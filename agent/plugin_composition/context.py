@@ -199,6 +199,12 @@ class Context:
         reject_executor_context_access()
         return self._fiber.plugin_module
 
+    def _owns_effect(self, effect: Effect) -> bool:
+        """Return whether this Fiber registered the exact live Effect."""
+
+        reject_executor_context_access()
+        return any(item is effect for item in self._fiber.effects)
+
     @asynccontextmanager
     async def root_scope(self) -> AsyncGenerator[None]:
         """Bind one short operation to this exact composition Root."""
@@ -663,6 +669,8 @@ class Fiber:
             plugin_id="" if runtime is None else runtime.plugin_id,
             generation_id="" if runtime is None else runtime.generation_id,
             fiber=self.name,
+            root_token=self.root.instance_token,
+            activation_token=self._activation_token,
         )
         self.effects.append(effect)
         return await effect.start(setup)
@@ -1216,6 +1224,18 @@ class CompositionRoot:
 
         return {
             key: runtime.plugin_id
+            for key, provider in self._providers.items()
+            if provider.owner.state == FiberState.ACTIVE
+            if (runtime := provider.owner.runtime) is not None
+        }
+
+    def service_fibers(
+        self,
+    ) -> Mapping[ServiceKey[object], tuple[str, str]]:
+        """Freeze each plugin Service's exact provider Fiber."""
+
+        return {
+            key: (runtime.plugin_id, provider.owner.name)
             for key, provider in self._providers.items()
             if provider.owner.state == FiberState.ACTIVE
             if (runtime := provider.owner.runtime) is not None

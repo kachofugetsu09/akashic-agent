@@ -13,6 +13,7 @@ from agent.plugin_composition.root_switch import (
     _PartNeed,
     _PartRef,
     _PartSet,
+    _SwitchInputRef,
 )
 from agent.plugins.artifact_pins import _ArtifactPins
 from agent.plugins.reload_journal import ReloadJournal, _StoredChoice, _SwitchRecord
@@ -42,6 +43,7 @@ class _Plan:
 class _Step:
     action: str
     entry: _PartEntry
+    snapshot: str
 
     @property
     def resource(self) -> str:
@@ -53,6 +55,7 @@ class _SwitchTarget:
     tx_id: str
     use_new: bool
     snapshot: str | None
+    other_snapshot: str | None
     moves: tuple[_Move, ...]
 
 
@@ -167,6 +170,30 @@ class _SwitchWork:
         )
 
 
+class _BootSwitch:
+    """Choose a journaled first-seen side after its recovery succeeds."""
+
+    def __init__(self, journal: ReloadJournal, workspace: Path, tx_id: str) -> None:
+        self._journal = journal
+        self._pins = _ArtifactPins(workspace, journal)
+        self._tx_id = tx_id
+
+    def commit(self) -> None:
+        """Record that recover converged the new side while admission is closed."""
+
+        self._journal.commit_switch(self._tx_id, recovered=True)
+
+    def finish(self) -> None:
+        """Clear the transition while its selected pins remain in the choice."""
+
+        _finish_switch(
+            self._journal,
+            self._pins,
+            self._tx_id,
+            use_new=True,
+        )
+
+
 class _SwitchRun:
     """Build, run, and recover RootSwitch inside the one reload owner."""
 
@@ -189,38 +216,6 @@ class _SwitchRun:
         """Read every durable selected part or absence tombstone."""
 
         return tuple(_decode_choice(item) for item in self._journal.switch_choices())
-
-    def save(self, snapshot: str, parts: _PartSet | None) -> None:
-        """Save first-seen selected parts before public admission opens."""
-
-        with self._pins.lock():
-            try:
-                pinned = (
-                    None
-                    if parts is None
-                    else _pin_parts_locked(self._pins, parts)
-                )
-                entries = () if pinned is None else tuple(pinned.values())
-                self._journal.save_parts(
-                    snapshot,
-                    tuple(
-                        (
-                            entry.ref.name,
-                            _encode_move(_Move(entry.ref.name, None, entry.ref)),
-                        )
-                        for entry in entries
-                    ),
-                )
-            except BaseException as error:
-                try:
-                    self._pins.clean()
-                except BaseException as cleanup_error:
-                    raise BaseExceptionGroup(
-                        "RootSwitch save 与 pin cleanup 同时失败",
-                        [error, cleanup_error],
-                    ) from error
-                raise
-            self._pins.clean()
 
     @staticmethod
     def old_refs(
@@ -296,13 +291,53 @@ class _SwitchRun:
                 raise
         return _SwitchWork(self._journal, self._workspace, tx_id, steps)
 
-    async def recover(self, loader: _PartLoader) -> tuple[_SwitchTarget, ...]:
-        """Converge each pending plan before its target snapshot may open."""
+    def prepare_boot(
+        self,
+        tx_id: str,
+        *,
+        new_snapshot: str,
+        new_parts: _PartSet | None,
+    ) -> _BootSwitch | None:
+        """Journal only first-seen parts before their first recovery call."""
+
+        current = {} if new_parts is None else dict(new_parts.items())
+        choices = {choice.name: choice for choice in self.choices()}
+        for name, choice in choices.items():
+            actual = current.get(name)
+            if choice.ref is None:
+                if actual is not None:
+                    raise RuntimeError(
+                        "RootSwitch boot target 与 absence choice 不一致"
+                    )
+            elif actual is None or actual.ref != choice.ref:
+                raise RuntimeError(
+                    "RootSwitch boot target 与 selected choice 不一致"
+                )
+        first = {
+            name: entry for name, entry in current.items() if name not in choices
+        }
+        if not first:
+            return None
+        if self.targets():
+            raise RuntimeError("RootSwitch recovery 期间不能增加 first part")
+        work = self.prepare(
+            tx_id,
+            old_snapshot=None,
+            old_parts=None,
+            new_snapshot=new_snapshot,
+            new_parts=_PartSet(first),
+        )
+        if work is None:
+            raise RuntimeError("RootSwitch first plan 意外为空")
+        return _BootSwitch(self._journal, self._workspace, tx_id)
+
+    async def preflight(self, loader: _PartLoader) -> tuple[_SwitchTarget, ...]:
+        """Prove each pinned side without calling a shared-owner action."""
 
         targets: list[_SwitchTarget] = []
         for record in self._journal.pending_switches():
             plan = _decode_record(record)
-            await self._recover_record(record, plan, loader)
+            await self._preflight_record(record, plan, loader)
             targets.append(_target(record, plan))
         return tuple(targets)
 
@@ -331,7 +366,31 @@ class _SwitchRun:
             self._pins,
             target.tx_id,
             use_new=record.use_new,
+            recovered=True,
         )
+
+    def degrade_recovery(
+        self,
+        targets: tuple[_SwitchTarget, ...],
+        *,
+        resource: str,
+        error: BaseException,
+    ) -> None:
+        """Keep every affected plan closed after a callback failure."""
+
+        message = str(error) or type(error).__name__
+        for target in targets:
+            record = self._journal.switch_record(target.tx_id)
+            if (
+                record is not None
+                and not record.cleared
+                and record.state == "running"
+            ):
+                self._journal.degrade_switch(
+                    target.tx_id,
+                    resource=resource,
+                    error=message,
+                )
 
     @staticmethod
     def check_recovery(
@@ -378,43 +437,29 @@ class _SwitchRun:
             use_new=True,
         )
 
-    async def _recover_record(
+    async def _preflight_record(
         self,
         record: _SwitchRecord,
         plan: _Plan,
         loader: _PartLoader,
     ) -> None:
-        target_new = record.use_new
-        inactive = tuple(
-            ref
-            for move in plan.moves
-            for ref in ((move.old,) if target_new else (move.new,))
-            if ref is not None
-        )
-        active = tuple(
-            ref
-            for move in plan.moves
-            for ref in ((move.new,) if target_new else (move.old,))
-            if ref is not None
-        )
         errors: list[BaseException] = []
         resources: list[str] = []
-        for ref, should_run in (
-            *((ref, False) for ref in inactive),
-            *((ref, True) for ref in active),
-        ):
+        refs = tuple(
+            dict.fromkeys(ref for move in plan.moves for ref in _move_refs(move))
+        )
+        for ref in refs:
             try:
                 entry = await loader.load(ref)
                 if entry.ref != ref:
                     raise RuntimeError(
                         "RootSwitch loader 返回了错误 artifact identity"
                     )
-                await entry.part.recover(should_run)
             except (KeyboardInterrupt, SystemExit):
                 raise
             except BaseException as error:
                 errors.append(error)
-                resources.append(f"root-switch:{ref.name}:recover")
+                resources.append(f"root-switch:{ref.name}:preflight")
         if not errors:
             return
         unique_resources = tuple(dict.fromkeys(resources))
@@ -427,7 +472,7 @@ class _SwitchRun:
             error=message,
         )
         raise _SwitchError(
-            "RootSwitch recovery 未能证明唯一 active side",
+            "RootSwitch preflight 未能证明 exact side",
             resources=unique_resources,
         ) from errors[0]
 
@@ -455,6 +500,9 @@ def _build_plan(
     _check_text(new_snapshot, "new snapshot")
     old = {} if old_parts is None else dict(old_parts.items())
     new = {} if new_parts is None else dict(new_parts.items())
+    if old and old_snapshot is None:
+        raise RuntimeError("RootSwitch old parts 缺少 snapshot identity")
+    old_step_snapshot = new_snapshot if old_snapshot is None else old_snapshot
     moves: list[_Move] = []
     changed: list[tuple[_PartEntry | None, _PartEntry | None]] = []
     for name in sorted(set(old) | set(new)):
@@ -476,22 +524,22 @@ def _build_plan(
         changed.append((old_entry, new_entry))
     steps = (
         *(
-            _Step("stop", old_entry)
+            _Step("stop", old_entry, old_step_snapshot)
             for old_entry, _ in changed
             if old_entry is not None
         ),
         *(
-            _Step("leave", old_entry)
+            _Step("leave", old_entry, old_step_snapshot)
             for old_entry, _ in changed
             if old_entry is not None
         ),
         *(
-            _Step("enter", new_entry)
+            _Step("enter", new_entry, new_snapshot)
             for _, new_entry in changed
             if new_entry is not None
         ),
         *(
-            _Step("start", new_entry)
+            _Step("start", new_entry, new_snapshot)
             for _, new_entry in changed
             if new_entry is not None
         ),
@@ -503,15 +551,14 @@ def _target(record: _SwitchRecord, plan: _Plan) -> _SwitchTarget:
     return _SwitchTarget(
         tx_id=record.tx_id,
         use_new=record.use_new,
-        snapshot=(
-            plan.new_snapshot if record.use_new else plan.old_snapshot
-        ),
+        snapshot=(plan.new_snapshot if record.use_new else plan.old_snapshot),
+        other_snapshot=(plan.old_snapshot if record.use_new else plan.new_snapshot),
         moves=plan.moves,
     )
 
 
 async def _run_step(step: _Step) -> None:
-    await getattr(step.entry.part, step.action)()
+    await getattr(step.entry.part, step.action)(step.snapshot)
 
 
 def _inverse(step: _Step) -> _Step:
@@ -523,6 +570,7 @@ def _inverse(step: _Step) -> _Step:
             "start": "stop",
         }[step.action],
         step.entry,
+        step.snapshot,
     )
 
 
@@ -618,6 +666,16 @@ def _ref_value(ref: _PartRef | None) -> dict[str, object] | None:
         "owner": ref.owner,
         "generation": ref.generation,
         "artifact": ref.artifact,
+        "fiber": ref.fiber,
+        "inputs": [
+            {
+                "owner": item.owner,
+                "generation": item.generation,
+                "artifact": item.artifact,
+                "fiber": item.fiber,
+            }
+            for item in ref.inputs
+        ],
         "needs": [
             {
                 "owner": need.owner,
@@ -640,9 +698,27 @@ def _decode_ref(value: object) -> _PartRef | None:
         "owner",
         "generation",
         "artifact",
+        "fiber",
+        "inputs",
         "needs",
     }:
         raise RuntimeError("RootSwitch journal part ref 结构无效")
+    inputs_value = ref_value["inputs"]
+    if not isinstance(inputs_value, list):
+        raise RuntimeError("RootSwitch journal part inputs 结构无效")
+    inputs = tuple(_decode_input(item) for item in cast(list[object], inputs_value))
+    if inputs != tuple(
+        sorted(
+            inputs,
+            key=lambda item: (
+                item.owner,
+                item.fiber,
+                item.generation,
+                item.artifact,
+            ),
+        )
+    ):
+        raise RuntimeError("RootSwitch journal part inputs 必须稳定排序")
     needs_value = ref_value["needs"]
     if not isinstance(needs_value, list):
         raise RuntimeError("RootSwitch journal part needs 结构无效")
@@ -656,7 +732,23 @@ def _decode_ref(value: object) -> _PartRef | None:
         owner=_stored_text(ref_value["owner"], "part owner"),
         generation=_stored_text(ref_value["generation"], "part generation"),
         artifact=_stored_text(ref_value["artifact"], "part artifact"),
+        fiber=_stored_text(ref_value["fiber"], "part fiber"),
+        inputs=inputs,
         needs=needs,
+    )
+
+
+def _decode_input(value: object) -> _SwitchInputRef:
+    if not isinstance(value, dict):
+        raise RuntimeError("RootSwitch journal input ref 结构无效")
+    item = cast(dict[str, object], value)
+    if set(item) != {"owner", "generation", "artifact", "fiber"}:
+        raise RuntimeError("RootSwitch journal input ref 结构无效")
+    return _SwitchInputRef(
+        owner=_stored_text(item["owner"], "input owner"),
+        generation=_stored_text(item["generation"], "input generation"),
+        artifact=_stored_text(item["artifact"], "input artifact"),
+        fiber=_stored_text(item["fiber"], "input fiber"),
     )
 
 
@@ -719,12 +811,47 @@ def _pin_plan(pins: _ArtifactPins, plan: _Plan) -> _Plan:
 def _pin_ref(pins: _ArtifactPins, ref: _PartRef | None) -> _PartRef | None:
     if ref is None:
         return None
+    artifact = pins.pin(ref.artifact, owner=ref.owner, name=ref.name)
     needs = tuple(_pin_need(pins, need) for need in ref.needs)
+    pinned_by_owner = {need.owner: need for need in needs}
+    inputs: list[_SwitchInputRef] = []
+    for item in ref.inputs:
+        if item.owner == ref.owner:
+            if item.generation != ref.generation or item.artifact != ref.artifact:
+                raise RuntimeError("RootSwitch owner input identity 不一致")
+            input_artifact = artifact
+        else:
+            need = pinned_by_owner.get(item.owner)
+            if (
+                need is None
+                or need.generation != item.generation
+                or next(
+                    (
+                        source.artifact
+                        for source in ref.needs
+                        if source.owner == item.owner
+                    ),
+                    None,
+                )
+                != item.artifact
+            ):
+                raise RuntimeError("RootSwitch input dependency identity 不一致")
+            input_artifact = need.artifact
+        inputs.append(
+            _SwitchInputRef(
+                owner=item.owner,
+                generation=item.generation,
+                artifact=input_artifact,
+                fiber=item.fiber,
+            )
+        )
     return _PartRef(
         name=ref.name,
         owner=ref.owner,
         generation=ref.generation,
-        artifact=pins.pin(ref.artifact, owner=ref.owner, name=ref.name),
+        artifact=artifact,
+        fiber=ref.fiber,
+        inputs=tuple(inputs),
         needs=needs,
     )
 
@@ -732,7 +859,13 @@ def _pin_ref(pins: _ArtifactPins, ref: _PartRef | None) -> _PartRef | None:
 def _pin_need(pins: _ArtifactPins, need: _PartNeed) -> _PartNeed:
     pinned = _pin_ref(
         pins,
-        _PartRef("need", need.owner, need.generation, need.artifact),
+        _PartRef(
+            "need",
+            need.owner,
+            need.generation,
+            need.artifact,
+            "need",
+        ),
     )
     if pinned is None:
         raise RuntimeError("RootSwitch dependency pin 意外为空")
@@ -768,12 +901,13 @@ def _finish_switch(
     tx_id: str,
     *,
     use_new: bool,
+    recovered: bool = False,
 ) -> None:
     with pins.lock():
         record = journal.switch_record(tx_id)
         if record is None:
             raise RuntimeError("RootSwitch record 不存在")
-        journal.finish_switch(tx_id, use_new=use_new)
+        journal.finish_switch(tx_id, use_new=use_new, recovered=recovered)
         pins.clean()
 
 

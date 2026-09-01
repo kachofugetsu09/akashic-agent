@@ -574,14 +574,14 @@ class ReloadJournal:
                 (next_step, _now(), tx_id),
             )
 
-    def commit_switch(self, tx_id: str) -> None:
+    def commit_switch(self, tx_id: str, *, recovered: bool = False) -> None:
         """Choose the new side immediately before candidate admission opens."""
 
         with self._connect() as conn:
             record = self._read_switch(conn, tx_id)
             if record.use_new or record.cleared or record.state != "running":
                 raise RuntimeError("RootSwitch 已选新边、已清理或已 degraded")
-            if record.next_step != record.step_count:
+            if not recovered and record.next_step != record.step_count:
                 raise RuntimeError(
                     "RootSwitch 尚有未完成动作: "
                     f"{record.next_step}/{record.step_count}"
@@ -589,10 +589,10 @@ class ReloadJournal:
             conn.execute(
                 """
                 UPDATE reload_switches
-                SET use_new = 1, updated_at = ?
+                SET next_step = ?, use_new = 1, updated_at = ?
                 WHERE tx_id = ?
                 """,
-                (_now(), tx_id),
+                (record.step_count, _now(), tx_id),
             )
             cursor = conn.execute(
                 """
@@ -605,33 +605,6 @@ class ReloadJournal:
             moves = json.loads(record.plan_json).get("moves")
             if not isinstance(moves, list) or cursor.rowcount != len(moves):
                 raise RuntimeError("RootSwitch stable choice 缺失")
-
-    def save_parts(
-        self,
-        snapshot_id: str,
-        choices: tuple[tuple[str, str], ...],
-    ) -> None:
-        """Save first-seen parts before their first public admission."""
-
-        if not snapshot_id or snapshot_id.strip() != snapshot_id:
-            raise ValueError("RootSwitch snapshot id 无效")
-        names = tuple(name for name, _move_json in choices)
-        if len(names) != len(set(names)):
-            raise ValueError("RootSwitch choice name 必须唯一")
-        with self._connect() as conn:
-            for name, move_json in choices:
-                move = json.loads(move_json)
-                if not isinstance(move, dict) or move.get("name") != name:
-                    raise ValueError("RootSwitch choice move 无效")
-                conn.execute(
-                    """
-                    INSERT INTO switch_choices (
-                        name, tx_id, move_json, use_new, snapshot_id, updated_at
-                    ) VALUES (?, ?, ?, 1, ?, ?)
-                    ON CONFLICT(name) DO NOTHING
-                    """,
-                    (name, f"snapshot:{snapshot_id}", move_json, snapshot_id, _now()),
-                )
 
     def degrade_switch(
         self,
@@ -656,7 +629,13 @@ class ReloadJournal:
                 (resource, error, _now(), tx_id),
             )
 
-    def finish_switch(self, tx_id: str, *, use_new: bool) -> None:
+    def finish_switch(
+        self,
+        tx_id: str,
+        *,
+        use_new: bool,
+        recovered: bool = False,
+    ) -> None:
         """Release pins only after one side was proved by the publication owner."""
 
         with self._connect() as conn:
@@ -665,7 +644,9 @@ class ReloadJournal:
                 if record.use_new != use_new:
                     raise RuntimeError("RootSwitch cleared side 与请求不一致")
                 return
-            if record.state != "running":
+            if record.state != "running" and not (
+                recovered and record.state == "degraded"
+            ):
                 raise RuntimeError("degraded RootSwitch 不能释放 artifact pin")
             if record.use_new != use_new:
                 raise RuntimeError("RootSwitch selected side 尚未证明")

@@ -246,7 +246,7 @@ class RuntimeSnapshotCompiler:
                     },
                     needs=_switch_needs(
                         generations,
-                        composition_root.plugin_service_owners(),
+                        composition_root.service_fibers(),
                         composition_root,
                     ),
                     plugin_ids=(
@@ -255,7 +255,11 @@ class RuntimeSnapshotCompiler:
                 )
             )
             if changed_parts is not None:
-                self._check_parts(changed_parts, generations)
+                self._check_parts(
+                    changed_parts,
+                    generations,
+                    composition_root,
+                )
             switch_parts = (
                 changed_parts
                 if base_snapshot is None
@@ -764,6 +768,7 @@ class RuntimeSnapshotCompiler:
     def _check_parts(
         parts: _PartSet,
         generations: Mapping[str, PluginGeneration],
+        composition_root: CompositionSnapshotRoot,
     ) -> None:
         """Bind every switch part to its selected immutable artifact."""
 
@@ -779,6 +784,35 @@ class RuntimeSnapshotCompiler:
                     "RuntimeSnapshot Root switch part 不属于 exact artifact: "
                     f"{ref.owner}:{ref.name}:{ref.generation}"
                 )
+            owner_fibers = {
+                fiber.name
+                for fiber in composition_root.plugin_topology(ref.owner).fibers
+            }
+            if ref.fiber not in owner_fibers:
+                raise RuntimeError(
+                    "RuntimeSnapshot Root switch part Fiber 不属于 owner: "
+                    f"{ref.owner}:{ref.fiber}"
+                )
+            for item in ref.inputs:
+                contributor = generations.get(item.owner)
+                if (
+                    contributor is None
+                    or contributor.generation_id != item.generation
+                    or _artifact_value(contributor) != item.artifact
+                ):
+                    raise RuntimeError(
+                        "RuntimeSnapshot Root switch input 不属于 exact artifact: "
+                        f"{ref.owner}:{item.owner}:{item.generation}"
+                    )
+                input_fibers = {
+                    fiber.name
+                    for fiber in composition_root.plugin_topology(item.owner).fibers
+                }
+                if item.fiber not in input_fibers:
+                    raise RuntimeError(
+                        "RuntimeSnapshot Root switch input Fiber 不属于 owner: "
+                        f"{item.owner}:{item.fiber}"
+                    )
             for need in ref.needs:
                 needed = generations.get(need.owner)
                 if (
@@ -794,48 +828,61 @@ class RuntimeSnapshotCompiler:
 
 def _switch_needs(
     generations: Mapping[str, PluginGeneration],
-    service_owners: Mapping[ServiceKey[object], str],
+    service_fibers: Mapping[ServiceKey[object], tuple[str, str]],
     composition_root: CompositionSnapshotRoot,
-) -> dict[str, tuple[_PartNeed, ...]]:
-    """Freeze each plugin's ordinary provider dependency closure."""
+) -> dict[tuple[str, str], tuple[_PartNeed, ...]]:
+    """Freeze the provider closure of each exact plugin Fiber."""
 
-    owners_by_name = {key.name: owner for key, owner in service_owners.items()}
-    if not owners_by_name:
-        return {plugin_id: () for plugin_id in generations}
-    direct: dict[str, tuple[str, ...]] = {}
-    for plugin_id in generations:
-        topology = composition_root.plugin_topology(plugin_id)
-        direct[plugin_id] = tuple(
-            sorted(
-                {
-                    owner
-                    for fiber in topology.fibers
-                    for name in fiber.dependencies
-                    if (owner := owners_by_name.get(name)) is not None
-                    and owner != plugin_id
-                    and owner in generations
-                }
+    providers = {key.name: value for key, value in service_fibers.items()}
+    fibers = {
+        plugin_id: {
+            fiber.name: fiber
+            for fiber in composition_root.plugin_topology(plugin_id).fibers
+        }
+        for plugin_id in generations
+    }
+    result: dict[tuple[str, str], tuple[_PartNeed, ...]] = {}
+    for start_owner, owner_fibers in fibers.items():
+        for start_fiber in owner_fibers:
+            selected: set[str] = set()
+            seen: set[tuple[str, str]] = set()
+            pending = [(start_owner, start_fiber)]
+            while pending:
+                owner, fiber_name = pending.pop()
+                node = (owner, fiber_name)
+                if node in seen:
+                    continue
+                seen.add(node)
+                topology = fibers.get(owner)
+                if topology is None or fiber_name not in topology:
+                    raise RuntimeError(
+                        "Root switch dependency Fiber 不属于 exact plugin: "
+                        f"{owner}:{fiber_name}"
+                    )
+                fiber = topology[fiber_name]
+                if fiber.parent is not None:
+                    pending.append((owner, fiber.parent))
+                for service_name in fiber.dependencies:
+                    provider = providers.get(service_name)
+                    if provider is None:
+                        continue
+                    provider_owner, provider_fiber = provider
+                    if provider_owner not in generations:
+                        raise RuntimeError(
+                            "Root switch dependency owner 不属于 snapshot: "
+                            f"{provider_owner}:{service_name}"
+                        )
+                    if provider_owner != start_owner:
+                        selected.add(provider_owner)
+                    pending.append((provider_owner, provider_fiber))
+            result[(start_owner, start_fiber)] = tuple(
+                _PartNeed(
+                    owner=owner,
+                    generation=generations[owner].generation_id,
+                    artifact=_artifact_value(generations[owner]),
+                )
+                for owner in sorted(selected)
             )
-        )
-
-    result: dict[str, tuple[_PartNeed, ...]] = {}
-    for plugin_id in generations:
-        selected: set[str] = set()
-        pending = list(direct[plugin_id])
-        while pending:
-            owner = pending.pop()
-            if owner in selected or owner == plugin_id:
-                continue
-            selected.add(owner)
-            pending.extend(direct[owner])
-        result[plugin_id] = tuple(
-            _PartNeed(
-                owner=owner,
-                generation=generations[owner].generation_id,
-                artifact=_artifact_value(generations[owner]),
-            )
-            for owner in sorted(selected)
-        )
     return result
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import pickle
 import shutil
 import threading
 from pathlib import Path
@@ -22,6 +23,7 @@ from agent.plugin_composition import (
     PluginBackgroundJobs,
     RootSwitch,
     ServiceKey,
+    SwitchInput,
     SwitchPart,
 )
 from agent.plugin_composition.root_switch import (
@@ -29,13 +31,16 @@ from agent.plugin_composition.root_switch import (
     _PartRef,
     _PartSet,
 )
+from agent.plugin_composition.effect import Effect
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.artifact_pins import _ArtifactPins
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
 from agent.plugins.root_switch import (
     _SwitchError,
     _SwitchRun,
+    _decode_ref,
     _pin_parts,
+    _ref_value,
 )
 from agent.plugins.generation import PluginContributions
 from agent.plugins.manager import PluginManager
@@ -70,18 +75,20 @@ class _Owner:
         self.waiting = asyncio.Event()
         self.release = asyncio.Event()
         self.recover_calls: list[bool] = []
+        self.snapshots: list[tuple[str, str]] = []
 
     def part(self, name: str = "shared") -> SwitchPart:
         return SwitchPart(
             name=name,
-            stop=lambda: self._run("stop"),
-            leave=lambda: self._run("leave"),
-            enter=lambda: self._run("enter"),
-            start=lambda: self._run("start"),
+            stop=lambda snapshot: self._run("stop", snapshot),
+            leave=lambda snapshot: self._run("leave", snapshot),
+            enter=lambda snapshot: self._run("enter", snapshot),
+            start=lambda snapshot: self._run("start", snapshot),
             recover=self.recover,
         )
 
-    async def _run(self, action: str) -> None:
+    async def _run(self, action: str, snapshot: str) -> None:
+        self.snapshots.append((action, snapshot))
         self.events.append(f"{self.label}.{action}")
         if action == "stop":
             self.active = False
@@ -97,7 +104,8 @@ class _Owner:
         if action in self.fail:
             raise RuntimeError(f"{self.label} {action} failed")
 
-    async def recover(self, active: bool) -> None:
+    async def recover(self, snapshot: str, active: bool) -> None:
+        self.snapshots.append(("recover", snapshot))
         self.events.append(f"{self.label}.recover:{active}")
         self.recover_calls.append(active)
         if "recover" in self.fail:
@@ -135,9 +143,10 @@ def _entry(
     plugin: str,
     generation: str,
     artifact: str,
+    fiber: str | None = None,
 ) -> _PartEntry:
     return _PartEntry(
-        ref=_PartRef(name, plugin, generation, artifact),
+        ref=_PartRef(name, plugin, generation, artifact, fiber or plugin),
         part=owner.part(name),
     )
 
@@ -156,6 +165,24 @@ def _target_parts(target: Any, *entries: _PartEntry) -> _PartSet | None:
         if ref is not None:
             selected[ref.name] = _PartEntry(ref, callbacks[ref.name])
     return _PartSet(selected) if selected else None
+
+
+async def _recover_target(target: Any, *entries: _PartEntry) -> None:
+    """Run the two closed sides after journal preflight."""
+
+    loader = _Loader(entries)
+    inactive = ((move.old if target.use_new else move.new) for move in target.moves)
+    for ref in inactive:
+        if ref is not None:
+            assert target.other_snapshot is not None
+            entry = await loader.load(ref)
+            await entry.part.recover(target.other_snapshot, False)
+    active = ((move.new if target.use_new else move.old) for move in target.moves)
+    for ref in active:
+        if ref is not None:
+            assert target.snapshot is not None
+            entry = await loader.load(ref)
+            await entry.part.recover(target.snapshot, True)
 
 
 def _artifact(root: Path, name: str) -> str:
@@ -181,9 +208,18 @@ def _artifact(root: Path, name: str) -> str:
     )
 
 
-def _builtin_artifact(root: Path, label: str, log: Path) -> str:
+def _builtin_artifact(
+    root: Path,
+    label: str,
+    log: Path,
+    *,
+    fail_recover: bool = False,
+) -> str:
     plugin_dir = root / label
     plugin_dir.mkdir(parents=True)
+    recover_failure = (
+        "    raise RuntimeError('recover failed')\n" if fail_recover else ""
+    )
     (plugin_dir / "plugin.py").write_text(
         "from pathlib import Path\n"
         "from agent.plugin_composition import ROOT_SWITCH, SwitchPart\n"
@@ -191,8 +227,9 @@ def _builtin_artifact(root: Path, label: str, log: Path) -> str:
         "name = 'plugin'\n"
         f"version = {label!r}\n"
         "inject = (ROOT_SWITCH,)\n"
-        "async def _none(): pass\n"
-        "async def _recover(active):\n"
+        "async def _none(_snapshot): pass\n"
+        "async def _recover(_snapshot, active):\n"
+        f"{recover_failure}"
         f"    path = Path({str(log)!r})\n"
         f"    prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
         f"    path.write_text(prior + {label!r} + ':' + str(active) + '\\n', encoding='utf-8')\n"
@@ -241,8 +278,8 @@ def _write_builtin(
         f"name = {plugin_name!r}\n"
         f"version = {label!r}\n"
         "inject = (ROOT_SWITCH,)\n"
-        "async def _none(): pass\n"
-        "async def _recover(active):\n"
+        "async def _none(_snapshot): pass\n"
+        "async def _recover(_snapshot, active):\n"
         f"    path = Path({str(log)!r})\n"
         "    prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
         f"    path.write_text(prior + {label!r} + ':' + str(active) + '\\n', encoding='utf-8')\n"
@@ -361,7 +398,12 @@ def _generation(
 def test_root_switch_public_surface_stays_small_and_source_neutral() -> None:
     import agent.plugin_composition.root_switch as module
 
-    assert module.__all__ == ["ROOT_SWITCH", "RootSwitch", "SwitchPart"]
+    assert module.__all__ == [
+        "ROOT_SWITCH",
+        "RootSwitch",
+        "SwitchInput",
+        "SwitchPart",
+    ]
     root = Path(__file__).parents[1]
     violations: list[str] = []
     for relative in (
@@ -438,6 +480,268 @@ async def test_snapshot_seal_freezes_exact_part_without_calling_it(
         await switch.add(plugin_ctx, owner.part("late"))
     assert caught.value.code == "ROOT_SWITCH_FROZEN"
     await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_switch_inputs_freeze_direct_multiset_and_real_closure(
+    tmp_path: Path,
+) -> None:
+    root = CompositionRoot("input-root")
+    switch = RootSwitch(root.instance_token)
+    _ = await root.context.provide(ROOT_SWITCH, switch)
+    value_key = ServiceKey[str]("test.input.value")
+    noise_key = ServiceKey[str]("test.input.noise")
+    tokens: list[SwitchInput] = []
+    contexts: list[Any] = []
+    generations: dict[str, Any] = {}
+
+    async def mount_plugin(
+        plugin_id: str,
+        generation_id: str,
+        apply: Any,
+    ) -> None:
+        plugin_dir = tmp_path / plugin_id
+        runtime = PluginRuntime(
+            plugin_id=plugin_id,
+            generation_id=generation_id,
+            plugin_dir=plugin_dir,
+            data_dir=tmp_path / f"{plugin_id}-data",
+            workspace=tmp_path / "workspace",
+            config={},
+        )
+        _ = await root.mount(apply, name=plugin_id, runtime=runtime)
+        generations[plugin_id] = _generation(
+            plugin_id,
+            generation_id,
+            plugin_dir,
+        )
+
+    async def provider(ctx) -> None:
+        _ = await ctx.provide(value_key, "ready")
+
+    async def noise(ctx) -> None:
+        _ = await ctx.provide(noise_key, "unused")
+
+    async def contributor(ctx) -> None:
+        contexts.append(ctx)
+
+        async def child(child_ctx) -> None:
+            assert child_ctx.require(value_key) == "ready"
+
+            def add_input() -> None:
+                tokens.append(child_ctx.require(ROOT_SWITCH).input(child_ctx))
+
+            _ = await child_ctx.effect(add_input, label="registry:item-one")
+            _ = await child_ctx.effect(add_input, label="registry:item-two")
+
+        _ = await ctx.mount(
+            child,
+            name="input-child",
+            inject=(ROOT_SWITCH, value_key),
+        )
+
+        async def unrelated(child_ctx) -> None:
+            assert child_ctx.require(noise_key) == "unused"
+
+        _ = await ctx.mount(
+            unrelated,
+            name="unrelated-child",
+            inject=(noise_key,),
+        )
+
+    owner = _Owner("part", [], active=False)
+
+    async def part(ctx) -> None:
+        _ = await ctx.require(ROOT_SWITCH).add(
+            ctx,
+            SwitchPart(
+                name="shared",
+                stop=owner.part().stop,
+                leave=owner.part().leave,
+                enter=owner.part().enter,
+                start=owner.part().start,
+                recover=owner.recover,
+                inputs=tuple(tokens),
+            ),
+        )
+
+    await mount_plugin("provider", "provider-v1", provider)
+    await mount_plugin("noise", "noise-v1", noise)
+    await mount_plugin("contributor", "contributor-v1", contributor)
+    await mount_plugin("part", "part-v1", part)
+    snapshot = RuntimeSnapshotCompiler().compile(
+        generations,
+        composition_root=root,
+    )
+
+    assert snapshot.switch_parts is not None
+    ref = snapshot.switch_parts["shared"].ref
+    assert ref.fiber == "part"
+    assert tuple((item.owner, item.generation, item.fiber) for item in ref.inputs) == (
+        ("contributor", "contributor-v1", "input-child"),
+        ("contributor", "contributor-v1", "input-child"),
+    )
+    assert tuple(item.owner for item in ref.needs) == (
+        "contributor",
+        "provider",
+    )
+    run = _SwitchRun(ReloadJournal(tmp_path / "input-workspace"))
+    boot = run.prepare_boot(
+        "input-boot",
+        new_snapshot=snapshot.snapshot_id,
+        new_parts=snapshot.switch_parts,
+    )
+    assert boot is not None
+    boot.commit()
+    boot.finish()
+    stored = run.choices()[0].ref
+    assert stored is not None and stored.fiber == "part"
+    assert len(stored.inputs) == 2
+    assert stored.inputs[0] == stored.inputs[1]
+    contributor_need = next(
+        item for item in stored.needs if item.owner == "contributor"
+    )
+    assert all(item.artifact == contributor_need.artifact for item in stored.inputs)
+    old_shape = _ref_value(stored)
+    assert old_shape is not None
+    del old_shape["inputs"]
+    with pytest.raises(RuntimeError, match="结构无效"):
+        _decode_ref(old_shape)
+    assert tokens[0] is not tokens[1]
+    with pytest.raises(TypeError, match="只能由"):
+        SwitchInput()
+    with pytest.raises(TypeError, match="不能序列化"):
+        pickle.dumps(tokens[0])
+    with pytest.raises(CompositionError) as outside:
+        switch.input(contexts[0])
+    assert outside.value.code == "INPUT_MISMATCH"
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_switch_input_rejects_an_unowned_effect(tmp_path: Path) -> None:
+    root = CompositionRoot("input-owner-root")
+    switch = RootSwitch(root.instance_token)
+    _ = await root.context.provide(ROOT_SWITCH, switch)
+    contexts: list[Any] = []
+    runtime = PluginRuntime(
+        plugin_id="owner",
+        generation_id="owner-v1",
+        plugin_dir=tmp_path / "owner",
+        data_dir=tmp_path / "owner-data",
+        workspace=tmp_path / "workspace",
+        config={},
+    )
+
+    async def plugin(ctx) -> None:
+        contexts.append(ctx)
+
+    _ = await root.mount(plugin, name="owner", runtime=runtime)
+    ctx = contexts[0]
+    rogue = Effect(
+        label="rogue",
+        remove_from_owner=lambda _effect: None,
+        plugin_id=runtime.plugin_id,
+        generation_id=runtime.generation_id,
+        fiber=ctx.fiber.name,
+        root_token=ctx.root_instance_token,
+        activation_token=ctx.fiber.activation_token,
+    )
+
+    with pytest.raises(CompositionError) as caught:
+        await rogue.start(lambda: switch.input(ctx))
+    assert caught.value.code == "INPUT_MISMATCH"
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("unused", "duplicate", "cleaned", "other-root"))
+async def test_switch_input_must_be_live_and_consumed_once(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    source_root = CompositionRoot(f"input-source-{mode}")
+    source_switch = RootSwitch(source_root.instance_token)
+    _ = await source_root.context.provide(ROOT_SWITCH, source_switch)
+    source_dir = tmp_path / "source"
+    source_runtime = PluginRuntime(
+        plugin_id="source",
+        generation_id="source-v1",
+        plugin_dir=source_dir,
+        data_dir=tmp_path / "source-data",
+        workspace=tmp_path / "workspace",
+        config={},
+    )
+    tokens: list[SwitchInput] = []
+    effects: list[Any] = []
+
+    async def source(ctx) -> None:
+        def setup() -> None:
+            tokens.append(ctx.require(ROOT_SWITCH).input(ctx))
+
+        effects.append(await ctx.effect(setup, label="registry:item"))
+
+    _ = await source_root.mount(source, name="source", runtime=source_runtime)
+    if mode == "cleaned":
+        await effects[0].aclose()
+
+    target_root = source_root
+    target_switch = source_switch
+    generations = {
+        "source": _generation("source", "source-v1", source_dir),
+    }
+    if mode == "other-root":
+        target_root = CompositionRoot("other-root")
+        target_switch = RootSwitch(target_root.instance_token)
+        _ = await target_root.context.provide(ROOT_SWITCH, target_switch)
+        generations = {}
+    part_dir = tmp_path / "part"
+    part_runtime = PluginRuntime(
+        plugin_id="part",
+        generation_id="part-v1",
+        plugin_dir=part_dir,
+        data_dir=tmp_path / "part-data",
+        workspace=tmp_path / "workspace",
+        config={},
+    )
+    owner = _Owner("part", [], active=False)
+    selected = (
+        ()
+        if mode == "unused"
+        else ((tokens[0], tokens[0]) if mode == "duplicate" else (tokens[0],))
+    )
+
+    async def part(ctx) -> None:
+        _ = await ctx.require(ROOT_SWITCH).add(
+            ctx,
+            SwitchPart(
+                name="shared",
+                stop=owner.part().stop,
+                leave=owner.part().leave,
+                enter=owner.part().enter,
+                start=owner.part().start,
+                recover=owner.recover,
+                inputs=selected,
+            ),
+        )
+
+    _ = await target_root.mount(part, name="part", runtime=part_runtime)
+    generations["part"] = _generation("part", "part-v1", part_dir)
+    expected = {
+        "unused": "UNUSED_INPUT",
+        "duplicate": "DUPLICATE_INPUT",
+        "cleaned": "INVALID_INPUT",
+        "other-root": "INVALID_INPUT",
+    }[mode]
+    with pytest.raises(CompositionError) as caught:
+        RuntimeSnapshotCompiler().compile(
+            generations,
+            composition_root=target_root,
+        )
+    assert caught.value.code == expected
+    if target_root is not source_root:
+        await target_root.dispose()
+    await source_root.dispose()
 
 
 @pytest.mark.asyncio
@@ -652,6 +956,8 @@ async def test_switch_runs_fixed_install_remove_replace_order(
     work.commit()
 
     assert events == expected
+    assert all(snapshot == "snapshot-old" for _, snapshot in old_owner.snapshots)
+    assert all(snapshot == "snapshot-new" for _, snapshot in new_owner.snapshots)
     record = journal.switch_record(tx_id)
     assert record is not None and record.use_new and not record.cleared
     assert len(_SwitchRun(journal).pins()) == int(old_present) + int(new_present)
@@ -922,7 +1228,7 @@ async def test_each_forward_step_crash_recovers_old_side(
     )
     assert work is not None
     for index, step in enumerate(work._steps[:crash_step], start=1):
-        await getattr(step.entry.part, step.action)()
+        await getattr(step.entry.part, step.action)(step.snapshot)
         if index < crash_step or step_recorded:
             journal.advance_switch(tx_id, index)
 
@@ -932,7 +1238,8 @@ async def test_each_forward_step_crash_recovers_old_side(
 
     reopened = ReloadJournal(workspace)
     recovery = _SwitchRun(reopened)
-    targets = await recovery.recover(_Loader((old_entry, new_entry)))
+    targets = await recovery.preflight(_Loader((old_entry, new_entry)))
+    await _recover_target(targets[0], old_entry, new_entry)
 
     assert len(targets) == 1
     assert not targets[0].use_new
@@ -978,7 +1285,7 @@ async def test_install_remove_step_crash_recovers_old_side(
     )
     assert work is not None
     for index, step in enumerate(work._steps[:crash_step], start=1):
-        await getattr(step.entry.part, step.action)()
+        await getattr(step.entry.part, step.action)(step.snapshot)
         if index < crash_step or step_recorded:
             journal.advance_switch(tx_id, index)
 
@@ -988,7 +1295,8 @@ async def test_install_remove_step_crash_recovers_old_side(
         for entry, present in ((old_entry, old_present), (new_entry, new_present))
         if present
     )
-    targets = await recovery.recover(_Loader(entries))
+    targets = await recovery.preflight(_Loader(entries))
+    await _recover_target(targets[0], *entries)
 
     assert old_owner.active is old_present
     assert old_owner.present is old_present
@@ -1084,7 +1392,8 @@ async def test_crash_after_new_side_mark_recovers_new_side(tmp_path: Path) -> No
 
     reopened = ReloadJournal(workspace)
     recovery = _SwitchRun(reopened)
-    targets = await recovery.recover(_Loader((old_entry, new_entry)))
+    targets = await recovery.preflight(_Loader((old_entry, new_entry)))
+    await _recover_target(targets[0], old_entry, new_entry)
 
     assert targets[0].use_new
     assert not old_owner.active and not old_owner.present
@@ -1093,7 +1402,7 @@ async def test_crash_after_new_side_mark_recovers_new_side(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_missing_artifact_or_recover_failure_stays_degraded(
+async def test_missing_artifact_stays_degraded(
     tmp_path: Path,
 ) -> None:
     events: list[str] = []
@@ -1124,44 +1433,13 @@ async def test_missing_artifact_or_recover_failure_stays_degraded(
     work.commit()
 
     with pytest.raises(_SwitchError) as missing:
-        await _SwitchRun(ReloadJournal(tmp_path / "missing")).recover(
+        await _SwitchRun(ReloadJournal(tmp_path / "missing")).preflight(
             _Loader((new_entry,))
         )
-    assert missing.value.resources == ("root-switch:shared:recover",)
+    assert missing.value.resources == ("root-switch:shared:preflight",)
     missing_record = journal.switch_record(tx_id)
     assert missing_record is not None and missing_record.state == "degraded"
     assert not missing_record.cleared
-
-    failed_owner = _Owner(
-        "failed",
-        [],
-        active=True,
-        fail=frozenset({"recover"}),
-    )
-    failed_entry = _entry(
-        failed_owner,
-        plugin="plugin",
-        generation="old",
-        artifact=_artifact(tmp_path, "artifact-old"),
-    )
-    journal_two, tx_two = _journal(tmp_path / "failed")
-    work_two = _SwitchRun(journal_two).prepare(
-        tx_two,
-        old_snapshot="snapshot-old",
-        old_parts=_parts(failed_entry),
-        new_snapshot="snapshot-new",
-        new_parts=None,
-    )
-    assert work_two is not None
-    first_step = work_two._steps[0]
-    await getattr(first_step.entry.part, first_step.action)()
-    journal_two.advance_switch(tx_two, 1)
-    with pytest.raises(_SwitchError):
-        await _SwitchRun(ReloadJournal(tmp_path / "failed")).recover(
-            _Loader((failed_entry,))
-        )
-    failed_record = journal_two.switch_record(tx_two)
-    assert failed_record is not None and failed_record.state == "degraded"
 
 
 @pytest.mark.asyncio
@@ -1173,20 +1451,25 @@ async def test_manager_provides_root_switch_and_recovers_before_boot_open(
     marker = tmp_path / "workspace" / "switch-state"
     (plugin_dir / "plugin.py").write_text(
         "from pathlib import Path\n"
-        "from agent.plugin_composition import ROOT_SWITCH, SwitchPart\n"
+        "from agent.plugin_composition import ROOT_SWITCH, RUNTIME_STARTED, SwitchPart\n"
         "api_version = 3\n"
         "name = 'switch_probe'\n"
         "version = '1.0.0'\n"
         "inject = (ROOT_SWITCH,)\n"
         "async def _write(value):\n"
-        f"    Path({str(marker)!r}).write_text(value, encoding='utf-8')\n"
-        "async def _recover(active):\n"
+        f"    path = Path({str(marker)!r})\n"
+        "    prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
+        "    path.write_text(prior + value + '\\n', encoding='utf-8')\n"
+        "async def _recover(_snapshot, active):\n"
         "    await _write('active' if active else 'inactive')\n"
+        "async def _started(_event):\n"
+        "    await _write('runtime')\n"
         "async def apply(ctx, config):\n"
+        "    await ctx.on(RUNTIME_STARTED, _started)\n"
         "    part = SwitchPart(\n"
-        "        name='shared', stop=lambda: _write('stopped'),\n"
-        "        leave=lambda: _write('left'), enter=lambda: _write('entered'),\n"
-        "        start=lambda: _write('started'), recover=_recover,\n"
+        "        name='shared', stop=lambda _snapshot: _write('stopped'),\n"
+        "        leave=lambda _snapshot: _write('left'), enter=lambda _snapshot: _write('entered'),\n"
+        "        start=lambda _snapshot: _write('started'), recover=_recover,\n"
         "    )\n"
         "    await ctx.require(ROOT_SWITCH).add(ctx, part)\n",
         encoding="utf-8",
@@ -1204,8 +1487,84 @@ async def test_manager_provides_root_switch_and_recovers_before_boot_open(
     assert snapshot is not None and snapshot.accepting_leases
     assert snapshot.switch_parts is not None
     assert tuple(snapshot.switch_parts) == ("shared",)
-    assert marker.read_text(encoding="utf-8") == "active"
+    assert marker.read_text(encoding="utf-8").splitlines() == ["active"]
+    await manager._start_runtime_snapshot(snapshot)
+    assert marker.read_text(encoding="utf-8").splitlines() == [
+        "active",
+        "runtime",
+    ]
     assert manager.reload_journal.pending_switches() == ()
+
+
+@pytest.mark.asyncio
+async def test_first_recover_has_a_durable_boot_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    plugin_dir = tmp_path / "plugins" / "switch_probe"
+    plugin_dir.mkdir(parents=True)
+    marker = tmp_path / "switch-state"
+    (plugin_dir / "plugin.py").write_text(
+        "from pathlib import Path\n"
+        "from agent.plugin_composition import ROOT_SWITCH, SwitchPart\n"
+        "api_version = 3\nname = 'switch_probe'\nversion = '1'\n"
+        "inject = (ROOT_SWITCH,)\n"
+        "async def _none(_snapshot): pass\n"
+        "async def _recover(_snapshot, active):\n"
+        f"    path = Path({str(marker)!r})\n"
+        "    prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
+        "    path.write_text(prior + ('active' if active else 'inactive') + '\\n', encoding='utf-8')\n"
+        "async def apply(ctx, config):\n"
+        "    await ctx.require(ROOT_SWITCH).add(ctx, SwitchPart(\n"
+        "        name='shared', stop=_none, leave=_none, enter=_none,\n"
+        "        start=_none, recover=_recover,\n"
+        "    ))\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager(
+        plugin_dirs=[plugin_dir.parent],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    recover_parts = manager._recover_parts
+
+    async def crash_after_recover(snapshot, active: bool) -> None:
+        await recover_parts(snapshot, active)
+        if active:
+            records = manager.reload_journal.pending_switches()
+            assert len(records) == 1
+            assert not records[0].use_new
+            assert manager._switch_run.pins()
+            raise RuntimeError("crash after recover")
+
+    monkeypatch.setattr(manager, "_recover_parts", crash_after_recover)
+
+    with pytest.raises(RuntimeError, match="crash after recover"):
+        await manager.load_all()
+    assert marker.read_text(encoding="utf-8").splitlines() == ["active"]
+    failed = manager.reload_journal.pending_switches()
+    assert len(failed) == 1 and failed[0].state == "degraded"
+
+    shutil.rmtree(plugin_dir)
+    reopened = PluginManager(
+        plugin_dirs=[plugin_dir.parent],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    await reopened.load_all()
+
+    assert marker.read_text(encoding="utf-8").splitlines() == [
+        "active",
+        "inactive",
+    ]
+    assert reopened.reload_journal.pending_switches() == ()
+    choices = reopened._switch_run.choices()
+    assert len(choices) == 1 and choices[0].ref is None
+    assert reopened.current_snapshot is not None
+    assert reopened.current_snapshot.switch_parts is None
 
 
 @pytest.mark.asyncio
@@ -1216,8 +1575,8 @@ async def test_plugin_cannot_add_two_switch_parts(tmp_path: Path) -> None:
         "from agent.plugin_composition import ROOT_SWITCH, SwitchPart\n"
         "api_version = 3\nname = 'owner'\nversion = '1'\n"
         "inject = (ROOT_SWITCH,)\n"
-        "async def _none(): pass\n"
-        "async def _recover(_active): pass\n"
+        "async def _none(_snapshot): pass\n"
+        "async def _recover(_snapshot, _active): pass\n"
         "async def apply(ctx, config):\n"
         "    switch = ctx.require(ROOT_SWITCH)\n"
         "    for name in ('first', 'second'):\n"
@@ -1608,7 +1967,7 @@ async def test_boot_loads_fresh_recovery_closures_from_builtin_pins(
     )
     assert work is not None
     first = work._steps[0]
-    await getattr(first.entry.part, first.action)()
+    await getattr(first.entry.part, first.action)(first.snapshot)
     journal.advance_switch("crash-switch", 1)
     shutil.rmtree(tmp_path / "sources")
 
@@ -1625,12 +1984,203 @@ async def test_boot_loads_fresh_recovery_closures_from_builtin_pins(
 
     await manager._recover_switches()
 
+    assert not log.exists()
+    await manager._recover_inactive_parts()
+    target = manager._boot_switches[0]
+    selected = tuple(
+        ref
+        for move in target.moves
+        for ref in (move.new if target.use_new else move.old,)
+        if ref is not None
+    )
+    entries, root = await manager._load_parts(selected)
+    try:
+        assert target.snapshot is not None
+        for ref in selected:
+            await entries[ref].part.recover(target.snapshot, True)
+    finally:
+        await root.dispose()
     assert log.read_text(encoding="utf-8").splitlines() == [
         "new:False",
         "old:True",
     ]
     record = reopened.switch_record("crash-switch")
     assert record is not None and not record.cleared and not record.use_new
+
+
+@pytest.mark.asyncio
+async def test_boot_callback_failure_keeps_switch_degraded(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    log = tmp_path / "recover.log"
+    old_ref = _builtin_artifact(tmp_path / "sources", "old", log)
+    new_ref = _builtin_artifact(
+        tmp_path / "sources",
+        "new",
+        log,
+        fail_recover=True,
+    )
+    old_entry = _entry(
+        _Owner("old", [], active=True),
+        plugin="plugin",
+        generation="old-generation",
+        artifact=old_ref,
+    )
+    new_entry = _entry(
+        _Owner("new", [], active=False),
+        plugin="plugin",
+        generation="new-generation",
+        artifact=new_ref,
+    )
+    journal = ReloadJournal(workspace)
+    work = _SwitchRun(journal).prepare(
+        "failed-recovery",
+        old_snapshot="old-snapshot",
+        old_parts=_parts(old_entry),
+        new_snapshot="new-snapshot",
+        new_parts=_parts(new_entry),
+    )
+    assert work is not None
+    shutil.rmtree(tmp_path / "sources")
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+
+    await manager._recover_switches()
+    assert not log.exists()
+    with pytest.raises(BaseExceptionGroup, match="inactive recovery"):
+        await manager._recover_inactive_parts()
+    record = journal.switch_record("failed-recovery")
+    assert record is not None
+    assert record.state == "degraded"
+    assert record.failure_resource == "root-switch:inactive:recover"
+
+
+@pytest.mark.asyncio
+async def test_full_root_boot_failure_keeps_switch_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    old_entry = _entry(
+        _Owner("old", [], active=True),
+        plugin="plugin",
+        generation="old-generation",
+        artifact=_artifact(tmp_path, "old"),
+    )
+    new_entry = _entry(
+        _Owner("new", [], active=False),
+        plugin="plugin",
+        generation="new-generation",
+        artifact=_artifact(tmp_path, "new"),
+    )
+    journal = ReloadJournal(workspace)
+    work = _SwitchRun(journal).prepare(
+        "full-root-failure",
+        old_snapshot="old-snapshot",
+        old_parts=_parts(old_entry),
+        new_snapshot="new-snapshot",
+        new_parts=_parts(new_entry),
+    )
+    assert work is not None
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+
+    async def set_targets() -> None:
+        manager._boot_switches = manager._switch_run.targets()
+
+    async def fail_build(_mods: object) -> None:
+        raise RuntimeError("full Root build failed")
+
+    monkeypatch.setattr(manager, "_recover_switches", set_targets)
+    monkeypatch.setattr(manager, "_load_stable_batch", fail_build)
+
+    with pytest.raises(RuntimeError, match="full Root build failed"):
+        await manager.load_all()
+    record = journal.switch_record("full-root-failure")
+    assert record is not None
+    assert record.state == "degraded"
+    assert record.failure_resource == "root-switch:selected:build"
+    assert manager.current_snapshot is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "resource"),
+    (
+        ("close", "root-switch:preflight:close"),
+        ("pointer", "root-switch:pointer:restore"),
+    ),
+)
+async def test_boot_setup_failure_keeps_switch_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    resource: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    old_entry = _entry(
+        _Owner("old", [], active=True),
+        plugin="plugin",
+        generation="old-generation",
+        artifact=_artifact(tmp_path, "old"),
+    )
+    new_entry = _entry(
+        _Owner("new", [], active=False),
+        plugin="plugin",
+        generation="new-generation",
+        artifact=_artifact(tmp_path, "new"),
+    )
+    journal = ReloadJournal(workspace)
+    work = _SwitchRun(journal).prepare(
+        "boot-setup-failure",
+        old_snapshot="old-snapshot",
+        old_parts=_parts(old_entry),
+        new_snapshot="new-snapshot",
+        new_parts=_parts(new_entry),
+    )
+    assert work is not None
+    manager = PluginManager(
+        plugin_dirs=[],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home" / "cache",
+    )
+    class RecoveryRoot:
+        async def dispose(self) -> None:
+            if mode == "close":
+                raise RuntimeError("recovery Root close failed")
+
+    async def load_part(ref: _PartRef):
+        part = old_entry.part if ref.generation == "old-generation" else new_entry.part
+        return _PartEntry(ref, part), cast(Any, RecoveryRoot())
+
+    def fail_pointer(_targets: object) -> None:
+        if mode == "pointer":
+            raise RuntimeError("pointer restore failed")
+
+    monkeypatch.setattr(manager, "_load_part", load_part)
+    monkeypatch.setattr(manager, "_set_pointers", fail_pointer)
+
+    if mode == "close":
+        with pytest.raises(BaseExceptionGroup, match="recovery Root"):
+            await manager._recover_switches()
+    else:
+        with pytest.raises(RuntimeError, match="pointer restore failed"):
+            await manager._recover_switches()
+    record = journal.switch_record("boot-setup-failure")
+    assert record is not None
+    assert record.state == "degraded"
+    assert record.failure_resource == resource
+    assert manager._boot_switches == ()
 
 
 @pytest.mark.asyncio
@@ -1977,7 +2527,14 @@ async def test_config_change_recovers_either_exact_side(
     )
     journal = ReloadJournal(workspace)
     run = _SwitchRun(journal)
-    run.save("old-snapshot", _parts(old_entry))
+    boot = run.prepare_boot(
+        "config-boot",
+        new_snapshot="old-snapshot",
+        new_parts=_parts(old_entry),
+    )
+    assert boot is not None
+    boot.commit()
+    boot.finish()
 
     config_path.write_text('value = "two"\n', encoding="utf-8")
     new_artifact = _write_builtin(
@@ -2098,6 +2655,9 @@ def test_recovery_checks_full_part_and_snapshot_identity(tmp_path: Path) -> None
             old.ref.owner,
             "wrong-generation",
             old.ref.artifact,
+            old.ref.fiber,
+            old.ref.inputs,
+            old.ref.needs,
         ),
         old.part,
     )
@@ -2129,10 +2689,10 @@ async def test_fresh_recovery_loads_ordinary_dependency_closure(
         "from agent.plugin_composition import ROOT_SWITCH, ServiceKey, SwitchPart\n"
         "api_version = 3\nname = 'owner'\nversion = '1'\n"
         "VALUE = ServiceKey('test.value')\ninject = (ROOT_SWITCH,)\n"
-        "async def _none(): pass\n"
+        "async def _none(_snapshot): pass\n"
         "async def child(ctx):\n"
         "    value = ctx.require(VALUE)\n"
-        "    async def recover(active):\n"
+        "    async def recover(_snapshot, active):\n"
         f"        Path({str(log)!r}).write_text(value + ':' + str(active), encoding='utf-8')\n"
         "    await ctx.require(ROOT_SWITCH).add(ctx, SwitchPart(\n"
         "        name='shared', stop=_none, leave=_none, enter=_none,\n"
@@ -2163,7 +2723,7 @@ async def test_fresh_recovery_loads_ordinary_dependency_closure(
 
     entry, root = await manager._load_part(ref)
     try:
-        await entry.part.recover(True)
+        await entry.part.recover("recovery-snapshot", True)
     finally:
         await root.dispose()
     assert log.read_text(encoding="utf-8") == "ready:True"

@@ -4,6 +4,8 @@ import asyncio
 import inspect
 from collections.abc import AsyncIterable, Awaitable, Callable, Iterable
 from contextlib import nullcontext
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from typing import cast
 
 from agent.plugin_composition.diagnostics import plugin_entrypoint
@@ -11,6 +13,34 @@ from agent.plugin_composition.model import CompositionError
 
 Cleanup = Callable[[], object]
 EffectSetup = Callable[[], object]
+
+
+@dataclass(frozen=True, slots=True)
+class _EffectSetupOwner:
+    """Identify the exact Effect setup that may create linked resources."""
+
+    effect: Effect
+    root_token: object | None
+    activation_token: object | None
+    plugin_id: str
+    generation_id: str
+    fiber: str
+    task: asyncio.Task[object] | None
+
+
+_current_effect_setup: ContextVar[_EffectSetupOwner | None] = ContextVar(
+    "current_effect_setup",
+    default=None,
+)
+
+
+def _effect_setup_owner() -> _EffectSetupOwner | None:
+    """Return only the setup owned by the current task."""
+
+    owner = _current_effect_setup.get()
+    if owner is None or owner.task is not asyncio.current_task():
+        return None
+    return owner
 
 
 class Effect:
@@ -24,12 +54,16 @@ class Effect:
         plugin_id: str = "",
         generation_id: str = "",
         fiber: str = "",
+        root_token: object | None = None,
+        activation_token: object | None = None,
     ) -> None:
         self.label = label
         self._remove_from_owner = remove_from_owner
         self._plugin_id = plugin_id
         self._generation_id = generation_id
         self._fiber = fiber
+        self._root_token = root_token
+        self._activation_token = activation_token
         self._cleanups: list[Cleanup] = []
         self._ready = asyncio.Event()
         self._setup_task: asyncio.Task[object] | None = None
@@ -42,8 +76,22 @@ class Effect:
         # 1. Capture setup ownership before user code can re-enter disposal.
         self._setup_task = asyncio.current_task()
         try:
-            result = setup()
-            await self._collect_result(result)
+            setup_token: Token[_EffectSetupOwner | None] = _current_effect_setup.set(
+                _EffectSetupOwner(
+                    effect=self,
+                    root_token=self._root_token,
+                    activation_token=self._activation_token,
+                    plugin_id=self._plugin_id,
+                    generation_id=self._generation_id,
+                    fiber=self._fiber,
+                    task=self._setup_task,
+                )
+            )
+            try:
+                result = setup()
+                await self._collect_result(result)
+            finally:
+                _current_effect_setup.reset(setup_token)
         except BaseException as setup_error:
             cleanup_errors = await self._run_cleanups()
             self._closed = True
@@ -65,6 +113,17 @@ class Effect:
                 await self._close_task
                 raise
         return self
+
+    def _add_setup_cleanup(self, cleanup: Cleanup) -> None:
+        """Link one cleanup to this exact in-flight setup."""
+
+        owner = _effect_setup_owner()
+        if owner is None or owner.effect is not self or self._ready.is_set():
+            raise CompositionError(
+                "SETUP_MISMATCH",
+                "资源只能绑定当前 Effect setup",
+            )
+        self._cleanups.append(cleanup)
 
     async def aclose(self) -> None:
         """Dispose once; concurrent callers await the same cleanup task."""

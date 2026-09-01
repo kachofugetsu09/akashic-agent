@@ -269,6 +269,24 @@ class CompositionOverlay:
             },
         }
 
+    def service_fibers(
+        self,
+    ) -> dict[ServiceKey[object], tuple[str, str]]:
+        """Return exact provider Fibers from the selected Roots."""
+
+        return {
+            **{
+                key: value
+                for key, value in self.stable.service_fibers().items()
+                if value[0] in self.stable_plugin_ids
+            },
+            **{
+                key: value
+                for key, value in self.candidate.service_fibers().items()
+                if value[0] in self.replaced_plugin_ids
+            },
+        }
+
     async def dispose(self) -> None:
         await self.candidate.dispose()
 

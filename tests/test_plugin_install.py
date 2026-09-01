@@ -138,10 +138,10 @@ def test_install_refuses_pointer_change_during_root_switch(tmp_path: Path) -> No
         sort_keys=True,
     )
 
-    async def none() -> None:
+    async def none(_snapshot: str) -> None:
         return None
 
-    async def recover(_active: bool) -> None:
+    async def recover(_snapshot: str, _active: bool) -> None:
         return None
 
     part = SwitchPart(
@@ -153,7 +153,7 @@ def test_install_refuses_pointer_change_during_root_switch(tmp_path: Path) -> No
         recover=recover,
     )
     entry = _PartEntry(
-        _PartRef("shared", "feed@lab", "old-generation", artifact),
+        _PartRef("shared", "feed@lab", "old-generation", artifact, "feed@lab"),
         part,
     )
     work = _SwitchRun(ReloadJournal(workspace)).prepare(

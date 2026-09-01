@@ -188,10 +188,16 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
     SnapshotTransaction,
+    _switch_needs,
     get_current_runtime_snapshot,
 )
-from agent.plugins.artifact_pins import _ArtifactPins, _decode_artifact
+from agent.plugins.artifact_pins import (
+    _ArtifactPins,
+    _artifact_value,
+    _decode_artifact,
+)
 from agent.plugins.root_switch import (
+    _BootSwitch,
     _SwitchRun,
     _SwitchTarget,
     _SwitchWork,
@@ -1418,31 +1424,66 @@ class PluginManager:
             self._write_startup_recovery_fact(action, committed=False)
 
         # 4. stable 在未发布事务中完整装配；latest 随后以新事务恢复。
-        if self._active_generations:
-            for mod in stable_by_id.values():
-                _ = await self._load_one(mod)
-        else:
-            await self._load_stable_batch(tuple(stable_by_id.values()))
-        self._finish_committed_recovery(restore_committed)
-        self._finish_boot_runtime_recovery(
-            runtime_recovery,
-            runtime_receipts,
-        )
-        await self._restore_latest_candidates(restore_candidates, latest_by_id)
+        try:
+            if self._active_generations:
+                for mod in stable_by_id.values():
+                    _ = await self._load_one(mod)
+            else:
+                await self._load_stable_batch(tuple(stable_by_id.values()))
+            self._finish_committed_recovery(restore_committed)
+            self._finish_boot_runtime_recovery(
+                runtime_recovery,
+                runtime_receipts,
+            )
+            await self._restore_latest_candidates(restore_candidates, latest_by_id)
+        except BaseException as error:
+            if self._boot_switches:
+                self._switch_run.degrade_recovery(
+                    self._boot_switches,
+                    resource="root-switch:selected:build",
+                    error=error,
+                )
+            raise
 
     async def _recover_switches(self) -> None:
         """Recover every interrupted shared owner before any snapshot can open."""
 
         targets = self._switch_run.targets()
-        if targets:
-            self._set_pointers(targets)
         loader = _RecoveryParts(self)
+        checked: tuple[_SwitchTarget, ...] = ()
+        preflight_error: BaseException | None = None
         try:
-            self._boot_switches = (
-                await self._switch_run.recover(loader) if targets else ()
-            )
-        finally:
+            checked = await self._switch_run.preflight(loader) if targets else ()
+        except BaseException as error:
+            preflight_error = error
+        try:
             await loader.close()
+        except BaseException as close_error:
+            if targets:
+                self._switch_run.degrade_recovery(
+                    targets,
+                    resource="root-switch:preflight:close",
+                    error=close_error,
+                )
+            if preflight_error is not None:
+                raise BaseExceptionGroup(
+                    "RootSwitch preflight 与 Root 清理同时失败",
+                    [preflight_error, close_error],
+                ) from close_error
+            raise
+        if preflight_error is not None:
+            raise preflight_error
+        if checked:
+            try:
+                self._set_pointers(checked)
+            except BaseException as error:
+                self._switch_run.degrade_recovery(
+                    checked,
+                    resource="root-switch:pointer:restore",
+                    error=error,
+                )
+                raise
+        self._boot_switches = checked
 
     def _boot_source(self) -> str | None:
         """Return the one prior snapshot identity selected for boot recovery."""
@@ -1467,13 +1508,75 @@ class PluginManager:
         if parts is None:
             return
         errors: list[BaseException] = []
+        recovery_snapshot = snapshot.source_snapshot or snapshot.snapshot_id
         for entry in parts.values():
             try:
-                await entry.part.recover(active)
+                await entry.part.recover(recovery_snapshot, active)
             except BaseException as error:
                 errors.append(error)
         if errors:
-            raise BaseExceptionGroup("RootSwitch boot recovery 失败", errors)
+            failure = BaseExceptionGroup("RootSwitch boot recovery 失败", errors)
+            self._switch_run.degrade_recovery(
+                self._boot_switches,
+                resource="root-switch:selected:recover",
+                error=failure,
+            )
+            raise failure
+
+    async def _recover_inactive_parts(self) -> None:
+        """Recover each unselected journal side in one fresh closed Root."""
+
+        grouped: dict[str, list[_PartRef]] = {}
+        for target in self._boot_switches:
+            refs = ((move.old if target.use_new else move.new) for move in target.moves)
+            selected = [ref for ref in refs if ref is not None]
+            if not selected:
+                continue
+            snapshot = target.other_snapshot
+            if snapshot is None:
+                raise RuntimeError("RootSwitch inactive side 缺少 snapshot identity")
+            group = grouped.setdefault(snapshot, [])
+            for ref in selected:
+                if ref not in group:
+                    group.append(ref)
+        for snapshot, refs in grouped.items():
+            affected = tuple(
+                target
+                for target in self._boot_switches
+                if target.other_snapshot == snapshot
+            )
+            try:
+                entries, root = await self._load_parts(tuple(refs))
+            except BaseException as error:
+                self._switch_run.degrade_recovery(
+                    affected,
+                    resource="root-switch:inactive:build",
+                    error=error,
+                )
+                raise
+            errors: list[BaseException] = []
+            try:
+                for ref in refs:
+                    try:
+                        await entries[ref].part.recover(snapshot, False)
+                    except BaseException as error:
+                        errors.append(error)
+            finally:
+                try:
+                    await root.dispose()
+                except BaseException as error:
+                    errors.append(error)
+            if errors:
+                failure = BaseExceptionGroup(
+                    "RootSwitch inactive recovery 失败",
+                    errors,
+                )
+                self._switch_run.degrade_recovery(
+                    affected,
+                    resource="root-switch:inactive:recover",
+                    error=failure,
+                )
+                raise failure
 
     def _finish_switches(self, snapshot: RuntimeSnapshot) -> None:
         """Clear boot pins only after the selected pointer is closed and exact."""
@@ -1613,6 +1716,7 @@ class PluginManager:
                     owner=need.owner,
                     generation=need.generation,
                     artifact=need.artifact,
+                    fiber="need",
                 )
             )
         return selected
@@ -1623,19 +1727,33 @@ class PluginManager:
     ) -> tuple[_PartEntry, CompositionRoot]:
         """Build one fresh recovery-only closure from its exact pinned code."""
 
+        entries, root = await self._load_parts((ref,))
+        return entries[ref], root
+
+    async def _load_parts(
+        self,
+        refs: tuple[_PartRef, ...],
+    ) -> tuple[dict[_PartRef, _PartEntry], CompositionRoot]:
+        """Build one fresh closed Root for an exact journal side."""
+
         root: CompositionRoot | None = None
         module_paths: list[str] = []
         try:
-            items = (
-                *ref.needs,
-                _PartNeed(ref.owner, ref.generation, ref.artifact),
-            )
+            items_by_owner: dict[str, _PartNeed] = {}
+            for ref in refs:
+                for item in (
+                    *ref.needs,
+                    _PartNeed(ref.owner, ref.generation, ref.artifact),
+                ):
+                    current = items_by_owner.get(item.owner)
+                    if current is not None and current != item:
+                        raise RuntimeError(
+                            f"RootSwitch recovery dependency 冲突: {item.owner}"
+                        )
+                    items_by_owner[item.owner] = item
+            items = tuple(items_by_owner[owner] for owner in sorted(items_by_owner))
             generations: dict[str, PluginGeneration] = {}
             for item in items:
-                if item.owner in generations:
-                    raise RuntimeError(
-                        f"RootSwitch recovery dependency 重复: {item.owner}"
-                    )
                 generation = self._load_plugin(item)
                 generations[item.owner] = generation
                 module_paths.append(generation.module_path)
@@ -1657,13 +1775,23 @@ class PluginManager:
             parts = _freeze_root_switch(
                 service,
                 root.instance_token,
-                artifacts={item.owner: item.artifact for item in items},
-                needs={ref.owner: ref.needs},
+                artifacts={
+                    owner: _artifact_value(generation)
+                    for owner, generation in generations.items()
+                },
+                needs=_switch_needs(
+                    generations,
+                    root.service_fibers(),
+                    root,
+                ),
             )
-            entry = parts.get(ref.name)
-            if entry is None or entry.ref != ref:
-                raise RuntimeError("RootSwitch recovery part identity 不一致")
-            return entry, root
+            entries: dict[_PartRef, _PartEntry] = {}
+            for ref in refs:
+                entry = parts.get(ref.name)
+                if entry is None or entry.ref != ref:
+                    raise RuntimeError("RootSwitch recovery part identity 不一致")
+                entries[ref] = entry
+            return entries, root
         except BaseException:
             if root is not None:
                 await root.dispose()
@@ -2016,7 +2144,7 @@ class PluginManager:
             )
             if cleanup_cancelled:
                 raise asyncio.CancelledError
-            if isinstance(error, _StablePluginFailed):
+            if isinstance(error, _StablePluginFailed) and not self._boot_switches:
                 await self._retry_stable_batch_without_failed(mods, error)
                 return
             raise
@@ -2982,6 +3110,7 @@ class PluginManager:
         force_provisional: bool = False,
         provisional_started: bool = False,
         boot_parts: bool = False,
+        boot_switch: _BootSwitch | None = None,
         reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
@@ -3022,7 +3151,7 @@ class PluginManager:
         if switch_changed:
             self._check_parts(transaction)
             if activity_catalog_changed:
-                # DEPRECATED(CORE): M1d moves Activity into RootSwitch and deletes this guard.
+                # DEPRECATED(CORE): M2d moves jobs into RootSwitch and deletes Activity.
                 raise RuntimeError(
                     "Activity publication 迁入 SwitchPart 前不能与 RootSwitch 同批"
                 )
@@ -3151,12 +3280,11 @@ class PluginManager:
                 await self._activity_host.open(activity_transaction)
             if switch_work is not None:
                 switch_work.commit()
-            if boot_parts:
-                self._switch_run.save(
-                    provisional.candidate.snapshot_id,
-                    provisional.candidate.switch_parts,
-                )
-            if boot_parts:
+            if boot_switch is not None:
+                boot_switch.commit()
+                boot_switch.finish()
+                self._boot_switches = ()
+            elif boot_parts:
                 self._finish_switches(provisional.candidate)
             await self._snapshot_store.open_provisional(provisional)
             if switch_id is not None:
@@ -6974,9 +7102,11 @@ class PluginManager:
         snapshot: RuntimeSnapshot,
     ) -> None:
         if self._snapshot_store.current is None:
-            boot_parts = bool(snapshot.switch_parts) or bool(self._boot_switches)
-            if boot_parts:
-                await self._recover_parts(snapshot, True)
+            boot_parts = (
+                bool(snapshot.switch_parts)
+                or bool(self._boot_switches)
+                or bool(self._switch_run.choices())
+            )
             registry = snapshot.channel_registry
             catalog = snapshot.channel_catalog
             activity_declared = self._activity_catalog_identity(snapshot) is not None
@@ -6987,12 +7117,28 @@ class PluginManager:
                 or boot_parts
             ):
                 transaction = self._snapshot_store.begin_publish(snapshot)
+                boot_switch = (
+                    self._switch_run.prepare_boot(
+                        f"snapshot:{snapshot.snapshot_id}",
+                        new_snapshot=snapshot.snapshot_id,
+                        new_parts=snapshot.switch_parts,
+                    )
+                    if boot_parts
+                    else None
+                )
+                if boot_switch is not None:
+                    self._boot_switches = self._switch_run.targets()
+                if boot_parts:
+                    if boot_switch is None:
+                        await self._recover_inactive_parts()
+                    await self._recover_parts(snapshot, True)
                 await self._commit_snapshot_with_publication_participants(
                     transaction,
                     old_commands=(),
                     new_commands=(),
                     promote_latest=False,
                     boot_parts=boot_parts,
+                    boot_switch=boot_switch,
                 )
                 return
             self._snapshot_store.install(snapshot)

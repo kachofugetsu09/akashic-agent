@@ -204,6 +204,7 @@ from agent.plugin_composition.tasks import (
 from agent.plugin_composition.root_switch import (
     ROOT_SWITCH as ROOT_SWITCH,
     RootSwitch as RootSwitch,
+    SwitchInput as SwitchInput,
     SwitchPart as SwitchPart,
 )
 from agent.plugin_composition.mcp_slots import (
@@ -535,7 +536,9 @@ __all__ = [
     "PluginTimers",
     "RUNTIME_STARTED",
     "RUNTIME_STOPPING",
+    "ROOT_SWITCH",
     "SNAPSHOT_SEALING",
+    "RootSwitch",
     "RuntimeStarted",
     "RuntimeStopping",
     "RootScope",
@@ -543,6 +546,8 @@ __all__ = [
     "SerialEventKey",
     "SyncTask",
     "StopReceipt",
+    "SwitchInput",
+    "SwitchPart",
     "TopologyFiberView",
     "TopologyView",
     "ToolGrant",
