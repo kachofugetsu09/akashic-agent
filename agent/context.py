@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.core.types import ContextRequest
+from agent.media import detect_supported_image_mime
 from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     BehaviorRulesPromptBlock,
@@ -96,7 +97,7 @@ class MessageEnvelopeBuilder:
                 continue
 
             p = Path(item)
-            mime, _ = mimetypes.guess_type(p)
+            mime = self._media_mime(p)
             if not p.is_file():
                 logger.warning("输入媒体文件不可用: %s", item)
                 file_refs.append(f"- 不可用媒体路径: {item}")
@@ -131,7 +132,7 @@ class MessageEnvelopeBuilder:
                 continue
 
             p = Path(value)
-            mime, _ = mimetypes.guess_type(p)
+            mime = self._media_mime(p)
             if not p.is_file():
                 logger.warning("输入媒体文件不可用: %s", value)
                 refs.append(f"- 不可用媒体路径: {value}")
@@ -162,6 +163,14 @@ class MessageEnvelopeBuilder:
         else:
             lines.append("以上媒体中没有可供 read_image_vision 读取的本地图片。")
         return "\n".join(lines)
+
+    @staticmethod
+    def _media_mime(path: Path) -> str | None:
+        mime, _ = mimetypes.guess_type(path)
+        if mime is not None or not path.is_file():
+            return mime
+        with path.open("rb") as handle:
+            return detect_supported_image_mime(handle.read(12))
 
     def _stamp_current_message(
         self,

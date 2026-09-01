@@ -466,6 +466,8 @@ class SettingsReceipt:
 
 
 class ModelSettings(Protocol):
+    async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]: ...
+
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
 
 

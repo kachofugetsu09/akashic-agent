@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from agent.plugin_composition import CHAT_MODELS, ModelRole
+from agent.media import detect_supported_image_mime
 from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.tools.base import Tool, ToolResult
 from infra.persistence.json_store import atomic_write_text
@@ -196,20 +197,6 @@ def _read_image(file_path: Path, detected_mime: str | None = None) -> ToolResult
     )
 
 
-def _detect_supported_image_mime_from_header(head: bytes) -> str | None:
-    if head.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if head.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if head.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if head.startswith(b"BM"):
-        return "image/bmp"
-    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
-        return "image/webp"
-    return None
-
-
 def _looks_binary(head: bytes) -> bool:
     if not head:
         return False
@@ -376,7 +363,7 @@ class ReadFileTool(Tool):
 
             with builtins.open(file_path, "rb") as fh:
                 head = fh.read(_READ_PROBE_BYTES)
-            image_mime = _detect_supported_image_mime_from_header(head)
+            image_mime = detect_supported_image_mime(head)
             if image_mime:
                 return _read_image(file_path, image_mime)
             if _looks_binary(head):

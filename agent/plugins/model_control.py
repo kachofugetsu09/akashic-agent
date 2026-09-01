@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from agent.plugin_composition import ModelCatalogSnapshot, ModelChange, SettingsReceipt
+from agent.plugin_composition import (
+    AddConnection,
+    DiscoveredModel,
+    ModelCatalogSnapshot,
+    ModelChange,
+    SettingsReceipt,
+)
 from agent.plugins.snapshot import (
     RuntimeSnapshotStore,
     bind_runtime_snapshot,
@@ -33,6 +39,18 @@ class RuntimeModelControl:
         token = bind_runtime_snapshot(lease)
         try:
             return await self._bound.apply(command)
+        finally:
+            reset_runtime_snapshot(token)
+            await lease.release()
+
+    async def discover(
+        self,
+        connection: AddConnection,
+    ) -> tuple[DiscoveredModel, ...]:
+        lease = await self._snapshot_store.acquire()
+        token = bind_runtime_snapshot(lease)
+        try:
+            return await self._bound.discover(connection)
         finally:
             reset_runtime_snapshot(token)
             await lease.release()

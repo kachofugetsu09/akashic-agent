@@ -152,6 +152,17 @@ test("HTTP and upload failures stay explicit at the transport boundary", async (
       sha256: "b".repeat(64),
       upload_url: "/api/chat/artifacts/artifact-note",
     }]);
+
+    globalThis.fetch = async () => {
+      throw new TypeError("Failed to fetch");
+    };
+    await assert.rejects(
+      uploadFiles(
+        [{ filename: "blocked.png", url: "blob:blocked" }],
+        new AbortController().signal,
+      ),
+      /无法读取附件 blocked\.png，请移除后重新选择/u,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

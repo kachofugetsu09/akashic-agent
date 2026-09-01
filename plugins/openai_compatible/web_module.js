@@ -37,30 +37,35 @@ export function activate(ctx) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;
       const defaults = props.state.template?.defaults ?? {};
-      const provider = existing?.driverId ?? defaults.provider ?? "openai";
+      const provider = defaults.provider ?? "openai";
       const isDeepSeek = !existing && provider === "deepseek";
       const title = existing ? `编辑 ${existing.name}` : isDeepSeek ? "连接 DeepSeek" : "连接自定义 API";
-      const description = isDeepSeek
-        ? "填写 API Key 和模型名称；未知能力保持未知。"
-        : "填写服务地址、凭据和模型名称。";
+      const description = existing
+        ? "更新连接信息，或重新读取服务的模型目录。"
+        : "填写连接信息，然后检测账号可用的模型。";
       host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${escapeHtml(title)}</h2><p class="settings-dialog-description">${description}</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization" placeholder="${isDeepSeek ? "例如：DeepSeek 官方" : "例如：公司网关"}"></label>
-          <label><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label>
-          <label><span>Base URL</span><input name="endpoint" aria-label="Base URL" required type="url" placeholder="https://api.example.com/v1"></label>
+          <label class="is-wide"><span>Base URL${existing ? "（留空则保持不变）" : ""}</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="https://api.example.com/v1"></label>
           <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="sk-…"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
-        <section class="settings-model-discovery"><header><div><h3>模型</h3><p>填写服务使用的模型名称；连接和模型会由插件分别验证并保存。</p></div></header>
-          <div class="settings-form-grid"><label class="is-wide"><span>模型名称</span><input name="model" aria-label="模型名称" required placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：your-model-name"}"></label></div>
-          <p>模型能力由 Provider 目录或后续显式设置补充，未知能力不会被猜测。</p>
+        ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 仅用于补充模型能力；通常无需修改。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label></div></details>`}
+        <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会显示在页面中</span></p>
+        <section class="settings-model-discovery"><header><div><h3>模型</h3><p>${existing ? "可随时重新检测目录与已知能力。" : "从服务目录选择一个默认模型，不必手填名称。"}</p></div></header>
+          ${existing ? `<p class="settings-discovery-summary">当前已保存 ${props.state.models.length} 个模型。</p>` : `<div class="settings-discovery-empty" data-discovery-empty>
+            <button type="button" class="settings-primary-button" data-discover>检测可用模型</button>
+            <button type="button" class="settings-text-button" data-manual>无法检测？手动填写模型名</button>
+          </div>
+          <div class="settings-discovery-result" data-discovery-result hidden><label><span>默认模型</span><select name="detectedModel" aria-label="默认模型"></select></label><p data-model-detail></p></div>
+          <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：your-model-name"}"></label><p>手动添加时图片等能力保持待识别，保存后仍可重新检测。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我知道模型目录未经验证，仍要保存这个连接。</span></label></div>
+          <p class="settings-discovery-status" data-status role="status" aria-live="polite" hidden></p>`}
         </section><p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会显示在页面中</span><button type="submit" class="settings-primary-button">保存连接</button></footer></form>`;
+        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}连接信息会在保存前验证</span><div class="settings-dialog-actions"><button type="button" class="settings-secondary-button" data-rescan>${existing ? "重新检测模型" : "重新检测"}</button><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
       const form = host.querySelector("form");
       form.elements.name.value = existing?.name ?? defaults.name ?? "";
       form.elements.endpoint.value = defaults.endpoint ?? "";
-      form.elements.provider.value = provider;
-      form.elements.model.value = props.state.models[0]?.model ?? "";
+      if (form.elements.provider) form.elements.provider.value = provider;
       const showKey = host.querySelector("[data-show-key]");
       showKey.addEventListener("click", () => {
         const visible = form.elements.apiKey.type === "text";
@@ -69,6 +74,15 @@ export function activate(ctx) {
         showKey.innerHTML = visible ? EYE_ICON : EYE_OFF_ICON;
       });
       host.querySelector("[data-close]").addEventListener("click", props.close);
+      let stopDiscovery = () => {};
+      if (existing) {
+        host.querySelector("[data-rescan]").addEventListener("click", () => {
+          void runButton(host.querySelector("[data-rescan]"), "检测中", props.actions.sync()
+            .then(() => props.changed("模型目录与能力已更新")), host.querySelector("[data-error]")).catch(() => {});
+        });
+      } else {
+        stopDiscovery = setupDiscovery(host, form, props);
+      }
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         const data = new FormData(form);
@@ -83,32 +97,21 @@ export function activate(ctx) {
           }).then(() => props.changed("OpenAI Compatible 连接已更新")));
           return;
         }
+        if (!form.reportValidity()) return;
+        const selected = selectedModel(host, form);
         submit(form, props.actions.createManual({
             name: String(data.get("name")),
             endpoint: String(data.get("endpoint")),
             credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
             driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), allow_unverified_manual: true},
-          model: {
-            kind: "chat",
-            model: String(data.get("model")),
-            capabilities: {
-              context_window: null,
-              max_output_tokens: null,
-              input_modalities: ["text"],
-              supports_tool_calls: null,
-              supports_parallel_tool_calls: null,
-              supported_reasoning_efforts: [],
-              embedding_dimensions: null,
-              embedding_normalization: null,
-            },
-            capability_sources: {},
-            default_reasoning_effort: null,
-            driver_config: {format_version: 1},
-          },
+          model: modelInput(selected),
         }).then(() => props.changed("OpenAI Compatible 连接已保存")));
       });
       queueMicrotask(() => form.elements.name.focus());
-      return () => host.replaceChildren();
+      return () => {
+        stopDiscovery();
+        host.replaceChildren();
+      };
     },
   }));
 }
@@ -119,7 +122,8 @@ function svgData(svg) {
 
 function requireProps(value) {
   if (!value || typeof value !== "object" || typeof value.actions !== "object"
-    || typeof value.actions.createManual !== "function" || typeof value.actions.update !== "function"
+    || typeof value.actions.discover !== "function" || typeof value.actions.createManual !== "function"
+    || typeof value.actions.update !== "function" || typeof value.actions.sync !== "function"
     || typeof value.close !== "function" || typeof value.changed !== "function" || !value.state) {
     throw new Error("models.connection-types.v1 props 无效");
   }
@@ -128,6 +132,226 @@ function requireProps(value) {
     throw new Error("models.connection-types.v1 connection 无效");
   }
   return value;
+}
+
+function setupDiscovery(host, form, props) {
+  const empty = host.querySelector("[data-discovery-empty]");
+  const result = host.querySelector("[data-discovery-result]");
+  const manual = host.querySelector("[data-discovery-manual]");
+  const status = host.querySelector("[data-status]");
+  const footer = host.querySelector("[data-footer]");
+  const select = form.elements.detectedModel;
+  const manualInput = form.elements.manualModel;
+  const discoverButton = host.querySelector("[data-discover]");
+  const rescanButton = host.querySelector("[data-rescan]");
+  const footerNote = host.querySelector("[data-footer-note]");
+  const manualConfirm = form.elements.manualConfirm;
+  const owner = createDiscoveryOwner();
+  let models = [];
+  let detectedConnection = "";
+
+  const showManual = () => {
+    owner.invalidate();
+    models = [];
+    empty.hidden = true;
+    result.hidden = true;
+    manual.hidden = false;
+    footer.hidden = false;
+    manualInput.required = true;
+    manualConfirm.required = true;
+    footerNote.lastChild.textContent = "模型目录未经验证；确认后仍可保存";
+    status.hidden = true;
+    manualInput.focus();
+  };
+  const detect = async (button) => {
+    manualInput.required = false;
+    manualConfirm.required = false;
+    if (!form.reportValidity()) return;
+    const data = new FormData(form);
+    const fingerprint = connectionFingerprint(form);
+    const attempt = owner.start(fingerprint);
+    clearInlineError(host);
+    status.hidden = false;
+    status.textContent = "正在读取服务的模型目录…";
+    try {
+      const nextModels = await runButton(button, "检测中", props.actions.discover({
+        name: String(data.get("name")),
+        endpoint: String(data.get("endpoint")),
+        credential: {driver: "api_key", access_token: String(data.get("apiKey"))},
+        driverConfig: {format_version: 1, catalog_provider_id: String(data.get("provider")), allow_unverified_manual: true},
+      }, attempt.signal), host.querySelector("[data-error]"), false);
+      if (!attempt.isCurrent(connectionFingerprint(form))) return;
+      models = nextModels.filter((model) => model.kind === "chat");
+      if (models.length === 0) throw new Error("服务返回了模型目录，但没有可用于对话的模型");
+      detectedConnection = fingerprint;
+      select.replaceChildren(...models.map((model, index) => new Option(model.model, String(index))));
+      empty.hidden = true;
+      manual.hidden = true;
+      result.hidden = false;
+      footer.hidden = false;
+      footerNote.lastChild.textContent = "连接信息会在保存前验证";
+      status.textContent = `找到 ${models.length} 个对话模型，请选择默认模型。`;
+      updateModelDetail(host, models[0]);
+      select.focus();
+    } catch (reason) {
+      if (!attempt.isCurrent(connectionFingerprint(form))) return;
+      empty.hidden = false;
+      result.hidden = true;
+      manual.hidden = true;
+      footer.hidden = true;
+      status.hidden = false;
+      status.textContent = reason?.code === "forbidden_contract"
+        ? "服务刚刚更新。请刷新页面后重新检测；连接信息尚未保存。"
+        : "未能读取模型目录。请检查 Base URL 和 API Key，或改用手动填写。";
+      const error = host.querySelector("[data-error]");
+      error.textContent = reason instanceof Error ? reason.message : String(reason);
+      error.hidden = false;
+    }
+  };
+
+  discoverButton.addEventListener("click", () => detect(discoverButton));
+  rescanButton.addEventListener("click", () => detect(rescanButton));
+  host.querySelector("[data-manual]").addEventListener("click", showManual);
+  select.addEventListener("change", () => updateModelDetail(host, models[Number(select.value)]));
+  for (const field of [form.elements.endpoint, form.elements.apiKey, form.elements.provider]) {
+    field.addEventListener("input", () => {
+      const current = connectionFingerprint(form);
+      if (detectedConnection === current) return;
+      owner.invalidate();
+      models = [];
+      status.hidden = false;
+      status.textContent = "连接信息已更改，请重新检测。";
+      if (result.hidden) return;
+      result.hidden = true;
+      footer.hidden = true;
+      empty.hidden = false;
+    });
+  }
+  host._discoveredModels = () => models;
+  return () => owner.close();
+}
+
+export function createDiscoveryOwner() {
+  let generation = 0;
+  let controller = null;
+  let closed = false;
+
+  const invalidate = () => {
+    generation += 1;
+    controller?.abort();
+    controller = null;
+  };
+  return Object.freeze({
+    start(fingerprint) {
+      if (closed) throw new Error("模型检测面板已关闭");
+      invalidate();
+      controller = new AbortController();
+      const currentGeneration = generation;
+      const signal = controller.signal;
+      return Object.freeze({
+        signal,
+        isCurrent(currentFingerprint) {
+          return !closed && !signal.aborted && generation === currentGeneration
+            && currentFingerprint === fingerprint;
+        },
+      });
+    },
+    invalidate,
+    close() {
+      closed = true;
+      invalidate();
+    },
+  });
+}
+
+function connectionFingerprint(form) {
+  return JSON.stringify([
+    form.elements.endpoint.value,
+    form.elements.apiKey.value,
+    form.elements.provider.value,
+  ]);
+}
+
+function selectedModel(host, form) {
+  if (!host.querySelector("[data-discovery-manual]").hidden) {
+    return {kind: "chat", model: form.elements.manualModel.value.trim()};
+  }
+  const models = host._discoveredModels?.() ?? [];
+  const selected = models[Number(form.elements.detectedModel.value)];
+  if (!selected) throw new Error("请先检测并选择一个模型");
+  return selected;
+}
+
+function modelInput(model) {
+  const capabilities = model.capabilities ?? {};
+  const sources = model.capabilitySources ?? {};
+  return {
+    kind: "chat",
+    model: model.model,
+    capabilities: {
+      context_window: capabilities.contextWindow ?? null,
+      max_output_tokens: capabilities.maxOutputTokens ?? null,
+      input_modalities: capabilities.inputModalities ?? ["text"],
+      supports_tool_calls: capabilities.supportsToolCalls ?? null,
+      supports_parallel_tool_calls: capabilities.supportsParallelToolCalls ?? null,
+      supported_reasoning_efforts: capabilities.supportedReasoningEfforts ?? [],
+      embedding_dimensions: capabilities.embeddingDimensions ?? null,
+      embedding_normalization: capabilities.embeddingNormalization ?? null,
+    },
+    capability_sources: {
+      context_window: sources.contextWindow ?? "unknown",
+      max_output_tokens: sources.maxOutputTokens ?? "unknown",
+      input_modalities: sources.inputModalities ?? "unknown",
+      tool_calls: sources.toolCalls ?? "unknown",
+      parallel_tool_calls: sources.parallelToolCalls ?? "unknown",
+      reasoning_efforts: sources.reasoningEfforts ?? "unknown",
+      embedding_dimensions: sources.embeddingDimensions ?? "unknown",
+      embedding_normalization: sources.embeddingNormalization ?? "unknown",
+    },
+    default_reasoning_effort: model.defaultReasoningEffort ?? null,
+    driver_config: model.driverConfig ?? {format_version: 1},
+  };
+}
+
+function updateModelDetail(host, model) {
+  const detail = host.querySelector("[data-model-detail]");
+  const modalities = model?.capabilities?.inputModalities ?? ["text"];
+  const source = model?.capabilitySources?.inputModalities ?? "unknown";
+  detail.textContent = modalities.includes("image")
+    ? `已确认可看图 · 能力来源：${sourceLabel(source)}`
+    : source === "unknown" ? "图片能力待识别" : "当前目录未标记图片输入";
+}
+
+function sourceLabel(source) {
+  if (source.startsWith("litellm-remote@")) return "LiteLLM 公共目录";
+  if (source.startsWith("provider")) return "服务目录";
+  return source;
+}
+
+function clearInlineError(host) {
+  const error = host.querySelector("[data-error]");
+  error.hidden = true;
+  error.textContent = "";
+}
+
+async function runButton(button, busyText, work, error, reportError = true) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.replaceChildren(htmlNode(SPINNER_ICON), busyText);
+  error.hidden = true;
+  error.textContent = "";
+  try {
+    return await work;
+  } catch (reason) {
+    if (reportError) {
+      error.textContent = reason instanceof Error ? reason.message : String(reason);
+      error.hidden = false;
+    }
+    throw reason;
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
 }
 
 function submit(form, work) {

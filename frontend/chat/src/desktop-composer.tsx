@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { memo, useCallback, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useState, type ChangeEvent } from "react";
 import {
   Attachment, AttachmentHoverCard, AttachmentHoverCardContent, AttachmentHoverCardTrigger,
   AttachmentPreview, AttachmentRemove, Attachments, getAttachmentLabel, getMediaCategory,
@@ -38,6 +38,7 @@ export const DesktopComposer = memo(function DesktopComposer({
 }) {
   const [input, setInput] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [hasAttachments, setHasAttachments] = useState(false);
   const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string) => {
     setExpanded((wasExpanded) => nextComposerExpanded(
       wasExpanded,
@@ -63,7 +64,7 @@ export const DesktopComposer = memo(function DesktopComposer({
       throw error;
     }
   }, [expanded, onSend]);
-  const shellExpanded = expanded || Boolean(replyTarget);
+  const shellExpanded = expanded || hasAttachments || Boolean(replyTarget);
   return (
     <PromptInput
       className={`composer ${shellExpanded ? "is-expanded" : "is-compact"} ${input.trim() || replyTarget ? "has-text" : "empty"}`}
@@ -72,7 +73,7 @@ export const DesktopComposer = memo(function DesktopComposer({
     >
       {replyTarget ? <ComposerReply role={replyTarget.role} preview={desktopComposerReplyPreview(replyTarget)} onCancel={onCancelReply} /> : null}
       <PromptInputBody>
-        <ComposerAttachments />
+        <ComposerAttachments onPresenceChange={setHasAttachments} />
         <PromptInputTextarea
           className="composer__textarea !min-h-0"
           value={input}
@@ -105,8 +106,12 @@ export const DesktopComposer = memo(function DesktopComposer({
   );
 });
 
-function ComposerAttachments() {
+function ComposerAttachments({ onPresenceChange }: { onPresenceChange: (hasAttachments: boolean) => void }) {
   const attachments = usePromptInputAttachments();
+  const hasAttachments = attachments.files.length > 0;
+  useEffect(() => {
+    onPresenceChange(hasAttachments);
+  }, [hasAttachments, onPresenceChange]);
   if (attachments.files.length === 0) return null;
   return (
     <Attachments className="composer-attachments" variant="grid">

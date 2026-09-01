@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {createDialogAuthOwner, createLatestCatalogRead} from "./web_module.js";
+import {
+  capabilitySummary,
+  createDialogAuthOwner,
+  createLatestCatalogRead,
+  modelsForRole,
+  readJsonResponse,
+} from "./web_module.js";
 
 function deferred() {
   let resolve;
@@ -77,4 +83,42 @@ test("a failed auth cancellation remains available for retry", async () => {
   await owner.cancel("attempt-retry");
 
   assert.equal(calls, 2);
+});
+
+test("capability summary separates confirmed vision from unknown", () => {
+  const models = [
+    {
+      capabilities: {inputModalities: ["text", "image"]},
+      capabilitySources: {inputModalities: "litellm-remote@sha256:test"},
+    },
+    {
+      capabilities: {inputModalities: ["text"]},
+      capabilitySources: {inputModalities: "unknown"},
+    },
+  ];
+
+  assert.equal(capabilitySummary(models), "2 个模型 · 1 个可看图 · 1 个待识别");
+  assert.deepEqual(modelsForRole(models, "vision"), [models[0]]);
+  assert.equal(modelsForRole(models, "default"), models);
+});
+
+test("HTTP response errors stay actionable and reject invalid success bodies", async () => {
+  await assert.rejects(
+    readJsonResponse(new Response("Internal Server Error", {status: 500})),
+    /请求失败：500/u,
+  );
+  await assert.rejects(
+    readJsonResponse(new Response(JSON.stringify({code: "forbidden_contract"}), {
+      status: 403,
+      headers: {"Content-Type": "application/json"},
+    })),
+    /服务已更新，请刷新页面后重试/u,
+  );
+  await assert.rejects(
+    readJsonResponse(new Response("[]", {
+      status: 200,
+      headers: {"Content-Type": "application/json"},
+    })),
+    /服务返回了无效 JSON/u,
+  );
 });

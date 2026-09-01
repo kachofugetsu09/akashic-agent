@@ -13,10 +13,10 @@ from agent.plugin_composition import (
     ModelRequest,
     ModelRole,
 )
+from agent.media import detect_supported_image_mime
 from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.tools.base import Tool
 from agent.tools.filesystem import (
-    _detect_supported_image_mime_from_header,
     _resolve_path,
 )
 
@@ -39,7 +39,7 @@ def _encode_image_data_uri(file_path: Path) -> str:
         )
 
     raw = file_path.read_bytes()
-    mime = _detect_supported_image_mime_from_header(raw[:4096])
+    mime = detect_supported_image_mime(raw[:4096])
     if mime is None:
         raise ValueError("不支持的图片格式。仅支持 PNG、JPEG、GIF、BMP、WebP。")
 

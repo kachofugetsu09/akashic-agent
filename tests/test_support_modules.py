@@ -611,6 +611,22 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "weekday=" in stamped_message
     assert builder.last_assembled_contexts["turn_injection_context"] == {}
 
+    extensionless_image = tmp_path / "24"
+    extensionless_image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    extensionless_content = builder.render(
+        ContextRequest(
+            history=[],
+            current_message="直接看图",
+            multimodal=True,
+            media=[str(extensionless_image)],
+        )
+    ).messages[-1]["content"]
+    assert isinstance(extensionless_content, list)
+    assert extensionless_content[0]["type"] == "image_url"
+    assert extensionless_content[0]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+
     turn_injection = builder.build_turn_injection_context(turn_injection_prompt="pref")
     render_result = builder.render(
         ContextRequest(

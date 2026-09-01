@@ -645,9 +645,7 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
     assert generation is not None
     assert generation.source_type == "installed"
     assert generation.plugin_dir == models_install.installed_path
-    contract_bytes = Path(
-        "packages/akashic-models-ui-v1/contract.json"
-    ).read_bytes()
+    contract_bytes = Path("packages/akashic-models-ui-v1/contract.json").read_bytes()
     assert dict(generation.instance.web_contract_digests) == {
         "models.connection-types.v1": hashlib.sha256(contract_bytes).hexdigest()
     }
@@ -693,6 +691,7 @@ async def test_models_plugin_installs_and_runs_without_builtin_source(
         for route in binding.routes  # type: ignore[attr-defined]
     ] == [
         "/api/dashboard/models/catalog",
+        "/api/dashboard/models/discover",
         "/api/dashboard/models/command",
     ]
     await _configure_and_call(manager, tmp_path / "workspace")

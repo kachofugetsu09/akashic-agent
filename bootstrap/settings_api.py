@@ -53,7 +53,8 @@ def create_settings_app() -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' "
+            "img-src 'self' data: blob:; connect-src 'self' data: blob:; "
+            "frame-ancestors 'self' "
             "http://127.0.0.1:5173 http://localhost:5173"
         )
         return response

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated, Literal, Protocol
 
 from fastapi import APIRouter, HTTPException, Request
@@ -21,6 +22,7 @@ from agent.plugin_composition.models import (
     CreateConnectionWithModel,
     DisableConnection,
     DriverUnavailableError,
+    DiscoveredModel,
     FinishConnectionAuth,
     MODEL_CATALOG,
     MODEL_SETTINGS,
@@ -51,6 +53,10 @@ class ModelControlUnavailable(RuntimeError):
 class ModelControl(Protocol):
     async def catalog(self) -> ModelCatalogSnapshot: ...
 
+    async def discover(
+        self, connection: AddConnection
+    ) -> tuple[DiscoveredModel, ...]: ...
+
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
 
 
@@ -70,6 +76,16 @@ class BoundModelControl:
         if settings is None:
             raise ModelControlUnavailable("models 插件未提供模型设置")
         return await settings.apply(command)
+
+    async def discover(
+        self,
+        connection: AddConnection,
+    ) -> tuple[DiscoveredModel, ...]:
+        root = _bound_root()
+        settings = root.context.get(MODEL_SETTINGS)
+        if settings is None:
+            raise ModelControlUnavailable("models 插件未提供模型设置")
+        return await settings.discover(connection)
 
 
 def _bound_root():
@@ -207,6 +223,7 @@ CommandPayload = Annotated[
 ]
 
 _COMMAND_ADAPTER = TypeAdapter(CommandPayload)
+_CONNECTION_ADAPTER = TypeAdapter(ConnectionInput)
 
 
 def create_model_settings_router(
@@ -224,6 +241,42 @@ def create_model_settings_router(
             return _catalog_payload(await control.catalog())
         except ModelControlUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @router.post("/discover")
+    async def discover(request: Request) -> dict[str, object]:
+        try:
+            payload = _CONNECTION_ADAPTER.validate_python(await request.json())
+        except (ValueError, ValidationError) as error:
+            detail = (
+                error.errors(include_input=False, include_context=False)
+                if isinstance(error, ValidationError)
+                else [{"type": "json_invalid", "msg": "JSON 无效"}]
+            )
+            raise HTTPException(status_code=422, detail=detail) from error
+        if payload.driver_id != "openai-compatible":
+            raise HTTPException(
+                status_code=422,
+                detail="模型预览仅支持 openai-compatible",
+            )
+        try:
+            models = await control.discover(_add_connection(payload))
+        except AuthenticationError as error:
+            raise HTTPException(status_code=401, detail=str(error)) from error
+        except RateLimitError as error:
+            raise HTTPException(status_code=429, detail=str(error)) from error
+        except QuotaError as error:
+            raise HTTPException(status_code=402, detail=str(error)) from error
+        except (ModelControlUnavailable, DriverUnavailableError) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ModelUnavailableError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ModelTimeoutError as error:
+            raise HTTPException(status_code=504, detail=str(error)) from error
+        except TransportError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        except (ModelError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"models": [_discovered_payload(model) for model in models]}
 
     @router.post("/command")
     async def command(request: Request) -> dict[str, object]:
@@ -400,13 +453,56 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
     }
 
 
+def _discovered_payload(model: DiscoveredModel) -> dict[str, object]:
+    """Project an unsaved provider model without inventing a registry ID."""
+
+    return {
+        "kind": model.kind.value,
+        "model": model.model,
+        "defaultReasoningEffort": model.default_reasoning_effort,
+        "capabilities": {
+            "contextWindow": model.capabilities.context_window,
+            "maxOutputTokens": model.capabilities.max_output_tokens,
+            "inputModalities": list(model.capabilities.input_modalities),
+            "supportsToolCalls": model.capabilities.supports_tool_calls,
+            "supportsParallelToolCalls": model.capabilities.supports_parallel_tool_calls,
+            "supportedReasoningEfforts": list(
+                model.capabilities.supported_reasoning_efforts
+            ),
+            "embeddingDimensions": model.capabilities.embedding_dimensions,
+            "embeddingNormalization": model.capabilities.embedding_normalization,
+        },
+        "capabilitySources": {
+            "contextWindow": model.capability_sources.context_window,
+            "maxOutputTokens": model.capability_sources.max_output_tokens,
+            "inputModalities": model.capability_sources.input_modalities,
+            "toolCalls": model.capability_sources.tool_calls,
+            "parallelToolCalls": model.capability_sources.parallel_tool_calls,
+            "reasoningEfforts": model.capability_sources.reasoning_efforts,
+            "embeddingDimensions": model.capability_sources.embedding_dimensions,
+            "embeddingNormalization": model.capability_sources.embedding_normalization,
+        },
+        "driverConfig": _json_value(model.driver_config),
+    }
+
+
 def _receipt_payload(receipt: SettingsReceipt) -> dict[str, object]:
     return {
         "revision": receipt.revision,
         "status": receipt.status,
         "attemptId": receipt.attempt_id,
-        "challenge": receipt.challenge,
+        "challenge": _json_value(receipt.challenge),
     }
+
+
+def _json_value(value: object) -> object:
+    """Restore frozen domain JSON to ordinary HTTP response containers."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_json_value(item) for item in value]
+    return value
 
 
 __all__ = ["ModelControl", "create_model_settings_router"]
