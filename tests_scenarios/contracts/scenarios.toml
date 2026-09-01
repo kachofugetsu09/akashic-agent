@@ -545,8 +545,8 @@ mutants = ["companion_peer_surface_survives"]
 requirements = ["OUT-001", "PRO-002", "TST-001", "TST-002", "TST-003"]
 groups = ["content_wake_drift"]
 environment = "public_clean_workspace"
-timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_content_delivery_rejects_early_source_ack_mutant", "tests/test_content_store.py", "tests/test_wake_durable_delivery.py"]
+timeout_seconds = 90
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_content_delivery_rejects_early_source_ack_mutant", "tests/test_content_store.py", "tests/test_wake_durable_delivery.py", "tests/test_wake_gate_contract.py"]
 observes = ["content_write_set", "durable_delivery_receipt", "source_ack_receipt", "restart_reconciliation", "failure_semantics"]
 mutants = ["content_source_ack_precedes_delivery"]
 

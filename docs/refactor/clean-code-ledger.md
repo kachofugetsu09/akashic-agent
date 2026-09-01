@@ -2828,3 +2828,11 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 验证：MCP host `19 passed, 1 deselected`（跳过既有缺少 `endpoint_ports` 的 duplicate-generation fixture）；`tests/test_plugin_composition_tool_catalog.py tests/test_subagent_v3_runtime.py` `25 passed`；background job/generation `45 passed`；compaction/migration `37 passed`；Guardian/restart 精确回归 `5 passed`；`compileall` 和 `git diff --check` 通过。已删除 Gate 文件无当前 CI/Gate 悬挂引用。
 - 未完成验证：全 Docker/大 Gate 未运行以保护本机资源；all-plugin Manager smoke 已进入 v3 MCP runtime，但因本机临时环境缺少 hua-home Steam MCP 配置/依赖而失败，不能记作全插件通过；MCP duplicate fixture 的原始失败与固定 formal port 的既有环境问题仍单独记录，不归因于本轮删除。
 - 回滚：按独立提交 revert；本轮 source/test/doc 修改前备份分别位于 `/mnt/data/akasic-agent-backups/pr525-mcp-observation-diagnostics-before-20260901/`、`/mnt/data/akasic-agent-backups/pr525-materialized-mcp-alias-before-20260901/`、`/mnt/data/akasic-agent-backups/pr525-tool-registry-context-facade-before-20260901/`、`/mnt/data/akasic-agent-backups/pr525-background-retry-alias-before-20260901/`、`/mnt/data/akasic-agent-backups/pr525-context-compaction-compat-before-20260901/` 和 `/mnt/data/akasic-agent-backups/pr525-supervisor-imports-before-20260901/`。
+
+## 2026-09-01 PR525：保留 pure v3 Wake/H5 Gate 合同
+
+- 独立概念 Review 发现，PR 删除旧大测试时也移除了仍受 `docker/debug` runner、manifest 和操作文档承诺的 v3 行为 oracle；这不是 v2 兼容壳，必须保留可观察覆盖。
+- 新增一份小型无外网合同测试，直接运行现有 v3 Wake provider runner，经 loopback Chat Completions 覆盖 200、400、503，验证 v3 request/tool shape、成功交付、失败终态、重试语义以及 endpoint、credential、provider body 的报告脱敏。
+- 同一测试覆盖 H5 manifest 保持 `real_provider=PENDING`、suite case 存在，以及受保护 workspace 必需文件、SQLite 表和非空行约束；不恢复已删除的 v2 ABI、旧 facade 或约 800 行重复 Gate/Probe 测试。
+- `content_wake_delivery_contract` 现直接执行该测试，timeout 从 60 秒调整为 90 秒以容纳 503 的生产重试时序；coverage catalog digest 同步更新。精确场景为 `56 passed in 43.06s`，新测试单独为 `4 passed in 42.20s`。
+- 恢复点：`backup/pr525-before-gate-oracle-fix-20260901` 固定修复前 head `c047c923`。完整 Core 回归、change Gate 与新 head 独立 Review 在冻结提交后重新记录。
