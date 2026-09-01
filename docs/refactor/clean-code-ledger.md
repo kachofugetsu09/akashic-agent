@@ -2821,7 +2821,7 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
   - 删除 `MaterializedMcpCommand` 旧拼写别名；`McpMaterializedCommand` 是唯一真实类型（同提交）。
   - 删除 `ToolRegistry.get_context()` compatibility view；保留当前 v3 的 `set_context()` 与 `get_execution_context()`（`c6f66eee`）。
   - 删除 `BackgroundJobRetryPolicy = RetryPolicy` 及顶层导出；`RetryPolicy`、job catalog、generation host 不变（`dc99f562`）。
-  - 删除 `agent/model_runtime/context_compaction.py` v2 compatibility export；将 yoyo migration 和契约测试改指向冻结 owner `compaction_migration_v1.py`，并更新当前设计合同（`d81526cf`）。
+  - compaction 的运行时实现和身份 owner 已迁到 `plugins/compaction/` 与 `compaction_migration_v1.py`；已注册 Yoyo migration 的旧 import path 是 append-only 执行 ABI，后续修复中保留 11 行转发模块，不属于 v2 插件 ABI。
 - 删除依据：上述表面分别只有定义/自递归/导出或一个测试读取；Core、Gate、外部插件源码和 active v3 artifact 没有真实消费者。`ModelCatalogUnavailable` 虽为同对象别名，但仍被 bootstrap、mobile、web 的可观察错误边界使用，保留；命令 aliases 是现行命令输入合同，也保留。
 - 误删回退：混合回归发现 `1d478f2d` 曾移除 `agent/supervisor.py` 对 `_cleanup_boot_processes`、`_pid_exists` 的必要模块导入，导致 5 个 Guardian/重启回归失败；恢复两个 import 后 `tests/test_agent_restart.py` 精确 5 passed（`49fab44f`）。本轮没有用 skip 掩盖失败；失败测试留下的两个临时 `guardian_gateway.py` 子进程已按精确 PID 清理，正常服务未触碰。
 - 保护边界：保留 active v3 插件中的 v2 data bridge/migration（Calendar、Feed、Fitbit、Proactive Feedback、Steam、Emotion）、`workbench.panels.v2` 当前 UI slot、Akasha v2 算法命名、持久化旧字段别名、Wake 私有历史迁移和 readiness redirect 安全边界；它们不是 v2 plugin ABI，删除条件另由数据迁移/合同拥有。
@@ -2836,3 +2836,9 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 同一测试覆盖 H5 manifest 保持 `real_provider=PENDING`、suite case 存在，以及受保护 workspace 必需文件、SQLite 表和非空行约束；不恢复已删除的 v2 ABI、旧 facade 或约 800 行重复 Gate/Probe 测试。
 - `content_wake_delivery_contract` 现直接执行该测试，timeout 从 60 秒调整为 90 秒以容纳 503 的生产重试时序；coverage catalog digest 同步更新。精确场景为 `56 passed in 43.06s`，新测试单独为 `4 passed in 42.20s`。
 - 恢复点：`backup/pr525-before-gate-oracle-fix-20260901` 固定修复前 head `c047c923`。完整 Core 回归、change Gate 与新 head 独立 Review 在冻结提交后重新记录。
+
+## 2026-09-01 PR525：恢复 append-only Yoyo import ABI
+
+- GitHub `change-impact-gate` 正确发现 `20260826_03_unify_akashic_channel_identity.py` 被改写。已注册 migration 是不可改写的持久化执行合同；把 import 改到新 owner 即使行为等价也不安全。
+- 恢复 migration 原文及其 11 行 `context_compaction` import path。该模块只把两个 identity helper 转发到冻结的 `compaction_migration_v1` owner，没有恢复 compaction runtime、v2 插件入口或第二套状态模型。
+- 恢复点：`backup/pr525-before-yoyo-ci-fix-20260901` 固定远端失败 head `31da9841`。修复后以 `scripts/check_yoyo_migrations.py --base origin/main`、迁移/compaction 回归和远端 CI 验证。

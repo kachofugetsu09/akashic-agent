@@ -41,7 +41,7 @@ must-fix，并提交 draft PR。
 | 编号 | 现有依赖位置 | 当前能力 | 迁移目标与对比证据 |
 |---|---|---|---|
 | C01 | `agent/core/passive_turn.py` | 完整 payload gate、74%、overflow retry | 中性事件调用普通 compaction Service；payload/usage/error 差分一致 |
-| C02 | `plugins/compaction/` 与 `agent/model_runtime/compaction_migration_v1.py` | logical unit、20k tail、六段摘要、fallback、持久化身份 | 实现归 compaction 插件；迁移身份由冻结的 v1 模块拥有；契约测试逐字段一致 |
+| C02 | `plugins/compaction/` 与 `agent/model_runtime/compaction_migration_v1.py` | logical unit、20k tail、六段摘要、fallback、持久化身份 | 实现归 compaction 插件；迁移身份由冻结的 v1 模块拥有，历史 Yoyo import path 仅保留转发；契约测试逐字段一致 |
 | C03 | `session/compaction_runtime.py` | projection、prepare/receipt/ledger/cursor/recovery | Session 原子端口与插件策略拆开；Session write set 一致 |
 | C04 | `session/store.py`、`session/manager.py` | ledger、fence、cursor、append-only provenance | 保持唯一 owner；messages 零 UPDATE/DELETE |
 | C05 | `agent/looping/core.py`、`ports.py` | 构造/关闭私有 runtime | 删除 memory/compaction 专用 deps；按 frozen Root 取普通 Service |
