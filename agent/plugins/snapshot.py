@@ -9,8 +9,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, cast
 
-from agent.control.scoped_turn import RootRetired
-
+from agent.plugins.errors import RootRetired
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
 from agent.tools.registry import ToolRegistry
@@ -1533,7 +1532,7 @@ class RuntimeSnapshotStore:
                 )
                 if snapshot is None:
                     raise RootRetired(
-                        "composition Root 已退役，Turn 尚未进入 admission"
+                        "composition Root 已退役，不能接收新工作"
                     )
                 if (
                     snapshot is self._current

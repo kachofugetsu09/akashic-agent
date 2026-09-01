@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from agent.control.scoped_turn import RootRetired
+from agent.plugins.errors import RootRetired
 from agent.control.timer import TimerHandle, TimerStatus
 from agent.plugin_composition import (
     DELIVERIES,

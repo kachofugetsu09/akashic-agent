@@ -2,12 +2,14 @@ from __future__ import annotations
 
 # pyright: reportPrivateUsage=false
 
+import ast
 import asyncio
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from agent.control.scoped_turn import RootRetired
+from agent.plugins.errors import RootRetired
 from agent.plugin_composition import (
     CompositionError,
     CompositionRoot,
@@ -25,6 +27,34 @@ from agent.plugins.snapshot import (
     reset_runtime_snapshot,
 )
 from bus.event_bus import EventBus
+
+
+_CORE_FILES = (
+    "agent/plugin_composition/context.py",
+    "agent/plugin_composition/tasks.py",
+    "agent/plugins/service_call.py",
+    "agent/plugins/snapshot.py",
+)
+
+
+def test_core_runtime_files_do_not_import_control_domain() -> None:
+    """Keep the runtime lease atoms independent from the old Turn owner."""
+
+    root = Path(__file__).parents[1]
+    violations: list[str] = []
+    for relative_path in _CORE_FILES:
+        tree = ast.parse((root / relative_path).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = tuple(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names = (node.module or "",)
+            else:
+                continue
+            for name in names:
+                if name == "agent.control" or name.startswith("agent.control."):
+                    violations.append(f"{relative_path}:{node.lineno}:{name}")
+    assert violations == []
 
 
 class _Lease:

@@ -17,10 +17,6 @@ if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotLease
 
 
-class RootRetired(RuntimeError):
-    """Report that a Root no longer accepts new work."""
-
-
 class RuntimeTurnHandle(Protocol):
     thread_id: str
     id: str
