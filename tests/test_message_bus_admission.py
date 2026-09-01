@@ -875,9 +875,18 @@ async def test_v3_mobile_bus_close_retains_durable_handoff_for_next_boot(
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     bus.bind_mobile_session_admission_owner(manager)
+    expected_ref = AttachmentRef(
+        artifact_id="artifact-3",
+        kind=AttachmentKind.IMAGE,
+        filename="photo.png",
+        media_type="image/png",
+        size_bytes=123,
+        sha256="a" * 64,
+    )
     envelope, lease = _v3_inbound(
         channel="akashic",
         message_id="client-message-3",
+        attachments=(expected_ref,),
         metadata={
             "session_key_override": session_key,
             "client_message_id": "client-message-3",
@@ -887,6 +896,10 @@ async def test_v3_mobile_bus_close_retains_durable_handoff_for_next_boot(
     )
 
     await bus.publish_channel_inbound(envelope)
+    assert bus.pending_mobile_attachment_refs(
+        session_key=session_key,
+        client_message_id="client-message-3",
+    ) == (expected_ref,)
     await bus.aclose()
 
     assert envelope.state is InboundState.TERMINAL

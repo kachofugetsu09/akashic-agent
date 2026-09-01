@@ -187,6 +187,7 @@ class ChannelAttachmentArtifactStore:
                 filename,
                 media_type,
                 None,
+                None,
             )
         )
         if cancelled:
@@ -198,22 +199,23 @@ class ChannelAttachmentArtifactStore:
         source: Path,
         *,
         allowed_root: Path,
-        artifact_id: str,
-        kind: AttachmentKind,
-        filename: str | None,
-        media_type: str | None,
+        expected_ref: AttachmentRef,
     ) -> AttachmentRef:
-        """以调用方预分配的 opaque identity 幂等导入一个 finalized file。"""
+        """仅在 finalized file 仍等于 durable expected ref 时发布。"""
+
+        if not isinstance(expected_ref, AttachmentRef):
+            raise TypeError("expected_ref 必须是 AttachmentRef")
 
         result, cancelled = await _complete_critical(
             asyncio.to_thread(
                 self._adopt_file,
                 source,
                 allowed_root,
-                kind,
-                filename,
-                media_type,
-                artifact_id,
+                expected_ref.kind,
+                expected_ref.filename,
+                expected_ref.media_type,
+                expected_ref.artifact_id,
+                expected_ref,
             )
         )
         if cancelled:
@@ -350,6 +352,7 @@ class ChannelAttachmentArtifactStore:
         filename: str | None,
         media_type: str | None,
         artifact_id: str | None,
+        expected_ref: AttachmentRef | None,
     ) -> AttachmentRef:
         """两次核对 source identity，并把内容复制进 Core artifact root。"""
 
@@ -361,6 +364,10 @@ class ChannelAttachmentArtifactStore:
             filename=filename,
             media_type=media_type,
         )
+        if expected_ref is not None and ref != expected_ref:
+            raise ValueError(
+                f"attachment source 与 durable ref 不一致: {expected_ref.artifact_id}"
+            )
 
         def copy_source(target_fd: int) -> None:
             source_fd = os.open(

@@ -287,7 +287,7 @@ async def test_fixed_artifact_identity_is_idempotent_and_rejects_source_drift(
     source = source_root / "upload.bin"
     source.write_bytes(b"mobile finalized bytes")
 
-    first = await artifact_store.adopt_file_with_artifact_id(
+    expected = await artifact_store.inspect_file_with_artifact_id(
         source,
         allowed_root=source_root,
         artifact_id="mobile-fixed-artifact",
@@ -295,26 +295,26 @@ async def test_fixed_artifact_identity_is_idempotent_and_rejects_source_drift(
         filename="upload.bin",
         media_type="application/octet-stream",
     )
+
+    first = await artifact_store.adopt_file_with_artifact_id(
+        source,
+        allowed_root=source_root,
+        expected_ref=expected,
+    )
     second = await artifact_store.adopt_file_with_artifact_id(
         source,
         allowed_root=source_root,
-        artifact_id="mobile-fixed-artifact",
-        kind=AttachmentKind.FILE,
-        filename="upload.bin",
-        media_type="application/octet-stream",
+        expected_ref=expected,
     )
     assert second == first
     assert len(session_store.list_attachments()) == 1
 
     source.write_bytes(b"different finalized bytes")
-    with pytest.raises(RuntimeError, match="identity 已漂移"):
+    with pytest.raises(ValueError, match="durable ref 不一致"):
         await artifact_store.adopt_file_with_artifact_id(
             source,
             allowed_root=source_root,
-            artifact_id="mobile-fixed-artifact",
-            kind=AttachmentKind.FILE,
-            filename="upload.bin",
-            media_type="application/octet-stream",
+            expected_ref=expected,
         )
 
 
@@ -332,6 +332,14 @@ async def test_fixed_artifact_identity_recovers_published_bytes_before_ready_row
     payload = b"published before database ready"
     source.write_bytes(payload)
     artifact_id = f"recover-{phase}"
+    expected = await artifact_store.inspect_file_with_artifact_id(
+        source,
+        allowed_root=source_root,
+        artifact_id=artifact_id,
+        kind=AttachmentKind.FILE,
+        filename="recover.bin",
+        media_type="application/octet-stream",
+    )
     storage_key = f"uploads/artifacts/{artifact_id}.bin"
     created_at = "2026-08-17T00:00:00+00:00"
     _ = session_store.begin_attachment_import(
@@ -353,10 +361,7 @@ async def test_fixed_artifact_identity_recovers_published_bytes_before_ready_row
     ref = await artifact_store.adopt_file_with_artifact_id(
         source,
         allowed_root=source_root,
-        artifact_id=artifact_id,
-        kind=AttachmentKind.FILE,
-        filename="recover.bin",
-        media_type="application/octet-stream",
+        expected_ref=expected,
     )
 
     assert ref.artifact_id == artifact_id

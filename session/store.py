@@ -1149,13 +1149,34 @@ class SessionStore:
     ) -> bool:
         """Check whether a client message still owns an uncompleted handoff."""
 
+        return self.read_inbound_handoff(
+            session_key=session_key,
+            client_message_id=client_message_id,
+        ) is not None
+
+    def read_inbound_handoff(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> dict[str, str | None] | None:
+        """读取一个仍由 durable queue 持有的 exact handoff。"""
+
         dedupe_key = f"{session_key}:{client_message_id}"
         with self._lock:
             row = self._conn.execute(
-                "SELECT 1 FROM inbound_handoffs WHERE dedupe_key = ?",
+                """
+                SELECT handoff_id, dedupe_key, channel, sender, chat_id,
+                       session_key, content, timestamp, media_json,
+                       metadata_json, created_at
+                FROM inbound_handoffs
+                WHERE dedupe_key = ?
+                """,
                 (dedupe_key,),
             ).fetchone()
-        return row is not None
+        if row is None:
+            return None
+        return {key: cast(str | None, row[key]) for key in row.keys()}
 
     def complete_inbound_handoff(self, handoff_id: str) -> None:
         """Release a handoff only after its worker has finished processing."""
