@@ -7,15 +7,15 @@
   “React 实现属于 Core”的结构结论；既有 Turn、Session、Scheduler、Subagent 行为合同不变
 - 实施分支：`codex/react-plugin-spine`
 - 初始迁移基线：`f1f4560892ae92e96779ff89f848223afdcc9919`
-- 最终复审实现 head：`df06efa1809dc181cf3465825f1aeaed4e89cec7`
+- 最终复审实现 head：`33864d9b77dcab2a0de5a31b440005542cfc4616`
 - Git worktree：`/mnt/data/coding/akasic-agent-worktrees/react-plugin-spine`
-- 当前实现 head：`df06efa1809dc181cf3465825f1aeaed4e89cec7`；M1 中性原子及 owner 修正已落地，M2 尚未开始
+- 当前实现 head：`33864d9b77dcab2a0de5a31b440005542cfc4616`；M1a～M1c 已落地，M1d 尚未开始
 - 恢复引用：`backup/pre-react-plugin-spine-20260901-f1f45608`、`backup/pre-dsh-spec-rewrite-20260901`、
   `backup/pre-m1-retired-error-fix-20260901`、`backup/pre-m2-system-prompt-20260901`、
   `backup/pre-concept-review-20260901`、`backup/pre-concept-p1-fixes-20260901`、
   `backup/pre-concept-p1-round2-20260901`、`backup/pre-concept-p1-round3-20260901`、
   `backup/pre-concept-p1-round4-20260902`、`backup/pre-concept-p1-round5-20260902`、
-  `backup/pre-m2-delivery-gap-fix-20260902`
+  `backup/pre-m2-delivery-gap-fix-20260902`、`backup/pre-m1d-activity-switch-20260902`
 
 ## 1. 结果、范围与停止条件
 
@@ -101,7 +101,7 @@ validation:
   - 最终 zero-consumer、全量 test 和 project Gate
 rollback: 上一完整 commit、不可变 generation、执行前备份；不伪造外部效果回滚
 worktree_writer: /root
-external_revisions: [hua-home:f1f4560892ae92e96779ff89f848223afdcc9919]
+external_revisions: [hua-home-release:da6fbee4e2a5a0e5bf01fea33e35578fb5fd88fb, hua-home-source:eef2700ec8bb2004d0335730128b01a1907c9232]
 schema_lineages: [sessions.db adds turn_saves and saved_notices with a forward-only migration]
 ```
 
@@ -147,17 +147,23 @@ rows/write set、stream、delivery/ACK、attachment、error/cancel/interrupt 和
 ### 1.4 外部插件真源
 
 外部 consumer 只以 `hua-home` 的实际启用状态为准，不以开发机源码目录或 cache 猜测。
-2026-09-01 的只读检查确认：live release 指向本合同基线
-`f1f4560892ae92e96779ff89f848223afdcc9919`；boot log 记录 33 个 active generation；其中有 stable
+2026-09-02 的只读检查确认：active Core release target 是
+`da6fbee4e2a5a0e5bf01fea33e35578fb5fd88fb`，其 source tree 是
+`eef2700ec8bb2004d0335730128b01a1907c9232`；Core container healthy，插件真源目录是
+`/srv/data/services/akashic/state/plugin-home`。本次 inventory 中有 stable
 GitHub artifact 的 16 个外部插件是：
 
 `calendar`、`citation`、`emotion`、`feed`、`fitbit`、`github-watch`、`huayue-skills`、`meme`、
 `observe`、`plugin_undo`、`proactive_feedback`、`setup_helper`、`shell_restore`、`shell_safety`、
 `status_commands`、`steam`。
 
-对这 16 个 stable artifact 的运行源码做零 consumer 查询，本批所有已删公开名均为零；
-`github-watch/scripts/core_v3_gate.py` 的 `FakeConversationRuntime` 只属于离线 Gate，不是 runtime
-consumer。后续每个 public API 删除都必须对当时 `hua-home` artifact 重新查询；本段不是永久豁免。
+对这 16 个 stable artifact 的运行源码做 consumer 查询，唯一 runtime `BACKGROUND_JOBS` consumer 是
+`github-watch@github` 的 `3.0.0-b9266ab3ca9932c0`，artifact commit 为
+`b9266ab3ca9932c074a6d91cf48ab69691bcf1ce`。它调用 `BACKGROUND_JOBS.register(...)`，并传
+`handler_export` 与 `programmatic_turns=True`。同插件的 `scripts/core_v3_gate.py` 还离线 import
+`ActivityHost`、`BackgroundJobActivityAdapter` 与 `bind_activity_host`；这只是 Gate consumer，不是 runtime
+owner。Emotion 只在测试中提到 `BACKGROUND_JOBS`。后续每个 public API 删除都必须对当时
+`hua-home` artifact 重查；本段不是永久豁免。
 
 consumer 只决定迁移顺序，不决定设计好坏。每个外部接入点都要先按最终模型独立判断：
 
@@ -171,7 +177,7 @@ consumer 只决定迁移顺序，不决定设计好坏。每个外部接入点�
 
 ### 1.5 外部接入点迁移账本
 
-以下判断基于 2026-09-01 `hua-home` stable artifact；每个后续阶段都要重新核对 live generation：
+以下判断基于 2026-09-02 `hua-home` stable artifact；每个后续阶段都要重新核对 live generation：
 
 当前 exact artifact commit 是：Citation `a886c74c55c4ef400ecd81451eb84b0970b60869`、Meme
 `c185ea7a3847d67a3c61ede9819d6a94636d69c1`、Emotion
@@ -192,6 +198,8 @@ consumer 只决定迁移顺序，不决定设计好坏。每个外部接入点�
 | 当前接入点 | live consumer | 判断 | 最终入口 |
 |---|---|---|---|
 | `COMMANDS`、`CommandDefinition` | Plugin Undo、Setup Helper、Status Commands | `keep` | 三只 stable artifact 已是普通 v3 command consumer；只把 registry provider 从 PluginManager 迁入普通 commands plugin，public contract 和短路语义不变 |
+| `BACKGROUND_JOBS` 与 `BackgroundJobDefinition` 等长类型名 | GitHub Watch runtime | `move` | 保留 `BACKGROUND_JOBS`、`IntervalTrigger` 与 `RetryPolicy`；registry、scanner、ledger 和 exact handler module 全部移入普通 `jobs` 插件，M9 同批迁外部源码并收短其余公开类型 |
+| `ActivityHost`、`BackgroundJobActivityAdapter`、`bind_activity_host` | GitHub Watch 离线 Gate | `remove` | M2d 改用普通 `jobs` fixture；不保留 runtime 或离线 alias |
 | `PROMPT_RENDER_EVENT`、可变 `PromptRenderCtx`、`PromptSectionRender` | Citation、Meme | `move` | `system-prompt` 接受普通 section |
 | `CONTEXT_PREPARED_EVENT`、`BeforeTurnCtx.extra_hints` | Emotion | `move` | 稳定模型规则归 `system-prompt`；本轮临时材料归 `context-input` |
 | `AFTER_REASONING_PREPROCESS_EVENT`、`AFTER_REASONING_CLEANUP_EVENT`、可变 `AfterReasoningCtx` | Citation、Meme | `move` | 普通 `reply-output` 在持久化前合并不重叠 `ReplyMark`；Citation/Meme 各自拥有 mark、media 与私有 ledger，不保留有序 reply hook |
@@ -319,8 +327,9 @@ checkpoint，插件靠自己的 prepare + SessionRead.status 做 crash recovery�
 本来就 inject sessions、reply-output 与 save-notice，因而只组合自己运行前必须 ready 的依赖；Core 只等待整棵
 Root ready，不识别这些 Service 名，也没有 Agent boot table。顺序不能由各 part 自行交换：
 
-1. publication gate、所有 ingress 和所有 delivery 都保持关闭；先恢复并 pin exact stable artifact 与 Core
-   ServiceHold journal 中全部 reserved/active Root，ServiceKey/Root/artifact identity 不符就 degraded；
+1. publication gate、所有 ingress 和所有 delivery 都保持关闭；先按 versioned RootRecipe 恢复并 pin Core
+   ServiceHold journal 中全部 reserved/active retired/closed Root，再恢复 exact stable Root；ABI、lineage、
+   Service provider、registry 或 artifact identity 不符就 degraded，held Root 不接 `RUNTIME_STARTED`；
 2. sessions owner 完成 schema migration、integrity check 和单 writer ready，但此时不运行 ReplyPart、SavePart
    或 provider；
 3. agent-loop 调 `SESSIONS.recover()`，按现行 `SessionStore` 合同在一个事务中把 crash 留下的 queued Turn 终结为 cancelled、
@@ -330,8 +339,9 @@ Root ready，不识别这些 Service 名，也没有 Agent boot table。顺序�
 4. 确认不存在 stale `running + save=none` 后才调用 `REPLY_OUTPUT.ready()`；ReplyPart 以已收敛的
    saved/skipped/terminal 结果 settle 或 abort 自己的 receipt；
 5. 再调用 `SAVE_NOTICE.ready()`；SavePart 先收敛自己的 prepare，再重放 saved notice；
-6. agent-loop 的 start Effect 完成，整棵 Root 才可取得；最后由各 source 以自己的 HoldKey + ServiceKey namespace
-   对账 Core hold 与 delivery ledger。reserve 后/row 前 crash 的 HoldId 由该 HoldKey owner 确认无 row 后 drop；
+6. agent-loop 的 start Effect 完成，整棵 Root 才可取得；最后由各 source 以该 binding 的 Core-derived holder
+   namespace + ServiceKey 对账 hold 与 delivery ledger：普通插件 binding 使用 stable registration Fiber，
+   snapshot 外 host binding 使用 sealed host identity。reserve 后/row 前 crash 的 HoldId 由该 holder 确认无 row后 drop；
    row 后/activate 前幂等 activate；active row 用冻结的 source generation、Channel generation/config 创建新的
    ephemeral binding/token，再恢复 prepare/send/ACK。先 durable 写 `done|abort`，再 drop hold，最后删 row；
    `unknown` 保留 hold 且 runtime degraded。全部 ready 后才开放 ingress 与 sender。
@@ -675,6 +685,7 @@ PassiveMessageWorker
 | 谁驱动每次模型尝试 | DSH 的具体 Agent loop 创建请求、调用模型、处理错误并继续工具循环：`packages/core/agent-loop/src/agent.ts:341-438`；prepared call 钉住同一 adapter generation：`packages/llm/llm/src/index.ts:882-935` | `agent-loop` 仍驱动 attempt；`provider-input` 只对每次 attempt 做 build/settle，不成为第二个 loop |
 | Prompt 如何扩展 | section/context 是不同类型、不同 registry 和不同输出：`packages/core/system-prompt/src/index.ts:52-84,354-385,424-476,536-610`；最终组合由 loop 完成：`packages/core/agent-loop/src/agent.ts:234-251,341-359,444-543` | `system-prompt` 与 `context-input` 分别拥有一条 lane；固定 envelope 顺序属于 `agent-loop`；不复制 tools/variables 或可改全体 assembly 的逃生 hook |
 | Skills 怎样共享 | 独立 `skills` Service Definition 合并 provider 并提供 list/get：`packages/skill/skill/src/index.ts:1-13,285-298,347-392,464-500`；filesystem 是注入它的普通 provider：`packages/skill/skill-filesystem/src/index.ts:1-9,129-146`；tool-skill 再组合 agents/tools/skills：`packages/skill/tool-skill/README.zh.md:28` | `skills` 独占一份 Root-local catalog；`skill-files` 只提供来源；system catalog、active skills 与 load-skill 消费同一 catalog，不从 Core snapshot ambient 读取 |
+| 定时工作怎样启动 | 普通 `schedule` 插件只 inject 自己需要的 Service，在自己的 `ctx.effect` 与 `agent.ctx.effect` 中创建、启动并随 scope dispose `ScheduleRuntime`：`packages/schedule/schedule/src/index.ts:35-83` | `jobs` 自己拥有 registry、scanner 和 ledger；Core 不保留 `ActivityHost`、participant 或 job publication 分支 |
 | Tool Search 如何涌现 | 具体工具通过普通 registry 注册：`packages/core/tools/src/index.ts:1022-1053`；progressive disclosure 替换 scoped restriction：`docs/cookbook/extension-cookbook.md:100-114` | Tool Search 只是 `tools` scoped view 的普通 consumer；Core 无元工具特判 |
 | Agent 和 loop 怎样分 | registry/factory：`packages/core/agent/src/index.ts:235-247,352-422`；具体 Agent 与完整 Turn/Step：`packages/core/agent-loop/src/index.ts:612-640`、`packages/core/agent-loop/src/agent.ts:254-438` | `agents` 只管合同和 factory；`agent-loop` 管具体 Agent 的整个生命周期 |
 | 是否需要 before/after phase | 只有窄 `agent/pre-step`：`packages/core/agent/src/runtime-types.ts:55-63,226-238`；无 `agent/after-step` | 不创建替代 before/after 套件；当前 `before_step` 无生产 consumer，直接删除 |
@@ -738,7 +749,7 @@ ConversationRuntime；它们都进入 exact 账本。M8 输出 repo/commit/符�
 | 现有 compaction/markdown-memory 普通插件 | 保留持久 owner；`PROVIDER_REQUEST_PROJECTION` 另行判为 `move`，不把特制 request gate 当终态 Service |
 | SessionManager/SessionStore 的事务和恢复算法 | 行为与测试资产保留，真实实现迁入 `sessions` owner；不包旧 singleton |
 | `PluginScopedTurns` 的 exact root、accepted handle、retired error 语义 | 领域中性部分迁入 `RootScope`/`TaskControl`；旧 `SCOPED_TURNS` key/bridge 最终删除 |
-| existing ActivityHost/admission-drain 模式 | 用作 `TaskControl` 与 `RootSwitch` 的实现证据，不复制 Agent 专用 publication plane |
+| existing ActivityHost/admission-drain 行为 | admission/drain 测试作为 `TaskControl`、ServiceHold 与 RootSwitch 的迁移证据；M2d 删除 ActivityHost 本身，不复制 publication plane |
 | `PluginSkillHost`、`PluginSkillLinker`、RuntimeSnapshot skill 字段与 `SkillsLoader` 资产 | 扫描、frontmatter、可用性、冻结副本、precedence、link journal 和 Gate 行为迁入普通 `skills` + `skill-files`；删除 Core catalog owner、skill publication branch 与 ambient snapshot lookup |
 | committed fact 的发布语义 | sessions 总写 turn_saves；saved 同事务写 pending notice；reply settle 后 SAVE_NOTICE 运行 SavePart，再 live observe 同一 SaveResult；telemetry failure 不阻止 delivery |
 | mutable phase ctx、metadata bag、编码 helper | 标成 `move`，Core 内部先停用；外部 consumer 迁完后删除 |
@@ -768,23 +779,39 @@ exact lease，不能由 host 或插件选择 latest。`ServiceCall` 绑定当前
 继承到错误 task 或 lease 已退休全部 fail-loud。它不解析 request，不创建 background task，也不
 捕获领域错误。
 
-`RootSwitch` 的 public contract 只有 `ROOT_SWITCH.add(ctx, SwitchPart) -> Effect`。SwitchPart 声明唯一
-`name`，并只用注册它的普通插件闭包持有的窄 grant 实现 `stop`、`leave`、`enter`、`start` 与
-`recover`。每个动作只改变这一个 part 自己的共享 owner：stop 停止 admission 并 drain，leave 撤掉本代
-claim/projection，enter 安装本代 claim/projection，start 让本代 owner ready。它不接收 request、Message、
+`RootSwitch` 的 public contract 只有 `ROOT_SWITCH.input(ctx) -> SwitchInput` 与
+`ROOT_SWITCH.add(ctx, SwitchPart) -> Effect`。普通 provider registry 每次接受一项真实注册时，必须在同一个
+Effect 中用贡献者自己的 Context 取得一只 input；撤销注册也撤销 input。`SwitchInput` 是 affine、不可伪造、
+不可序列化的 token，只绑定当前 exact Root、贡献者 Fiber 和该次 activation；cleanup 后立刻失效。Root sealing
+要求每只 input 恰好被一只 `SwitchPart.inputs` 消费一次，漏接、重复接或跨 Root/Fiber 使用都拒绝 candidate。
+没有直接输入的稳定 owner 也注册同名 part 和空 tuple；例如空 job catalog 仍注册 `name="jobs"`、`inputs=()`。
+
+SwitchPart 声明唯一 `name`，并只用注册它的普通插件闭包持有的窄 grant 实现
+`stop(snapshot_id)`、`leave(snapshot_id)`、`enter(snapshot_id)`、`start(snapshot_id)` 与
+`recover(snapshot_id, active)`。old 动作只收到 old snapshot ID，new 动作只收到 new snapshot ID；恢复还明确
+目标边是否 active。每个动作只改变这一只 part 自己的共享 owner：stop 停止 admission 并 drain，leave 撤掉
+本代 claim/projection，enter 安装本代 claim/projection，start 让本代 owner ready。它不接收 request、Message、
 plugin config bag、任意 Service lookup 或对方 Root 的 grant。Root sealing 冻结 registry，重复 name
 拒绝 candidate。只有同时满足“跨 Root 共享一名 live owner、old/new 不能安全共存、lease 不能恢复共享
 状态”的 owner 才能注册；普通 cache、catalog reader、MCP process 或 background task 不得借此进入
 publication plane。
 同一已安装插件必须在自己的所有 generation 持续注册同名 part；不能在插件仍存在时临时新增或移除。
-一名 plugin owner 只能注册一个 part；需要第二个 part 就必须安装第二名独立 owner。
+一名 plugin owner 只能注册一个 part；Core 还冻结注册 part 的 stable Fiber identity。需要第二个 part 或第二个
+holder Fiber 就必须安装第二名独立 owner，不能在同一插件内造两个 publication owner。
 新增 part 通过安装独立 owner，移除 part 通过移除整个 owner。owner 转移时 old/new 两边提供同名 part，且
 同批移除整个 old owner、安装整个 new owner；两名 owner 都继续安装时拒绝转移。
 这样 absent tombstone 始终表示 owner 整体不存在，不会把仍提供其他能力的普通插件误删。
 
 Core 从 old/new 两棵已 seal registry 构造 closed plan；part 不产生 callback bag。candidate validation
-不调用任何动作。closed plan 只包含 old/new part owner identity 不同的 name；identity 同时含 owner artifact
-与 generation，复用同一 owner 的 part 不切换。publication gate 先阻止新 lease，再等待 plan 中每只 old part
+不调用任何动作。Core 把每只 input 冻结成 `SwitchInputRef`：只含稳定 Fiber identity 与 exact
+owner/generation/artifact，保留同一 Fiber 的 multiplicity，不保存 token ordinal，也不接受插件提交 path、hash、
+digest 或自选 identity。同一 artifact/config 必须确定性重建同一组直接注册；不确定的 composition 直接失败。
+每个内部 `_PartRef.inputs` 与 `_PartRef.needs` 分开保存：inputs 是直接 input multiset；needs 是 part owner 的普通
+dependency closure 与全部 input contributor closure 的 union，去掉 part owner 后 unique sort。这样恢复所需闭包
+由 Core 从真实图推导，part 不能借自报依赖扩大权限。
+
+closed plan 只包含 old/new part owner identity 或 direct-input multiset 不同的 name；复用同一 owner、inputs 与
+needs 的 part 不切换。publication gate 先阻止新 lease，再等待 plan 中每只 old part
 owner generation 的 lease_count 与 hold_count 都归零；RuntimeSnapshotLease 与 ServiceHold 分别为 live
 snapshot 和 durable receipt 引用的每个 generation 计数，所以这会
 覆盖“旧 Turn 尚未走到该 part”的未来调用，而不必把普通无共享状态插件一起 drain。相关 owner generation
@@ -805,21 +832,30 @@ Service dependency closure，直到 journal 清理完成。config value 与 secr
 只保留一条长期 choice：
 selected ref 或 absence tombstone；清掉 transition record 后它仍是下次 boot 的 stable selector，不能重新让
 可变磁盘目录裁决当前版本。只有新 publication 覆盖该 name 后，旧 pin 才可减少。进程崩溃后、开放任何 lease
-前，Core 按 journal 重建两边所引用 part 的 fresh recovery-only Root：选择新边前一律收敛到 old
-active/new inactive，选择新边后收敛到 new
+前，Core 先以 journal pin 重建两边的 recovery-only mini Root。mini Root 只做 artifact/config/registry/input/
+closure identity preflight，不调用 part callback，也不启动 scanner、task 或 live runner。preflight 通过后，
+Manager 为 journal 引用的每一边构造一棵 private full closed recovery Root；selected side 先经
+`begin_publish()` 成为 gate CLOSED target，inactive side 只在 Manager 内存中保持 closed。五个 callback 只在
+各自 full Root 上运行；inactive recover 完成就 dispose，selected recover 完成并证明 pointer 后才可 open。
+这些 recovery Root 不取得公开 lease、不接 `RUNTIME_STARTED`，也不是新的 public API。首次启动没有已选边时
+同样先收完整 Root 为 CLOSED target，再执行 recover；任一 preflight/callback 失败就中止并保持关闭。选择新边前
+一律收敛到 old active/new inactive，选择新边后收敛到 new
 active/old inactive。install 后 pointer 前崩溃仍能找到 new part；remove 后崩溃仍能找到 old part；replace
-能同时找到两边。selected snapshot lineage、完整 ref、generation、path、source type、config revision 与
-每个 owner 全部 Fiber 的依赖 closure 必须一致。Activity 在 M1d 迁成 SwitchPart 前，它的 publication 与 RootSwitch change 不能出现在
-同一批；RootSwitch restore failure 的同进程 retry 保持 admission 关闭并要求 restart，不能绕过 durable choice。
-part 可用自己的资源 journal实现幂等 recover，但 Core 不解释其内容。artifact pin
+能同时找到两边。selected snapshot lineage、完整 ref、generation、path、source type、config revision、direct
+inputs 与每个 owner 全部 Fiber 的依赖 closure 必须一致。所有可能失败的 catalog、handler、ledger 与 recipe
+检查都在开 gate 前完成；runtime task 只在通用 `RUNTIME_STARTED` 后启动，并且只 spawn 已完成 preflight 的
+任务。RootSwitch restore failure 的同进程 retry 保持 admission 关闭并要求 restart，不能绕过 durable choice。
+part 可用自己的资源 journal 实现幂等 recover，但 Core 不解释其内容。artifact pin
 缺失、identity 不符或任一 recover 失败时 runtime 保持 degraded 且不开放 lease，不能只信当前 stable
 Root 里恰好还存在的 part。
 
 这不是通用 transaction hook：没有 arbitrary phase、priority、waterfall、request rewrite 或可注册
 undo callback；五个动作只能收敛该 part 声明的一名跨代共享 owner。0036 要求“第 4 名真实 consumer
 出现后再提窄协议”；PluginSkillLinker 的共享 symlink + journal 已满足该门槛。进一步审查证明
-`sessions` 的单 SQLite writer 也是第 5 名 consumer。M1d 先 cold start Activity，M3c 再迁 skill link，M6 迁
-sessions，M8a～M8b 再把 Channel 和 command 私有分支逐名迁入同一 registry，M8c 删除硬编码 participant table。
+`sessions` 的单 SQLite writer 也是第 5 名 consumer。M1d/M1e 只补通用 input、hold access 与 exact recipe，
+没有业务 RootSwitch consumer；M2d 普通 `jobs` 是第一名 production plugin consumer，M3c 再迁 skill link，
+M6 迁 sessions，M8a～M8b 再把 Channel 和 command 私有分支逐名迁入同一 registry，M8c 删除硬编码
+participant table。
 
 ### 4.2 最小普通插件图
 
@@ -835,6 +871,7 @@ sessions，M8a～M8b 再把 Channel 和 command 私有分支逐名迁入同一 r
 | `agents` | 公开 Agent 合同、live registry、`TurnSource` 校验/冻结和 factory slot | `AGENTS`: create、resume、get；register factory；Agent accept/run/finish contract | 具体 inbox/Turn/Step、cancel/terminal 实现、ReAct、模型、工具 |
 | `agent-loop` | 默认具体 Agent 的完整生命周期 | 向 `AGENTS` 注册默认 factory；拥有 inbox、Turn/Step、cancel/terminal、TurnEnded 和 provider/tool loop | 持久 writer、发送、来源枚举、业务插件名 |
 | `session-view`（可选） | 已提交 Session fact 的纯同步 fold | `SESSION_VIEW`: register、state、snapshot | prompt history、I/O、Session 回写、命令、发送 |
+| `jobs`（可选） | job registry、scanner、outcome ledger 与 exact handler module | 复用 `BACKGROUND_JOBS`；私有 `_JOB_RUNS`；向 RootSwitch 注册 `jobs` part | Core publication、Agent loop、任意插件 source lookup、其他 owner 的任务 |
 
 `ToolOutcome` 在实现前锁定为 `ToolOutcome(call_id, status, content)`。`status` 只有
 `done|failed|cancelled`；`content` 只是给模型看的 immutable content tuple，只允许普通文本与已验证的
@@ -1315,26 +1352,55 @@ candidate closure 中的 `sessions` 使用插件自己创建的全新临时 sche
 | kernel atom | 只拥有 | 不拥有 |
 |---|---|---|
 | `ServiceCall[T]` | 构造时固定的 ServiceKey 与 lease source；一次完整 call | selector、request 解析、background task、领域 fallback |
-| `ServiceHold[T]` | 构造时固定的 ServiceKey 与不可伪造 HoldKey；Core 铸造全局 HoldId、exact Root/artifact pin、跨进程 call 与 drop | source 名称、payload、Channel live binding、delivery、ACK 解释或任意 Service lookup |
+| `ServiceHold[T]` | Core 绑定的 holder identity + ServiceKey namespace；普通插件使用 stable holder Fiber，外部 durable host 使用构造时固定的 sealed identity；Core 铸造 HoldId、exact Root recipe、跨进程 call 与 drop | source 名称、payload、Channel live binding、delivery、ACK 解释或任意 Service lookup |
 | `RootScope` | owning Root identity、task/Effect cleanup、root-bound lease acquire | stable/latest 选择、领域 retry、跨 Root 重投 |
 | `TaskControl` | opaque scope/task claim、exact lease、task、cancel callback、terminal release | Message/Turn/Session、Agent/factory、持久状态、错误解释、delivery |
-| `RootSwitch` | 跨代共享 owner 的 closed plan、两代 artifact pin、publication record 与逆序恢复 | 业务数据、request hook、普通 Root-local resource、feature 名称或任意 callback phase |
+| `RootSwitch` | 直接 `SwitchInput` multiset、跨代共享 owner 的 closed plan、两代 artifact pin、publication record 与逆序恢复 | 业务数据、request hook、普通 Root-local resource、feature 名称或任意 callback phase |
 
-`ServiceHold` 不是 source 插件或第二个 snapshot manager。kernel 像 ServiceCall 一样只为一个固定
-ServiceKey 铸造它，并从 sealed caller capability identity 铸造稳定、不可伪造的 `HoldKey`；两个调同一
-Service 的 host 也有不同 HoldKey。host/插件不能创建、改 key 或选择 generation。仍持有 live exact lease
-的 durable owner 先调用 `reserve()`；Core 铸造全局唯一 `HoldId`，在一份 journal row 持久写入
-HoldKey、sealed ServiceKey identity、
-exact Root/snapshot/artifact/generation 和 `reserved`，并立即 pin artifact。owner 再在自己的 ledger 写
-HoldId、source generation、Channel generation/config identity、target 与 stable delivery key，最后调用
-`activate(HoldId)` 把 Core row 置为 active；active 前 Agent call=0。Core 不读取 source row，也不保存 payload、
-target、Channel config 或业务 completion。
+`ServiceHold` 不是 source 插件或第二个 snapshot manager。普通插件在 seal 前调用
+`ctx.hold(key) -> ServiceHold[T]`；key 必须是当前 Fiber 的 direct inject，或当前 Fiber 自己 provide 的 Service，
+不能借 `Context.get` 的 fallback 取得。调用者必须是该逻辑插件唯一 SwitchPart 的同一注册 Fiber；Core 在
+part ref 中冻结这条 stable Fiber identity，seal 拒绝“另一 Fiber hold”、缺 part 或一插件多 part。一个
+注册 Fiber 可以按不同 ServiceKey 取得多只 hold；同一逻辑插件不能用多个 holder Fiber 绕过单 part owner。
+`Context.hold` 返回 Core 绑定的 descriptor，插件不能创建、改绑或选择 generation。稳定 holder namespace
+只由 Core 以“顶层逻辑 plugin identity + direct holder Fiber identity + ServiceKey”推导；它不含 generation、
+artifact、input token 或 caller 自选 ID。同一 Fiber 跨代恢复同一 namespace，不同 Fiber 即使 inject 同一
+Service 也互相隔离。snapshot 外的 durable source host 继续只获得 Core 在构造时绑定一只 ServiceKey 与 sealed
+host identity 的 ServiceHold；它没有 Context、任意 lookup 或改绑能力。两条入口共享相同 journal、permit、
+RootRecipe 与五个动作，区别只在 holder identity 的 Core 推导来源。
 
-`pending()` 只列出这只固定 HoldKey + ServiceKey namespace 的 reserved/active HoldId；`call(id, action)` 只从
-journal 中的 exact Root require 同一 sealed ServiceKey，wrong HoldKey/ServiceKey/Root/artifact fail-loud；`drop(id)` terminalize
-并释放 pin。boot 在 publication gate 关闭时先从 Core journal 重建所有 reserved/active Root，再让每名 exact
-source 对账自己的 row：reserve 后/row 前 crash 没有 source row，该 HoldKey 的 owner 确认后直接 drop；
-row 后/activate 前幂等 activate；active 后按 row 恢复。source row 的 outcome 初始为空，只能终结为 closed
+权限与稳定名字分开。candidate 上五个动作都 fail-loud，且不写 journal 或 pin。`reserve()` 只允许当前
+accepting exact live Root；Core 同时铸造私有 HoldId、task permit 与 recipe permit。`activate()` 只允许同一
+task 仍持有该 Root 的 active lease 且 permit 匹配，或使用 Core 的窄 boot permit。`pending()` 只允许当前
+selected holder，或 Core 标记的 closed boot target。live source 必须在自己的 current `RootScope` 内完成
+reserve→row→activate，取得 Core 内部 transaction permit，然后退出该 scope。仍是同一 source task 的 scanner
+此时未绑定任何 Root，才能用 permit 调 `call()`；Core 在 call 内临时绑定 held recipe Root 并等待 action，
+返回后解除绑定，再为同一 task 铸造该 HoldId 的 finalizer permit。boot scanner 使用窄 boot permit 走同一
+unbound call。`drop()` 只允许匹配的 transaction/call finalizer 或 boot permit。hold 本身在 scope 退出后继续
+pin 全部相关 generation，所以 jobs/source owner 不能换代；另一次无关 publication 也不能截断已有 permit 的
+activate/drop 收尾。scanner 不把 current Root lease 带进 held call，因而不会让 publication 同时等待两边 lease。
+
+仍持有 live exact lease 的 owner 先调用 `reserve()`；Core 铸造全局唯一 `HoldId`，在 journal 持久写入
+holder namespace、sealed ServiceKey、exact `RootRecipe` 和 `reserved`，并立即 pin 全部 recipe artifact。
+owner 再在自己的 ledger 写 HoldId 与业务 identity，最后调用 `activate(HoldId)`；active 前业务 call=0。
+Core 不读取 source row，也不保存 payload、target、Channel config 或业务 completion。
+
+`RootRecipe` 是 versioned exact recovery contract，不复用新的随机 snapshot ID 冒充旧 runtime。它至少冻结：
+`recipe_version`、Core recovery ABI/config fingerprint、原 `source_snapshot` lineage、每只 plugin 的 exact
+artifact/generation/config identity、composition topology 与 active set fingerprint、held ServiceKey provider
+identity（含 provider plugin/generation/stable Fiber path）、每只 SwitchPart 的 identity/direct inputs/needs，
+以及所有 runnable sealed registry identity：jobs、tools、commands、channels、UI、MCP、managed process、
+workload、Web UI 与 Core channel definitions。hash 只校验语义；payload、secret、live binding 和 socket 都不
+进入 recipe。恢复会编译一棵 fresh retired/closed RuntimeSnapshot，给它新的 process-local runtime ID，但保留
+`source_snapshot`，并逐项校验 semantic fingerprint、provider identity 与 Core ABI。任何不匹配都 degraded，
+`call=0`，不得 fallback current。held recipe Root 永不收到 `RUNTIME_STARTED`，只暴露固定 Service 给 call。
+Core 在公开任何 lease 前恢复全部 recipe。
+
+`pending()` 只列出这只 holder namespace + ServiceKey 的 reserved/active HoldId；`call(id, action)` 只从 recipe
+Root require 同一 sealed ServiceKey；wrong holder/ServiceKey/recipe/artifact 全部 fail-loud。`drop(id)` terminalize
+并释放 pin。boot 在 publication gate 关闭时先重建全部 reserved/active recipe，再让每名 exact source 对账自己的
+row：reserve 后/row 前 crash 没有 source row，该 holder 确认后直接 drop；row 后/activate 前幂等 activate；
+active 后按 row 恢复。source row 的 outcome 初始为空，只能终结为 closed
 `done|abort|unknown`：delivery ACK、
 Control/result receipt、明确 no-sink 均为 done；accept failure、确定未产生外部效果的 run/cancel 为 abort；
 外部效果是否发生无法证明才是 unknown。owner 必须先 durable 写 done/abort，再 drop，最后删 row；completion
@@ -1342,11 +1408,9 @@ Control/result receipt、明确 no-sink 均为 done；accept failure、确定未
 也不允许换代。row 先删再 drop 被协议禁止。
 
 reserved/active hold 与 live lease 一起计入 RootSwitch drain，所以 old source/Channel 有 pending work 时不能
-换代。Core hold 只 pin 可重建的 exact Root/artifact；source row 只冻结 source generation、Channel
-generation/config 和 stable delivery key。live binding/token/socket 是 Channel owner 每次进程启动建立的
-ephemeral 资源，绝不持久化。reboot 在 held exact Root 中由同 generation 用冻结 config 创建**新的**
-live binding/token，再以 stable delivery key 幂等发送；dispatch envelope 使用这只新 token。这样
-不会拿 current stable 解释旧 output，也不假装复活已死亡连接。
+换代。source row 冻结自己的 source generation、Channel generation/config 和 stable delivery key。live
+binding/token/socket 是 Channel owner 每次进程启动建立的 ephemeral 资源，绝不持久化；reboot 只按 recipe 与
+冻结 config 创建**新的** binding/token。这样不会拿 current stable 解释旧 output，也不假装复活已死亡连接。
 
 `TaskStart.claim(scope_key, task_key, lease, run, cancel) -> TaskWait` 对整个进程原子；`lease` 是
 `TaskLease`。
@@ -1361,8 +1425,8 @@ publication drain 时，bootstrap Control 可以依已知 task key 请求取消 
 Agent 继续唯一负责 terminal/Session settle，并在最后释放旧 lease。只有包含 changed shared owner 的旧
 snapshot 会阻止该 owner switch；完全不含该 owner、或复用同一 generation 的旧 task 可继续。因而不存在
 旧 Turn 在自己依赖的 sessions/reply part leave 后继续调用，也没有内存状态搬家、两代共同写或特权 Agent
-service。`ActivityHost`/generation lease 的现有 admission/drain 语义是实现资产；不得再创建一份 Agent
-专用 publication 平面。
+service。现有 generation lease 的 admission/drain 语义是实现资产；M2d 删除 `ActivityHost`，不得再创建一份
+Agent 或 jobs 专用 publication 平面。
 
 `RootScope` 由每个 Fiber 平等取得。`agent-loop` 创建的具体 Agent 绑定自己的 root scope；
 它只复用同 Root 的 current lease，或向该 scope 取得 owning Root lease，遇到其他 Root
@@ -1588,7 +1652,7 @@ DSH 也把 live Agent 停止/清理与 factory registry 放在普通 effect 中
 | Shell/process | 工具显式启动 | active → terminal/cleanup_degraded | owner 确认退出后 | Shell/Workload plugin；process registry/report |
 | Channel send / remote API | prepared 后调用 | committed/partial/failed/outcome_unknown | 外部效果不可由 Git 删除 | Channel/Delivery/tool owner；provider receipt |
 | snapshot/candidate | publication transaction 增加 | state、lease count、stable/latest 指针 | drain 后清理不可达代 | Core kernel；journal、identity、zero lease |
-| Core service holds | 持有 live lease 时 reserve 全局 HoldId、不可伪造 HoldKey、sealed ServiceKey、exact Root/snapshot/artifact/generation 并立即 pin | reserved 只能 activate 为 active；drop 为幂等 terminal；业务 payload/config/binding/delivery/outcome 不进入 | 仅 source 已 durable 证明 done/abort 后 drop；unknown 不 drop | Core kernel；ServiceHold journal、artifact pin、HoldKey + ServiceKey namespace、RootSwitch hold count |
+| Core service holds | 当前 accepting Root 的普通插件以 direct holder Fiber + ServiceKey namespace reserve；snapshot 外 durable host 使用构造时 fixed sealed identity + ServiceKey。Core 保存 versioned RootRecipe 并 pin exact plugin/config/topology/provider/registry | reserved 只能由匹配 permit activate 为 active；call 使用 fresh retired/closed Root，drop 为幂等 terminal；业务 payload/secret/binding/delivery/outcome 不进入 | 仅 source 已 durable 证明 done/abort 后 drop；unknown 不 drop；recipe pin 只在无 selected/pending/hold 引用后减少 | Core kernel；ServiceHold journal、RootRecipe、artifact pin、holder identity + ServiceKey namespace、RootSwitch hold count |
 
 AgentResult 复用现有 turns terminal row 的 status/items/usage/final_response/error 权威字节，不新增第二张结果表、
 不从 messages 猜结果，也不改变既有 row 减少协议。本迁移只为 sessions 的 save outcome 与 durable saved notice 增加一只 forward-only
@@ -1644,12 +1708,12 @@ enter/start new，并在选择新 pointer 后才开放 lease；切换中核对�
   隔离 fake part 证明 install/replace/remove、重复 name、candidate 不触发、按 name 的 stop/leave/enter/start、
   start failure 的逆序恢复、恢复 failure 资源留痕、取消保护，以及 crash 落在每个 step 时都依据两代 pin
   收敛到 journal `use_new` 指定的一边；same-path builtin、absent tombstone、selected side、exact config、
-  owner 全部 Fiber 的 ordinary dependency closure 和 exact snapshot/generation 都必须连续两次 boot 不漂移。Activity 在 M1d
-  迁成 SwitchPart 前与 RootSwitch change 明确互斥；RootSwitch restore failure 的同进程 retry 必须拒绝并
+  owner 全部 Fiber 的 ordinary dependency closure 和 exact snapshot/generation 都必须连续两次 boot 不漂移。旧
+  Activity participant 在 M2d 删除前与 RootSwitch change 明确互斥；RootSwitch restore failure 的同进程 retry 必须拒绝并
   保持 admission 关闭，installed pointer update 与 recovery 共用一把 pin lock。
-  本批不迁现有 production participant，也不写正式共享状态；M1d 必须先删除 Activity 私有 participant，
-  M3c 的 skill link 才是第一名业务 consumer，M6 迁 sessions writer，M8a～M8b 再迁 Channel/command 并
-  删除 PluginManager 私有 participant table。
+  本批不迁现有 production participant，也不写正式共享状态；M1d/M1e 先补齐通用 input 与 exact recipe，
+  M2d 再由普通 jobs 插件同批删除 Activity 私有 participant。M3c 迁 skill link，M6 迁 sessions writer，
+  M8a～M8b 再迁 Channel/command 并删除 PluginManager 私有 participant table。
 
 - **M1c · Service hold（已完成）：** 增加绑定单一 ServiceKey 与不可伪造 HoldKey 的 `ServiceHold` 与通用 hold journal，只用 fake Service
   和一次性 Core/source 数据库验证 reserve→source row→activate→call→source outcome→drop→row delete。
@@ -1659,22 +1723,33 @@ enter/start new，并在选择新 pointer 后才开放 lease；切换中核对�
   hold 与 live lease 一起阻止 RootSwitch。Core 只看到全局 HoldId、HoldKey、sealed ServiceKey 和 exact
   Root/artifact identity，不看到 source、payload、Channel config/binding、delivery 或 outcome。
   fake source 必须证明 done/abort 不泄漏 hold，unknown 必须保留 hold 和 degraded。本批不接 production source；
-  M2c 是首批 consumer。
+  M1e 补齐普通插件 access 与 production RootRecipe 后，M2c 才能成为首批 source host consumer。
 
-  2026-09-02 验收：代码树 `cc44d0a409abfd5d3d077add402c2a2d48dde687` 取得两份
+  2026-09-02 验收：代码树 `a43f63df200a61a4a5f4e96bf3b2c0269b56103a` 取得两份
   `IMPLEMENTATION PASS` 与一份 `NAME PASS`；279 个相关测试通过，Pyright 为 0 errors。M1c 新增公开面只有
   `HoldId`、`ServiceHold` 及五个动作；其余 M1c helper 都是私有。
-  当前仓库没有旧 hold owner 或 production consumer，因此本批没有 deprecated block 可删除；M2c 才接第一名调用者。
+  当前仓库没有旧 hold owner 或 production consumer，因此本批没有 deprecated block 可删除。
 
-- **M1d · Activity switch：** 在第一名业务 RootSwitch consumer 前完成一次 supervised cold start。existing
-  Activity owner 注册自己的 SwitchPart，同批物理删除 PluginManager 的 Activity participant、双 owner 互斥
-  guard 与对应 fake；进程尚未开放 lease 时只用该 part 的幂等 `recover(True)` 建立现行 catalog，随后保存
-  selected choice。失败保持启动关闭并由下次 supervised boot 重试，不经过旧 Activity finalize/open，也不产生
-  双 commit owner。fake + real fixture 覆盖 cold start、install/remove/replace 与逐 step crash。这个批次完成前
-  禁止接入 skill link、sessions 或其他 production RootSwitch consumer。
+- **M1d · Switch input：** 增加 public `SwitchInput`、`ROOT_SWITCH.input(ctx)` 与
+  `SwitchPart.inputs`。provider registry 只在真实注册的同一 Effect 中取得 input；seal 拒绝漏接、重复接、
+  跨 Root/Fiber token 与不确定重建。part ref 另冻结注册它的 stable Fiber identity，但继续保持一逻辑插件
+  只能有一只 part。journal 的 direct-input multiset 与普通 dependency closure 分开，
+  install/remove/replace、同 Fiber multiplicity、空 tuple、cleanup 与两次 boot identity fixture 全部通过。
+  同批把 callback 收窄为携带 exact `snapshot_id` 的五个动作，并让 cold boot 先收完整 CLOSED target、
+  mini Root 只做 preflight、`RUNTIME_STARTED` 才能 spawn。该批只用 fake registry/part，没有业务名称或
+  production consumer，也不删除 Activity。
 
-M1a/M1b/M1c 是中性前置能力；M1d 是第一项旧 owner 迁移。M1d 前 Activity participant 明确
-`DEPRECATED(CORE)`，同批删除后不留 guard、alias 或兼容壳。
+- **M1e · Hold access：** 增加 `Context.hold(key)`，只允许 direct inject 或 own provide，并要求调用 Fiber
+  就是该逻辑插件唯一 SwitchPart 的注册 Fiber。把 M1c 私有 holder 改成 Core 推导的 stable Fiber namespace，加入 task/recipe/
+  boot/finalizer permit；candidate 五动作零写入。用 versioned `RootRecipe` 替换不足以恢复完整组合的旧
+  `_RootRef`，覆盖 Core ABI、source lineage、exact plugin/config、topology、provider Fiber、SwitchPart
+  inputs/needs 与全部 sealed runnable registry。boot 在公开 lease 前恢复 fresh retired/closed Root，错误保持
+  degraded 且 call=0；held Root 永不接 `RUNTIME_STARTED`。fixture 必须使用正式 loader 与完整插件 artifact，
+  覆盖 random runtime ID、ABI/config/provider/registry mismatch、两个 holder 隔离、scanner RootScope 与
+  publication race。该批仍只有 fake plugin consumer，不接业务 source。
+
+M1a～M1e 都是中性前置能力。M2d 才是第一项旧 Activity owner 迁移；在此之前旧 Activity participant 标成
+`DEPRECATED(CORE): remove in M2d`，不允许新增 consumer，也不能与 RootSwitch change 同批运行。
 
 ### M2 · Root-bound Agent 入口
 
@@ -1744,11 +1819,14 @@ M1a/M1b/M1c 是中性前置能力；M1d 是第一项旧 owner 迁移。M1d 前 A
   双跑；同一正式 Turn 在 commit 前只选择新 source path。M2c 同批物理删除 `_DispatchOutboundModule`、
   `_ReturnOutboundMessageModule`、concrete Agent direct dispatch、`dispatch_outbound`、默认 sender 与 fallback，
   并让 Agent 普通 direct return，不能保留到 M7，也不能由 M5b 复活。
-  每个 durable source 在 admission、Agent accept 之前，还持有 live exact lease 时先用 M1c ServiceHold
-  `reserve()` 取得全局 HoldId；再在自己的 ledger/handoff 冻结 HoldId、source generation、Channel
+  每个 snapshot 外 durable source 在 admission、Agent accept 之前，还持有 live exact ServiceCall lease 时，
+  先用 Core 构造时已绑定 AGENTS + sealed source identity 的 ServiceHold `reserve()` 取得全局 HoldId；再在自己的 ledger/handoff 冻结 HoldId、source generation、Channel
   generation/config、target 和 stable delivery key；最后 `activate()`，active 前 Agent call=0。live call 的外层
-  exact lease 和 crash 后的 hold 指向同一 Root。boot 先按 HoldKey + ServiceKey namespace 对账 hold 和 source row：
-  reserve 无 row 就由该 HoldKey owner 确认后 drop，row 未 active 就 activate，active 才以同一 TurnSource ref 和原 typed request
+  exact lease 和 crash 后的 hold 指向同一 recipe。boot 先按这只 binding 的 Core-sealed host identity + ServiceKey
+  namespace 对账 hold 和 source row：
+  reserve 无 row 就由该 holder owner 确认后 drop，row 未 active 就 activate。正常 live path 不调
+  `hold.call`：它在原 ServiceCall action 内完成 AgentResult、prepare/send/ACK、outcome→drop→delete。只有 crash
+  recovery scanner 是 unbound host task，才用 boot permit `hold.call`，以同一 TurnSource ref 和原 typed request
   重新 accept/run，从 old session owner 的 `result` 只读 exact AgentResult，再幂等 prepare/send。reboot 使用冻结
   Channel generation/config 创建新的 ephemeral binding/token，不恢复旧 binding。delivery ACK、Control/result
   receipt 或明确 no-sink 先 durable 写 done；accept failure 或能证明零外部效果的 run/cancel 写 abort；
@@ -1763,6 +1841,36 @@ M1a/M1b/M1c 是中性前置能力；M1d 是第一项旧 owner 迁移。M1d 前 A
   仍各一次且 Message row=0。
   本批单独 review、name Gate、zero-consumer 和 commit；M7b 只把已经成立的 passive source/sink 搬进普通
   conversation plugin，不再改变 delivery owner 或 fence。
+
+- **M2d · Jobs：** 建立 optional builtin `jobs`，但用与外部插件完全相同的 loader、Context、Fiber、Effect
+  与 PluginRuntime。它继续提供 `BACKGROUND_JOBS`，registry 在每次 register 时复用 `PluginTools` 已使用的
+  `ctx._plugin_module()` 捕获 exact contributor module；不再让 Manager 按 plugin/generation 反查 handler。
+  `snapshot.sealing` 冻结 descriptor、module 与 handler，并注册稳定 `name="jobs"` 的 SwitchPart；空 catalog
+  仍注册 `inputs=()`。jobs 私有 provide `_JOB_RUNS`，再以 `ctx.hold(_JOB_RUNS)` 取得 hold。
+
+  当前 Root 只有一只 `RUNTIME_STARTED` scanner，它是唯一 source runner。start callback 创建 scanner task 时
+  不继承 runtime binding；scanner 只在每次 trigger 的短 `ctx.root_scope` 内绑定 current Root。held old Root 永不启动 runner；
+  每次 trigger 都由当前 scanner 在自己的 RootScope 中 reserve，durable 写入 HoldId 与 exact job identity并
+  activate；随后退出 RootScope，在同一 scanner task 用 transaction permit 等待
+  `hold.call(id, old_service.run(row_id))`。held executor 只执行固定旧 Service，不成为
+  第二名 scanner。action 内必须在任何 handler/provider/programmatic Turn 效果前 durable 写
+  `QUEUED → RUNNING`；terminal、retry 或 unknown 也必须在 action 返回前 durable。QUEUED crash 允许 exact
+  replay；RUNNING crash 不自动 replay，必须写/报告 unknown/degraded 并保留 hold。外层 scanner 只对已 terminal
+  row 做 shielded `drop → delete`。
+
+  boot 对账固定为：reserved hold 无 row 就 drop；row + reserved hold 就 activate 或以证据 abort；active QUEUED
+  用 exact recipe call；RUNNING/unknown 保留 hold/degraded，call=0；terminal row 只有 hold 已 drop 后才能 delete。
+  holds 计入每个 generation 的 RootSwitch drain，所以 jobs replace/remove 会等待；已经获得 permit 的 unbound
+  held call 可以在 admission 关闭后完成，不和 publication 互相等待。SwitchPart callback 只管理 jobs ledger 的
+  active/closed marker 与 preflight；live scanner 只由 `RUNTIME_STARTED` 启动。
+
+  同批在 Core 分支物理删除 `ActivityHost`、`BackgroundJobActivityAdapter`、`bind_activity_host`、PluginManager 的 Activity
+  participant/guard/`BACKGROUND_JOBS` provider、RuntimeSnapshot 的 background job catalog 特分支与 bootstrap
+  bind；不留 fallback 或双 runner。crash fixture 覆盖 reserve、row、activate、RUNNING commit、handler effect、
+  terminal commit、drop 和 delete；offline replace/remove 必须从 exact old recipe 调到原 handler，否则
+  `handler=0`。GitHub Watch runtime 继续使用 `BACKGROUND_JOBS`；它的离线旧 Core Gate 在 M2d 后预期不能对
+  Draft Core head 编译，但 live production artifact 不受影响。该 incompatibility 明确阻断 Core PR merge、release
+  或 deploy；M9c3 必须先迁 Gate 并通过跨仓验证。Core 内不为离线 Gate 留 alias。
 
 先迁这层不是先重写 ReAct；它把同一 concrete Agent 原样放进普通 Root，给后续 owner 提供真实 inject
 carrier。M2 不标记后续 owner 的代码 deprecated；每项 owner 只在自己的批次开始时标记，并在该批验证后
@@ -2054,7 +2162,8 @@ review、deprecated 删除和 zero-consumer Gate，不能把七个 owner 堆成�
   旧 consumer；运行关键场景、全量测试、静态检查和项目 Gate，并输出最终 topology/write set。
   同时输出所有外部 `move/remove` consumer 的 exact repo/commit/符号清单和仍工作的九类 migration block，
   不把它们误报成干净设计。M8a～M8c 各自独立 review、name Gate 和旧分支删除。
-- Draft PR 保持等待维护者；不开始修改独立外部插件仓库。
+- Draft PR 保持等待维护者；不开始修改独立外部插件仓库。M2d 已入账的离线 Gate incompatibility 让该 Core
+  head 在 M9c3 完成前不得 merge、release 或 deploy；active production 继续运行旧 release，不形成双路径。
 
 ### M9 · 外部插件收尾
 
@@ -2074,6 +2183,13 @@ review。不能先删再审，也不能等 M9z 一起删。
   历史 message bytes 不改写，独立安装与 review。
 - **M9c2 · Skip input：** 下一批只改送 skip_parts；重装后按上述删除协议移除 turn metadata block，不能与
   M9c1 合并。
+- **M9c3 · Job API：** 同批修改 GitHub Watch runtime 注册与 `scripts/core_v3_gate.py`。保留
+  `BACKGROUND_JOBS`、`IntervalTrigger` 与 `RetryPolicy`；把 `BackgroundJobDefinition` 改成 `Job`，
+  `BackgroundJobContext` 改成 `JobContext`，`ProgrammaticTurnPort` 改成 `TurnPort`，
+  `ProgrammaticTurnReceipt` 改成 `TurnReceipt`。`BackgroundJobBinding`、`BackgroundJobCatalog`、
+  `BackgroundJobDescriptor`、`BackgroundJobTrigger`、`PluginBackgroundJobs` 与没有独立 caller 合同的长错误
+  类型停止 re-export 并变成 private。新 artifact 重装且 runtime/offline Gate 都离开旧 import 后，Core 同批
+  删除旧名字、旧 export 和 fake，不加 alias 或兼容壳。
 - **M9d1 · Citation reply / M9d2 · Meme reply：** 两只插件各是一批独立实现、安装与 review；Citation batch
   同时完成 ledger 历史导入。M9d2 作为最后一名 consumer 离开后按上述删除协议移除 OldReply call site、
   reply block 与旧 reply event/import；Meme ReplyPart 还从自己的解析结果以 typed observe 发布 MemeUse，
@@ -2128,6 +2244,9 @@ review。不能先删再审，也不能等 M9z 一起删。
 external migration block；它必须标成 `DEPRECATED(EXTERNAL): no new consumers; remove in M9`，
 除合同锁定的唯一 adapter call site 外，Core 内部不得再调用。若出现未入账 external consumer，M8 必须停止并更新账本，而不是把旧入口
 解释成长期 public contract。M9 完成后不允许留下任何 migration block 或兼容壳。
+离线测试或 Gate import 不要求 Core 保留 production alias：账本必须记录其 exact repo/commit/symbol 与替代
+fixture；Core Draft 删除后到外部源码迁移前，该 Gate 的 expected incompatibility 阻断 merge、release 和 deploy。
+M9 必须在任何 Core 发布前迁完并通过跨仓 Gate。active production runtime consumer 不适用这条例外。
 
 ## 11. 合格测试
 
@@ -2135,19 +2254,34 @@ external migration block；它必须标成 `DEPRECATED(EXTERNAL): no new consume
 
 - `ServiceCall` 的窄 key、stable-only public policy、candidate capability identity、exact lease、
   task ownership、cancel 和 cleanup；
-- `ServiceHold` 的固定 HoldKey + ServiceKey、全局 HoldId、reserve/source row/activate、exact artifact pin、reboot
-  call 与 outcome→drop→delete；crash 遍历每个间隙，accept/run/cancel/no-sink/projection failure 都不泄漏
-  hold，unknown 必须保留 hold/degraded。两个 holder 调同一 Service 也不能相互 pending/call/drop；
-  pending hold 与 live lease 一起阻止 RootSwitch，wrong HoldKey/ServiceKey/缺 artifact degraded 且不投
-  current stable。Core journal 不含 source/payload/Channel config/binding/
-  delivery/outcome 字段；source row 不含 live binding/token/socket，reboot 必须新建 ephemeral binding 并复用 stable
-  delivery key；
+- `Context.hold` 只接受 direct inject 或 own provide，并要求调用 Fiber 就是该插件唯一 SwitchPart 的注册 Fiber；
+  seal 拒绝另一 Fiber hold、一插件多 part 与缺 part。stable Fiber namespace 让同一 Fiber 跨代恢复、不同插件
+  Fiber 隔离。candidate 五动作零写，reserve/activate/pending/call/drop 分别校验 live、
+  boot、transaction 与 finalizer permit。`RootRecipe` 用 fresh runtime ID 保留 source lineage，并固定 Core ABI、
+  exact plugin/config/topology、provider Fiber、SwitchPart inputs/needs 与全部 runnable registry；任一 mismatch
+  degraded、call=0 且不投 current stable。scanner 在 RootScope 内 reserve→row→activate 后退出 scope，再以
+  同一 task 的 permit 进行 unbound held call 和 finalization；publication 不能截断已有 permit；
+- `ServiceHold` 的全局 HoldId、reserve/source row/activate、exact recipe pin、reboot call 与
+  outcome→drop→delete；crash 遍历每个间隙，accept/run/cancel/no-sink/projection failure 都不泄漏 hold，unknown
+  必须保留 hold/degraded。两个 holder 调同一 Service 也不能相互 pending/call/drop；pending hold 与 live
+  lease 一起阻止 RootSwitch。Core journal 不含 source/payload/Channel config/binding/delivery/outcome；source
+  row 不含 live binding/token/socket，reboot 必须新建 ephemeral binding 并复用 stable delivery key；
+  同一 ServiceKey 下 plugin Fiber holder 与 host sealed holder 互相看不到 pending/call/drop；两边分别 crash/
+  reboot 后仍只恢复自己的 namespace；
 - RootSwitch 以 fake part 覆盖 old/new present/absent 的 install、remove、replace；在 stop/leave/enter/start、
   pointer choice 前后逐点 crash，重启只能按 Core journal 的两代 identity/pin 收敛；缺 artifact 或 recover
   failure 保持 degraded 且零 lease。barrier 把旧 Turn 分别卡在 model、tool、reply open：changed owner
   generation lease_count 未归零前不得 stop/leave，归零后不得再有 old call；unchanged generation 不必 drain。
-  skill link、sessions、Activity、Channel、command 与实际 SavePart/ReplyPart production part 各跑自己的资源
-  oracle，Core 零 feature name；
+  `SwitchInput` 必须 affine、同 Effect、每只恰好消费一次；journal 保留 direct multiset multiplicity 并独立推导
+  needs。old/new callback 只收到对应 snapshot ID，mini Root 只 preflight，完整 CLOSED Root recover 成功后才
+  可开放，live task 只由 `RUNTIME_STARTED` 启动。jobs、skill link、sessions、Channel、command 与实际
+  SavePart/ReplyPart production part 各跑自己的资源 oracle，Core 零 feature name；
+- jobs crash matrix 覆盖 reserve、row、activate、RUNNING commit、handler effect、terminal commit、drop 与
+  delete；QUEUED 只从 exact held recipe replay，RUNNING/unknown 不自动 replay且保留 hold。空 catalog 仍有
+  `jobs` part；scanner task 的 inherited runtime binding 为空，只在 reserve→row→activate 的短 scope 内绑定；
+  call 前再次证明 task unbound。held Root 的 runner=0，当前 scanner=1，offline replace/remove 要么 exact old handler=1，要么
+  handler=0。M2d 后 ActivityHost/adapter/bind、Manager participant/provider、snapshot feature branch 与 bootstrap
+  wiring 全部零 consumer；
 - reload-mid-Turn 后用原 task key `/stop`，必须到达旧 owner，产生一次 terminal 并释放旧 lease；
 - Scheduler/Wake/Subagent 在 reload-before-fire 与 fire-during-drain 下只取得 owning Root；retired
   admission 单次 settle/rearm，不重复 provider、Session commit 或 delivery；
@@ -2288,7 +2422,7 @@ P0/P1 任一非零即 `BLOCK`。旧版合同因把 `session-view` 当成 prompt 
 `context-input`，又按 live external consumer 补齐 `reply-output`、RootSwitch crash recovery 和九类 exact
 migration block。
 
-2026-09-02 最终 Gate 记录如下。正文哈希是 reviewer 实际读取的字节；状态和本表在 PASS 后落盘，因而不计入
+2026-09-02 第一版最终 Gate 记录如下。正文哈希是 reviewer 实际读取的字节；状态和本表在 PASS 后落盘，因而不计入
 该哈希。
 
 | Gate | reviewer | 模型 | 实现 head | 送审正文哈希 | 结论 |
@@ -2301,6 +2435,20 @@ metadata bag、把 OutputDone 误当 input lock、以及 source input lock 缺�
 和 durable outcome、封闭 TurnItem/JSON/TurnError、TextUpdate/ItemStart/ItemDone/OutputDone、独立 InputSeal
 及 TurnWait.close 闭合这些路径。Name 复审把与现有类型冲突的 `SkillSource` 改为 `SkillRef`，并把可见思考
 统一为 `thinking`、`TextUpdate` 和 `ThinkingItem`。两名 reviewer 最终均无未关闭 finding。
+
+M1c 完成后的 M1d/M1e 实现审查发现：direct input、完整 cold-boot Root、hold access 与跨进程
+`RootRecipe` 还需要写得更精确。2026-09-02 对这些改正重新执行同样的 Concept 与 Name Gate；reviewer
+读取的正文哈希如下，本段与状态表仍不计入 design 哈希。
+
+| Gate | reviewer | 模型 | 实现 head | 送审正文哈希 | 结论 |
+|---|---|---|---|---|---|
+| Concept | `m1c_impl_one` | `gpt-5.6-terra` xhigh | `33864d9b77dcab2a0de5a31b440005542cfc4616` | design `1cb73bb9a5c01b1951405074d7fafb35b198aa37bcb5637859b9b91031ee404b`；projectneed `476ef99208e5f9ecbad81339bebb28ad818b491c5bd8b1fddf5ed3faf998d930`；ADR `6906719ba362fdb4b6747242561efa989bba3d907e5efddbfe2af72b8cb1a960`；NOW `e0af170d5eb99e3a95ec6762b11acebe05cf80267b746c83f1527814ecd14aab`；state map `e823d7a7d0f21a235a76915fa96ba46072f12bc179894e6959dcfd0c0090e13a` | `CONCEPT PASS`；P0=0，P1=0 |
+| Name | `m1c_name` | `gpt-5.6-terra` xhigh | 同上 | 同上 | `NAME PASS`；P0=0，P1=0 |
+
+本轮关闭四个断点：一名逻辑插件只能有一名 part/Fiber owner；live source 在短 RootScope 外以窄 permit
+调用 exact held recipe；mini Root 只 preflight，callback 在两棵 private full closed Root 上恢复；普通插件
+holder 使用 stable registration Fiber，外部 host 使用 Core sealed identity，二者不能互相 pending、call 或 drop。
+Core 原子仍不识别 jobs、Activity 或 source 名称。
 
 该结论批准 M0 设计并允许开始 M1b；它不能代替 M1b～M9 的实现 review 与行为 Gate。
 

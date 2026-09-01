@@ -32,10 +32,14 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
   `skill-files` 与 `skill-use`，不安装它们仍能完成 Turn。Core 只保留 publication、exact lease 与泛型
   Service 调用、跨进程 exact `ServiceHold`、task control 和跨 Root 共享 owner 的 `RootSwitch`。M2 审计先发现动态 context Message 缺少 owner，又发现 SkillsLoader、PluginSkillHost、
   PluginSkillLinker、host capability、candidate Gate 与 normal/drift 来源仍跨越多个 owner；已按 DSH 的
-  registry/source/product 三层拆开并以 hua-home live artifact/目录入账。2026-09-02 整份规格已经重新取得
-  `CONCEPT PASS` 与 `NAME PASS`；M1a exact work、M1b Root switch 与 M1c Service hold 已完成，当前下一批是
-  M1d Activity cold start；M1d 同批删除旧 Activity participant，且必须早于第一名业务 RootSwitch consumer。
-  之后依次为 M2a agents、M2b agent-loop、M2c source delivery，M3a host-check、M3b skills、M3c skill-files、M3d drift files、
+  registry/source/product 三层拆开并以 hua-home live artifact/目录入账。2026-09-02 整份规格及 M1d/M1e
+  实现前改正已经重新取得
+  `CONCEPT PASS` 与 `NAME PASS`；M1a exact work、M1b Root switch 与 M1c Service hold 已完成。当前下一批是
+  M1d Switch input：补 affine direct input、snapshot callback 与 closed-root cold boot；随后 M1e 增加
+  `Context.hold`、stable Fiber namespace、permit 与完整 `RootRecipe`。两批都只用 fake plugin，不接业务 consumer。
+  之后依次为 M2a agents、M2b agent-loop、M2c source delivery、M2d ordinary jobs。M2d 是第一名 production plugin
+  consumer，同批删除 ActivityHost、Manager participant/provider、snapshot job 分支与 bootstrap bind；再做
+  M3a host-check、M3b skills、M3c skill-files、M3d drift files、
   M3e context-input、M3f system-prompt、M3g provider-input；M4 再按 tools、skill tool、
   Tool Search、push、media、attention、Shell 七批切换，之后是 M5a models、M5b old tail、M6a sessions、M6b reply-output、
   M6c Akasha、M7a loop cleanup、M7b
@@ -46,8 +50,12 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
   在同批删除 deprecated 旧 owner，
   最终不留兼容壳。Core 阶段停在独立外部插件源码迁移之前，但这只是迁移停靠点，不是干净终态；
   M8 只允许账本逐项锁定的 prompt、context、turn metadata、reply、agent skill roots、drift skill roots、
-  Shell、committed event、message frame 九类 exact `DEPRECATED(EXTERNAL)` block；COMMANDS 保持普通 public
-  Service，不建 bridge。M9 以当时 hua-home exact stable generation 按 seam 串行迁移外部源码并重装；
+  Shell、committed event、message frame 九类 exact `DEPRECATED(EXTERNAL)` block；COMMANDS 与
+  `BACKGROUND_JOBS` 保持普通 public Service，不建 bridge。M9 以当时 hua-home exact stable generation 按 seam
+  串行迁移外部源码并重装；GitHub Watch 还必须同批离开旧 Activity 离线 Gate，并把 job public type 收短为
+  `Job`、`JobContext`、`TurnPort`、`TurnReceipt`，其余无独立 caller 合同的长类型停止 re-export；
+  M2d 后该旧离线 Gate 对 Draft Core head 是 expected incompatible；这明确阻断 Core PR merge、release 与
+  deploy，直到 M9c3 迁完 Gate 并通过跨仓验证。active production runtime 在此期间仍运行旧 release；
   每类最后一名 consumer 离开时立即只删对应 block、旧 event/type/export 与 fake，最终 Gate 不集中清壳。
   任何仍有 live consumer 的旧 public surface 都要按
   `keep/move/remove` 入账，不能把迁移停靠点说成干净终态。

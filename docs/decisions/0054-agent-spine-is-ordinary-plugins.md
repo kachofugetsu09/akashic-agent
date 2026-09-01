@@ -38,6 +38,11 @@ source provider，`dsh-tool-skill` 才组合 catalog 与 tool；不挂最后一�
 `packages/skill/tool-skill/src/index.ts:127-161,163-251`）。Akashic 也不能为了默认启用 skills 把它塞成
 agent-loop 的 required spine dependency。
 
+DSH 的 `schedule` 也不是 Core activity：普通插件在自己的 `ctx.effect` 与 `agent.ctx.effect` 内创建、启动并
+随 scope dispose `ScheduleRuntime`（`packages/schedule/schedule/src/index.ts:35-83`）。Akashic 比它多出的
+durable job ledger、exact Root recipe 与 publication crash recovery 需要中性 Core 原子，但不需要让 Core
+认识 job、handler 或 scanner。
+
 ## 决定
 
 Akashic 的 Agent 骨架是一张由同一 v3 loader 装载的最小无环能力图。最小 spine 包含：
@@ -68,6 +73,11 @@ provider set 与 SkillView；skill-files 只拥有受保护 agent/drift roots、
 catalog check；skill-use 把 SKILLS 分别贡献给 system-prompt、context-input 与 tools。agent-loop、PromptCall
 与 ContextCall 都不携带 skill 状态。当前 drift roots 没有 runtime list/get consumer，只保留 check/projection，
 不预建第二只 registry。
+
+需要后台工作时再挂普通 `jobs`。它继续提供 `BACKGROUND_JOBS`，并自己拥有 registry、唯一 current scanner、
+outcome ledger 与 exact contributor module；空 catalog 也稳定注册 `jobs` SwitchPart。held old Root 只执行固定
+Service，不启动 scanner。QUEUED crash 才允许 exact replay；RUNNING/unknown 保留 hold 与 degraded，不能自动
+重放可能已经发生的效果。Core 不保留 `ActivityHost`、job catalog、handler lookup 或 job publication branch。
 
 Root seal 只冻结 SkillProvider set，SkillView 仍在原有 lookup 边界读取 workspace、frontmatter 与
 host availability；installed plugin body 只读 generation-private copy。SkillCall 只有 turn identity 与
@@ -322,18 +332,27 @@ lease、原子 publication、drain 和恢复日志。它保留五个领域中性
 
 1. `ServiceCall`：绑定一个 `ServiceKey`、取得构造时已固定的 exact lease、绑定当前 task、等待调用完成并
    逆序释放。公开 `call(action)` 没有 selector、snapshot ID 或 plugin ID；
-2. `ServiceHold`：同样绑定一个 ServiceKey，并由 sealed caller capability identity 铸造不可伪造
-   HoldKey；两个 holder 调同一 Service 也不能相互 pending/call/drop。在 live exact lease 中 reserve
-   全局 HoldId，Core journal 只冻结 HoldKey、sealed ServiceKey 与 exact Root/snapshot/artifact/generation 并 pin；
-   owner row 另行冻结 HoldId、
-   source generation、Channel generation/config、target 和 stable delivery key 后 activate。done/abort 必须先
-   durable 写入，再 drop，最后删 row；unknown 保留 hold/degraded。reboot 只新建 ephemeral binding，
-   不复活旧 binding；artifact 缺失 fail-loud，不 fallback current stable；
+2. `ServiceHold`：普通插件只以 `Context.hold(key)` 取得 Core 绑定能力；key 必须是当前 Fiber direct inject
+   或 own provide，并要求该 Fiber 就是逻辑插件唯一 SwitchPart 的注册 Fiber；另一 Fiber hold、缺 part 或一
+   plugin 多 part 都在 seal 失败。stable namespace 由顶层逻辑 plugin、direct holder Fiber
+   与 ServiceKey 推导；snapshot 外 durable source host 只能使用构造时绑定的 ServiceKey 与 sealed host
+   identity，不能 lookup 或改绑。candidate 五动作零写。在 live exact lease 中 reserve 全局 HoldId，Core journal 冻结
+   namespace、sealed ServiceKey 与 versioned `RootRecipe` 并 pin；recipe 固定 Core ABI、source lineage、exact
+   plugin/config/topology、provider Fiber、SwitchPart inputs/needs 与 runnable sealed registry。恢复生成 fresh
+   retired/closed Root，不接 `RUNTIME_STARTED`；任一 identity mismatch degraded、call=0，不 fallback current。
+   owner row 另行冻结业务 identity 后 activate；done/abort 必须先 durable 写入，再 drop，最后删 row；unknown
+   保留 hold/degraded。live source 在 RootScope 内 reserve→row→activate 后退出 scope，再由同一 unbound task
+   用 transaction permit call held recipe；boot 使用窄 boot permit。reserve/activate/pending/call/drop 分别受
+   live、boot、transaction 与 finalizer permit 约束；
 3. `RootScope`：只取得自身 exact Root lease；Root 退休后返回 `RootRetired`，不改投新 stable；
 4. `TaskControl`：只按 opaque scope key/task key 原子 claim，保存 exact lease、task 和 cancel callback，terminal 后
    release；
-5. `RootSwitch`：只协调跨 Root 不能共存的共享 owner。普通插件以
-   `ROOT_SWITCH.add(ctx, SwitchPart)` 注册唯一 name 和只操作自己窄 grant 的 stop/leave/enter/start/recover。
+5. `RootSwitch`：只协调跨 Root 不能共存的共享 owner。provider registry 对每项真实注册用贡献者 Context
+   取得 affine `SwitchInput`，seal 要求每只 input 恰好由一只 `SwitchPart.inputs` 消费。普通插件以
+   `ROOT_SWITCH.add(ctx, SwitchPart)` 注册唯一 name 和只操作自己窄 grant、带对应 snapshot ID 的
+   stop/leave/enter/start/recover。Core 分开保存 direct-input multiset 与 dependency closure；mini Root 只
+   preflight 且不调 callback；old/new 每一边使用 private full closed recovery Root，inactive side recover 后
+   dispose，selected side 成为 CLOSED target。成功后才可开 gate，live task 只在 `RUNTIME_STARTED` 后启动。
 
 五者不识别 Message、Turn、Session、Agent、ReAct、工具名或来源，不为缺失 Service fallback。snapshot lease
 包住完整 ReAct Turn 不授予某个插件特权；它只保证同一项工作始终使用同一盒插件。
@@ -348,12 +367,13 @@ durable source 在 AgentResult commit 后、自己的 delivery row prepare 前 c
 原 typed request 重新 accept/run，只读 exact durable AgentResult，再幂等 prepare/send；不得从 Message、
 TurnSaved、notice 或正文猜 output，ACK 前不得删除 handoff。source 在 admission 时按 reserve→
 source row→activate 建立 hold；row 冻结 HoldId、source generation、Channel generation/config、target 和
-stable delivery key，不冻结 live binding/token/socket。reboot 用 exact old Root/config 新建 binding；done/abort
+stable delivery key，不冻结 live binding/token/socket。正常 path 在 ServiceCall action 内完成 sink，不调
+hold.call；reboot 才由 unbound host scanner 以 boot permit call exact old AGENTS，并用 frozen config 新建 binding。done/abort
 先写入、再 drop、最后删 row，unknown 保留 hold/degraded。缺 Root/artifact/config 时 degraded、
 sender=0，不 fallback current stable。M2c 同批物理删除旧 dispatch/return
 module、direct dispatch 和 flag；这是把一名旧 sender owner 原子交给已有 source sink，不是双路径。
 
-RootSwitch 只把 owner artifact/generation identity 改变的 part 放进 closed plan。publication gate 先关新
+RootSwitch 只把 owner artifact/generation identity、direct inputs 或 needs 改变的 part 放进 closed plan。publication gate 先关新
 lease，并等待每只 changed old owner generation 的 lease_count=0 且 hold_count=0；snapshot 与 ServiceHold 对其中每个 generation 计数，
 所以覆盖旧 Turn 尚未调用该 part 的未来路径，而不拖住无 shared owner 的普通 generation。Core journal
 随后 pin old/new immutable artifact，并记录两边 participant identity、step 和 terminal；gate 内依次
@@ -361,7 +381,7 @@ stop/leave old、enter/start new。start 后仍无新 lease，只有 stable
 identity 与 terminal record 原子提交后才开放。失败逆序恢复 old。进程崩溃时 terminal 前收敛 old，terminal
 后收敛 new；install/remove/replace 即使某一边 stable Root 已没有该 part，也能从 journal pin 重建
 recovery-only closure。恢复失败保持 degraded 且不开放 lease。0036 的延后门槛已经由 skill link、sessions、
-Activity、Channel 与 command 这些现有 shared owner 满足；durable ReplyPart/SavePart 也按同一条件注册。
+jobs、Channel 与 command 这些现有 shared owner 满足；durable ReplyPart/SavePart 也按同一条件注册。
 Core 不按 participant 的数量或名称分支。
 
 ## 非特权判定
@@ -406,11 +426,14 @@ tool view/run、`SaveResult` 和 outbound view。不新增 `ReplyEdit`；它只�
 Terra xhigh review 和一个独立 name review 通过后，同批物理删除旧实现。外部 consumer 只能以明确
 `DEPRECATED(EXTERNAL)` migration block 阻塞公共面删除；跨仓收尾后不保留 alias、adapter、flag、fallback 或 block。
 M8 Core stop 只允许 1.5 账本列出的九类 exact block：prompt、context、turn metadata、reply、agent skill
-roots、drift skill roots、Shell、committed event 和 message frame。它们只能服务 2026-09-01 hua-home exact
-stable consumer，不得新增 consumer；M9 按 seam 串行迁 consumer，每类最后一名离开时只删除对应 block，
+roots、drift skill roots、Shell、committed event 和 message frame。它们只能服务每阶段重新固定的 hua-home
+exact stable consumer，不得新增 consumer；M9 按 seam 串行迁 consumer，每类最后一名离开时只删除对应 block，
 最终 Gate 不再承担集中清壳。
 Plugin Undo、Setup Helper 与 Status Commands 的 stable artifact 已是普通 COMMANDS consumer，属于 keep，
 不需要 command bridge。
+外部离线 Gate 不是 Core 保留 compatibility API 的理由。它的 exact import 可以在 Core Draft 中暂时不兼容，
+但必须入账并阻断 merge、release 与 deploy；M9 在任何 Core 发布前迁到普通 fixture 并通过跨仓 Gate。active
+production runtime consumer 仍必须在删除 public surface 前完成迁移，不适用这条例外。
 
 回滚只选择上一个完整 Git commit、不可变 generation 和执行前备份。已提交的 Session 行、已发送消息、远程调用
 或文件写入不因代码回滚而伪装撤销。
@@ -436,9 +459,16 @@ Plugin Undo、Setup Helper 与 Status Commands 的 stable artifact 已是普通 
 - [ ] snapshot 外入口只能通过泛型 Service 调用边界进入；该边界源码与测试无 Agent 领域词。
 - [ ] root-bound task 在 reload 前后只运行自己的 exact Root；opaque task 可跨代取消，同一 scope 不由两代
   同时 claim。
-- [ ] RootSwitch 在 publication gate 内完成 stop/leave/enter/start；journal pin 两代 participant，逐 step
-  crash 对 install/remove/replace 都只收敛到 terminal 指定一边；sessions 与其他四名共享 owner 不由 Core
-  名称分支切换。
+- [ ] RootSwitch 的 affine input 每只恰好消费一次，journal 分开保存 direct multiset 与 needs；publication gate
+  内以对应 snapshot ID 完成 stop/leave/enter/start，逐 step crash 对 install/remove/replace 都只收敛到
+  terminal 指定一边；mini Root 只 preflight，live task 只在 `RUNTIME_STARTED` 后启动。jobs、sessions 与其他
+  shared owner 不由 Core 名称分支切换。
+- [ ] `Context.hold` 只接受 direct inject/own provide，且调用 Fiber 是该插件唯一 SwitchPart 的注册 Fiber；
+  stable Fiber namespace、task/boot/finalizer permit 与完整 `RootRecipe` 让 exact old Service 跨 boot 调用。
+  ABI、provider、topology 或 registry mismatch 时 call=0；held Root 不启动 runner，scanner 在 RootScope 内
+  reserve→row→activate 后先退出 scope，再以同一 unbound task call/finalize。
+- [ ] 普通 jobs 插件是唯一 scanner/ledger owner；QUEUED exact replay、RUNNING unknown、drop 后 delete 的 crash
+  matrix 通过，ActivityHost、Manager participant/provider、snapshot job 分支与 bootstrap bind 零 consumer。
 - [ ] 最小骨架全部由正式 v3 loader 挂载，依赖图无环，Root sealing 恰有一个默认 factory。
 - [ ] `sessions` 唯一派生 prompt history；`provider-input` 每 Turn 只 open 一次、每个 provider attempt
   恰好 build/settle 一次，overflow retry、tool batch、usage 与 recovery 等价；`session-view` 若存在只

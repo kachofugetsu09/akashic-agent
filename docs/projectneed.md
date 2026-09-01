@@ -778,7 +778,11 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 与 `skill-use`；它们不是 agent-loop 的 required dependency，移除后只失去 skill catalog/context/tool。
 `session-view` 只在有 exact consumer 需要对已提交
 Session fact 做纯可回放 fold 时作为额外普通插件；它不构造 prompt history。Channel、Command、Scheduler、
-Wake、Subagent、Compaction、Memory、Tool Search 与 Shell 等能力继续作为普通插件注入这些 Service。
+Wake、Subagent、Compaction、Memory、Tool Search、Shell 与 `jobs` 等能力继续作为普通插件注入这些 Service。
+`jobs` 继续提供 `BACKGROUND_JOBS`，但自己拥有 registry、唯一 current scanner、outcome ledger 与 exact handler
+module；scanner task 不继承 runtime binding，只在 reserve→row→activate 的短 RootScope 内绑定。held old Root只
+执行固定 Service，不启动 scanner。QUEUED 可按 exact recipe replay，RUNNING/unknown
+不得自动 replay，terminal 必须先 drop hold 再删 row。Core 不保留 job catalog、ActivityHost 或 publication 特分支。
 
 `host-check` 只以 `HOST_CHECK.check(HostNeed) -> HostState` 把 bin/env name 严格分成
 available/missing；不得暴露 env value、PATH、shell 或文件权限。local 与认证 bridge 是二选一普通 provider，
@@ -1069,18 +1073,38 @@ Core 只拥有 artifact、generation、完整 Root、readiness、stable/latest�
 publication、drain、恢复日志和五个领域中性执行原子：绑定单一 `ServiceKey` 的 `ServiceCall`、
 把同样窄的 exact Service 跨进程 pin 到 receipt 完成的 `ServiceHold`、只能取得自身 exact Root 的 `RootScope`，以及按 opaque scope key/task key 保存 task、
 exact lease 与 cancel callback 的 process-wide `TaskControl`；`RootSwitch` 只协调跨 Root 不能同时存在的
-共享 owner。普通插件以 `ROOT_SWITCH.add(ctx, SwitchPart)` 注册唯一 name；part 只闭包持有自己资源的窄 grant，
-只实现 `stop`、`leave`、`enter`、`start` 和 `recover`，不能看到别的 part 或得到跨 Root 总权限。每个 snapshot 外
-host 只获得完成自己任务的一只窄 `ServiceCall` 或 `ServiceHold`，插件不能创建或改绑它们。公开 `call` 不接受 selector、
+共享 owner。普通 provider registry 对每项真实注册用贡献者 Context 取得 affine `SwitchInput`；Root seal 要求
+每只 input 恰好由一只 `SwitchPart.inputs` 消费，Core 以 stable Fiber 与 exact owner/generation/artifact 推导
+direct-input multiset，并把它与 dependency closure 分开保存。普通插件以
+`ROOT_SWITCH.add(ctx, SwitchPart)` 注册唯一 name；part 只闭包持有自己资源的窄 grant，只实现带对应
+`snapshot_id` 的 `stop`、`leave`、`enter`、`start` 和 `recover(snapshot_id, active)`，不能看到别的 part 或
+得到跨 Root 总权限。mini recovery Root 只做 durable marker/identity preflight；完整 Root 必须先成为 gate
+CLOSED target，再做所有可失败检查。live task 只能在通用 `RUNTIME_STARTED` 后启动。
+
+每个 snapshot 外普通 host 只获得完成自己任务的一只窄 `ServiceCall`；需要跨进程 durable receipt 的 source
+host 可以获得 Core 在构造时绑定单一 ServiceKey 与 sealed host identity 的 `ServiceHold`，但没有 Context、
+任意 lookup 或改绑能力。普通插件只能在 seal 前以
+`Context.hold(key)` 取得 Core 绑定的 `ServiceHold`，key 必须是当前 Fiber direct inject 或 own provide，且同
+Fiber 必须是该逻辑插件唯一 SwitchPart 的注册 Fiber。Core 冻结 part 的 stable Fiber identity；另一 Fiber
+hold、缺 part 或一插件多 part 都在 seal 失败。公开 `call` 不接受 selector、
 snapshot ID 或 plugin ID；普通 host 的 acquisition policy 在构造时固定为 stable。attached validation
 child 只使用 Core 根据父 Turn 与 candidate identity 铸造的一次性 exact lease，host 和插件不能选择
 latest。`ServiceCall` 只能在该 lease 内等待一次调用，不得理解 Message、Turn、Session、ReAct、工具名或来源，
-也不得为缺失 Service 提供私有 fallback。ServiceHold 构造时固定 ServiceKey 和由 sealed caller
-capability identity 铸造的不可伪造 HoldKey；两个 holder 调同一 Service 也不能相互 pending/call/drop。
-它在持有 live exact lease 时 reserve 全局 HoldId，Core journal 冻结 HoldKey、sealed ServiceKey 与 exact
-Root/snapshot/artifact/generation 并立即 pin；owner 自己的 ledger 再冻结
+也不得为缺失 Service 提供私有 fallback。普通插件 ServiceHold 的 stable namespace 只由 Core 以顶层逻辑
+plugin、direct holder Fiber 与 ServiceKey 推导；host 则使用构造时 fixed sealed identity。不同 holder 不能相互
+pending/call/drop。candidate 五动作必须零写。
+reserve/activate/pending/call/drop 分别受 live、boot、transaction 与 finalizer permit 约束，publication 不能
+截断已铸造的 activate/drop 收尾。它在持有 live exact lease 时 reserve 全局 HoldId，Core journal 冻结
+holder namespace、sealed ServiceKey 与 versioned `RootRecipe` 并立即 pin；owner 自己的 ledger 再冻结
 HoldId、source generation、Channel generation/config、target 与 stable delivery key，然后 activate。Core 不读
-source、payload、Channel config/binding、delivery 或 outcome。hold 与 live lease 一起阻止换代。source 以
+source、payload、Channel config/binding、delivery 或 outcome。recipe 必须冻结 Core recovery ABI/config
+fingerprint、原 source lineage、全部 exact plugin artifact/generation/config、composition topology、held
+provider stable Fiber、SwitchPart inputs/needs 与 runnable sealed registry identity；恢复使用新的 process-local
+runtime ID 构造 fresh retired/closed Root，保留原 lineage。任一 recipe/ABI/provider/registry 不符都 degraded、
+call=0，不得 fallback current；held Root 永不接 `RUNTIME_STARTED`。live source 必须在自己的 RootScope 内
+完成 reserve→row→activate，再退出 scope；同一 task 此时未绑定 Root，才能用 transaction permit call held
+recipe 并取得 finalizer permit。boot scanner 使用窄 boot permit。hold 在 scope 退出后仍阻止相关换代，
+scanner 不同时持有 current 与 held Root lease。source 以
 `done|abort|unknown` 结束；done/abort 必须先 durable 写 outcome，再 drop，最后删 row；unknown
 保留 hold 与 degraded。reboot 只按 exact old Root 和冻结 Channel config 创建新的 ephemeral binding/token，
 不持久化或复活旧 binding。artifact 缺失时 degraded 且 sender=0，不得 fallback current stable。Root
@@ -1104,8 +1128,10 @@ TurnSource ref 和原 typed request 重新 accept/run，从 terminal SESSIONS.re
 创建 row。不得从 Message、TurnSaved、notice 或正文猜 output；ACK 前不得删除 handoff。固定 crash fixture
 落在 AgentResult commit 后、source prepare 前。每个 durable source 必须在 admission 时按
 reserve→source row→activate 建立 hold；row 冻结 HoldId、source generation、Channel generation/config、
-target 与 stable delivery key，不冻结 live binding/token/socket。reserve 无 row 就由该 HoldKey owner 确认后 drop，row 未 active 就
-activate。reboot 只用 exact old Root 与 frozen Channel config 新建 binding，缺 Root/artifact/config 就
+target 与 stable delivery key，不冻结 live binding/token/socket。reserve 无 row 就由该 stable holder owner 确认后 drop，row 未 active 就
+activate。正常 live path 在原 ServiceCall action 内完成 AgentResult、sink、outcome→drop→delete，不调用
+hold.call。只有 reboot recovery scanner 是 unbound host task，才用 boot permit `hold.call` exact old AGENTS，
+读取 durable result 后以 frozen Channel config 新建 binding；缺 Root/artifact/config 就
 degraded、sender=0，不得 fallback current stable。fixture 在 gap 中尝试换代并证明被阻止，随后 reboot
 provider/tool/save/observer=0、send/ACK=1，先 done、再 drop、最后 delete 才可换代；accept/run/
 cancel/no-sink/projection failure 均必须有 done/abort 或 unknown 的可恢复证据。M2c 是把一名旧
@@ -1113,16 +1139,21 @@ agent-loop sender 原子交给所有既有 source sink 的
 不可拆 cut；它同批物理删除两个 dispatch/return module、direct dispatch 与 flag，不是双路径或多 owner。
 
 Core 必须在 publication gate 内从 old/new sealed registry 生成 closed plan：只纳入 owner
-artifact/generation identity 改变的 SwitchPart；阻止新 lease，并先等待每只 changed old owner generation 的
+artifact/generation identity、direct-input multiset 或 dependency closure 改变的 SwitchPart；阻止新 lease，并先等待每只 changed old owner generation 的
 lease_count=0 且 hold_count=0。snapshot/ServiceHold 对其包含的每个 generation 计数，所以这也覆盖尚未调用该 part 的旧 Turn与跨进程 pending receipt；同 identity
 part 复用，无 shared owner 的普通 generation 不必 drain。随后按 name 完成全部 old stop/leave，再完成全部
 new enter/start；new start 只表示 ready，gate 仍关闭。只有 stable identity 与
 terminal 写入同一 crash-safe publication record 后才能开放新 lease。失败时在 gate 内逆序恢复 old。
-动作前的 journal 必须 pin old/new 两代 immutable artifact、两边 participant identity、当前 step 和 terminal；
+动作前的 journal 必须 pin old/new 两代 immutable artifact、两边 participant identity、direct inputs、needs、
+对应 snapshot ID、当前 step 和 terminal；
 terminal 前崩溃只收敛 old active/new inactive，terminal 后只收敛 new active/old inactive。即使 install、remove
-或 replace 后某一边当前 stable 已无该 part，也必须从 journal pin 重建 recovery-only closure；缺 artifact、
-identity 或 recover 失败时保持 degraded 且不开放 lease。sessions 的单 SQLite writer 必须注册自己的
-SwitchPart；Core 不得按 sessions、skill link、Activity、Channel、command 或其他 participant 名称分支。
+或 replace 后某一边当前 stable 已无该 part，也必须从 journal pin 先用 mini Root 做 identity preflight，再为
+每一边构造 private full closed recovery Root。callback 只在对应 full Root 运行；inactive side 随后 dispose，
+selected side 作为 gate CLOSED target 在证明 pointer 后才 open。两边都不接 `RUNTIME_STARTED`。缺 artifact、
+identity、input、closure 或 recover 失败时保持 degraded 且不开放 lease。普通 `jobs` 插件是第一名业务
+consumer：它自己拥有 registry、scanner 与 ledger，held Root 不启动 scanner；Core 同批删除 ActivityHost、
+Activity participant、Manager provider、snapshot job 分支与 bootstrap bind。sessions 的单 SQLite writer也必须
+注册自己的 SwitchPart；Core 不得按 jobs、sessions、skill link、Channel、command 或其他 participant 名称分支。
 
 骨架插件必须使用与外部 v3 插件相同的 loader、Context、Fiber、Effect、PluginRuntime、generation、
 workspace file grant 和 disabled builtin 规则。`sessions` 是 `sessions.db` 的唯一正式 writer；
