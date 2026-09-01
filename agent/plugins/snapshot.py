@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, cast
 
-from agent.control.scoped_turn import TurnAdmissionRetiredError
+from agent.control.scoped_turn import RootRetired
 
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
@@ -1532,7 +1532,7 @@ class RuntimeSnapshotStore:
                     None,
                 )
                 if snapshot is None:
-                    raise TurnAdmissionRetiredError(
+                    raise RootRetired(
                         "composition Root 已退役，Turn 尚未进入 admission"
                     )
                 if (

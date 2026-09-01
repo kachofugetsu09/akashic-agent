@@ -131,7 +131,7 @@ async def _project_committed(
 ) -> None:
     """Consume one validated durable fact exactly once after the business response."""
 
-    async with ctx.runtime_scope():
+    async with ctx.root_scope():
         facts = ctx.get(CONTEXT_PROJECTION_FACTS)
         if facts is None:
             raise RuntimeError("Markdown memory 收到 projection event 但缺少 fact reader")

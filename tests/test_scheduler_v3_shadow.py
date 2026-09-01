@@ -14,7 +14,7 @@ import pytest
 import agent.plugins.manager as plugin_manager_module
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.turn_effects import PostCommitEffect, TurnStorage
-from agent.control.scoped_turn import TurnAdmissionRetiredError
+from agent.control.scoped_turn import RootRetired
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.deliveries import PluginDeliveries
 from agent.plugin_composition.scoped_turns import PluginScopedTurns
@@ -115,7 +115,7 @@ class _RetiredTurns(_Turns):
         self, session_id: str, content: str, **kwargs: object
     ) -> _TurnHandle:
         _ = session_id, content, kwargs
-        raise TurnAdmissionRetiredError("fixture Root retired before admission")
+        raise RootRetired("fixture Root retired before admission")
 
 
 async def _settled() -> None:

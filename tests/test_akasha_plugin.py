@@ -95,7 +95,7 @@ from session.store import InteractionDeletion, SessionStore
 
 
 @asynccontextmanager
-async def _runtime_scope():
+async def _root_scope():
     yield
 
 
@@ -147,7 +147,7 @@ async def test_explicit_reindex_backs_up_and_publishes_descriptor_space(
         workspace=tmp_path,
         data_root=tmp_path / "plugin-data",
         config=AkashaConfig(),
-        runtime_scope=_runtime_scope,
+        root_scope=_root_scope,
     )
 
     assert result.embedded_messages == 2
@@ -220,7 +220,7 @@ async def test_explicit_reindex_restores_old_sidecars_when_publish_fails(
         workspace=tmp_path,
         data_root=tmp_path / "plugin-data",
         config=AkashaConfig(),
-        runtime_scope=_runtime_scope,
+        root_scope=_root_scope,
     )
     index = tmp_path / "memory" / "akasha-v2-index.db"
     memory = tmp_path / "memory" / "akasha.db"
@@ -249,7 +249,7 @@ async def test_explicit_reindex_restores_old_sidecars_when_publish_fails(
             workspace=tmp_path,
             data_root=tmp_path / "plugin-data",
             config=AkashaConfig(),
-            runtime_scope=_runtime_scope,
+            root_scope=_root_scope,
         )
 
     assert len(load_turns(index)) == 1
@@ -341,7 +341,7 @@ def test_engine_and_inspector_resolve_sidecars_from_same_memory_root(
     engine = AkashaMemoryEngine(
         embeddings=_Embeddings(),
         embedding_space=_embedding_space(),
-        runtime_scope=_runtime_scope,
+        root_scope=_root_scope,
         akasha_config=config,
         workspace=tmp_path,
         event_publisher=None,
@@ -375,7 +375,7 @@ def test_engine_rejects_markdown_profile_config_before_opening_it(
         AkashaMemoryEngine(
             embeddings=_Embeddings(),
             embedding_space=_embedding_space(),
-            runtime_scope=_runtime_scope,
+            root_scope=_root_scope,
             akasha_config=AkashaConfig(db_path="memory/MEMORY.md"),
             workspace=tmp_path,
             event_publisher=None,
@@ -427,7 +427,7 @@ async def test_engine_rejects_a_bound_embedding_space_change(tmp_path: Path) -> 
     engine = AkashaMemoryEngine(
         embeddings=embeddings,
         embedding_space=described,
-        runtime_scope=_runtime_scope,
+        root_scope=_root_scope,
         akasha_config=AkashaConfig(),
         workspace=tmp_path,
         event_publisher=None,
@@ -3241,7 +3241,7 @@ def _engine(
     return AkashaMemoryEngine(
         embeddings=_Embeddings(),
         embedding_space=_embedding_space(),
-        runtime_scope=_runtime_scope,
+        root_scope=_root_scope,
         akasha_config=AkashaConfig(),
         workspace=workspace,
         event_publisher=event_publisher,

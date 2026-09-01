@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotLease
 
 
-class TurnAdmissionRetiredError(RuntimeError):
-    """Report that an unaccepted child Turn must hand off to a newer Root."""
+class RootRetired(RuntimeError):
+    """Report that a Root no longer accepts new work."""
 
 
 class RuntimeTurnHandle(Protocol):

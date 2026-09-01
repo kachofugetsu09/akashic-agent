@@ -89,12 +89,28 @@ forbidden_effects:
 validation:
   - 每批关键行为和 write-set oracle
   - 每批两个独立 Terra xhigh review
+  - 每批一个独立 Terra xhigh name review
   - 最终 zero-consumer、全量 test 和 project Gate
 rollback: 上一完整 commit、不可变 generation、执行前备份；不伪造外部效果回滚
 worktree_writer: /root
-external_revisions: []
+external_revisions: [hua-home:f1f4560892ae92e96779ff89f848223afdcc9919]
 schema_lineages: [sessions.db current schema unchanged]
 ```
+
+### 1.4 外部插件真源
+
+外部 consumer 只以 `hua-home` 的实际启用状态为准，不以开发机源码目录或 cache 猜测。
+2026-09-01 的只读检查确认：live release 指向本合同基线
+`f1f4560892ae92e96779ff89f848223afdcc9919`；boot log 记录 33 个 active generation；其中有 stable
+GitHub artifact 的 16 个外部插件是：
+
+`calendar`、`citation`、`emotion`、`feed`、`fitbit`、`github-watch`、`huayue-skills`、`meme`、
+`observe`、`plugin_undo`、`proactive_feedback`、`setup_helper`、`shell_restore`、`shell_safety`、
+`status_commands`、`steam`。
+
+对这 16 个 stable artifact 的运行源码做零 consumer 查询，本批所有已删公开名均为零；
+`github-watch/scripts/core_v3_gate.py` 的 `FakeConversationRuntime` 只属于离线 Gate，不是 runtime
+consumer。后续每个 public API 删除都必须对当时 `hua-home` artifact 重新查询；本段不是永久豁免。
 
 ## 2. 六岁小孩版
 
@@ -208,13 +224,13 @@ exact consumer/commit 清单后停下，待外部源码 PR 更新后再做跨仓
 | 资产 | 处理 |
 |---|---|
 | Context / ServiceKey / Inject / Fiber / Effect / typed dispatch | 原样作为唯一 composition kernel，不另建容器或 hook bus |
-| RuntimeSnapshot、Root sealing、stable/latest、lease、candidate closure | 原样作为 publication 真源，只补中性 port/task/operation 能力 |
+| RuntimeSnapshot、Root sealing、stable/latest、lease、candidate closure | 原样作为 publication 真源，只补 `ServiceCall`、`RootScope`、`TaskControl` |
 | `TOOL_CATALOG`、`PluginTools`、工具 snapshot freeze | 演进为 `tools` 插件的唯一 registry，不创建平行 ToolRegistry |
 | 现有 `plugins/models` Services | 直接作为 `models` 基础插件，不复制 provider/model catalog |
-| 现有 compaction/markdown-memory 普通插件 | 保留 owner，只改为注入新 prompt/projection/session public port |
+| 现有 compaction/markdown-memory 普通插件 | 保留 owner，只改为注入新 prompt/projection/session Service |
 | SessionManager/SessionStore 的事务和恢复算法 | 行为与测试资产保留，真实实现迁入 `sessions` owner；不包旧 singleton |
-| `PluginScopedTurns` 的 exact root、accepted handle、retired error 语义 | 迁入 AGENTS + RootTaskScope；旧 `SCOPED_TURNS` key/bridge 最终删除 |
-| existing ActivityHost/admission-drain 模式 | 用作 operation supervisor 的实现证据，不复制 Agent 专用 publication plane |
+| `PluginScopedTurns` 的 exact root、accepted handle、retired error 语义 | 迁入 AGENTS + `RootScope`；旧 `SCOPED_TURNS` key/bridge 最终删除 |
+| existing ActivityHost/admission-drain 模式 | 用作 `TaskControl` 的实现证据，不复制 Agent 专用 publication plane |
 | AFTER_REASONING/AFTER_TURN 等 stable typed events | 有真实外部 consumer 的公共事实继续保留 payload/order，不保留旧 mutable phase wrapper |
 | bootstrap AgentLoop/SessionManager/ToolRegistry construction 与 manager Core-service manufacturing | deprecated 后退役；它们是待删除 owner，不是可长期复用 adapter |
 
@@ -226,17 +242,17 @@ Core 只保留：
 
 - 插件 artifact、generation 和完整 Root 的构建、验证、发布、丢弃与恢复；
 - stable/latest 指针、exact lease、retire/drain 和 Effect cleanup；
-- 绑定单一 `ServiceKey[T]` 的 `RuntimeServicePort[T].call(operation) -> R`；
-- 每个 Fiber 平等取得的 `RootTaskScope`，以及按 Service namespace 隔离的
-  `OperationSupervisor`/窄 cancel port；
+- 绑定单一 `ServiceKey[T]` 的 `ServiceCall[T].call(action) -> R`；
+- 每个 Fiber 平等取得的 `RootScope`，以及按 service key 隔离的
+  `TaskControl` 与窄 `TaskStart`/`TaskCancel`/`TaskWait`；
 - composition diagnostics、最小 workspace file grant 和外部 host 的通用资源开关。
 
 kernel 在 bootstrap composition 时为外部 host 创建绑定一个 exact `ServiceKey` 和固定 lease source 的
-`RuntimeServicePort`；host 不取得任意 service lookup，插件也不取得 port factory。普通 host 的 lease
-source 永远取得 stable；公开 `call(operation)` 不接受 selector、snapshot ID、plugin ID 或 lease。
+`ServiceCall`；host 不取得任意 service lookup，插件也不能创建 `ServiceCall`。普通 host 的 lease
+source 永远取得 stable；公开 `call(action)` 不接受 selector、snapshot ID、plugin ID 或 lease。
 attached validation child 只使用 Core 根据父 Turn、candidate generation/source identity 铸造的一次性
-exact lease，不能由 host 或插件选择 latest。port 绑定当前 task，从 exact Root
-`require(bound_key)`，完整等待 operation，再解除绑定并释放。Service 缺失、Root/identity 不一致、
+exact lease，不能由 host 或插件选择 latest。`ServiceCall` 绑定当前 task，从 exact Root
+`require(bound_key)`，完整等待 action，再解除绑定并释放。Service 缺失、Root/identity 不一致、
 继承到错误 task 或 lease 已退休全部 fail-loud。它不解析 request，不创建 background task，也不
 捕获领域错误。
 
@@ -244,7 +260,7 @@ exact lease，不能由 host 或插件选择 latest。port 绑定当前 task，�
 
 | 插件 | 独占事实或变化轴 | 公开能力 | 明确不拥有 |
 |---|---|---|---|
-| `sessions` | Session/Message/Turn/attachment 的 SQLite 事实与事务 | `SESSIONS`: read snapshot、admit/terminal、atomic commit、窄 compaction/attachment/delivery ports | Prompt、模型、工具、Channel 发送、任意删除 |
+| `sessions` | Session/Message/Turn/attachment 的 SQLite 事实与事务 | `SESSIONS`: read snapshot、admit/terminal、atomic commit、窄 compaction/attachment/delivery Service | Prompt、模型、工具、Channel 发送、任意删除 |
 | `models` | provider、model revision、role 与 Turn-frozen binding | 现有 `MODEL_DRIVERS`、`CHAT_MODELS`、`EMBEDDINGS`、catalog/settings | Session、Prompt、loop |
 | `tools` | 工具定义、当前 Turn 可见集合、调用结算 | `TOOLS`: register、open turn view、present、authorize、execute；结构化 `ToolOutcome` | Prompt 文案、Session SQL、特定工具策略 |
 | `system-prompt` | 有序 Prompt section registry | `SYSTEM_PROMPT.build(input)` 与 section contribution | persistent history、provider 调用、记忆文件 |
@@ -261,29 +277,30 @@ candidate closure 中的 `sessions` 使用插件自己创建的全新临时 sche
 
 | kernel atom | 只拥有 | 不拥有 |
 |---|---|---|
-| `RuntimeServicePort[T]` | 构造时固定的 ServiceKey 与 lease source；一次完整 call | selector、request 解析、background task、领域 fallback |
-| `RootTaskScope` | owning Root identity、task/Effect cleanup、root-bound lease acquire | stable/latest 选择、领域 retry、跨 Root 重投 |
-| `OperationSupervisor` | opaque scope/operation claim、exact lease、task、cancel callback、terminal release | Message/Turn/Session、runner、持久状态、错误解释、delivery |
+| `ServiceCall[T]` | 构造时固定的 ServiceKey 与 lease source；一次完整 call | selector、request 解析、background task、领域 fallback |
+| `RootScope` | owning Root identity、task/Effect cleanup、root-bound lease acquire | stable/latest 选择、领域 retry、跨 Root 重投 |
+| `TaskControl` | opaque scope/task claim、exact lease、task、cancel callback、terminal release | Message/Turn/Session、runner、持久状态、错误解释、delivery |
 
-`OperationSupervisor.claim(scope_key, operation_key, exact_lease, task, cancel)` 对整个进程原子，
-同一 opaque scope 跨 generation 只能有一个 active operation。`agents` 负责把自己的 session/attempt
+`TaskStart.claim(scope_key, task_key, lease, run, cancel) -> TaskWait` 对整个进程原子；`lease` 是
+`TaskLease`。
+同一 opaque scope 跨 generation 只能有一个 active task。`agents` 负责把自己的 session/attempt
 领域身份映射成稳定 opaque key，并负责何时允许 start/cancel/terminal；accepted receipt 与 durable
-active-attempt fact 保存同一个 operation key。supervisor 只执行 claim、按该 key 通知原 owner 的
-cancel callback 和最后释放。Control host 只获得 `cancel(opaque_operation_key)` 窄 port，不能枚举
-operation、读取结果、创建工作或取得 snapshot。新 ingress 要 interrupt 旧 attempt 时，先从
-`SESSIONS` 窄 read port 取得 durable active operation key，不能按内存对象或 current stable 猜测。
+active-attempt fact 保存同一个 task key。`TaskControl` 只执行 claim、按该 key 通知原 owner 的
+cancel callback 和最后释放。Control host 只获得 `TaskCancel`，不能枚举
+task、读取结果、创建工作或取得 snapshot。新 ingress 要 interrupt 旧 attempt 时，先从
+`SESSIONS` 窄 read Service 取得 durable active task key，不能按内存对象或 current stable 猜测。
 
 这使新 stable 的 `agents` 能请求取消旧 Root 的仍活 task，但旧 `agents` 和旧 runner 继续唯一负责
 terminal/Session settle，并在最后释放旧 lease。这里没有内存状态搬家、两代共同写或特权 Agent
 service。`ActivityHost`/generation lease 的现有 admission/drain 语义是实现资产；不得再创建一份
 Agent 专用 publication 平面。
 
-`RootTaskScope` 由每个 Fiber 平等取得。`agents` 实例在 apply 时绑定自己的 root scope；
+`RootScope` 由每个 Fiber 平等取得。`agents` 实例在 apply 时绑定自己的 root scope；
 `AGENTS.start` 只复用同 Root 的 current lease，或向该 scope 取得 owning Root lease，遇到其他 Root
 binding 直接失败。Scheduler/Wake 的 timer callback 因而可以直接调用同 Root 注入的 `AGENTS`；Root
-已退休时原样得到 `TurnAdmissionRetiredError`，由 Scheduler/Wake 自己 settle/rearm，绝不 fallback
+已退休时原样得到 `RootRetired`，由 Scheduler/Wake 自己 settle/rearm，绝不 fallback
 到 current stable。candidate Root 的普通 background scope 关闭，只有 Core 铸造的 attached
-validation capability 能启动一次 candidate operation。
+validation capability 能启动一次 candidate task。
 
 ### 4.4 无环注册
 
@@ -318,7 +335,7 @@ store 或兄弟插件源码。
 `Message`、`Turn`、`Session` 的稳定结构合同和 Service protocol 可以留在中立 public API 包；
 它们不包含实现、全局 singleton、workspace root、任意 SQL 或 publication 控制。迁移旧算法时移动
 真实 owner 的代码，而不是在新插件里包一层旧 Core class。Core/Bootstrap 只为边界 host import
-公开 `ServiceKey` 来绑定窄 `RuntimeServicePort`，不 import provider implementation。
+公开 `ServiceKey` 来绑定窄 `ServiceCall`，不 import provider implementation。
 
 ## 5. 完整链怎样走
 
@@ -346,20 +363,20 @@ ordinary Channel plugin
                     conversation delivery + ACK
 ```
 
-一次 Turn 的 exact lease 从 `AGENTS.start` 原子 claim 到 `OperationSupervisor`，直到 terminal 后释放。
-Channel 回调提前返回时 lease 仍由 supervisor 持有；取消只通知当前 attempt，旧 Root 的 agents/runner
+一次 Turn 的 exact lease 从 `AGENTS.start` 原子 claim 到 `TaskControl`，直到 terminal 后释放。
+Channel 回调提前返回时 lease 仍由 `TaskControl` 持有；取消只通知当前 attempt，旧 Root 的 agents/runner
 继续完成 cleanup 和 terminal。新 generation 不能 claim 同一 session scope。
 
 ### 5.2 Control、Scheduler、Wake 与 Subagent
 
-- Control host 只持有 bootstrap 为 `AGENTS` 绑定的 `RuntimeServicePort`；它不直接 import AgentLoop，
-  也不能借该 port 查询其他 Service。
-- 正常 `/stop` 可以由当前 `AGENTS` 读取 durable active operation key；publication 暂停、没有 stable
+- Control host 只持有 bootstrap 为 `AGENTS` 绑定的 `ServiceCall`；它不直接 import AgentLoop，
+  也不能借该 `ServiceCall` 查询其他 Service。
+- 正常 `/stop` 可以由当前 `AGENTS` 读取 durable active task key；publication 暂停、没有 stable
   service lease 时，Control 从 accepted receipt/Control store 取得同一 key，只用 kernel 给它的窄
-  operation cancel port 通知已接受的旧工作。
-- Scheduler/Wake/Subagent 已在 Root 内时直接 inject `AGENTS`；`AGENTS` 实例自己的 RootTaskScope
+  `TaskCancel` 通知已接受的旧工作。
+- Scheduler/Wake/Subagent 已在 Root 内时直接 inject `AGENTS`；`AGENTS` 实例自己的 `RootScope`
   保证 timer/后台 callback 只能取得 owning Root。Root 已退休就收到
-  `TurnAdmissionRetiredError` 并由来源 settle/rearm，不得改投 current stable。各自 gate、spawn、
+  `RootRetired` 并由来源 settle/rearm，不得改投 current stable。各自 gate、spawn、
   持久状态和 delivery 仍由原插件拥有。
 - 来源只构造普通 Message/Turn request，不复制模型、工具、Prompt、Session commit 或 cancel loop。
 - 不适用的 feature plugin 没有 contribution；不存在“先运行 passive hook 再 early return”。
@@ -371,15 +388,15 @@ Channel 回调提前返回时 lease 仍由 supervisor 持有；取消只通知�
 ```text
 outside snapshot             inside one exact snapshot
 ─────────────────┬────────────────────────────────────────────
-AGENTS-bound port │ require(bound key)
+AGENTS ServiceCall │ require(bound key)
 acquire lease ────┼─► agents ─► runner ─► model/tools/session
-                  │                    └─ supervisor owns opaque op + lease
+                   │                    └─ TaskControl owns opaque task + lease
 wait result ◄─────┼────────────────────────────────────────────
 release lease ────┘
 ```
 
 “谁保管 lease/task/cancel callback”与“谁解释 Turn 并实现 ReAct”是两条正交轴。前者属于领域中性
-operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写进一个 privileged plugin
+`TaskControl`，后者属于普通 `agents`/`agent-loop`。把二者写进一个 privileged plugin
 反而重新制造 bootstrap cycle。
 
 ## 6. 当前特殊功能清单与目标 owner
@@ -388,7 +405,7 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 |---|---|---|---|
 | command 在模型前短路 | `AgentLoop._process`、`PassiveTurnPipeline.run_command` | conversation source 注入普通 `COMMANDS`，识别后不创建 Agent Turn | 否 |
 | plugin rollout fact 塞入下一轮 Prompt | `AgentLoop._process` metadata | rollout 插件向 `SYSTEM_PROMPT` 提供一次性 section；事实文件由其声明 | 否 |
-| session 模型选择 | `AgentLoop._resolve_model_selection` | models 插件通过 `SESSIONS` 窄 metadata port 读取/提交，返回 frozen binding | 否 |
+| session 模型选择 | `AgentLoop._resolve_model_selection` | models 插件通过 `SESSIONS` 窄 metadata Service 读取/提交，返回 frozen binding | 否 |
 | Shell 按工具名和类 cleanup | `AgentLoop._cleanup_shell_owner` | Shell 插件监听 `agents` 的 Turn terminal，并清理自己拥有的 execution | 否 |
 | Tool Search enable、schema cap、LRU、名称解锁 | `DefaultReasoner` 多处分支、ToolRegistry meta set | Tool Search 普通插件注册普通 tool；用 `TOOLS` 的 catalog search 与 turn-local schema grant | 否 |
 | 未解锁工具的提示文字 | `DefaultReasoner` | `TOOLS.authorize` 返回结构化 denial；Tool Search 插件提供模型可见说明 | 否 |
@@ -403,7 +420,7 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 | 六组可任意改写总状态的 phase | `agent/lifecycle/phases/**` | 收敛到 owner 明确的 Prompt/Tool/Turn/Projection 接入点 | 否 |
 | provider retry、max iteration、tool batch、continuation | `DefaultReasoner` | `agent-loop` 内部直接算法，不拆成 feature plugins | 不适用 |
 | attempt admission、interrupt、cancel、terminal | `ConversationRuntime` | `agents` 插件唯一 owner | 否 |
-| durable inbound handoff 与 ACK 顺序 | `PassiveMessageWorker` | ordinary conversation plugin，持久写只请求 `SESSIONS` 窄 port | 否 |
+| durable inbound handoff 与 ACK 顺序 | `PassiveMessageWorker` | ordinary conversation plugin，持久写只请求 `SESSIONS` 窄 Service | 否 |
 
 禁止用 `TURN_EFFECTS`、万能 middleware、任意 mutable context 或一个“passive hooks”总 Service 把这些
 重新装进一只袋子。每个 public seam 必须指向表中已有 owner 与一种明确变化轴。
@@ -414,7 +431,7 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 |---|---|---|---|---|
 | `sessions.db/messages` | completed transcript 原子 INSERT | 不更新正文 | 仅 SES-003 显式用户撤销/删除 | sessions；DB backup、row/seq/write-set diff |
 | `sessions` metadata / `turns` | admission、attempt、terminal 写入 | 仅既有状态机和白名单 metadata | 仅既有管理协议 | sessions；turn identity、terminal、restart recovery |
-| attachments/compaction/delivery rows | 既有事务增加 | 按各自 prepare/commit/settle 状态机 | 只按现行独立合同 | sessions 窄 port；digest、receipt、prepare fence |
+| attachments/compaction/delivery rows | 既有事务增加 | 按各自 prepare/commit/settle 状态机 | 只按现行独立合同 | sessions 窄 Service；digest、receipt、prepare fence |
 | MEMORY/SELF 与 receipt | committed checkpoint 触发 | backup + atomic replace / idempotent receipt | 只按 MEM 条款 | markdown-memory；backup、source_ref、receipt |
 | plugin rollout fact | rollout terminal 增加一次临时事实 | consume 逻辑终态 | 成功消费或已批准恢复 | rollout plugin；fact/journal |
 | Shell/process | 工具显式启动 | active → terminal/cleanup_degraded | owner 确认退出后 | Shell/Workload plugin；process registry/report |
@@ -432,12 +449,12 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 - **普通错误：** provider、tool、Prompt contribution、Session commit 和 delivery 保持现有错误分类；
   只有拥有恢复动作的边界转换错误。
 - **取消：** 当前 attempt 收到取消；agent-loop 完成工具/外部效果既有 settle，agents 只提交一次
-  terminal，operation supervisor 最后移除 opaque record 并释放 lease。reload 后 cancel 仍调用旧
+  terminal，`TaskControl` 最后移除 opaque record 并释放 lease。reload 后 cancel 仍调用旧
   record 保存的原 owner callback；重复取消幂等，不吞 cleanup failure。
 - **并发：** Turn 继续按 session 串行而非全局串行；同一 runner registry seal 后不可变。
 - **热重载：** 新 Root 完整 seal 后才可发布；旧 Turn 用完旧 Root。`sessions` 等独占 writer 的
   publication 走 pause → drain → close → open → publish，不跨代共写。普通插件 publication 可以让
-  旧 opaque operation 持有旧 lease 到 terminal，但 supervisor 拒绝新代 claim 同一 scope；这不是
+  旧 opaque task 持有旧 lease 到 terminal，但 `TaskControl` 拒绝新代 claim 同一 scope；这不是
   两条实现处理同一请求，也不是双写。
 - **候选验证：** 只在隔离 workspace/recording adapter 下运行，不接生产流量、不发真实 Channel、
   不读取或写正式 Session。candidate sessions 使用全新临时 schema/programmatic Session；candidate 与
@@ -457,9 +474,9 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 
 ### M1 · 中性 snapshot 执行原子
 
-- 增加 `RuntimeServicePort`、`RootTaskScope`、`OperationSupervisor` 和 kernel-private Root lookup；
+- 增加 `ServiceCall`、`RootScope`、`TaskControl` 和 private lease source；
   三者接口不增加 Agent/Turn/Session/Scheduler 等领域字段。
-- fixture 证明 single-key/stable-only port、owning Root background acquire、跨代 opaque cancel、
+- fixture 证明 single-key/stable-only `ServiceCall`、owning Root background acquire、跨代 opaque cancel、
   same-scope claim exclusion、terminal release、错误 task 继承和退休 Root fail-loud。
 - 本批没有被替换的旧 owner，不提前标 deprecated；caller 先作为后续唯一切换的中性前置能力。
 
@@ -484,15 +501,15 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 
 ### M5 · Sessions 独占 writer
 
-- 普通 `sessions` 插件创建 SessionManager 和全部窄 port；所有其他插件只注入端口。
+- 普通 `sessions` 插件创建 SessionManager 和全部窄 Service；所有其他插件只注入 Service。
 - 用维护窗口式测试执行 pause/drain/close/open，证明正式路径任一时刻只有一个 SQLite writer。
 - bootstrap、PluginManager 和工具不再持有 `_store`、任意 repository 或 SessionManager 私有引用。
 
 ### M6 · Agents owner 与所有 ingress
 
 - 普通 `agents` 插件取得 ConversationRuntime/admission/cancel/terminal/active owner。
-- 把 ConversationRuntime 中 process-wide task/lease/cancel 的中性机械部分迁到 M1 supervisor；
-  `agents` 只保留领域状态机，并让 accepted/durable fact 使用同一 opaque operation key。
+- 把 ConversationRuntime 中 process-wide task/lease/cancel 的中性机械部分迁到 M1 `TaskControl`；
+  `agents` 只保留领域状态机，并让 accepted/durable fact 使用同一 opaque task key。
 - passive、control、scheduler、wake、subagent 的仓库内入口一次切到 `AGENTS`；没有 runtime fallback。
 - agent-loop 尚未迁移时，只允许一个明确 deprecated runner 注册旧算法，零其他 consumer。
 
@@ -520,10 +537,12 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 2. 新 owner 成为唯一正式路径；旧代码只留给该批 reviewer 看差异，不接流量、不双写。
 3. 运行该 owner 的最小关键测试和 deterministic recording 场景。
 4. 同时启动两个互相独立的 Terra xhigh reviewer。两者都读取完整 batch diff、合同和相关 source，
-   检查 owner、权限、失败路径、行为损失和兼容壳；任一 P0/P1 都阻断删除。
-5. 修复 finding；涉及 owner/接口变化时让同一 reviewer 复审到 P0/P1 为零。
+   检查 owner、权限、失败路径、行为损失和兼容壳；任一 P0/P1 都阻断删除。另开一个独立 Terra
+   xhigh name reviewer，只检查新增和改名的公开词：每个名字最多两个简单英语单词，六年级学生能懂。
+5. 修复 finding；涉及 owner/接口变化时让同一 reviewer 复审到 P0/P1 为零，name reviewer 复审到
+   `NAME PASS`。
 6. 物理删除 deprecated 文件、分支、配置、导出、测试替身和文档入口，运行 zero-consumer 查询。
-7. 重新运行关键测试。删除 delta 若改变调用链或公共面，由两位 reviewer 快速复核最终 diff。
+7. 重新运行关键测试。删除 delta 若改变调用链或公共面，由两位 reviewer 和 name reviewer 快速复核最终 diff。
 8. 形成一个语义连贯、可独立回滚的 commit，再进入下一 owner。
 
 不把“以后再删”留到 PR 外。唯一例外是本合同明确排除的外部插件源码 consumer；Core public contract
@@ -534,9 +553,9 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 
 只补能保护现实行为或非平凡边界的测试：
 
-- snapshot service port 的窄 key、stable-only public policy、candidate capability identity、exact lease、
+- `ServiceCall` 的窄 key、stable-only public policy、candidate capability identity、exact lease、
   task ownership、cancel 和 cleanup；
-- reload-mid-Turn 后用原 operation key `/stop`，必须到达旧 owner，产生一次 terminal 并释放旧 lease；
+- reload-mid-Turn 后用原 task key `/stop`，必须到达旧 owner，产生一次 terminal 并释放旧 lease；
 - Scheduler/Wake/Subagent 在 reload-before-fire 与 fire-during-drain 下只取得 owning Root；retired
   admission 单次 settle/rearm，不重复 provider、Session commit 或 delivery；
 - Root sealing 对缺 Service、重复 runner、循环依赖、重复 writer 的 fail-loud；
@@ -563,11 +582,11 @@ operation supervisor，后者属于普通 `agents`/`agent-loop`。把二者写�
 | 整条链走得通？ | passive/control/recursive source、完整 snapshot、commit、delivery、cancel、reload 和单 writer 都有闭合路径 |
 
 P0/P1 任一非零即 `BLOCK`。2026-09-01 独立 Terra xhigh reviewer 完整复核当前代码与本合同；
-在收窄 stable-only single-key port，并补齐 RootTaskScope、跨代 opaque cancel 和后台 exact Root
+在收窄 stable-only single-key call，并补齐 `RootScope`、跨代 opaque cancel 和后台 exact Root
 路径后，四项均 `PASS`，P0/P1 为零。该结论只批准设计，不能代替 M1～M8 的实现 review 与行为 Gate。
 
 ## 13. 交接边界
 
 本 PR 最终只交付 Core 仓库内的通用内核、七个普通基础插件、仓库内置 conversation/feature
-组合和旧私有链删除。独立安装的 QQ/Feishu/Citation/Meme 等外部源码若需要改用新公共合同，记录
-exact repo、consumer、版本和阻塞点，等本 PR 停下后另开迁移。禁止直接修改 cache 伪造完成。
+组合和旧私有链删除。上面列出的 `hua-home` 外部插件若需要改用新公共合同，记录 exact repo、
+consumer、版本和阻塞点，等本 PR 停下后另开迁移。禁止直接修改 cache 伪造完成。

@@ -57,32 +57,78 @@ class Plugin(Protocol):
     def apply(self, ctx: Context) -> object: ...
 
 
-class RuntimeScope:
+class RootScope:
     """Carry one exact snapshot from a source callback into one async operation."""
 
     def __init__(self, lease: Any) -> None:
         self._lease = lease
         self._token: object | None = None
+        self._owner_task: asyncio.Task[object] | None = None
         self._closed = False
+
+    @property
+    def active(self) -> bool:
+        return not self._closed and bool(self._lease.active)
 
     async def __aenter__(self) -> None:
         if self._closed or self._token is not None:
-            raise RuntimeError("runtime scope 只能进入一次")
+            raise RuntimeError("Root scope 只能进入一次")
         from agent.plugins.snapshot import bind_runtime_snapshot
 
+        owner_task = asyncio.current_task()
+        if owner_task is None:
+            raise RuntimeError("Root scope 必须在 async task 中运行")
+        self._owner_task = cast(asyncio.Task[object], owner_task)
         try:
             self._token = bind_runtime_snapshot(self._lease)
         except BaseException:
             self._closed = True
-            await self._lease.release()
+            task = asyncio.create_task(
+                self._lease.release(),
+                name="root-scope-release",
+            )
+            await _await_critical(task)
             raise
 
     async def __aexit__(self, *exc_info: object) -> None:
-        await self.close()
+        await self.release()
 
-    async def close(self) -> None:
+    async def run(self, operation: Callable[[], Awaitable[R]]) -> R:
+        """Run one operation bound to this exact Root, then release it."""
+
+        await self.__aenter__()
+        result: object | None = None
+        operation_error: BaseException | None = None
+        try:
+            result = await operation()
+        except BaseException as error:
+            operation_error = error
+
+        release_error: BaseException | None = None
+        try:
+            await self.release()
+        except BaseException as error:
+            release_error = error
+        if operation_error is not None and release_error is not None:
+            raise BaseExceptionGroup(
+                "Root task 与 lease release 同时失败",
+                [operation_error, release_error],
+            )
+        if operation_error is not None:
+            raise operation_error
+        if release_error is not None:
+            raise release_error
+        return cast(R, result)
+
+    async def release(self) -> None:
         if self._closed:
             return
+        current_task = asyncio.current_task()
+        if self._owner_task is not None and current_task is not self._owner_task:
+            raise CompositionError(
+                "TASK_MISMATCH",
+                "Root scope 只能由进入它的 task 释放",
+            )
         self._closed = True
         token = self._token
         try:
@@ -92,7 +138,11 @@ class RuntimeScope:
                 reset_runtime_snapshot(cast(Any, token))
                 self._token = None
         finally:
-            await self._lease.release()
+            task = asyncio.create_task(
+                self._lease.release(),
+                name="root-scope-release",
+            )
+            await _await_critical(task)
 
 
 @dataclass(slots=True)
@@ -150,33 +200,43 @@ class Context:
         return self._fiber.plugin_module
 
     @asynccontextmanager
-    async def runtime_scope(self) -> AsyncGenerator[None]:
-        """Bind one short background operation to this exact composition Root."""
+    async def root_scope(self) -> AsyncGenerator[None]:
+        """Bind one short operation to this exact composition Root."""
 
         reject_executor_context_access()
-        from agent.plugins.snapshot import get_current_runtime_lease
-
-        current = get_current_runtime_lease()
-        lease = (
-            current.fork()
-            if current is not None
-            and current.snapshot.composition_root is self._root
-            else await self._root._acquire_runtime_scope()
+        from agent.plugins.snapshot import (
+            get_current_runtime_lease,
+            get_lifecycle_runtime_snapshot,
         )
 
-        async with RuntimeScope(lease):
+        _ = get_lifecycle_runtime_snapshot()
+        current = get_current_runtime_lease()
+        if current is not None:
+            if current.snapshot.composition_root is not self._root:
+                raise CompositionError(
+                    "ROOT_MISMATCH",
+                    "Root scope 不能跨 composition Root",
+                )
+            lease = current.fork()
+        else:
+            lease = await self._root._get_lease()
+        async with RootScope(lease):
             yield
 
-    def capture_runtime_scope(self) -> RuntimeScope:
+    def capture_scope(self) -> RootScope:
         """Fork the exact scope bound to this callback for one detached operation."""
 
         reject_executor_context_access()
-        from agent.plugins.snapshot import get_current_runtime_lease
+        from agent.plugins.snapshot import (
+            get_current_runtime_lease,
+            get_lifecycle_runtime_snapshot,
+        )
 
+        _ = get_lifecycle_runtime_snapshot()
         current = get_current_runtime_lease()
         if current is None or current.snapshot.composition_root is not self._root:
-            raise RuntimeError("当前 task 未绑定此插件 Root 的 runtime scope")
-        return RuntimeScope(current.fork())
+            raise RuntimeError("当前 task 未绑定此插件 Root 的 scope")
+        return RootScope(current.fork())
 
     @property
     def runtime(self) -> PluginRuntime:
@@ -394,7 +454,19 @@ class Context:
 
     async def observe(self, key: ObserveEventKey[T], payload: T) -> None:
         reject_executor_context_access()
-        await self._root._events.observe(key, payload)
+        from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
+
+        snapshot = get_lifecycle_runtime_snapshot()
+        if snapshot is not None and snapshot.composition_root is not self._root:
+            raise CompositionError(
+                "ROOT_MISMATCH",
+                "Observe 不能跨 composition Root",
+            )
+        await self._root._events.observe(
+            key,
+            payload,
+            scope_source=(None if snapshot is None else self.capture_scope),
+        )
 
     async def spawn(
         self,
@@ -823,7 +895,7 @@ class CompositionRoot:
             self._record_listener_failure,
         )
         self._internal_cleanups: list[tuple[str, Callable[[], object]]] = []
-        self._runtime_scope_acquirer: Callable[[], Awaitable[Any]] | None = None
+        self._lease_source: Callable[[], Awaitable[Any]] | None = None
         self._dispose_task: asyncio.Task[None] | None = None
         self.root_fiber = Fiber(
             root=self,
@@ -846,20 +918,20 @@ class CompositionRoot:
 
         return self._instance_token
 
-    def _bind_runtime_scope_acquirer(
+    def _bind_lease(
         self,
         acquire: Callable[[], Awaitable[Any]],
     ) -> None:
         """Bind the Core-owned exact-Root lease source before mounting plugins."""
 
-        if self._runtime_scope_acquirer is not None:
-            raise RuntimeError("composition Root runtime scope 已绑定")
-        self._runtime_scope_acquirer = acquire
+        if self._lease_source is not None:
+            raise RuntimeError("composition Root lease 已绑定")
+        self._lease_source = acquire
 
-    async def _acquire_runtime_scope(self):
-        acquire = self._runtime_scope_acquirer
+    async def _get_lease(self):
+        acquire = self._lease_source
         if acquire is None:
-            raise RuntimeError("composition Root runtime scope 不可用")
+            raise RuntimeError("composition Root lease 不可用")
         return await acquire()
 
     def on_mount(self, observer: FiberObserver) -> Callable[[], None]:
@@ -1614,8 +1686,12 @@ def _error_message(error: BaseException) -> str:
 async def _await_critical(task: asyncio.Task[None]) -> None:
     """Finish lifecycle cleanup before propagating caller cancellation."""
 
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
-        raise
+    cancelled = False
+    while not task.done():
+        try:
+            _ = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    await task
+    if cancelled:
+        raise asyncio.CancelledError

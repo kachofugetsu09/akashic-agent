@@ -4067,7 +4067,7 @@ async def test_installed_v3_shared_handoff_success_and_owner_failure(
             "    disposed = False\n"
             "    token = id(ctx._root_instance_token())\n"
             "    async def started(_):\n"
-            "        async with ctx.runtime_scope():\n"
+            "        async with ctx.root_scope():\n"
             "            started_roots.append(token)\n"
             "    await ctx.on(RUNTIME_STARTED, started)\n"
         "    await ctx.on(RUNTIME_STOPPING, lambda _: stopped_roots.append(token))\n"

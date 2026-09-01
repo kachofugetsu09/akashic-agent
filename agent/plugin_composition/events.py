@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable, Collection
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ContextManager, Generic, TypeVar, cast
@@ -15,7 +15,7 @@ from agent.plugin_composition.diagnostics import (
 from agent.plugin_composition.model import CompositionError, FiberState
 
 if TYPE_CHECKING:
-    from agent.plugin_composition.context import Fiber
+    from agent.plugin_composition.context import Fiber, RootScope
 
 P = TypeVar("P")
 R = TypeVar("R")
@@ -95,6 +95,20 @@ EventKey = (
 )
 EventListener = Callable[[object], object]
 ListenerFailureHandler = Callable[["Fiber", str, BaseException], None]
+
+
+@dataclass(slots=True)
+class _ScopeCall:
+    scope: RootScope
+    started: bool = False
+
+    async def run(self, action: Callable[[], Awaitable[R]]) -> R:
+        self.started = True
+        return await self.scope.run(action)
+
+    async def release(self) -> None:
+        if not self.started and self.scope.active:
+            await self.scope.release()
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +320,7 @@ class EventRegistry:
         payload: P,
         *,
         plugin_ids: Collection[str] | None = None,
+        scope_source: Callable[[], RootScope] | None = None,
     ) -> None:
         """调用全部 observer，并把各自失败隔离为 Incident。"""
 
@@ -370,19 +385,21 @@ class EventRegistry:
             raise
 
         # 2. 全部 callback 已调用后再统一启动并等待异步 observer。
-        pending = [
-            (
-                listener,
-                asyncio.create_task(
-                    _capture_observer_failure(result, operation),
-                    name=f"plugin-observer:{key.name}:{listener.owner.name}",
-                ),
+        pending: list[
+            tuple[_Listener, asyncio.Task[BaseException | None], _ScopeCall | None]
+        ] = []
+        for listener, result, operation in awaitables:
+            scope_call = (
+                None if scope_source is None else _ScopeCall(scope_source())
             )
-            for listener, result, operation in awaitables
-        ]
+            task = asyncio.create_task(
+                _capture_observer_failure(result, operation, scope_call),
+                name=f"plugin-observer:{key.name}:{listener.owner.name}",
+            )
+            pending.append((listener, task, scope_call))
         if not pending:
             return
-        task_owners = {task: listener for listener, task in pending}
+        task_owners = {task: listener for listener, task, _ in pending}
         remaining = set(task_owners)
         try:
             while remaining:
@@ -405,6 +422,10 @@ class EventRegistry:
         except asyncio.CancelledError as cancellation:
             await _cancel_observer_tasks(list(remaining))
             raise cancellation
+        finally:
+            await _release_unstarted(
+                [scope_call for _, _, scope_call in pending if scope_call is not None]
+            )
 
     def registrations(
         self,
@@ -484,14 +505,22 @@ async def _run_parallel_listener(
 async def _capture_observer_failure(
     result: object,
     operation: PluginOperation | None,
+    scope_call: _ScopeCall | None,
 ) -> BaseException | None:
     assert inspect.isawaitable(result)
-    try:
+
+    async def wait_result() -> None:
         if operation is None:
             _ = await result
         else:
             with operation.bind():
                 _ = await result
+
+    try:
+        if scope_call is None:
+            await wait_result()
+        else:
+            await scope_call.run(wait_result)
     except BaseException as error:
         if operation is not None:
             operation.finish(error)
@@ -499,6 +528,23 @@ async def _capture_observer_failure(
     if operation is not None:
         operation.finish()
     return None
+
+
+async def _release_unstarted(scopes: list[_ScopeCall]) -> None:
+    tasks = [
+        asyncio.create_task(scope.release(), name="observer-scope-release")
+        for scope in scopes
+        if not scope.started and scope.scope.active
+    ]
+    if not tasks:
+        return
+    release = asyncio.gather(*tasks)
+    while not release.done():
+        try:
+            _ = await asyncio.shield(release)
+        except asyncio.CancelledError:
+            continue
+    _ = release.result()
 
 
 def _listener_boundary(

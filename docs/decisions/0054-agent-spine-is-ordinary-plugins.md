@@ -58,25 +58,25 @@ Core publication plane 继续唯一拥有 artifact、generation、candidate isol
 stable/latest、lease、原子 publication、drain 和恢复日志。它补齐三个领域中性的执行原子：
 
 1. 一个绑定单一 `ServiceKey`
-的泛型 snapshot `RuntimeServicePort`：取得构造时已经固定的 exact snapshot lease、绑定当前 task、
-取已绑定 Service、等待调用结束、逆序释放。公开 `call(operation)` 没有 selector、snapshot ID 或
-plugin ID 参数；普通 host 的 port 永远固定 stable，插件得不到 port factory。attached validation
+的泛型 `ServiceCall`：取得构造时已经固定的 exact snapshot lease、绑定当前 task、
+取已绑定 Service、等待调用结束、逆序释放。公开 `call(action)` 没有 selector、snapshot ID 或
+plugin ID 参数；普通 host 的 `ServiceCall` 永远固定 stable，插件不能创建 `ServiceCall`。attached validation
 child 只使用 Core 根据父 Turn 与 candidate identity 铸造的一次性 exact lease，host 和插件都不能
 选择 latest。该边界不知道 `Message`、`Turn`、`Session`、ReAct 或工具名，也不能替任何缺失
 Service fallback；
-2. 每个 Fiber 都能使用但不能选择目标的 root-bound task scope。它只取得自身 exact Root lease；
-   Root 退休后新 acquire 返回 `TurnAdmissionRetiredError`，不改投新 stable；
-3. process-wide opaque operation supervisor。它只按 opaque scope/operation key 原子 claim，保存
+2. 每个 Fiber 都能使用但不能选择目标的 `RootScope`。它只取得自身 exact Root lease；
+   Root 退休后新 acquire 返回 `RootRetired`，不改投新 stable；
+3. process-wide `TaskControl`。它只按 opaque scope key/task key 原子 claim，保存
    exact lease、task 和 cancel callback，并在 terminal 后 release；它不知道 Turn、Session、Agent
-   或来源。窄 control port 可以按已知 opaque key 取消旧 generation 的仍活 operation，使 reload
+   或来源。窄 `TaskCancel` 可以按已知 task key 取消旧 generation 的仍活 task，使 reload
    期间不丢 `/stop`，但不能创建工作、读取业务状态或选择 snapshot。
 
 因此不保留“特权 Agent 插件”。snapshot lease 包住完整 ReAct Turn 并不授予其中某个插件
 特权；它只是保证该 Turn 看到同一整盒积木。普通 Channel 回调已经处于 exact snapshot 时直接
 注入 `agents`；Control 等 snapshot 外入口通过泛型调用边界进入。`agents` 若启动长于调用栈的
-task，只能从自己实例绑定的 root task scope 取得 lease，再交给 operation supervisor 保持到
-terminal，不能自行选择 stable/latest。每次 admission 返回 opaque operation control key；Control
-从 accepted receipt 或 durable active-attempt fact 取得该 key，通过 supervisor 保存的旧 cancel
+task，只能从自己实例绑定的 `RootScope` 取得 lease，再交给 `TaskControl` 保持到
+terminal，不能自行选择 stable/latest。每次 admission 返回 opaque task key；Control
+从 accepted receipt 或 durable active-attempt fact 取得该 key，通过 `TaskControl` 保存的旧 cancel
 callback 通知旧 task。新 generation 不接管旧插件的业务状态，也不能 claim 同一 opaque scope。
 
 ## 非特权判定
@@ -87,7 +87,7 @@ callback 通知旧 task。新 generation 不接管旧插件的业务状态，也
   `PluginManager`、Session 私有 store 或兄弟插件源码作隐藏后门。
 - Core 与 bootstrap 不按七个插件的 ID、`tool_search`、`message_push`、`shell`、模型名、记忆文件
   或 Channel 来源分支，也不制造这些领域的专用 Service。
-- root task scope 与 operation supervisor 只处理 Root identity、opaque key、task、lease 和 cancel
+- `RootScope` 与 `TaskControl` 只处理 Root identity、opaque key、task、lease 和 cancel
   callback；它们的接口和测试不得出现 Agent/Turn/Session/Scheduler 等领域字段。
 - 插件只获得声明的 `workspace_files`、plugin-data 和公开窄 Service；`sessions` 是
   `sessions.db` 的唯一正式 writer，其他插件不能获得任意 SQL 或全功能 repository。
@@ -115,7 +115,8 @@ section、provider request prepare、tool authorize/result、Turn committed 和 
 同一固定输入依次运行旧基线 artifact 与新实现，并比较记录结果；两条实现不会同时服务一次请求。
 
 每批先给即将退役的 owner 明确 `deprecated` 标记和零新增 consumer 约束，再把正式调用者一次
-切到唯一新 owner。关键测试通过且两个独立 Terra xhigh review 清除 P0/P1 后，立即物理删除该批
+切到唯一新 owner。关键测试通过、两个独立 Terra xhigh review 清除 P0/P1，且独立 Terra xhigh
+name review 得到 `NAME PASS` 后，立即物理删除该批
 旧实现、分支、配置和测试替身。最终不保留 alias、adapter、feature flag、legacy mode 或 fallback。
 
 回滚只选择上一个完整 Git commit、不可变 generation 和执行前备份。已经提交的 Session 行、
@@ -128,8 +129,8 @@ section、provider request prepare、tool authorize/result、Turn committed 和 
   compaction ledger、附件或删除权限。
 - passive、control、scheduler、wake 与 subagent 最终使用同一 `agents` Service，但各来源仍拥有
   自己的准入前规则、领域状态和 delivery settle。
-- reload 后新 `agents` 可以通过 opaque operation control 取消旧 Root 内尚未终结的工作；旧 owner
-  保持自己的 lease 与 terminal，结束后才从 supervisor 移除，不迁移内存业务对象。
+- reload 后新 `agents` 可以通过 opaque `TaskCancel` 取消旧 Root 内尚未终结的工作；旧 owner
+  保持自己的 lease 与 terminal，结束后才从 `TaskControl` 移除，不迁移内存业务对象。
 - 禁用一个基础插件会使依赖拓扑不可发布，不触发 Core 私有实现。
 - 0036 的 publication owner 与 0046 的增量候选隔离保持有效；stable/latest 是发布状态，不是
   灰度或双正式 writer。
@@ -137,12 +138,13 @@ section、provider request prepare、tool authorize/result、Turn committed 和 
 ## 验收
 
 - [ ] snapshot 外入口只能通过泛型 Service 调用边界进入；该边界源代码与测试无 Agent 领域词。
-- [ ] root-bound task 在 reload 前后只运行自己的 exact Root；opaque operation 可跨代取消，且同一
+- [ ] root-bound task 在 reload 前后只运行自己的 exact Root；opaque task 可跨代取消，且同一
   scope 不会由两代同时 claim。
 - [ ] 七个基础插件全部由正式 v3 loader 挂载，依赖图无环，Root sealing 恰有一个默认 runner。
 - [ ] passive 完整路径只经过 snapshot 内普通 Service；禁用任一依赖会在 admission 前 fail-loud。
 - [ ] Core 零插件 ID/工具名/来源特判，零旧 `AgentLoop`/`PassiveTurnPipeline` consumer，零兼容壳。
 - [ ] 固定场景依次比较迁移前后 Session write set、事件、provider/tool trace、stream、delivery、
   error/cancel/interrupt 和附件结果；除批准字段外相同。
-- [ ] 每个迁移批次都有两个独立 Terra xhigh review，最终 Concept Gate 与全量 Gate 无 P0/P1。
+- [ ] 每个迁移批次都有两个独立 Terra xhigh review 和一个独立 name review；最终 Concept Gate、
+  全量 Gate 与 `NAME PASS` 全部通过。
 - [ ] 外部插件源码、正式 Akashic workspace、协议 schema 和客户端不在本次 Core 迁移中改变。

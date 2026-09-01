@@ -5,7 +5,7 @@ from agent.plugin_composition.context import (
     FiberHandle,
     HealthHandle,
     Plugin,
-    RuntimeScope,
+    RootScope,
 )
 from agent.plugin_composition.overlay import (
     CompositionOverlay,
@@ -194,6 +194,12 @@ from agent.plugin_composition.interaction_undo import (
     InteractionUndoResult,
     InteractionUndoService,
     SourceMutationFence,
+)
+from agent.plugin_composition.tasks import (
+    TaskCancel,
+    TaskLease,
+    TaskStart,
+    TaskWait,
 )
 from agent.plugin_composition.mcp_slots import (
     MCP_SERVERS,
@@ -443,6 +449,10 @@ __all__ = [
     "MobileUiRegistry",
     "MobileUiRpcInvalidRequest",
     "ObserveEventKey",
+    "TaskCancel",
+    "TaskLease",
+    "TaskStart",
+    "TaskWait",
     "Plugin",
     "PluginChannels",
     "PluginCommands",
@@ -523,7 +533,7 @@ __all__ = [
     "SNAPSHOT_SEALING",
     "RuntimeStarted",
     "RuntimeStopping",
-    "RuntimeScope",
+    "RootScope",
     "SnapshotSealing",
     "SerialEventKey",
     "SyncTask",

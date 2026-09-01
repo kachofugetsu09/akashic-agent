@@ -59,6 +59,7 @@ from agent.plugin_composition import (
     PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
+    ServiceKey,
     ServiceView,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
@@ -67,6 +68,7 @@ from agent.plugin_composition import (
     RuntimeStopping,
     SnapshotSealing,
 )
+from agent.plugin_composition.tasks import TaskCancel, TaskControl, TaskStart
 from agent.plugin_composition.channels import (
     CoreChannelDefinition,
     ChannelRegistrySnapshot,
@@ -362,6 +364,7 @@ class PluginManager:
         )
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
+        self._task_control = TaskControl()
         self._runtime_started_roots: set[object] = set()
         self._runtime_lifecycle_lock = asyncio.Lock()
         self._runtime_services_enabled = False
@@ -643,6 +646,16 @@ class PluginManager:
         if self._activity_host is not None:
             raise RuntimeError("ActivityHost 已绑定")
         self._activity_host = host
+
+    def task_start(self, service_key: ServiceKey[object]) -> TaskStart:
+        """Return the process-wide start right for one ServiceKey."""
+
+        return self._task_control.bind_start(service_key)
+
+    def task_cancel(self, service_key: ServiceKey[object]) -> TaskCancel:
+        """Return the process-wide cancel right for one ServiceKey."""
+
+        return self._task_control.bind_cancel(service_key)
 
     @staticmethod
     def _activity_catalog_identity(snapshot: RuntimeSnapshot | None) -> str | None:
@@ -5237,7 +5250,7 @@ class PluginManager:
             "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16],
             candidate_incident_limit=(1024 if candidate_owner is not None else None),
         )
-        root._bind_runtime_scope_acquirer(
+        root._bind_lease(
             lambda: self._snapshot_store.acquire_composition_root(root)
         )
         try:
@@ -6558,7 +6571,11 @@ class PluginManager:
                     "Activity runtime cleanup 未完成，generation owner 已保留"
                 ) from error
 
-        # 2. 关闭当前 generation admission，再完成快照回收。
+        # 2. 让已接收 task 由原 owner 收束，再完成快照回收。
+        _, task_cancelled = await _complete_critical(self._task_control.aclose())
+        externally_cancelled = externally_cancelled or task_cancelled
+
+        # 3. 关闭当前 generation admission，再完成快照回收。
         for generation in self._active_generations.values():
             self._retire_generation(generation)
         _, snapshot_cancelled = await _complete_critical(self._snapshot_store.close())
@@ -6567,7 +6584,7 @@ class PluginManager:
         for plugin_id in tuple(self._prepared_generations):
             _, cancelled = await _complete_critical(self.discard_prepared(plugin_id))
             externally_cancelled = externally_cancelled or cancelled
-        # 3. 逐插件关闭 generation scope 并消费全部 cleanup failures。
+        # 4. 逐插件关闭 generation scope 并消费全部 cleanup failures。
         for mp in list(self._loaded):
             active_info = self._active_plugins.get(mp)
             scope = self._scopes.pop(mp, None)
@@ -6581,7 +6598,7 @@ class PluginManager:
                 self._cleanup_failures.extend(cleanup_failures)
                 externally_cancelled = externally_cancelled or cancelled
 
-            # 4. 注销模块和运行时注册。
+            # 5. 注销模块和运行时注册。
             self._remove_module_tree(mp)
             stable_alias = self._stable_aliases.pop(mp, None)
             if stable_alias is not None:
