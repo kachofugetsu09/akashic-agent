@@ -766,10 +766,29 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 
 ### PLG-018 Agent 内骨架由普通插件组合
 
-一次 Agent 工作的内骨架由 `sessions`、`models`、`tools`、`prompt`、
-`session-view`、`agents` 与 `agent-loop` 七个普通插件组成。七个表示内骨架的最小变化轴，
-不是整个系统只能安装七个插件；Channel、Command、Scheduler、Wake、Subagent、Compaction、
-Memory、Tool Search 与 Shell 等能力继续作为普通插件注入这些 Service。
+默认 Agent 装配由 `sessions`、`models`、`tools`、`system-prompt`、`model-input`、`agents` 与
+`agent-loop` 七个普通插件组成。这七个是当前已证明的默认能力图，不是固定数字；增删任一块都
+必须以独立事实、不变量、控制流或真实边界证明。`session-view` 只在有 exact consumer 需要对已提交
+Session fact 做纯可回放 fold 时作为额外普通插件；它不构造 model history。Channel、Command、Scheduler、
+Wake、Subagent、Compaction、Memory、Tool Search 与 Shell 等能力继续作为普通插件注入这些 Service。
+
+`sessions` 唯一拥有权威 Session/Message/Turn 事实、事务和 model history 派生。`model-input` 每个
+Agent Turn 只 open 一次私有 `InputState`，每次 provider attempt 必须用 immutable `InputCall` build
+一只 `ProviderInput`，再以同一 opaque receipt 恰好 settle 一次。`InputCall` 冻结权威 history 之外的
+当前完整 Turn transcript、system text、tool schemas、model/context/output limit、call/try 序号、
+normal/too-long cause、continuation 和 prior usage；`ProviderInput` 返回 provider-ready content payload、
+`InputSize` 与 receipt。settle 明确区分 done、too-long、failed、cancelled，只有 `InputRetry` 可以允许
+同一 call 的第二次 attempt，禁止第三次尝试或 Core fallback。一个 Root 必须恰有一个 basic 或
+compaction provider；Core 和 `agent-loop` 不识别 compaction。`models`
+只校验、解析、冻结和执行已传入的模型选择，不读写 Session metadata。`agents` 只拥有公开
+Agent 合同、registry、source 归属和 factory slot；`agent-loop` 提供默认具体 Agent，拥有 inbox、Turn/Step、
+ReAct、interrupt/cancel/terminal，不允许两者各留半个 driver。
+
+compaction provider 可以在 `InputState` 内私有保留 ledger head、token meter、已闭合 tool batch 和
+待发布 fact。它从下一只完整 transcript 识别新 tool batch；too-long 后的第二次 build 可以强制压缩；
+done settle 记录 usage 并只发布一次 fact。failed/cancelled settle 不得伪造已提交 checkpoint 回滚，
+下次 open 必须依 receipt/ledger 恢复并补发。basic provider 原样组合且不允许 overflow retry。两者都
+不能要求 loop 传 compaction 专用方法、mutable binding、listener 列表或任意 request bag。
 
 Core 只拥有 artifact、generation、完整 Root、readiness、stable/latest、exact snapshot lease、原子
 publication、drain、恢复日志和三个领域中性执行原子：绑定单一 `ServiceKey` 的 `ServiceCall`、
@@ -783,11 +802,14 @@ latest。`ServiceCall` 只能在该 lease 内等待一次调用，不得理解 M
 不得理解 Agent、Turn、Session、来源或业务状态，只允许同一 opaque scope 原子 claim、按已知 key
 取消和 terminal release。snapshot 包住完整 ReAct Turn 只冻结这次组合，不赋予其中任何插件特权。
 
-七个插件必须使用与外部 v3 插件相同的 loader、Context、Fiber、Effect、PluginRuntime、generation、
+骨架插件必须使用与外部 v3 插件相同的 loader、Context、Fiber、Effect、PluginRuntime、generation、
 workspace file grant 和 disabled builtin 规则。`sessions` 是 `sessions.db` 的唯一正式 writer；
-`agent-loop` 只实现直接 ReAct 算法并向 `agents` 注册 runner。Root 在 publication 前必须拒绝缺失 Service、
-重复 runner、重复 writer 和依赖环。Core/Bootstrap 不得按这些插件或 `tool_search`、`message_push`、Shell、
+`agent-loop` 向 `agents` 注册 factory。Root 在 publication 前必须拒绝缺失 Service、重复 factory、
+重复 `model-input` provider、重复 writer 和依赖环。Core/Bootstrap 不得按这些插件或 `tool_search`、`message_push`、Shell、
 模型、记忆和 Channel 名称分支。
+
+现有 before/after phase 套件全部退役。不预建 `before-step`、`after-step`、`ReplyEdit`、万能 middleware 或
+可变总 context。system section、model input、tool view/run、committed fact 和 outbound view 各归自己的 owner。
 
 迁移不使用生产流量灰度、运行时 shadow、旧新双执行、双写或双 sender。每次只切换一个 owner：新路径
 成为唯一正式路径并通过关键 oracle 与两个独立 review 后，必须在同批删除 deprecated 旧代码、配置、

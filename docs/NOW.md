@@ -28,8 +28,9 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 ## P1 · Agent Harness 抽象收敛
 
 - 当前执行合同为 [`普通插件 Agent 骨架与被动链迁移合同`](design/ordinary-agent-spine-migration.md)：
-  七个同权普通插件组成 Agent 内骨架，Core 只保留 publication、exact lease 与泛型 Service 调用。
-  本迁移不走灰度、生产 shadow、双执行或双写；每批两个独立实现 review 和一个独立 name review 后，
+  默认七个同权普通插件组成当前最小能力图，但数字不是架构律；Core 只保留 publication、
+  exact lease 与泛型 Service 调用。本版已通过 DSH 对照 `CONCEPT PASS` 与 `NAME PASS`，下一批是 M2。
+  本迁移不走灰度、生产 shadow、双执行或双写；M1～M9 每个实现批次在两个独立实现 review 和一个独立 name review 后，
   在同批删除 deprecated 旧 owner，
   最终不留兼容壳。Core 阶段停在独立外部插件源码迁移之前，但这只是迁移停靠点，不是干净终态；
   任何仍有 live consumer 的旧 public surface 都要按 `keep/move/remove` 入账，外部源码迁完后删除。

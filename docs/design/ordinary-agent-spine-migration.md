@@ -2,13 +2,16 @@
 
 - 状态：accepted
 - 日期：2026-09-01
-- 决策：[0054 · Agent 内骨架由七个普通插件组成](../decisions/0054-agent-spine-is-ordinary-plugins.md)
+- 决策：[0054 · Agent 由普通插件组成](../decisions/0054-agent-spine-is-ordinary-plugins.md)
 - 取代范围：[React Core 与 Scheduler/Subagent 设计](react-core-scheduler-subagent.md) 中
   “React 实现属于 Core”的结构结论；既有 Turn、Session、Scheduler、Subagent 行为合同不变
 - 实施分支：`codex/react-plugin-spine`
-- 基线：`f1f4560892ae92e96779ff89f848223afdcc9919`
+- 初始迁移基线：`f1f4560892ae92e96779ff89f848223afdcc9919`
+- 本次 Concept Gate 基线：`b8f38583a51dee4cde9a689f1a5f49560d654bd2`
 - Git worktree：`/mnt/data/coding/akasic-agent-worktrees/react-plugin-spine`
-- 恢复引用：`backup/pre-react-plugin-spine-20260901-f1f45608`
+- 当前实现 head：`b8f38583a51dee4cde9a689f1a5f49560d654bd2`；M1 中性原子及 owner 修正已落地，M2 尚未开始
+- 恢复引用：`backup/pre-react-plugin-spine-20260901-f1f45608`、`backup/pre-dsh-spec-rewrite-20260901`、
+  `backup/pre-m1-retired-error-fix-20260901`
 
 ## 1. 结果、范围与停止条件
 
@@ -20,7 +23,8 @@ Command、Shell、Compaction、Markdown memory 或任何业务插件；它只发
 
 ### 1.2 完成标准
 
-- 七个 Agent 内骨架插件全部通过同一 v3 loader、generation Root、Fiber、Effect 和 lease 运行。
+- 最小 Agent 能力图全部通过同一 v3 loader、generation Root、Fiber、Effect 和 lease 运行；
+  插件数量不作为设计约束。
 - 被动 Channel、Control、Scheduler、Wake 和 Subagent 都只通过公开 `agents` Service 发起工作。
 - 一次工作从 source 到 provider/tool、Session commit、delivery/ACK 始终绑定 exact snapshot。
 - 当前硬编码特殊功能都有普通 owner，或被证明是 ReAct 直接算法的一部分；Core 无名称特判。
@@ -87,9 +91,9 @@ forbidden_effects:
   - 旧新双执行、双写、双 sender
   - 正式数据库、消息、远程 API、服务或插件安装变更
 validation:
-  - 每批关键行为和 write-set oracle
-  - 每批两个独立 Terra xhigh review
-  - 每批一个独立 Terra xhigh name review
+  - 每个实现批次的关键行为和 write-set oracle
+  - M0 一个 Terra xhigh concept review 和一个独立 name review
+  - M1～M9 每批两个独立 Terra xhigh implementation review 和一个独立 name review
   - 最终 zero-consumer、全量 test 和 project Gate
 rollback: 上一完整 commit、不可变 generation、执行前备份；不伪造外部效果回滚
 worktree_writer: /root
@@ -137,9 +141,9 @@ consumer 只决定迁移顺序，不决定设计好坏。每个外部接入点�
 
 | 当前接入点 | live consumer | 判断 | 最终入口 |
 |---|---|---|---|
-| `PROMPT_RENDER_EVENT`、可变 `PromptRenderCtx`、`PromptSectionRender` | Citation、Meme | `move` | `Prompt` 接受普通 `PromptSection` contribution |
-| `CONTEXT_PREPARED_EVENT`、`BeforeTurnCtx.extra_hints` | Emotion | `move` | context target 的 `PromptSection` contribution |
-| `AFTER_REASONING_PREPROCESS_EVENT`、`AFTER_REASONING_CLEANUP_EVENT`、可变 `AfterReasoningCtx` | Citation、Meme | `move` | `agent-loop` 按顺序应用窄 `ReplyEdit`；不得暴露完整 Turn 总状态 |
+| `PROMPT_RENDER_EVENT`、可变 `PromptRenderCtx`、`PromptSectionRender` | Citation、Meme | `move` | `system-prompt` 接受普通 section contribution |
+| `CONTEXT_PREPARED_EVENT`、`BeforeTurnCtx.extra_hints` | Emotion | `move` | system section 或普通 context Message；依是否需要进历史决定 |
+| `AFTER_REASONING_PREPROCESS_EVENT`、`AFTER_REASONING_CLEANUP_EVENT`、可变 `AfterReasoningCtx` | Citation、Meme | `move` | 模型指引归 `system-prompt`，展示归 outbound view，插件事实归私有 ledger；无通用 reply 改写链 |
 | `AFTER_TURN_COMMITTED`、`TurnCommitted` 总 payload | Emotion、GitHub Watch、Observe、Proactive Feedback | `move` | sessions 只发布小而 immutable 的 `TurnSaved`；诊断由原 owner 单独发布 |
 | `is_context_frame` 与 provider dict 编码 | Status Commands | `move` | sessions 拥有 typed `MessageKind`，`SessionRead` 返回 typed `MessageView` |
 | `persist_assistant_metadata["cited_memory_ids"]` | Citation | `move` | Citation 自己的 `MemoryIds` ledger；Core 不新增通用 data bag |
@@ -158,14 +162,15 @@ deeply immutable；事件只在 sessions 原子提交成功后发布。它不增
 model、prompt、统计、展示或 `extra`。GitHub Watch 可直接使用 identity；Emotion 和 Proactive
 Feedback 以 identity 调窄 `SessionRead` 读取已保存的 typed `TurnView`。
 
-Observe 不再等待一只总事件，也不新增 `*Log` 总袋子。算法进行时：`prompt` 只发
-`PromptSize(turn_id, tokens)`；每次 provider call 由 `models` 发一条 immutable `ModelUse`；每次
+Observe 不再等待一只总事件，也不新增 `*Log` 总袋子。算法进行时：`model-input` 每次 build 只发
+`InputSize(turn_id, call_id, try_number, tokens, quality, changed)`；每次 provider call 由 `models` 发一条 immutable `ModelUse`；每次
 tool call 由 `tools` 发一条 immutable `ToolUse`；每次 ReAct step 由 `agent-loop` 发一条 immutable
 `LoopStep`。每种 fact 只含本 owner 的标量、tuple 或 immutable value。最后 sessions commit 并发
 `TurnSaved`，作为本轮 facts 已齐的 fence。Observe 以 `turn_id` 在自身 turn-local state 中 join，
 并从 `SessionRead` 读取已保存正文；无 `TurnSaved` 的失败或取消 Turn 不伪装成已保存。
 
-这些小事实的字段也在实现前锁定：`PromptSize(turn_id, tokens)`；
+这些小事实的字段也在实现前锁定：
+`InputSize(turn_id, call_id, try_number, tokens, quality, changed)`；
 `ModelUse(turn_id, call_id, usage)`，其中 `usage` 复用 models 的 immutable `ModelUsage`；
 `ToolUse(turn_id, call_id, name, args_json, result, status)`；
 `LoopStep(turn_id, step, text, call_ids, final)`。`args_json` 是已验证参数的 immutable 编码，
@@ -174,15 +179,16 @@ tool call 由 `tools` 发一条 immutable `ToolUse`；每次 ReAct step 由 `age
 旧 metadata 三组键分别这样结束：
 
 - Citation 的 `cited_memory_ids` 变成 Citation 私有的 immutable `MemoryIds`，不进入 Core public
-  API。Citation 的 `ReplyEdit` 只改 reply，并在 sessions commit 前把 pending row 写入自己的
-  plugin-data ledger，key 是 `turn_id`。`TurnSaved` 后 Citation 用 `reply_id` 完成 row；若进程在两步
-  之间崩溃，Citation boot 时用窄 `SessionRead` 按 `turn_id` 判断已保存、失败或仍 pending，再完成或
-  丢弃自己的 row。M9 从旧 assistant metadata 一次性导入历史 Citation rows；之后只读 Citation
-  ledger，旧 key 零 consumer，不留 dual read。Core 不认识 citation，也不新增通用 data bag。
+  API。Citation 若引导模型生成引用，用 system section 或普通 Tool；若只改变 Channel 展示，用
+  outbound view。不允许在模型返回后用通用 `ReplyEdit` 改写待持久正文。Citation 在 `TurnSaved`
+  后以 `reply_id` 写自己的 plugin-data ledger，boot 时用窄 `SessionRead` 修复漏处理。M9 从旧
+  assistant metadata 一次性导入历史 Citation rows；之后只读 Citation ledger，旧 key 零 consumer，不留
+  dual read。Core 不认识 citation，也不新增通用 data bag。若精确行为对比证明“模型后改写且
+  作为持久正文”不可替代，M9 必须停止并单独决定 Message 合同，不得因此复活 phase。
 - `skip_memory_retrieval` 不再是 durable Session metadata。GitHub Watch 每次 start Turn 时传
-  immutable `PromptUse`，只关闭 memory 拥有的 section；`prompt` 只按该 request 过滤本轮 section。
+  immutable `PromptUse`，只关闭 memory 拥有的 section；`system-prompt` 只按该 request 过滤本轮 section。
   其他 Turn 不继承这项 policy。
-- `source/repo/item` 属于 github-watch job identity。GitHub Watch 在 `AGENTS.start` 前写自己的 durable
+- `source/repo/item` 属于 github-watch job identity。GitHub Watch 在 Agent create/resume 前写自己的 durable
   job ledger，start 失败也由该 ledger 记录；运行时只传普通 session/turn identity。M9 从旧 Session
   metadata 一次性导入仍有效 job，之后插件只读自己的 ledger，sessions 不再认识 GitHub 字段。
 
@@ -199,32 +205,36 @@ sessions 的存储 adapter 内解码，外部插件和其他 Core 模块都不�
 现在像一辆玩具火车：车头里同时焊死了电池、方向盘、喇叭、货箱、售票员和清洁刷。换一只
 喇叭，也要拆车头。
 
-目标是七块普通积木：
+目标不是必须凑成七块，而是每块只做一件事：
 
 ```text
 ┌──────────┐  保存故事      ┌──────────┐  选择大脑
 │ sessions │               │ models   │
 └──────────┘               └──────────┘
 
-┌──────────┐  使用工具      ┌──────────┐  拼提示词
-│ tools    │               │ prompt   │
-└──────────┘               └──────────┘
+┌──────────┐  使用工具      ┌───────────────┐  只拼系统提示
+│ tools    │               │ system-prompt  │
+└──────────┘               └───────────────┘
 
-┌──────────────┐  把故事变成大脑这次要看的页面
-│ session-view │
-└──────────────┘
+┌─────────────┐  把完整故事装进大脑这次装得下的小包
+│ model-input │
+└─────────────┘
 
-┌──────────┐  管“这次工作是谁、能否取消、何时结束”
+┌──────────┐  管“有哪些 Agent，请哪一种来工作”
 │ agents   │
 └────┬─────┘
-     │ runner slot
+     │ factory
      ▼
-┌──────────┐  重复“大脑想一下 → 调工具 → 再想一下”
+┌──────────┐  管“一次工作怎样开始、停止，以及怎样想”
 │agent-loop│
 └──────────┘
+
+┌──────────────┐  可选：把已保存的故事折成可读小纸条
+│ session-view │  它不给大脑拼历史，也不改故事
+└──────────────┘
 ```
 
-还有一个很小的门卫，但门卫不是第八块特权积木。门卫不认识故事、大脑或工具；它只给每项工作
+还有一个很小的门卫，但门卫不是特权 Agent 积木。门卫不认识故事、大脑或工具；它只给每项工作
 一张不透明号码牌，锁住这项工作使用的同一代积木，并记住“有人按停止时通知哪项工作”。演完后
 号码牌和锁一起归还。这样一次 ReAct Turn 全程走同一 snapshot，旧工作仍能被停止，盒内每块积木
 仍然平等。定时器醒来只能拿回自己的旧盒；旧盒已经退休就明确失败，不能偷偷换新盒。
@@ -263,18 +273,46 @@ PassiveMessageWorker
   `agent/plugins/manager.py:5323-5340` 又从它制造 Core-owned `SCOPED_TURNS`。这构成当前环。
 - `agent/plugins/snapshot.py:76-114` 已把完整 Composition Root 放入 RuntimeSnapshot；
   `agent/plugins/snapshot.py:876-907` 已保证 exact lease 排空。
+- `agent/plugins/service_call.py:21-105`、`agent/plugin_composition/context.py:60-145` 和
+  `agent/plugin_composition/tasks.py:18-220` 已分别落地中性 `ServiceCall`、`RootScope` 和 `TaskControl`。
 - `agent/plugin_composition/context.py:236-311` 已提供 mount/inject/provide/require/effect，
   `agent/plugin_composition/context.py:350-397` 已提供 typed dispatch。
 - `agent/plugins/manager.py:5451-5458` 已有 `snapshot.sealing`；不需要新建第二套 readiness 图。
 - `session/manager.py:642-802` 已有原子 message commit、append 和 durable delivery 事务 owner；
   迁移 owner 不能改变这些 write set。
 
-### 3.2 DSH 的七个零件
+### 3.2 DSH 参考快照
 
-DeepSeek Harness 的 AgentLoop 注入 `agents`、`sessions`、`llm`、`tools`、`systemPrompt` 和
-`sessionProjections`，自己是第七个零件。它的 loop 只负责模型/工具重复，持久化等由其他插件
-补充。Akashic 复用这个依赖形状，不复制 DSH 的内存 SessionStore，也不放弃现有 SQLite、
-generation 或 recovery owner。
+本合同对照 DSH commit `dd6322d604e00eec1ba5e0c8541159906a21094a`。每一块都以当前源码为老师，
+不把名字相似当成行为等价：
+
+| 问题 | DSH 证据 | Akashic 结论 |
+|---|---|---|
+| 插件是否同权 | 产品部件全是插件，无特权 Core：`docs/architecture.md:9-13`；bundle row 顺序不表示加载顺序：`packages/bundle/base/cordis.patch.yml:12-13` | 内置只表示默认发行；同 loader、权限、failure 和 lifecycle |
+| 默认装配有多少块 | `AgentLoop` 注入六个 Service：`packages/core/agent-loop/src/index.ts:351-354`；官方测试挂载这六个加 loop：`packages/core/agent-loop/tests/interception.spec.ts:31-40` | “七块”只是 DSH 当前默认装配事实，不是 Akashic 验收数字 |
+| Session 拥有什么 | append/commit：`packages/core/session/src/index.ts:567-653`；model history：同文件 `:699-745` | `sessions` 独占权威历史与 model history 派生 |
+| Session projection 是什么 | 纯 `init + apply` fold：`packages/session/session-projection/src/index.ts:34-85`；只消费 committed event：同文件 `:169-211` | `session-view` 若存在只是可选通用 fold，不是 model history owner |
+| Compaction 怎样进入 | DSH 在窄 `agent/pre-step` 决策中检查压力并追加 surface replacement：`packages/compaction/compaction-basic/src/index.ts:127-225` | Akashic 不复制 before-step；以独立 `model-input` provider 保留现有 append-only message + compaction ledger 边界 |
+| 谁驱动每次模型尝试 | DSH 的具体 Agent loop 创建请求、调用模型、处理错误并继续工具循环：`packages/core/agent-loop/src/agent.ts:341-438`；prepared call 钉住同一 adapter generation：`packages/llm/llm/src/index.ts:882-935` | `agent-loop` 仍驱动 attempt；`model-input` 只对每次 attempt 做 build/settle，不成为第二个 loop |
+| Prompt 如何扩展 | section/context/tools/variable 独立注册：`packages/core/system-prompt/src/index.ts:424-524`；assemble：同文件 `:526-611` | 只保留有 owner 的 system section 注册；不复制可改全体 assembly 的逃生 hook |
+| Tool Search 如何涌现 | 具体工具通过普通 registry 注册：`packages/core/tools/src/index.ts:1022-1053`；progressive disclosure 替换 scoped restriction：`docs/cookbook/extension-cookbook.md:100-114` | Tool Search 只是 `tools` scoped view 的普通 consumer；Core 无元工具特判 |
+| Agent 和 loop 怎样分 | registry/factory：`packages/core/agent/src/index.ts:235-247,352-422`；具体 Agent 与完整 Turn/Step：`packages/core/agent-loop/src/index.ts:612-640`、`packages/core/agent-loop/src/agent.ts:254-438` | `agents` 只管合同和 factory；`agent-loop` 管具体 Agent 的整个生命周期 |
+| 是否需要 before/after phase | 只有窄 `agent/pre-step`：`packages/core/agent/src/runtime-types.ts:55-63,226-238`；无 `agent/after-step` | 不创建替代 before/after 套件；当前 `before_step` 无生产 consumer，直接删除 |
+| 模型后是否任意改 reply | assistant 结果直接追加为事实：`packages/core/agent-loop/src/agent.ts:410-427` | 不创建 `ReplyEdit`；按 system prompt、plugin ledger 或 outbound view 拆开 |
+| 事实怎样观察 | DSH 区分 durable event、waterfall 和 notification：`docs/architecture.md:64-70`；Session observer 只在 commit 后收到事实：`packages/core/session/src/index.ts:63-74,567-653` | 能力 owner 只发自己的 immutable live fact；`sessions` 以 `TurnSaved` 做原子提交 fence；无总 Turn bag |
+
+DSH 不是需要逐字复制的模板。Akashic 保留四项有证据的差异：SQLite 原子事务、完整 Root 的
+exact snapshot lease、Channel delivery/ACK，以及不 UPDATE/DELETE 旧 message 的 compaction ledger + `model-input`。每项差异都只保留
+现有 owner 与安全不变量，不引入特权 Agent 接口。
+
+`model-input` 的 Akashic 证据是：`session/manager.py:409-462` 已从只追加 Session row 构造完整
+history units；`agent/core/passive_turn.py:2698-2860` 证明每次 provider call 都必须 prepare/settle，
+overflow 还会在同一 call 强制重建；`agent/core/passive_turn.py:2258-2266` 证明闭合 tool batch 是下一次
+输入的必要状态；`agent/plugin_composition/request_projection.py:69-141` 与
+`plugins/compaction/plugin.py:87-286` 证明“权威 history + turn-local progress → 有限 provider input →
+usage/fact settle”是真实边界；`plugins/compaction/runtime.py:238-353` 已证明 checkpoint 使用独立 durable
+ledger 与 provenance。现有 mutable binding、Core pass-through fallback 和特制 ServiceKey 不是被背书的
+终态，而是 M2 要收窄并删除的迁移资产。
 
 ### 3.3 事实、推断与未知
 
@@ -284,7 +322,7 @@ generation 或 recovery owner。
 | 已核对事实 | `SCOPED_TURNS` 由 Core 从 ConversationRuntime 制造，是 bootstrap 环的关键，不是必须保留的业务 owner |
 | 已核对事实 | 当前 passive 文件按工具名识别 `tool_search`、`message_push`，AgentLoop 按名称/类型识别 Shell |
 | 设计推断 | 一个泛型 snapshot Service 调用边界足以让 snapshot 外入口进入普通 `agents` Service |
-| 设计推断 | runner slot 让 `agents → sessions` 与 `agent-loop → agents + 其余服务` 保持无环 |
+| 设计推断 | factory slot 让 `agents` 不依赖具体 `agent-loop`；loop 反向注册 factory，因而无环 |
 | 实施中核对 | 每个旧 phase 的动态外部 consumer；先判 `keep/move/remove`，consumer 只决定删除顺序 |
 | 实施中核对 | Mobile attention、Meme/Citation 和 attachment 的精确外部 payload；只迁 owner，不改协议字段 |
 
@@ -311,11 +349,11 @@ ConversationRuntime；它们都进入 exact 账本。M8 输出 repo/commit/符�
 | RuntimeSnapshot、Root sealing、stable/latest、lease、candidate closure | 原样作为 publication 真源，只补 `ServiceCall`、`RootScope`、`TaskControl` |
 | `TOOL_CATALOG`、`PluginTools`、工具 snapshot freeze | 演进为 `tools` 插件的唯一 registry，不创建平行 ToolRegistry |
 | 现有 `plugins/models` Services | 直接作为 `models` 基础插件，不复制 provider/model catalog |
-| 现有 compaction/markdown-memory 普通插件 | 保留 owner，只改为注入新 prompt/projection/session Service |
+| 现有 compaction/markdown-memory 普通插件 | 保留持久 owner；`PROVIDER_REQUEST_PROJECTION` 另行判为 `move`，不把特制 request gate 当终态 Service |
 | SessionManager/SessionStore 的事务和恢复算法 | 行为与测试资产保留，真实实现迁入 `sessions` owner；不包旧 singleton |
-| `PluginScopedTurns` 的 exact root、accepted handle、retired error 语义 | 迁入 AGENTS + `RootScope`；旧 `SCOPED_TURNS` key/bridge 最终删除 |
+| `PluginScopedTurns` 的 exact root、accepted handle、retired error 语义 | 领域中性部分迁入 `RootScope`/`TaskControl`；旧 `SCOPED_TURNS` key/bridge 最终删除 |
 | existing ActivityHost/admission-drain 模式 | 用作 `TaskControl` 的实现证据，不复制 Agent 专用 publication plane |
-| committed fact 的一次发布语义 | sessions 只发小 `TurnSaved`；prompt/tools/models/agent-loop 各发自己的窄 immutable fact |
+| committed fact 的一次发布语义 | sessions 只发小 `TurnSaved`；system-prompt/model-input/tools/models/agent-loop 各发自己的窄 immutable fact |
 | mutable phase ctx、metadata bag、编码 helper | 标成 `move`，Core 内部先停用；外部 consumer 迁完后删除 |
 | bootstrap AgentLoop/SessionManager/ToolRegistry construction 与 manager Core-service manufacturing | deprecated 后退役；它们是待删除 owner，不是可长期复用 adapter |
 
@@ -341,17 +379,55 @@ exact lease，不能由 host 或插件选择 latest。`ServiceCall` 绑定当前
 继承到错误 task 或 lease 已退休全部 fail-loud。它不解析 request，不创建 background task，也不
 捕获领域错误。
 
-### 4.2 七个普通插件
+### 4.2 最小普通插件图
 
 | 插件 | 独占事实或变化轴 | 公开能力 | 明确不拥有 |
 |---|---|---|---|
-| `sessions` | Session/Message/Turn/attachment 的 SQLite 事实与事务 | `SESSIONS`: read snapshot、admit/terminal、atomic commit、窄 compaction/attachment/delivery Service | Prompt、模型、工具、Channel 发送、任意删除 |
-| `models` | provider、model revision、role 与 Turn-frozen binding | 现有 `MODEL_DRIVERS`、`CHAT_MODELS`、`EMBEDDINGS`、catalog/settings | Session、Prompt、loop |
-| `tools` | 工具定义、当前 Turn 可见集合、调用结算 | `TOOLS`: register、open turn view、present、authorize、execute；结构化 `ToolOutcome` | Prompt 文案、Session SQL、特定工具策略 |
-| `prompt` | 有序 Prompt section registry | `PROMPT.build(input)` 与 `PromptSection` contribution | persistent history、provider 调用、记忆文件 |
-| `session-view` | 从 Session 快照构造 model-facing 临时只读 view | `SESSION_VIEW.build(input)` 与窄 history contribution | 权威 history、保存、展示、提交后事实、外部发送 |
-| `agents` | agent registry、Turn admission/取消/terminal 的领域规则 | `AGENTS.start/cancel/read`；runner register slot；typed Turn facts | task/lease 的跨代机械路由、ReAct、模型、工具、Channel 规则 |
-| `agent-loop` | 一次直接 ReAct 的控制流 | 向 `AGENTS` 注册唯一默认 runner；内部 provider/tool loop | 持久 owner、发送、来源枚举、业务插件名 |
+| `sessions` | Session/Message/Turn 的 SQLite 事实、事务与 model history 派生 | `SESSIONS`: read、history、append、save；附件/delivery 只留有已证明跨表事务的窄端口 | system prompt、模型、工具、Channel 发送、任意删除 |
+| `models` | provider/model registry、冻结执行绑定与流式调用 | 复用 `MODEL_DRIVERS`、`CHAT_MODELS`、`EMBEDDINGS`、catalog/settings | Session metadata、模型选择 policy、system prompt、loop |
+| `tools` | 工具定义、scoped view、调用与结算 | `TOOLS`: register、view、run；结构化 `ToolOutcome` | system prompt 文案、Session SQL、Tool Search 特制 grant/unlock |
+| `system-prompt` | 有序 system section registry | `SYSTEM_PROMPT`: register、build | model history、provider 调用、记忆文件、任意 reply 改写 |
+| `model-input` | 每次 provider attempt 的有限不可变输入与结算 | `MODEL_INPUT`: open、build、settle；一个 Root 恰有一个 basic 或 compaction provider | 权威 history、system section/tool registry、provider 调用、通用 middleware |
+| `agents` | 公开 Agent 合同、live registry、source 归属和 factory slot | `AGENTS`: create、resume、get；register factory | 具体 inbox/Turn/Step、cancel/terminal 实现、ReAct、模型、工具 |
+| `agent-loop` | 默认具体 Agent 的完整生命周期 | 向 `AGENTS` 注册默认 factory；拥有 inbox、Turn/Step、cancel/terminal 和 provider/tool loop | 持久 writer、发送、来源枚举、业务插件名 |
+| `session-view`（可选） | 已提交 Session fact 的纯同步 fold | `SESSION_VIEW`: register、state、snapshot | model history、I/O、Session 回写、命令、发送 |
+
+`model-input` 的 definition、provider 和 consumer 是一条完整 capability seam。中立 public API 只有：
+
+```text
+MODEL_INPUT.open(TurnInput)          ──► InputState
+InputState.build(InputCall)          ──► ProviderInput
+InputState.settle(CallResult)        ──► InputRetry
+```
+
+`TurnInput` 每个 Agent Turn 只创建一次，冻结 `session_key`、`turn_id`、Session 创建时间、`sessions`
+派生的 immutable history units 和一只窄 ledger read grant。`InputCall` 每个 provider attempt 创建一次，冻结：
+
+- `call_id`、1-based `call_number`、1-based `try_number`；
+- `cause=normal|too_long`；
+- 当前完整 Turn transcript、当前 system text 和当前 tool schemas；
+- `ModelChoice`、context limit、max output 和 continuation；
+- 之前已经 settle 的 immutable usage tuple。
+
+`ProviderInput` 是 provider-ready content payload：最终 messages、tool schemas、max output、可继续使用的
+continuation、`InputSize`、opaque `InputReceipt`，以及 build 中额外模型调用产生的 immutable usage。
+stream callback、transport retry 和 auth 不进入 `model-input`，仍属于 `models`。每只 receipt 必须恰好一次以
+`CallResult(receipt, status, usage)` settle；status 只能是 `done`、`too_long`、`failed` 或 `cancelled`。
+`InputRetry` 只回答同一逻辑 call 是否可用 `cause=too_long, try_number=2` 再 build；禁止第三次尝试、换 provider
+或 Core fallback。缺 provider、双 provider、序号倒退、receipt 错配或重复 settle 均 fail-loud。
+
+basic provider 原样组合且永不要求 overflow retry。compaction provider 依自己的 durable ledger 投影，
+可以在 `InputState` 内私有保存 ledger head、token meter、已闭合 tool batch 与待发布 fact。它从每次冻结的
+完整 transcript 与上一只 receipt 的边界识别新增闭合 batch，而不是要求 loop 调用 compaction 专用方法；
+成功 settle 记录 response usage，并在单次运行只发布一次待发布 fact。`too_long` settle 可允许第二次 build 强制压缩；
+失败或取消不伪造已提交 checkpoint 回滚，下一次 `open` 从 ledger/receipt 重放并补发。若 build 改变
+messages，返回的 continuation 必须为空。`agent-loop` 只 require `MODEL_INPUT` 并传 typed input/result，
+不识别 compaction、不读写 provider 私有 state、不接受 mutable request binding 或 listener 列表。
+
+`build` 与 `settle` 不是可分别注册的 before/after hook。一个 Root 只有一个 provider，同一只
+`InputState` 同时实现两者，receipt 把一次 build 和一次 settle 配对；没有 listener order、任意 ctx、
+跨 capability 改写或第二条控制流。普通返回路径必须 settle；进程崩溃来不及 settle 时，compaction
+provider 按 `source_ref` 幂等补发 committed fact，不能宣称外部效果被回滚。
 
 `sessions` 可以声明 `workspace_files=("sessions.db",)`，但只有它获得正式 writable grant。
 candidate closure 中的 `sessions` 使用插件自己创建的全新临时 schema 和 programmatic Session，
@@ -364,24 +440,24 @@ candidate closure 中的 `sessions` 使用插件自己创建的全新临时 sche
 |---|---|---|
 | `ServiceCall[T]` | 构造时固定的 ServiceKey 与 lease source；一次完整 call | selector、request 解析、background task、领域 fallback |
 | `RootScope` | owning Root identity、task/Effect cleanup、root-bound lease acquire | stable/latest 选择、领域 retry、跨 Root 重投 |
-| `TaskControl` | opaque scope/task claim、exact lease、task、cancel callback、terminal release | Message/Turn/Session、runner、持久状态、错误解释、delivery |
+| `TaskControl` | opaque scope/task claim、exact lease、task、cancel callback、terminal release | Message/Turn/Session、Agent/factory、持久状态、错误解释、delivery |
 
 `TaskStart.claim(scope_key, task_key, lease, run, cancel) -> TaskWait` 对整个进程原子；`lease` 是
 `TaskLease`。
-同一 opaque scope 跨 generation 只能有一个 active task。`agents` 负责把自己的 session/attempt
+同一 opaque scope 跨 generation 只能有一个 active task。具体 Agent 负责把自己的 session/attempt
 领域身份映射成稳定 opaque key，并负责何时允许 start/cancel/terminal；accepted receipt 与 durable
 active-attempt fact 保存同一个 task key。`TaskControl` 只执行 claim、按该 key 通知原 owner 的
 cancel callback 和最后释放。Control host 只获得 `TaskCancel`，不能枚举
 task、读取结果、创建工作或取得 snapshot。新 ingress 要 interrupt 旧 attempt 时，先从
 `SESSIONS` 窄 read Service 取得 durable active task key，不能按内存对象或 current stable 猜测。
 
-这使新 stable 的 `agents` 能请求取消旧 Root 的仍活 task，但旧 `agents` 和旧 runner 继续唯一负责
+这使新 stable 的 Control 能依已知 task key 请求取消旧 Root 的仍活 task，但旧具体 Agent 继续唯一负责
 terminal/Session settle，并在最后释放旧 lease。这里没有内存状态搬家、两代共同写或特权 Agent
 service。`ActivityHost`/generation lease 的现有 admission/drain 语义是实现资产；不得再创建一份
 Agent 专用 publication 平面。
 
-`RootScope` 由每个 Fiber 平等取得。`agents` 实例在 apply 时绑定自己的 root scope；
-`AGENTS.start` 只复用同 Root 的 current lease，或向该 scope 取得 owning Root lease，遇到其他 Root
+`RootScope` 由每个 Fiber 平等取得。`agent-loop` 创建的具体 Agent 绑定自己的 root scope；
+它只复用同 Root 的 current lease，或向该 scope 取得 owning Root lease，遇到其他 Root
 binding 直接失败。Scheduler/Wake 的 timer callback 因而可以直接调用同 Root 注入的 `AGENTS`；Root
 已退休时原样得到 `RootRetired`，由 Scheduler/Wake 自己 settle/rearm，绝不 fallback
 到 current stable。candidate Root 的普通 background scope 关闭，只有 Core 铸造的 attached
@@ -391,28 +467,28 @@ validation capability 能启动一次 candidate task。
 
 ```text
 foundation providers
-  sessions ──► SESSIONS
+  sessions ──► SESSIONS (includes model history)
   models ────► CHAT_MODELS ...
   tools ─────► TOOLS
-  prompt ────► PROMPT
-  session view ► SESSION_VIEW
+  system prompt ► SYSTEM_PROMPT
+  model input ──► MODEL_INPUT (exactly one provider)
+  session view? ► SESSION_VIEW (only with proved fold consumers)
 
-agents injects: SESSIONS
-agents provides: AGENTS + empty runner slot
+agents provides: AGENTS + empty factory slot
 
-agent-loop injects: AGENTS, SESSIONS, CHAT_MODELS, TOOLS,
-                    PROMPT, SESSION_VIEW
-agent-loop effect: register(default runner) ── cleanup unregisters
+agent-loop injects: AGENTS, SESSIONS, CHAT_MODELS, TOOLS, SYSTEM_PROMPT,
+                    MODEL_INPUT
+agent-loop effect: register(default factory) ── cleanup unregisters
 
-snapshot.sealing: exactly one default runner, every registry frozen
+snapshot.sealing: exactly one default factory, every registry frozen
 ```
 
 `agents` 不 inject `agent-loop`，因此没有 Service cycle。Root 未 seal 前不能取得正式 lease；
-seal 后 runner slot 不再改变。热重载发布的是另一棵完整 Root，不原位替换 live runner。
+seal 后 factory slot 不再改变。热重载发布的是另一棵完整 Root，不原位替换 live factory。
 
 ### 4.5 代码与公共合同边界
 
-七个插件的实现最终位于各自 `plugins/<name>/` 包，或其独立安装 artifact 中。普通插件只能 import
+骨架插件的实现最终位于各自 `plugins/<name>/` 包，或其独立安装 artifact 中。普通插件只能 import
 版本化 public Plugin API、结构 DTO/Protocol/ServiceKey 与自身包；不得为了复用旧实现继续 import
 `bootstrap.*`、`agent.looping.core`、`agent.core.passive_turn`、`PluginManager`、SessionManager 私有
 store 或兄弟插件源码。
@@ -430,17 +506,30 @@ store 或兄弟插件源码。
 ordinary Channel plugin
   └─ ordinary conversation plugin
        ├─ explicit command? ──► COMMANDS ──► delivery settle
-       └─ normal Message ─────► AGENTS.start
-                                │ fork exact current lease for owned task
+       └─ normal Message ─────► AGENTS create/resume
+                                │ registry chooses one factory
                                 ▼
-                         agents admission/Turn owner
-                                │ registered runner
+                         ordinary agent-loop Agent
+                                │ inbox/admission/Turn/cancel/terminal
+                ┌───────────────┼───────────────┐
+                ▼               ▼               ▼
+          session history   system prompt   tools view + model limit
+                └───────────────┬───────────────┘
                                 ▼
-                         ordinary agent-loop
-                ┌───────────────┼────────────────┐
-                ▼               ▼                ▼
-          session snapshot   prompt/project   model + tools
-                └───────────────┬────────────────┘
+                         model-input open
+                                │
+                      ┌─────────▼──────────┐
+                      │ build each attempt │◄── too_long + InputRetry
+                      └─────────┬──────────┘
+                                │ ProviderInput + receipt
+                                ▼
+                         models call
+                                │ done / too_long / failed / cancelled
+                                ▼
+                         model-input settle
+                                │
+                                ├── tool calls ──► tools run ──► next transcript
+                                └── final assistant Message
                                 ▼
                      sessions atomic commit
                                 │ committed fact
@@ -448,22 +537,22 @@ ordinary Channel plugin
                     conversation delivery + ACK
 ```
 
-一次 Turn 的 exact lease 从 `AGENTS.start` 原子 claim 到 `TaskControl`，直到 terminal 后释放。
-Channel 回调提前返回时 lease 仍由 `TaskControl` 持有；取消只通知当前 attempt，旧 Root 的 agents/runner
+一次 Turn 的 exact lease 在具体 Agent 接受工作时原子 claim 到 `TaskControl`，直到 terminal 后释放。
+Channel 回调提前返回时 lease 仍由 `TaskControl` 持有；取消只通知当前 attempt，旧 Root 的具体 Agent
 继续完成 cleanup 和 terminal。新 generation 不能 claim 同一 session scope。
 
 ### 5.2 Control、Scheduler、Wake 与 Subagent
 
 - Control host 只持有 bootstrap 为 `AGENTS` 绑定的 `ServiceCall`；它不直接 import AgentLoop，
   也不能借该 `ServiceCall` 查询其他 Service。
-- 正常 `/stop` 可以由当前 `AGENTS` 读取 durable active task key；publication 暂停、没有 stable
+- 正常 `/stop` 可以由当前 Agent 读取 durable active task key；publication 暂停、没有 stable
   service lease 时，Control 从 accepted receipt/Control store 取得同一 key，只用 kernel 给它的窄
   `TaskCancel` 通知已接受的旧工作。
-- Scheduler/Wake/Subagent 已在 Root 内时直接 inject `AGENTS`；`AGENTS` 实例自己的 `RootScope`
-  保证 timer/后台 callback 只能取得 owning Root。Root 已退休就收到
+- Scheduler/Wake/Subagent 已在 Root 内时直接 inject `AGENTS`；它们通过 registry 创建或恢复同 Root
+  的具体 Agent。该 Agent 的 `RootScope` 保证 timer/后台 callback 只能取得 owning Root。Root 已退休就收到
   `RootRetired` 并由来源 settle/rearm，不得改投 current stable。各自 gate、spawn、
   持久状态和 delivery 仍由原插件拥有。
-- 来源只构造普通 Message/Turn request，不复制模型、工具、Prompt、Session commit 或 cancel loop。
+- 来源只构造普通 Message/Agent request，不复制模型、工具、system prompt、Session commit 或 cancel loop。
 - 不适用的 feature plugin 没有 contribution；不存在“先运行 passive hook 再 early return”。
 
 ### 5.3 snapshot 本身包住完整 ReAct Turn
@@ -474,8 +563,9 @@ Channel 回调提前返回时 lease 仍由 `TaskControl` 持有；取消只通�
 outside snapshot             inside one exact snapshot
 ─────────────────┬────────────────────────────────────────────
 AGENTS ServiceCall │ require(bound key)
-acquire lease ────┼─► agents ─► runner ─► model/tools/session
-                   │                    └─ TaskControl owns opaque task + lease
+acquire lease ────┼─► agents ─► factory ─► concrete Agent
+                   │                          ├─ model/tools/session
+                   │                          └─ TaskControl owns opaque task + lease
 wait result ◄─────┼────────────────────────────────────────────
 release lease ────┘
 ```
@@ -484,27 +574,32 @@ release lease ────┘
 `TaskControl`，后者属于普通 `agents`/`agent-loop`。把二者写进一个 privileged plugin
 反而重新制造 bootstrap cycle。
 
+DSH 也把 live Agent 停止/清理与 factory registry 放在普通 effect 中
+（`packages/core/agent/src/index.ts:149-204`，`packages/core/agent-loop/src/index.ts:560-583`）。Akashic 的更强
+保证是当前 `RuntimeSnapshot` 已冻结整棵 Root 并用 exact lease 等待全部工作退出
+（`agent/plugins/snapshot.py:76-114,876-907`）。这是 publication/lifetime 差异，不是 Agent 特权。
+
 ## 6. 当前特殊功能清单与目标 owner
 
 | 当前特殊点 | 当前位置 | 目标组合 | Core 新增专用原子？ |
 |---|---|---|---|
 | command 在模型前短路 | `AgentLoop._process`、`PassiveTurnPipeline.run_command` | conversation source 注入普通 `COMMANDS`，识别后不创建 Agent Turn | 否 |
-| plugin rollout fact 塞入下一轮 Prompt | `AgentLoop._process` metadata | rollout 插件向 `PROMPT` 提供一次性 section；事实文件由其声明 | 否 |
-| session 模型选择 | `AgentLoop._resolve_model_selection` | models 插件通过 `SESSIONS` 窄 metadata Service 读取/提交，返回 frozen binding | 否 |
-| Shell 按工具名和类 cleanup | `AgentLoop._cleanup_shell_owner` | Shell 插件监听 `agents` 的 Turn terminal，并清理自己拥有的 execution | 否 |
-| Tool Search enable、schema cap、LRU、名称解锁 | `DefaultReasoner` 多处分支、ToolRegistry meta set | Tool Search 普通插件注册普通 tool；用 `TOOLS` 的 catalog search 与 turn-local schema grant | 否 |
-| 未解锁工具的提示文字 | `DefaultReasoner` | `TOOLS.authorize` 返回结构化 denial；Tool Search 插件提供模型可见说明 | 否 |
+| plugin rollout fact 塞入下一轮 Prompt | `AgentLoop._process` metadata | rollout 插件向 `SYSTEM_PROMPT` 提供一次性 section；事实文件由其声明 | 否 |
+| session 模型选择 | `AgentLoop._resolve_model_selection` | 具体 Agent 通过 `SESSIONS` 读取已保存选择，将 `ModelChoice` 显式传给 `models`；`models` 只校验、解析、冻结与调用 | 否 |
+| Shell 按工具名和类 cleanup | `AgentLoop._cleanup_shell_owner` | Shell 插件消费具体 Agent 的 terminal fact，并清理自己拥有的 execution | 否 |
+| Tool Search enable、schema cap、LRU、名称解锁 | `DefaultReasoner` 多处分支、ToolRegistry meta set | Tool Search 普通插件注册普通 tool；只替换 `TOOLS` 的 scoped view/restriction | 否 |
+| 未解锁工具的提示文字 | `DefaultReasoner` | Tool Search 自己的 tool outcome 或 system section 说明可用工具；`tools` 不知道“解锁” | 否 |
 | `message_push` 媒体抽取 | tool loop 按名称收集 | 普通工具返回 `ToolOutcome` 的 typed durable items/delivery facts；delivery owner 消费 | 否 |
 | `mobile_attention` | Reasoner/Turn result 固定字段 | Mobile output projection 插件消费 typed tool/turn fact并保持现有协议字段 | 否 |
-| Meme/Citation response decoration | after-reasoning/after-turn consumers | `PROMPT` section + `agent-loop` 的窄 `ReplyEdit`；其他事实归各自 owner | 否 |
-| Skills、memory、hints | before-reasoning phase | 普通 prompt/tool contribution；required Service 显式 inject | 否 |
-| Compaction request gate | provider call seam | 已有普通 compaction 插件向 provider request projection 注册 | 否 |
+| Meme/Citation response decoration | after-reasoning/after-turn consumers | 模型指引归 `SYSTEM_PROMPT`，显示归 outbound view，事实归私有 ledger；无 reply 改写 hook | 否 |
+| Skills、memory、hints | before-reasoning phase | 普通 system section、context Message 或 tool contribution；required Service 显式 inject | 否 |
+| Compaction request gate | `PROVIDER_REQUEST_PROJECTION` | 能力与 ledger 保留，当前 mutable request binding 判为 `move`；M2 必须在不引入 before-step 的前提下收窄为独立 model-input 边界 | 否 |
 | Markdown MEMORY/SELF 写入 | committed checkpoint 后 | 已有普通 markdown-memory 插件 | 否 |
-| streaming、thinking、tool progress | AgentLoop sink + EventBus | agent-loop 发算法事实；agents observer/source projection 消费 | 否 |
+| streaming、thinking、tool progress | AgentLoop sink + EventBus | 具体 Agent 发算法事实；Observe/Channel 的可选 session-view 消费 | 否 |
 | Session commit 与 outbound 混在 after-turn | PassiveTurnPipeline | `sessions` 先原子 commit；conversation/Channel 后 delivery/ACK | 否 |
-| 六组可任意改写总状态的 phase | `agent/lifecycle/phases/**` | 收敛到 owner 明确的 Prompt/Tool/Turn/Projection 接入点 | 否 |
+| 六组可任意改写总状态的 phase | `agent/lifecycle/phases/**` | 删除；收敛到 owner 明确的 section/model request/tool/fact/view | 否 |
 | provider retry、max iteration、tool batch、continuation | `DefaultReasoner` | `agent-loop` 内部直接算法，不拆成 feature plugins | 不适用 |
-| attempt admission、interrupt、cancel、terminal | `ConversationRuntime` | `agents` 插件唯一 owner | 否 |
+| attempt admission、interrupt、cancel、terminal | `ConversationRuntime` | 默认具体 Agent（`agent-loop`）唯一 owner；`agents` 只管公开合同与 factory | 否 |
 | durable inbound handoff 与 ACK 顺序 | `PassiveMessageWorker` | ordinary conversation plugin，持久写只请求 `SESSIONS` 窄 Service | 否 |
 
 禁止用 `TURN_EFFECTS`、万能 middleware、任意 mutable context 或一个“passive hooks”总 Service 把这些
@@ -530,13 +625,14 @@ release lease ────┘
 
 ## 8. 失败、取消、并发与 reload
 
-- **缺依赖：** required Service、runner 或 exclusive writer 缺失时 Root sealing 失败，stable 不变。
+- **缺依赖：** required Service、default factory、`MODEL_INPUT` provider 或 exclusive writer 缺失时
+  Root sealing 失败，stable 不变。
 - **普通错误：** provider、tool、Prompt contribution、Session commit 和 delivery 保持现有错误分类；
   只有拥有恢复动作的边界转换错误。
-- **取消：** 当前 attempt 收到取消；agent-loop 完成工具/外部效果既有 settle，agents 只提交一次
+- **取消：** 当前 attempt 收到取消；具体 Agent 完成工具/外部效果既有 settle，只提交一次
   terminal，`TaskControl` 最后移除 opaque record 并释放 lease。reload 后 cancel 仍调用旧
   record 保存的原 owner callback；重复取消幂等，不吞 cleanup failure。
-- **并发：** Turn 继续按 session 串行而非全局串行；同一 runner registry seal 后不可变。
+- **并发：** Turn 继续按 session 串行而非全局串行；factory slot 和 provider registry seal 后不可变。
 - **热重载：** 新 Root 完整 seal 后才可发布；旧 Turn 用完旧 Root。`sessions` 等独占 writer 的
   publication 走 pause → drain → close → open → publish，不跨代共写。普通插件 publication 可以让
   旧 opaque task 持有旧 lease 到 terminal，但 `TaskControl` 拒绝新代 claim 同一 scope；这不是
@@ -554,7 +650,8 @@ release lease ────┘
 ### M0 · 正式设计
 
 - 本合同、0054、PLG-018、INDEX/NOW 对账。
-- 一个 Terra xhigh reviewer 只审查：正交、原子、非特权、整链可走通；P0/P1 为零才接受。
+- 一个 Terra xhigh reviewer 只审查：DSH 忠实度、正交、原子、非特权、整链可走通；P0/P1 为零才接受。
+- 另一个 Terra xhigh name reviewer 只审查公开名称是否最多两个简单英语单词，并给出 `NAME PASS`。
 - 仅文档 commit 并打开 Draft PR；不修改 runtime。
 
 ### M1 · 中性 snapshot 执行原子
@@ -565,14 +662,19 @@ release lease ────┘
   same-scope claim exclusion、terminal release、错误 task 继承和退休 Root fail-loud。
 - 本批没有被替换的旧 owner，不提前标 deprecated；caller 先作为后续唯一切换的中性前置能力。
 
-### M2 · Prompt 与 Session view owner
+### M2 · System prompt 与 Model input
 
-- 建立普通 `prompt`、`session-view` 插件，先迁已有普通 contribution；`session-view` 只处理
-  Session/Message 到 model-facing history 的临时只读 view，不接管展示、保存或提交后事件。
-- 迁 rollout fact、skills/hints 与仓库内 output metadata consumer；按 1.5 判断外部入口。保留
-  committed fact 的一次发布语义，但当前总 payload、mutable ctx 与 metadata bag 均标成 `move`。
-- 唯一新 registry 生效后删除对应旧 Core default phase、mutable wrapper 与 metadata bridge；
-  对 live external consumer 只留下显式 migration block，Core 内部零 consumer，M9 必删。
+- 建立普通 `system-prompt` plugin，先迁已有普通 section contribution；动态且需要进入历史的内容改成
+  context Message，不塞进可变 prompt ctx。
+- 建立 `MODEL_INPUT` 中立合同和两个二选一普通 provider：每 Turn 一次 `open`，每 provider attempt
+  一次 `build` 与一次 `settle`。basic 原样组合；compaction 复用当前 ledger/provenance/recovery、
+  tool batch、usage 和 overflow retry 算法。Root 必须恰有一个 provider；`agent-loop` 只按
+  `InputRetry` 决定同一 call 的第二次 attempt，不识别 compaction。
+- 将 mutable `ProviderRequestBinding`、pass-through Core fallback 和 `PROVIDER_REQUEST_PROJECTION` 标成 deprecated；
+  唯一新 provider 生效后同批删除。不新增 before-step、reply edit 或通用 middleware。
+- 迁 rollout fact、skills/hints 与仓库内 output metadata consumer；按 1.5 判断外部入口。当前总 payload、
+  mutable ctx 与 metadata bag 均标成 `move`。可选 `session-view` 不在本批预建；只有后续 exact fold
+  consumer 证明需要时才增加。
 
 ### M3 · Tools owner 与特殊工具退役
 
@@ -582,8 +684,9 @@ release lease ────┘
 
 ### M4 · Models owner 收口
 
-- 复用现有普通 models plugin，把 session selection/frozen execution binding 的唯一入口迁入该 owner。
-- 删除 AgentLoop 的 model metadata 读写和 bootstrap model branch；保留现有 provider/usage语义。
+- 复用现有普通 models plugin，保留 provider/model registry、冻结 binding 和 call/stream 的唯一 owner。
+- 具体 Agent 从 `SESSIONS` 读已保存 selection，以 `ModelChoice` 显式传入；`models` 不读写 Session metadata。
+- 删除 AgentLoop 的 model metadata 分支和 bootstrap model branch；保留现有 provider/usage 语义。
 
 ### M5 · Sessions 独占 writer
 
@@ -591,20 +694,22 @@ release lease ────┘
 - 用维护窗口式测试执行 pause/drain/close/open，证明正式路径任一时刻只有一个 SQLite writer。
 - bootstrap、PluginManager 和工具不再持有 `_store`、任意 repository 或 SessionManager 私有引用。
 
-### M6 · Agents owner 与所有 ingress
+### M6 · Agents registry 与所有 ingress
 
-- 普通 `agents` 插件取得 ConversationRuntime/admission/cancel/terminal/active owner。
-- 把 ConversationRuntime 中 process-wide task/lease/cancel 的中性机械部分迁到 M1 `TaskControl`；
-  `agents` 只保留领域状态机，并让 accepted/durable fact 使用同一 opaque task key。
-- passive、control、scheduler、wake、subagent 的仓库内入口一次切到 `AGENTS`；没有 runtime fallback。
-- agent-loop 尚未迁移时，只允许一个明确 deprecated runner 注册旧算法，零其他 consumer。
+- 普通 `agents` 插件只取得 public Agent contract、live registry、source 归属和 factory slot owner。
+- 把 ConversationRuntime 中 process-wide task/lease/cancel 的中性机械部分迁到 M1 `TaskControl`；具体
+  admission/cancel/terminal 暂时仍属于待迁的旧 Agent 实现，不塞进 registry。
+- passive、control、scheduler、wake、subagent 的仓库内入口一次切到 `AGENTS` 的 create/resume/get；
+  没有 runtime fallback。
+- agent-loop 尚未迁移时，只允许一个明确 deprecated factory 注册旧具体 Agent，零其他 consumer。
 
 ### M7 · Agent-loop 与 conversation source
 
-- 把直接 ReAct 算法作为普通 `agent-loop` 插件注册；把 durable handoff、command route、delivery/ACK
+- 把 inbox、admission、Turn/Step、interrupt/cancel/terminal 和直接 ReAct 一起迁入普通 `agent-loop`，作为完整具体
+  Agent factory 注册；不在 `agents` 与 `agent-loop` 各留半个 driver。把 durable handoff、command route、delivery/ACK
   组合放入普通 conversation plugin。
 - 迁 streaming、interrupt、tool batch、provider retry、commit 观察点；保留算法而删除总 phase。
-- 物理删除 deprecated runner、`AgentLoop`、`PassiveTurnPipeline`、旧 ConversationRuntime wiring、
+- 物理删除 deprecated factory、`AgentLoop`、`PassiveTurnPipeline`、旧 ConversationRuntime wiring、
   `SCOPED_TURNS` Core bridge 和 PassiveMessageWorker 私有业务链。
 
 ### M8 · Core 收口并停止
@@ -625,7 +730,7 @@ release lease ────┘
 
 顺序只能在证明依赖和风险更低时调整；任何调整都要先更新本合同并重新过 Concept Gate。
 
-## 10. 每批 deprecated、Review 与删除协议
+## 10. 每个实现批次的 deprecated、Review 与删除协议
 
 1. 在旧 owner 入口写静态注释：`DEPRECATED(Mx): no new consumers; remove in this batch after review`。
    不发运行时 warning，不新增 alias，不创建 `legacy_mode`。
@@ -654,11 +759,16 @@ Core 内部不得再调用。若出现未入账 external consumer，M8 必须停
 - reload-mid-Turn 后用原 task key `/stop`，必须到达旧 owner，产生一次 terminal 并释放旧 lease；
 - Scheduler/Wake/Subagent 在 reload-before-fire 与 fire-during-drain 下只取得 owning Root；retired
   admission 单次 settle/rearm，不重复 provider、Session commit 或 delivery；
-- Root sealing 对缺 Service、重复 runner、循环依赖、重复 writer 的 fail-loud；
+- Root sealing 对缺 Service、重复 factory、重复 `MODEL_INPUT` provider、循环依赖、重复 writer 的 fail-loud；
 - sessions 单 writer、原子 commit、messages 只追加、seq、restart recovery；
 - 同一固定场景在旧基线 artifact 与新代码上**依次**运行，比较 provider payload、tool trace、
   Session rows/write set、typed events、stream、delivery/ACK、attachment、error/cancel/interrupt；
-- Tool Search grant 通过结构化 outcome 工作，改名 tool 后仍工作；普通工具不能越权 grant；
+- Tool Search 只通过 scoped tool view 工作，改名 tool 后仍工作；Core 和 `tools` 不认识 search/grant/unlock；
+- basic/compaction `MODEL_INPUT` provider 用同一固定 history 得到已批准的不同 projection；无 provider 和双 provider 都
+  fail-loud，没有 Core pass-through fallback；
+- fixture 覆盖首 call、tool batch 后 call、空回复/结构化终态的后续 call、context overflow 的同 call
+  第二次 attempt、done/failed/cancelled settle、usage 计量、checkpoint fact 单次发布和 crash 后 receipt
+  补发；每只 `InputReceipt` 只能 settle 一次，禁止第三次 attempt；
 - feature plugin disabled/removed 后只失去自身 contribution，不触发 Core fallback；
 - fault injection 覆盖 provider/tool/commit/delivery/cleanup 的真实失败边界；
 - zero-consumer 和 forbidden-token Gate 证明没有旧入口、名称特判、双写或 compatibility flag。
@@ -674,16 +784,17 @@ Core 内部不得再调用。若出现未入账 external consumer，M8 必须停
 |---|---|
 | 足够正交？ | 每个事实只有一个 owner，变化轴之间没有强制联动或万能 context |
 | 足够原子？ | Core atom 只有 composition/publication/lease/泛型 call；业务能力可直接组合且没有 feature-shaped Core API |
-| 是非特权插件？ | 七项与其他插件使用同 loader、权限、lifecycle 和 failure；Core 无 ID/名字/fallback |
+| 是非特权插件？ | 骨架能力与其他插件使用同 loader、权限、lifecycle 和 failure；Core 无 ID/名字/fallback |
 | 整条链走得通？ | passive/control/recursive source、完整 snapshot、commit、delivery、cancel、reload 和单 writer 都有闭合路径 |
 
-P0/P1 任一非零即 `BLOCK`。2026-09-01 独立 Terra xhigh reviewer 完整复核当前代码与本合同；
-在收窄 stable-only single-key call，并补齐 `RootScope`、跨代 opaque cancel 和后台 exact Root
-路径后，四项均 `PASS`，P0/P1 为零。该结论只批准设计，不能代替 M1～M8 的实现 review 与行为 Gate。
+P0/P1 任一非零即 `BLOCK`。旧版合同因把 `session-view` 当成 model history owner、把 `agents` 与
+`agent-loop` 分成两个半 driver，以及新增 `ReplyEdit`，已被 DSH 对照复核判为 `BLOCK`。当前版本已在
+`b8f38583a51dee4cde9a689f1a5f49560d654bd2` 基线上取得 `CONCEPT PASS`（P0/P1/P2 全零）与
+`NAME PASS`，可以开始 M2。该结论只批准设计，不能代替 M2～M8 的实现 review 与行为 Gate。
 
 ## 13. 交接边界
 
-本 Core PR 交付通用内核、七个普通基础插件、仓库内置 conversation/feature 组合和旧私有链删除，
+本 Core PR 交付通用内核、最小普通 Agent 能力图、仓库内置 conversation/feature 组合和旧私有链删除，
 并保留 1.5 中可枚举、不可新增 consumer 的 migration block。它是 M9 前的停靠点，不是最终架构。
 上面列出的 `hua-home` 外部插件记录 exact repo、consumer、版本和阻塞点；Core 阶段停下后另开源码
 迁移。M9 删除 migration block 后才完成整体交付。禁止直接修改 cache 伪造完成。
