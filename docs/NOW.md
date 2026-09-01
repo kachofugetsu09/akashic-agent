@@ -33,8 +33,8 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
   Service 调用、跨进程 exact `ServiceHold`、task control 和跨 Root 共享 owner 的 `RootSwitch`。M2 审计先发现动态 context Message 缺少 owner，又发现 SkillsLoader、PluginSkillHost、
   PluginSkillLinker、host capability、candidate Gate 与 normal/drift 来源仍跨越多个 owner；已按 DSH 的
   registry/source/product 三层拆开并以 hua-home live artifact/目录入账。2026-09-02 整份规格已经重新取得
-  `CONCEPT PASS` 与 `NAME PASS`；M1a exact work 与 M1b Root switch 已完成，当前下一批是 M1c service hold，
-  随后 M1d Activity cold start；M1d 同批删除旧 Activity participant，且必须早于第一名业务 RootSwitch consumer。
+  `CONCEPT PASS` 与 `NAME PASS`；M1a exact work、M1b Root switch 与 M1c Service hold 已完成，当前下一批是
+  M1d Activity cold start；M1d 同批删除旧 Activity participant，且必须早于第一名业务 RootSwitch consumer。
   之后依次为 M2a agents、M2b agent-loop、M2c source delivery，M3a host-check、M3b skills、M3c skill-files、M3d drift files、
   M3e context-input、M3f system-prompt、M3g provider-input；M4 再按 tools、skill tool、
   Tool Search、push、media、attention、Shell 七批切换，之后是 M5a models、M5b old tail、M6a sessions、M6b reply-output、

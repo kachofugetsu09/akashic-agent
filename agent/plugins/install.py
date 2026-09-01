@@ -105,14 +105,12 @@ def finalize_uninstall_plugin(
     cache_path = home / "cache" / marketplace / plugin_name
     data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
     from agent.plugins.reload_journal import ReloadJournal
-    from agent.plugins.root_switch import (  # pyright: ignore[reportPrivateUsage]
-        _path_pinned,
-        _pin_lock,
-    )
+    from agent.plugins.artifact_pins import _ArtifactPins
 
-    with _pin_lock(workspace):
-        if cache_path.exists() and _path_pinned(ReloadJournal(workspace), cache_path):
-            raise RuntimeError(f"插件 artifact 仍被 RootSwitch pin: {cache_path}")
+    pins = _ArtifactPins(workspace, ReloadJournal(workspace))
+    with pins.lock():
+        if cache_path.exists() and pins.has(cache_path):
+            raise RuntimeError(f"插件 artifact 仍被 durable work pin: {cache_path}")
         if cache_path.exists():
             shutil.rmtree(cache_path)
     _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
@@ -187,11 +185,10 @@ def install_git_plugin(
             static_manifest.version,
             "插件 version",
         )
-        from agent.plugins.root_switch import (  # pyright: ignore[reportPrivateUsage]
-            _pin_lock,
-        )
+        from agent.plugins.artifact_pins import _ArtifactPins
+        from agent.plugins.reload_journal import ReloadJournal
 
-        with _pin_lock(workspace):
+        with _ArtifactPins(workspace, ReloadJournal(workspace)).lock():
             activation = _activate_plugin_version(
                 plugin_name=plugin_name,
                 plugin_version=plugin_version,
@@ -304,11 +301,10 @@ def _activate_plugin_version(
     plugin_base = cache_root / plugin_name
     _ensure_directory(plugin_base)
     from agent.plugins.reload_journal import ReloadJournal
-    from agent.plugins.root_switch import (  # pyright: ignore[reportPrivateUsage]
-        _path_pending,
-    )
+    from agent.plugins.artifact_pins import _ArtifactPins
 
-    if _path_pending(ReloadJournal(workspace), plugin_base):
+    pins = _ArtifactPins(workspace, ReloadJournal(workspace))
+    if pins.switching(plugin_base):
         raise RuntimeError(
             f"插件 artifact 正在执行 RootSwitch: {plugin_name}@{marketplace}"
         )
@@ -341,14 +337,9 @@ def _activate_plugin_version(
         else None
     )
     if superseded_artifact is not None:
-        from agent.plugins.reload_journal import ReloadJournal
-        from agent.plugins.root_switch import (  # pyright: ignore[reportPrivateUsage]
-            _path_pinned,
-        )
-
-        if _path_pinned(ReloadJournal(workspace), superseded_artifact):
+        if pins.has(superseded_artifact):
             raise RuntimeError(
-                f"插件 artifact 仍被 RootSwitch pin: {superseded_artifact}"
+                f"插件 artifact 仍被 durable work pin: {superseded_artifact}"
             )
     target_root = (
         artifacts_root / f"{artifact_id}-restaged-{uuid4().hex[:16]}"

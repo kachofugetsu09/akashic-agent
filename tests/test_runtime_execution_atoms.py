@@ -32,7 +32,9 @@ from bus.event_bus import EventBus
 _CORE_FILES = (
     "agent/plugin_composition/context.py",
     "agent/plugin_composition/tasks.py",
+    "agent/plugins/artifact_pins.py",
     "agent/plugins/service_call.py",
+    "agent/plugins/service_hold.py",
     "agent/plugins/snapshot.py",
 )
 

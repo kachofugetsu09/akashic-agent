@@ -190,12 +190,11 @@ from agent.plugins.snapshot import (
     SnapshotTransaction,
     get_current_runtime_snapshot,
 )
+from agent.plugins.artifact_pins import _ArtifactPins, _decode_artifact
 from agent.plugins.root_switch import (
     _SwitchRun,
     _SwitchTarget,
     _SwitchWork,
-    _decode_artifact,
-    _pin_lock,
 )
 from bus.event_bus import EventBus
 from infra.persistence.json_store import atomic_save_json
@@ -1499,7 +1498,7 @@ class PluginManager:
     ) -> None:
         """Make installed selectors follow the journal side choice."""
 
-        with _pin_lock(self._workspace):
+        with _ArtifactPins(self._workspace, self._reload_journal).lock():
             for target in targets:
                 by_owner: dict[str, tuple[_PartRef | None, _PartRef | None]] = {}
                 for move in target.moves:
@@ -2793,7 +2792,7 @@ class PluginManager:
                 if exclusive_endpoint_changed and self._endpoint_quiescer is not None:
                     await self._endpoint_quiescer()
                 if exclusive_endpoint_changed or v3_channel_catalog_changed:
-                    await self._snapshot_store.wait_for_no_leases(quiesced)
+                    await self._snapshot_store._wait_for_no_refs(quiesced)
             self._snapshot_skill_catalogs[snapshot.snapshot_id] = catalog_id
             transaction = self._snapshot_store.begin_publish(
                 snapshot,
@@ -2972,12 +2971,6 @@ class PluginManager:
                 generations.append(generation)
         for generation in generations:
             await self._snapshot_store.wait_for_generation_drained(generation)
-        await self._wait_holds(tuple(refs))
-
-    async def _wait_holds(self, refs: tuple[object, ...]) -> None:
-        """M1c extends this closed wait with durable ServiceHold counts."""
-
-        _ = refs
 
     async def _commit_snapshot_with_publication_participants(
         self,
@@ -3422,7 +3415,7 @@ class PluginManager:
             if publication_gated:
                 try:
                     if shared_handoff:
-                        await self._snapshot_store.wait_for_no_leases(ready.snapshot)
+                        await self._snapshot_store._wait_for_no_refs(ready.snapshot)
                         self._snapshot_store.seal_candidate_validation(ready.snapshot)
                         quiesced_snapshot = self._snapshot_store.pause_admission()
                     if (
@@ -3436,9 +3429,9 @@ class PluginManager:
                         or shared_handoff
                         or formal_root_handoff
                     ):
-                        await self._snapshot_store.wait_for_no_leases(quiesced_snapshot)
+                        await self._snapshot_store._wait_for_no_refs(quiesced_snapshot)
                     if not shared_handoff:
-                        await self._snapshot_store.wait_for_no_leases(ready.snapshot)
+                        await self._snapshot_store._wait_for_no_refs(ready.snapshot)
                         self._snapshot_store.seal_candidate_validation(ready.snapshot)
                     (
                         provisional_transaction,
@@ -3514,7 +3507,7 @@ class PluginManager:
                     raise
             else:
                 try:
-                    await self._snapshot_store.wait_for_no_leases(ready.snapshot)
+                    await self._snapshot_store._wait_for_no_refs(ready.snapshot)
                     self._snapshot_store.seal_candidate_validation(ready.snapshot)
                     runtime_restore_started = True
                     await self._restore_ready_runtime(
@@ -4427,7 +4420,7 @@ class PluginManager:
                     or v3_channel_catalog_changed
                     or formal_root_handoff
                 ):
-                    await self._snapshot_store.wait_for_no_leases(quiesced_snapshot)
+                    await self._snapshot_store._wait_for_no_refs(quiesced_snapshot)
             except BaseException as error:
                 error_text = str(error) or type(error).__name__
                 await self._snapshot_store.resume(quiesced_snapshot)
@@ -4478,7 +4471,7 @@ class PluginManager:
                     ):
                         await self._endpoint_quiescer()
                     assert quiesced_snapshot is not None
-                    await self._snapshot_store.wait_for_no_leases(quiesced_snapshot)
+                    await self._snapshot_store._wait_for_no_refs(quiesced_snapshot)
                 if publication_gated:
                     _, provisional_cancelled = await _complete_critical(
                         self._snapshot_store.commit_provisional(transaction)
@@ -7615,7 +7608,7 @@ def _switch_config(
     """Validate one private exact config file from the switch journal."""
 
     path = Path(value)
-    root = (workspace / "runtime" / "root-switch" / "configs").resolve(
+    root = (workspace / "runtime" / "artifact-pins" / "configs").resolve(
         strict=False
     )
     resolved = path.resolve(strict=False)
@@ -7983,7 +7976,11 @@ def _replace_snapshot_payload(
 ) -> None:
     """刷新无 lease 候选载荷，并保留 store 拥有的生命周期字段。"""
 
-    if target.lease_count or target.state not in {"validating", "committed"}:
+    if (
+        target.lease_count
+        or target.hold_count
+        or target.state not in {"validating", "committed"}
+    ):
         raise RuntimeError("只能刷新无 lease 的 candidate snapshot")
     for name in (
         "generations",

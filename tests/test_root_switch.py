@@ -21,6 +21,7 @@ from agent.plugin_composition import (
     PluginRuntime,
     PluginBackgroundJobs,
     RootSwitch,
+    ServiceKey,
     SwitchPart,
 )
 from agent.plugin_composition.root_switch import (
@@ -29,18 +30,24 @@ from agent.plugin_composition.root_switch import (
     _PartSet,
 )
 from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.artifact_pins import _ArtifactPins
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
 from agent.plugins.root_switch import (
     _SwitchError,
     _SwitchRun,
-    _pin_lock,
     _pin_parts,
 )
 from agent.plugins.generation import PluginContributions
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import finalize_uninstall_plugin
 from agent.plugins.generation_activity_host import ActivityCatalog, ActivityHost
-from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
+from agent.plugins.service_hold import _HoldRun, _hold_key
+from agent.plugins.snapshot import (
+    RuntimeSnapshotCompiler,
+    RuntimeSnapshotStore,
+    bind_runtime_snapshot,
+    reset_runtime_snapshot,
+)
 from agent.plugins.source_hash import file_hash, file_revision, source_revision
 from bus.event_bus import EventBus
 
@@ -346,6 +353,7 @@ def _generation(
         contributions=PluginContributions(manifest={}),
         config_projection={},
         lease_count=0,
+        hold_count=0,
         reload_tx_id=None,
     )
 
@@ -468,7 +476,7 @@ async def test_candidate_seal_does_not_write_builtin_pin(tmp_path: Path) -> None
     )
 
     assert snapshot.switch_parts is not None
-    assert not (workspace / "runtime" / "root-switch" / "artifacts").exists()
+    assert not (workspace / "runtime" / "artifact-pins" / "artifacts").exists()
     await root.dispose()
 
 
@@ -497,7 +505,7 @@ def test_config_drift_before_prepare_leaves_no_plan_or_pin(tmp_path: Path) -> No
     events: list[str] = []
     run = _SwitchRun(ReloadJournal(workspace))
 
-    with pytest.raises(RuntimeError, match="publication 前已漂移"):
+    with pytest.raises(RuntimeError, match="pin 前已漂移"):
         run.prepare(
             "config-drift",
             old_snapshot="old-snapshot",
@@ -523,7 +531,7 @@ def test_config_drift_before_prepare_leaves_no_plan_or_pin(tmp_path: Path) -> No
     assert run.targets() == ()
     assert run.choices() == ()
     assert events == []
-    pin_root = workspace / "runtime" / "root-switch" / "artifacts"
+    pin_root = workspace / "runtime" / "artifact-pins" / "artifacts"
     assert not pin_root.exists() or not tuple(pin_root.iterdir())
 
 
@@ -1240,11 +1248,13 @@ async def test_manager_switch_waits_changed_generation_and_uses_one_pointer(
     events: list[str] = []
     old_owner = _Owner("old", events, active=True)
     new_owner = _Owner("new", events, active=False)
+    value_key = ServiceKey[str]("test.value")
 
     async def build(label: str, owner: _Owner):
         root = CompositionRoot(f"root-{label}")
         switch = RootSwitch(root.instance_token)
         _ = await root.context.provide(ROOT_SWITCH, switch)
+        _ = await root.context.provide(value_key, label)
         plugin_dir = tmp_path / f"artifact-{label}"
         generation = _generation("plugin", label, plugin_dir)
         runtime = PluginRuntime(
@@ -1277,6 +1287,14 @@ async def test_manager_switch_waits_changed_generation_and_uses_one_pointer(
     )
     manager.snapshot_store.install(old_snapshot)
     lease = await manager.snapshot_store.acquire()
+    holds = _HoldRun(manager.snapshot_store, manager.reload_journal)
+    holder = holds.bind(value_key, _hold_key("source:root-switch"))
+    token = bind_runtime_snapshot(lease)
+    try:
+        hold_id = await holder.reserve()
+    finally:
+        reset_runtime_snapshot(token)
+    await holder.activate(hold_id)
     transaction = manager.snapshot_store.begin_publish(new_snapshot)
     publish = asyncio.create_task(
         manager._commit_snapshot_with_publication_participants(
@@ -1289,8 +1307,12 @@ async def test_manager_switch_waits_changed_generation_and_uses_one_pointer(
     await asyncio.sleep(0)
     assert not publish.done()
     assert old_generation.lease_count == 1
+    assert old_generation.hold_count == 1
 
     await lease.release()
+    await asyncio.sleep(0)
+    assert not publish.done()
+    await holder.drop(hold_id)
     await publish
 
     assert manager.current_snapshot is new_snapshot
@@ -1637,7 +1659,10 @@ async def test_same_path_builtin_choice_survives_two_boots(
         generation="old-generation",
         artifact=old_artifact,
     )
-    old_parts = _pin_parts(workspace, _parts(old_entry))
+    old_parts = _pin_parts(
+        _ArtifactPins(workspace, ReloadJournal(workspace)),
+        _parts(old_entry),
+    )
     new_artifact = _write_builtin(
         plugin_dir,
         data_dir,
@@ -1900,7 +1925,7 @@ async def test_config_secret_stays_out_of_journal_and_old_revision_recovers(
     work.commit()
 
     assert secret not in journal.pending_switches()[0].plan_json
-    config_root = workspace / "runtime" / "root-switch" / "configs"
+    config_root = workspace / "runtime" / "artifact-pins" / "configs"
     pinned = tuple(config_root.glob("*/config.local.toml"))
     assert len(pinned) == 1
     assert pinned[0].read_text(encoding="utf-8") == f'api_key = "{secret}"\n'
@@ -2131,7 +2156,7 @@ async def test_fresh_recovery_loads_ordinary_dependency_closure(
     assert tuple(need.owner for need in ref.needs) == ("provider",)
     assert all(
         Path(json.loads(need.artifact)["path"]).is_relative_to(
-            workspace / "runtime" / "root-switch" / "artifacts"
+            workspace / "runtime" / "artifact-pins" / "artifacts"
         )
         for need in ref.needs
     )
@@ -2167,7 +2192,7 @@ def test_uninstall_cannot_delete_a_pinned_installed_artifact(tmp_path: Path) -> 
     )
     assert work is not None
 
-    with pytest.raises(RuntimeError, match="RootSwitch pin"):
+    with pytest.raises(RuntimeError, match="durable work pin"):
         finalize_uninstall_plugin(
             "probe@market",
             workspace=workspace,
@@ -2222,7 +2247,7 @@ def test_pointer_recovery_waits_for_the_pin_lock(
             errors.append(error)
 
     thread = threading.Thread(target=recover)
-    with _pin_lock(workspace):
+    with _ArtifactPins(workspace, ReloadJournal(workspace)).lock():
         thread.start()
         assert started.wait(1)
         assert not entered.wait(0.05)

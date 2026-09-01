@@ -154,6 +154,19 @@ class _StoredChoice:
 
 
 @dataclass(frozen=True)
+class _HoldRecord:
+    """Keep one durable exact Root hold without caller-owned fields."""
+
+    hold_id: str
+    hold_key: str
+    service_key: str
+    snapshot_id: str
+    root_json: str
+    state: str
+    error: str
+
+
+@dataclass(frozen=True)
 class ReloadRecoveryAction:
     tx_id: str
     plugin_id: str
@@ -707,6 +720,199 @@ class ReloadJournal:
             for row in rows
         )
 
+    def _reserve_hold(
+        self,
+        *,
+        hold_key: str,
+        service_key: str,
+        snapshot_id: str,
+        root_json: str,
+    ) -> str:
+        """Persist one reserved exact Root before its caller writes a row."""
+
+        for value, label in (
+            (hold_key, "hold key"),
+            (service_key, "service key"),
+            (snapshot_id, "snapshot id"),
+        ):
+            _check_text(value, label)
+        _ = _root_artifacts(root_json)
+        if _root_snapshot(root_json) != snapshot_id:
+            raise ValueError("ServiceHold RootRef snapshot 与列不一致")
+        hold_id = uuid.uuid4().hex
+        with self._connect() as conn:
+            _ = conn.execute(
+                """
+                INSERT INTO service_holds (
+                    hold_id, hold_key, service_key, snapshot_id, root_json,
+                    state, error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'reserved', '', ?)
+                """,
+                (
+                    hold_id,
+                    hold_key,
+                    service_key,
+                    snapshot_id,
+                    root_json,
+                    _now(),
+                ),
+            )
+        return hold_id
+
+    def _activate_hold(
+        self,
+        hold_id: str,
+        *,
+        hold_key: str,
+        service_key: str,
+    ) -> None:
+        """Move one caller-owned reserved hold to active exactly once."""
+
+        with self._connect() as conn:
+            record = self._read_hold(conn, hold_id)
+            _check_hold(record, hold_key=hold_key, service_key=service_key)
+            if record.state == "active":
+                return
+            if record.state != "reserved":
+                raise RuntimeError(f"ServiceHold 不能 activate: {record.state}")
+            cursor = conn.execute(
+                """
+                UPDATE service_holds
+                SET state = 'active', updated_at = ?
+                WHERE hold_id = ? AND state = 'reserved'
+                """,
+                (_now(), hold_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("ServiceHold activate 与并发更改冲突")
+
+    def _drop_hold(
+        self,
+        hold_id: str,
+        *,
+        hold_key: str,
+        service_key: str,
+    ) -> bool:
+        """Mark one exact hold dropped and report whether it released a pin."""
+
+        with self._connect() as conn:
+            record = self._read_hold(conn, hold_id)
+            _check_hold(record, hold_key=hold_key, service_key=service_key)
+            if record.state == "dropped":
+                return False
+            if record.state not in {"reserved", "active"}:
+                raise RuntimeError(f"ServiceHold 不能 drop: {record.state}")
+            cursor = conn.execute(
+                """
+                UPDATE service_holds
+                SET state = 'dropped', updated_at = ?
+                WHERE hold_id = ? AND state IN ('reserved', 'active')
+                """,
+                (_now(), hold_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("ServiceHold drop 与并发更改冲突")
+        return True
+
+    def _degrade_hold(self, hold_id: str, error: str) -> None:
+        """Keep an exact hold and durable evidence when its Root cannot reopen."""
+
+        _check_text(error, "hold error")
+        with self._connect() as conn:
+            record = self._read_hold(conn, hold_id)
+            if record.state not in {"reserved", "active"}:
+                raise RuntimeError("dropped ServiceHold 不能 degraded")
+            cursor = conn.execute(
+                """
+                UPDATE service_holds
+                SET error = ?, updated_at = ?
+                WHERE hold_id = ? AND state IN ('reserved', 'active')
+                """,
+                (error, _now(), hold_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("ServiceHold degrade 与并发更改冲突")
+
+    def _recover_hold(self, hold_id: str) -> None:
+        """Clear old recovery evidence after the exact Root reopens."""
+
+        with self._connect() as conn:
+            record = self._read_hold(conn, hold_id)
+            if record.state not in {"reserved", "active"}:
+                raise RuntimeError("dropped ServiceHold 不能 recover")
+            cursor = conn.execute(
+                """
+                UPDATE service_holds
+                SET error = '', updated_at = ?
+                WHERE hold_id = ? AND state IN ('reserved', 'active')
+                """,
+                (_now(), hold_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("ServiceHold recover 与并发更改冲突")
+
+    def _hold_record(self, hold_id: str) -> _HoldRecord:
+        with self._connect() as conn:
+            return self._read_hold(conn, hold_id)
+
+    def _pending_holds(
+        self,
+        *,
+        hold_key: str | None = None,
+        service_key: str | None = None,
+    ) -> tuple[_HoldRecord, ...]:
+        """List only reserved and active holds in one optional sealed namespace."""
+
+        where = ["state IN ('reserved', 'active')"]
+        values: list[object] = []
+        if hold_key is not None:
+            where.append("hold_key = ?")
+            values.append(hold_key)
+        if service_key is not None:
+            where.append("service_key = ?")
+            values.append(service_key)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT hold_id FROM service_holds WHERE "
+                + " AND ".join(where)
+                + " ORDER BY hold_id",
+                tuple(values),
+            ).fetchall()
+            return tuple(self._read_hold(conn, str(row[0])) for row in rows)
+
+    def _artifact_refs(self) -> tuple[str, ...]:
+        """List every artifact reachable from durable switches and holds."""
+
+        values = [*self._choice_artifacts(), *self._switch_refs()]
+        values.extend(
+            artifact
+            for record in self._pending_holds()
+            for artifact in _root_artifacts(record.root_json)
+        )
+        return tuple(dict.fromkeys(values))
+
+    def _switch_refs(self) -> tuple[str, ...]:
+        """List both sides of every unfinished RootSwitch plan."""
+
+        return tuple(
+            dict.fromkeys(
+                artifact
+                for record in self.pending_switches()
+                for artifact in _plan_artifacts(record.plan_json)
+            )
+        )
+
+    def _choice_artifacts(self) -> tuple[str, ...]:
+        values: list[str] = []
+        for choice in self.switch_choices():
+            loaded = json.loads(choice.move_json)
+            if not isinstance(loaded, dict):
+                raise RuntimeError("RootSwitch choice move 结构无效")
+            item = cast(dict[str, object], loaded)
+            selected = item.get("new" if choice.use_new else "old")
+            values.extend(_ref_artifacts(selected))
+        return tuple(values)
+
     @staticmethod
     def _read_switch(
         conn: sqlite3.Connection,
@@ -736,6 +942,34 @@ class ReloadJournal:
             failure_resource=_optional_string(row[8]),
             error=str(row[9]),
         )
+
+    @staticmethod
+    def _read_hold(conn: sqlite3.Connection, hold_id: str) -> _HoldRecord:
+        row = conn.execute(
+            """
+            SELECT hold_key, service_key, snapshot_id, root_json, state, error
+            FROM service_holds
+            WHERE hold_id = ?
+            """,
+            (hold_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"ServiceHold 不存在: {hold_id}")
+        record = _HoldRecord(
+            hold_id=hold_id,
+            hold_key=str(row[0]),
+            service_key=str(row[1]),
+            snapshot_id=str(row[2]),
+            root_json=str(row[3]),
+            state=str(row[4]),
+            error=str(row[5]),
+        )
+        if record.state not in {"reserved", "active", "dropped"}:
+            raise RuntimeError(f"ServiceHold state 无效: {record.state}")
+        _ = _root_artifacts(record.root_json)
+        if _root_snapshot(record.root_json) != record.snapshot_id:
+            raise RuntimeError("ServiceHold RootRef snapshot 与列不一致")
+        return record
 
     def get(self, tx_id: str) -> ReloadTransactionRecord:
         with self._connect() as conn:
@@ -1106,6 +1340,20 @@ class ReloadJournal:
                     snapshot_id TEXT,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS service_holds (
+                    hold_id TEXT PRIMARY KEY,
+                    hold_key TEXT NOT NULL,
+                    service_key TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL,
+                    root_json TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (
+                        state IN ('reserved', 'active', 'dropped')
+                    ),
+                    error TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_service_holds_pending
+                ON service_holds(state, hold_key, service_key);
                 """)
             columns = {
                 str(row[1])
@@ -1163,6 +1411,120 @@ class ReloadJournal:
                 created_at,
             ),
         )
+
+
+def _check_hold(
+    record: _HoldRecord,
+    *,
+    hold_key: str,
+    service_key: str,
+) -> None:
+    if record.hold_key != hold_key:
+        raise PermissionError("ServiceHold 不属于这只 holder")
+    if record.service_key != service_key:
+        raise PermissionError("ServiceHold 不属于这只 Service")
+
+
+def _plan_artifacts(value: str) -> tuple[str, ...]:
+    loaded = json.loads(value)
+    if not isinstance(loaded, dict):
+        raise RuntimeError("RootSwitch plan 结构无效")
+    item = cast(dict[str, object], loaded)
+    moves = item.get("moves")
+    if not isinstance(moves, list):
+        raise RuntimeError("RootSwitch plan 结构无效")
+    return tuple(
+        artifact
+        for move in cast(list[object], moves)
+        for artifact in _move_artifacts(move)
+    )
+
+
+def _move_artifacts(value: object) -> tuple[str, ...]:
+    if not isinstance(value, dict):
+        raise RuntimeError("RootSwitch move 结构无效")
+    item = cast(dict[str, object], value)
+    return (*_ref_artifacts(item.get("old")), *_ref_artifacts(item.get("new")))
+
+
+def _ref_artifacts(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise RuntimeError("artifact ref 结构无效")
+    item = cast(dict[str, object], value)
+    artifact = item.get("artifact")
+    needs = item.get("needs", [])
+    if not isinstance(artifact, str) or not isinstance(needs, list):
+        raise RuntimeError("artifact ref 结构无效")
+    return (
+        artifact,
+        *(
+            need_artifact
+            for need in cast(list[object], needs)
+            for need_artifact in _need_artifacts(need)
+        ),
+    )
+
+
+def _need_artifacts(value: object) -> tuple[str, ...]:
+    if not isinstance(value, dict):
+        raise RuntimeError("artifact need 结构无效")
+    artifact = cast(dict[str, object], value).get("artifact")
+    if not isinstance(artifact, str):
+        raise RuntimeError("artifact need 结构无效")
+    return (artifact,)
+
+
+def _root_artifacts(value: str) -> tuple[str, ...]:
+    loaded = json.loads(value)
+    if not isinstance(loaded, dict):
+        raise RuntimeError("ServiceHold RootRef 结构无效")
+    item = cast(dict[str, object], loaded)
+    if set(item) != {"plugins", "snapshot"}:
+        raise RuntimeError("ServiceHold RootRef 结构无效")
+    snapshot = item.get("snapshot")
+    if not isinstance(snapshot, str) or not snapshot:
+        raise RuntimeError("ServiceHold RootRef snapshot 无效")
+    plugins = item.get("plugins")
+    if not isinstance(plugins, list) or not plugins:
+        raise RuntimeError("ServiceHold RootRef 缺少 plugins")
+    values: list[str] = []
+    owners: list[str] = []
+    for raw in cast(list[object], plugins):
+        if not isinstance(raw, dict):
+            raise RuntimeError("ServiceHold plugin ref 结构无效")
+        item = cast(dict[str, object], raw)
+        if set(item) != {"owner", "generation", "artifact"}:
+            raise RuntimeError("ServiceHold plugin ref 结构无效")
+        owner = item["owner"]
+        generation = item["generation"]
+        artifact = item["artifact"]
+        if not all(
+            isinstance(part, str) and part
+            for part in (owner, generation, artifact)
+        ):
+            raise RuntimeError("ServiceHold plugin ref 字段无效")
+        owners.append(cast(str, owner))
+        values.append(cast(str, artifact))
+    if owners != sorted(set(owners)):
+        raise RuntimeError("ServiceHold plugin refs 必须唯一且按 owner 排序")
+    return tuple(values)
+
+
+def _root_snapshot(value: str) -> str:
+    loaded = json.loads(value)
+    if not isinstance(loaded, dict):
+        raise RuntimeError("ServiceHold RootRef 结构无效")
+    snapshot = cast(dict[str, object], loaded).get("snapshot")
+    if not isinstance(snapshot, str) or not snapshot:
+        raise RuntimeError("ServiceHold RootRef snapshot 无效")
+    return snapshot
+
+
+def _check_text(value: str, label: str) -> None:
+    if not isinstance(value, str) or not value or value.strip() != value:
+        raise ValueError(f"ServiceHold {label} 无效")
 
 
 def _record(row: sqlite3.Row | tuple[object, ...]) -> ReloadTransactionRecord:

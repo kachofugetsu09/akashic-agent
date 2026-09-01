@@ -1651,7 +1651,7 @@ enter/start new，并在选择新 pointer 后才开放 lease；切换中核对�
   M3c 的 skill link 才是第一名业务 consumer，M6 迁 sessions writer，M8a～M8b 再迁 Channel/command 并
   删除 PluginManager 私有 participant table。
 
-- **M1c · Service hold：** 增加绑定单一 ServiceKey 与不可伪造 HoldKey 的 `ServiceHold` 与通用 hold journal，只用 fake Service
+- **M1c · Service hold（已完成）：** 增加绑定单一 ServiceKey 与不可伪造 HoldKey 的 `ServiceHold` 与通用 hold journal，只用 fake Service
   和一次性 Core/source 数据库验证 reserve→source row→activate→call→source outcome→drop→row delete。
   crash 点覆盖 reserve 前后、row 前后、activate 前后、done/abort 前后、drop 前后与 delete 前后；另外固定覆盖
   accept failure、run failure、cancel、no-sink、stream/projection failure、outcome unknown、artifact 缺失、wrong
@@ -1660,6 +1660,11 @@ enter/start new，并在选择新 pointer 后才开放 lease；切换中核对�
   Root/artifact identity，不看到 source、payload、Channel config/binding、delivery 或 outcome。
   fake source 必须证明 done/abort 不泄漏 hold，unknown 必须保留 hold 和 degraded。本批不接 production source；
   M2c 是首批 consumer。
+
+  2026-09-02 验收：代码树 `cc44d0a409abfd5d3d077add402c2a2d48dde687` 取得两份
+  `IMPLEMENTATION PASS` 与一份 `NAME PASS`；279 个相关测试通过，Pyright 为 0 errors。M1c 新增公开面只有
+  `HoldId`、`ServiceHold` 及五个动作；其余 M1c helper 都是私有。
+  当前仓库没有旧 hold owner 或 production consumer，因此本批没有 deprecated block 可删除；M2c 才接第一名调用者。
 
 - **M1d · Activity switch：** 在第一名业务 RootSwitch consumer 前完成一次 supervised cold start。existing
   Activity owner 注册自己的 SwitchPart，同批物理删除 PluginManager 的 Activity participant、双 owner 互斥

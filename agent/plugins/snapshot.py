@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -12,7 +11,7 @@ from typing import Literal, cast
 
 from agent.plugins.errors import RootRetired
 from agent.plugins.generation import PluginGeneration
-from agent.plugins.source_hash import file_hash
+from agent.plugins.artifact_pins import _artifact_value
 from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
 from agent.tools.registry import ToolRegistry
 from agent.skills import SkillIndex
@@ -121,6 +120,7 @@ class RuntimeSnapshot:
     )
     state: SnapshotState = "compiled"
     lease_count: int = 0
+    hold_count: int = 0
     accepting_leases: bool = True
     _store_token: object | None = field(default=None, repr=False)
 
@@ -138,6 +138,7 @@ class RuntimeSnapshot:
         if (
             self.state != "compiled"
             or self.lease_count
+            or self.hold_count
             or self._store_token is not None
         ):
             raise RuntimeError("RuntimeSnapshot 不是可发布的全新 compiled 快照")
@@ -240,7 +241,7 @@ class RuntimeSnapshotCompiler:
                     root_switch,
                     catalog_root_token,
                     artifacts={
-                        owner: _switch_artifact(generation)
+                        owner: _artifact_value(generation)
                         for owner, generation in generations.items()
                     },
                     needs=_switch_needs(
@@ -772,7 +773,7 @@ class RuntimeSnapshotCompiler:
             if (
                 generation is None
                 or generation.generation_id != ref.generation
-                or _switch_artifact(generation) != ref.artifact
+                or _artifact_value(generation) != ref.artifact
             ):
                 raise RuntimeError(
                     "RuntimeSnapshot Root switch part 不属于 exact artifact: "
@@ -783,35 +784,12 @@ class RuntimeSnapshotCompiler:
                 if (
                     needed is None
                     or needed.generation_id != need.generation
-                    or _switch_artifact(needed) != need.artifact
+                    or _artifact_value(needed) != need.artifact
                 ):
                     raise RuntimeError(
                         "RuntimeSnapshot Root switch dependency 不属于 exact artifact: "
                         f"{ref.owner}:{need.owner}:{need.generation}"
                     )
-
-
-def _switch_artifact(generation: PluginGeneration) -> str:
-    """Name the exact code artifact without trusting plugin input."""
-
-    config_path = generation.config_path or (
-        generation.data_dir / "config.local.toml"
-    )
-    return json.dumps(
-        {
-            "config_hash": file_hash(config_path),
-            "config_path": str(config_path.resolve(strict=False)),
-            "config_revision": generation.config_revision,
-            "data_path": str(generation.data_dir.resolve(strict=False)),
-            "entrypoint": generation.entrypoint,
-            "source_type": generation.source_type,
-            "path": str(generation.plugin_dir.resolve(strict=False)),
-            "source_revision": generation.source_revision,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
 
 
 def _switch_needs(
@@ -854,7 +832,7 @@ def _switch_needs(
             _PartNeed(
                 owner=owner,
                 generation=generations[owner].generation_id,
-                artifact=_switch_artifact(generations[owner]),
+                artifact=_artifact_value(generations[owner]),
             )
             for owner in sorted(selected)
         )
@@ -1235,6 +1213,7 @@ class RuntimeSnapshotStore:
             and (
                 snapshot.state in {"validating", "committed"}
                 or snapshot.lease_count > 0
+                or snapshot.hold_count > 0
             )
             and any(item is generation for item in snapshot.generations.values())
             for snapshot in self._snapshots.values()
@@ -1251,6 +1230,7 @@ class RuntimeSnapshotStore:
             and (
                 snapshot.state in {"validating", "committed"}
                 or snapshot.lease_count > 0
+                or snapshot.hold_count > 0
             )
             and snapshot.composition_root is root
             for snapshot in self._snapshots.values()
@@ -1571,7 +1551,7 @@ class RuntimeSnapshotStore:
             candidate.state = "aborted"
             candidate.accepting_leases = False
             self._latest = self._current
-        await self.wait_for_no_leases(candidate)
+        await self._wait_for_no_refs(candidate)
         self._schedule_drain(candidate)
 
         # 2. Wait for validation leases and candidate-owned resources to drain.
@@ -1604,7 +1584,7 @@ class RuntimeSnapshotStore:
         if snapshot is None:
             return None
         try:
-            await self.wait_for_no_leases(snapshot)
+            await self._wait_for_no_refs(snapshot)
         except BaseException:
             await self.resume(snapshot)
             raise
@@ -1660,9 +1640,11 @@ class RuntimeSnapshotStore:
             None if root is None else root.instance_token
         )
 
-    async def wait_for_no_leases(self, snapshot: RuntimeSnapshot) -> None:
+    async def _wait_for_no_refs(self, snapshot: RuntimeSnapshot) -> None:
+        """Wait until neither live work nor durable work retains this Root."""
+
         async with self._condition:
-            while snapshot.lease_count:
+            while snapshot.lease_count or snapshot.hold_count:
                 await self._condition.wait()
 
     async def resume(self, snapshot: RuntimeSnapshot | None) -> None:
@@ -1728,14 +1710,15 @@ class RuntimeSnapshotStore:
     async def close(self) -> None:
         if self._pending is not None or self._provisional is not None:
             raise RuntimeError("RuntimeSnapshot 发布事务尚未结束")
-        leased = [
+        retained = [
             snapshot.snapshot_id
             for snapshot in self._snapshots.values()
-            if snapshot.lease_count
+            if snapshot.lease_count or snapshot.hold_count
         ]
-        if leased:
+        if retained:
             raise RuntimeError(
-                f"RuntimeSnapshot 仍有 lease: {', '.join(sorted(leased))}"
+                "RuntimeSnapshot 仍被 work 保留: "
+                + ", ".join(sorted(retained))
             )
         await self.retry_drains()
         latest = self.unpromoted_candidate
@@ -1783,6 +1766,57 @@ class RuntimeSnapshotStore:
         if self._snapshots.get(candidate.snapshot_id) is not candidate:
             raise RuntimeError("RuntimeSnapshot publication target 未被 Store 持有")
         return self._claim_lease(candidate)
+
+    def _check_hold(self, lease: RuntimeSnapshotLease) -> RuntimeSnapshot:
+        """Validate that durable work still owns the live stable Root."""
+
+        snapshot = lease.snapshot
+        if (
+            not lease.active
+            or self._snapshots.get(snapshot.snapshot_id) is not snapshot
+            or snapshot.state != "committed"
+            or snapshot is not self._current
+            or not snapshot.accepting_leases
+        ):
+            raise RuntimeError("ServiceHold 需要 live exact snapshot lease")
+        return snapshot
+
+    def _retain_hold(self, lease: RuntimeSnapshotLease) -> RuntimeSnapshot:
+        """Retain the exact live Root for durable work without choosing a Root."""
+
+        snapshot = self._check_hold(lease)
+        snapshot.hold_count += 1
+        for generation in snapshot.generations.values():
+            generation.hold_count += 1
+        return snapshot
+
+    def _restore_hold(self, snapshot: RuntimeSnapshot) -> RuntimeSnapshot:
+        """Adopt one fresh held Root rebuilt from durable artifact pins."""
+
+        current = self._snapshots.get(snapshot.snapshot_id)
+        if current is not None:
+            if current is not snapshot:
+                raise RuntimeError("ServiceHold snapshot id 重复")
+            retained = current
+        else:
+            self._validate_composition(snapshot)
+            self._adopt(snapshot)
+            snapshot.state = "retired"
+            snapshot.accepting_leases = False
+            self._snapshots[snapshot.snapshot_id] = snapshot
+            retained = snapshot
+        retained.hold_count += 1
+        for generation in retained.generations.values():
+            generation.hold_count += 1
+        return retained
+
+    def _lease_hold(self, snapshot_id: str) -> RuntimeSnapshotLease:
+        """Lease one exact held Root without opening normal admission."""
+
+        snapshot = self._snapshots.get(snapshot_id)
+        if snapshot is None or snapshot.hold_count <= 0:
+            raise RuntimeError("ServiceHold exact Root 未恢复")
+        return self._claim_lease(snapshot)
 
     def _claim_lease(self, snapshot: RuntimeSnapshot) -> RuntimeSnapshotLease:
         snapshot.lease_count += 1
@@ -1835,12 +1869,30 @@ class RuntimeSnapshotStore:
         async with self._condition:
             self._condition.notify_all()
 
+    async def _release_hold(self, snapshot: RuntimeSnapshot) -> None:
+        """Release one durable Root hold and wake closed publication gates."""
+
+        if snapshot.hold_count <= 0:
+            raise RuntimeError(
+                f"RuntimeSnapshot hold 计数失衡: {snapshot.snapshot_id}"
+            )
+        snapshot.hold_count -= 1
+        for generation in snapshot.generations.values():
+            if generation.hold_count <= 0:
+                raise RuntimeError(
+                    f"PluginGeneration hold 计数失衡: {generation.plugin_id}"
+                )
+            generation.hold_count -= 1
+        self._schedule_drain(snapshot)
+        async with self._condition:
+            self._condition.notify_all()
+
     async def wait_for_generation_drained(
         self,
         generation: PluginGeneration,
     ) -> None:
         async with self._condition:
-            while generation.lease_count:
+            while generation.lease_count or generation.hold_count:
                 await self._condition.wait()
         await self.retry_drains()
 
@@ -1849,6 +1901,7 @@ class RuntimeSnapshotStore:
             self._snapshots.get(snapshot.snapshot_id) is not snapshot
             or snapshot.state not in {"retired", "aborted"}
             or snapshot.lease_count
+            or snapshot.hold_count
         ):
             return
         existing = self._drain_tasks.get(snapshot.snapshot_id)

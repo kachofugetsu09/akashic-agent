@@ -960,7 +960,7 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
         )
     store.pause_candidate_admission(latest)
     await latest_lease.release()
-    await store.wait_for_no_leases(latest)
+    await store._wait_for_no_refs(latest)
     promoted = await store.promote_latest()
     assert promoted.previous is stable
     assert store.stable is latest

@@ -3,15 +3,10 @@ from __future__ import annotations
 # pyright: reportPrivateUsage=false
 
 import asyncio
-import hashlib
 import json
-import os
-import shutil
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Generator, Protocol, cast
-from uuid import uuid4
+from typing import Protocol, cast
 
 from agent.plugin_composition.root_switch import (
     _PartEntry,
@@ -19,26 +14,14 @@ from agent.plugin_composition.root_switch import (
     _PartRef,
     _PartSet,
 )
+from agent.plugins.artifact_pins import _ArtifactPins
 from agent.plugins.reload_journal import ReloadJournal, _StoredChoice, _SwitchRecord
-from agent.plugins.source_hash import file_hash, file_revision, source_revision
 
 
 class _PartLoader(Protocol):
     """Load one exact recovery part from its pinned artifact."""
 
     async def load(self, ref: _PartRef) -> _PartEntry: ...
-
-
-@dataclass(frozen=True, slots=True)
-class _Artifact:
-    source_type: str
-    path: str
-    source_revision: str
-    config_revision: str
-    config_hash: str
-    config_path: str
-    data_path: str
-    entrypoint: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +146,7 @@ class _SwitchWork:
         if not errors:
             _finish_switch(
                 self._journal,
-                self._workspace,
+                _ArtifactPins(self._workspace, self._journal),
                 self._tx_id,
                 use_new=False,
             )
@@ -190,6 +173,7 @@ class _SwitchRun:
     def __init__(self, journal: ReloadJournal) -> None:
         self._journal = journal
         self._workspace = journal.path.parent.parent
+        self._pins = _ArtifactPins(self._workspace, journal)
 
     def pins(self) -> tuple[str, ...]:
         """List exact artifacts that cleanup must keep for boot recovery."""
@@ -209,12 +193,12 @@ class _SwitchRun:
     def save(self, snapshot: str, parts: _PartSet | None) -> None:
         """Save first-seen selected parts before public admission opens."""
 
-        with _pin_lock(self._workspace):
+        with self._pins.lock():
             try:
                 pinned = (
                     None
                     if parts is None
-                    else _pin_parts_locked(self._workspace, parts)
+                    else _pin_parts_locked(self._pins, parts)
                 )
                 entries = () if pinned is None else tuple(pinned.values())
                 self._journal.save_parts(
@@ -229,14 +213,14 @@ class _SwitchRun:
                 )
             except BaseException as error:
                 try:
-                    _clean_pins(self._workspace, self._kept_refs())
+                    self._pins.clean()
                 except BaseException as cleanup_error:
                     raise BaseExceptionGroup(
                         "RootSwitch save 与 pin cleanup 同时失败",
                         [error, cleanup_error],
                     ) from error
                 raise
-            _clean_pins(self._workspace, self._kept_refs())
+            self._pins.clean()
 
     @staticmethod
     def old_refs(
@@ -288,9 +272,9 @@ class _SwitchRun:
         )
         if not steps:
             return None
-        with _pin_lock(self._workspace):
+        with self._pins.lock():
             try:
-                pinned = _pin_plan(self._workspace, plan)
+                pinned = _pin_plan(self._pins, plan)
                 self._journal.begin_switch(
                     tx_id,
                     old_snapshot_id=old_snapshot,
@@ -303,7 +287,7 @@ class _SwitchRun:
                 )
             except BaseException as error:
                 try:
-                    _clean_pins(self._workspace, self._kept_refs())
+                    self._pins.clean()
                 except BaseException as cleanup_error:
                     raise BaseExceptionGroup(
                         "RootSwitch prepare 与 pin cleanup 同时失败",
@@ -344,7 +328,7 @@ class _SwitchRun:
             raise RuntimeError("RootSwitch recovery record 不存在")
         _finish_switch(
             self._journal,
-            self._workspace,
+            self._pins,
             target.tx_id,
             use_new=record.use_new,
         )
@@ -389,7 +373,7 @@ class _SwitchRun:
             raise RuntimeError("RootSwitch stable snapshot 尚未证明")
         _finish_switch(
             self._journal,
-            self._workspace,
+            self._pins,
             tx_id,
             use_new=True,
         )
@@ -715,7 +699,7 @@ def _step_refs(plan: _Plan) -> tuple[tuple[str, _PartRef], ...]:
     )
 
 
-def _pin_plan(workspace: Path, plan: _Plan) -> _Plan:
+def _pin_plan(pins: _ArtifactPins, plan: _Plan) -> _Plan:
     """Pin every code artifact before the first shared-owner action."""
 
     return _Plan(
@@ -724,183 +708,30 @@ def _pin_plan(workspace: Path, plan: _Plan) -> _Plan:
         moves=tuple(
             _Move(
                 name=move.name,
-                old=_pin_ref(workspace, move.old),
-                new=_pin_ref(workspace, move.new),
+                old=_pin_ref(pins, move.old),
+                new=_pin_ref(pins, move.new),
             )
             for move in plan.moves
         ),
     )
 
 
-def _pin_ref(workspace: Path, ref: _PartRef | None) -> _PartRef | None:
+def _pin_ref(pins: _ArtifactPins, ref: _PartRef | None) -> _PartRef | None:
     if ref is None:
         return None
-    artifact = _decode_artifact(ref.artifact)
-    source = Path(artifact.path)
-    if artifact.source_type not in {"builtin", "installed"}:
-        raise RuntimeError(
-            f"RootSwitch artifact source type 无效: {artifact.source_type}"
-        )
-    needs = tuple(_pin_need(workspace, need) for need in ref.needs)
-    digest = hashlib.sha256(ref.artifact.encode("utf-8")).hexdigest()
-    pinned_source = _pin_source(workspace, artifact, ref, digest)
-    pinned_config = _pin_config(workspace, artifact, ref, digest)
-    pinned = _Artifact(
-        source_type=artifact.source_type,
-        path=str(pinned_source),
-        source_revision=artifact.source_revision,
-        config_revision=artifact.config_revision,
-        config_hash=artifact.config_hash,
-        config_path=str(pinned_config),
-        data_path=artifact.data_path,
-        entrypoint=artifact.entrypoint,
-    )
+    needs = tuple(_pin_need(pins, need) for need in ref.needs)
     return _PartRef(
         name=ref.name,
         owner=ref.owner,
         generation=ref.generation,
-        artifact=_encode_artifact(pinned),
+        artifact=pins.pin(ref.artifact, owner=ref.owner, name=ref.name),
         needs=needs,
     )
 
 
-def _pin_source(
-    workspace: Path,
-    artifact: _Artifact,
-    ref: _PartRef,
-    digest: str,
-) -> Path:
-    """Return exact source, copying mutable builtin code only once."""
-
-    source = Path(artifact.path)
-    root = workspace / "runtime" / "root-switch" / "artifacts"
-    resolved = source.resolve(strict=False)
-    pinned = resolved.parent == root.resolve(strict=False)
-    if artifact.source_type == "installed" or pinned:
-        _check_source(source, artifact, ref)
-        return source
-
-    target = root / digest
-    if target.exists():
-        _check_source(target, artifact, ref)
-        return target
-
-    _check_source(source, artifact, ref)
-    root.mkdir(parents=True, exist_ok=True)
-    temporary = root / f".{digest}-{uuid4().hex}.tmp"
-    try:
-        _copy_source(source, temporary)
-        if source_revision(temporary) != artifact.source_revision:
-            raise RuntimeError(
-                f"RootSwitch builtin pin 内容漂移: {ref.owner}:{ref.name}"
-            )
-        _sync_tree(temporary)
-        try:
-            os.replace(temporary, target)
-        except FileExistsError:
-            shutil.rmtree(temporary)
-        _sync_dir(root)
-    except BaseException:
-        if temporary.exists():
-            shutil.rmtree(temporary)
-        raise
-    _check_source(target, artifact, ref)
-    return target
-
-
-def _check_source(source: Path, artifact: _Artifact, ref: _PartRef) -> None:
-    if source_revision(source) != artifact.source_revision:
-        raise RuntimeError(
-            f"RootSwitch artifact source 已漂移: {ref.owner}:{ref.name}"
-        )
-    entrypoint = source / artifact.entrypoint
-    if not entrypoint.is_file() or entrypoint.is_symlink():
-        raise RuntimeError(
-            f"RootSwitch artifact entrypoint 无效: {ref.owner}:{entrypoint}"
-        )
-
-
-def _pin_config(
-    workspace: Path,
-    artifact: _Artifact,
-    ref: _PartRef,
-    digest: str,
-) -> Path:
-    """Keep one private exact config file for crash recovery."""
-
-    source = Path(artifact.config_path)
-    root = workspace / "runtime" / "root-switch" / "configs"
-    resolved = source.resolve(strict=False)
-    pinned = (
-        resolved.parent.parent == root.resolve(strict=False)
-        and resolved.name == "config.local.toml"
-    )
-    if pinned:
-        _check_config_pin(source, root, artifact, ref)
-        return source
-
-    target_dir = root / digest
-    target = target_dir / "config.local.toml"
-    if target_dir.exists():
-        _check_config_pin(target, root, artifact, ref)
-        return target
-
-    if source.is_symlink():
-        raise RuntimeError(f"RootSwitch config 不能是符号链接: {ref.owner}")
-    if file_revision(source) != artifact.config_revision:
-        raise RuntimeError(f"RootSwitch config 在 publication 前已漂移: {ref.owner}")
-    _check_config_hash(source, artifact, ref)
-    root.mkdir(parents=True, exist_ok=True)
-    os.chmod(root, 0o700)
-    temporary = root / f".{digest}-{uuid4().hex}.tmp"
-    try:
-        temporary.mkdir(mode=0o700)
-        if source.is_file():
-            _ = shutil.copyfile(source, temporary / "config.local.toml")
-            os.chmod(temporary / "config.local.toml", 0o600)
-        _sync_tree(temporary)
-        try:
-            os.replace(temporary, target_dir)
-        except FileExistsError:
-            shutil.rmtree(temporary)
-        _sync_dir(root)
-    except BaseException:
-        if temporary.exists():
-            shutil.rmtree(temporary)
-        raise
-    _check_config_pin(target, root, artifact, ref)
-    return target
-
-
-def _check_config_hash(path: Path, artifact: _Artifact, ref: _PartRef) -> None:
-    if file_hash(path) != artifact.config_hash:
-        raise RuntimeError(f"RootSwitch config pin 已漂移: {ref.owner}:{ref.name}")
-
-
-def _check_config_pin(
-    path: Path,
-    root: Path,
-    artifact: _Artifact,
-    ref: _PartRef,
-) -> None:
-    """Validate private pin location, mode, and exact content."""
-
-    if root.stat().st_mode & 0o777 != 0o700:
-        raise RuntimeError(f"RootSwitch config root 权限无效: {root}")
-    if path.parent.stat().st_mode & 0o777 != 0o700:
-        raise RuntimeError(f"RootSwitch config pin 权限无效: {path.parent}")
-    if path.exists() and (
-        not path.is_file()
-        or path.is_symlink()
-        or path.stat().st_mode & 0o777 != 0o600
-    ):
-        raise RuntimeError(f"RootSwitch config file 权限无效: {path}")
-    _check_config_hash(path, artifact, ref)
-
-
-def _pin_need(workspace: Path, need: _PartNeed) -> _PartNeed:
+def _pin_need(pins: _ArtifactPins, need: _PartNeed) -> _PartNeed:
     pinned = _pin_ref(
-        workspace,
+        pins,
         _PartRef("need", need.owner, need.generation, need.artifact),
     )
     if pinned is None:
@@ -908,266 +739,46 @@ def _pin_need(workspace: Path, need: _PartNeed) -> _PartNeed:
     return _PartNeed(pinned.owner, pinned.generation, pinned.artifact)
 
 
-def _pin_parts(workspace: Path, parts: _PartSet) -> _PartSet:
+def _pin_parts(pins: _ArtifactPins, parts: _PartSet) -> _PartSet:
     """Pin every part before its snapshot becomes committed state."""
 
-    with _pin_lock(workspace):
-        return _pin_parts_locked(workspace, parts)
+    with pins.lock():
+        return _pin_parts_locked(pins, parts)
 
 
-def _pin_parts_locked(workspace: Path, parts: _PartSet) -> _PartSet:
+def _pin_parts_locked(pins: _ArtifactPins, parts: _PartSet) -> _PartSet:
     return _PartSet(
         {
-            name: _PartEntry(_pin_required(workspace, entry.ref), entry.part)
+            name: _PartEntry(_pin_required(pins, entry.ref), entry.part)
             for name, entry in parts.items()
         }
     )
 
 
-def _pin_required(workspace: Path, ref: _PartRef) -> _PartRef:
-    pinned = _pin_ref(workspace, ref)
+def _pin_required(pins: _ArtifactPins, ref: _PartRef) -> _PartRef:
+    pinned = _pin_ref(pins, ref)
     if pinned is None:
         raise RuntimeError("RootSwitch part pin 意外为空")
     return pinned
 
 
-def _copy_source(source: Path, target: Path) -> None:
-    excluded = {
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".venv",
-        "__pycache__",
-        "node_modules",
-    }
-    _ = shutil.copytree(
-        source,
-        target,
-        symlinks=True,
-        ignore=lambda _path, names: sorted(excluded.intersection(names)),
-    )
-
-
-def _sync_tree(root: Path) -> None:
-    for current, directories, filenames in os.walk(root, topdown=False):
-        for name in filenames:
-            path = Path(current) / name
-            if path.is_symlink():
-                continue
-            with path.open("rb") as stream:
-                os.fsync(stream.fileno())
-        for name in directories:
-            path = Path(current) / name
-            if not path.is_symlink():
-                _sync_dir(path)
-    _sync_dir(root)
-
-
-def _sync_dir(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def _finish_switch(
     journal: ReloadJournal,
-    workspace: Path,
+    pins: _ArtifactPins,
     tx_id: str,
     *,
     use_new: bool,
 ) -> None:
-    with _pin_lock(workspace):
+    with pins.lock():
         record = journal.switch_record(tx_id)
         if record is None:
             raise RuntimeError("RootSwitch record 不存在")
         journal.finish_switch(tx_id, use_new=use_new)
-        kept = tuple(
-            choice.ref
-            for choice in (
-                _decode_choice(item) for item in journal.switch_choices()
-            )
-            if choice.ref is not None
-        )
-        pending = tuple(
-            ref
-            for item in journal.pending_switches()
-            for move in _decode_record(item).moves
-            for ref in _move_refs(move)
-        )
-        _clean_pins(workspace, (*kept, *pending))
-
-
-def _clean_pins(workspace: Path, refs: tuple[_PartRef, ...]) -> None:
-    artifacts = (
-        workspace / "runtime" / "root-switch" / "artifacts"
-    ).resolve(strict=False)
-    configs = (workspace / "runtime" / "root-switch" / "configs").resolve(
-        strict=False
-    )
-    artifact_paths = tuple(
-        Path(_decode_artifact(ref.artifact).path).resolve(strict=False)
-        for part in refs
-        for ref in (part, *part.needs)
-    )
-    config_paths = tuple(
-        Path(_decode_artifact(ref.artifact).config_path).resolve(strict=False).parent
-        for part in refs
-        for ref in (part, *part.needs)
-    )
-    _clean_pin_root(artifacts, artifact_paths)
-    _clean_pin_root(configs, config_paths)
-
-
-def _clean_pin_root(root: Path, paths: tuple[Path, ...]) -> None:
-    """Remove unreferenced direct children from one private pin root."""
-
-    if not root.exists():
-        return
-    kept = {path for path in paths if path.parent == root}
-    for path in root.iterdir():
-        resolved = path.resolve(strict=False)
-        if resolved.parent != root:
-            raise RuntimeError(f"RootSwitch pin path 越界: {resolved}")
-        if resolved not in kept:
-            if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
-
-
-def _path_pinned(journal: ReloadJournal, path: Path) -> bool:
-    """Check an exact artifact path while the caller owns the pin lock."""
-
-    target = path.resolve(strict=False)
-    refs: list[_PartRef] = []
-    for stored in journal.switch_choices():
-        choice = _decode_choice(stored)
-        if choice.ref is not None:
-            refs.append(choice.ref)
-    refs.extend(
-        ref
-        for record in journal.pending_switches()
-        for move in _decode_record(record).moves
-        for ref in _move_refs(move)
-    )
-    for part in refs:
-        for ref in (part, *part.needs):
-                artifact = _decode_artifact(ref.artifact)
-                pinned = Path(artifact.path).resolve(strict=False)
-                if (
-                    target == pinned
-                    or target.is_relative_to(pinned)
-                    or pinned.is_relative_to(target)
-                ):
-                    return True
-    return False
-
-
-def _path_pending(journal: ReloadJournal, path: Path) -> bool:
-    """Check whether one unfinished switch covers this plugin path."""
-
-    target = path.resolve(strict=False)
-    return any(
-        target == pinned
-        or target.is_relative_to(pinned)
-        or pinned.is_relative_to(target)
-        for record in journal.pending_switches()
-        for move in _decode_record(record).moves
-        for ref in _move_refs(move)
-        for pinned in (Path(_decode_artifact(ref.artifact).path).resolve(strict=False),)
-    )
+        pins.clean()
 
 
 def _move_refs(move: _Move) -> tuple[_PartRef, ...]:
     return tuple(ref for ref in (move.old, move.new) if ref is not None)
-
-
-@contextmanager
-def _pin_lock(workspace: Path) -> Generator[None]:
-    """Serialize durable pin creation with every artifact delete check."""
-
-    path = workspace / "runtime" / "root-switch" / ".lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    stream: IO[str] = path.open("a+", encoding="utf-8")
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        if os.name == "nt":
-            import msvcrt
-
-            stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-        stream.close()
-
-
-def _decode_artifact(value: str) -> _Artifact:
-    try:
-        loaded = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise RuntimeError("RootSwitch artifact identity 不是 JSON") from error
-    if not isinstance(loaded, dict):
-        raise RuntimeError("RootSwitch artifact identity 结构无效")
-    item = cast(dict[str, object], loaded)
-    keys = {
-        "source_type",
-        "path",
-        "source_revision",
-        "config_revision",
-        "config_hash",
-        "config_path",
-        "data_path",
-        "entrypoint",
-    }
-    if set(item) != keys:
-        raise RuntimeError("RootSwitch artifact identity 结构无效")
-    return _Artifact(
-        source_type=_stored_text(item["source_type"], "artifact source type"),
-        path=_stored_text(item["path"], "artifact path"),
-        source_revision=_stored_text(
-            item["source_revision"], "artifact source revision"
-        ),
-        config_revision=_stored_text(
-            item["config_revision"], "artifact config revision"
-        ),
-        config_hash=_stored_text(item["config_hash"], "artifact config hash"),
-        config_path=_stored_text(item["config_path"], "artifact config path"),
-        data_path=_stored_text(item["data_path"], "artifact data path"),
-        entrypoint=_stored_text(item["entrypoint"], "artifact entrypoint"),
-    )
-
-
-def _encode_artifact(value: _Artifact) -> str:
-    return json.dumps(
-        {
-            "config_hash": value.config_hash,
-            "config_path": value.config_path,
-            "config_revision": value.config_revision,
-            "data_path": value.data_path,
-            "entrypoint": value.entrypoint,
-            "path": value.path,
-            "source_revision": value.source_revision,
-            "source_type": value.source_type,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
 
 
 def _same_part(expected: _PartRef, actual: _PartRef) -> bool:

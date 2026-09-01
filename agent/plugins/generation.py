@@ -105,6 +105,7 @@ class PluginGeneration:
     minimum_resource_count: int = 0
     state: str = "active"
     lease_count: int = 0
+    hold_count: int = 0
     reload_tx_id: str | None = None
     production_contributions: PluginContributions | None = None
     production_data_dir: Path | None = None
