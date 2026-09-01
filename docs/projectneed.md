@@ -764,6 +764,36 @@ Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；�
 通道直达同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 也只操作这台桌面及其唯一
 Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪装成桌面控制。
 
+### PLG-018 Agent 内骨架由普通插件组合
+
+一次 Agent 工作的内骨架由 `sessions`、`models`、`tools`、`system-prompt`、
+`session-projections`、`agents` 与 `agent-loop` 七个普通插件组成。七个表示内骨架的最小变化轴，
+不是整个系统只能安装七个插件；Channel、Command、Scheduler、Wake、Subagent、Compaction、
+Memory、Tool Search 与 Shell 等能力继续作为普通插件注入这些 Service。
+
+Core 只拥有 artifact、generation、完整 Root、readiness、stable/latest、exact snapshot lease、原子
+publication、drain、恢复日志和三个领域中性执行原子：绑定单一 `ServiceKey` 的泛型 snapshot Service
+port、只能取得自身 exact Root 的 Fiber task scope，以及按 opaque scope/operation key 保存 task、
+exact lease 与 cancel callback 的 process-wide operation supervisor。每个 snapshot 外
+host 只获得完成自己任务的一只窄 port，插件不得取得 port factory。公开 `call` 不接受 selector、
+snapshot ID 或 plugin ID；普通 host 的 acquisition policy 在构造时固定为 stable。attached validation
+child 只使用 Core 根据父 Turn 与 candidate identity 铸造的一次性 exact lease，host 和插件不能选择
+latest。port 只能在该 lease 内等待一次操作，不得理解 Message、Turn、Session、ReAct、工具名或来源，
+也不得为缺失 Service 提供私有 fallback。root task 退休后不得改投新 stable；operation supervisor
+不得理解 Agent、Turn、Session、来源或业务状态，只允许同一 opaque scope 原子 claim、按已知 key
+取消和 terminal release。snapshot 包住完整 ReAct Turn 只冻结这次组合，不赋予其中任何插件特权。
+
+七个插件必须使用与外部 v3 插件相同的 loader、Context、Fiber、Effect、PluginRuntime、generation、
+workspace file grant 和 disabled builtin 规则。`sessions` 是 `sessions.db` 的唯一正式 writer；
+`agent-loop` 只实现直接 ReAct 算法并向 `agents` 注册 runner。Root 在 publication 前必须拒绝缺失 Service、
+重复 runner、重复 writer 和依赖环。Core/Bootstrap 不得按这些插件或 `tool_search`、`message_push`、Shell、
+模型、记忆和 Channel 名称分支。
+
+迁移不使用生产流量灰度、运行时 shadow、旧新双执行、双写或双 sender。每次只切换一个 owner：新路径
+成为唯一正式路径并通过关键 oracle 与两个独立 review 后，必须在同批删除 deprecated 旧代码、配置、
+导出和测试替身。最终不得保留 alias、adapter、feature flag、legacy mode 或 fallback。isolated candidate
+只验证拓扑、权限和无正式副作用的行为，不接生产流量，也不成为第二名正式状态 owner。
+
 ## 11. Workspace、文件和进程
 
 ### WSP-001 Workspace 可写状态显式归属
