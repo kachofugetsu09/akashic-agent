@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 import asyncio
+import base64
+import json
 
 import pytest
 
@@ -16,6 +18,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.models import ModelUnavailableError
 from agent.tools.vision import ReadImageVisionTool
+from plugins.computer.mcp_server import screenshot_result
 from tests.model_plugin_fakes import bind_test_model_snapshot
 
 
@@ -157,6 +160,39 @@ async def test_vision_tool_uses_turn_vision_binding(
     assert chat_models.execution_calls == 2
     latest = chat_models.executions[-1].models[ModelRole.VISION]  # type: ignore[attr-defined]
     assert latest.descriptor.model_revision == 2
+
+
+@pytest.mark.asyncio
+async def test_computer_screenshot_path_is_readable_by_vision_tool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "computer-data"
+    monkeypatch.setenv("AKA_PLUGIN_DATA_DIR", str(data_dir))
+    screenshot = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    response = screenshot_result(screenshot, "image/png")
+    content = response["content"]
+    assert isinstance(content, list)
+    content_block = content[0]
+    assert isinstance(content_block, dict)
+    text = content_block.get("text")
+    assert isinstance(text, str)
+    reference = json.loads(text)
+    path = reference["path"]
+    assert isinstance(path, str)
+    model = _VisionModel()
+    chat_models = _ChatModels(model)
+
+    async with bind_test_model_snapshot(object(), chat_models=chat_models):
+        result = await ReadImageVisionTool(allowed_dir=data_dir).execute(
+            path, "描述 Computer 当前画面"
+        )
+
+    assert result == "一只猫"
+    content = model.requests[0].messages[0]["content"]
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 @pytest.mark.asyncio

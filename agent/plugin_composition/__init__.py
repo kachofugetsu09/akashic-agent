@@ -199,10 +199,20 @@ from agent.plugin_composition.mcp_slots import (
     MCP_SERVERS,
     EndpointEnv,
     McpServerDefinition,
+    WorkloadEnv,
 )
 from agent.plugin_composition.process_slots import (
     MANAGED_PROCESSES,
     ManagedProcessDefinition,
+)
+from agent.plugin_composition.workload_slots import (
+    WORKLOADS,
+    PluginWorkloads,
+    Workload,
+    WorkloadData,
+    WorkloadHealth,
+    WorkloadLimits,
+    WorkloadPort,
 )
 from agent.plugin_composition.background_jobs import (
     BACKGROUND_JOBS,
@@ -410,13 +420,21 @@ __all__ = [
     "SourceMutationFence",
     "JsonValue",
     "MANAGED_PROCESSES",
+    "WORKLOADS",
     "EMBEDDING_MEMORY_PLUGIN",
     "MCP_SERVERS",
     "BACKGROUND_JOBS",
     "TOOL_CATALOG",
     "EndpointEnv",
+    "WorkloadEnv",
     "McpServerDefinition",
     "ManagedProcessDefinition",
+    "PluginWorkloads",
+    "Workload",
+    "WorkloadData",
+    "WorkloadHealth",
+    "WorkloadLimits",
+    "WorkloadPort",
     "MobileUiBinding",
     "MobileUiDefinition",
     "MobileUiDescriptor",

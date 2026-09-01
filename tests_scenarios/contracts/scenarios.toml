@@ -17,7 +17,7 @@ recursive_crash_promotes_candidate = "tests/semantic/test_recursive_plugin_self_
 recursive_fake_domain_success = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_fake_domain_success_mutant"
 recursive_fake_tool_item = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_fake_tool_item"
 recursive_global_turn_lock = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_global_lock_mutant"
-recursive_memory_write = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_memory_write_mutant"
+recursive_post_commit_effect = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_post_commit_effect_mutant"
 recursive_message_push_blocks_parent = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_message_push_blocking_mutant"
 recursive_parent_terminal_overflow = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_parent_terminal_overflow_mutant"
 recursive_stable_misbinding = "tests/semantic/test_recursive_plugin_self_validation_contract.py::test_recursive_plugin_oracle_rejects_stable_misbinding_mutant"
@@ -290,6 +290,37 @@ command = [
 observes = ["candidate_generation", "active_generation", "turn_committed_event_position", "rollback"]
 mutants = ["candidate_visible_before_activation", "plugin_uninstall_deletes_data"]
 
+[scenarios.plugin_workload_contract]
+requirements = ["PLG-001", "PLG-004", "PLG-009", "PLG-017", "RUN-016", "WSP-006"]
+groups = ["plugin"]
+environment = "public_clean_workspace"
+timeout_seconds = 120
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_contract_oracles.py::test_plugin_drain_oracle_rejects_active_only_completion_mutant",
+  "tests/semantic/test_contract_oracles.py::test_plugin_data_oracle_rejects_uninstall_delete_mutant",
+  "tests/test_plugin_workload_manifest.py",
+  "tests/test_plugin_workload_core.py",
+  "tests/test_workload_controller.py",
+  "tests/test_computer_plugin.py",
+]
+observes = [
+  "workload_declaration",
+  "owner_scoped_binding",
+  "workload_readiness",
+  "candidate_data_isolation",
+  "exact_lease_adoption",
+  "strong_stop_receipt",
+  "cross_boot_recovery",
+  "plugin_data_retention",
+  "browser_shell_separation",
+  "live_display_proxy",
+]
+mutants = ["plugin_drain_reports_before_old_lease_release", "plugin_uninstall_deletes_data"]
+
 [scenarios.model_owner_contract]
 requirements = ["RUN-005", "RUN-009", "RUN-010", "RUN-011", "RUN-012", "TST-001", "TST-003"]
 groups = ["model_owner"]
@@ -467,7 +498,7 @@ observes = [
   "control_tool_items",
   "candidate_domain_state",
   "validation_session_db",
-  "semantic_memory_write_set",
+  "post_commit_effect",
   "chat_lane_timer_order",
   "message_push_receipt",
   "crash_recovery",
@@ -476,7 +507,7 @@ mutants = [
   "recursive_stable_misbinding",
   "recursive_global_turn_lock",
   "recursive_parent_terminal_overflow",
-  "recursive_memory_write",
+  "recursive_post_commit_effect",
   "recursive_fake_domain_success",
   "recursive_message_push_blocks_parent",
   "recursive_crash_promotes_candidate",

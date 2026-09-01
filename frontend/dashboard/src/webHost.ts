@@ -207,6 +207,7 @@ class BrowserCatalogSession implements WebHostSession {
     return {
       http: {
         request: (path, init) => this.request(owner, path, init),
+        webSocketUrl: (path) => this.webSocketUrl(owner, path),
       },
       ui: {
         inject: (mountId, connect) => this.inject(owner, mountId, connect),
@@ -219,13 +220,7 @@ class BrowserCatalogSession implements WebHostSession {
     path: string,
     init: RequestInit = {},
   ): Promise<Response> {
-    if (this.closed) throw new Error("web catalog session is closed");
-    if (owner.disposed) throw new Error("web module is disposed");
-    if (this.staleCatalog) throw new Error("web catalog is stale");
-    const url = new URL(path, window.location.origin);
-    if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/dashboard/")) {
-      throw new Error("web modules may only call their own dashboard API");
-    }
+    const url = this.dashboardUrl(owner, path);
     const headers = new Headers(init.headers);
     headers.set("X-Akashic-Web-Snapshot", this.bootstrap.snapshotId);
     headers.set("X-Akashic-Web-Catalog", this.bootstrap.catalogId);
@@ -236,6 +231,28 @@ class BrowserCatalogSession implements WebHostSession {
       if (!this.closed && response.headers.get("X-Akashic-Web-Stale") === "1") this.markStale();
       return response;
     });
+  }
+
+  private webSocketUrl(owner: ModuleActivation, path: string): string {
+    const url = this.dashboardUrl(owner, path);
+    url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    url.hash = "";
+    url.searchParams.set("__akashic_web_snapshot", this.bootstrap.snapshotId);
+    url.searchParams.set("__akashic_web_catalog", this.bootstrap.catalogId);
+    url.searchParams.set("__akashic_web_module", owner.module.pluginId);
+    url.searchParams.set("__akashic_web_generation", owner.module.generationId);
+    return url.toString();
+  }
+
+  private dashboardUrl(owner: ModuleActivation, path: string): URL {
+    if (this.closed) throw new Error("web catalog session is closed");
+    if (owner.disposed) throw new Error("web module is disposed");
+    if (this.staleCatalog) throw new Error("web catalog is stale");
+    const url = new URL(path, window.location.origin);
+    if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/dashboard/")) {
+      throw new Error("web modules may only call their own dashboard API");
+    }
+    return url;
   }
 
   private inject(

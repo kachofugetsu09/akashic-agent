@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import logging
 import re
 import sys
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
-from collections.abc import Sequence
 from pathlib import Path
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
-from starlette.datastructures import Headers
 from starlette.convertors import (
     FloatConvertor,
     IntegerConvertor,
@@ -21,8 +23,9 @@ from starlette.convertors import (
     StringConvertor,
     UUIDConvertor,
 )
-from starlette.routing import Match
+from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
+from starlette.routing import Match, WebSocketRoute
 
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
@@ -42,6 +45,8 @@ from agent.plugins.snapshot import (
 
 logger = logging.getLogger(__name__)
 
+DashboardRoute = APIRoute | WebSocketRoute
+
 
 class _DashboardImportError(RuntimeError):
     pass
@@ -51,7 +56,7 @@ class _DashboardImportError(RuntimeError):
 class DashboardBinding:
     plugin_id: str
     app: FastAPI
-    routes: tuple[APIRoute, ...]
+    routes: tuple[DashboardRoute, ...]
     runtime_workspace: Path | None = None
     runtime_data_root: Path | None = None
     validation: bool = False
@@ -67,8 +72,10 @@ class PluginDashboardHost:
         self,
         *,
         core_routes: tuple[object, ...],
+        workload_urls: Callable[[str], Mapping[tuple[str, str], str]] | None = None,
     ) -> None:
         self._core_routes = _core_routes(core_routes)
+        self._workload_urls = workload_urls or (lambda _generation_id: {})
         self._bindings: dict[tuple[str, Path], DashboardBinding] = {}
         self._unavailable: set[str] = set()
 
@@ -217,7 +224,7 @@ class PluginDashboardHost:
         generation: PluginGeneration,
         module_path: Path,
         *,
-        occupied: list[APIRoute],
+        occupied: list[DashboardRoute],
         workspace: Path,
         data_root: Path,
         workspace_roots: tuple[str, ...],
@@ -268,6 +275,9 @@ class PluginDashboardHost:
                     (name, resolve_declared_workspace_file(workspace, name))
                     for name in workspace_files
                 ),
+                _workload_urls=MappingProxyType(
+                    dict(self._workload_urls(generation.generation_id))
+                ),
             )
             enabled_result = True
             if callable(enabled):
@@ -283,9 +293,7 @@ class PluginDashboardHost:
                         operation="plugin_enabled",
                     )
                     if not isinstance(enabled_result, bool):
-                        raise RuntimeError(
-                            "v3 dashboard plugin_enabled 必须返回 bool"
-                        )
+                        raise RuntimeError("v3 dashboard plugin_enabled 必须返回 bool")
             registered = None
             if enabled_result:
                 with plugin_entrypoint(
@@ -369,23 +377,65 @@ class SnapshotDashboardMiddleware:
         self._snapshot_store = snapshot_store
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope.get("type") == "http":
+        scope_type = scope.get("type")
+        if scope_type in {"http", "websocket"}:
             headers = Headers(scope=scope)
             try:
-                web_identity = _web_request_identity(headers)
-            except RuntimeError:
-                await _web_error(409, "stale_catalog", scope, receive, send)
+                web_identity = (
+                    _websocket_request_identity(scope)
+                    if scope_type == "websocket"
+                    else _web_request_identity(headers)
+                )
+            except RuntimeError as error:
+                logger.warning(
+                    "Web UI WebSocket 身份解析失败: path=%s error=%s",
+                    scope.get("path"),
+                    error,
+                )
+                await _reject_web_request(409, "stale_catalog", scope, receive, send)
+                return
+            dashboard_path = str(scope.get("path", "")).startswith("/api/dashboard/")
+            if scope_type == "websocket" and web_identity is None:
+                if dashboard_path:
+                    logger.warning(
+                        "Web UI WebSocket 缺少 generation 身份: path=%s",
+                        scope.get("path"),
+                    )
+                    await _reject_web_request(
+                        403, "forbidden_contract", scope, receive, send
+                    )
+                    return
+                await self._app(scope, receive, send)  # type: ignore[operator]
+                return
+            if (
+                scope_type == "websocket"
+                and web_identity is not None
+                and not _same_origin_websocket(headers)
+            ):
+                logger.warning(
+                    "Web UI WebSocket 来源不匹配: path=%s origin=%s host=%s",
+                    scope.get("path"),
+                    headers.get("origin"),
+                    headers.get("host"),
+                )
+                await _reject_web_request(
+                    403, "forbidden_contract", scope, receive, send
+                )
                 return
             if (
                 web_identity is None
-                and str(scope.get("path", "")).startswith("/api/dashboard/")
+                and dashboard_path
                 and headers.get("sec-fetch-site") in {"same-origin", "same-site"}
             ):
-                await _web_error(403, "forbidden_contract", scope, receive, send)
+                await _reject_web_request(
+                    403, "forbidden_contract", scope, receive, send
+                )
                 return
             if self._snapshot_store.current is None:
                 if web_identity is not None:
-                    await _web_error(409, "stale_catalog", scope, receive, send)
+                    await _reject_web_request(
+                        409, "stale_catalog", scope, receive, send
+                    )
                     return
                 await self._app(scope, receive, send)  # type: ignore[operator]
                 return
@@ -395,15 +445,24 @@ class SnapshotDashboardMiddleware:
                     if web_identity is not None
                     else await self._snapshot_store.acquire()
                 )
-            except RuntimeError:
-                await _web_error(409, "stale_catalog", scope, receive, send)
+            except RuntimeError as error:
+                logger.warning(
+                    "Web UI snapshot 不可租用: reason=%s",
+                    type(error).__name__,
+                )
+                await _reject_web_request(409, "stale_catalog", scope, receive, send)
                 return
             async with lease:
                 if web_identity is not None and not _web_request_matches(
                     lease.snapshot,
                     web_identity,
                 ):
-                    await _web_error(409, "stale_catalog", scope, receive, send)
+                    logger.warning(
+                        "Web UI WebSocket generation 已过期",
+                    )
+                    await _reject_web_request(
+                        409, "stale_catalog", scope, receive, send
+                    )
                     return
                 token = bind_runtime_snapshot(lease)
                 try:
@@ -417,7 +476,7 @@ class SnapshotDashboardMiddleware:
                                 generation.contributions.web_module is not None
                                 and web_identity is None
                             ):
-                                await _web_error(
+                                await _reject_web_request(
                                     403,
                                     "forbidden_contract",
                                     scope,
@@ -429,7 +488,10 @@ class SnapshotDashboardMiddleware:
                                 web_identity is not None
                                 and binding.plugin_id != web_identity[2]
                             ):
-                                await _web_error(
+                                logger.warning(
+                                    "Web UI WebSocket plugin 身份不匹配",
+                                )
+                                await _reject_web_request(
                                     403,
                                     "forbidden_contract",
                                     scope,
@@ -446,13 +508,25 @@ class SnapshotDashboardMiddleware:
                                 plugin_id=binding.plugin_id,
                                 generation_id=generation.generation_id,
                                 fiber=binding.plugin_id,
-                                operation="dashboard.http",
+                                operation=f"dashboard.{scope_type}",
                                 entrypoint=route.path,
                             ):
-                                await binding.app(scope, receive, send)
+                                if scope_type == "websocket":
+                                    await _run_dashboard_websocket(
+                                        binding.app,
+                                        scope,
+                                        receive,
+                                        send,
+                                        lease.snapshot,
+                                    )
+                                else:
+                                    await binding.app(scope, receive, send)
                             return
                     if web_identity is not None:
-                        await _web_error(
+                        logger.warning(
+                            "Web UI WebSocket 路由不存在",
+                        )
+                        await _reject_web_request(
                             403,
                             "forbidden_contract",
                             scope,
@@ -464,7 +538,47 @@ class SnapshotDashboardMiddleware:
                     return
                 finally:
                     reset_runtime_snapshot(token)
+            return
         await self._app(scope, receive, send)  # type: ignore[operator]
+
+
+async def _run_dashboard_websocket(
+    app: object,
+    scope: dict[str, Any],
+    receive: Any,
+    send: Any,
+    snapshot: RuntimeSnapshot,
+) -> None:
+    """Close one live plugin socket before its exact snapshot can drain."""
+
+    closed = False
+
+    async def tracked_send(message: dict[str, Any]) -> None:
+        nonlocal closed
+        if message.get("type") == "websocket.close":
+            closed = True
+        await send(message)
+
+    task = asyncio.create_task(app(scope, receive, tracked_send))  # type: ignore[operator]
+    try:
+        while not task.done() and snapshot.accepting_leases:
+            await asyncio.wait((task,), timeout=0.2)
+        if task.done():
+            await task
+            return
+        if not closed:
+            await tracked_send(
+                {
+                    "type": "websocket.close",
+                    "code": 1012,
+                    "reason": "plugin generation changed",
+                }
+            )
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 def _web_request_identity(headers: Headers) -> tuple[str, str, str, str] | None:
@@ -479,6 +593,47 @@ def _web_request_identity(headers: Headers) -> tuple[str, str, str, str] | None:
     if not all(values):
         raise RuntimeError("Web UI 请求身份不完整")
     return values
+
+
+def _websocket_request_identity(
+    scope: dict[str, Any],
+) -> tuple[str, str, str, str] | None:
+    try:
+        query = parse_qs(
+            bytes(scope.get("query_string", b"")).decode("ascii"),
+            keep_blank_values=True,
+        )
+    except (UnicodeDecodeError, ValueError) as error:
+        raise RuntimeError("Web UI WebSocket 请求身份无效") from error
+    names = (
+        "__akashic_web_snapshot",
+        "__akashic_web_catalog",
+        "__akashic_web_module",
+        "__akashic_web_generation",
+    )
+    values = tuple(query.get(name, []) for name in names)
+    if not any(values):
+        return None
+    if any(len(value) != 1 or not value[0] or len(value[0]) > 256 for value in values):
+        raise RuntimeError("Web UI WebSocket 请求身份不完整")
+    return tuple(value[0] for value in values)  # type: ignore[return-value]
+
+
+def _same_origin_websocket(headers: Headers) -> bool:
+    origin = headers.get("origin")
+    host = headers.get("host")
+    if not origin or not host:
+        return False
+    parsed = urlsplit(origin)
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.netloc.casefold() == host.casefold()
+    )
 
 
 def _web_request_matches(
@@ -513,6 +668,25 @@ async def _web_error(
     )(scope, receive, send)
 
 
+async def _reject_web_request(
+    status: int,
+    code: str,
+    scope: dict[str, Any],
+    receive: Any,
+    send: Any,
+) -> None:
+    if scope.get("type") == "websocket":
+        await send(
+            {
+                "type": "websocket.close",
+                "code": 4409 if code == "stale_catalog" else 4403,
+                "reason": code,
+            }
+        )
+        return
+    await _web_error(status, code, scope, receive, send)
+
+
 async def _close_dashboard_scope(scope: PluginScope) -> None:
     failures = await scope.aclose()
     if failures:
@@ -522,10 +696,12 @@ async def _close_dashboard_scope(scope: PluginScope) -> None:
         raise RuntimeError(f"candidate dashboard 清理失败: {details}")
 
 
-def _plugin_routes(routes: Sequence[object]) -> tuple[APIRoute, ...]:
-    if any(not isinstance(route, APIRoute) for route in routes):
-        raise RuntimeError("dashboard module 只支持 HTTP API route")
-    typed = tuple(route for route in routes if isinstance(route, APIRoute))
+def _plugin_routes(routes: Sequence[object]) -> tuple[DashboardRoute, ...]:
+    if any(not isinstance(route, (APIRoute, WebSocketRoute)) for route in routes):
+        raise RuntimeError("dashboard module 只支持 HTTP API 或 WebSocket route")
+    typed = tuple(
+        route for route in routes if isinstance(route, (APIRoute, WebSocketRoute))
+    )
     builtin_convertor_types = {
         StringConvertor,
         PathConvertor,
@@ -542,13 +718,15 @@ def _plugin_routes(routes: Sequence[object]) -> tuple[APIRoute, ...]:
     return typed
 
 
-def _core_routes(routes: tuple[object, ...]) -> tuple[APIRoute, ...]:
-    return tuple(route for route in routes if isinstance(route, APIRoute))
+def _core_routes(routes: tuple[object, ...]) -> tuple[DashboardRoute, ...]:
+    return tuple(
+        route for route in routes if isinstance(route, (APIRoute, WebSocketRoute))
+    )
 
 
 def _require_routes_available(
     binding: DashboardBinding,
-    occupied: list[APIRoute],
+    occupied: list[DashboardRoute],
 ) -> None:
     conflicts: list[str] = []
     for index, route in enumerate(binding.routes):
@@ -568,7 +746,7 @@ def _require_routes_available(
         raise RuntimeError(f"dashboard route 冲突: {', '.join(conflicts)}")
 
 
-def _route_paths_overlap(first: APIRoute, second: APIRoute) -> bool:
+def _route_paths_overlap(first: DashboardRoute, second: DashboardRoute) -> bool:
     first_sample = _sample_route_path(first)
     second_sample = _sample_route_path(second)
     return bool(
@@ -577,7 +755,12 @@ def _route_paths_overlap(first: APIRoute, second: APIRoute) -> bool:
     )
 
 
-def _overlapping_methods(first: APIRoute, second: APIRoute) -> list[str]:
+def _overlapping_methods(first: DashboardRoute, second: DashboardRoute) -> list[str]:
+    if isinstance(first, APIRoute) != isinstance(second, APIRoute):
+        return []
+    if isinstance(first, WebSocketRoute):
+        return ["WEBSOCKET"]
+    assert isinstance(second, APIRoute)
     if not first.methods and not second.methods:
         return ["*"]
     if not first.methods:
@@ -587,7 +770,10 @@ def _overlapping_methods(first: APIRoute, second: APIRoute) -> list[str]:
     return sorted(first.methods.intersection(second.methods))
 
 
-def _ordered_specific_route_wins(first: APIRoute, second: APIRoute) -> bool:
+def _ordered_specific_route_wins(
+    first: DashboardRoute,
+    second: DashboardRoute,
+) -> bool:
     """Allow an earlier narrow route that cannot shadow the later broad route."""
 
     first_sample = _sample_route_path(first)
@@ -598,7 +784,7 @@ def _ordered_specific_route_wins(first: APIRoute, second: APIRoute) -> bool:
     )
 
 
-def _sample_route_path(route: APIRoute) -> str:
+def _sample_route_path(route: DashboardRoute) -> str:
     def replace(match: re.Match[str]) -> str:
         convertor = route.param_convertors[match.group(1)]
         regex = re.compile(f"^(?:{convertor.regex})$")

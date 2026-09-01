@@ -17,6 +17,7 @@
     "test:desktop-navigation": "node --experimental-strip-types --test frontend/chat/src/browser-uuid.test.mjs frontend/chat/src/desktop-navigation.test.mjs frontend/chat/src/desktop-composer.test.mjs frontend/chat/src/model-capsule-data.test.mjs frontend/chat/src/mobile-pairing.test.mjs frontend/chat/src/web-chat-data.test.mjs frontend/chat/src/web-chat-transport.test.mjs frontend/chat/src/webui-error-boundary.test.mjs frontend/chat/src/module-boundaries.test.mjs frontend/chat/src/stream-turn-metrics.test.mjs",
     "test:theme": "node --test frontend/theme/src/theme-catalog.test.mjs frontend/theme/src/paper-brand.test.mjs",
     "test:models-web-module": "node --test plugins/models/web_module.test.mjs",
+    "test:computer-web-module": "node --test plugins/computer/web_module.test.mjs",
     "test:mobile-web-state": "node --experimental-strip-types --test frontend/chat/src/desktop-conversation.test.mjs frontend/chat/src/static-message-response.test.mjs frontend/chat/src/runtime-dashboard-data.test.mjs frontend/chat/src/message-rendering-policy.test.mjs frontend/chat/src/kaomoji-markdown.test.mjs frontend/chat/src/mobile-message-state.test.mjs frontend/chat/src/stream-projection.test.mjs frontend/chat/src/web-chat-status.test.mjs frontend/chat/src/mobile-plugin-layout.test.mjs frontend/chat/src/mobile-plugin-query-queue.test.mjs frontend/chat/src/mobile-plugin-result-cache.test.mjs frontend/chat/src/mobile-surface-history.test.mjs frontend/chat/src/mobile-turn-trace.test.mjs frontend/chat/src/web-turn-trace.test.mjs",
     "test:webui-performance": "node --test scripts/webui-performance/*.test.mjs && node scripts/webui-performance/run-build-baseline.mjs",
     "measure:webui-performance:browser": "node scripts/webui-performance/run-browser-scenarios.mjs",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "22.20.1",
+    "@types/novnc__novnc": "1.6.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -57,6 +59,7 @@
     "@ai-sdk/react": "^4.0.16",
     "@material/web": "^2.5.0",
     "@noble/hashes": "2.4.0",
+    "@novnc/novnc": "1.7.0",
     "@radix-ui/react-collapsible": "^1.1.15",
     "@radix-ui/react-dialog": "^1.1.18",
     "@radix-ui/react-dropdown-menu": "^2.1.19",

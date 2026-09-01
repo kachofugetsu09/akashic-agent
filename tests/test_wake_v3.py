@@ -608,6 +608,8 @@ async def test_successful_selection_consumes_kick_from_full_snapshot(tmp_path) -
         now=lambda: now,
     )
 
+    admission = await runtime._admit_attempt()
+    assert admission.turn_owner == "content"
     runtime._active_owner = "content"
     await runtime.prepare(_ctx(now))
     proposal = runtime._content_proposal
@@ -652,6 +654,8 @@ async def test_context_events_enter_only_content_investigation(tmp_path) -> None
         now=lambda: now,
         proactive_context="Do not interrupt sleep.",
     )
+    admission = await runtime._admit_attempt()
+    assert admission.turn_owner == "content"
     runtime._active_owner = "content"
     first = _ctx(now)
     await runtime.prepare(first)
@@ -702,6 +706,8 @@ async def test_alert_bypasses_interest_and_receives_context(tmp_path) -> None:
         proactive_context="Do not interrupt sleep.",
     )
 
+    admission = await runtime._admit_attempt()
+    assert admission.turn_owner == "alert"
     assert content.snapshots == 1
     runtime._phase = "alert"
     ctx = _ctx(now)
@@ -831,6 +837,8 @@ async def test_expired_alert_is_not_admitted_after_restart(tmp_path) -> None:
         now=lambda: now,
     )
 
+    admission = await recovered._admit_attempt()
+    assert admission.turn_owner is None
     assert content.alert_status("calendar", "old-meeting") == "expired"
 
 
@@ -1310,6 +1318,8 @@ async def test_context_source_can_report_before_wake_runtime_starts(tmp_path) ->
     )
     runtime.content_changed()
     await runtime.start()
+    admission = await runtime._admit_attempt()
+    assert admission.turn_owner == "content"
     runtime._active_owner = "content"
     await runtime.prepare(_ctx(now))
     runtime._screened_content = (
@@ -1440,6 +1450,8 @@ async def test_content_crash_before_selection_retries_then_commits(tmp_path) -> 
         now=lambda: now,
     )
 
+    admission = await first._admit_attempt()
+    assert admission.turn_owner == "content"
     assert first_state.has_unseen_due(content.snapshot(now)["items"], now) is True
 
     recovered_state = WakeState(path)
@@ -1451,6 +1463,8 @@ async def test_content_crash_before_selection_retries_then_commits(tmp_path) -> 
         state=recovered_state,
         now=lambda: now,
     )
+    admission = await recovered._admit_attempt()
+    assert admission.turn_owner == "content"
     recovered._active_owner = "content"
     await recovered.prepare(_ctx(now))
     recovered._screened_content = (
@@ -1478,6 +1492,8 @@ async def test_low_value_content_batch_does_not_admit_scoped_turn(tmp_path) -> N
         now=lambda: now,
     )
 
+    admission = await runtime._admit_attempt()
+    assert admission.turn_owner is None
 
 
 @pytest.mark.asyncio
@@ -1545,6 +1561,8 @@ async def test_passive_semantic_interest_can_admit_low_preprocess_content(
         semantic_interest=cast(Any, SemanticInterest()),
     )
 
+    admission = await runtime._admit_attempt()
+    assert admission.turn_owner == "content"
     runtime._active_owner = "content"
     ctx = _ctx(now)
     await runtime.prepare(ctx)

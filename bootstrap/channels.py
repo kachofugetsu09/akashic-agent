@@ -23,10 +23,7 @@ async def start_channels(
     push_tool: MessagePushTool,
     http_resources: SharedHttpResources,
     event_bus: EventBus,
-    telegram_command_catalog_provider: Callable[
-        [], tuple[tuple[str, str], ...]
-    ] | None = None,
-    mobile_command_catalog_provider: Callable[
+    command_catalog_provider: Callable[
         [], tuple[tuple[str, str], ...]
     ] | None = None,
     interrupt_controller: InterruptController | None = None,
@@ -44,7 +41,7 @@ async def start_channels(
             http_resources=http_resources,
             interrupt_controller=interrupt_controller,
             log=logging.getLogger(f"channels.{channel.name}"),
-            command_catalog_provider=mobile_command_catalog_provider,
+            command_catalog_provider=command_catalog_provider,
         )
 
     host = ChannelHost(_ctx_factory)
@@ -58,7 +55,7 @@ async def start_channels(
             bus=bus,
             session_manager=session_manager,
             allow_from=tg.allow_from,
-            command_catalog_provider=telegram_command_catalog_provider,
+            command_catalog_provider=command_catalog_provider,
             event_bus=event_bus,
             interrupt_controller=interrupt_controller,
             channel_name=tg.channel_name,

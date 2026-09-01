@@ -207,9 +207,20 @@ async def test_duplicate_generation_is_rejected_before_second_process(tmp_path: 
     root, registry = await _registry(tmp_path, script)
     host = McpGenerationHost()
     try:
-        await host.start_generation("same", registry, _command(script))
+        endpoint_ports = {"calendar_api": _free_port()}
+        await host.start_generation(
+            "same",
+            registry,
+            _command(script),
+            endpoint_ports=endpoint_ports,
+        )
         with pytest.raises(RuntimeError, match="already exists"):
-            await host.start_generation("same", registry, _command(script))
+            await host.start_generation(
+                "same",
+                registry,
+                _command(script),
+                endpoint_ports=endpoint_ports,
+            )
         assert (script.parent / "counter").read_text(encoding="utf-8") == "1"
     finally:
         await host.close()

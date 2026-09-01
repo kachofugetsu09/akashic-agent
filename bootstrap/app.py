@@ -37,6 +37,7 @@ from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from agent.plugins.turn_rollout import TurnPluginRollout
 from agent.plugins.watcher import PluginWatcher
+from agent.plugin_composition.commands import command_discovery_catalog
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -450,6 +451,17 @@ class AppRuntime:
                         ),
                     )
                 )
+            command_catalog_provider: Callable[
+                [], tuple[tuple[str, str], ...]
+            ] | None = None
+            if plugin_manager is not None:
+                def current_command_catalog() -> tuple[tuple[str, str], ...]:
+                    snapshot = plugin_manager.current_snapshot
+                    registry = None if snapshot is None else snapshot.command_registry
+                    return command_discovery_catalog(registry)
+
+                command_catalog_provider = current_command_catalog
+
             self.channel_host = await start_channels(
                 self.config,
                 bus=self.bus,
@@ -457,16 +469,7 @@ class AppRuntime:
                 push_tool=self.push_tool,
                 http_resources=self.http_resources,
                 event_bus=event_bus,
-                telegram_command_catalog_provider=(
-                    plugin_manager.stable_telegram_command_catalog
-                    if plugin_manager is not None
-                    else None
-                ),
-                mobile_command_catalog_provider=(
-                    plugin_manager.stable_mobile_command_catalog
-                    if plugin_manager is not None
-                    else None
-                ),
+                command_catalog_provider=command_catalog_provider,
                 interrupt_controller=self.conversation_runtime,
                 extra_channels=extra_channels,
             )

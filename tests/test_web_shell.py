@@ -135,15 +135,18 @@ def test_websocket_proxy_stops_when_browser_leaves_before_accept(
         headers: dict[str, str] = {}
         close_called = False
 
-        async def accept(self) -> None:
+        async def accept(self, subprotocol: str | None = None) -> None:
+            _ = subprotocol
             raise OSError("browser left")
 
         async def close(self, *, code: int, reason: str) -> None:
             self.close_called = True
 
     class Upstream:
-        async def __aenter__(self) -> object:
-            return object()
+        subprotocol = None
+
+        async def __aenter__(self) -> Upstream:
+            return self
 
         async def __aexit__(self, *args: object) -> None:
             return None
@@ -165,6 +168,116 @@ def test_websocket_proxy_stops_when_browser_leaves_before_accept(
     )
 
     assert not browser.close_called
+
+
+def test_dashboard_websocket_crosses_the_public_shell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[Path, str]] = []
+
+    async def proxy(
+        websocket: Any,
+        socket_path: Path,
+        target_path: str,
+    ) -> None:
+        calls.append((socket_path, target_path))
+        await websocket.accept(subprotocol="binary")
+        await websocket.send_text("ready")
+
+    monkeypatch.setattr(web_shell, "_proxy_websocket", proxy)
+    workspace = tmp_path / "workspace"
+    app = create_web_shell_app(tmp_path / "config.toml", workspace)
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/dashboard/computer/display?generation=computer%3A1",
+            subprotocols=["binary"],
+        ) as socket:
+            assert socket.accepted_subprotocol == "binary"
+            assert socket.receive_text() == "ready"
+
+    assert calls == [
+        (
+            web_shell.dashboard_socket_path(workspace),
+            "/api/dashboard/computer/display?generation=computer%3A1",
+        )
+    ]
+
+
+def test_websocket_proxy_preserves_origin_host_and_subprotocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connect_args: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class Browser:
+        headers = {
+            "host": "127.0.0.1:2237",
+            "origin": "http://127.0.0.1:2237",
+            "sec-websocket-protocol": "binary",
+        }
+        accepted_subprotocol: str | None = None
+
+        async def accept(self, subprotocol: str | None = None) -> None:
+            self.accepted_subprotocol = subprotocol
+
+        async def receive(self) -> object:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def close(self, *, code: int, reason: str) -> None:
+            raise AssertionError(f"unexpected close: {code} {reason}")
+
+    class Upstream:
+        subprotocol = "binary"
+
+        async def __aenter__(self) -> Upstream:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        def __aiter__(self) -> Upstream:
+            return self
+
+        async def __anext__(self) -> object:
+            raise StopAsyncIteration
+
+        async def close(self) -> None:
+            return None
+
+    def connect(*args: object, **kwargs: object) -> Upstream:
+        connect_args.append((args, kwargs))
+        return Upstream()
+
+    browser = Browser()
+    monkeypatch.setattr(web_shell, "_is_socket", lambda path: True)
+    monkeypatch.setattr(web_shell.websockets, "unix_connect", connect)
+
+    asyncio.run(
+        web_shell._proxy_websocket(
+            cast(Any, browser),
+            tmp_path / "dashboard.sock",
+            "/api/dashboard/computer/display?generation=computer%3A1",
+        )
+    )
+
+    assert browser.accepted_subprotocol == "binary"
+    assert connect_args == [
+        (
+            (str(tmp_path / "dashboard.sock"),),
+            {
+                "uri": (
+                    "ws://127.0.0.1:2237/api/dashboard/computer/display"
+                    "?generation=computer%3A1"
+                ),
+                "origin": "http://127.0.0.1:2237",
+                "subprotocols": ["binary"],
+                "max_size": None,
+            },
+        )
+    ]
 
 
 def test_http_proxy_stops_when_browser_leaves_during_upload(

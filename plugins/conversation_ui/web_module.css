@@ -1,7 +1,221 @@
+.conversation-page {
+  --conversation-tools-width: 42vw;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ak-paper-canvas);
+}
+
+.conversation-page.tools-open {
+  grid-template-columns: minmax(26rem, 1fr) 1px minmax(22.5rem, var(--conversation-tools-width));
+}
+
 .conversation-page-frame {
+  grid-column: 1;
+  grid-row: 1;
   display: block;
+  min-width: 0;
   width: 100%;
   height: 100%;
   border: 0;
   background: var(--ak-paper-canvas);
+}
+
+.conversation-tools {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ak-paper-sheet);
+}
+
+.conversation-tools-splitter {
+  position: relative;
+  z-index: 4;
+  grid-column: 2;
+  grid-row: 1;
+  width: 1px;
+  height: 100%;
+  background: var(--ak-rule-subtle);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.conversation-tools-splitter::before {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: -7px;
+  content: "";
+}
+
+.conversation-tools-splitter:hover,
+.conversation-tools-splitter:focus-visible,
+.conversation-page.is-resizing .conversation-tools-splitter {
+  width: 2px;
+  margin-inline-start: -1px;
+  background: var(--ak-color-action-primary);
+  outline: 0;
+}
+
+.conversation-page.is-resizing,
+.conversation-page.is-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.conversation-page.is-resizing iframe {
+  pointer-events: none;
+}
+
+.conversation-tools-bar {
+  display: flex;
+  height: 42px;
+  min-width: 0;
+  align-items: stretch;
+  gap: 2px;
+  padding-inline: 8px 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-block-end: 1px solid var(--ak-rule-subtle);
+  scrollbar-width: none;
+}
+
+.conversation-tools-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.conversation-tools-tab,
+.conversation-tools-close,
+.conversation-tools-toggle {
+  border: 0;
+  color: var(--ak-ink-secondary);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.conversation-tools-tab {
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding-inline: 10px;
+  border-block-end: 2px solid transparent;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.conversation-tools-tab[aria-selected="true"] {
+  color: var(--ak-ink-primary);
+  border-block-end-color: var(--ak-color-action-primary);
+}
+
+.conversation-tools-close {
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  margin-inline-start: auto;
+  align-self: center;
+  border-radius: 6px;
+}
+
+.conversation-tools-close svg,
+.conversation-tools-toggle svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.conversation-tools-toggle {
+  position: absolute;
+  z-index: 5;
+  inset-block-start: 10px;
+  inset-inline-end: 12px;
+  display: inline-flex;
+  min-width: 40px;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding-inline: 9px;
+  border: 1px solid var(--ak-rule-subtle);
+  border-radius: 7px;
+  color: var(--ak-ink-secondary);
+  background: color-mix(in oklch, var(--ak-paper-sheet) 94%, transparent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
+  backdrop-filter: blur(8px);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.conversation-tools-content,
+.conversation-tool-panel {
+  height: calc(100% - 42px);
+  min-height: 0;
+}
+
+.conversation-tool-panel {
+  overflow: hidden;
+}
+
+.conversation-tools[hidden],
+.conversation-tools-splitter[hidden],
+.conversation-tools-toggle[hidden],
+.conversation-tool-panel[hidden] {
+  display: none;
+}
+
+@media (hover: hover) {
+  .conversation-tools-tab:hover,
+  .conversation-tools-close:hover,
+  .conversation-tools-toggle:hover {
+    color: var(--ak-ink-primary);
+    background: color-mix(in oklch, var(--ak-ink-primary) 6%, transparent);
+  }
+}
+
+.conversation-tools-tab:focus-visible,
+.conversation-tools-close:focus-visible,
+.conversation-tools-toggle:focus-visible {
+  outline: 2px solid var(--ak-rule-focus);
+  outline-offset: -2px;
+}
+
+@media (max-width: 68rem) {
+  .conversation-page.tools-open {
+    display: block;
+  }
+
+  .conversation-tools {
+    position: absolute;
+    z-index: 6;
+    inset: 0;
+    border: 0;
+  }
+
+  .conversation-tools-splitter {
+    display: none;
+  }
+}
+
+@media (max-width: 32rem) {
+  .conversation-tools-toggle span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-tools-toggle {
+    transition: none;
+  }
 }

@@ -228,6 +228,13 @@ candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有�
 
 颜色必须表达动作、选择、状态或层级：annotation 只表达批注、选择和活动书写，error、warning、success、trace 不能互相借色。布局优先使用留白、字级、缩进和细规则线建立层级；只有需要交互或语义隔离的内容形成局部纸片，卡片、气泡、胶囊、阴影和纹理不得作为默认容器。旧 Material 变量和组件只在迁移期提供兼容，不能改变 WEBUI-001～WEBUI-006 的源码、平台能力、状态 owner 与发布边界。
 
+### WEBUI-008 对话页工具区由普通插件组合
+
+`conversation-ui` 可以声明一个右侧多标签工具区 mount。它唯一拥有展开、关闭、当前标签、分栏宽度、
+键盘导航和窄屏布局，并只向子标签报告自己的当前可见状态；普通插件各自注册一个可撤销标签并拥有标签内容。没有 entry 时不显示工具区入口；删除父插件
+或子插件时按 Web module Effect 递归清理。Core Web Host 与 conversation-ui 不得按 Computer、Browser 或
+其他子插件名称分支，工具区也不得取得 Session、Turn 或插件领域状态所有权。
+
 ### AKC-001 Web 与 Mobile 使用一个 Core Akashic Channel
 
 Web 与 Mobile 对话必须由 Core 内建且只注册一次的 `akashic` Channel 承载。两端只是这个
@@ -607,6 +614,21 @@ Codex、OpenCode 等 Provider 插件的权威目录优先提供模型能力；�
 Core；旧代恢复失败则停在 maintenance 并保留全部证据。软件回滚不得冒充 workspace、plugin-data、
 消息或外部效果已经回滚；正式数据发生新写入后禁止自动切回旧端。
 
+### RUN-016 插件 Workload 由窄权限 Controller 执行
+
+普通插件可以声明随 exact generation 启停的 Workload。Core 继续拥有 generation、candidate、readiness、
+晋升、排空和恢复日志，但不得取得 Docker socket；固定 Workload Controller 独占实际容器副作用，只接受
+认证的固定 schema，并按 workspace、plugin、generation 和 workload identity 校验每次 start/stop。插件
+不能传 Compose、任意 Docker JSON、宿主路径、privileged、host network、device、capability 或公开端口。
+
+candidate Workload 只能使用隔离数据和端口，不能写 formal plugin-data。formal 切换必须先释放旧写入者；
+新服务失败时真实恢复旧服务，恢复 readiness 前保持 degraded。禁用或普通卸载停止 Workload，但不删除
+plugin-data。跨 Core boot 接管同一 stable key 时，spec 相同才可 adopt；spec 改变时 Controller 只依据自己
+持久化的 exact lease 强 stop 旧容器，再创建新容器。没有旧 lease 或真实 owner 标签漂移时 fail-loud。
+正式容器部署必须把 Controller 绑定到其 Core 容器 owner；Core 一旦从 running 变为 absent/stopped，
+Controller 强 stop 自己持有的全部 Workload lease，但保留 plugin-data。Docker 探测失败不能伪装成 owner
+已经停止，Controller 保留 lease 并继续重试。
+
 ### ONB-001 首次模型配置使用三个渐进入口
 
 首次启动只展示“登录 Codex”“登录或检测 OpenCode”“Base URL + API Key + Model Name”三个主要入口。已识别模型自动填充能力并隐藏高级覆盖；无法识别能力仍允许保存连接，但必须明确显示哪些能力 unknown。没有配置时 Supervisor 仍须在 `2236` 提供统一 Dashboard 壳层：访问根路径 `/` 时地址不跳转，壳层默认选中 Chat，发送区明确显示尚未连接模型并能原地进入模型设置。保存合法配置后同一入口恢复聊天，不要求用户改 URL、端口或重启浏览器。
@@ -727,6 +749,21 @@ generation identity 只作为 structured metadata；Prometheus 只聚合经过�
 选择的 Tool 表达。发布 Gate 必须在不加入主仓库源码路径的隔离安装中证明 import、apply、
 provide/inject、Tool、热重载、卸载和 plugin-data 边界。
 
+### PLG-017 Workload 是普通插件原子能力
+
+Workload 只表达插件 generation 拥有的外部运行生命周期。插件声明固定 image digest、命名端口、当前
+plugin-data 下的数据目录、资源上限和 health；Core 不按 Computer、Browser、OpenCLI 或插件 ID 分支。
+需要在非 root 容器中建立自身沙箱的 Workload 可以声明 `user_namespaces=true`；它只选择 Core 固定的
+受限 seccomp profile，不能传入任意 Docker security option，并进入静态 identity、spec 和漂移核对。
+Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；停止和 cleanup 失败由 Core 与 Controller
+保留 owner 和可重试证据。正式 Core 停止后 Controller 必须独立完成强 stop；supervised 新 boot 只能恢复
+当前 release 中仍存在的内置插件，不能伪造 installed artifact pointer，也不能把缺少当前插件的状态记为
+成功。内置插件不得绕过该路径直接管理容器。
+
+默认 `computer` 插件通过这条普通边界提供一台持久 Linux 用户桌面。人工操作使用 generation-bound RFB
+通道直达同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 也只操作这台桌面及其唯一
+Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪装成桌面控制。
+
 ## 11. Workspace、文件和进程
 
 ### WSP-001 Workspace 可写状态显式归属
@@ -748,6 +785,13 @@ plugin、marketplace、snapshot 等名称必须是安全单片段；resolved pat
 ### WSP-005 容器与宿主共享一个逻辑路径和一个状态 owner
 
 正式容器与 Host Bridge 对 workspace、canonical source、Git worktree 和允许访问的宿主文件使用一致的逻辑绝对路径。宿主文件系统是这些路径的唯一权威状态；不得同时维护容器副本、命名卷副本或双向同步副本。Bridge 返回的图片、附件和其他二进制内容必须可按原始字节进入 Core 工具结果或渠道投递，不能只返回容器不可访问的宿主路径。实验只能使用带 run identity 的隔离 workspace 和 companion state，不得 bind、merge 或清理正式状态。
+
+### WSP-006 Workload 数据属于插件数据生命周期
+
+Workload 只挂载当前插件 data root 下经过校验的命名子目录。formal Workload 可以原位更新自己的数据；
+candidate 只能使用隔离 data root。停止、更新、禁用或普通卸载可以移除容器，不得删除 Workload 数据。
+物理删除仍需名称不同的用户操作、影响预览、恢复点和再次确认。一个可写目录同一时刻只能有一个 formal
+Workload writer；容器名、镜像和 endpoint 都不是持久状态 owner。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 

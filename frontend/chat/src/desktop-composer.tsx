@@ -10,6 +10,7 @@ import {
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import type { ChatMessage } from "./chat-message";
+import { nextComposerExpanded } from "./composer-layout";
 import { ComposerActionButton } from "./composer-action";
 import { ComposerReply } from "./message-actions";
 import { ModelCapsulePicker } from "./model-capsule-picker";
@@ -37,33 +38,31 @@ export const DesktopComposer = memo(function DesktopComposer({
 }) {
   const [input, setInput] = useState("");
   const [expanded, setExpanded] = useState(false);
-  const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string, hasReply: boolean) => {
-    if (hasReply) {
-      setExpanded(true);
-      return;
-    }
-    if (!textarea) {
-      setExpanded(text.includes("\n"));
-      return;
-    }
-    // 仅在内容真正溢出 compact 单行框时才展开，避免首字就触发整壳 reflow。
-    setExpanded(text.includes("\n") || textarea.scrollHeight > textarea.clientHeight);
+  const syncExpanded = useCallback((textarea: HTMLTextAreaElement | null, text: string) => {
+    setExpanded((wasExpanded) => nextComposerExpanded(
+      wasExpanded,
+      text,
+      // 只在紧凑态读取一次溢出；展开后的宽度变化不能反向改写布局状态。
+      () => textarea ? textarea.scrollHeight > textarea.clientHeight : false,
+    ));
   }, []);
   const onInputChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.target.value;
     setInput(next);
-    syncExpanded(event.target, next, Boolean(replyTarget));
-  }, [replyTarget, syncExpanded]);
+    syncExpanded(event.target, next);
+  }, [syncExpanded]);
   const submit = useCallback(async (text: string, files: ComposerFile[]) => {
+    const wasExpanded = expanded;
     setInput("");
-    setExpanded(Boolean(replyTarget));
+    setExpanded(false);
     try {
       await onSend(text, files);
     } catch (error) {
       setInput((current) => current || text);
+      setExpanded(wasExpanded);
       throw error;
     }
-  }, [onSend, replyTarget]);
+  }, [expanded, onSend]);
   const shellExpanded = expanded || Boolean(replyTarget);
   return (
     <PromptInput

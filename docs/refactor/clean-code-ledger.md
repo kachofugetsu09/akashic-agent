@@ -2800,6 +2800,16 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 验证：background-job composition/generation tests `45 passed in 0.79s`；目标 Pyright `0 errors, 0 warnings, 0 informations`；编译、精确残留扫描和 `git diff --check` 通过。
 - 回滚：revert `cf5cbac0`；修改前备份：`/mnt/data/akasic-agent-backups/pr525-background-binding-owner-before-clean-20260901/`。
 
+## 2026-09-01 PR525：完成 pure v3 consumer 迁移并合入最新 main
+
+- 恢复点：`backup/pr525-pre-v3-fix-20260901` 固定修复前 PR head `81a11c2d`；本轮通过普通 merge 合入 `origin/main@e4ba0427`，没有改写已发布历史。
+- 分类结论：没有恢复 v2 lifecycle、固定贡献方法或 Manager 兼容壳。`active_channel_generation` 是重复的 v3 inspection 门面，Feishu/QQBot 测试迁到 `current_snapshot.snapshot_id → channel_generation_host.get()`；`stable_telegram_command_catalog()` 与 `stable_mobile_command_catalog()` 是重复渠道投影，Core 改为一份 universal v3 command discovery projection。
+- main 对账：保留 Computer managed workload 的 v3 owner、controller、MCP workload binding 与测试；新 manifest 从双写法 `[[workloads]]`/`[[mcp_servers]]` 收敛到唯一 `[[workload]]`/`[[mcp]]`。MCP generation 的 candidate/formal forwarding wrapper、`PluginManager.skill_catalog()` 和公开 `sync_skill_links()` 不因 merge 复活；热重载内部使用私有 `_sync_skill_links()` 完成真实 v3 projection 生命周期。
+- 回归修复：bootstrap 只接收一个 universal command catalog provider；Wake 行为测试通过完整 `_admit_attempt()` 建立 admitted pool/alert expiry，不恢复 `_admit_owner()`；duplicate-generation 测试补齐必需的 endpoint materialization 后再验证第二次启动被拒绝。
+- 跨仓 consumer：Feishu `dcde5a5`（PR #4）在同一 Core candidate 上 `35 passed`；QQBot `489c693`（PR #4）为 `37 passed`。两者只修改合同测试，插件生产代码与 installed cache 未改。
+- 验证：已知失败与 Computer 回归 `37 passed`；Core 全量 `3217 passed, 6 skipped`；Basedpyright `0 errors`、compileall、`git diff --check` 与 change-impact audit 通过。完整 change Gate 与冻结 head 独立概念 Review 在最终提交后记录。
+- 受保护状态：没有写 hua-home、正式 workspace、plugin-data、Session、数据库、凭据或运行服务；代码变化只删除 v2/重复入口并把消费者迁到现有 v3 owner。
+
 ## 2026-09-01 less-is-more PR525：继续清理 v3 已收敛后的旧兼容表面
 
 ### `PR525` `refactor: reclaim v2 compatibility surfaces`

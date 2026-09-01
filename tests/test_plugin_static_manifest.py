@@ -252,7 +252,10 @@ candidate_env = {CALENDAR_BACKEND = "recording"}
     assert manifest.managed_processes[0].python_runtime == "mcp"
 
 
-@pytest.mark.parametrize("removed_field", ("mcp_servers", "process", "managed_processes"))
+@pytest.mark.parametrize(
+    "removed_field",
+    ("mcp_servers", "process", "managed_processes", "workloads"),
+)
 def test_static_manifest_rejects_removed_v2_declaration_alias(
     tmp_path: Path,
     removed_field: str,
@@ -458,6 +461,32 @@ def test_static_python_command_uses_only_staged_interpreter(
     command = materialize_static_command(root, manifest, manifest.mcp_servers[0])
 
     assert command == (str(interpreter), "mcp/run.py")
+
+
+def test_static_artifact_command_uses_absolute_executable(tmp_path: Path) -> None:
+    root = tmp_path / "computer"
+    root.mkdir()
+    (root / "plugin.py").write_text("", encoding="utf-8")
+    executable = root / "mcp_server.py"
+    executable.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    executable.chmod(0o755)
+    (root / "akashic.plugin.toml").write_text(
+        "schema_version = 1\n"
+        "name = 'computer'\n"
+        "version = '1.0.0'\n"
+        "api_version = 3\n"
+        "entrypoint = 'plugin.py'\n\n"
+        "[[mcp]]\n"
+        "name = 'computer'\n"
+        "command = ['mcp_server.py']\n",
+        encoding="utf-8",
+    )
+
+    manifest = load_static_plugin_manifest(root)
+
+    assert materialize_static_command(
+        root, manifest, manifest.mcp_servers[0]
+    ) == (str(executable),)
 
 
 @pytest.mark.parametrize("python_command", ("python", "python3.12"))

@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "683b4791b0c25e3e899d65fe7c028514240414b3",
-  "catalogDigest": "165295ebbbda09026885d82740505f4cad582f05a4fa45da68d9ee9ce07447d0",
+  "catalogDigest": "4d5bcfdb00b2215f84bc536a123a543199936eaf991335b4c63d1cd90aa49c08",
   "purpose": "approved_contract_mapping",
   "coveredP0": {
     "companion_control": [
@@ -55,6 +55,7 @@
     ],
     "plugin": [
       "plugin_generation_contract",
+      "plugin_workload_contract",
       "plugin_uninstall_drain_finality",
       "mcp_process_lifecycle",
       "plugin_domain_observe_events"

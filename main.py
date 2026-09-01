@@ -225,9 +225,7 @@ from agent.restart import RestartCoordinator, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.persona import read_veda
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
-from agent.plugins.install import (
-    set_installed_plugin_enabled,
-)
+from agent.plugins.manifest import set_plugin_enabled
 from bootstrap.app import build_app_runtime
 from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
@@ -859,7 +857,7 @@ if __name__ == "__main__":
         plugin_id = args[1]
         enabled = args[0] == "plugin-enable"
         try:
-            manifest = set_installed_plugin_enabled(plugin_id, enabled=enabled)
+            manifest = set_plugin_enabled(plugin_id, enabled=enabled)
         except ValueError as exc:
             print(str(exc))
             sys.exit(1)

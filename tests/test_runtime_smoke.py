@@ -1079,8 +1079,7 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         push_tool=cast(Any, _PushTool()),
         http_resources=resources,
         event_bus=event_bus,
-        telegram_command_catalog_provider=lambda: (("telegram_only", "仅 Telegram"),),
-        mobile_command_catalog_provider=lambda: (("mobile_only", "仅 mobile"),),
+        command_catalog_provider=lambda: (("shared", "统一目录"),),
         interrupt_controller=cast(Any, controller),
         extra_channels=[cast(Any, _PluginChannel())],
     )
@@ -1092,12 +1091,12 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         assert telegram.kwargs["event_bus"] is event_bus
         assert telegram.kwargs["interrupt_controller"] is controller
         assert telegram.kwargs["command_catalog_provider"]() == (
-            ("telegram_only", "仅 Telegram"),
+            ("shared", "统一目录"),
         )
         assert qq.kwargs["interrupt_controller"] is controller
         assert plugin.name == "plugin"
         assert attachment_roots == [tmp_path / "uploads"]
-        assert mobile_catalogs == [[("mobile_only", "仅 mobile")]]
+        assert mobile_catalogs == [[("shared", "统一目录")]]
     finally:
         await host.stop_all()
         await resources.aclose()

@@ -1,0 +1,60 @@
+schema_version = 1
+name = "computer"
+version = "1.0.0"
+api_version = 3
+entrypoint = "plugin.py"
+
+[validation]
+exclude_data_paths = [
+  "state/config/pulse",
+  "state/config/xfce4/desktop/icons.screen.latest.rc",
+  "state/home/.opencli/node_modules",
+  "state/profile/SingletonCookie",
+  "state/profile/SingletonLock",
+  "state/profile/SingletonSocket",
+]
+
+[[workload]]
+name = "computer"
+image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:6fd3c605380a3daef5ddebb34f2905ee992d2b4e1490fbfb78dcce9f06a3dadb"
+command = ["/opt/computer/start.sh"]
+user_namespaces = true
+
+[[workload.ports]]
+name = "gateway"
+number = 8080
+
+[[workload.ports]]
+name = "display"
+number = 6080
+
+[[workload.ports]]
+name = "opencli"
+number = 19826
+loopback = 19825
+
+[[workload.data]]
+name = "state"
+target = "/data"
+writable = true
+
+[workload.health]
+port = "gateway"
+path = "/health"
+timeout_seconds = 90
+
+[workload.limits]
+memory_mb = 0
+cpu_count = 0.0
+pids = 0
+
+[[mcp]]
+name = "computer"
+command = ["mcp_server.py"]
+required_tools = ["browser_observe", "browser_action", "computer_observe", "computer_action"]
+candidate_read_only_tools = ["browser_observe", "computer_observe"]
+
+[[mcp.workload_env]]
+env = "COMPUTER_URL"
+workload = "computer"
+port = "gateway"

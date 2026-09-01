@@ -236,6 +236,7 @@ def test_activation_failure_atomically_restores_previous_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(activate_module, "docker_socket_gid", lambda: 961)
     paths = ReleasePaths(tmp_path / "root")
     paths.create_layout()
     (paths.state / "config.toml").write_text("[runtime]\n", encoding="utf-8")
@@ -290,6 +291,7 @@ def test_previous_recovery_failure_records_maintenance_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(activate_module, "docker_socket_gid", lambda: 961)
     paths = ReleasePaths(tmp_path / "root")
     paths.create_layout()
     (paths.state / "config.toml").write_text("[runtime]\n", encoding="utf-8")
@@ -364,10 +366,12 @@ def test_runtime_environment_rejects_multiline_secret(tmp_path: Path) -> None:
 
 def test_release_environment_preserves_web_bind_and_loopback_mobile_port(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = ReleasePaths(tmp_path / "root")
     paths.create_layout()
     commit = "a" * 40
+    monkeypatch.setattr("scripts.akashic_release.activate.docker_socket_gid", lambda: 961)
     environment = release_environment(
         paths=paths,
         manifest={
@@ -385,6 +389,7 @@ def test_release_environment_preserves_web_bind_and_loopback_mobile_port(
     compose = Path("docker/host-runtime/compose.experiment.yaml").read_text()
     assert environment["AKASHIC_WEB_BIND_ADDRESS"] == "192.168.0.100"
     assert environment["AKASHIC_PUBLISHED_MOBILE_PORT"] == "6323"
+    assert environment["AKASHIC_DOCKER_GID"] == "961"
     assert (
         '"${AKASHIC_WEB_BIND_ADDRESS:-127.0.0.1}:'
         '${AKASHIC_PUBLISHED_WEB_PORT:-2236}:2236"' in compose
@@ -392,6 +397,9 @@ def test_release_environment_preserves_web_bind_and_loopback_mobile_port(
     assert '127.0.0.1:${AKASHIC_PUBLISHED_MOBILE_PORT:-6323}:6323' in compose
     assert 'TZ: "${TZ:-Asia/Shanghai}"' in compose
     assert 'start_period: "${AKASHIC_READINESS_TIMEOUT_S:-120}s"' in compose
+    assert 'user: "${AKASHIC_UID:-1000}:${AKASHIC_GID:-1000}"' in compose
+    assert '"${AKASHIC_DOCKER_GID:?AKASHIC_DOCKER_GID is required}"' in compose
+    assert "- --socket-uid" in compose
 
 
 def test_activation_rejects_unadopted_legacy_skill_before_stopping(

@@ -26,6 +26,7 @@ services:
       AKASHIC_SERVICE_NAME: "akashic-core"
       AKASHIC_RELEASE_MANIFEST: /run/akashic-release.json
       AKASHIC_PLUGIN_HOME: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}/plugin-home"
+      AKASHIC_WORKLOAD_SOCKET: "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}/controller.sock"
       AKASHIC_READINESS_TIMEOUT_S: "${AKASHIC_READINESS_TIMEOUT_S:-120}"
       AKASHIC_WEB_HOST: "0.0.0.0"
       AKASHIC_WEB_ALLOW_NON_LOOPBACK: "1"
@@ -41,6 +42,9 @@ services:
       - type: bind
         source: "${AKASHIC_HOST_BRIDGE_DIR:?AKASHIC_HOST_BRIDGE_DIR is required}"
         target: "${AKASHIC_HOST_BRIDGE_DIR:?AKASHIC_HOST_BRIDGE_DIR is required}"
+      - type: bind
+        source: "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}"
+        target: "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}"
       - type: bind
         source: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
         target: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
@@ -69,3 +73,83 @@ services:
         max-size: "50m"
         max-file: "5"
     restart: "no"
+    depends_on:
+      workload-controller:
+        condition: service_healthy
+    networks:
+      - default
+      - akashic-workloads
+
+  workload-controller:
+    image: "${AKASHIC_IMAGE:?AKASHIC_IMAGE is required}"
+    container_name: "${AKASHIC_CONTAINER_NAME:?AKASHIC_CONTAINER_NAME is required}-workloads"
+    user: "${AKASHIC_UID:-1000}:${AKASHIC_GID:-1000}"
+    group_add:
+      - "${AKASHIC_DOCKER_GID:?AKASHIC_DOCKER_GID is required}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /tmp
+      PYTHONUNBUFFERED: "1"
+    entrypoint:
+      - /opt/venv/bin/python
+      - -m
+      - agent.workloads.controller
+    command:
+      - --workspace
+      - "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}"
+      - --socket
+      - "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}/controller.sock"
+      - --state
+      - "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}/workload-controller/leases.json"
+      - --network
+      - "${AKASHIC_WORKLOAD_NETWORK:-akashic-workloads}"
+      - --allowed-uid
+      - "${AKASHIC_UID:-1000}"
+      - --socket-gid
+      - "${AKASHIC_GID:-1000}"
+      - --socket-uid
+      - "${AKASHIC_UID:-1000}"
+      - --workload-uid
+      - "${AKASHIC_UID:-1000}"
+      - --workload-gid
+      - "${AKASHIC_GID:-1000}"
+      - --owner-container
+      - "${AKASHIC_CONTAINER_NAME:?AKASHIC_CONTAINER_NAME is required}"
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: bind
+        source: "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}/plugin-data"
+        target: "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}/plugin-data"
+      - type: bind
+        source: "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}/runtime/plugin-validation"
+        target: "${AKASHIC_WORKSPACE:?AKASHIC_WORKSPACE is required}/runtime/plugin-validation"
+      - type: bind
+        source: "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}"
+        target: "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}"
+      - type: bind
+        source: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}/workload-controller"
+        target: "${AKASHIC_EXPERIMENT_ROOT:?AKASHIC_EXPERIMENT_ROOT is required}/workload-controller"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777
+      - /run:rw,nosuid,nodev,noexec,size=8m,mode=755
+    healthcheck:
+      test:
+        - CMD
+        - /usr/bin/test
+        - -S
+        - "${AKASHIC_WORKLOAD_RUNTIME_DIR:-${AKASHIC_EXPERIMENT_ROOT}/workload-runtime}/controller.sock"
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    stop_grace_period: 45s
+    restart: "no"
+
+networks:
+  akashic-workloads:
+    name: "${AKASHIC_WORKLOAD_NETWORK:-akashic-workloads}"

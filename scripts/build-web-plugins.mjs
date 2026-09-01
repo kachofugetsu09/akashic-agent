@@ -64,6 +64,7 @@ for (const plugin of modules) {
       },
     },
     build: {
+      target: plugin === "computer" ? "es2022" : undefined,
       outDir: resolve(repoRoot, "plugins", plugin),
       emptyOutDir: false,
       minify: "esbuild",

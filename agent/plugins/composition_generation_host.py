@@ -1,4 +1,4 @@
-"""Materialize frozen v3 process and MCP declarations for one generation."""
+"""Materialize frozen v3 runtime declarations for one generation."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from agent.plugin_composition.process_slots import (
     ManagedProcessBinding,
     ManagedProcessDefinition,
 )
+from agent.plugin_composition.workload_slots import WorkloadBinding
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.managed_process_host import (
     GenerationCleanupTombstone,
@@ -36,6 +37,12 @@ from agent.plugins.mcp_generation_host import (
     McpServerView,
     McpToolView,
 )
+from agent.plugins.workload_generation_host import (
+    WorkloadCleanupTombstone,
+    WorkloadGeneration,
+    WorkloadGenerationHost,
+)
+from agent.workloads.client import WorkloadController
 from agent.plugins.snapshot import RuntimeSnapshot
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
@@ -52,6 +59,7 @@ class CompositionRuntimeGeneration:
     plugin_id: str
     generation_id: str
     mode: RuntimeMode
+    workloads: WorkloadGeneration | None
     processes: ManagedProcessGeneration | None
     mcp: McpGeneration | None
 
@@ -60,10 +68,7 @@ class CompositionRuntimeGeneration:
         if self.mcp is None:
             return MappingProxyType({})
         return MappingProxyType(
-            {
-                name: self.mcp.catalog_digest(name)
-                for name in self.mcp
-            }
+            {name: self.mcp.catalog_digest(name) for name in self.mcp}
         )
 
 
@@ -82,6 +87,7 @@ class CompositionRuntimeFailure:
 @dataclass(slots=True)
 class _RootBridge:
     root_instance_token: object
+    workload_bindings: dict[str, WorkloadBinding]
     process_bindings: dict[str, ManagedProcessBinding]
     mcp_bindings: dict[str, McpServerBinding]
 
@@ -93,11 +99,13 @@ class _RuntimeOwner:
 
 
 class CompositionGenerationHost:
-    """Own v3 managed-process and MCP runtime state until generation drain."""
+    """Own v3 runtime state until generation drain."""
 
     def __init__(
         self,
         *,
+        workload_controller: WorkloadController | None = None,
+        workspace_id: str | None = None,
         on_failure: Callable[[CompositionRuntimeFailure], None] | None = None,
     ) -> None:
         self._on_failure = on_failure
@@ -114,6 +122,32 @@ class CompositionGenerationHost:
             on_incident=self._on_mcp_incident,
             on_failure=self._on_runtime_failure,
         )
+        if workload_controller is not None and not workspace_id:
+            raise ValueError("Workload Controller 需要 workspace_id")
+        self._workload_host = (
+            None
+            if workload_controller is None
+            else WorkloadGenerationHost(
+                workload_controller,
+                workspace_id=cast(str, workspace_id),
+                on_health=self._on_workload_health,
+                on_incident=self._on_workload_incident,
+                on_failure=self._on_runtime_failure,
+            )
+        )
+        self._workload_controller = workload_controller
+        self._workload_workspace_id = workspace_id
+
+    async def cleanup_candidates(self) -> None:
+        """Strongly remove candidate containers left by an earlier Core boot."""
+
+        if self._workload_controller is None:
+            return
+        workspace_id = cast(str, self._workload_workspace_id)
+        receipts = await self._workload_controller.cleanup_candidates(workspace_id)
+        for receipt in receipts:
+            if not (receipt.container_absent and receipt.mounts_released):
+                raise RuntimeError("Workload candidate cleanup 回执未证明资源释放")
 
     async def start(
         self,
@@ -135,13 +169,17 @@ class CompositionGenerationHost:
             return None
 
         # 1. Bind only this plugin's declarations to the exact compiled Root.
+        workload_bindings = _owned_workload_bindings(snapshot, generation.plugin_id)
         process_bindings = _owned_process_bindings(snapshot, generation.plugin_id)
         mcp_bindings = _owned_mcp_bindings(snapshot, generation.plugin_id)
-        if not process_bindings and not mcp_bindings:
+        if not workload_bindings and not process_bindings and not mcp_bindings:
             return None
+        if workload_bindings and self._workload_host is None:
+            raise RuntimeError("插件声明了 Workload，但 Core 未配置 Controller")
         _assert_root_token(snapshot, root.instance_token)
         bridge = _RootBridge(
             root_instance_token=root.instance_token,
+            workload_bindings=workload_bindings,
             process_bindings=process_bindings,
             mcp_bindings=mcp_bindings,
         )
@@ -153,10 +191,19 @@ class CompositionGenerationHost:
             )
             generation.composition_runtime_cleanup_registered = True
 
-        # 2. Start loopback processes before MCP endpoint materialization.
+        # 2. Start Workloads and loopback processes before MCP endpoints.
+        workloads: WorkloadGeneration | None = None
         processes: ManagedProcessGeneration | None = None
         mcp: McpGeneration | None = None
         try:
+            if workload_bindings:
+                assert self._workload_host is not None
+                workloads = await self._workload_host.start_generation(
+                    generation.generation_id,
+                    generation.plugin_id,
+                    workload_bindings,
+                    mode=mode,
+                )
             if process_bindings:
                 definitions = _materialized_process_definitions(
                     generation,
@@ -191,6 +238,9 @@ class CompositionGenerationHost:
                     mode=mode,
                     endpoint_ports=ports,
                     expected_catalog_digests=expected_mcp_catalog_digests,
+                    workload_endpoints=(
+                        {} if workloads is None else workloads.endpoints
+                    ),
                 )
         except BaseException as start_error:
             try:
@@ -198,12 +248,14 @@ class CompositionGenerationHost:
                     generation.generation_id,
                     mcp=mcp,
                     processes=processes,
+                    workloads=workloads,
                 )
             except BaseException as cleanup_error:
                 runtime = CompositionRuntimeGeneration(
                     plugin_id=generation.plugin_id,
                     generation_id=generation.generation_id,
                     mode=mode,
+                    workloads=workloads,
                     processes=processes,
                     mcp=mcp,
                 )
@@ -222,6 +274,7 @@ class CompositionGenerationHost:
             plugin_id=generation.plugin_id,
             generation_id=generation.generation_id,
             mode=mode,
+            workloads=workloads,
             processes=processes,
             mcp=mcp,
         )
@@ -255,20 +308,34 @@ class CompositionGenerationHost:
         return registry
 
     async def stop(self, generation_id: str) -> None:
-        """Stop MCP then managed processes and retain failed Host ownership."""
+        """Stop consumers before providers and retain failed ownership."""
 
         self._detached_observers.add(generation_id)
         _ = self._bridges.pop(generation_id, None)
         owner = self._owners.get(generation_id)
         mcp = None if owner is None else owner.generation.mcp
         processes = None if owner is None else owner.generation.processes
-        await self._stop_partial(generation_id, mcp=mcp, processes=processes)
+        workloads = None if owner is None else owner.generation.workloads
+        await self._stop_partial(
+            generation_id,
+            mcp=mcp,
+            processes=processes,
+            workloads=workloads,
+        )
         _ = self._owners.pop(generation_id, None)
         self._detached_observers.discard(generation_id)
 
     def get(self, generation_id: str) -> CompositionRuntimeGeneration | None:
         owner = self._owners.get(generation_id)
         return None if owner is None else owner.generation
+
+    def workload_urls(self, generation_id: str) -> Mapping[tuple[str, str], str]:
+        """Return ready workload URLs for one exact generation."""
+
+        runtime = self.get(generation_id)
+        if runtime is None or runtime.workloads is None:
+            return MappingProxyType({})
+        return MappingProxyType(dict(runtime.workloads.endpoints))
 
     def route_for(self, generation_id: str, server_name: str) -> McpRoute:
         """Return one exact formal MCP route for a generation-bound Core consumer."""
@@ -288,6 +355,14 @@ class CompositionGenerationHost:
             for kind, tombstone in (
                 ("mcp", self._mcp_host.tombstone(generation_id)),
                 ("process", self._process_host.tombstone(generation_id)),
+                (
+                    "workload",
+                    (
+                        None
+                        if self._workload_host is None
+                        else self._workload_host.tombstone(generation_id)
+                    ),
+                ),
             )
             if tombstone is not None
         )
@@ -303,14 +378,10 @@ class CompositionGenerationHost:
             generation_id=generation_id,
             state="degraded" if degraded else "cleanup_failed",
             action=(
-                "retry_runtime_recovery"
-                if degraded
-                else "retry_generation_cleanup"
+                "retry_runtime_recovery" if degraded else "retry_generation_cleanup"
             ),
             resource_names=resources,
-            error="; ".join(
-                f"{kind}: {item.error}" for kind, item in tombstones
-            ),
+            error="; ".join(f"{kind}: {item.error}" for kind, item in tombstones),
             attempt_count=max(item.attempt_count for _, item in tombstones),
         )
 
@@ -338,7 +409,10 @@ class CompositionGenerationHost:
             raise RuntimeError(
                 f"v3 runtime generation 没有 retained failure: {generation_id}"
             )
-        for host in (self._mcp_host, self._process_host):
+        hosts = [self._mcp_host, self._process_host]
+        if self._workload_host is not None:
+            hosts.append(self._workload_host)
+        for host in hosts:
             tombstone = host.tombstone(generation_id)
             if tombstone is None:
                 if host.get(generation_id) is not None:
@@ -364,15 +438,14 @@ class CompositionGenerationHost:
         *,
         mcp: McpGeneration | None,
         processes: ManagedProcessGeneration | None,
+        workloads: WorkloadGeneration | None,
     ) -> None:
         errors: list[BaseException] = []
         cancelled = False
         mcp_tombstone = self._mcp_host.tombstone(generation_id)
         if mcp_tombstone is not None:
             errors.append(
-                RuntimeError(
-                    f"MCP generation cleanup 未完成: {mcp_tombstone.error}"
-                )
+                RuntimeError(f"MCP generation cleanup 未完成: {mcp_tombstone.error}")
             )
         elif mcp is not None or self._mcp_host.get(generation_id) is not None:
             try:
@@ -396,6 +469,25 @@ class CompositionGenerationHost:
                 cancelled = True
             except BaseException as error:
                 errors.append(error)
+        if self._workload_host is not None:
+            workload_tombstone = self._workload_host.tombstone(generation_id)
+            if workload_tombstone is not None:
+                errors.append(
+                    RuntimeError(
+                        "Workload generation cleanup 未完成: "
+                        f"{workload_tombstone.error}"
+                    )
+                )
+            elif (
+                workloads is not None
+                or self._workload_host.get(generation_id) is not None
+            ):
+                try:
+                    await self._workload_host.stop_generation(generation_id)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except BaseException as error:
+                    errors.append(error)
         if errors:
             raise RuntimeError(
                 "v3 runtime generation cleanup failed: "
@@ -417,7 +509,9 @@ class CompositionGenerationHost:
         bindings = bridge.mcp_bindings if mcp else bridge.process_bindings
         binding = bindings.get(name)
         if binding is None:
-            raise RuntimeError(f"v3 runtime declaration owner 不存在: {generation_id}:{name}")
+            raise RuntimeError(
+                f"v3 runtime declaration owner 不存在: {generation_id}:{name}"
+            )
         if (
             binding.owner_fiber.state is not FiberState.ACTIVE
             or binding.owner_fiber.activation_token is not binding.activation_token
@@ -485,9 +579,57 @@ class CompositionGenerationHost:
         )
         _ = binding.incident_reporter(kind, message)
 
+    def _on_workload_health(
+        self,
+        generation_id: str,
+        workload_name: str,
+        healthy: bool,
+        reason: str,
+    ) -> None:
+        if generation_id in self._detached_observers:
+            return
+        binding = self._workload_binding(generation_id, workload_name)
+        binding.health.recover() if healthy else binding.health.degrade(reason)
+
+    def _on_workload_incident(
+        self,
+        generation_id: str,
+        workload_name: str,
+        kind: str,
+        message: str,
+    ) -> None:
+        if generation_id in self._detached_observers:
+            return
+        binding = self._workload_binding(generation_id, workload_name)
+        _ = binding.incident_reporter(kind, message)
+
+    def _workload_binding(
+        self,
+        generation_id: str,
+        name: str,
+    ) -> WorkloadBinding:
+        bridge = self._bridges.get(generation_id)
+        if bridge is None:
+            raise RuntimeError(f"v3 runtime Root bridge 已释放: {generation_id}")
+        binding = bridge.workload_bindings.get(name)
+        if binding is None:
+            raise RuntimeError(
+                f"v3 Workload declaration owner 不存在: {generation_id}:{name}"
+            )
+        if (
+            binding.owner_fiber.state is not FiberState.ACTIVE
+            or binding.owner_fiber.activation_token is not binding.activation_token
+        ):
+            raise RuntimeError(
+                f"v3 Workload declaration 已失效: {generation_id}:{name}"
+            )
+        return binding
+
     def _on_runtime_failure(
         self,
-        tombstone: GenerationCleanupTombstone | McpCleanupTombstone,
+        tombstone: (
+            GenerationCleanupTombstone | McpCleanupTombstone | WorkloadCleanupTombstone
+        ),
     ) -> None:
         """Forward one aggregated retained owner to the Core publication owner."""
 
@@ -550,6 +692,20 @@ def _owned_process_bindings(
     }
 
 
+def _owned_workload_bindings(
+    snapshot: RuntimeSnapshot,
+    plugin_id: str,
+) -> dict[str, WorkloadBinding]:
+    registry = snapshot.workload_registry
+    if registry is None:
+        return {}
+    return {
+        binding.descriptor.name: binding
+        for binding in registry.values()
+        if binding.descriptor.owner == plugin_id
+    }
+
+
 def _owned_mcp_bindings(
     snapshot: RuntimeSnapshot,
     plugin_id: str,
@@ -567,7 +723,9 @@ def _owned_mcp_bindings(
 def _assert_root_token(snapshot: RuntimeSnapshot, root_token: object) -> None:
     process_registry = snapshot.managed_process_registry
     mcp_registry = snapshot.mcp_server_registry
+    workload_registry = snapshot.workload_registry
     for label, registry in (
+        ("Workload", workload_registry),
         ("managed process", process_registry),
         ("MCP", mcp_registry),
     ):

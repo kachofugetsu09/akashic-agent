@@ -22,9 +22,7 @@ def test_core_consumes_external_services_without_owning_them() -> None:
         "After=docker.service akashic-host-bridge.service akashic-home-services.service"
         in core_unit
     )
-    assert (
-        "PartOf=akashic-host-bridge.service" in core_unit
-    )
+    assert "PartOf=akashic-host-bridge.service" in core_unit
     assert "Requires=akashic-home-services.service" not in core_unit
     assert "PartOf=akashic-home-services.service" not in core_unit
     assert "home-services.env" not in core_unit
@@ -36,10 +34,21 @@ def test_core_consumes_external_services_without_owning_them() -> None:
     assert not (SYSTEMD / "akashic-opencli-browser.service").exists()
 
 
-def test_host_bridge_lease_covers_longest_write_stdin_wait() -> None:
-    bridge_unit = (SYSTEMD / "akashic-host-bridge.service").read_text(
+def test_core_and_dynamic_workloads_share_a_compose_owned_network() -> None:
+    compose = (ROOT / "docker/host-runtime/compose.experiment.yaml").read_text(
         encoding="utf-8"
     )
+
+    assert "AKASHIC_WORKLOAD_NETWORK" in compose
+    assert "- akashic-workloads" in compose
+    assert 'name: "${AKASHIC_WORKLOAD_NETWORK:-akashic-workloads}"' in compose
+    assert "external: true" not in compose
+    assert "--workload-uid" in compose
+    assert "--workload-gid" in compose
+
+
+def test_host_bridge_lease_covers_longest_write_stdin_wait() -> None:
+    bridge_unit = (SYSTEMD / "akashic-host-bridge.service").read_text(encoding="utf-8")
     match = re.search(r"--lease-timeout (\d+)", bridge_unit)
 
     assert match is not None
@@ -55,7 +64,7 @@ def test_release_restart_does_not_control_external_services(monkeypatch) -> None
         arguments: list[str], **_kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
-        output = "healthy\n" if arguments[0] == "docker" else ""
+        output = "running|healthy\n" if arguments[0] == "docker" else ""
         return subprocess.CompletedProcess(arguments, 0, output, "")
 
     monkeypatch.setattr("subprocess.run", run)
@@ -82,7 +91,7 @@ def test_release_restart_rejects_unhealthy_core(monkeypatch) -> None:
     monkeypatch.setattr(
         "subprocess.run",
         lambda arguments, **_kwargs: subprocess.CompletedProcess(
-            arguments, 0, "unhealthy\n", ""
+            arguments, 0, "running|unhealthy\n", ""
         ),
     )
     with pytest.raises(RuntimeError, match="healthcheck 未通过"):
@@ -97,11 +106,29 @@ def test_release_restart_waits_for_container_creation(monkeypatch) -> None:
             subprocess.CompletedProcess(
                 [], 1, "", "Error: No such object: akashic-core"
             ),
-            subprocess.CompletedProcess([], 0, "healthy\n", ""),
+            subprocess.CompletedProcess([], 0, "running|healthy\n", ""),
         )
     )
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: next(results))
     monkeypatch.setattr("time.sleep", lambda _seconds: None)
+    wait_for_core_health("akashic-core", 10)
+
+
+def test_release_restart_waits_while_container_depends_on_controller(
+    monkeypatch,
+) -> None:
+    from scripts.restart_host_runtime_release import wait_for_core_health
+
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, "created|missing\n", ""),
+            subprocess.CompletedProcess([], 0, "running|starting\n", ""),
+            subprocess.CompletedProcess([], 0, "running|healthy\n", ""),
+        )
+    )
+    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
     wait_for_core_health("akashic-core", 10)
 
 

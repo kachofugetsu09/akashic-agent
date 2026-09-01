@@ -91,6 +91,7 @@ def create_dashboard_app(
 
         dashboard_host = PluginDashboardHost(
             core_routes=tuple(app.routes),
+            workload_urls=plugin_manager.workload_urls,
         )
         snapshot = plugin_manager.current_snapshot
         if snapshot is not None:

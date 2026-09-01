@@ -124,10 +124,12 @@ scenarios = ["mcp_call_finality", "mcp_process_lifecycle"]
 
 [groups.plugin]
 priority = "p0"
-requirements = ["PLG-001", "PLG-004", "PLG-009"]
+requirements = ["PLG-001", "PLG-004", "PLG-009", "PLG-017", "RUN-016", "WSP-006"]
 paths = [
   "agent/plugin_composition/**",
   "agent/plugins/**",
+  "agent/workloads/**",
+  "docker/computer/**",
   "examples/plugin_composition/**",
   "packages/akashic-web-ui-v1/**",
   "packages/akashic-workbench-ui-v2/**",
@@ -137,6 +139,8 @@ paths = [
   "bootstrap/tools.py",
   "bootstrap/wiring.py",
   "tests/test_plugin_*.py",
+  "tests/test_computer_plugin.py",
+  "tests/test_workload_controller.py",
 ]
 deleted_paths = [
   "agent/tool_hooks/**",
@@ -144,7 +148,7 @@ deleted_paths = [
   "plugin_packages/wake-proactive/**",
 ]
 depends_on = ["lifecycle"]
-scenarios = ["plugin_generation_contract", "plugin_uninstall_drain_finality", "mcp_process_lifecycle", "plugin_domain_observe_events"]
+scenarios = ["plugin_generation_contract", "plugin_workload_contract", "plugin_uninstall_drain_finality", "mcp_process_lifecycle", "plugin_domain_observe_events"]
 
 [groups.model_owner]
 priority = "p0"

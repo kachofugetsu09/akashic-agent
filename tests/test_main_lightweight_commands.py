@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from agent.persona import read_default_veda
@@ -153,3 +155,54 @@ def test_help_lists_veda_reset() -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "veda-reset" in result.stdout
+
+
+def test_plugin_toggle_accepts_builtin_plugin_id(tmp_path: Path) -> None:
+    plugin_home = tmp_path / "plugin-home"
+    plugin_home.mkdir()
+    manifest = plugin_home / "manifest.toml"
+    manifest.write_text(
+        '[plugins]\n\n[plugins."computer"]\nenabled = true\n',
+        encoding="utf-8",
+    )
+    environment = {**os.environ, "AKASHIC_PLUGIN_HOME": str(plugin_home)}
+
+    disabled = subprocess.run(
+        [
+            sys.executable,
+            str(_PROJECT_ROOT / "main.py"),
+            "plugin-disable",
+            "computer",
+            "--workspace",
+            str(tmp_path / "workspace"),
+        ],
+        cwd=_PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert disabled.returncode == 0, disabled.stdout + disabled.stderr
+    assert tomllib.loads(manifest.read_text(encoding="utf-8"))["plugins"]["computer"][
+        "enabled"
+    ] is False
+
+    enabled = subprocess.run(
+        [
+            sys.executable,
+            str(_PROJECT_ROOT / "main.py"),
+            "plugin-enable",
+            "computer",
+            "--workspace",
+            str(tmp_path / "workspace"),
+        ],
+        cwd=_PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert enabled.returncode == 0, enabled.stdout + enabled.stderr
+    assert tomllib.loads(manifest.read_text(encoding="utf-8"))["plugins"]["computer"][
+        "enabled"
+    ] is True

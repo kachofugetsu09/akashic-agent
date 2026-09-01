@@ -140,7 +140,37 @@ client 或数据库实现。边界如下：
 Core 是受支持 API 的 owner，不是 Python 安全沙箱。同 UID 的恶意插件仍能绕过普通对象边界；
 真正的安全隔离需要独立进程或权限域，不在本迁移中伪装实现。
 
-## 4. 2026-08-16 试点盘点（历史）
+## 4. 当前 external plugin source 索引
+
+以下路径是 2026-09-01 按 hua-home stable artifact、安装 manifest 和工作站 canonical checkout
+重新对账的源码入口。正式运行身份仍由 immutable artifact commit 与 stable pointer 证明；本表只拥有
+“去哪里审查和修改源码”，不把本地 checkout 或浮动分支当作部署证据。
+
+| 插件 | canonical repository | 工作站 checkout |
+|---|---|---|
+| Calendar | [akashic-plugins/calendar-mcp](https://github.com/akashic-plugins/calendar-mcp) | `/mnt/data/coding/akashic-plugin/calendar-mcp` |
+| Citation | [akashic-plugins/citation](https://github.com/akashic-plugins/citation) | `/mnt/data/coding/akashic-plugin/citation` |
+| Emotion | [akashic-plugins/emotion](https://github.com/akashic-plugins/emotion) | `/mnt/data/coding/akashic-plugin/emotion` |
+| Feed | [akashic-plugins/feed-mcp](https://github.com/akashic-plugins/feed-mcp) | `/mnt/data/coding/akashic-plugin/feed-mcp` |
+| Fitbit | [akashic-plugins/fitbit-mcp](https://github.com/akashic-plugins/fitbit-mcp) | `/mnt/data/coding/akashic-plugin/fitbit-mcp` |
+| GitHub Watch | [kachofugetsu09/github-watch](https://github.com/kachofugetsu09/github-watch) | `/mnt/data/coding/akashic-plugin/github-watch` |
+| Huayue Skills | [akashic-plugins/huayue-skills](https://github.com/akashic-plugins/huayue-skills) | `/mnt/data/coding/akashic-plugin/huayue-skills` |
+| Meme | [akashic-plugins/meme](https://github.com/akashic-plugins/meme) | `/mnt/data/coding/akashic-plugin/meme` |
+| Observe | [akashic-plugins/observe](https://github.com/akashic-plugins/observe) | `/mnt/data/coding/akashic-plugin/observe` |
+| Plugin Undo | [akashic-plugins/plugin_undo](https://github.com/akashic-plugins/plugin_undo) | `/mnt/data/coding/akashic-plugin/plugin_undo` |
+| Proactive Feedback | [akashic-plugins/proactive_feedback](https://github.com/akashic-plugins/proactive_feedback) | `/mnt/data/coding/akashic-plugin/proactive_feedback` |
+| Setup Helper | [akashic-plugins/setup_helper](https://github.com/akashic-plugins/setup_helper) | `/mnt/data/coding/akashic-plugin/setup_helper` |
+| Shell Restore | [akashic-plugins/shell_restore](https://github.com/akashic-plugins/shell_restore) | `/mnt/data/coding/akashic-plugin/shell_restore` |
+| Shell Safety | [akashic-plugins/shell_safety](https://github.com/akashic-plugins/shell_safety) | `/mnt/data/coding/akashic-plugin/shell_safety` |
+| Status Commands | [akashic-plugins/status_commands](https://github.com/akashic-plugins/status_commands) | `/mnt/data/coding/akashic-plugin/status_commands` |
+| Steam | [akashic-plugins/steam-mcp](https://github.com/akashic-plugins/steam-mcp) | `/mnt/data/coding/akashic-plugin/steam-mcp` |
+
+Feishu 与 QQBot 不在上述 hua-home enabled manifest 中，但它们是 PLG-016 指定的纯 v3 channel
+consumer，分别由 [akashic-plugins/feishu](https://github.com/akashic-plugins/feishu) 和
+[akashic-plugins/qqbot](https://github.com/akashic-plugins/qqbot) 拥有。本轮 Core surface 删除必须同时
+运行这两个仓库的固定 commit 合同测试。
+
+## 5. 2026-08-16 试点盘点（历史）
 
 本节只解释最初 Tool/Passive 试点怎样形成后续架构，不是当前进度账本。当前目标已经收敛为
 fleet lock 中 20 个 external 插件与 8 个 in-tree 实现；Computer Use Linux、Context Pressure
@@ -169,7 +199,7 @@ fleet lock 中 20 个 external 插件与 8 个 in-tree 实现；Computer Use Lin
 | Tool Loop Guard | typed authorization 与 per-generation state | [Tool Loop Guard #2](https://github.com/akashic-plugins/tool_loop_guard/pull/2) |
 | Default Memory | static activation、Memory capability、result observer、Dashboard | [Core #437](https://github.com/kachofugetsu09/akashic-agent/pull/437) |
 
-### 4.1 Core 实现栈
+### 5.1 Core 实现栈
 
 本轮 remediation 并非直接从 `main` 起步。它依赖已经单独评审的组合 foundation：
 
@@ -216,12 +246,12 @@ lane，不是 #425 的父链。下面只列本轮 remediation 与试点 Gate：
 PR 只按图中的依赖边合并。#432 在 #431 后可以独立 review/merge，不是 #433 或被动回复分支的
 前置；栈顶 Gate 通过也不能解释成底层 PR 可以乱序 cherry-pick。
 
-## 5. 2026-08-16 原始迁移盘点（历史）
+## 6. 2026-08-16 原始迁移盘点（历史）
 
 本节保留当时的 consumer 调查，不能作为当前待办或 target fleet。现行迁移账本、排除项与
 private proactive 边界以生产替代清单为准。
 
-### 5.1 External lock 插件：16 个
+### 6.1 External lock 插件：16 个
 
 | 族群 | 插件 | 迁移时需要的首要 v3 seam |
 |---|---|---|
@@ -234,13 +264,13 @@ private proactive 边界以生产替代清单为准。
 | channel | `feishu`、`qqbot` | inbound/outbound channel capability 与发送提交边界 |
 | Skill | `huayue-skills` | 只迁移包级 `skill_roots`，不引入不存在的 MCP/channel seam |
 
-### 5.2 In-tree 插件：7 个
+### 6.2 In-tree 插件：7 个
 
 `akasha`、`default_proactive`、`drift_flow`、`proactive_flow`、`wake_drift_flow`、
 `wake_proactive`、`wake_proactive_flow` 当时尚未迁移。它们涉及 memory/proactive/wake 生命周期，
 应在 external lifecycle 与 process seam 稳定后迁移，避免为旧领域方法复制一套 v3 Manager。
 
-### 5.3 GitHub Watcher
+### 6.3 GitHub Watcher
 
 当时公开 lock、`akashic-plugins` 组织和本轮可访问的 canonical source 中没有可锁定的
 GitHub Watcher。因此它不计入 29 个实现，也不能声称已经迁移。后续必须先定位 canonical
