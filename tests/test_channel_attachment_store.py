@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
 from bootstrap.channel_attachment_import import import_channel_attachments
@@ -61,6 +62,30 @@ async def test_import_publishes_ready_metadata_and_verified_read_lease(stores) -
     assert report.verified_bytes == len(payload)
     assert report.orphan_artifact_ids == ()
     assert report.incomplete_import_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_import_owns_image_kind_from_file_signature(stores) -> None:
+    _session_store, artifact_store = stores
+    image_path = Path(_session_store.db_path).parent / "extensionless"
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(image_path, format="PNG")
+
+    image_ref = await artifact_store.import_bytes(
+        image_path.read_bytes(),
+        kind=AttachmentKind.FILE,
+        filename="extensionless",
+        media_type=None,
+    )
+    assert image_ref.kind is AttachmentKind.IMAGE
+    assert image_ref.media_type == "image/png"
+
+    fake_ref = await artifact_store.import_bytes(
+        b"not an image",
+        kind=AttachmentKind.IMAGE,
+        filename="forged.png",
+        media_type="image/png",
+    )
+    assert fake_ref.kind is AttachmentKind.FILE
 
 
 @pytest.mark.asyncio
@@ -141,17 +166,18 @@ async def test_import_rejects_symlinked_artifact_parent_before_write(
         workspace=workspace,
         session_store=session_store,
     )
+    try:
+        with pytest.raises(ValueError, match="符号链接"):
+            await artifact_store.import_bytes(
+                b"secret",
+                kind=AttachmentKind.FILE,
+                filename=None,
+                media_type=None,
+            )
 
-    with pytest.raises(ValueError, match="符号链接"):
-        await artifact_store.import_bytes(
-            b"secret",
-            kind=AttachmentKind.FILE,
-            filename=None,
-            media_type=None,
-        )
-
-    assert list(outside.iterdir()) == []
-    session_store.close()
+        assert list(outside.iterdir()) == []
+    finally:
+        session_store.close()
 
 
 @pytest.mark.asyncio

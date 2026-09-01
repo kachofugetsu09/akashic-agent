@@ -1612,8 +1612,34 @@ async def test_v3_channel_worker_holds_session_admission_until_terminal(
 
 
 @pytest.mark.asyncio
-async def test_channel_worker_rejects_image_budget_before_acquiring_leases() -> None:
+async def test_channel_worker_rejects_image_budget_before_acquiring_leases(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
     from bootstrap.passive_worker import PassiveMessageWorker
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+
+    session_store = SessionStore(tmp_path / "artifact-sessions.db")
+    artifact_store = ChannelAttachmentArtifactStore(
+        workspace=tmp_path,
+        session_store=session_store,
+    )
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(image_path)
+    extensionless_refs = tuple(
+        [
+            await artifact_store.import_bytes(
+                image_path.read_bytes(),
+                kind=AttachmentKind.FILE,
+                filename=f"extensionless-{index}",
+                media_type=None,
+            )
+            for index in range(5)
+        ]
+    )
+    session_store.close()
+    assert all(ref.kind is AttachmentKind.IMAGE for ref in extensionless_refs)
 
     class Store:
         def __init__(self) -> None:
@@ -1626,6 +1652,9 @@ async def test_channel_worker_rejects_image_budget_before_acquiring_leases() -> 
     store = Store()
     worker = object.__new__(PassiveMessageWorker)
     worker._attachment_store = cast(Any, store)
+
+    with pytest.raises(ValueError, match="最多可以添加 4 张图片"):
+        await worker._acquire_attachment_refs(extensionless_refs)
 
     too_many = tuple(
         AttachmentRef(

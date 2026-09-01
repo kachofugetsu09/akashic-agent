@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
+from agent.media import detect_supported_image_mime
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
 from session.store import AttachmentArtifactRecord, SessionStore
 
@@ -26,6 +27,7 @@ class _SourceFingerprint:
     size_bytes: int
     mtime_ns: int
     sha256: str
+    signature_head: bytes
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,21 @@ async def _complete_critical(awaitable: Awaitable[T]) -> tuple[T, bool]:
         except asyncio.CancelledError:
             cancelled = True
     return task.result(), cancelled
+
+
+def _verified_attachment_type(
+    declared_kind: AttachmentKind,
+    declared_media_type: str | None,
+    signature_head: bytes,
+) -> tuple[AttachmentKind, str | None]:
+    """用受支持的文件签名拥有图片 kind，不信任文件名或 MIME。"""
+
+    detected = detect_supported_image_mime(signature_head)
+    if detected is not None:
+        return AttachmentKind.IMAGE, detected
+    if declared_kind is AttachmentKind.IMAGE:
+        return AttachmentKind.FILE, declared_media_type
+    return declared_kind, declared_media_type
 
 
 class _ArtifactReadLease:
@@ -129,6 +146,11 @@ class ChannelAttachmentArtifactStore:
             raise ValueError(
                 f"attachment 超过导入上限: {len(data)} > {self._max_import_bytes}"
             )
+        kind, media_type = _verified_attachment_type(
+            kind,
+            media_type,
+            data[:12],
+        )
         candidate = AttachmentRef(
             artifact_id=uuid4().hex,
             kind=kind,
@@ -305,6 +327,11 @@ class ChannelAttachmentArtifactStore:
         """两次核对 source identity，并把内容复制进 Core artifact root。"""
 
         source_path, fingerprint = self._inspect_source(source, allowed_root)
+        kind, media_type = _verified_attachment_type(
+            kind,
+            media_type,
+            fingerprint.signature_head,
+        )
         ref = AttachmentRef(
             artifact_id=uuid4().hex if artifact_id is None else artifact_id,
             kind=kind,
@@ -548,10 +575,13 @@ class ChannelAttachmentArtifactStore:
                     f"{file_stat.st_size} > {self._max_import_bytes}"
                 )
             digest = hashlib.sha256()
+            signature_head = b""
             while True:
                 chunk = os.read(fd, 1024 * 1024)
                 if not chunk:
                     break
+                if not signature_head:
+                    signature_head = chunk[:12]
                 digest.update(chunk)
             after = os.fstat(fd)
             if (
@@ -567,6 +597,7 @@ class ChannelAttachmentArtifactStore:
                 size_bytes=file_stat.st_size,
                 mtime_ns=file_stat.st_mtime_ns,
                 sha256=digest.hexdigest(),
+                signature_head=signature_head,
             )
         finally:
             os.close(fd)
