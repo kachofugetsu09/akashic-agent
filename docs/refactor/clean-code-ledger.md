@@ -2842,3 +2842,8 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - GitHub `change-impact-gate` 正确发现 `20260826_03_unify_akashic_channel_identity.py` 被改写。已注册 migration 是不可改写的持久化执行合同；把 import 改到新 owner 即使行为等价也不安全。
 - 恢复 migration 原文及其 11 行 `context_compaction` import path。该模块只把两个 identity helper 转发到冻结的 `compaction_migration_v1` owner，没有恢复 compaction runtime、v2 插件入口或第二套状态模型。
 - 恢复点：`backup/pr525-before-yoyo-ci-fix-20260901` 固定远端失败 head `31da9841`。修复后以 `scripts/check_yoyo_migrations.py --base origin/main`、迁移/compaction 回归和远端 CI 验证。
+
+## 2026-09-01 PR525：补齐 unified MCP v3 测试类型
+
+- 删除 `start_candidate()` / `start_formal()` wrapper 后，测试已统一调用 `start_generation(mode=...)`；一处循环把 `candidate` / `formal` literal 推断成普通 `str`，GitHub test Pyright 正确拒绝。
+- 只为该 fixture 的两组 case 标注 `McpMode`，不改变生产签名、mode 校验或运行行为。恢复点：`backup/pr525-before-test-pyright-fix-20260901` 固定修复前 head `dfa1d3b0`。

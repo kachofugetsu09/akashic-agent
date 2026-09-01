@@ -27,6 +27,7 @@ from agent.plugins.mcp_generation_host import (
     McpGeneration,
     McpGenerationHost,
     McpMaterializedCommand,
+    McpMode,
 )
 from utils.process_group import OwnedProcessGroup
 
@@ -350,10 +351,11 @@ async def test_materialized_candidate_env_is_rejected_for_candidate_and_formal(
     root, registry = await _registry(tmp_path, script)
     host = McpGenerationHost()
     try:
-        for generation_id, mode in (
+        cases: tuple[tuple[str, McpMode], ...] = (
             ("candidate-base-env", "candidate"),
             ("formal-base-env", "formal"),
-        ):
+        )
+        for generation_id, mode in cases:
             with pytest.raises(ValueError, match="candidate-only"):
                 await host.start_generation(
                     generation_id,
