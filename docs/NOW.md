@@ -28,12 +28,28 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 ## P1 · Agent Harness 抽象收敛
 
 - 当前执行合同为 [`普通插件 Agent 骨架与被动链迁移合同`](design/ordinary-agent-spine-migration.md)：
-  默认七个同权普通插件组成当前最小能力图，但数字不是架构律；Core 只保留 publication、
-  exact lease 与泛型 Service 调用。本版已通过 DSH 对照 `CONCEPT PASS` 与 `NAME PASS`，下一批是 M2。
+  九个同权普通插件只组成最小 Agent spine，数字不是架构律；默认产品另挂普通 `host-check`、`skills`、
+  `skill-files` 与 `skill-use`，不安装它们仍能完成 Turn。Core 只保留 publication、exact lease 与泛型
+  Service 调用、跨进程 exact `ServiceHold`、task control 和跨 Root 共享 owner 的 `RootSwitch`。M2 审计先发现动态 context Message 缺少 owner，又发现 SkillsLoader、PluginSkillHost、
+  PluginSkillLinker、host capability、candidate Gate 与 normal/drift 来源仍跨越多个 owner；已按 DSH 的
+  registry/source/product 三层拆开并以 hua-home live artifact/目录入账。2026-09-02 整份规格已经重新取得
+  `CONCEPT PASS` 与 `NAME PASS`；M1a 泛型 task 原子已经完成，当前下一批是 M1b Root switch，随后 M1c service hold。
+  之后依次为 M2a agents、M2b agent-loop、M2c source delivery，M3a host-check、M3b skills、M3c skill-files、M3d drift files、
+  M3e context-input、M3f system-prompt、M3g provider-input；M4 再按 tools、skill tool、
+  Tool Search、push、media、attention、Shell 七批切换，之后是 M5a models、M5b old tail、M6a sessions、M6b reply-output、
+  M6c Akasha、M7a loop cleanup、M7b
+  conversation，最后 M8a～M8c 逐名迁 Activity/Channel/command switch，M8d 删除硬编码 table 并停止。
+  每批只切一个 owner，不给 PromptSection、ReplyPart 或 AgentLoop 扩权。M2c 虽同时改多个 caller，却只把一名
+  旧 agent-loop sender owner 原子交给已经存在的 source sink；拆开部署必须保留 sender flag，因此禁止拆分。
   本迁移不走灰度、生产 shadow、双执行或双写；M1～M9 每个实现批次在两个独立实现 review 和一个独立 name review 后，
   在同批删除 deprecated 旧 owner，
   最终不留兼容壳。Core 阶段停在独立外部插件源码迁移之前，但这只是迁移停靠点，不是干净终态；
-  任何仍有 live consumer 的旧 public surface 都要按 `keep/move/remove` 入账，外部源码迁完后删除。
+  M8 只允许账本逐项锁定的 prompt、context、turn metadata、reply、agent skill roots、drift skill roots、
+  Shell、committed event、message frame 九类 exact `DEPRECATED(EXTERNAL)` block；COMMANDS 保持普通 public
+  Service，不建 bridge。M9 以当时 hua-home exact stable generation 按 seam 串行迁移外部源码并重装；
+  每类最后一名 consumer 离开时立即只删对应 block、旧 event/type/export 与 fake，最终 Gate 不集中清壳。
+  任何仍有 live consumer 的旧 public surface 都要按
+  `keep/move/remove` 入账，不能把迁移停靠点说成干净终态。
 - 目标骨架只使用 `Message`、`Turn`、`Session`：Message 组成 Turn，Turn 归入 Session；`Loop` 表达“输入 Message → 内部 `react` → 输出 Message”。当前从 `AgentLoop._react → PassiveTurnPipeline` 继续向内审查；只有独占权威状态、不变量、控制流、生命周期或真实边界的层才保留。纯转发、重复结果包装、字段复制、内部重复校验和平行模型分批内联、合并或删除；命名使用普通英语和 Python 风格，不再引入 `Unit` 一类没有独立事实的概念。
 - Turn 的待审目标是：多次 user 输入可以跨越被中断的执行尝试，最后与唯一 terminal assistant 构成一个完整 Turn；主动投喂、scheduler、spawn 和不依赖 user query 的消息可以各自成为独立 Turn，再由 Turn 组合时间线与 Akasha 节点。当前 SES-007、SES-008、RUN-008、OUT-001、OUT-004 和 OUT-005 的 `logical interaction / execution attempt`、主动送达与 `message_push` 合同仍是权威语义；改变名称、数据库身份或归属前，必须先用 SessionDB 与 runtime 日志证明真实路径，再单独批准规格、数据和迁移，不能借普通 refactor 偷改。
 - 接手顺序固定为从内向外的小批次：`ReasonerResult` metadata dict 已类型化、`AfterReasoningResult` 已内联进 `TurnSnapshot`（less-is-more PR62/PR63）；剩余先审查重复 input DTO（`BeforeReasoningInput`/`AfterReasoningInput`/`PromptRenderInput` 与 GATE ctx 的平行字段）是否重述同一事实，审查结论写进账本；再完整画出 Message、Turn、Session、interaction 和 attempt 的 owner/写入链，确认非唯一 attempt 的真实频率与恢复用途；最后才评估 proactive、scheduler、spawn 和 `message_push` 怎样由同一组原子能力拼接。每个 PR 只处理一个冗余组，不为未来预建总框架，也不把现有独立实现直接包进新的总抽象。

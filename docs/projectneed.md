@@ -312,7 +312,7 @@ prompt 必须区分只读调查、设计、实现、评审和外部协调。读�
           │ 派生
           ▼
 ┌────────────────────┐
-│ C. 临时运行时视图   │  PromptContext、窗口、cache、candidate、snapshot binding
+│ C. 临时运行时视图   │  provider input、窗口、cache、candidate、snapshot binding
 └────────────────────┘
 
 ┌────────────────────┐
@@ -348,7 +348,7 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 ### CTX-001 上下文裁切是非破坏性投影
 
-本次 `PromptContext` 可以因模型窗口超出预算而改变。当前进程的 runtime history view 只有在选中的 history window 确实缩小时才能缩短。只移除 skills、memory 等动态区块不得改变 runtime history view。`sessions.db/messages`、`message_embeddings` 和完整历史内容必须保持不变。上下文裁切不承担归档、保留或删除职责。
+本次 provider input 可以因模型窗口超出预算而改变。当前进程的 runtime history view 只有在选中的 history window 确实缩小时才能缩短。只移除 skills、memory 等动态区块不得改变 runtime history view。`sessions.db/messages`、`message_embeddings` 和完整历史内容必须保持不变。上下文裁切不承担归档、保留或删除职责。
 
 验收至少核对裁切前后的完整持久快照和数据库 write set；关闭并再次加载后仍能看到全部历史；追加消息从原最大序号继续。
 
@@ -671,7 +671,7 @@ Mobile 中止按钮和 channel `/stop` 只调用带精确 attempt identity 的 h
 
 ### PLG-003 在途请求绑定同一 runtime snapshot
 
-一个 turn、job、event 或 proactive tick 从 admission 到结束只能看到同一 snapshot。新代只服务新请求；旧代在全部 lease 归零后清理。无主后台任务不得意外继承绑定。
+一个 turn、job、event 或 proactive tick 从 admission 到结束只能看到同一 snapshot。新代只服务新请求；旧代在全部 live lease 与 durable ServiceHold 归零后清理。无主后台任务不得意外继承绑定。
 
 ### PLG-004 发布对外观察必须原子
 
@@ -679,7 +679,7 @@ candidate 在所有 invariant 通过前不接受公开请求。commit 临界区�
 
 ### PLG-005 独占 endpoint 先停 admission 再排空
 
-端口、channel 和 managed service 换代前暂停新请求，等待旧 lease 归零，再切换 endpoint。失败时先恢复旧 endpoint 和 admission，随后清理候选；持有当前 lease 的调用栈不得发起会等待自身的切换。
+端口、channel 和 managed service 换代前暂停新请求，等待旧 lease 与 ServiceHold 归零，再切换 endpoint。失败时先恢复旧 endpoint 和 admission，随后清理候选；持有当前 lease 的调用栈不得发起会等待自身的切换。
 
 ### PLG-006 清理逆序、抗取消并保留全部失败
 
@@ -695,7 +695,13 @@ active 检查错误、generation key 错配、名称冲突、依赖缺失和拓�
 
 ### PLG-009 Skill 和 MCP 通过插件安装发布
 
-Skill、Drift skill 和 MCP server 都由插件包声明并通过插件安装系统进入 Akashic。插件的 `skill_roots`、`drift_skill_roots` 和 `mcp_servers` 是能力来源；安装阶段准备代码与 MCP runtime，generation readiness 全部通过后再原子发布 catalog。workspace 中的 skill 软链接只是当前插件 generation 的可重建投影，不是 canonical source。独立 `mcp/servers/*.toml` 和 workspace 内手工 skill 目录不属于目标安装模型；现有兼容路径必须迁移到插件，不能继续扩展成第二套能力所有权。
+Skill、Drift skill 和 MCP server 都由插件包声明并通过插件安装系统进入 Akashic。目标路径中，插件以普通
+`SKILL_FILES.add(SkillRoot)` 注册 agent/drift 文件来源，以普通 MCP service 注册 server；现有
+`skill_roots`、`drift_skill_roots` 和 `mcp_servers` 声明只能作为有界迁移输入，不能继续新增 consumer。
+安装阶段准备代码与 MCP runtime，generation readiness 全部通过后再原子发布 catalog。workspace 中由
+link journal 拥有的 skill 软链接只是当前插件 generation 的可重建投影，不是 canonical source。
+独立 `mcp/servers/*.toml` 和 workspace 内手工 skill 目录不属于目标安装模型；现有真实目录必须先备份并
+迁入插件 source，验证新 generation 后再清掉旧 loader，不能继续扩展成第二套能力所有权。
 
 ### PLG-010 卸载插件默认保留 plugin-data
 
@@ -766,23 +772,168 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 
 ### PLG-018 Agent 内骨架由普通插件组合
 
-默认 Agent 装配由 `sessions`、`models`、`tools`、`system-prompt`、`model-input`、`agents` 与
-`agent-loop` 七个普通插件组成。这七个是当前已证明的默认能力图，不是固定数字；增删任一块都
-必须以独立事实、不变量、控制流或真实边界证明。`session-view` 只在有 exact consumer 需要对已提交
-Session fact 做纯可回放 fold 时作为额外普通插件；它不构造 model history。Channel、Command、Scheduler、
+最小 Agent spine 由 `sessions`、`models`、`tools`、`system-prompt`、`context-input`、`provider-input`、
+`reply-output`、`agents` 与 `agent-loop` 九个普通插件组成；不安装 skills 时仍能完成 Turn。这九个不是固定数字；增删任一块都
+必须以独立事实、不变量、控制流或真实边界证明。默认产品另挂普通 `host-check`、`skills`、`skill-files`
+与 `skill-use`；它们不是 agent-loop 的 required dependency，移除后只失去 skill catalog/context/tool。
+`session-view` 只在有 exact consumer 需要对已提交
+Session fact 做纯可回放 fold 时作为额外普通插件；它不构造 prompt history。Channel、Command、Scheduler、
 Wake、Subagent、Compaction、Memory、Tool Search 与 Shell 等能力继续作为普通插件注入这些 Service。
 
-`sessions` 唯一拥有权威 Session/Message/Turn 事实、事务和 model history 派生。`model-input` 每个
+`host-check` 只以 `HOST_CHECK.check(HostNeed) -> HostState` 把 bin/env name 严格分成
+available/missing；不得暴露 env value、PATH、shell 或文件权限。local 与认证 bridge 是二选一普通 provider，
+失败 fail-loud。`skill-files` 只 inject HOST_CHECK，并以受保护 root grant 注册 agent/drift SkillRoot；
+source identity 来自插件 ctx，caller 不能伪造。它拥有现有 skill link projection/journal 的
+prepare/commit/recover 与 typed catalog check。agent group 进入普通 SKILLS；drift group 当前没有 runtime
+reader，只保留已证明的 check/projection，不预建第二只 registry。
+
+`skills` 只冻结 Root-local provider set；`SKILLS.open(SkillCall) -> SkillView` 在原有 lookup 边界读取
+workspace/frontmatter/host availability，下一次 lookup 仍能观察变化，而 installed plugin body 始终来自
+generation-private copy。SkillCall 只含 turn identity/cancellation，不含 RootRef、workspace path 或 mutable
+bag。SkillView list/get 保留 name、rank、available/missing、provider、source/source_id、resource root 与
+catalog identity；重复同 rank 名称 fail-loud。`skill-use` 是无状态普通产品插件，只把同一 SKILLS 分别接成
+system catalog section、active context part 与 load-skill tool。tool boundary 统一 stamp exact Root
+provenance；skill provider 不 ambient 读取 RuntimeSnapshot。Agent spine、PromptCall 与 ContextCall 都没有
+skill 字段或分支。
+
+`sessions` 唯一拥有权威 Session/Message/Turn 事实、事务和 prompt history 派生。`system-prompt` 只拥有
+named system section 的 add、排序、异步 build 与纯 render，并返回 immutable
+`PromptSet(items, size)`；items 是 PromptText tuple，size 是同一次 build 得到的 PromptSize；
+`render` 不筛选、不重排、不读 registry。`PromptCall` 只冻结 session/turn identity、channel 和 chat
+identity，不能携带 workspace grant、prompt history、current/context Message、tools、provider request、
+mutable bag 或 rewrite callback。每个 section 只能使用注册它的普通插件自己取得的 narrow grant 或 ledger。
+`TurnRequest.skip_sections` 是 SYSTEM_PROMPT.build 的独立参数，只有 service 看见；校验语法并完成 registry
+验名后、调用 section build 前过滤 matched name。unknown name 是幂等 no-op，被跳过的 section 不得读取
+文件/ledger，PromptSection 看不见名单。skip_parts 同样在完整 ContextText/registry 验名后、调用 part build
+前过滤；unknown no-op，被跳过的 part 不得 query。
+每个 Turn 恰好 build 一次并冻结 PromptSet；agent-loop 直接保留 items/size，system-prompt 再以 typed observe
+发布同一只 size，observer failure 不改变返回；provider retry 与同 Turn 的后续 tool call 不重新 build。
+`context-input` 只拥有 Root-local transient context Message part 集合；`ContextCall` 只含 session/turn
+identity、current Message、immutable runtime history view、channel、chat identity 与 message time，不含
+`context_texts`、skip parts、skills 或 mutable bag。`TurnRequest.context_texts` 与 `skip_parts` 作为
+`CONTEXT_INPUT.build` 的独立参数，只有
+service 能看见；ContextPart 只收到 ContextCall。
+每个 Turn 用 immutable `ContextCall` 异步 build 一次，按 `(order, name)` 确定顺序，provider retry
+不得重查。每项 `ContextPart` 只能以 `async build(ContextCall) -> str | None` 返回自己的 text；每项
+`ContextText` 只含 name、整数展示 order、text 与 DropLevel，并从 TurnRequest 传入。ContextPart 也声明
+独立 order。`context-input` 合并两者，以 name 作为 provider-visible source，固定标记
+`trust=derived`、`kind=context`、`role=user`，并构造与 current user 分开的
+immutable `ContextMessage`；provider 必须让 source/trust 在独立 context block 中对模型可见。它不能改 prompt history、current Message、system text、tools、
+别的 part 或 Session。缺依赖、重复 name、非法 text、I/O 错误
+和取消都必须在模型调用前 fail-loud，整次 build 失败且不允许部分结果或静默跳过。`agent-loop` 唯一拥有
+system → prompt history → context → turn transcript 的固定 envelope 顺序；transcript 以 current Message
+开始，再按执行顺序接本 Turn 的 assistant/tool 进展。这只是具体 Agent 算法，不是可插入 phase。
+Active skills 必须由 skill-use 的 context part 使用普通 Message 事实和 SKILLS catalog/rules 选择，骨架没有
+Skills 字段或分支。Wake、Subagent、Emotion 等 source-only hint 在调用 Agent 前构造 immutable
+ContextText；`TurnRequest` 经 AGENTS 原样进入 concrete Agent，agent-loop 构造 ContextCall 并把
+`context_texts`/`skip_parts`
+作为独立 build 参数传给 context-input，并把 skip sections 独立传给 system-prompt。Wake 分别传
+long-term-memory section 和 memory part；GitHub Watch 的 skip parts 走同一路径。禁止 ambient
+`ContextVar`、Message/Session metadata 或 durable Inbox transport。
+
+`PromptSection`、`ContextPart` 与 `ContextText` 都必须声明 `DropLevel drop`。DropLevel 只有 `extra`、
+`repeat`、`keep`：装饰内容先移除，可再次生成的 skills、memory、catalog 和 retrieval 其次，keep 不移除；
+之后才能按完整 prompt history 边界缩窗。展示 order、source name 与 drop 是三个独立轴；context 按
+`(order, name)` 排序，name 只作相同 order 的 tie-breaker。Core 和
+provider-input 不得按插件名决定预算。未超窗时由 `SYSTEM_PROMPT.render` join 全部 PromptText；扣除已批准
+移到 context lane 的 Akasha memory section 后，其余 system section 的文本、相对顺序和分隔符必须逐字节
+保持；超窗时 provider-input 只筛选 tuple，再调用同一 render。
+
+领域 `TurnRequest(start, message, ...)` 只携带各 owner 的 immutable typed call fact，不得恢复通用
+behavior metadata；`start` 是 Agent 已接受的 Turn 身份，message 是独立 typed Message，channel/chat/time 从它读取。现有 control
+`TurnRequest(thread_id, input, metadata)` 在 M2 改名 `ControlTurn`，只属于 transport/store；control 与
+channel source adapter 各自在唯一边界先接受 Turn、再产出领域 TurnRequest。M2 把同一 concrete Agent 实现直接移动到普通
+agent-loop plugin，并同批把所有 ingress 改送 AGENTS；旧模块、direct import 和 bootstrap constructor 不留
+alias 或 wrapper。进入 Root-bound concrete Agent 后不再携带或读取 raw metadata，也不再换路。
+`TurnSource(name, ref)` 是开放但严格的来源身份；两项必须非空、无首尾空白，ref 复用 source 已有的 durable
+message/job/attempt identity。插件可以提供新 name，因此不用封闭 enum。两项只用于幂等 admission 与诊断，
+不能替代任何行为选择。
+
+所有 source 使用同一握手：先 `Agent.accept(session_key, TurnSource) -> TurnStart`，再
+`Agent.run(TurnRequest(start, ...), watch) -> TurnWait`，并以 `TurnWait.result() -> AgentResult` 等待 terminal；若自己的 source gate 在 run 前决定 skip/fail/cancel，则调用
+`Agent.finish(TurnStart, status)`。accept 由 concrete agent-loop 唯一实现：sessions 先幂等 reserve Turn，
+TaskControl 再以同一 identity claim，sessions 最后把 reserve 标成 claimed，三步全成才返回 TurnStart。
+claim 前失败要 terminal reserve；claim 后 mark 失败还要 cancel/release 同一 task。boot 在开放 AGENTS 前按
+durable reserve/claim receipt 收敛 reserved、claimed 与 active task，identity 冲突保持 degraded。Wake 必须
+accept 后运行自己的 select/claim/quiet gate；run 或 finish 只能各发生一次，ContextPart 不得取得 admission。
+`AgentOutput(text, thinking, media, attachments, message_id: MessageId | None)` 只含 source-neutral final output；
+只有 exact assistant Message 已保存时 message_id 才非空，user-only/no-save completed 必须为 None，delivery
+只用 TurnSource ref/自己的 key 幂等。`AgentResult(status, output, items, usage, error, ended_at)` 是 deeply
+immutable terminal fact；items/usage 保留现有 typed TurnItem/TurnUsage 合同与 `items_json/usage_json` write set，没有 channel/chat/reply target、
+sender、delivery flag、callback 或 metadata bag。agent-loop 必须先以
+`SESSIONS.finish(start, status, output, items, usage, error)` 把 AgentResult commit 到现有权威 turns terminal row，TurnWait
+才能返回；`SESSIONS.result(start)` 只读同一 typed result，不返回 row/repository。相同 TurnSource ref 的
+terminal 重入返回同一 TurnStart；run 只读 durable AgentResult，provider/tool/save/observer call=0，不重新
+执行。TurnWait 还提供与输出流正交的 one-shot `input_seal() -> InputSeal | None`。Agent 到达
+现有 input lock 点时产生无 payload seal 并等待；source 锁自己的 active input 后 `done()`，失败则
+`fail()` 并让 Agent 以 input-lock error 终结。terminal-before-seal 和 terminal 重入返回 None；caller lost 不能让
+Agent 无限等待；source 离开自己 scope 时 finally 调幂等 `TurnWait.close()`，它切 discard 并让未回执
+seal fail，但不伪造 caller cancel。正常路径保持 seal→source lock→done→OutputDone；安全拦截、上下文过长、模型超时
+保持 OutputDone→executor return→seal→source lock→done。InputSeal 不含 source、callback、registry、listener、
+reason 或 metadata，不能改写输入。每个 source 都在 run 后立即并行处理它；无 active input 则立即 done。
+watch=true 时 TurnWait 另提供单 consumer、有界、按序 backpressure 的 live
+`TextUpdate | ItemStart | ItemDone | OutputDone` stream。TextUpdate 必须同时保留 text/thinking，两者至少一个
+非空；四种 update 共用从 1 严格递增的 sequence，ItemStart/ItemDone 必须同 id、同 kind 配对。
+OutputDone 只表示现有 output stream 已封口，必须一比一保持 `TurnOutputCompleted` 在 normal、
+安全拦截、已知上下文过长和模型超时四条路径的达到时机；其他在旧事件点前终结的
+failure/cancel 不产生。它不拥有 input source lock，各 source 独立拥有并验证自己的 lock 时序。它不是插件
+hook 或 callback field。Control 与流式 Channel 由各自 source adapter 直接投影，watch=false 不建队列。
+projection error、disconnect 或 early close 只把 feed 切成 discard 并继续等 AgentResult/final sink；只有 caller
+cancel 才 cancel 同一 Turn。crash/terminal 重入不重放 live update，只返回 durable items/usage/final output。
+M2b 必须删除 ChannelTurnPresentationBridge、五种旧 lifecycle event/producer/registration 和所有 product
+subscriber；正式外部 artifact 出现 subscriber 时阻断 deploy，不保留第二条展示链。M2c 后 agent-loop
+不发送，source 只用自己的窄 sink。
+内部 TurnItem 必须是 `UserItem | AssistantItem | ThinkingItem | ToolItem | ErrorItem` 五种 closed
+immutable schema，不得继续使用 kind+dict。工具 args 只能是不含重复 key/NaN/infinity 的 immutable
+`JsonValue | JsonList | JsonMap`；工具来源只能是空或带 skill/plugin/catalog generation/root snapshot 四项的
+`SkillRef`；`TurnError` 只含 type/message/retryable。M2 Gate 必须证明旧 error data 和其他 provenance key
+在源码、正式 artifact 与正式 DB 为零，否则阻断，不静默丢弃。sessions 唯一编码 items_json，
+Control adapter 唯一编码现有 wire object，并保持现有 key/order 字节。replyTo、client id 与 transport
+metadata 只由 source ledger 投影；未入账 live outbound key 阻断 M2，不能恢复 assistant_data/OutboundMessage
+metadata bag。
+`past_read: PastRead(full|empty)` 只交给 sessions；sessions 从同一次 persistent history 选择返回
+`HistoryViews(runtime_history, prompt_history)` 两个不同 typed projection，分别进入 ContextCall 与
+TurnInput，empty 时两者都空但不改 Session。`context_texts`、`skip_sections`、`skip_parts` 分别只交给
+context-input、system-prompt、context-input；`tool_grant: ToolGrant`、`tool_picks: tuple[ToolPick, ...]` 与
+`turn_tools: tuple[Tool, ...]` 只交给 tools；`save: SaveChoice(user, assistant)` 与
+`effects: EffectMode(run|skip)` 只交给 sessions；`step_limit` 只交给 agent-loop；`source: TurnSource` 只由
+agents 在 create/resume 边界校验并冻结，agent-loop 原样带给 Tools 和诊断，任何 consumer 都不得按 source
+值改变行为。AGENTS 除自己拥有的 TurnSource 外只转发，agent-loop 只在固定位置交给唯一 owner，禁止 dict 遍历、ambient scope、Message/
+Session metadata 或 feature name 分支。
+
+PastRead.empty 只改变本 Turn 的非破坏性读取：`HistoryViews.runtime_history` 与 `.prompt_history` 都由同一空选择派生，但仍保持不同类型，也不改 persistent history。SaveChoice 分别决定 user/assistant
+Message 是否进入原子 Turn commit；两者都 false 时 EffectMode 必须是 skip，user false/assistant true 保留
+stateless continuation。EffectMode 只映射 sessions 现行 `effects.post_commit` 持久语义。ToolPick 只有 name、
+preload、terminal；tools 校验 registry、ToolGrant 和重复项并返回冻结 view。旧 `skip_session_history`、
+`omit_user_turn`、`omit_assistant_turn`、`disabled_prompt_sections`、`PostCommitEffect` runtime decoder 和
+TurnExecutionScope 同义字段必须在各 owner 批次切换后删除，不保留 metadata decoder。
+
+本轮 retrieval/hint 只属于临时 context，不能反向变成下一 Turn 的权威历史。新 user row 不再写
+`llm_user_content`/`llm_context_frame`，sessions history 也不再读取历史两键；既有字节保留且零 reader。
+Akasha feedback 同理：新 row 不再写 `akasha_reinforce`/`akasha_forget`，历史 marker 在有备份与 count/hash
+校验的一次性维护窗口导入 Akasha 私有 ledger 后零 reader，不双写、不 dual read。
+
+`provider-input` 每个
 Agent Turn 只 open 一次私有 `InputState`，每次 provider attempt 必须用 immutable `InputCall` build
-一只 `ProviderInput`，再以同一 opaque receipt 恰好 settle 一次。`InputCall` 冻结权威 history 之外的
-当前完整 Turn transcript、system text、tool schemas、model/context/output limit、call/try 序号、
+一只 `ProviderInput`，再以同一 opaque receipt 恰好 settle 一次。`TurnInput` 冻结 prompt history、
+PromptText tuple 与 ContextMessage tuple；`InputCall` 冻结当前完整 Turn transcript、tool schemas、model/context/output limit、call/try 序号、
 normal/too-long cause、continuation 和 prior usage；`ProviderInput` 返回 provider-ready content payload、
-`InputSize` 与 receipt。settle 明确区分 done、too-long、failed、cancelled，只有 `InputRetry` 可以允许
+`InputSize` 与 receipt；agent-loop 直接保留 size，provider-input 再以 typed observe 发布同一只 size，observer
+failure 不改变返回。settle 明确区分 done、too-long、failed、cancelled，只有 `InputRetry` 可以允许
 同一 call 的第二次 attempt，禁止第三次尝试或 Core fallback。一个 Root 必须恰有一个 basic 或
 compaction provider；Core 和 `agent-loop` 不识别 compaction。`models`
-只校验、解析、冻结和执行已传入的模型选择，不读写 Session metadata。`agents` 只拥有公开
-Agent 合同、registry、source 归属和 factory slot；`agent-loop` 提供默认具体 Agent，拥有 inbox、Turn/Step、
+只校验、解析、冻结和执行已传入的模型选择，不读写 Session metadata。每次 call 返回 immutable
+`ModelReply(text, tool_calls, thinking, finish, continuation, use)`；use 是同一次 ModelUse，agent-loop 直接消费
+reply，models 再 observe 同一只 use，observer failure 不改变返回。`agents` 只拥有公开
+Agent 合同、registry、`TurnSource` 校验/冻结和 factory slot；`agent-loop` 提供默认具体 Agent，拥有 inbox、Turn/Step、
 ReAct、interrupt/cancel/terminal，不允许两者各留半个 driver。
+
+`provider-input` 只能按 CTX-002 先移除 drop=extra、再移除 drop=repeat，之后减少完整 prompt history 边界；
+drop=keep 不得移除。basic 与 compaction 都必须保留
+concrete loop 给出的 system → prompt history → context → turn transcript lane 顺序、每条 Message 的 role
+与既有 `normal|context` kind，以及 transcript 内执行顺序，不得重排、合并或把 system text 降成普通
+Message。首个 call 的 transcript 只有独立 current Message；后续 call 在它后面保留已发生的
+assistant/tool 进展。固定 envelope 顺序只有 concrete loop 一个 owner。
 
 compaction provider 可以在 `InputState` 内私有保留 ledger head、token meter、已闭合 tool batch 和
 待发布 fact。它从下一只完整 transcript 识别新 tool batch；too-long 后的第二次 build 可以强制压缩；
@@ -790,31 +941,231 @@ done settle 记录 usage 并只发布一次 fact。failed/cancelled settle 不�
 下次 open 必须依 receipt/ledger 恢复并补发。basic provider 原样组合且不允许 overflow retry。两者都
 不能要求 loop 传 compaction 专用方法、mutable binding、listener 列表或任意 request bag。
 
+`reply-output` 是最终 provider reply 与 Session commit 之间唯一的 typed 输出边界。
+`REPLY_OUTPUT.open(ReplyCall) -> ReplyState` 让每只普通 `ReplyPart` 只在同一 immutable raw text 上声明自己的
+`ReplyMark(start, end, text, media)`；part 看不到其他 part 的结果，也没有 listener order、priority、
+`next()` 或 mutable reply context。service 必须拒绝越界和重叠 mark，并一次合并成 `FinalReply`。
+span 必须非空；已有 media 保持原顺序，mark media 按 source span 追加，mark 内的顺序和重复项不变。
+media 只能是由 tool boundary 或注册 part 的窄 file grant 铸造的 immutable `MediaItem`；不得接受 raw path、
+URL、open file 或任意读 capability。attachment owner 验证 provenance 并导入，reply-output 不取得文件权限。
+`reply-output` 自己只拥有现行 trailing `<name:value>` hidden-marker grammar：part 未 claim 的 trailing marker
+也按这条固定 grammar 删除，不能靠最后一只 cleanup 插件兜底。没有 feature part 时，basic decoder 仍执行
+既有 parser 和 fixed hidden-marker decoder；没有 marker 的正文与已有 media 保持不变。
+
+每只 ReplyPart 必须显式实现 `ready(SessionRead)`、`open(ReplyCall) -> PartState(marks, receipt)` 和
+`settle(PartState, ReplySave)`。receipt 只回给同一 part，`None` 表示本次没有 durable work；reply-output 只
+保存 state、验证/合并 mark，不解释 receipt。会产生 durable receipt 的 part 必须由同一 artifact/generation
+以同一 name 注册 SwitchPart，Root sealing 拒绝缺失或错配；pure part 的 receipt 恒为 None，也不得假注册
+SwitchPart。owner generation 的 snapshot lease 未归零前不得 remove/replace，stop 还要断言本代 receipt 已
+settle/abort，避免新 generation 被迫解释旧 generation 的私有 journal。
+
+最终合同中，Session 与 attachment writer 必须只使用同一 `ReplyState.output`，Channel 也只能发送同一
+`FinalReply`。Session save 的 saved/skipped 或 Turn 的 failed/cancelled/interrupted 结果确定后，caller 必须恰好一次调用
+`REPLY_OUTPUT.settle(ReplyState, ReplySave)`；saved 携带 immutable `TurnSaved`。part 只提交自己的私有
+ledger/fact，不得写 Session 或其他 part 的状态。open 中已 prepare、进程却在 settle 前崩溃时，只能用
+part 的 crash journal 和窄 `SessionRead` 按 turn identity 收敛，不能猜测提交成功。
+任一 part 在 open 中失败或取消时，service 必须先以同一终态收敛已经 prepare 的 receipt，再抛出原错误；
+不得交付半只 ReplyState。
+
+重启时 publication gate、ingress 和 sender 必须保持关闭。exact stable Root 中普通 agent-loop 的 start Effect
+是唯一顺序 owner；它显式 inject SESSIONS、REPLY_OUTPUT 与 SAVE_NOTICE 这些正常运行依赖，Core 只等待 Root
+ready，不识别 Service 名。sessions 先完成
+schema/integrity 和 writer ready，agent-loop 再调用 `SESSIONS.recover()`，在一个事务中把 crash 遗留 queued
+Turn 终结为 cancelled、running/in-progress Turn 终结为
+interrupted，且 provider reboot call=0。只有不存在 stale `running + save=none` 后，REPLY_OUTPUT 才能用
+SessionRead 收敛 pending receipt 并报告 ready；随后 SavePart ready/saved-notice replay，最后各 source 恢复
+自己的 delivery ledger并开放 ingress。SessionRead.status 的 save=saved/skipped 分别收敛 saved/skipped；
+save=none 且 terminal failed/cancelled/interrupted 才收敛相同失败。未知、冲突或 recover failure 必须让
+Root degraded 且不发送。hot reload 由 Turn lease 和 SwitchPart 保护，不复用 boot recovery。
+
+M6b 到 M9 只允许一项已经入账的例外：exact external reply block 以 private `OldReply` 把 Citation
+当前 `cited_memory_ids` 交给 sessions 同一事务，保持旧 assistant row write set。它不得进入 FinalReply、
+REPLY_OUTPUT public protocol、Service 或 registry；Citation ledger 迁移完成后必须与 call site 同批删除。
+
+`SESSIONS.save` 必须总在 `turn_saves` 写 immutable saved/skipped outcome 与已验证 channel。至少一条
+Message 保存时，它还在同一事务 append pending `saved_notices` row，冻结当时 SavePart 的
+`(name, owner artifact, generation)` recipient tuple，并返回 `SaveResult.saved(TurnSaved)`；两项
+SaveChoice 都为 false 时不写 Message/outbox，返回 `SaveResult.skipped`，不能伪造 TurnSaved。事务内不发布。
+`SESSIONS.size(SaveResult) -> HistorySize` 先验证同一 save identity，再从 saved 后或 skipped 未改变的
+provider-facing committed history 直接返回 immutable value；sessions 以 typed observe 发布同一个值，observer
+failure 不改变 save。它不返回 rows、Session 或 repository。
+唯一 concrete Agent caller 固定执行
+`REPLY_OUTPUT.open → SESSIONS.save → SESSIONS.size → REPLY_OUTPUT.settle → old-commit →
+SAVE_NOTICE.send → live SaveResult observe → SESSIONS.finish → source sink`。M2c 已物理删除 dispatch/return
+两个 module、Agent sender 和 flag，并改为 direct return。M5b 在 PromptSet/ProviderInput/ModelReply/ToolUse
+都已成为 closed typed return 后，一次删除剩余 after-turn phase 与八个 builtin：零 consumer 的
+extras/AfterTurnCtx/telemetry 直接删除，绝不恢复 Agent sender。只保留 private `DEPRECATED(EXTERNAL)` old-commit，以显式 immutable value 重建完整 TurnCommitted 和
+exact budget log；不得读取 typed observer、raw Session、ContextBuilder、metadata、Service lookup 或旧 ctx。
+M7a 只删除其余总 phase suite，不重建或再次拆 after-turn。saved/skipped 都必须调用 SAVE_NOTICE；不能把
+skipped 绕过 part。
+normal path 只有 completed AgentResult durable 后才能交给 source；此前 error/cancel/interrupted 也必须以同一
+TurnStart finish 一次。finish 失败没有 AgentResult，sender=0。
+saved notice 是 at-least-once durable fact；skipped notice 只对本 Turn sealed generation 做 live checkpoint。
+consumer 通过普通 `SAVE_NOTICE.add` 注册 ready/accept，并以
+`(session_key, turn_id)` 拥有幂等 receipt。全部 frozen recipients 并发 accept、全部等待并聚合
+错误，name 只作身份；saved 时 sessions 按 recipient 分别持久化 done，全部 done 才终结 notice，失败项保持
+pending 并阻止 delivery。插件 commit 后、recipient done 前崩溃允许 at-least-once 重放。skipped failure 也
+阻止当次 delivery，但不声明 outbox replay；part 用自己的 prepare + SessionRead.status 恢复。每只 SavePart 注册同名 SwitchPart，
+自己的 frozen pending recipient 未清空时拒绝 remove/replace；sessions 有任一 pending outbox 时拒绝 writer
+switch，新安装的 part 不接收安装前 notice，新 generation 也不能解释旧 notice。
+boot 顺序必须是 stable/session ready、agent-loop crash terminal、reply receipt、SavePart/saved notice、
+source delivery；任何前一步未完成时 sender call=0。
+Akasha 以 TurnSaved durable enqueue projection job，再用 SessionRead 投影已提交 Turn；failed/cancelled/interrupted prepare
+只由窄 `TurnEnded` identity + SessionRead 收敛，不再读取总 TurnCommitted 或 sessions.db。
+
+`SessionRead` 只公开 `message(id) -> MessageView | None`、`turn(TurnSaved) -> TurnView`、确定性
+`history(TurnSaved) -> HistorySize(turn_id, messages, chars, tokens)` 与
+`status(session_key, turn_id) -> TurnInfo | None`，不得返回 dict、extra
+或任意 repository。MessageView 只有 message_id、optional client_id、seq、`user|assistant` role、typed `normal|context` kind、
+权威 content 和 time。TurnView 只有 session/turn/channel/chat/start identity、按 seq 排列且与
+TurnSaved.message_ids 完全相同的 MessageView tuple 与 EffectMode。TurnInfo 只有 session/turn、
+save 时已验证并 durable 冻结的 optional channel、
+`running|completed|failed|cancelled|interrupted|skipped` result、`none|saved|skipped` save 与 ended_at；save=saved
+带同一 TurnSaved，save=skipped 证明明确 no-save，两者 channel 必须非空；save=none 的 channel 可以为空，
+也不能猜成失败。这样 Akasha、Emotion、Proactive
+和 Status 可以取得已提交正文、ordered user ids、assistant id、是否保存 user、时间与 MessageKind，而 Observe
+的 tool/model/retry stats 仍来自真正 owner 的窄 fact。拿 TurnSaved 查询时缺 row/message、seq 或 identity 冲突、
+非法 role/kind/effects、terminal 倒退或 status/save/reply 组合冲突都是持久化损坏并 fail-loud。已知 running，
+或 terminal failed/cancelled/interrupted/skipped 在 SESSIONS.save 前结束，合法返回 save=none；completed
+terminal、saved_notices 或本 turn 的已提交 Message 证明 save 已发生，此时缺 turn_saves row 才是损坏。
+只有未知 session/turn 返回 None，不能用空 tuple 或
+默认值掩盖。
+
+不得用新的总 Turn bag 替代 TurnCommitted。agent-loop 在 provider/tool 前用 PLG-014 `parallel` 发布一次
+`InputBatch(turn_id, messages)`，Emotion durable prepare 完整 tuple 后才能继续；这是真正的 business
+checkpoint。agent-loop 发布 LoopStep/RawReply，provider-input 发布 InputSize，system-prompt 发布 PromptSize，
+sessions 发布 HistorySize，models 发布 ModelUse，tools 发布 ToolUse，reply-output 发布 ReplyText，Meme 发布
+MemeUse；
+这些 telemetry fact 全部使用 PLG-014 `observe`，普通失败只形成 Incident，不改写 ReAct、Session、delivery
+或 terminal。HistorySize 必须在 SaveResult 后从当时 provider-facing committed history 投影计算：saved 包含
+本轮新 Message，skipped 使用未改变历史，chars 保持
+`len(json.dumps(history, ensure_ascii=False))`，tokens 保持 `0 if empty else max(1, chars // 3)`。PromptSize
+保持当前 `sum(last_debug_breakdown.est_tokens)` 口径。
+Observe 只在 turn-local memory join，在 SAVE_NOTICE 成功后收到 live SaveResult 并恰好调用现有非阻塞 writer
+一次；它不是 SavePart，不写 per-fact staging，queue full/error/crash 仍可像现有 TurnCommitted 路径一样丢
+trace，且不阻止 delivery。旧 TurnTrace 的 source 三分支、raw/clean reply、meme、tool chain、history/prompt
+size、ReAct input、model output/cache 每个非空字段都必须映到真实 owner 并逐字段对比；history_window 继续
+为 None。required fact 缺失时丢整条 trace 并记 Incident，不写 partial/fake row。
+
+Proactive Feedback 只在 TurnView 同时含 exact persisted user 与 assistant 时 durable enqueue；user-only 与
+skipped 明确 no-op。不得在 assistant identity 缺失时按正文从旧 Session history 猜另一条 assistant；重复
+assistant 文本必须仍绑定本 Turn exact id。
+
+Emotion 以 InputBatch durable staging 保留本轮全部输入正文；SavePart.accept 再与 TurnView join。这样
+SaveChoice.user=false 时 explicit quote 仍可工作，只有 persisted user 才更新 presence；Wake selection 仍在
+TurnWait.result 返回后 settle，所以 run 内的 save notice consumer 保持旧的 selection-before-settle 时序。
+SaveResult.skipped 同样调用 part，且 part ready 能以 SessionRead.status 收敛 crash；Input content 与 selection
+都不得扩进 TurnSaved。Emotion 还观察 TurnEnded：failed/cancelled/interrupted 或 save=none terminal abort InputBatch
+prepare；observer failure 不丢 durable receipt，boot ready 仍能收敛。
+
+`TurnEnded(session_key, turn_id, status, ended_at)` 只有 completed/failed/cancelled/interrupted/skipped 五种 status，由
+agent-loop 在 sessions 已 durable 写入同一 terminal 后、TaskControl release 前用 PLG-014 `observe` live 发布一次。它没有 reply、
+tool、model、error bag 或 cleanup callback。Akasha/Shell consumer 必须在返回前 settle 自己的幂等 receipt，
+或 durable 接受 recovery work；listener failure 只记录 cleanup_degraded，不改写已提交 terminal，最后仍
+release task。进程崩溃时各 owner 只扫描自己的 pending 并以 SessionRead terminal identity 收敛，不建立
+TurnEnded 总事件重放。
+
 Core 只拥有 artifact、generation、完整 Root、readiness、stable/latest、exact snapshot lease、原子
-publication、drain、恢复日志和三个领域中性执行原子：绑定单一 `ServiceKey` 的 `ServiceCall`、
-只能取得自身 exact Root 的 `RootScope`，以及按 opaque scope key/task key 保存 task、
-exact lease 与 cancel callback 的 process-wide `TaskControl`。每个 snapshot 外
-host 只获得完成自己任务的一只窄 `ServiceCall`，插件不能创建 `ServiceCall`。公开 `call` 不接受 selector、
+publication、drain、恢复日志和五个领域中性执行原子：绑定单一 `ServiceKey` 的 `ServiceCall`、
+把同样窄的 exact Service 跨进程 pin 到 receipt 完成的 `ServiceHold`、只能取得自身 exact Root 的 `RootScope`，以及按 opaque scope key/task key 保存 task、
+exact lease 与 cancel callback 的 process-wide `TaskControl`；`RootSwitch` 只协调跨 Root 不能同时存在的
+共享 owner。普通插件以 `ROOT_SWITCH.add(ctx, SwitchPart)` 注册唯一 name；part 只闭包持有自己资源的窄 grant，
+只实现 `stop`、`leave`、`enter`、`start` 和 `recover`，不能看到别的 part 或得到跨 Root 总权限。每个 snapshot 外
+host 只获得完成自己任务的一只窄 `ServiceCall` 或 `ServiceHold`，插件不能创建或改绑它们。公开 `call` 不接受 selector、
 snapshot ID 或 plugin ID；普通 host 的 acquisition policy 在构造时固定为 stable。attached validation
 child 只使用 Core 根据父 Turn 与 candidate identity 铸造的一次性 exact lease，host 和插件不能选择
 latest。`ServiceCall` 只能在该 lease 内等待一次调用，不得理解 Message、Turn、Session、ReAct、工具名或来源，
-也不得为缺失 Service 提供私有 fallback。Root 退休后不得改投新 stable；`TaskControl`
+也不得为缺失 Service 提供私有 fallback。ServiceHold 构造时固定 ServiceKey 和由 sealed caller
+capability identity 铸造的不可伪造 HoldKey；两个 holder 调同一 Service 也不能相互 pending/call/drop。
+它在持有 live exact lease 时 reserve 全局 HoldId，Core journal 冻结 HoldKey、sealed ServiceKey 与 exact
+Root/snapshot/artifact/generation 并立即 pin；owner 自己的 ledger 再冻结
+HoldId、source generation、Channel generation/config、target 与 stable delivery key，然后 activate。Core 不读
+source、payload、Channel config/binding、delivery 或 outcome。hold 与 live lease 一起阻止换代。source 以
+`done|abort|unknown` 结束；done/abort 必须先 durable 写 outcome，再 drop，最后删 row；unknown
+保留 hold 与 degraded。reboot 只按 exact old Root 和冻结 Channel config 创建新的 ephemeral binding/token，
+不持久化或复活旧 binding。artifact 缺失时 degraded 且 sender=0，不得 fallback current stable。Root
+退休后不得改投新 stable；`TaskControl`
 不得理解 Agent、Turn、Session、来源或业务状态，只允许同一 opaque scope 原子 claim、按已知 key
 取消和 terminal release。snapshot 包住完整 ReAct Turn 只冻结这次组合，不赋予其中任何插件特权。
+attached validation child 必须用这只 exact candidate ServiceCall 调普通 AGENTS，以 candidate identity 构造
+TurnSource 和 typed TurnRequest；同一 `call(action)` 内完整走 accept、run 或 run 前 finish、等待 AgentResult，
+AgentResult 已是 Agent terminal 且 TaskControl 已 release；有 output 时 source adapter 仍在同一 ServiceCall
+的外层 exact Root lease 内调用 recording Channel 并等待 ACK，之后 action 才返回并释放 ServiceCall lease。
+它只使用 candidate 临时
+sessions 与 recording Channel，PastRead/SaveChoice 由 fixture 显式给出，不能触碰正式 workspace 或真实
+sender。这是 publication validation，不是新的产品 source 或特权 Agent API。M2c 后 passive 只由 conversation
+送 Channel；Control 只返回/stream control result；Scheduler 用自己的 job delivery；Wake 用自己的 durable
+delivery；Subagent sync 返回 parent Tool、background 用自己的 continuation；attached 只用 recording Channel；
+其他 source 没有明确 sink 就不发送。M2c 必须在同一批切完这些 caller 后删除 concrete Agent direct dispatch，
+不得保留 `dispatch_outbound` 或默认 sender；M7b 只把已经成立的 passive source/sink 搬进普通 conversation
+plugin，不改变 delivery owner 或 fence。
+durable source 重启时先恢复自己的 delivery row；若 inbound/handoff 仍在但 row 未 prepare，必须以同一
+TurnSource ref 和原 typed request 重新 accept/run，从 terminal SESSIONS.result 取得 exact AgentResult 后才可
+创建 row。不得从 Message、TurnSaved、notice 或正文猜 output；ACK 前不得删除 handoff。固定 crash fixture
+落在 AgentResult commit 后、source prepare 前。每个 durable source 必须在 admission 时按
+reserve→source row→activate 建立 hold；row 冻结 HoldId、source generation、Channel generation/config、
+target 与 stable delivery key，不冻结 live binding/token/socket。reserve 无 row 就由该 HoldKey owner 确认后 drop，row 未 active 就
+activate。reboot 只用 exact old Root 与 frozen Channel config 新建 binding，缺 Root/artifact/config 就
+degraded、sender=0，不得 fallback current stable。fixture 在 gap 中尝试换代并证明被阻止，随后 reboot
+provider/tool/save/observer=0、send/ACK=1，先 done、再 drop、最后 delete 才可换代；accept/run/
+cancel/no-sink/projection failure 均必须有 done/abort 或 unknown 的可恢复证据。M2c 是把一名旧
+agent-loop sender 原子交给所有既有 source sink 的
+不可拆 cut；它同批物理删除两个 dispatch/return module、direct dispatch 与 flag，不是双路径或多 owner。
+
+Core 必须在 publication gate 内从 old/new sealed registry 生成 closed plan：只纳入 owner
+artifact/generation identity 改变的 SwitchPart；阻止新 lease，并先等待每只 changed old owner generation 的
+lease_count=0 且 hold_count=0。snapshot/ServiceHold 对其包含的每个 generation 计数，所以这也覆盖尚未调用该 part 的旧 Turn与跨进程 pending receipt；同 identity
+part 复用，无 shared owner 的普通 generation 不必 drain。随后按 name 完成全部 old stop/leave，再完成全部
+new enter/start；new start 只表示 ready，gate 仍关闭。只有 stable identity 与
+terminal 写入同一 crash-safe publication record 后才能开放新 lease。失败时在 gate 内逆序恢复 old。
+动作前的 journal 必须 pin old/new 两代 immutable artifact、两边 participant identity、当前 step 和 terminal；
+terminal 前崩溃只收敛 old active/new inactive，terminal 后只收敛 new active/old inactive。即使 install、remove
+或 replace 后某一边当前 stable 已无该 part，也必须从 journal pin 重建 recovery-only closure；缺 artifact、
+identity 或 recover 失败时保持 degraded 且不开放 lease。sessions 的单 SQLite writer 必须注册自己的
+SwitchPart；Core 不得按 sessions、skill link、Activity、Channel、command 或其他 participant 名称分支。
 
 骨架插件必须使用与外部 v3 插件相同的 loader、Context、Fiber、Effect、PluginRuntime、generation、
 workspace file grant 和 disabled builtin 规则。`sessions` 是 `sessions.db` 的唯一正式 writer；
 `agent-loop` 向 `agents` 注册 factory。Root 在 publication 前必须拒绝缺失 Service、重复 factory、
-重复 `model-input` provider、重复 writer 和依赖环。Core/Bootstrap 不得按这些插件或 `tool_search`、`message_push`、Shell、
+重复 context name、重复 `provider-input` provider、重复 writer 和依赖环。Core/Bootstrap 不得按这些插件或 `tool_search`、`message_push`、Shell、
 模型、记忆和 Channel 名称分支。
 
 现有 before/after phase 套件全部退役。不预建 `before-step`、`after-step`、`ReplyEdit`、万能 middleware 或
-可变总 context。system section、model input、tool view/run、committed fact 和 outbound view 各归自己的 owner。
+可变总 context。system section、context Message、provider input、reply mark、tool view/run、committed fact 和 outbound view
+各归自己的 owner。临时 retrieval/runtime view 不得借 `context-input` 或 Inbox 反写权威 Session Message。
+
+`ToolOutcome(call_id, status, content)` 只表达一次普通工具调用的 identity、`done|failed|cancelled` 和给模型
+看的 immutable content；content 只允许普通文本或已验证的 typed `MediaItem`。它不得携带任意 fact、metadata、
+delivery、attention、callback 或插件数据。`TOOLS.run` 返回 closed
+`ToolUse(turn_id, name, args_json, outcome)`；outcome 是同一 ToolOutcome，不复制 call/status/content。agent-loop
+只读 `use.outcome.status/content`，并累积 exact ToolUse tuple 给 ReplyCall；tools 用 typed observe 发布同一
+对象，observer failure 不能删掉或改写返回值。工具拥有的外部效果由该 Tool 注入对应 owner 的窄 Service 并在
+execute 内完成；agent-loop 不按 tool name 或 fact type 分支。`message_push` 因而直接
+调用 committed Channel 发送 Service，完成自己的独立 outbound Turn 后返回普通 receipt content；请求
+mobile confirmation 的 Tool 直接调用 Mobile output projection Service。调用参数和真实 receipt content
+仍由 tools 的私有 execution trace 保存，不把 trace 变成跨 owner public bag。通用 `ToolInput` 只含所有
+Tool 都成立的 validated args、call/turn/source identity 与 cancellation；send mode、commit role 和 delivery
+policy 必须由具体 Tool 注册时 inject 的窄 sender 闭包固定，agent-loop 不得填写。
 
 迁移不使用生产流量灰度、运行时 shadow、旧新双执行、双写或双 sender。每次只切换一个 owner：新路径
 成为唯一正式路径并通过关键 oracle 与两个独立 review 后，必须在同批删除 deprecated 旧代码、配置、
 导出和测试替身。最终不得保留 alias、adapter、feature flag、legacy mode 或 fallback。isolated candidate
 只验证拓扑、权限和无正式副作用的行为，不接生产流量，也不成为第二名正式状态 owner。
+未超窗行为对比只批准 M3e 的三项 prompt shape 修正：Akasha memory 从误入 system 改到 context、旧
+after-current hints 改到 current 前、每条 context 显示自己的 source 与固定 `trust=derived`。超窗时另
+批准 CTX-002 的 extra → repeat → prompt history projection，并逐项记录 lane、name、DropLevel、
+size 与剩余 lane。除此之外 provider payload 字段必须相同，Session write set、tool trace、事件、发送、
+错误/取消和能力结果必须等价。
+
+Core 迁移停靠点只允许逐项入账、禁止新增 consumer 的九类 `DEPRECATED(EXTERNAL)` block：Citation/Meme
+prompt section；Emotion context text；GitHub Watch turn metadata；Citation/Meme reply protocol 与私有
+OldReply；normal agent skill roots；Emotion drift skill roots；Shell rewrite 后 authorize；Session
+save result 后、Channel delivery 前恰好一次生成旧 TurnCommitted；Status Commands 的旧 message-frame decoder。
+每类只保留 exact stable consumer 的原 import 与唯一 adapter call site，不开放通用 Service 或名单。
+现行 `COMMANDS` public contract 是普通 Service，保持不变，不建 command bridge。M9 必须以当时 hua-home
+exact stable generation 为真源迁移全部 live 外部源码并重装；最后一名 consumer 离开时同批删除 block、
+旧 event/type/export、parser 字段和离线 fake。最终不得留下 compatibility alias、adapter、feature flag、
+legacy mode 或 fallback。
 
 ## 11. Workspace、文件和进程
 
@@ -943,7 +1294,7 @@ pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
 
 ### CTRL-003 Programmatic 验证可选择 snapshot 且默认不学习
 
-新 programmatic session 可以在严格类型边界显式选择 `stable` 或 `latest`，默认使用 stable。新 session 默认持久化 thread、messages、tool items 与 terminal，但它的 Turn scope 声明 `effects.post_commit=suppress`：Session 仍记录客观事实，Akasha 等派生投影不消费它；Prompt 是否读取既有记忆与 Tool 是否可用分别由 `disabled_prompt_sections` 和 `ToolGrant` 决定。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
+新 programmatic session 可以在严格类型边界显式选择 `stable` 或 `latest`，默认使用 stable。新 session 默认持久化 thread、messages、tool items 与 terminal；它的 `TurnRequest.effects=EffectMode.skip` 让 Session 仍记录客观事实，但 Akasha 等派生投影不消费这个 Turn。是否读取 Session、是否构建 memory system section、是否构建 memory context part 和 Tool 是否可用，分别只由 `past_read`、`skip_sections`、`skip_parts` 和 `ToolGrant` 交给各自 owner；Prompt memory 同时存在于 system 与 context 时必须显式选择两条独立 skip lane。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
 
 ## 13. 独立验收要求
 
