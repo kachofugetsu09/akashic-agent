@@ -766,8 +766,8 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 
 ### PLG-018 Agent 内骨架由普通插件组合
 
-一次 Agent 工作的内骨架由 `sessions`、`models`、`tools`、`system-prompt`、
-`session-projections`、`agents` 与 `agent-loop` 七个普通插件组成。七个表示内骨架的最小变化轴，
+一次 Agent 工作的内骨架由 `sessions`、`models`、`tools`、`prompt`、
+`session-view`、`agents` 与 `agent-loop` 七个普通插件组成。七个表示内骨架的最小变化轴，
 不是整个系统只能安装七个插件；Channel、Command、Scheduler、Wake、Subagent、Compaction、
 Memory、Tool Search 与 Shell 等能力继续作为普通插件注入这些 Service。
 

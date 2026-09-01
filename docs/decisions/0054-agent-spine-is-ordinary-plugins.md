@@ -16,7 +16,7 @@
 被动链仍要先经过一条 Core 私有控制流。
 
 DeepSeek Harness 的可复用部分不是七个特权组件，而是一条很小的依赖骨架：agent loop 只组合
-agents、sessions、LLM、tools、system prompt 和 session projections。Akashic 已经拥有比它更强的
+agents、sessions、LLM、tools、prompt 和 session view。Akashic 已经拥有比它更强的
 持久化、候选隔离和 snapshot publication；缺口是让 snapshot 内普通 Service 成为正式调用入口，
 不是再复制一套插件系统。
 
@@ -27,9 +27,9 @@ Akashic 的 Agent 内骨架由七个经同一 v3 loader 装载的普通插件组
 1. `sessions`：唯一拥有 Session、Message、Turn 和附件等权威持久事实及窄事务端口；
 2. `models`：唯一拥有 provider、模型目录、角色选择和一次 Turn 的冻结执行绑定；
 3. `tools`：唯一拥有工具注册、每 Turn 可见集合、执行、授权结果和结构化工具事实；
-4. `system-prompt`：唯一拥有有序 Prompt section 组合，不拥有 Session 或模型调用；
-5. `session-projections`：唯一拥有从 Session 快照派生 provider/展示/提交后事实的注册表，
-   不建立第二份权威 history；
+4. `prompt`：唯一拥有有序 `PromptSection` 组合，不拥有 Session 或模型调用；
+5. `session-view`：唯一拥有从 Session 快照构造 model-facing 临时只读 view，
+   不建立第二份权威 history，也不拥有展示、保存或提交后事实；
 6. `agents`：唯一拥有 agent registry、Turn admission 规则、取消/terminal 领域语义和 runner slot；
 7. `agent-loop`：实现一次直接 ReAct 算法，注入前六项并向 `agents` 注册 runner。
 
@@ -46,8 +46,8 @@ sessions ───────────────► agents ◄────
                             ▲                      ▲
 models ─────────────────────┼──────────────────────┤
 tools ──────────────────────┼──────────────────────┤
-system-prompt ──────────────┼──────────────────────┤
-session-projections ────────┴──────────────────────┘
+prompt ─────────────────────┼──────────────────────┤
+session-view ───────────────┴──────────────────────┘
 
 Channel / Command / Scheduler / Wake / Subagent
                     │ public Service
@@ -100,13 +100,17 @@ callback 通知旧 task。新 generation 不接管旧插件的业务状态，也
 ReAct 的 provider/tool 迭代、工具 batch 结算、max-iteration、stream 与取消检查是一个直接算法，
 留在 `agent-loop` 内，不为每个步骤各造插件。独立变化轴通过领域 Service 组合：模型选择由
 `models`，工具发现由普通 Tool Search 插件调用 `tools` 的 catalog/grant，Prompt facts 由
-`system-prompt`，提交与持久投影由 `sessions`/`session-projections`，发送由 Channel/Delivery，
+`prompt`，model-facing history view 由 `session-view`，提交由 `sessions`，发送由 Channel/Delivery，
 Shell owner cleanup 由 Shell 插件自己的 Turn terminal listener 负责。
 
 现有 `before_turn`、`before_reasoning`、`before_step`、`after_step`、`after_reasoning` 和
-`after_turn` 总 phase 不是目标公共模型。迁移后只保留 owner 明确的领域接入点，例如 Prompt
-section、provider request prepare、tool authorize/result、Turn committed 和 outbound projection；
-不能用一个可任意改写总状态的 hook 代替 Service 所有权。
+`after_turn` 总 phase 不是目标公共模型。迁移后只保留 owner 明确的领域接入点，例如
+`PromptSection`、request prepare、tool check/result、`TurnSaved` 和 outbound view；
+不能用一个可任意改写总状态的 hook 代替 Service 所有权。外部 consumer 只影响迁移顺序，不决定
+接口是否保留：immutable 且 owner 明确的事实才可以 `keep`；只把 dataclass 标成 frozen，而内部仍
+装有 mutable list/dict 或多个 owner 的总 payload，仍必须 `move`。mutable ctx、metadata bag 和内部
+编码也必须 `move` 或 `remove`。Core 内部切换后，旧 public surface 只允许作为有 exact consumer 和删除阶段的
+migration block；外部源码迁完的同一批必须物理删除。
 
 ## 迁移与回滚
 
@@ -117,7 +121,9 @@ section、provider request prepare、tool authorize/result、Turn committed 和 
 每批先给即将退役的 owner 明确 `deprecated` 标记和零新增 consumer 约束，再把正式调用者一次
 切到唯一新 owner。关键测试通过、两个独立 Terra xhigh review 清除 P0/P1，且独立 Terra xhigh
 name review 得到 `NAME PASS` 后，立即物理删除该批
-旧实现、分支、配置和测试替身。最终不保留 alias、adapter、feature flag、legacy mode 或 fallback。
+旧实现、分支、配置和测试替身。外部源码 consumer 阻塞的旧 public surface 必须显式登记为
+`DEPRECATED(EXTERNAL)`，且 Core 内部零 consumer；它不属于目标设计。跨仓收尾后不保留 alias、
+adapter、feature flag、legacy mode、fallback 或 migration block。
 
 回滚只选择上一个完整 Git commit、不可变 generation 和执行前备份。已经提交的 Session 行、
 已发送消息、远程调用或文件写入不因代码回滚而伪装撤销；需要恢复的独占 writer 先停 admission、

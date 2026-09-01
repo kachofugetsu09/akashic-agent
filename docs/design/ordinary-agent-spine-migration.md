@@ -112,6 +112,88 @@ GitHub artifact 的 16 个外部插件是：
 `github-watch/scripts/core_v3_gate.py` 的 `FakeConversationRuntime` 只属于离线 Gate，不是 runtime
 consumer。后续每个 public API 删除都必须对当时 `hua-home` artifact 重新查询；本段不是永久豁免。
 
+consumer 只决定迁移顺序，不决定设计好坏。每个外部接入点都要先按最终模型独立判断：
+
+- `keep`：接入点本身同时满足 owner 明确、deeply immutable、权限窄和单一变化轴；consumer 可原样继续。
+- `move`：能力要保留，但当前入口暴露可变总状态、metadata bag、phase 顺序或另一 owner 的实现细节；
+  先建立新入口，最后迁 consumer 并删除旧入口。
+- `remove`：能力和入口都没有独立 owner 或现实用途；consumer 一起删除。
+
+“线上正在使用”不能把 `move` 或 `remove` 升级成 `keep`。反过来，“零 consumer”也不能证明一个
+新接口值得存在。最终判断只看 owner、变化轴、权限和失败语义。
+
+### 1.5 外部接入点迁移账本
+
+以下判断基于 2026-09-01 `hua-home` stable artifact；每个后续阶段都要重新核对 live generation：
+
+当前 exact artifact commit 是：Citation `a886c74c55c4ef400ecd81451eb84b0970b60869`、Meme
+`c185ea7a3847d67a3c61ede9819d6a94636d69c1`、Emotion
+`d828fd7ec97e027bc1ee4a39e5501a2cf25296a2`、GitHub Watch
+`b9266ab3ca9932c074a6d91cf48ab69691bcf1ce`、Observe
+`09214c23f287f659eee6280706208b9ba7d2ed13`、Proactive Feedback
+`d9d90fd4d3027d444091fd6a38453c33f372b7ed`、Status Commands
+`8d119e8cfa53bd91e4dd1e2d4dcf67edfe047cb4`。这些 commit 只固定本次审计输入；M9 前仍以当时
+`hua-home` stable pointer 重查，不能把本清单当成永久事实。
+
+| 当前接入点 | live consumer | 判断 | 最终入口 |
+|---|---|---|---|
+| `PROMPT_RENDER_EVENT`、可变 `PromptRenderCtx`、`PromptSectionRender` | Citation、Meme | `move` | `Prompt` 接受普通 `PromptSection` contribution |
+| `CONTEXT_PREPARED_EVENT`、`BeforeTurnCtx.extra_hints` | Emotion | `move` | context target 的 `PromptSection` contribution |
+| `AFTER_REASONING_PREPROCESS_EVENT`、`AFTER_REASONING_CLEANUP_EVENT`、可变 `AfterReasoningCtx` | Citation、Meme | `move` | `agent-loop` 按顺序应用窄 `ReplyEdit`；不得暴露完整 Turn 总状态 |
+| `AFTER_TURN_COMMITTED`、`TurnCommitted` 总 payload | Emotion、GitHub Watch、Observe、Proactive Feedback | `move` | sessions 只发布小而 immutable 的 `TurnSaved`；诊断由原 owner 单独发布 |
+| `is_context_frame` 与 provider dict 编码 | Status Commands | `move` | sessions 拥有 typed `MessageKind`，`SessionRead` 返回 typed `MessageView` |
+| `persist_assistant_metadata["cited_memory_ids"]` | Citation | `move` | Citation 自己的 `MemoryIds` ledger；Core 不新增通用 data bag |
+| Session metadata `skip_memory_retrieval` | GitHub Watch | `move` | 每次 Turn 显式传 `PromptUse`，不保存成 Session policy |
+| Session metadata `source/repo/item` | GitHub Watch | `move` | github-watch 自己的 job ledger，不进入 Session metadata |
+| `PromptRenderInput`、旧 phase frame/slot、`ConversationRuntime` fake | 仅仓库或外部离线 Gate | `remove` | 新 Service fixture；不保留 runtime alias |
+
+`move` 项允许在 Core 阶段保留一个清楚标记的 live migration block，只为账本中的 exact external
+consumer 服务；它不是目标设计，也不能新增 consumer。Core 内部必须先全部切到新入口。外部源码
+迁移完成的同一收尾批次删除 block、旧公开类型、事件、导出和测试。全部 `move/remove` 清零前，
+整个迁移不能宣称最终完成，Core Draft PR 也不能作为“干净终态”合并。
+
+`TurnSaved` 的最终合同现在锁定为
+`TurnSaved(session_key, turn_id, message_ids, reply_id, saved_at)`。所有字段及 `message_ids` tuple 都是
+deeply immutable；事件只在 sessions 原子提交成功后发布。它不增加 channel、正文、reply、tool、
+model、prompt、统计、展示或 `extra`。GitHub Watch 可直接使用 identity；Emotion 和 Proactive
+Feedback 以 identity 调窄 `SessionRead` 读取已保存的 typed `TurnView`。
+
+Observe 不再等待一只总事件，也不新增 `*Log` 总袋子。算法进行时：`prompt` 只发
+`PromptSize(turn_id, tokens)`；每次 provider call 由 `models` 发一条 immutable `ModelUse`；每次
+tool call 由 `tools` 发一条 immutable `ToolUse`；每次 ReAct step 由 `agent-loop` 发一条 immutable
+`LoopStep`。每种 fact 只含本 owner 的标量、tuple 或 immutable value。最后 sessions commit 并发
+`TurnSaved`，作为本轮 facts 已齐的 fence。Observe 以 `turn_id` 在自身 turn-local state 中 join，
+并从 `SessionRead` 读取已保存正文；无 `TurnSaved` 的失败或取消 Turn 不伪装成已保存。
+
+这些小事实的字段也在实现前锁定：`PromptSize(turn_id, tokens)`；
+`ModelUse(turn_id, call_id, usage)`，其中 `usage` 复用 models 的 immutable `ModelUsage`；
+`ToolUse(turn_id, call_id, name, args_json, result, status)`；
+`LoopStep(turn_id, step, text, call_ids, final)`。`args_json` 是已验证参数的 immutable 编码，
+`call_ids` 是 tuple。没有 dict、`extra`、跨 owner payload 或“以后可能用”的字段。
+
+旧 metadata 三组键分别这样结束：
+
+- Citation 的 `cited_memory_ids` 变成 Citation 私有的 immutable `MemoryIds`，不进入 Core public
+  API。Citation 的 `ReplyEdit` 只改 reply，并在 sessions commit 前把 pending row 写入自己的
+  plugin-data ledger，key 是 `turn_id`。`TurnSaved` 后 Citation 用 `reply_id` 完成 row；若进程在两步
+  之间崩溃，Citation boot 时用窄 `SessionRead` 按 `turn_id` 判断已保存、失败或仍 pending，再完成或
+  丢弃自己的 row。M9 从旧 assistant metadata 一次性导入历史 Citation rows；之后只读 Citation
+  ledger，旧 key 零 consumer，不留 dual read。Core 不认识 citation，也不新增通用 data bag。
+- `skip_memory_retrieval` 不再是 durable Session metadata。GitHub Watch 每次 start Turn 时传
+  immutable `PromptUse`，只关闭 memory 拥有的 section；`prompt` 只按该 request 过滤本轮 section。
+  其他 Turn 不继承这项 policy。
+- `source/repo/item` 属于 github-watch job identity。GitHub Watch 在 `AGENTS.start` 前写自己的 durable
+  job ledger，start 失败也由该 ledger 记录；运行时只传普通 session/turn identity。M9 从旧 Session
+  metadata 一次性导入仍有效 job，之后插件只读自己的 ledger，sessions 不再认识 GitHub 字段。
+
+上述 M9 导入遵守 messages 只追加边界：旧 `extra.cited_memory_ids` 和 GitHub Watch metadata 作为
+不再解释的历史字节保留，不 UPDATE/DELETE 既有 message。这里的“旧 key 零 consumer”只指代码面
+零读取，不授权清洗或改写历史行。
+
+`MessageKind` 只表示普通 message 或 context message 这一条轴，不包含 role、内容编码或 delivery
+状态。sessions 是唯一 decode owner；`SessionRead` 返回 typed `MessageView`。旧 DB marker 只在
+sessions 的存储 adapter 内解码，外部插件和其他 Core 模块都不能 import `is_context_frame`。
+
 ## 2. 六岁小孩版
 
 现在像一辆玩具火车：车头里同时焊死了电池、方向盘、喇叭、货箱、售票员和清洁刷。换一只
@@ -124,13 +206,13 @@ consumer。后续每个 public API 删除都必须对当时 `hua-home` artifact 
 │ sessions │               │ models   │
 └──────────┘               └──────────┘
 
-┌──────────┐  使用工具      ┌──────────────┐  拼系统提示
-│ tools    │               │ system-prompt│
-└──────────┘               └──────────────┘
+┌──────────┐  使用工具      ┌──────────┐  拼提示词
+│ tools    │               │ prompt   │
+└──────────┘               └──────────┘
 
-┌────────────────────┐  把故事投影成这次要看的页面
-│ session-projections│
-└────────────────────┘
+┌──────────────┐  把故事变成大脑这次要看的页面
+│ session-view │
+└──────────────┘
 
 ┌──────────┐  管“这次工作是谁、能否取消、何时结束”
 │ agents   │
@@ -203,7 +285,7 @@ generation 或 recovery owner。
 | 已核对事实 | 当前 passive 文件按工具名识别 `tool_search`、`message_push`，AgentLoop 按名称/类型识别 Shell |
 | 设计推断 | 一个泛型 snapshot Service 调用边界足以让 snapshot 外入口进入普通 `agents` Service |
 | 设计推断 | runner slot 让 `agents → sessions` 与 `agent-loop → agents + 其余服务` 保持无环 |
-| 实施中核对 | 每个旧 phase 的动态外部 consumer；未完成零 consumer 证明前不删除对应接入点 |
+| 实施中核对 | 每个旧 phase 的动态外部 consumer；先判 `keep/move/remove`，consumer 只决定删除顺序 |
 | 实施中核对 | Mobile attention、Meme/Citation 和 attachment 的精确外部 payload；只迁 owner，不改协议字段 |
 
 ### 3.4 当前外部 consumer 风险
@@ -213,11 +295,13 @@ generation 或 recovery owner。
 Scheduler、Wake 与 Subagent，因此该 Core bridge 可以在 M6/M7 内完整替换。
 
 外部 Citation、Meme、Observe、Emotion、Proactive Feedback 和 GitHub Watch 使用
-`AFTER_REASONING_*` 或 `AFTER_TURN_COMMITTED` 等 stable typed event。它们是已有普通 v3 接入点，
-不是 `SCOPED_TURNS` 特权桥，Core 迁移期间必须保持可观察 payload 和顺序。外部 Observe 测试仍
-import 旧 phase frame，GitHub Watch 的跨仓 Gate 仍构造 fake ConversationRuntime；这些是下一阶段
-需要迁移的源码 consumer，不授权本 PR 保留旧 Core 实现、re-export 或测试兼容壳。M8 必须输出
-exact consumer/commit 清单后停下，待外部源码 PR 更新后再做跨仓最终组合 Gate。
+`AFTER_REASONING_*` 或 `AFTER_TURN_COMMITTED` 等入口。“typed”与“已有 consumer”都不自动代表
+正交：可变 `AfterReasoningCtx` 判为 `move`；当前 `TurnCommitted` 虽是 frozen dataclass，却混入
+可变 list/dict、`extra` bag、工具 trace、模型用量和展示字段，也判为 `move`。Core 阶段必须
+保持 live consumer 的可观察行为，但 Core 内部只能走新入口；旧入口以 1.5 的 migration block
+存在。外部 Observe 测试仍 import 旧 phase frame，GitHub Watch 的跨仓 Gate 仍构造 fake
+ConversationRuntime；它们都进入 exact 账本。M8 输出 repo/commit/符号清单并停下，M9 迁外部
+源码后物理删除所有 `move/remove` public surface，再做跨仓最终组合 Gate。
 
 ### 3.5 直接复用与必须退役的资产
 
@@ -231,7 +315,8 @@ exact consumer/commit 清单后停下，待外部源码 PR 更新后再做跨仓
 | SessionManager/SessionStore 的事务和恢复算法 | 行为与测试资产保留，真实实现迁入 `sessions` owner；不包旧 singleton |
 | `PluginScopedTurns` 的 exact root、accepted handle、retired error 语义 | 迁入 AGENTS + `RootScope`；旧 `SCOPED_TURNS` key/bridge 最终删除 |
 | existing ActivityHost/admission-drain 模式 | 用作 `TaskControl` 的实现证据，不复制 Agent 专用 publication plane |
-| AFTER_REASONING/AFTER_TURN 等 stable typed events | 有真实外部 consumer 的公共事实继续保留 payload/order，不保留旧 mutable phase wrapper |
+| committed fact 的一次发布语义 | sessions 只发小 `TurnSaved`；prompt/tools/models/agent-loop 各发自己的窄 immutable fact |
+| mutable phase ctx、metadata bag、编码 helper | 标成 `move`，Core 内部先停用；外部 consumer 迁完后删除 |
 | bootstrap AgentLoop/SessionManager/ToolRegistry construction 与 manager Core-service manufacturing | deprecated 后退役；它们是待删除 owner，不是可长期复用 adapter |
 
 ## 4. 最终能力与唯一 owner
@@ -263,8 +348,8 @@ exact lease，不能由 host 或插件选择 latest。`ServiceCall` 绑定当前
 | `sessions` | Session/Message/Turn/attachment 的 SQLite 事实与事务 | `SESSIONS`: read snapshot、admit/terminal、atomic commit、窄 compaction/attachment/delivery Service | Prompt、模型、工具、Channel 发送、任意删除 |
 | `models` | provider、model revision、role 与 Turn-frozen binding | 现有 `MODEL_DRIVERS`、`CHAT_MODELS`、`EMBEDDINGS`、catalog/settings | Session、Prompt、loop |
 | `tools` | 工具定义、当前 Turn 可见集合、调用结算 | `TOOLS`: register、open turn view、present、authorize、execute；结构化 `ToolOutcome` | Prompt 文案、Session SQL、特定工具策略 |
-| `system-prompt` | 有序 Prompt section registry | `SYSTEM_PROMPT.build(input)` 与 section contribution | persistent history、provider 调用、记忆文件 |
-| `session-projections` | Session 快照的可重建 provider/展示/提交后投影 | `SESSION_PROJECTIONS.prepare/committed` 与窄 contribution | 权威 history、cursor 删除、外部发送 |
+| `prompt` | 有序 Prompt section registry | `PROMPT.build(input)` 与 `PromptSection` contribution | persistent history、provider 调用、记忆文件 |
+| `session-view` | 从 Session 快照构造 model-facing 临时只读 view | `SESSION_VIEW.build(input)` 与窄 history contribution | 权威 history、保存、展示、提交后事实、外部发送 |
 | `agents` | agent registry、Turn admission/取消/terminal 的领域规则 | `AGENTS.start/cancel/read`；runner register slot；typed Turn facts | task/lease 的跨代机械路由、ReAct、模型、工具、Channel 规则 |
 | `agent-loop` | 一次直接 ReAct 的控制流 | 向 `AGENTS` 注册唯一默认 runner；内部 provider/tool loop | 持久 owner、发送、来源枚举、业务插件名 |
 
@@ -309,14 +394,14 @@ foundation providers
   sessions ──► SESSIONS
   models ────► CHAT_MODELS ...
   tools ─────► TOOLS
-  prompt ────► SYSTEM_PROMPT
-  projection ► SESSION_PROJECTIONS
+  prompt ────► PROMPT
+  session view ► SESSION_VIEW
 
 agents injects: SESSIONS
 agents provides: AGENTS + empty runner slot
 
 agent-loop injects: AGENTS, SESSIONS, CHAT_MODELS, TOOLS,
-                    SYSTEM_PROMPT, SESSION_PROJECTIONS
+                    PROMPT, SESSION_VIEW
 agent-loop effect: register(default runner) ── cleanup unregisters
 
 snapshot.sealing: exactly one default runner, every registry frozen
@@ -404,14 +489,14 @@ release lease ────┘
 | 当前特殊点 | 当前位置 | 目标组合 | Core 新增专用原子？ |
 |---|---|---|---|
 | command 在模型前短路 | `AgentLoop._process`、`PassiveTurnPipeline.run_command` | conversation source 注入普通 `COMMANDS`，识别后不创建 Agent Turn | 否 |
-| plugin rollout fact 塞入下一轮 Prompt | `AgentLoop._process` metadata | rollout 插件向 `SYSTEM_PROMPT` 提供一次性 section；事实文件由其声明 | 否 |
+| plugin rollout fact 塞入下一轮 Prompt | `AgentLoop._process` metadata | rollout 插件向 `PROMPT` 提供一次性 section；事实文件由其声明 | 否 |
 | session 模型选择 | `AgentLoop._resolve_model_selection` | models 插件通过 `SESSIONS` 窄 metadata Service 读取/提交，返回 frozen binding | 否 |
 | Shell 按工具名和类 cleanup | `AgentLoop._cleanup_shell_owner` | Shell 插件监听 `agents` 的 Turn terminal，并清理自己拥有的 execution | 否 |
 | Tool Search enable、schema cap、LRU、名称解锁 | `DefaultReasoner` 多处分支、ToolRegistry meta set | Tool Search 普通插件注册普通 tool；用 `TOOLS` 的 catalog search 与 turn-local schema grant | 否 |
 | 未解锁工具的提示文字 | `DefaultReasoner` | `TOOLS.authorize` 返回结构化 denial；Tool Search 插件提供模型可见说明 | 否 |
-| `message_push` 媒体抽取 | tool loop 按名称收集 | 普通工具返回 `ToolOutcome` 的 typed durable items/delivery facts；投影 owner消费 | 否 |
+| `message_push` 媒体抽取 | tool loop 按名称收集 | 普通工具返回 `ToolOutcome` 的 typed durable items/delivery facts；delivery owner 消费 | 否 |
 | `mobile_attention` | Reasoner/Turn result 固定字段 | Mobile output projection 插件消费 typed tool/turn fact并保持现有协议字段 | 否 |
-| Meme/Citation response decoration | after-reasoning/after-turn consumers | `SYSTEM_PROMPT` section + `SESSION_PROJECTIONS`/outbound contribution | 否 |
+| Meme/Citation response decoration | after-reasoning/after-turn consumers | `PROMPT` section + `agent-loop` 的窄 `ReplyEdit`；其他事实归各自 owner | 否 |
 | Skills、memory、hints | before-reasoning phase | 普通 prompt/tool contribution；required Service 显式 inject | 否 |
 | Compaction request gate | provider call seam | 已有普通 compaction 插件向 provider request projection 注册 | 否 |
 | Markdown MEMORY/SELF 写入 | committed checkpoint 后 | 已有普通 markdown-memory 插件 | 否 |
@@ -480,13 +565,14 @@ release lease ────┘
   same-scope claim exclusion、terminal release、错误 task 继承和退休 Root fail-loud。
 - 本批没有被替换的旧 owner，不提前标 deprecated；caller 先作为后续唯一切换的中性前置能力。
 
-### M2 · Prompt 与 Session projection owner
+### M2 · Prompt 与 Session view owner
 
-- 建立普通 `system-prompt`、`session-projections` 插件，先迁已有普通 contribution。
-- 迁 rollout fact、skills/hints 与仓库内 output metadata consumer；现有外部 pure-v3 typed event
-  consumer 若合同已正交则原样保留，确需换公共合同的只记录后续迁移，不改源码。
+- 建立普通 `prompt`、`session-view` 插件，先迁已有普通 contribution；`session-view` 只处理
+  Session/Message 到 model-facing history 的临时只读 view，不接管展示、保存或提交后事件。
+- 迁 rollout fact、skills/hints 与仓库内 output metadata consumer；按 1.5 判断外部入口。保留
+  committed fact 的一次发布语义，但当前总 payload、mutable ctx 与 metadata bag 均标成 `move`。
 - 唯一新 registry 生效后删除对应旧 Core default phase、mutable wrapper 与 metadata bridge；
-  不把仍有外部 consumer 的稳定 typed event 误当兼容壳删除。
+  对 live external consumer 只留下显式 migration block，Core 内部零 consumer，M9 必删。
 
 ### M3 · Tools owner 与特殊工具退役
 
@@ -521,12 +607,21 @@ release lease ────┘
 - 物理删除 deprecated runner、`AgentLoop`、`PassiveTurnPipeline`、旧 ConversationRuntime wiring、
   `SCOPED_TURNS` Core bridge 和 PassiveMessageWorker 私有业务链。
 
-### M8 · 最终收口并停止
+### M8 · Core 收口并停止
 
 - Core/Bootstrap 搜索证明零 Agent/Tool/Session/feature 插件 ID 特判和零旧 consumer。
 - 运行关键场景、全量测试、静态检查、项目 Gate；对最终 topology 和 write set 生成证据。
-- 输出外部 typed-event/test consumer 的 exact repo/commit/符号清单；不为它们新增 Core 兼容层。
+- 输出所有外部 `move/remove` consumer 的 exact repo/commit/符号清单；列出仍在工作的 migration
+  block，不把它们误报成干净设计。
 - Draft PR 保持等待维护者；不开始修改独立外部插件仓库。
+
+### M9 · 外部插件收尾
+
+- 为账本中每个 `move` consumer 修改真实插件源码并走正式安装链；不编辑 cache。
+- 在同一收尾批次删除 Core migration block、旧 public type/event/export 和外部离线 fake。
+- 对当时 `hua-home` active generation 做 zero-consumer 查询，重装插件并跑跨仓组合 Gate。
+- 只有 1.5 中全部 `move/remove` 清零，且没有 alias、adapter、fallback、双路或旧名字，才宣称
+  整个被动链路迁移完成。
 
 顺序只能在证明依赖和风险更低时调整；任何调整都要先更新本合同并重新过 Concept Gate。
 
@@ -545,9 +640,10 @@ release lease ────┘
 7. 重新运行关键测试。删除 delta 若改变调用链或公共面，由两位 reviewer 和 name reviewer 快速复核最终 diff。
 8. 形成一个语义连贯、可独立回滚的 commit，再进入下一 owner。
 
-不把“以后再删”留到 PR 外。唯一例外是本合同明确排除的外部插件源码 consumer；Core public contract
-会先保留到后续外部插件 PR，但不得保留旧 Core 私有实现。若外部 consumer 阻止删除公共面，M8
-必须停止并报告，而不是加兼容壳。
+不把未知的“以后再删”留到 PR 外。唯一暂存项是 1.5 已列出 exact consumer、目标入口和删除阶段的
+external migration block；它必须标成 `DEPRECATED(EXTERNAL): no new consumers; remove in M9`，
+Core 内部不得再调用。若出现未入账 external consumer，M8 必须停止并更新账本，而不是把旧入口
+解释成长期 public contract。M9 完成后不允许留下任何 migration block 或兼容壳。
 
 ## 11. 合格测试
 
@@ -587,6 +683,7 @@ P0/P1 任一非零即 `BLOCK`。2026-09-01 独立 Terra xhigh reviewer 完整复
 
 ## 13. 交接边界
 
-本 PR 最终只交付 Core 仓库内的通用内核、七个普通基础插件、仓库内置 conversation/feature
-组合和旧私有链删除。上面列出的 `hua-home` 外部插件若需要改用新公共合同，记录 exact repo、
-consumer、版本和阻塞点，等本 PR 停下后另开迁移。禁止直接修改 cache 伪造完成。
+本 Core PR 交付通用内核、七个普通基础插件、仓库内置 conversation/feature 组合和旧私有链删除，
+并保留 1.5 中可枚举、不可新增 consumer 的 migration block。它是 M9 前的停靠点，不是最终架构。
+上面列出的 `hua-home` 外部插件记录 exact repo、consumer、版本和阻塞点；Core 阶段停下后另开源码
+迁移。M9 删除 migration block 后才完成整体交付。禁止直接修改 cache 伪造完成。
