@@ -33,12 +33,13 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
   Service 调用、跨进程 exact `ServiceHold`、task control 和跨 Root 共享 owner 的 `RootSwitch`。M2 审计先发现动态 context Message 缺少 owner，又发现 SkillsLoader、PluginSkillHost、
   PluginSkillLinker、host capability、candidate Gate 与 normal/drift 来源仍跨越多个 owner；已按 DSH 的
   registry/source/product 三层拆开并以 hua-home live artifact/目录入账。2026-09-02 整份规格已经重新取得
-  `CONCEPT PASS` 与 `NAME PASS`；M1a 泛型 task 原子已经完成，当前下一批是 M1b Root switch，随后 M1c service hold。
+  `CONCEPT PASS` 与 `NAME PASS`；M1a exact work 与 M1b Root switch 已完成，当前下一批是 M1c service hold，
+  随后 M1d Activity cold start；M1d 同批删除旧 Activity participant，且必须早于第一名业务 RootSwitch consumer。
   之后依次为 M2a agents、M2b agent-loop、M2c source delivery，M3a host-check、M3b skills、M3c skill-files、M3d drift files、
   M3e context-input、M3f system-prompt、M3g provider-input；M4 再按 tools、skill tool、
   Tool Search、push、media、attention、Shell 七批切换，之后是 M5a models、M5b old tail、M6a sessions、M6b reply-output、
   M6c Akasha、M7a loop cleanup、M7b
-  conversation，最后 M8a～M8c 逐名迁 Activity/Channel/command switch，M8d 删除硬编码 table 并停止。
+  conversation，最后 M8a～M8b 逐名迁 Channel/command switch，M8c 删除硬编码 table 并停止。
   每批只切一个 owner，不给 PromptSection、ReplyPart 或 AgentLoop 扩权。M2c 虽同时改多个 caller，却只把一名
   旧 agent-loop sender owner 原子交给已经存在的 source sink；拆开部署必须保留 sender flag，因此禁止拆分。
   本迁移不走灰度、生产 shadow、双执行或双写；M1～M9 每个实现批次在两个独立实现 review 和一个独立 name review 后，

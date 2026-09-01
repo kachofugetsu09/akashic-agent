@@ -222,6 +222,18 @@ class CompositionOverlay:
             listeners=listeners,
         )
 
+    def plugin_topology(self, plugin_id: str) -> TopologyView:
+        """Freeze one dispatched plugin's full Fiber topology."""
+
+        matches = tuple(
+            root
+            for root, owner in self.dispatch_order
+            if owner == plugin_id
+        )
+        if len(matches) != 1:
+            raise RuntimeError(f"composition plugin topology 不唯一: {plugin_id}")
+        return matches[0].plugin_topology(plugin_id)
+
     def topology_identity(self) -> str:
         return self.topology_view().identity
 

@@ -38,6 +38,7 @@ from agent.plugin_composition import (
     BACKGROUND_JOBS,
     TOOL_CATALOG,
     UI_SLOTS,
+    ROOT_SWITCH,
     CompositionOverlay,
     CompositionRoot,
     CompositionSnapshotRoot,
@@ -67,8 +68,15 @@ from agent.plugin_composition import (
     RuntimeStarted,
     RuntimeStopping,
     SnapshotSealing,
+    RootSwitch,
 )
 from agent.plugin_composition.tasks import TaskCancel, TaskControl, TaskStart
+from agent.plugin_composition.root_switch import (
+    _PartEntry,
+    _PartNeed,
+    _PartRef,
+    _freeze_root_switch,
+)
 from agent.plugin_composition.channels import (
     CoreChannelDefinition,
     ChannelRegistrySnapshot,
@@ -137,6 +145,11 @@ from agent.plugins.artifacts import (
     write_pointers,
 )
 from agent.plugins.source_resolver import resolve_plugin_sources
+from agent.plugins.source_hash import (
+    file_hash as _file_hash,
+    file_revision as _file_revision,
+    source_revision as _source_revision,
+)
 from agent.plugins.scope import CleanupFailure, PluginScope
 from agent.plugins.generation import (
     GateCheckResult,
@@ -176,6 +189,13 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotStore,
     SnapshotTransaction,
     get_current_runtime_snapshot,
+)
+from agent.plugins.root_switch import (
+    _SwitchRun,
+    _SwitchTarget,
+    _SwitchWork,
+    _decode_artifact,
+    _pin_lock,
 )
 from bus.event_bus import EventBus
 from infra.persistence.json_store import atomic_save_json
@@ -284,6 +304,35 @@ class _ChannelPublicationState:
     new_runtime: ChannelGeneration | None = None
 
 
+class _RecoveryParts:
+    """Load fresh recovery closures and dispose their isolated Roots."""
+
+    def __init__(self, manager: "PluginManager") -> None:
+        self._manager = manager
+        self._entries: dict[_PartRef, _PartEntry] = {}
+        self._roots: list[CompositionRoot] = []
+
+    async def load(self, ref: _PartRef) -> _PartEntry:
+        current = self._entries.get(ref)
+        if current is not None:
+            return current
+        entry, root = await self._manager._load_part(ref)
+        self._entries[ref] = entry
+        self._roots.append(root)
+        return entry
+
+    async def close(self) -> None:
+        errors: list[BaseException] = []
+        for root in reversed(self._roots):
+            try:
+                await root.dispose()
+            except BaseException as error:
+                errors.append(error)
+        self._roots.clear()
+        if errors:
+            raise BaseExceptionGroup("RootSwitch recovery Root 清理失败", errors)
+
+
 class PluginManager:
     POST_PUBLISH_TIMEOUT_SECONDS = 5.0
 
@@ -370,6 +419,8 @@ class PluginManager:
         self._runtime_services_enabled = False
         self._snapshot_skill_catalogs: dict[str, str] = {}
         self._reload_journal = ReloadJournal(workspace)
+        self._switch_run = _SwitchRun(self._reload_journal)
+        self._boot_switches: tuple[_SwitchTarget, ...] = ()
         self._channel_provider_factory_resolver: (
             Callable[
                 [RuntimeSnapshot],
@@ -1312,11 +1363,14 @@ class PluginManager:
 
         # 1. A prior Core boot cannot retain a live candidate lease.
         await self._composition_generation_host.cleanup_candidates()
+        await self._recover_switches()
 
         # 2. 处理尚未进入 latest_ready 的残留事务，恢复磁盘 pointer。
         recovery = self._reload_journal.pending_recovery()
         self._require_unique_recovery_plugins(recovery)
-        stable_by_id = self._discovered_by_id(installed_selector="stable")
+        stable_by_id = self._use_pins(
+            self._discovered_by_id(installed_selector="stable")
+        )
         latest_by_id = self._discovered_by_id(installed_selector="latest")
         runtime_recovery = tuple(
             action
@@ -1332,7 +1386,9 @@ class PluginManager:
             action for action in recovery if action not in runtime_recovery
         )
         if runtime_recovery:
-            stable_by_id = self._discovered_by_id(installed_selector="stable")
+            stable_by_id = self._use_pins(
+                self._discovered_by_id(installed_selector="stable")
+            )
             latest_by_id = self._discovered_by_id(installed_selector="latest")
         for action in recovery:
             if action.action != "discard_candidate":
@@ -1347,7 +1403,9 @@ class PluginManager:
             self._write_startup_recovery_fact(action, committed=False)
 
         # 3. 根据 durable pointer 判定 promoting 崩溃发生在切换前还是切换后。
-        stable_by_id = self._discovered_by_id(installed_selector="stable")
+        stable_by_id = self._use_pins(
+            self._discovered_by_id(installed_selector="stable")
+        )
         latest_by_id = self._discovered_by_id(installed_selector="latest")
         restore_candidates, restore_committed, restore_discarded = (
             self._classify_reload_recovery(
@@ -1372,6 +1430,335 @@ class PluginManager:
             runtime_receipts,
         )
         await self._restore_latest_candidates(restore_candidates, latest_by_id)
+
+    async def _recover_switches(self) -> None:
+        """Recover every interrupted shared owner before any snapshot can open."""
+
+        targets = self._switch_run.targets()
+        if targets:
+            self._set_pointers(targets)
+        loader = _RecoveryParts(self)
+        try:
+            self._boot_switches = (
+                await self._switch_run.recover(loader) if targets else ()
+            )
+        finally:
+            await loader.close()
+
+    def _boot_source(self) -> str | None:
+        """Return the one prior snapshot identity selected for boot recovery."""
+
+        values = {
+            target.snapshot
+            for target in self._boot_switches
+            if target.snapshot is not None
+        }
+        if len(values) > 1:
+            raise RuntimeError("RootSwitch boot snapshot 选择不唯一")
+        return next(iter(values), None)
+
+    async def _recover_parts(
+        self,
+        snapshot: RuntimeSnapshot,
+        active: bool,
+    ) -> None:
+        """Converge every current boot part before its first admission."""
+
+        parts = snapshot.switch_parts
+        if parts is None:
+            return
+        errors: list[BaseException] = []
+        for entry in parts.values():
+            try:
+                await entry.part.recover(active)
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            raise BaseExceptionGroup("RootSwitch boot recovery 失败", errors)
+
+    def _finish_switches(self, snapshot: RuntimeSnapshot) -> None:
+        """Clear boot pins only after the selected pointer is closed and exact."""
+
+        for target in self._boot_switches:
+            self._switch_run.check_recovery(
+                target,
+                snapshot.switch_parts,
+                snapshot.source_snapshot,
+            )
+        for target in self._boot_switches:
+            self._switch_run.finish_recovery(
+                target,
+                snapshot.switch_parts,
+                snapshot.source_snapshot,
+            )
+        self._boot_switches = ()
+
+    def _set_pointers(
+        self,
+        targets: tuple[_SwitchTarget, ...],
+    ) -> None:
+        """Make installed selectors follow the journal side choice."""
+
+        with _pin_lock(self._workspace):
+            for target in targets:
+                by_owner: dict[str, tuple[_PartRef | None, _PartRef | None]] = {}
+                for move in target.moves:
+                    if move.old is not None:
+                        pair = by_owner.setdefault(move.old.owner, (None, None))
+                        if pair[0] is not None and pair[0] != move.old:
+                            raise RuntimeError(
+                                f"RootSwitch old artifact 冲突: {move.old.owner}"
+                            )
+                        by_owner[move.old.owner] = (move.old, pair[1])
+                    if move.new is not None:
+                        pair = by_owner.setdefault(move.new.owner, (None, None))
+                        if pair[1] is not None and pair[1] != move.new:
+                            raise RuntimeError(
+                                f"RootSwitch new artifact 冲突: {move.new.owner}"
+                            )
+                        by_owner[move.new.owner] = (pair[0], move.new)
+                for owner, (old, new) in by_owner.items():
+                    self._set_pointer(target, owner, old, new)
+
+    def _set_pointer(
+        self,
+        target: _SwitchTarget,
+        owner: str,
+        old: _PartRef | None,
+        new: _PartRef | None,
+    ) -> None:
+        """Select one installed artifact while the caller holds the pin lock."""
+
+        installed = tuple(
+            ref
+            for ref in (old, new)
+            if ref is not None
+            and _decode_artifact(ref.artifact).source_type == "installed"
+        )
+        if not installed:
+            return
+        bases = {
+            Path(_decode_artifact(ref.artifact).path).parent.parent
+            for ref in installed
+        }
+        if len(bases) != 1:
+            raise RuntimeError(
+                f"RootSwitch installed artifact base 不一致: {owner}"
+            )
+        plugin_base = next(iter(bases))
+        current = read_pointers(plugin_base)
+        if current is None:
+            raise RuntimeError(f"RootSwitch installed pointer 缺失: {owner}")
+        allowed: set[str | None] = {
+            None,
+            *(
+                Path(_decode_artifact(ref.artifact).path)
+                .relative_to(plugin_base)
+                .as_posix()
+                for ref in installed
+            ),
+        }
+        if (
+            current.stable.path not in allowed
+            or current.latest.path not in allowed
+        ):
+            raise RuntimeError(
+                f"RootSwitch installed pointer 超出 exact pair: {owner}"
+            )
+        selected = new if target.use_new else old
+        pointer = ArtifactPointer(
+            None
+            if selected is None
+            else Path(_decode_artifact(selected.artifact).path)
+            .relative_to(plugin_base)
+            .as_posix()
+        )
+        _ = write_pointers(
+            plugin_base,
+            stable=pointer,
+            latest=pointer,
+        )
+
+    def _use_pins(
+        self,
+        mods: dict[str, dict[str, str]],
+    ) -> dict[str, dict[str, str]]:
+        """Apply every durable part choice before plugin discovery is loaded."""
+
+        selected = dict(mods)
+        chosen: dict[str, _PartNeed] = {}
+        blocked: set[str] = set()
+        for choice in self._switch_run.choices():
+            if choice.other is not None and (
+                choice.ref is None or choice.other.owner != choice.ref.owner
+            ):
+                blocked.add(choice.other.owner)
+            if choice.ref is None:
+                continue
+            _add_choice(
+                chosen,
+                _PartNeed(
+                    choice.ref.owner,
+                    choice.ref.generation,
+                    choice.ref.artifact,
+                ),
+            )
+            for need in choice.ref.needs:
+                _add_choice(chosen, need)
+        for owner in blocked.difference(chosen):
+            selected.pop(owner, None)
+        for need in chosen.values():
+            selected[need.owner] = _switch_mod(
+                _PartRef(
+                    name="need",
+                    owner=need.owner,
+                    generation=need.generation,
+                    artifact=need.artifact,
+                )
+            )
+        return selected
+
+    async def _load_part(
+        self,
+        ref: _PartRef,
+    ) -> tuple[_PartEntry, CompositionRoot]:
+        """Build one fresh recovery-only closure from its exact pinned code."""
+
+        root: CompositionRoot | None = None
+        module_paths: list[str] = []
+        try:
+            items = (
+                *ref.needs,
+                _PartNeed(ref.owner, ref.generation, ref.artifact),
+            )
+            generations: dict[str, PluginGeneration] = {}
+            for item in items:
+                if item.owner in generations:
+                    raise RuntimeError(
+                        f"RootSwitch recovery dependency 重复: {item.owner}"
+                    )
+                generation = self._load_plugin(item)
+                generations[item.owner] = generation
+                module_paths.append(generation.module_path)
+            resolved, _ = await self._resolve_composition_root(
+                generations,
+                force_fresh=True,
+            )
+            if not isinstance(resolved, CompositionRoot):
+                raise RuntimeError("RootSwitch recovery Root 无效")
+            root = resolved
+            for module_path in module_paths:
+                root._defer_internal_cleanup(
+                    f"recovery-module:{module_path}",
+                    lambda path=module_path: self._remove_module_tree(path),
+                )
+            service = root.context.get(ROOT_SWITCH)
+            if service is None:
+                raise RuntimeError("RootSwitch recovery plugin 未 inject ROOT_SWITCH")
+            parts = _freeze_root_switch(
+                service,
+                root.instance_token,
+                artifacts={item.owner: item.artifact for item in items},
+                needs={ref.owner: ref.needs},
+            )
+            entry = parts.get(ref.name)
+            if entry is None or entry.ref != ref:
+                raise RuntimeError("RootSwitch recovery part identity 不一致")
+            return entry, root
+        except BaseException:
+            if root is not None:
+                await root.dispose()
+            else:
+                for module_path in module_paths:
+                    self._remove_module_tree(module_path)
+            raise
+
+    def _load_plugin(self, item: _PartNeed) -> PluginGeneration:
+        """Import and validate one exact member of a recovery closure."""
+
+        artifact = _decode_artifact(item.artifact)
+        plugin_dir = Path(artifact.path)
+        data_dir = Path(artifact.data_path)
+        if _source_revision(plugin_dir) != artifact.source_revision:
+            raise RuntimeError(f"RootSwitch recovery source 已漂移: {item.owner}")
+        module_path = f"root_switch_{secrets.token_hex(8)}"
+        self._import_plugin(module_path, plugin_dir / artifact.entrypoint)
+        try:
+            module = sys.modules[module_path]
+            static_manifest = None
+            manifest_path = plugin_dir / "akashic.plugin.toml"
+            if manifest_path.exists() or manifest_path.is_symlink():
+                static_manifest = load_static_plugin_manifest(plugin_dir)
+                if static_manifest.entrypoint != artifact.entrypoint:
+                    raise RuntimeError("RootSwitch recovery entrypoint 已漂移")
+                validate_module_exports(
+                    static_manifest,
+                    module,
+                    plugin_root=plugin_dir,
+                )
+            elif artifact.source_type == "installed":
+                raise RuntimeError("RootSwitch installed recovery 缺少静态 manifest")
+            plugin = ComposablePlugin.from_module(module)
+            name = item.owner.rpartition("@")[0] or item.owner
+            if plugin.name != name:
+                raise RuntimeError("RootSwitch recovery plugin identity 不一致")
+            credential_paths = (
+                _static_channel_credential_paths(static_manifest)
+                if static_manifest is not None
+                else ()
+            )
+            aliases = _validate_channel_credential_schema(
+                cast(type[BaseModel] | None, plugin.ConfigModel),
+                credential_paths=credential_paths,
+            )
+            config_path = _switch_config(
+                artifact.config_path,
+                artifact.config_hash,
+                self._workspace,
+                item.owner,
+            )
+            projection = _read_plugin_config_projection(
+                data_dir,
+                config_path=config_path,
+                credential_paths=credential_paths,
+                credential_alias_groups=aliases,
+            )
+            config = _validate_plugin_config_projection(
+                projection,
+                cast(type[BaseModel] | None, plugin.ConfigModel),
+            )
+            plugin.bind_static_services(self._composition_service_view())
+            return PluginGeneration(
+                plugin_id=item.owner,
+                generation_id=item.generation,
+                module_path=module_path,
+                source_revision=artifact.source_revision,
+                config_revision=artifact.config_revision,
+                plugin_dir=plugin_dir,
+                data_dir=data_dir,
+                config_path=config_path,
+                config=config,
+                config_projection=projection,
+                instance=plugin,
+                scope=PluginScope(item.owner, generation_id=item.generation),
+                contributions=PluginContributions(manifest={}),
+                gate_result=GateResult(
+                    gate_id="root-switch-recovery",
+                    plugin_id=item.owner,
+                    candidate_revision=artifact.source_revision,
+                    status="passed",
+                    checks=(),
+                ),
+                source_type=cast(
+                    Literal["builtin", "installed"],
+                    artifact.source_type,
+                ),
+                static_manifest=static_manifest,
+                entrypoint=artifact.entrypoint,
+            )
+        except BaseException:
+            self._remove_module_tree(module_path)
+            raise
 
     async def _prepare_boot_runtime_recovery(
         self,
@@ -1597,6 +1984,9 @@ class PluginManager:
                 if generation is not None:
                     staged.append(generation)
             if not staged:
+                if self._boot_switches:
+                    snapshot, catalog_id = await self._compile_topology_snapshot({})
+                    await self._publish_stable_batch([], snapshot, catalog_id)
                 return
             snapshot, catalog_id = await self._compile_stable_batch_snapshot(staged)
             for generation in staged:
@@ -2489,6 +2879,106 @@ class PluginManager:
         if old_commands != new_commands:
             raise RuntimeError("command catalog host 尚未绑定")
 
+    def _switch_id(self, transaction: SnapshotTransaction) -> str:
+        """Choose one publication id without making RootSwitch plugin-specific."""
+
+        changed = {
+            generation.reload_tx_id
+            for generation in transaction.candidate.generations.values()
+            if generation.reload_tx_id is not None
+            and (
+                transaction.previous is None
+                or transaction.previous.generations.get(generation.plugin_id)
+                is not generation
+            )
+        }
+        if len(changed) == 1:
+            return next(iter(changed))
+        return f"snapshot:{transaction.candidate.snapshot_id}"
+
+    @staticmethod
+    def _check_parts(transaction: SnapshotTransaction) -> None:
+        """Require one plugin to keep its part for its whole installed life."""
+
+        previous = transaction.previous
+        old = (
+            {}
+            if previous is None or previous.switch_parts is None
+            else dict(previous.switch_parts.items())
+        )
+        new = (
+            {}
+            if transaction.candidate.switch_parts is None
+            else dict(transaction.candidate.switch_parts.items())
+        )
+        old_plugins = {} if previous is None else previous.generations
+        new_plugins = transaction.candidate.generations
+        for name in set(old) | set(new):
+            old_entry = old.get(name)
+            new_entry = new.get(name)
+            if (
+                old_entry is None
+                and new_entry is not None
+                and new_entry.ref.owner in old_plugins
+            ):
+                raise RuntimeError(
+                    "已安装插件不能新增 RootSwitch part；请安装独立 owner: "
+                    + name
+                )
+            if (
+                old_entry is not None
+                and new_entry is None
+                and old_entry.ref.owner in new_plugins
+            ):
+                raise RuntimeError(
+                    "仍安装的插件不能移除 RootSwitch part；请移除整个 owner: "
+                    + name
+                )
+            if (
+                old_entry is not None
+                and new_entry is not None
+                and old_entry.ref.owner != new_entry.ref.owner
+                and (
+                    old_entry.ref.owner in new_plugins
+                    or new_entry.ref.owner in old_plugins
+                )
+            ):
+                raise RuntimeError(
+                    "RootSwitch part 转移必须同时移除旧 owner 并安装新 owner: "
+                    + name
+                )
+
+    async def _wait_parts(
+        self,
+        transaction: SnapshotTransaction,
+    ) -> None:
+        """Wait for changed generations while both snapshot gates are closed."""
+
+        previous = transaction.previous
+        refs = self._switch_run.old_refs(
+            None if previous is None else previous.switch_parts,
+            transaction.candidate.switch_parts,
+        )
+        generations: list[PluginGeneration] = []
+        for ref in refs:
+            if previous is None:
+                raise RuntimeError("RootSwitch old part 缺少 previous snapshot")
+            generation = previous.generations.get(ref.owner)
+            if generation is None or generation.generation_id != ref.generation:
+                raise RuntimeError(
+                    f"RootSwitch old generation 身份不一致: {ref.owner}:{ref.name}"
+                )
+            if all(item is not generation for item in generations):
+                generations.append(generation)
+        for generation in generations:
+            await self._snapshot_store.wait_for_generation_drained(generation)
+        await self._wait_holds(tuple(refs))
+
+    async def _wait_holds(self, refs: tuple[object, ...]) -> None:
+        """M1c extends this closed wait with durable ServiceHold counts."""
+
+        _ = refs
+
     async def _commit_snapshot_with_publication_participants(
         self,
         transaction: SnapshotTransaction,
@@ -2498,6 +2988,7 @@ class PluginManager:
         promote_latest: bool,
         force_provisional: bool = False,
         provisional_started: bool = False,
+        boot_parts: bool = False,
         reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
@@ -2527,10 +3018,33 @@ class PluginManager:
                 )
             )
         )
+        switch_changed = not boot_parts and self._switch_run.changed(
+            (
+                None
+                if transaction.previous is None
+                else transaction.previous.switch_parts
+            ),
+            transaction.candidate.switch_parts,
+        )
+        if switch_changed:
+            self._check_parts(transaction)
+            if activity_catalog_changed:
+                # DEPRECATED(CORE): M1d moves Activity into RootSwitch and deletes this guard.
+                raise RuntimeError(
+                    "Activity publication 迁入 SwitchPart 前不能与 RootSwitch 同批"
+                )
+            from agent.plugins.snapshot import get_current_runtime_lease
+
+            if get_current_runtime_lease() is not None:
+                raise RuntimeError(
+                    "持有 RuntimeSnapshot lease 时不能等待 RootSwitch owner"
+                )
         if (
             not endpoints_changed
             and not channel_binding_changed
             and not activity_catalog_changed
+            and not switch_changed
+            and not boot_parts
             and not force_provisional
             and not provisional_started
         ):
@@ -2557,6 +3071,30 @@ class PluginManager:
             if not promote_latest:
                 await self._snapshot_store.commit_provisional(provisional)
 
+        # 3. Wait only for changed owners, then journal before the first action.
+        switch_work: _SwitchWork | None = None
+        switch_id: str | None = None
+        if switch_changed:
+            await self._wait_parts(provisional)
+            switch_id = self._switch_id(provisional)
+            switch_work = self._switch_run.prepare(
+                switch_id,
+                old_snapshot=(
+                    None
+                    if provisional.previous is None
+                    else provisional.previous.snapshot_id
+                ),
+                old_parts=(
+                    None
+                    if provisional.previous is None
+                    else provisional.previous.switch_parts
+                ),
+                new_snapshot=provisional.candidate.snapshot_id,
+                new_parts=provisional.candidate.switch_parts,
+            )
+            if switch_work is None:
+                raise RuntimeError("RootSwitch changed plan 意外为空")
+
         channel_state: _ChannelPublicationState | None = None
         activity_transaction: ActivityTransaction | None = None
         participants_switch_attempted = False
@@ -2580,6 +3118,12 @@ class PluginManager:
                 provisional.candidate,
             )
             await self._close_channel_publication(channel_state)
+            if switch_work is not None:
+                try:
+                    await switch_work.apply()
+                except BaseException as error:
+                    forward_error = error
+                    raise
             if endpoints_changed:
                 participants_switch_attempted = True
                 try:
@@ -2593,9 +3137,9 @@ class PluginManager:
             await self._start_channel_publication(channel_state)
             if activity_transaction is not None:
                 assert self._activity_host is not None
-                await self._activity_host.materialize_closed(activity_transaction)
+                _ = await self._activity_host.materialize_closed(activity_transaction)
 
-            def open_participants() -> None:
+            def select_participants() -> None:
                 if after_open is not None:
                     after_open()
                 if activity_transaction is not None:
@@ -2604,14 +3148,35 @@ class PluginManager:
                 assert channel_state is not None
                 self._open_channel_publication(channel_state)
 
-            await self._snapshot_store.finalize_provisional(
+            await self._snapshot_store.select_provisional(
                 provisional,
                 before_open=before_open,
-                after_open=open_participants,
+                after_open=select_participants,
             )
             if activity_transaction is not None:
                 assert self._activity_host is not None
                 await self._activity_host.open(activity_transaction)
+            if switch_work is not None:
+                switch_work.commit()
+            if boot_parts:
+                self._switch_run.save(
+                    provisional.candidate.snapshot_id,
+                    provisional.candidate.switch_parts,
+                )
+            if boot_parts:
+                self._finish_switches(provisional.candidate)
+            await self._snapshot_store.open_provisional(provisional)
+            if switch_id is not None:
+                try:
+                    self._switch_run.finish(
+                        switch_id,
+                        provisional.candidate.snapshot_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "RootSwitch 新边已选择，但 artifact pin 尚未清理: %s",
+                        switch_id,
+                    )
         except BaseException as publication_error:
             if (
                 activity_transaction is not None
@@ -2622,7 +3187,10 @@ class PluginManager:
                 provisional.candidate.accepting_leases = False
                 raise _PublicationParticipantRestoreError(
                     "Activity 新 owner 已提交，但旧 child cleanup 尚未完成",
-                    resources=("activity-publication",),
+                    resources=(
+                        "activity-publication",
+                        *(("root-switch",) if switch_work is not None else ()),
+                    ),
                 ) from publication_error
             rollback_errors: list[BaseException] = []
             channel_cleanup_failed = False
@@ -2674,6 +3242,22 @@ class PluginManager:
                 except BaseException as caught:
                     rollback_errors.append(caught)
                     channel_cleanup_failed = True
+            switch_cleanup_failed = False
+            if switch_work is not None:
+                try:
+                    await switch_work.rollback(publication_error)
+                except BaseException as caught:
+                    rollback_errors.append(caught)
+                    switch_cleanup_failed = True
+            if boot_parts:
+                try:
+                    await self._recover_parts(
+                        provisional.candidate,
+                        False,
+                    )
+                except BaseException as caught:
+                    rollback_errors.append(caught)
+                    switch_cleanup_failed = True
             await self._snapshot_store.rollback_provisional(
                 provisional,
                 keep_candidate_latest=promote_latest,
@@ -2689,6 +3273,8 @@ class PluginManager:
                 resources: list[str] = []
                 if activity_cleanup_failed:
                     resources.append("activity-publication")
+                if switch_cleanup_failed:
+                    resources.append("root-switch")
                 if channel_cleanup_failed:
                     resources.extend(("plugin-endpoint", "channel-publication"))
                 elif endpoint_restore_failed:
@@ -2740,6 +3326,7 @@ class PluginManager:
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 snapshot_revision=catalog_id,
+                source_snapshot=self._boot_source(),
                 composition_root=composition_root,
                 core_channel_definitions=self._core_channel_definitions,
             )
@@ -3214,6 +3801,13 @@ class PluginManager:
             # 1. Retry every exact retained Host owner before changing pointers.
             receipts: list[str] = []
             resource = action.failure_resource or ""
+            if any(
+                item == "root-switch" or item.startswith("root-switch:")
+                for item in resource.split(",")
+            ):
+                raise RuntimeError(
+                    "RootSwitch publication 需要重启恢复；当前进程不会重新开放 admission"
+                )
             if "runtime-snapshot-drain" in resource:
                 await self._snapshot_store.retry_drains()
                 receipts.append("runtime-snapshot-drain-complete")
@@ -4734,8 +5328,22 @@ class PluginManager:
             self._workspace,
         )
         validate_workspace_plugin_data_path(data_dir, self._workspace)
-        config_revision = _file_revision(data_dir / "config.local.toml")
-        generation_id = (
+        config_path = data_dir / "config.local.toml"
+        if "config_path" in mod:
+            config_path = _switch_config(
+                mod["config_path"],
+                mod["config_hash"],
+                self._workspace,
+                initial_plugin_id,
+            )
+            config_revision = mod["config_revision"]
+        else:
+            config_revision = _file_revision(config_path)
+            if mod.get("config_revision") not in {None, config_revision}:
+                raise RuntimeError(
+                    f"RootSwitch recovery config 已漂移: {initial_plugin_id}"
+                )
+        generation_id = mod.get("generation_id") or (
             f"{initial_plugin_id}:{source_revision[:12]}:{generation_sequence}"
         )
         reload_tx_id = (
@@ -4854,6 +5462,7 @@ class PluginManager:
             )
             config_projection = _read_plugin_config_projection(
                 data_dir,
+                config_path=config_path,
                 credential_paths=credential_paths,
                 credential_alias_groups=credential_alias_groups,
             )
@@ -4927,6 +5536,7 @@ class PluginManager:
                 config_revision=config_revision,
                 plugin_dir=plugin_dir,
                 data_dir=data_dir,
+                config_path=config_path,
                 config=plugin_config,
                 config_projection=config_projection,
                 instance=instance,
@@ -5133,6 +5743,7 @@ class PluginManager:
             snapshot = self._snapshot_compiler.compile(
                 generations,
                 catalog_generation=generation,
+                source_snapshot=self._boot_source(),
                 composition_root=composition_root,
                 base_snapshot=(
                     self.current_snapshot
@@ -5255,6 +5866,14 @@ class PluginManager:
         )
         try:
             _ = await root.context.provide(COMMANDS, PluginCommands())
+            if any(
+                ROOT_SWITCH in cast(ComposablePlugin, item.instance).inject
+                for item in mount_order
+            ):
+                _ = await root.context.provide(
+                    ROOT_SWITCH,
+                    RootSwitch(root.instance_token),
+                )
             if any(
                 CHANNELS in cast(ComposablePlugin, item.instance).inject
                 for item in mount_order
@@ -6362,6 +6981,9 @@ class PluginManager:
         snapshot: RuntimeSnapshot,
     ) -> None:
         if self._snapshot_store.current is None:
+            boot_parts = bool(snapshot.switch_parts) or bool(self._boot_switches)
+            if boot_parts:
+                await self._recover_parts(snapshot, True)
             registry = snapshot.channel_registry
             catalog = snapshot.channel_catalog
             activity_declared = self._activity_catalog_identity(snapshot) is not None
@@ -6369,6 +6991,7 @@ class PluginManager:
                 (registry is not None and registry.descriptors)
                 or (catalog is not None and catalog.descriptors)
                 or activity_declared
+                or boot_parts
             ):
                 transaction = self._snapshot_store.begin_publish(snapshot)
                 await self._commit_snapshot_with_publication_participants(
@@ -6376,6 +6999,7 @@ class PluginManager:
                     old_commands=(),
                     new_commands=(),
                     promote_latest=False,
+                    boot_parts=boot_parts,
                 )
                 return
             self._snapshot_store.install(snapshot)
@@ -6685,17 +7309,18 @@ def _with_gate_check(
 def _read_plugin_config_projection(
     data_dir: Path,
     *,
+    config_path: Path | None = None,
     credential_paths: tuple[str, ...] = (),
     credential_alias_groups: tuple[tuple[str, ...], ...] = (),
 ) -> dict[str, object]:
     """Read plugin config and replace declared secret values with opaque refs."""
 
     # 1. Core alone reads the formal file before plugin config validation.
-    config_path = data_dir / "config.local.toml"
+    path = config_path or (data_dir / "config.local.toml")
     raw_config: dict[str, Any] = {}
-    if config_path.exists():
+    if path.exists():
         try:
-            raw_config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            raw_config = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as e:
             raise _PluginConfigError(str(e)) from e
     for aliases in credential_alias_groups:
@@ -6944,6 +7569,91 @@ def _resolve_plugin_data_dir(
     marketplace = mod.get("marketplace", "").strip()
     suffix = marketplace or "builtin"
     return workspace_plugin_data_dir(workspace, name, suffix)
+
+
+def _switch_mod(ref: _PartRef) -> dict[str, str]:
+    """Build one normal discovery item from a durable exact part reference."""
+
+    artifact = _decode_artifact(ref.artifact)
+    plugin_root = Path(artifact.path)
+    manifest_path = plugin_root / "akashic.plugin.toml"
+    static_manifest = (
+        load_static_plugin_manifest(plugin_root)
+        if manifest_path.exists() or manifest_path.is_symlink()
+        else None
+    )
+    name, separator, marketplace = ref.owner.rpartition("@")
+    if not separator:
+        name = ref.owner
+        marketplace = ""
+    import_name = ref.owner.replace("-", "_").replace("@", "_")
+    return {
+        "name": name,
+        "plugin_root": str(plugin_root),
+        "module_path": str(plugin_root / artifact.entrypoint),
+        "entrypoint": artifact.entrypoint,
+        "manifest_digest": (
+            "" if static_manifest is None else static_manifest.identity_digest
+        ),
+        "import_path": f"akasic_plugin_switch_{import_name}",
+        "marketplace": marketplace,
+        "source_type": artifact.source_type,
+        "package_id": "",
+        "generation_id": ref.generation,
+        "config_revision": artifact.config_revision,
+        "config_hash": artifact.config_hash,
+        "config_path": artifact.config_path,
+    }
+
+
+def _switch_config(
+    value: str,
+    expected_hash: str,
+    workspace: Path,
+    owner: str,
+) -> Path:
+    """Validate one private exact config file from the switch journal."""
+
+    path = Path(value)
+    root = (workspace / "runtime" / "root-switch" / "configs").resolve(
+        strict=False
+    )
+    resolved = path.resolve(strict=False)
+    if (
+        path.is_symlink()
+        or resolved.name != "config.local.toml"
+        or resolved.parent.parent != root
+    ):
+        raise RuntimeError(f"RootSwitch recovery config path 无效: {owner}")
+    if (
+        not root.is_dir()
+        or root.stat().st_mode & 0o777 != 0o700
+        or not path.parent.is_dir()
+        or path.parent.stat().st_mode & 0o777 != 0o700
+        or (
+            path.exists()
+            and (
+                not path.is_file()
+                or path.is_symlink()
+                or path.stat().st_mode & 0o777 != 0o600
+            )
+        )
+    ):
+        raise RuntimeError(f"RootSwitch recovery config 权限无效: {owner}")
+    if _file_hash(path) != expected_hash:
+        raise RuntimeError(f"RootSwitch recovery config pin 已漂移: {owner}")
+    return path
+
+
+def _add_choice(chosen: dict[str, _PartNeed], need: _PartNeed) -> None:
+    """Add one exact boot plugin or reject conflicting durable choices."""
+
+    current = chosen.get(need.owner)
+    if current is not None and current != need:
+        raise RuntimeError(
+            f"RootSwitch plugin choice 冲突: {need.owner}"
+        )
+    chosen[need.owner] = need
 
 
 def _plugins_home(installed_cache_root: Path | None) -> Path:
@@ -7277,6 +7987,7 @@ def _replace_snapshot_payload(
         raise RuntimeError("只能刷新无 lease 的 candidate snapshot")
     for name in (
         "generations",
+        "source_snapshot",
         "skill_catalog_generation_id",
         "dashboard_bindings",
         "web_ui_catalog",
@@ -7299,6 +8010,7 @@ def _replace_snapshot_payload(
         "background_job_catalog_identity",
         "plugin_tool_catalog",
         "plugin_tool_catalog_identity",
+        "switch_parts",
         "composition_root",
         "composition_topology",
         "composition_active_plugin_ids",
@@ -7619,51 +8331,6 @@ def _build_v3_plugin_tool(
         },
     )
     return tool_class()
-
-
-def _file_revision(path: Path) -> str:
-    digest = hashlib.sha256()
-    digest.update(str(path.resolve(strict=False)).encode())
-    if path.is_file():
-        digest.update(path.read_bytes())
-    else:
-        digest.update(b"<missing>")
-    return digest.hexdigest()
-
-
-def _source_revision(plugin_dir: Path) -> str:
-    digest = hashlib.sha256()
-    root = plugin_dir.resolve(strict=False)
-    excluded = {
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".venv",
-        "__pycache__",
-        "node_modules",
-    }
-    for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
-        directories[:] = sorted(name for name in directories if name not in excluded)
-        current_path = Path(current)
-        for name in [*directories, *sorted(filenames)]:
-            path = current_path / name
-            relative = path.relative_to(plugin_dir)
-            if path.is_symlink():
-                resolved = path.resolve(strict=False)
-                _require_plugin_path(root, resolved, "源码符号链接")
-                digest.update(str(relative).encode())
-                digest.update(os.readlink(path).encode())
-                if resolved.is_file():
-                    digest.update(resolved.read_bytes())
-                continue
-            if not path.is_file():
-                continue
-            resolved = path.resolve(strict=False)
-            _require_plugin_path(root, resolved, "源码文件")
-            digest.update(str(relative).encode())
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
 
 
 def _source_metadata_revision(plugin_dir: Path) -> bytes:

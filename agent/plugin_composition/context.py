@@ -1142,6 +1142,11 @@ class CompositionRoot:
             listeners=listeners,
         )
 
+    def plugin_topology(self, plugin_id: str) -> TopologyView:
+        """Freeze one ordinary plugin's full Fiber topology."""
+
+        return self.topology_view(plugin_ids=frozenset({plugin_id}))
+
     def topology_identity(self) -> str:
         return self.topology_view().identity
 

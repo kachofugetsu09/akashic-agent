@@ -776,6 +776,11 @@ plugin config bag、任意 Service lookup 或对方 Root 的 grant。Root sealin
 拒绝 candidate。只有同时满足“跨 Root 共享一名 live owner、old/new 不能安全共存、lease 不能恢复共享
 状态”的 owner 才能注册；普通 cache、catalog reader、MCP process 或 background task 不得借此进入
 publication plane。
+同一已安装插件必须在自己的所有 generation 持续注册同名 part；不能在插件仍存在时临时新增或移除。
+一名 plugin owner 只能注册一个 part；需要第二个 part 就必须安装第二名独立 owner。
+新增 part 通过安装独立 owner，移除 part 通过移除整个 owner。owner 转移时 old/new 两边提供同名 part，且
+同批移除整个 old owner、安装整个 new owner；两名 owner 都继续安装时拒绝转移。
+这样 absent tombstone 始终表示 owner 整体不存在，不会把仍提供其他能力的普通插件误删。
 
 Core 从 old/new 两棵已 seal registry 构造 closed plan；part 不产生 callback bag。candidate validation
 不调用任何动作。closed plan 只包含 old/new part owner identity 不同的 name；identity 同时含 owner artifact
@@ -786,26 +791,35 @@ snapshot 和 durable receipt 引用的每个 generation 计数，所以这会
 zero lease/hold 前不得调用它的 stop/leave，也不得 commit 新 stable。全部 changed owner 都 quiescent 后，Core 才
 写 publication journal，再按 name 执行所有 old stop、old leave、new enter、new start；start 完成时 service
 仍被 gate 关住，不能接到请求。全部成功后，Core 才在同一份 crash-safe
-publication record 中原子写入新 stable identity 与 terminal commit，然后开放 lease。任何一步失败都在
+publication record 中原子写入新 stable identity 与 `use_new` choice，然后开放 lease。任何一步失败都在
 gate 仍关闭时按完成动作的相反顺序停止/离开 new、重新 enter/start old；取消不能截断恢复，forward 与
-reverse failure 全部聚合并保留 part/resource label。旧 stable 在 terminal commit 前始终是唯一 committed
+reverse failure 全部聚合并保留 part/resource label。旧 stable 在选择新边前始终是唯一 committed
 pointer，因此 start 失败不会留下“pointer 已新、owner 仍旧”的半状态。
 
 Core publication journal 是跨代恢复的唯一 transition owner。它只在全部 changed old part owner generation
 zero lease/hold 后、第一项动作前写入 old/new snapshot identity、两边每个 part 是否存在、part name、owner
-artifact/generation identity、当前 step 与 terminal bit，并 pin 两边 immutable artifact，
-直到 journal 清理完成。进程崩溃后、开放任何 lease 前，Core 按 journal 重建两边所引用 part 的
-recovery-only closure：terminal 之前一律收敛到 old active/new inactive，terminal 之后收敛到 new
+artifact/generation identity、当前 step 与 `use_new`，并 pin 两边 immutable code、私有 exact config file 和普通
+Service dependency closure，直到 journal 清理完成。config value 与 secret 不进入 publication journal；Core 只在
+`0700` 私有目录保存 exact file，文件为 `0600`，journal 只保存 path、hash 与 revision。恢复仍经正常 config parser
+读取所选 file；path、hash 或权限漂移都保持 degraded。`switch_choices` 每个 part name
+只保留一条长期 choice：
+selected ref 或 absence tombstone；清掉 transition record 后它仍是下次 boot 的 stable selector，不能重新让
+可变磁盘目录裁决当前版本。只有新 publication 覆盖该 name 后，旧 pin 才可减少。进程崩溃后、开放任何 lease
+前，Core 按 journal 重建两边所引用 part 的 fresh recovery-only Root：选择新边前一律收敛到 old
+active/new inactive，选择新边后收敛到 new
 active/old inactive。install 后 pointer 前崩溃仍能找到 new part；remove 后崩溃仍能找到 old part；replace
-能同时找到两边。part 可用自己的资源 journal实现幂等 recover，但 Core 不解释其内容。artifact pin
+能同时找到两边。selected snapshot lineage、完整 ref、generation、path、source type、config revision 与
+每个 owner 全部 Fiber 的依赖 closure 必须一致。Activity 在 M1d 迁成 SwitchPart 前，它的 publication 与 RootSwitch change 不能出现在
+同一批；RootSwitch restore failure 的同进程 retry 保持 admission 关闭并要求 restart，不能绕过 durable choice。
+part 可用自己的资源 journal实现幂等 recover，但 Core 不解释其内容。artifact pin
 缺失、identity 不符或任一 recover 失败时 runtime 保持 degraded 且不开放 lease，不能只信当前 stable
 Root 里恰好还存在的 part。
 
 这不是通用 transaction hook：没有 arbitrary phase、priority、waterfall、request rewrite 或可注册
 undo callback；五个动作只能收敛该 part 声明的一名跨代共享 owner。0036 要求“第 4 名真实 consumer
 出现后再提窄协议”；PluginSkillLinker 的共享 symlink + journal 已满足该门槛。进一步审查证明
-`sessions` 的单 SQLite writer 也是第 5 名 consumer。M3c 先迁 skill link，M6 迁 sessions，M8a～M8c 再把
-既有 Activity、Channel 和 command 私有分支逐名迁入同一 registry，M8d 删除硬编码 participant table。
+`sessions` 的单 SQLite writer 也是第 5 名 consumer。M1d 先 cold start Activity，M3c 再迁 skill link，M6 迁
+sessions，M8a～M8b 再把 Channel 和 command 私有分支逐名迁入同一 registry，M8c 删除硬编码 participant table。
 
 ### 4.2 最小普通插件图
 
@@ -1583,8 +1597,8 @@ Akasha 私有 feedback ledger 增加 owner 自己的表；执行前分别备份 
 失败恢复旧 artifact 与备份。除此之外不迁正式 workspace，不 UPDATE/DELETE 既有消息，不复制正式数据库做
 第二个 writer。
 `sessions` owner 切换由它自己的 SwitchPart 在 publication gate 内 stop/drain old、leave old claim、
-enter/start new，并在 terminal pointer commit 后才开放 lease；切换中核对同一路径 integrity 和高水位。
-失败或 terminal 前崩溃按 Core journal pin 的旧完整 artifact 逆向恢复。该窗口没有两名正式 writer。
+enter/start new，并在选择新 pointer 后才开放 lease；切换中核对同一路径 integrity 和高水位。
+失败或选择新边前崩溃按 Core journal pin 的旧完整 artifact 逆向恢复。该窗口没有两名正式 writer。
 
 ## 8. 失败、取消、并发与 reload
 
@@ -1598,7 +1612,7 @@ enter/start new，并在 terminal pointer commit 后才开放 lease；切换中�
 - **并发：** Turn 继续按 session 串行而非全局串行；factory slot 和 provider registry seal 后不可变。
 - **热重载：** 新 Root 完整 seal 后才可发布。publication gate 先拒绝新 lease；对每只 identity 改变的
   SwitchPart，Core 等 old owner generation lease_count=0 且 hold_count=0，`TaskCancel` 只能通知原 owner，不能强杀或跳过
-  settle。随后才走 old stop/leave → new enter/start → terminal pointer commit 并开放新 lease。同 identity
+  settle。随后才走 old stop/leave → new enter/start → `use_new` pointer choice 并开放新 lease。同 identity
   part 直接复用；没有 shared owner 的普通 generation 不加入 plan。任何 old task 都不能跨过自己依赖的
   owner switch，等待相关长 Turn 是有意的安全代价。SKILLS 的 provider set 和 installed artifact root 跟随 Root；
   workspace skill 与 host availability 仍在原有 lookup 边界重查。skill-files link journal 失败时
@@ -1626,11 +1640,15 @@ enter/start new，并在 terminal pointer commit 后才开放 lease；切换中�
   三者接口不增加 Agent/Turn/Session/Scheduler 等领域字段。fixture 证明 single-key/stable-only call、
   owning Root background acquire、跨代 opaque cancel、same-scope claim exclusion、terminal release、错误
   task 继承和退休 Root fail-loud。
-- **M1b · Root switch：** 增加 `ROOT_SWITCH.add(SwitchPart)`、closed transaction 和 crash recovery；先只用
+- **M1b · Root switch（已完成）：** 增加 `ROOT_SWITCH.add(SwitchPart)`、closed transaction 和 crash recovery；先只用
   隔离 fake part 证明 install/replace/remove、重复 name、candidate 不触发、按 name 的 stop/leave/enter/start、
   start failure 的逆序恢复、恢复 failure 资源留痕、取消保护，以及 crash 落在每个 step 时都依据两代 pin
-  收敛到 journal terminal 指定的一边。本批不迁现有 production participant，也不写正式共享状态；M3c 的
-  skill link 是第一名 production consumer，M6 迁 sessions writer，M8a～M8c 再迁 Activity/Channel/command 并
+  收敛到 journal `use_new` 指定的一边；same-path builtin、absent tombstone、selected side、exact config、
+  owner 全部 Fiber 的 ordinary dependency closure 和 exact snapshot/generation 都必须连续两次 boot 不漂移。Activity 在 M1d
+  迁成 SwitchPart 前与 RootSwitch change 明确互斥；RootSwitch restore failure 的同进程 retry 必须拒绝并
+  保持 admission 关闭，installed pointer update 与 recovery 共用一把 pin lock。
+  本批不迁现有 production participant，也不写正式共享状态；M1d 必须先删除 Activity 私有 participant，
+  M3c 的 skill link 才是第一名业务 consumer，M6 迁 sessions writer，M8a～M8b 再迁 Channel/command 并
   删除 PluginManager 私有 participant table。
 
 - **M1c · Service hold：** 增加绑定单一 ServiceKey 与不可伪造 HoldKey 的 `ServiceHold` 与通用 hold journal，只用 fake Service
@@ -1643,7 +1661,15 @@ enter/start new，并在 terminal pointer commit 后才开放 lease；切换中�
   fake source 必须证明 done/abort 不泄漏 hold，unknown 必须保留 hold 和 degraded。本批不接 production source；
   M2c 是首批 consumer。
 
-M1a/M1b/M1c 都是后续唯一切换的中性前置能力；没有被替换的旧 owner，不提前标 deprecated。
+- **M1d · Activity switch：** 在第一名业务 RootSwitch consumer 前完成一次 supervised cold start。existing
+  Activity owner 注册自己的 SwitchPart，同批物理删除 PluginManager 的 Activity participant、双 owner 互斥
+  guard 与对应 fake；进程尚未开放 lease 时只用该 part 的幂等 `recover(True)` 建立现行 catalog，随后保存
+  selected choice。失败保持启动关闭并由下次 supervised boot 重试，不经过旧 Activity finalize/open，也不产生
+  双 commit owner。fake + real fixture 覆盖 cold start、install/remove/replace 与逐 step crash。这个批次完成前
+  禁止接入 skill link、sessions 或其他 production RootSwitch consumer。
+
+M1a/M1b/M1c 是中性前置能力；M1d 是第一项旧 owner 迁移。M1d 前 Activity participant 明确
+`DEPRECATED(CORE)`，同批删除后不留 guard、alias 或兼容壳。
 
 ### M2 · Root-bound Agent 入口
 
@@ -2013,18 +2039,16 @@ review、deprecated 删除和 zero-consumer Gate，不能把七个 owner 堆成�
 
 ### M8 · Core 收口并停止
 
-- **M8a · Activity switch：** existing Activity owner 注册自己的 SwitchPart；同批删除 PluginManager 的
-  Activity participant 分支，fake + real fixture 覆盖 install/remove/replace 与逐 step crash。
-- **M8b · Channel switch：** Channel owner 注册自己的 SwitchPart；同批删除 Channel participant 分支，
+- **M8a · Channel switch：** Channel owner 注册自己的 SwitchPart；同批删除 Channel participant 分支，
   保持 admission/drain、endpoint publication、delivery fence 和恢复语义。
-- **M8c · Command switch：** commands plugin 注册自己的 SwitchPart；同批删除 command participant 分支，
+- **M8b · Command switch：** commands plugin 注册自己的 SwitchPart；同批删除 command participant 分支，
   public COMMANDS contract 和三只 live consumer 不变。
-- **M8d · Core close：** 删除已经零 consumer 的 PluginManager participant table。与 M3c skill link、M6
+- **M8c · Core close：** 删除已经零 consumer 的 PluginManager participant table。与 M3c skill link、M6
   sessions 合跑现有五类 shared owner 与 durable ReplyPart/SavePart 的组合 install/replace/remove 和逐 step
   crash recovery，证明 RootSwitch 不认识 participant 数量或 feature 名称。Core/Bootstrap 搜索必须证明零 Agent/Tool/Session/feature 插件 ID 特判和零内部
   旧 consumer；运行关键场景、全量测试、静态检查和项目 Gate，并输出最终 topology/write set。
   同时输出所有外部 `move/remove` consumer 的 exact repo/commit/符号清单和仍工作的九类 migration block，
-  不把它们误报成干净设计。M8a～M8d 各自独立 review、name Gate 和旧分支删除。
+  不把它们误报成干净设计。M8a～M8c 各自独立 review、name Gate 和旧分支删除。
 - Draft PR 保持等待维护者；不开始修改独立外部插件仓库。
 
 ### M9 · 外部插件收尾
@@ -2114,7 +2138,7 @@ external migration block；它必须标成 `DEPRECATED(EXTERNAL): no new consume
   delivery/outcome 字段；source row 不含 live binding/token/socket，reboot 必须新建 ephemeral binding 并复用 stable
   delivery key；
 - RootSwitch 以 fake part 覆盖 old/new present/absent 的 install、remove、replace；在 stop/leave/enter/start、
-  pointer terminal 前后逐点 crash，重启只能按 Core journal 的两代 identity/pin 收敛；缺 artifact 或 recover
+  pointer choice 前后逐点 crash，重启只能按 Core journal 的两代 identity/pin 收敛；缺 artifact 或 recover
   failure 保持 degraded 且零 lease。barrier 把旧 Turn 分别卡在 model、tool、reply open：changed owner
   generation lease_count 未归零前不得 stop/leave，归零后不得再有 old call；unchanged generation 不必 drain。
   skill link、sessions、Activity、Channel、command 与实际 SavePart/ReplyPart production part 各跑自己的资源

@@ -201,6 +201,11 @@ from agent.plugin_composition.tasks import (
     TaskStart,
     TaskWait,
 )
+from agent.plugin_composition.root_switch import (
+    ROOT_SWITCH as ROOT_SWITCH,
+    RootSwitch as RootSwitch,
+    SwitchPart as SwitchPart,
+)
 from agent.plugin_composition.mcp_slots import (
     MCP_SERVERS,
     EndpointEnv,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -11,6 +12,7 @@ from typing import Literal, cast
 
 from agent.plugins.errors import RootRetired
 from agent.plugins.generation import PluginGeneration
+from agent.plugins.source_hash import file_hash
 from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
 from agent.tools.registry import ToolRegistry
 from agent.skills import SkillIndex
@@ -28,6 +30,7 @@ from agent.plugin_composition import (
     CompositionError,
     CompositionSnapshotRoot,
     MobileUiRegistry,
+    ServiceKey,
     UI_SLOTS,
     TopologyView,
 )
@@ -61,6 +64,13 @@ from agent.plugin_composition.tool_catalog import (
     PluginTools,
     _freeze_plugin_tools,
 )
+from agent.plugin_composition.root_switch import (
+    ROOT_SWITCH,
+    _PartNeed,
+    _PartSet,
+    _freeze_root_switch,
+    _merge_root_switch,
+)
 
 SnapshotState = Literal[
     "compiled",
@@ -77,6 +87,7 @@ class RuntimeSnapshot:
     snapshot_id: str
     generations: Mapping[str, PluginGeneration]
     skill_catalog_generation_id: str | None
+    source_snapshot: str | None = None
     dashboard_bindings: tuple[object, ...] = ()
     web_ui_catalog: WebUiCatalog | None = None
     web_ui_catalog_identity: str | None = None
@@ -96,6 +107,7 @@ class RuntimeSnapshot:
     plugin_tool_catalog: PluginToolCatalog | None = None
     plugin_tool_catalog_identity: str | None = None
     plugin_tool_facades: tuple[PluginTools, ...] = field(default=(), repr=False)
+    switch_parts: _PartSet | None = field(default=None, repr=False)
     tool_registry: ToolRegistry | None = None
     plugin_skill_index: SkillIndex | None = None
     command_registry: CommandRegistry | None = None
@@ -150,6 +162,7 @@ class RuntimeSnapshotCompiler:
         replaced_plugin_ids: frozenset[str] = frozenset(),
         core_channel_definitions: tuple[CoreChannelDefinition, ...] = (),
         require_composition_ready: bool = True,
+        source_snapshot: str | None = None,
     ) -> RuntimeSnapshot:
         ordered = [generations[key] for key in sorted(generations)]
         if any(generation.plugin_id != key for key, generation in generations.items()):
@@ -190,6 +203,7 @@ class RuntimeSnapshotCompiler:
         background_job_catalog: BackgroundJobCatalog | None = None
         plugin_tool_catalog: PluginToolCatalog | None = None
         plugin_tool_facades: tuple[PluginTools, ...] = ()
+        switch_parts: _PartSet | None = None
         web_ui_catalog: WebUiCatalog | None = None
         if base_snapshot is None and replaced_plugin_ids:
             raise ValueError("replaced_plugin_ids 需要 base_snapshot")
@@ -218,6 +232,40 @@ class RuntimeSnapshotCompiler:
             composition_topology = composition_root.topology_view()
             composition_active_plugin_ids = composition_root.active_plugin_ids()
             identity += f"|composition:{composition_topology.identity}"
+            root_switch = catalog_context.get(ROOT_SWITCH)
+            changed_parts = (
+                None
+                if root_switch is None
+                else _freeze_root_switch(
+                    root_switch,
+                    catalog_root_token,
+                    artifacts={
+                        owner: _switch_artifact(generation)
+                        for owner, generation in generations.items()
+                    },
+                    needs=_switch_needs(
+                        generations,
+                        composition_root.plugin_service_owners(),
+                        composition_root,
+                    ),
+                    plugin_ids=(
+                        None if base_snapshot is None else replaced_plugin_ids
+                    ),
+                )
+            )
+            if changed_parts is not None:
+                self._check_parts(changed_parts, generations)
+            switch_parts = (
+                changed_parts
+                if base_snapshot is None
+                else _merge_root_switch(
+                    base_snapshot.switch_parts,
+                    changed_parts,
+                    replaced_plugin_ids,
+                )
+            )
+            if switch_parts is not None:
+                identity += f"|root-switch:{switch_parts.identity}"
             ui_slots = catalog_context.get(UI_SLOTS)
             if ui_slots is not None:
                 freeze = getattr(ui_slots, "freeze", None)
@@ -578,6 +626,7 @@ class RuntimeSnapshotCompiler:
         snapshot_id = hashlib.sha256(canonical_identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
             snapshot_id=snapshot_id,
+            source_snapshot=source_snapshot or snapshot_id,
             generations=MappingProxyType(dict(generations)),
             skill_catalog_generation_id=(
                 catalog_owner.skill_catalog.generation_id
@@ -622,6 +671,7 @@ class RuntimeSnapshotCompiler:
                 None if plugin_tool_catalog is None else plugin_tool_catalog.identity
             ),
             plugin_tool_facades=plugin_tool_facades,
+            switch_parts=switch_parts,
             plugin_skill_index=(
                 catalog_owner.skill_catalog.normal_plugins
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None
@@ -708,6 +758,107 @@ class RuntimeSnapshotCompiler:
                     "RuntimeSnapshot plugin Tool 不属于 exact generation: "
                     f"{binding.plugin_id}:{binding.generation_id}"
                 )
+
+    @staticmethod
+    def _check_parts(
+        parts: _PartSet,
+        generations: Mapping[str, PluginGeneration],
+    ) -> None:
+        """Bind every switch part to its selected immutable artifact."""
+
+        for binding in parts.values():
+            ref = binding.ref
+            generation = generations.get(ref.owner)
+            if (
+                generation is None
+                or generation.generation_id != ref.generation
+                or _switch_artifact(generation) != ref.artifact
+            ):
+                raise RuntimeError(
+                    "RuntimeSnapshot Root switch part 不属于 exact artifact: "
+                    f"{ref.owner}:{ref.name}:{ref.generation}"
+                )
+            for need in ref.needs:
+                needed = generations.get(need.owner)
+                if (
+                    needed is None
+                    or needed.generation_id != need.generation
+                    or _switch_artifact(needed) != need.artifact
+                ):
+                    raise RuntimeError(
+                        "RuntimeSnapshot Root switch dependency 不属于 exact artifact: "
+                        f"{ref.owner}:{need.owner}:{need.generation}"
+                    )
+
+
+def _switch_artifact(generation: PluginGeneration) -> str:
+    """Name the exact code artifact without trusting plugin input."""
+
+    config_path = generation.config_path or (
+        generation.data_dir / "config.local.toml"
+    )
+    return json.dumps(
+        {
+            "config_hash": file_hash(config_path),
+            "config_path": str(config_path.resolve(strict=False)),
+            "config_revision": generation.config_revision,
+            "data_path": str(generation.data_dir.resolve(strict=False)),
+            "entrypoint": generation.entrypoint,
+            "source_type": generation.source_type,
+            "path": str(generation.plugin_dir.resolve(strict=False)),
+            "source_revision": generation.source_revision,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _switch_needs(
+    generations: Mapping[str, PluginGeneration],
+    service_owners: Mapping[ServiceKey[object], str],
+    composition_root: CompositionSnapshotRoot,
+) -> dict[str, tuple[_PartNeed, ...]]:
+    """Freeze each plugin's ordinary provider dependency closure."""
+
+    owners_by_name = {key.name: owner for key, owner in service_owners.items()}
+    if not owners_by_name:
+        return {plugin_id: () for plugin_id in generations}
+    direct: dict[str, tuple[str, ...]] = {}
+    for plugin_id in generations:
+        topology = composition_root.plugin_topology(plugin_id)
+        direct[plugin_id] = tuple(
+            sorted(
+                {
+                    owner
+                    for fiber in topology.fibers
+                    for name in fiber.dependencies
+                    if (owner := owners_by_name.get(name)) is not None
+                    and owner != plugin_id
+                    and owner in generations
+                }
+            )
+        )
+
+    result: dict[str, tuple[_PartNeed, ...]] = {}
+    for plugin_id in generations:
+        selected: set[str] = set()
+        pending = list(direct[plugin_id])
+        while pending:
+            owner = pending.pop()
+            if owner in selected or owner == plugin_id:
+                continue
+            selected.add(owner)
+            pending.extend(direct[owner])
+        result[plugin_id] = tuple(
+            _PartNeed(
+                owner=owner,
+                generation=generations[owner].generation_id,
+                artifact=_switch_artifact(generations[owner]),
+            )
+            for owner in sorted(selected)
+        )
+    return result
 
 
 def _merge_command_registries(
@@ -1244,6 +1395,22 @@ class RuntimeSnapshotStore:
     ) -> None:
         """Open a provisional stable and retire its rollback snapshot."""
 
+        await self.select_provisional(
+            transaction,
+            before_open=before_open,
+            after_open=after_open,
+        )
+        await self.open_provisional(transaction)
+
+    async def select_provisional(
+        self,
+        transaction: SnapshotTransaction,
+        *,
+        before_open: Callable[[], None] | None = None,
+        after_open: Callable[[], None] | None = None,
+    ) -> None:
+        """Select the candidate pointer while both sides remain closed."""
+
         # 1. Complete fallible projection work while the old stable stays visible.
         self._require_provisional(transaction)
         self._validate_composition(transaction.candidate)
@@ -1264,15 +1431,27 @@ class RuntimeSnapshotStore:
                 self._activate_plugin_tool_catalog(previous)
             raise
 
-        # 3. Open the new stable only after all publication work succeeded.
-        transaction.candidate.accepting_leases = True
-        if previous is not None:
-            previous.state = "retired"
-            previous.accepting_leases = False
-        self._provisional = None
-        if previous is not None:
-            self._schedule_drain(previous)
         async with self._condition:
+            self._condition.notify_all()
+
+    async def open_provisional(
+        self,
+        transaction: SnapshotTransaction,
+    ) -> None:
+        """Open a selected candidate after every closed participant settled."""
+
+        async with self._condition:
+            self._require_provisional(transaction)
+            if self._current is not transaction.candidate:
+                raise RuntimeError("RuntimeSnapshot provisional candidate 尚未选中")
+            transaction.candidate.accepting_leases = True
+            previous = transaction.previous
+            if previous is not None:
+                previous.state = "retired"
+                previous.accepting_leases = False
+            self._provisional = None
+            if previous is not None:
+                self._schedule_drain(previous)
             self._condition.notify_all()
 
     async def rollback_provisional(
@@ -1288,8 +1467,12 @@ class RuntimeSnapshotStore:
         self._require_provisional(transaction)
         candidate = transaction.candidate
         previous = transaction.previous
-        if self._current is not previous:
+        if self._current is not previous and self._current is not candidate:
             raise RuntimeError("RuntimeSnapshot provisional stable 指针已漂移")
+        if self._current is candidate:
+            self._current = previous
+            if previous is not None:
+                self._activate_plugin_tool_catalog(previous)
         if previous is not None:
             previous.state = "committed"
             previous.accepting_leases = reopen_previous

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -126,6 +126,34 @@ class ReloadJournalEvent:
 
 
 @dataclass(frozen=True)
+class _SwitchRecord:
+    """Store one RootSwitch plan inside the shared publication journal."""
+
+    tx_id: str
+    old_snapshot_id: str | None
+    new_snapshot_id: str
+    plan_json: str
+    next_step: int
+    step_count: int
+    use_new: bool
+    state: str
+    cleared: bool
+    failure_resource: str | None
+    error: str
+
+
+@dataclass(frozen=True)
+class _StoredChoice:
+    """Keep one part's selected side after its switch record is cleared."""
+
+    name: str
+    tx_id: str
+    move_json: str
+    use_new: bool
+    snapshot_id: str | None
+
+
+@dataclass(frozen=True)
 class ReloadRecoveryAction:
     tx_id: str
     plugin_id: str
@@ -152,6 +180,7 @@ class ReloadJournal:
         self.path = workspace / "runtime" / "plugin-reloads.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self.path.chmod(0o600)
 
     def begin(
         self,
@@ -432,6 +461,281 @@ class ReloadJournal:
                 ),
             )
             self._append_event(conn, tx_id, phase, details_for_event, now)
+
+    def begin_switch(
+        self,
+        tx_id: str,
+        *,
+        old_snapshot_id: str | None,
+        new_snapshot_id: str,
+        plan_json: str,
+        step_count: int,
+        choices: tuple[tuple[str, str], ...],
+    ) -> None:
+        """Write one closed RootSwitch plan before its first action."""
+
+        if not new_snapshot_id or new_snapshot_id.strip() != new_snapshot_id:
+            raise ValueError("RootSwitch new snapshot id 无效")
+        if old_snapshot_id is not None and (
+            not old_snapshot_id or old_snapshot_id.strip() != old_snapshot_id
+        ):
+            raise ValueError("RootSwitch old snapshot id 无效")
+        if step_count <= 0:
+            raise ValueError("RootSwitch step count 必须大于零")
+        plan = json.loads(plan_json)
+        if not isinstance(plan, dict):
+            raise ValueError("RootSwitch plan 必须是 JSON object")
+        moves = plan.get("moves")
+        if not isinstance(moves, list) or len(moves) != len(choices):
+            raise ValueError("RootSwitch plan 与 choice 数量不一致")
+        names = tuple(name for name, _move_json in choices)
+        if (
+            not names
+            or len(names) != len(set(names))
+            or any(not name or name.strip() != name for name in names)
+        ):
+            raise ValueError("RootSwitch choice name 必须非空且唯一")
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO reload_switches (
+                        tx_id, old_snapshot_id, new_snapshot_id, plan_json,
+                        next_step, step_count, use_new, state, cleared,
+                        failure_resource, error, updated_at
+                    ) VALUES (?, ?, ?, ?, 0, ?, 0, 'running', 0, NULL, '', ?)
+                    """,
+                    (
+                        tx_id,
+                        old_snapshot_id,
+                        new_snapshot_id,
+                        plan_json,
+                        step_count,
+                        _now(),
+                    ),
+                )
+                for name, move_json in choices:
+                    move = json.loads(move_json)
+                    if not isinstance(move, dict) or move.get("name") != name:
+                        raise ValueError("RootSwitch choice move 无效")
+                    conn.execute(
+                        """
+                        INSERT INTO switch_choices (
+                            name, tx_id, move_json, use_new, snapshot_id, updated_at
+                        ) VALUES (?, ?, ?, 0, ?, ?)
+                        ON CONFLICT(name) DO UPDATE SET
+                            tx_id = excluded.tx_id,
+                            move_json = excluded.move_json,
+                            use_new = 0,
+                            snapshot_id = excluded.snapshot_id,
+                            updated_at = excluded.updated_at
+                        """,
+                        (name, tx_id, move_json, old_snapshot_id, _now()),
+                    )
+            except sqlite3.IntegrityError as error:
+                raise RuntimeError(
+                    f"ReloadTransaction 已有 RootSwitch plan: {tx_id}"
+                ) from error
+
+    def advance_switch(self, tx_id: str, next_step: int) -> None:
+        """Record one completed fixed RootSwitch action."""
+
+        with self._connect() as conn:
+            record = self._read_switch(conn, tx_id)
+            if record.use_new or record.cleared or record.state != "running":
+                raise RuntimeError("RootSwitch 不接受新的 forward step")
+            if (
+                next_step != record.next_step + 1
+                or next_step > record.step_count
+            ):
+                raise RuntimeError(
+                    "RootSwitch step 必须单步前进: "
+                    f"{record.next_step} -> {next_step}"
+                )
+            conn.execute(
+                """
+                UPDATE reload_switches
+                SET next_step = ?, updated_at = ?
+                WHERE tx_id = ?
+                """,
+                (next_step, _now(), tx_id),
+            )
+
+    def commit_switch(self, tx_id: str) -> None:
+        """Choose the new side immediately before candidate admission opens."""
+
+        with self._connect() as conn:
+            record = self._read_switch(conn, tx_id)
+            if record.use_new or record.cleared or record.state != "running":
+                raise RuntimeError("RootSwitch 已选新边、已清理或已 degraded")
+            if record.next_step != record.step_count:
+                raise RuntimeError(
+                    "RootSwitch 尚有未完成动作: "
+                    f"{record.next_step}/{record.step_count}"
+                )
+            conn.execute(
+                """
+                UPDATE reload_switches
+                SET use_new = 1, updated_at = ?
+                WHERE tx_id = ?
+                """,
+                (_now(), tx_id),
+            )
+            cursor = conn.execute(
+                """
+                UPDATE switch_choices
+                SET use_new = 1, snapshot_id = ?, updated_at = ?
+                WHERE tx_id = ?
+                """,
+                (record.new_snapshot_id, _now(), tx_id),
+            )
+            moves = json.loads(record.plan_json).get("moves")
+            if not isinstance(moves, list) or cursor.rowcount != len(moves):
+                raise RuntimeError("RootSwitch stable choice 缺失")
+
+    def save_parts(
+        self,
+        snapshot_id: str,
+        choices: tuple[tuple[str, str], ...],
+    ) -> None:
+        """Save first-seen parts before their first public admission."""
+
+        if not snapshot_id or snapshot_id.strip() != snapshot_id:
+            raise ValueError("RootSwitch snapshot id 无效")
+        names = tuple(name for name, _move_json in choices)
+        if len(names) != len(set(names)):
+            raise ValueError("RootSwitch choice name 必须唯一")
+        with self._connect() as conn:
+            for name, move_json in choices:
+                move = json.loads(move_json)
+                if not isinstance(move, dict) or move.get("name") != name:
+                    raise ValueError("RootSwitch choice move 无效")
+                conn.execute(
+                    """
+                    INSERT INTO switch_choices (
+                        name, tx_id, move_json, use_new, snapshot_id, updated_at
+                    ) VALUES (?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(name) DO NOTHING
+                    """,
+                    (name, f"snapshot:{snapshot_id}", move_json, snapshot_id, _now()),
+                )
+
+    def degrade_switch(
+        self,
+        tx_id: str,
+        *,
+        resource: str,
+        error: str,
+    ) -> None:
+        """Keep both artifact pins when one part cannot be restored."""
+
+        if not resource or not error:
+            raise ValueError("degraded RootSwitch 必须保存 resource 和 error")
+        with self._connect() as conn:
+            _ = self._read_switch(conn, tx_id)
+            conn.execute(
+                """
+                UPDATE reload_switches
+                SET state = 'degraded', failure_resource = ?, error = ?,
+                    updated_at = ?
+                WHERE tx_id = ?
+                """,
+                (resource, error, _now(), tx_id),
+            )
+
+    def finish_switch(self, tx_id: str, *, use_new: bool) -> None:
+        """Release pins only after one side was proved by the publication owner."""
+
+        with self._connect() as conn:
+            record = self._read_switch(conn, tx_id)
+            if record.cleared:
+                if record.use_new != use_new:
+                    raise RuntimeError("RootSwitch cleared side 与请求不一致")
+                return
+            if record.state != "running":
+                raise RuntimeError("degraded RootSwitch 不能释放 artifact pin")
+            if record.use_new != use_new:
+                raise RuntimeError("RootSwitch selected side 尚未证明")
+            conn.execute(
+                """
+                UPDATE reload_switches
+                SET cleared = 1, updated_at = ?
+                WHERE tx_id = ?
+                """,
+                (_now(), tx_id),
+            )
+
+    def switch_record(self, tx_id: str) -> _SwitchRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM reload_switches WHERE tx_id = ?",
+                (tx_id,),
+            ).fetchone()
+            return None if row is None else self._read_switch(conn, tx_id)
+
+    def pending_switches(self) -> tuple[_SwitchRecord, ...]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT tx_id
+                FROM reload_switches
+                WHERE cleared = 0
+                ORDER BY updated_at, tx_id
+                """
+            ).fetchall()
+            return tuple(self._read_switch(conn, str(row[0])) for row in rows)
+
+    def switch_choices(self) -> tuple[_StoredChoice, ...]:
+        """Read the durable selected side for every switch part."""
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT name, tx_id, move_json, use_new, snapshot_id
+                FROM switch_choices
+                ORDER BY name
+                """
+            ).fetchall()
+        return tuple(
+            _StoredChoice(
+                name=str(row[0]),
+                tx_id=str(row[1]),
+                move_json=str(row[2]),
+                use_new=bool(row[3]),
+                snapshot_id=_optional_string(row[4]),
+            )
+            for row in rows
+        )
+
+    @staticmethod
+    def _read_switch(
+        conn: sqlite3.Connection,
+        tx_id: str,
+    ) -> _SwitchRecord:
+        row = conn.execute(
+            """
+            SELECT old_snapshot_id, new_snapshot_id, plan_json, next_step,
+                   step_count, use_new, state, cleared, failure_resource, error
+            FROM reload_switches
+            WHERE tx_id = ?
+            """,
+            (tx_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"RootSwitch record 不存在: {tx_id}")
+        return _SwitchRecord(
+            tx_id=tx_id,
+            old_snapshot_id=_optional_string(row[0]),
+            new_snapshot_id=str(row[1]),
+            plan_json=str(row[2]),
+            next_step=int(row[3]),
+            step_count=int(row[4]),
+            use_new=bool(row[5]),
+            state=str(row[6]),
+            cleared=bool(row[7]),
+            failure_resource=_optional_string(row[8]),
+            error=str(row[9]),
+        )
 
     def get(self, tx_id: str) -> ReloadTransactionRecord:
         with self._connect() as conn:
@@ -778,6 +1082,30 @@ class ReloadJournal:
                 ON reload_transactions(phase);
                 CREATE INDEX IF NOT EXISTS idx_reload_events_tx
                 ON reload_events(tx_id, sequence);
+                CREATE TABLE IF NOT EXISTS reload_switches (
+                    tx_id TEXT PRIMARY KEY,
+                    old_snapshot_id TEXT,
+                    new_snapshot_id TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    next_step INTEGER NOT NULL,
+                    step_count INTEGER NOT NULL,
+                    use_new INTEGER NOT NULL CHECK (use_new IN (0, 1)),
+                    state TEXT NOT NULL CHECK (state IN ('running', 'degraded')),
+                    cleared INTEGER NOT NULL CHECK (cleared IN (0, 1)),
+                    failure_resource TEXT,
+                    error TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_reload_switches_pending
+                ON reload_switches(cleared, updated_at);
+                CREATE TABLE IF NOT EXISTS switch_choices (
+                    name TEXT PRIMARY KEY,
+                    tx_id TEXT NOT NULL,
+                    move_json TEXT NOT NULL,
+                    use_new INTEGER NOT NULL CHECK (use_new IN (0, 1)),
+                    snapshot_id TEXT,
+                    updated_at TEXT NOT NULL
+                );
                 """)
             columns = {
                 str(row[1])
@@ -801,7 +1129,7 @@ class ReloadJournal:
                     )
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path)
         try:
             conn.execute("PRAGMA journal_mode = WAL")

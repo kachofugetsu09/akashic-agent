@@ -1,9 +1,16 @@
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
 
 from agent.plugins.reload_journal import ReloadJournal
+
+
+def test_reload_journal_is_private(tmp_path: Path) -> None:
+    journal = ReloadJournal(tmp_path / "workspace")
+
+    assert stat.S_IMODE(journal.path.stat().st_mode) == 0o600
 
 
 def test_reload_journal_records_durable_transaction_phases(tmp_path: Path) -> None:
