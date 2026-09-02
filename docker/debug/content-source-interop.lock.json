@@ -3,8 +3,9 @@
   "core_contract": "39cbdcefc155aaf6c41deafd7754a37e6126c23c",
   "core_cases": [
     "tests/test_content_v3_composition.py",
+    "tests/test_wake_v3_composition.py",
     "tests/test_wake_durable_delivery.py",
-    "tests/test_wake_gate_contract.py"
+    "tests/test_wake_drift_fixture.py"
   ],
   "coexistence": [
     {

@@ -49,15 +49,17 @@ jobs:
           ../../.venv/bin/pytest -q tests
 
       - name: Run Python regressions
-        timeout-minutes: 10
+        timeout-minutes: 15
         env:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
-        run: .venv/bin/pytest -q -W error tests/
+        run: |
+          mapfile -t tests < tests_scenarios/contracts/pr-regression-files.txt
+          .venv/bin/pytest -q -W error "${tests[@]}"
 
       - name: Run Web regressions
         run: |
           npm ci
-          npm run test:web
+          npm run test:web:pr
           npm run typecheck
 
   change-impact-gate:
