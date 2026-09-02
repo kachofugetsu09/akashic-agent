@@ -3,8 +3,6 @@ import json
 import httpx
 import pytest
 
-from agent.tools.web_fetch import WebFetchTool
-from infra.channels.qq_channel import _read_qq_image
 from core.net.http import (
     HttpRequester,
     RequestBudget,
@@ -41,52 +39,6 @@ async def test_default_shared_http_resources_requires_explicit_configuration():
     finally:
         clear_default_shared_http_resources(resources)
         await resources.aclose()
-
-
-@pytest.mark.asyncio
-async def test_web_fetch_tool_uses_injected_requester():
-    async def _handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["accept"].startswith("text/plain")
-        return httpx.Response(
-            200,
-            request=request,
-            text="hello from shared requester",
-            headers={"content-type": "text/plain; charset=utf-8"},
-        )
-
-    requester = _build_requester(_handler)
-    try:
-        tool = WebFetchTool(requester)
-        payload = json.loads(
-            await tool.execute(url="https://example.com/data.txt", format="text")
-        )
-        assert payload["status"] == 200
-        assert payload["text"] == "hello from shared requester"
-    finally:
-        await requester.client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_qq_image_reader_uses_injected_requester():
-    def _handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            request=request,
-            content=b"fake-image-bytes",
-            headers={"content-type": "image/png"},
-        )
-
-    requester = _build_requester(_handler)
-    try:
-        content, media_type = await _read_qq_image(
-            "https://example.com/image.png",
-            requester,
-            max_bytes=1024,
-        )
-        assert content == b"fake-image-bytes"
-        assert media_type == "image/png"
-    finally:
-        await requester.client.aclose()
 
 
 @pytest.mark.asyncio

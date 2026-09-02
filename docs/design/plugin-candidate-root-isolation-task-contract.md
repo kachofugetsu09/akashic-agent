@@ -57,7 +57,7 @@ Core 提供隔离路径和生命周期 owner，不解释插件领域数据，也
 - direct candidate invariant 失败不得执行 formal apply；下一次 fresh attempt 可以独立成功。
 - installed promotion 在 Skill projection 或 owner commit 失败后，latest、production Root 和正式候选 owner 必须全部清除，stable pointer/Root/data 保持原值。
 - v2-only candidate promotion 产生新 stable snapshot，但继续复用未变化的旧 stable Root；candidate clone module 与 attempt data 不进入 stable。
-- targeted：`tests/test_plugin_composition_loader.py`、`tests/test_plugin_hot_reload.py`。
+- targeted：`tests/test_plugin_composition_lifecycle.py`、`tests/test_plugin_hot_reload.py`。旧 loader 细分测试已在 2026-09-02 测试预算清理中移除。
 - cumulative：manager/runtime control/composition kernel 与公开 change Gate。
 - 本地证据：composition loader/kernel/hot reload `188 passed`；manager/runtime control/reload journal/turn rollout/skill links/source/install 与 composition events/executor/lifecycle/experiment `159 passed`；Basedpyright `0 errors`，`git diff --check` 通过。
 - Terra xhigh 只读复审无 P0；其 promotion 失败、partial mount cancellation 和 registry cleanup findings 已转成上述 oracle。

@@ -1,25 +1,39 @@
-name: Programmatic Control Nightly
+name: Runtime Lifecycle Weekly
 
 on:
   schedule:
-    - cron: "23 18 * * *"
+    - cron: "23 18 * * 0"
   workflow_dispatch:
 
 jobs:
-  soak:
+  lifecycle:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Run deterministic resource soak
-        run: python docker/debug/programmatic_control_probe.py --gate soak
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
 
-      - name: Upload commit-bound soak evidence
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run deterministic lifecycle gates
+        run: |
+          python docker/debug/programmatic_control_probe.py --gate failure-matrix
+          python docker/debug/programmatic_control_probe.py --gate soak
+          python docker/debug/restart_probe.py --soak
+
+      - name: Upload commit-bound lifecycle evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: programmatic-control-soak-${{ github.sha }}
-          path: docker/debug/reports/programmatic-control/
+          name: runtime-lifecycle-${{ github.sha }}
+          path: |
+            docker/debug/reports/programmatic-control/
+            docker/debug/reports/restart/
           retention-days: 30

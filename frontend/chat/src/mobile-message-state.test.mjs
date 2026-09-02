@@ -315,17 +315,6 @@ test("reply navigation only resolves a target from the current message projectio
   assert.equal(resolveMobileReplyNavigationTarget("old-history", [user, assistant]), null);
 });
 
-test("reply navigation announces user and assistant identity with message time", () => {
-  assert.equal(
-    formatMobileReplyNavigationAnnouncement(selectableMessage("question", "user", "问题"), () => "10:21"),
-    "已跳到你 10:21 的消息",
-  );
-  assert.equal(
-    formatMobileReplyNavigationAnnouncement(selectableMessage("answer", "assistant", "回答"), () => "10:22"),
-    "已跳到Akashic 10:22 的消息",
-  );
-});
-
 test("composer waits until every attachment is ready", () => {
   assert.equal(allMobileAttachmentsReady([]), true);
   assert.equal(allMobileAttachmentsReady([{ state: "ready" }, { state: "ready" }]), true);

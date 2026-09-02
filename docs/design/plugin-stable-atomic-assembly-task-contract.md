@@ -66,7 +66,7 @@ v2 不是新组合平面的长期成员。本 PR 中下列代码只承担迁移�
 - required Service 永不出现时 fail-loud；`current_snapshot`、retained snapshot、active plugins/generations 和 scopes 都保持启动前状态。
 - legacy prepare、tool catalog 或注册失败时调用 terminate/Scope cleanup，失败插件不残留，剩余插件从全新对象重建。
 - 连续取消不能截断批次清理；全部 Scope、Root effect、KV rollback 和 topology Skill catalog 完成后才向调用方恢复 `CancelledError`。
-- targeted：`tests/test_plugin_composition_loader.py`、`tests/test_plugin_manager.py`。
+- targeted：`tests/test_plugin_composition_lifecycle.py`、`tests/test_plugin_hot_reload.py`。旧 loader/manager 细分测试已在 2026-09-02 测试预算清理中移除。
 - cumulative：plugin hot reload/runtime control/snapshot/composition 全量相关测试、Basedpyright、`git diff --check`、公开 change Gate。
 - 停止条件：正式 plugin-data 在失败批次中改变、Core-managed endpoint 提前开放、Root 被 snapshot lease 前释放、取消后残留 task/process/catalog、失败重试复用旧 instance。
 - 回滚点：Git tag `backup/plugin-atomic-assembly-r2-before-20260815`。

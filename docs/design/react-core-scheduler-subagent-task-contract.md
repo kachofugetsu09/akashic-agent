@@ -169,7 +169,7 @@ allowed_paths:
   - bootstrap/tools.py
   - plugins/subagent/plugin.py
   - tests/control/test_scoped_turn.py
-  - tests/test_subagent_v3_shadow.py
+  - tests/semantic/test_recursive_plugin_self_validation_contract.py
   - docs/NOW.md
   - docs/design/react-core-scheduler-subagent.md
   - docs/design/react-core-scheduler-subagent-task-contract.md
@@ -219,8 +219,8 @@ allowed_paths:
   - tests/**subagent**
   - tests/test_shell_tool.py
   - tests/test_plugin_hot_reload.py
-  - tests/test_plugin_packages.py
-  - tests/semantic/test_react_core_contract.py
+  - tests/test_plugin_generation_job_host.py
+  - tests/semantic/test_recursive_plugin_self_validation_contract.py
   - docs/NOW.md
   - docs/design/react-core-scheduler-subagent*.md
 forbidden_effects:

@@ -304,7 +304,7 @@ allowed_paths:
   - "skills/develop-akashic-plugin/**"
   - "skills/plugin-system/**"
   - "tests/test_plugin_*.py"
-  - "tests/test_channel_host.py"
+  - "tests/test_message_bus_admission.py"
   - "tests/test_builtin_*plugin*.py"
   - "tests/control/**"
   - "tests/semantic/**"

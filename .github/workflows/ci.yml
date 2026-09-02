@@ -53,14 +53,13 @@ jobs:
         env:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
-          .venv/bin/python scripts/check_pr_regression_budget.py
-          mapfile -t tests < tests_scenarios/contracts/pr-regression-files.txt
-          .venv/bin/pytest -q -W error "${tests[@]}"
+          .venv/bin/python scripts/check_test_budget.py
+          .venv/bin/pytest -q -W error tests/
 
       - name: Run Web regressions
         run: |
           npm ci
-          npm run test:web:pr
+          npm run test:web
           npm run typecheck
 
   change-impact-gate:

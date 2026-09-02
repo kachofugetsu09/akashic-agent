@@ -1,22 +1,65 @@
 # 测试与 Gate 清理账本
 
-本账本记录测试和 Gate 的收敛。数量不是删除证明：只有明确没有独占现实可观察回归、非平凡不变量、信任边界、生命周期、持久化或具体 bug 的测试，才可以永久删除。
+本账本记录测试与 Gate 的永久收敛。数量只是预算，不是删除依据；取舍按用户可观察失败、持久化与安全边界、并发 finality、恢复能力和插件 v3 生命周期排序。
 
-## 记录格式
+## 2026-09-02：保留最高价值的三分之一
 
-每次清理记录基线、运行范围、永久删除、删除理由、保留边界、验证和恢复点。新增或删除测试都必须说明它固定或放弃的可观察失败。
+### 结果
 
-## 2026-09-02：普通 Pull Request 回归与插件 v3 Gate 分层
+| 范围 | 清理前 | 保留 | 删除 | 预算结果 |
+| --- | ---: | ---: | ---: | --- |
+| Python | 3239 项 / 250 文件 | 1080 项 / 72 文件 | 2159 项 / 178 文件 | `ceil(3239 / 3) = 1080` |
+| Node | 194 项 / 34 文件 | 62 项 / 4 文件 | 132 项 / 30 文件 | 低于三分之一 |
+| PR CI job | 8 | 2 | 6 | 低于三分之一 |
 
-- 基线：`origin/main@1b889e01`；完整 Python 为 3239 项、完整 Node 为 194 项，Pull Request CI 为 8 个 job。
-- 普通 PR：运行 1080 项 Python，即完整数量向上取整后的三分之一；运行 62 项 Web；CI 收敛为 `check-and-test` 与 `change-impact-gate` 两个 job。
-- 完整资产：3239 项 Python、194 项 Node 及原始 semantic scenario、impact mapping、Content/Wake manifest、插件 v3 Gate 脚本全部保留。change-impact Gate 可以按生产 diff 选择普通 PR 清单外的边界测试；候选或发布里程碑继续运行完整回归与对应集中 Gate。
-- 永久删除：无。第一次实现曾按数量批量删除 205 个测试文件；复核发现其中包含 ConversationRuntime finality、Web ingress、attachment durable publication、backup restore、MCP recovery 和 plugin lifecycle 等独占边界，无法证明安全，因此全部恢复。
-- 收敛理由：过重来自“每个 PR 总是运行全部回归和多个候选/发布 Docker Gate”，不是测试文件存在本身。最终只减少常态执行频率，不销毁可在影响 Gate、候选或发布阶段调用的证据。
-- Python 清单：`tests_scenarios/contracts/pr-regression-files.txt` 明确列出普通 PR 文件；`scripts/check_pr_regression_budget.py` 在 CI 中校验路径存在且唯一，并用 pytest 真实收集数固定为完整集向上取整后的三分之一。复审后以 50 项 mobile protocol schema/枚举覆盖换入 19 项 ConversationRuntime finality 和 31 项 channel-to-runtime durable handoff；前者在完整套件保留，并在 `infra/mobile_realtime/**`、protocol 或 schema 变化时由 `mobile_realtime_contract` 运行整个 `tests/mobile_realtime`，后两者此前没有 scenario 直接覆盖，固定 late failure、exactly-once delivery 与 durable handoff。清单还覆盖 Session 只追加、迁移/backfill/retirement、认证、附件、generation 发布、进程清理、provider 错误、确定性并发、中断恢复和 Content/Wake 互操作。
-- Web 清单：`npm run test:web:pr` 保留移动消息状态、Web transport 和 Akasha 移动端行为；原有 navigation、theme、plugin web module、mobile state 和 performance 命令保持可运行。
-- Docker Gate：普通 PR 不再总是重复完整回归、static fleet、Mobile、composition、programmatic-control 与 restart-soak job；手动 `Plugin v3 Candidate Gates` workflow 是候选与发布阶段运行完整 Python/Node、这些 Gate 脚本并上传 commit-bound evidence 的 owner。依赖正式来源 workspace 副本的 E4 仍按发布手册显式执行，不进入无正式状态的 GitHub runner。
-- 发布缺口：E3 Fleet/Channel/Proactive 是既有发布合同，但仓库尚无 runner。本次不伪造或删除该合同；E4 会对缺失或身份不匹配的 E3 报告 fail closed，因此 E3 落地前只能合并本次 CI 分层，不能宣称完整插件 v3 发布 Gate 已完成。
-- 并发：保留 WebSocket generation 发布用例的 5 秒 fail-loud timeout。1012 close 只协调客户端关闭，测试退出 TestClient WebSocket context 完成 close handshake，让 middleware 拥有的 snapshot lease 可以释放，再等待 publication；lease drain 没有内部 deadline，删除外层 timeout 会把回归退化成 CI 级无界挂起，因此不属于可安全清理项。
-- 恢复点：初始清理前归档位于 `/mnt/data/akasic-agent-backups/test-gate-one-third-20260902-before-clean/test-and-gate-surface.tar.gz`；安全返工前 bundle 位于同目录 `pre-safety-rework-fab050bf.bundle`，SHA-256 为 `bd64973eea6291bd6934a3fda14e4284de4026011e0d2a590a6ddda49c511d3e`；独立 Review 修复前 bundle 为 `pre-terra-fixes-7806cf79.bundle`，SHA-256 为 `c46560c496492f906ee243badcfab98917060603a7976dcb9102990366fdeb83`。
-- 验证：最终普通 PR Python 清单实跑为 `1075 passed, 5 skipped`（472.22 秒）；完整 Python 为 `3233 passed, 6 skipped`（810.76 秒）；完整 Node 为 `194 passed`，候选 workflow 的相同 Node 发现命令也为 `194 passed`。WebSocket lease 顺序修复后目标用例连续运行 10 次全部通过。TypeScript、生产/测试 Pyright、控制协议 schema、Yoyo 只追加检查、Gate audit 与差异检查均通过；最终 change-impact Gate 通过，报告为 `docker/debug/reports/change-gate/20260902-215329-121a9138`。独立 Review 首轮发现清单预算与候选 Gate owner 缺少机器约束，以及 publication timeout 被错误移除；上述三项已返工，复审结论随后记录。
+Python 的 1080 是仓库完整收集数，不是从完整套件中挑出的 PR 子集。`scripts/check_test_budget.py` 同时固定数量和文件集合；任何未列入 `tests_scenarios/contracts/retained-test-files.txt` 的新测试都会使 CI 失败。Node 只保留 mobile message state、pairing response schema、Web transport 和 Akasha mobile UI 四个行为边界，由唯一命令 `npm run test:web` 执行。
+
+删除的精确路径以本次提交的 delete diff 为准。Python 删除清单 SHA-256 为 `e807c64144b4693959d85edd23bea2832832ad138e662cab752cd55c8a967785`，Node 删除清单 SHA-256 为 `9b6cc344774d16dbd7d4f9a4e2bc154c1c7285ef5434aaccfb905d786b1c01d1`；摘要基于排序后的仓库相对路径，每行一个。
+
+### 保留理由
+
+保留清单不是按文件大小或覆盖率生成。每个文件至少拥有以下一种高价值失败：
+
+- `tests/semantic/**`：P0 mutant/oracle、非破坏历史、模型 owner、递归插件验证和 change-impact Gate 自身的 fail-closed 合同。
+- `tests/control/**`、`test_session_store.py`、`test_message_bus_admission.py`：Turn admission、同 session 排他、跨 session 并发、中断、重放、终态一次性和消息只追加。
+- `test_plugin_hot_reload.py`、`test_plugin_install.py`、`test_plugin_generation_job_host.py`、`test_plugin_managed_process_host.py`、`test_plugin_runtime_control.py`、`test_plugin_turn_rollout.py`：插件 v3 generation、lease、promotion、rollback、卸载、进程清理和崩溃恢复。
+- `mobile_realtime/**`、`test_web_chat_channel.py`、`test_channel_attachment_store.py`、`test_durable_deliveries.py`：真实入口的认证、附件、游标、持久交付、跨客户端身份和 exactly-once/finality。
+- `test_context_compaction_contract.py`、`test_session_compaction_runtime.py` 及迁移测试：历史正文不得因裁切或迁移减少，迁移链必须 append-only 且可从旧状态恢复。单项迁移测试数量小，但保护不可逆数据变换。
+- `test_agent_restart.py`、`test_mcp_process_recovery.py`、`test_rolling_backup.py`、`test_runtime_smoke.py`：监听器归属、子进程 epoch、备份恢复和跨层启动/关闭失败语义。
+- `test_shell_tool.py`、`test_unified_exec.py`、`test_tool_executor.py`：外部进程、权限、取消和输出 finality 的信任边界。
+- `mobile-message-state.test.mjs`、`mobile-pairing.test.mjs`、`web-chat-transport.test.mjs`、`test_akasha_mobile_ui.mjs`：用户真正看到的消息身份、外部 pairing 响应校验、流式终态、草稿/阅读锚点和 Akasha 查询边界。
+
+最后一次等额调整用 138 项更高价值边界替换 138 项内部覆盖：加入 rolling backup、MCP process recovery、attachment store、durable delivery、真实 Web ingress 和 runtime smoke；移出 MCP slot、turn pipeline、composition wiring、reload journal 以及重复的 mobile adapter/publisher 组合。数量不变，但对灾难恢复、进程恢复、权威附件、交付 finality 和真实入口的保护更强。
+
+独立复审又完成两次等额交换：用 Web pairing 的外部响应 schema 边界替换一项通知文案字面测试；用 2 项正式 credential/ref 冻结与原始配置 revision drift 测试替换 2 项 injected requester wiring 测试。它们分别保护不可信网络输入和插件 secret/config 的 TOCTOU 边界，优先级高于展示字符串与依赖注入接线。
+
+### 删除理由
+
+被删除测试按主要理由归入以下类别。一个文件可能同时符合多项；删除仍有取舍，不声称它们完全没有价值。
+
+| 删除类别 | 主要路径示例 | 为什么在 1080 预算外 |
+| --- | --- | --- |
+| 实现镜像与分层重复 | `test_agent_core_p*.py`、`test_plugin_composition_*.py`、`test_*_modules.py` | 固定 helper、slot、wiring、字段转发或显然控制流；同一可观察合同已在 runtime、control、generation 或 semantic 边界保留。 |
+| 字面量、schema 与 catalog 枚举 | `test_plugin_static_manifest.py`、`test_plugin_config_schema.py`、`test_model_catalog_reader.py`、theme/module-boundary Node 测试 | 主要镜像常量、映射、导出列表或静态形状；真实加载、安装、协议拒绝或 UI 行为边界优先。 |
+| 重复 adapter/client 组合 | `test_channel_base.py`、`test_channel_clients.py`、`test_core_channel_adapter.py`、mobile gateway/pairing/publisher 测试 | 相同身份、鉴权、交付和 publication 语义已由 Web/mobile 真实入口及持久存储边界覆盖。 |
+| 已移除或历史过渡面 | `test_workspace_mcp_removed.py`、`test_plugin_v3_only_surface.py`、shadow/legacy migration 辅助面 | 仅证明旧入口不存在或过渡实现仍在；没有持续的公共 absence 合同则不占长期预算。真正不可逆的数据库迁移仍保留。 |
+| 宽矩阵与低增量排列 | provider/model 普通安装组合、plugin composition 各 slot 组合、UI state 细分 Node 文件 | 多个用例沿同一路径只替换插件、provider 或状态枚举；保留最能穿过公共边界和失败路径的代表。 |
+| benchmark、性能与部署演练 | `tests/benchmark/test_harbor_*.py`、WebUI performance `.test.mjs`、container/release rehearsal 测试 | 它们是专项测量或环境验收，不是每次源码变更都必须固定的核心回归；正式性能或发布验收应由独立、带真实环境证据的流程拥有。 |
+| 被更高层 finality 覆盖 | `test_turn_pipelines.py`、`test_turn_effects.py`、`test_content_store.py`、部分 wake/drift 与 support 测试 | 保留 ConversationRuntime、SessionStore、durable delivery、semantic mutant 和 wake durable 边界，避免在下游重复验证同一 owner。 |
+
+主动放弃的检测粒度包括：每种 provider/plugin 的对称安装排列、每个 composition slot 的内部快照、全部桌面 UI 小状态、benchmark controller 细节，以及部分旧 CLI/部署 helper。若这些区域以后发生具体生产 bug，应优先在现有公共边界补一个回归，并从 1080 预算中移出更低价值测试，而不是扩大总数。
+
+### Gate 清理
+
+- 普通 PR 从 8 个 job 收敛到 `check-and-test` 与 `change-impact-gate` 两个。2026-07-18 引入的统一 Gate 已能按 diff 选择 P0 mutant/oracle 并对未知映射 fail closed，因此保留；它是当前 Core 变更的单一语义 owner。
+- 2026-07-14 的 control 三连跑和 restart soak、2026-08-18 的 static fleet、2026-08-15～16 的旧 composition 不再进入每个 PR。control/restart 已合并为一个每周 lifecycle job；旧 composition 已被 2026-08-18 引入的正式 E1/E2 能力批次取代。
+- 手动候选 workflow 从 4 个 job 收敛到 1 个，只运行 fleet completeness、Mobile、公共 WebUI、E1 和 E2。四个行为批次分别固定用户可见 Mobile ABI、真实 WebSocket 插件面、状态型插件生命周期和 Tool/MCP/process finality。fleet 静态检查还扫描 18 个锁定插件的来源身份、禁止 v2 import/base/method、`api_version` 和 retired exclusion；E1/E2/Mobile 的并集尚未覆盖 `setup_helper`、`feishu`、`qqbot`、`huayue-skills` 和 `github_watch`，所以 E3 落地前不能删除。workflow 不再重复 1080/62 回归或旧 composition。
+- `programmatic-control-nightly.yml` 改为每周唯一的 full-process lifecycle job，顺序运行 failure matrix、100-turn resource soak 与 restart soak；进程级 SIGTERM/crash、workspace lock 和资源泄漏因此仍有明确 owner，但不阻塞每个 PR。E4 保留为本地正式发布 Gate，因为它需要显式的正式来源 workspace 副本，不能安全地放进普通 GitHub runner。
+- semantic scenario 与 Content/Wake lock/H5 manifest 都只引用仍保留的测试；已删除的 slot、pipeline、gateway、shadow 和 support 测试不再被 Gate 间接复活。
+- E3 Fleet/Channel/Proactive runner 仍是既有 P2 缺口；E4 对缺失或身份不匹配报告 fail closed。本次清理不伪造发布通过。
+
+### 恢复与验证
+
+清理前恢复点：`/mnt/data/akasic-agent-backups/test-gate-one-third-20260902-before-clean/pre-hard-budget-71b27f5b.bundle`，SHA-256 `78c213310dc94c8ee5a16da65f8dd25c4dc0078aab7bb965cb772b91001ed7f5`。更早的完整测试归档为同目录 `test-and-gate-surface.tar.gz`。
+
+本地验证：预算检查为 `python_files=72 python_tests=1080 node_files=4`；最终等额交换后的 Python 全量为 `1075 passed, 5 skipped`（155.87 秒），Node 为 `62 passed`。Python/测试/SDK Pyright、TypeScript、control schema、Yoyo append-only、SDK 11 项测试、workflow YAML、Gate audit 和 `git diff --check` 均通过；受保护合同变化触发的 27 个公开场景也通过。Terra xhigh 独立复审提出的 fleet coverage、pairing/credential swap、full-process lifecycle owner 和活跃文档悬空引用均已修正，代码与文档 P0/P1 清零。提交后仍需远端 CI 对精确 head 验证。

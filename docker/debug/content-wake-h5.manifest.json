@@ -4,24 +4,24 @@
   "suites": [
     {
       "id": "scheduler",
-      "cases": ["tests/test_scheduler_v3_shadow.py"]
+      "cases": [
+        "tests/semantic/test_companion_contract.py::test_schedule_capacity_rejects_unbounded_add_mutant",
+        "tests/test_job_store.py"
+      ]
     },
     {
       "id": "subagent_and_real_mcp",
       "cases": [
-        "tests/test_subagent_v3_shadow.py",
-        "tests/test_subagent_v3_runtime.py",
-        "tests/test_plugin_composition_generation_host.py::test_exact_root_candidate_materializes_process_mcp_and_tool_route",
-        "tests/test_mcp_process_recovery.py::test_mcp_client_recovers_process_epoch_and_keeps_logical_contract"
+        "tests/test_mcp_process_recovery.py::test_mcp_client_recovers_process_epoch_and_keeps_logical_contract",
+        "tests/test_plugin_managed_process_host.py::test_process_exit_recovers_with_new_epoch_without_stale_resurrection"
       ]
     },
     {
       "id": "wake_drift_and_handoff",
       "cases": [
-        "tests/test_wake_v3_composition.py",
         "tests/test_wake_durable_delivery.py",
-        "tests/test_wake_drift_fixture.py",
-        "tests/test_proactive_island_handoff.py"
+        "tests/test_wake_gate_contract.py",
+        "tests/test_proactive_feedback_emotion_interop.py"
       ]
     }
   ],

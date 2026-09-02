@@ -103,7 +103,8 @@ python docker/debug/programmatic_control_probe.py --gate failure-matrix
 python docker/debug/programmatic_control_probe.py --gate soak
 ```
 
-当前基建实现 `smoke`、PR 必选的 `failure-matrix` 和 nightly/release `soak`。`smoke`
+当前基建实现 `smoke`、`failure-matrix` 和 `soak`。每周 `Runtime Lifecycle Weekly`
+顺序运行 `failure-matrix`、`soak` 与 restart soak；它们不再是普通 PR 的重复 Gate。`smoke`
 覆盖 UDS/stdio、基本 turn，以及 streaming/tool/usage 的事件与 DB 一致性；
 `failure-matrix` 覆盖双连接隔离、同 thread active-start busy、精确中断、断线恢复、慢客户端背压、
 provider 分类、非法协议、Web channel parity、workspace lock、SIGTERM 和 crash/restart。
@@ -351,47 +352,39 @@ container
 
 ## 插件变更 Gate
 
-pure-v3 发布证据分成静态 fleet、领域组合与四个集中 E2E 批次。所有 Gate
+pure-v3 发布证据以集中 E1～E4 为主，Mobile 和公共 WebUI 补充用户可见边界。所有 Gate
 使用 exact commit 锁、一次性 workspace/plugin-home/HOME 与受控端点，不读写正式
 Akashic workspace、正式凭据或 hua-home 服务。
 
 这些是插件候选与发布 Gate，不是普通 Core Pull Request 的固定矩阵。普通 Pull Request
-只运行聚焦回归和按 diff 选场景的统一变更影响 Gate；当改动进入插件候选或发布里程碑时，
-由 `Plugin v3 Candidate Gates` 手动 workflow 运行 static、Mobile、composition、control
-与 restart Gate，再按下列层次补齐依赖正式来源副本的集中 E2E，避免在每个改动上重复搭建
-同一组 Docker 环境。
+运行全部保留回归和按 diff 选场景的统一变更影响 Gate；当改动进入插件候选时，
+`Plugin v3 Candidate Gates` 手动 workflow 只运行 fleet completeness、Mobile、公共 WebUI、E1 和 E2。
+E4 依赖维护者显式提供的正式来源副本，只在本地发布验收中运行。
 
 ```text
-精确 fleet lock
+精确能力 lock
       │
-      ├── static fleet ── manifest / api_version=3 / retired exclusions
+      ├── fleet ─────── 全插件来源、v3-only 与 retired exclusion
       ├── Mobile ────── Python catalog / JS ABI / plugin tests
-      ├── Tool ─────── typed prepare / authorize / result
-      ├── Passive/WebUI ── Citation / Meme / public WebSocket
-      └── E1─E4 ───── grouped behavior / failure / copied-workspace rehearsal
+      ├── WebUI ─────── Citation / Meme / public WebSocket
+      ├── E1/E2 ────── state plugins / typed Tool / MCP / process finality
+      └── E3/E4 ────── fleet coverage / copied-workspace rehearsal
 ```
 
-静态 fleet 与 Mobile Gate：
+候选 workflow 保留的独立边界：
 
 ```bash
 python docker/debug/plugin_v3_fleet_gate.py \
   --require-clean-core --require-full-core-history
 python docker/debug/plugin_v3_mobile_gate.py --require-clean-core
-```
-
-领域组合 Gate：
-
-```bash
-python docker/debug/plugin_composition_v3_gate.py --require-clean-core
-python docker/debug/plugin_passive_composition_v3_gate.py --require-clean-core
 python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
-```
-
-集中 E2E 只在能力接线全部完成后运行一轮：
-
-```bash
 python docker/debug/plugin_v3_e1_gate.py
 python docker/debug/plugin_v3_e2_gate.py --require-clean-core
+```
+
+E4 只在能力接线全部完成且正式来源副本可用时运行：
+
+```bash
 python docker/debug/plugin_v3_e4_gate.py \
   --source-workspace /path/to/source-workspace \
   --source-config /path/to/config.toml \

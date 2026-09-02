@@ -759,7 +759,7 @@ Phase 1 完整后锁住“绝不丢持久历史”。Phase 2 再收紧 runtime �
 - `run_turn` retry 成功记录 `selected_plan`、`disabled_sections` 和 window，不再调用 `trim_history_async`。
 - history window 小于原窗口时调用名称明确的 runtime-only mutator；它只修改内存中的 `session.messages` 和 `last_consolidated`，不刷新 `updated_at`，也不调用 store。
 - `agent/looping/core.py::_assemble_passive_runtime` 不再把 `self.session_manager` 注入 reasoner。
-- `tests/test_safety_retry_service.py` 核对 dynamic-only 保持原 `session.messages`，50% history retry 只保留选中窗口。
+- `tests/test_session_compaction_runtime.py` 核对 runtime-only projection 不改写权威 Session，并固定 retry/commit 边界。旧 safety-retry 细分测试已在 2026-09-02 测试预算清理中移除。
 - Phase 1 两个 case 开启对应的 runtime view 断言。
 
 验收：`rg '_session_manager|trim_history_async' agent/core/passive_turn.py` 无匹配；prompt retry 的 protected store write set 为空；runtime view 的变化与 selected window 完全一致；retry trace 能解释本次发送了哪个窗口。

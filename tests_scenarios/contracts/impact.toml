@@ -70,7 +70,6 @@ paths = [
   "schema/archive/mobile-realtime-v1-mobile-pr6.json",
   "scripts/generate_mobile_realtime_schema.py",
   "tests/mobile_realtime/**",
-  "tests/test_plugin_mobile_ui.py",
   "tests_scenarios/mobile_isolated_gateway.py",
 ]
 depends_on = ["channel", "plugin", "session_persistence"]
@@ -105,7 +104,6 @@ paths = [
   "schema/mobile-realtime-v1.json",
   "scripts/generate_mobile_realtime_schema.py",
   "scripts/publish-mobile-webui.py",
-  "tests/mobile_realtime/test_mobile_realtime_protocol.py",
   "tests/mobile_webui/**",
 ]
 depends_on = ["mobile_realtime"]
@@ -117,7 +115,6 @@ requirements = ["PLG-004", "PLG-008", "PLG-009", "TST-001", "TST-003"]
 paths = [
   "agent/mcp/**",
   "bootstrap/toolsets/protocol.py",
-  "tests/test_workspace_mcp_removed.py",
 ]
 depends_on = ["plugin", "lifecycle"]
 scenarios = ["mcp_call_finality", "mcp_process_lifecycle"]
@@ -139,8 +136,6 @@ paths = [
   "bootstrap/tools.py",
   "bootstrap/wiring.py",
   "tests/test_plugin_*.py",
-  "tests/test_computer_plugin.py",
-  "tests/test_workload_controller.py",
 ]
 deleted_paths = [
   "agent/tool_hooks/**",
@@ -187,10 +182,7 @@ paths = [
   "migrations/yoyo/*model*.py",
   "tests/model_plugin_fakes.py",
   "tests/test_*model*.py",
-  "tests/test_vision_tool.py",
-  "tests/test_akasha_plugin.py",
   "tests/test_plugin_generation_job_host.py",
-  "tests/test_web_shell.py",
   "tests/semantic/test_model_owner_contract.py",
 ]
 deleted_paths = ["agent/provider.py", "bootstrap/providers.py"]
@@ -215,12 +207,8 @@ paths = [
   "skills/develop-akashic-plugin/**",
   "tests/control/**",
   "tests/semantic/test_recursive_plugin_self_validation_contract.py",
-  "tests/semantic/test_recursive_plugin_self_validation_trajectory.py",
-  "tests/test_builtin_develop_akashic_plugin_skill.py",
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_runtime_control.py",
-  "tests/test_support_modules.py",
-  "tests/test_turn_pipelines.py",
 ]
 depends_on = ["plugin", "control", "session_persistence", "channel", "memory"]
 scenarios = ["recursive_plugin_self_validation_contract"]
@@ -253,9 +241,7 @@ paths = [
   "plugins/eventmail/**",
   "plugins/wake/**",
   "plugins/drift/**",
-  "tests/test_content_*.py",
   "tests/test_wake_*.py",
-  "tests/test_drift_*.py",
 ]
 depends_on = ["events", "plugin"]
 scenarios = ["content_wake_delivery_contract"]
@@ -375,7 +361,6 @@ paths = [
   "scripts/prepare_container_rehearsal.py",
   "scripts/prepare_runtime_checkout.py",
   "scripts/verify_host_runtime_deployment.py",
-  "tests/test_akashic_release_installer.py",
 ]
 depends_on = ["runtime", "shell_finality", "session_persistence"]
 scenarios = ["host_bridge_boot_fencing_contract", "shell_privileged_cleanup_contract"]
@@ -387,7 +372,6 @@ paths = [
   "agent/migrations/**",
   "migrations/**",
   "scripts/check_yoyo_migrations.py",
-  "tests/test_main_lightweight_commands.py",
   "tests/test_migration_runner.py",
   "tests/test_yoyo_migration_append_only.py",
 ]
@@ -412,7 +396,7 @@ scenarios = ["companion_tool_context_contract"]
 [groups.companion_external_io]
 priority = "p0"
 requirements = ["SEC-002", "FS-001", "SES-006", "ERR-001", "TST-001", "TST-003"]
-paths = ["core/net/http.py", "agent/tools/web_fetch.py", "bootstrap/chat_api.py", "infra/channels/base.py", "infra/channels/delivery.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/mobile_realtime/test_storage.py"]
+paths = ["core/net/http.py", "agent/tools/web_fetch.py", "bootstrap/chat_api.py", "infra/channels/base.py", "infra/channels/delivery.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
 depends_on = ["runtime", "mobile_realtime"]
 scenarios = ["companion_external_io_contract"]
 

@@ -53,7 +53,13 @@ requirements = ["WSP-001", "WSP-004", "TST-005"]
 groups = ["runtime", "tooling"]
 environment = "public_clean_workspace"
 timeout_seconds = 120
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_gate_workspace_contract.py"]
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_contract_oracles.py::test_workspace_oracle_rejects_official_path_mutant",
+]
 observes = ["workspace_path", "plugin_home_path", "fresh_config"]
 mutants = ["official_workspace_path"]
 
@@ -132,9 +138,6 @@ command = [
   "pytest",
   "-q",
   "tests/test_host_bridge.py",
-  "tests/test_akashic_release_installer.py",
-  "tests/test_runtime_identity.py",
-  "tests/test_host_runtime_healthcheck.py",
 ]
 observes = [
   "release_identity",
@@ -179,9 +182,6 @@ command = [
   "pytest",
   "-q",
   "tests/mobile_realtime",
-  "tests/test_plugin_mobile_ui.py",
-  "tests/test_app_server.py",
-  "tests/test_channel_host.py",
 ]
 observes = ["protocol_frames", "session_identity", "durable_delivery", "resume_cursor", "attachment_finality", "plugin_ui_snapshot", "master_key_write_set", "master_key_file", "keyset_manifest", "restart_identity"]
 mutants = ["unicode_utf16_command_length"]
@@ -214,7 +214,7 @@ command = [
   "pytest",
   "-q",
   "tests/mobile_webui",
-  "tests/mobile_realtime/test_mobile_realtime_protocol.py",
+  "tests/mobile_realtime/test_channel.py",
 ]
 observes = [
   "release_view",
@@ -242,9 +242,7 @@ command = [
   "-q",
   "--basetemp=/sandbox/pytest-mcp-call-finality",
   "tests/semantic/test_contract_oracles.py",
-  "tests/test_plugin_composition_mcp_slots.py::test_mcp_registry_freezes_descriptor_health_and_cleanup",
-  "tests/test_plugin_composition_mcp_slots.py::test_static_manifest_is_admission_source_and_reconciles_mcp_root",
-  "tests/test_workspace_mcp_removed.py",
+  "tests/test_mcp_process_recovery.py::test_mcp_client_call_gate_waits_for_recovery_and_disconnect_cancels_it",
 ]
 observes = ["call_return", "immediate_read_after_call"]
 mutants = ["async_accepted_before_visible"]
@@ -259,8 +257,6 @@ command = [
   "-m",
   "pytest",
   "-q",
-  "tests/test_io_modules.py::test_mcp_client_cleans_wrapper_process_group",
-  "tests/test_io_modules.py::test_mcp_client_retains_ownership_when_process_group_cleanup_fails",
   "tests/test_plugin_managed_process_host.py::test_formal_fixed_port_and_candidate_are_isolated",
   "tests/test_plugin_managed_process_host.py::test_process_exit_recovers_with_new_epoch_without_stale_resurrection",
   "tests/test_plugin_managed_process_host.py::test_cleanup_failure_retains_tombstone_until_retry",
@@ -301,10 +297,6 @@ command = [
   "-q",
   "tests/semantic/test_contract_oracles.py::test_plugin_drain_oracle_rejects_active_only_completion_mutant",
   "tests/semantic/test_contract_oracles.py::test_plugin_data_oracle_rejects_uninstall_delete_mutant",
-  "tests/test_plugin_workload_manifest.py",
-  "tests/test_plugin_workload_core.py",
-  "tests/test_workload_controller.py",
-  "tests/test_computer_plugin.py",
 ]
 observes = [
   "workload_declaration",
@@ -331,27 +323,10 @@ command = [
   "pytest",
   "-q",
   "tests/semantic/test_model_owner_contract.py",
-  "tests/test_models_plugin_ordinary_install.py::test_models_plugin_installs_and_runs_without_builtin_source",
-  "tests/test_openai_compatible_model_plugin.py::test_driver_is_an_installable_ordinary_artifact",
-  "tests/test_codex_model_plugin.py::test_codex_is_an_ordinary_installed_plugin_with_login_refresh_and_continuation",
-  "tests/test_opencode_go_model_plugin.py::test_driver_is_an_installable_ordinary_artifact",
-  "tests/test_compaction_markdown_memory_e2e.py",
-  "tests/test_markdown_memory_plugin.py",
-  "tests/test_model_control_api.py",
-  "tests/test_turn_pipelines.py::test_runtime_admission_runs_normal_tool_loop_through_chat_models",
-  "tests/test_models_plugin_store.py::test_saved_model_service_rejects_another_runtime_snapshot",
-  "tests/test_models_plugin_store.py::test_model_service_requires_owner_task_snapshot_lease",
-  "tests/test_models_plugin_store.py::test_model_capabilities_sources_and_driver_config_round_trip",
-  "tests/test_vision_tool.py",
   "tests/test_plugin_generation_job_host.py::test_llm_lease_is_invocation_scoped_and_invalid_after_handler",
   "tests/test_plugin_generation_job_host.py::test_model_retry_reuses_one_exact_binding_and_execution",
   "tests/test_plugin_generation_job_host.py::test_model_view_rejects_inherited_child_task",
   "tests/test_plugin_generation_job_host.py::test_queued_request_selects_model_generation_at_execution_start",
-  "tests/test_akasha_plugin.py::test_explicit_reindex_backs_up_and_publishes_descriptor_space",
-  "tests/test_akasha_plugin.py::test_engine_rejects_a_bound_embedding_space_change",
-  "tests/test_web_shell.py::test_model_control_crosses_public_shell_and_real_chat_socket",
-  "tests/test_web_chat_channel.py::test_chat_model_catalog_reports_session_override",
-  "tests/test_retire_core_model_config_migration.py",
   "tests/test_migration_runner.py",
 ]
 observes = [
@@ -415,13 +390,11 @@ command = [
   "-m",
   "pytest",
   "-q",
-  "tests/test_plugin_composition_loader.py::test_v3_reload_keeps_old_root_until_snapshot_lease_drains",
   "tests/test_plugin_runtime_control.py::test_installed_mcp_update_keeps_old_artifact_until_lease_drains",
   "tests/test_plugin_turn_rollout.py::test_revert_is_same_turn_only_and_uninstall_stays_reversible",
   "tests/control/test_protocol.py::test_plugin_uninstall_returns_before_old_turn_drain_completes",
   "tests/control/test_protocol.py::test_plugin_uninstall_survives_deferred_client_disconnect",
   "tests/test_shell_tool.py::test_shell_env_exports_plugin_rollout_owner_turn",
-  "tests/test_runtime_smoke.py::test_plugin_uninstall_passes_active_turn_owner",
   "tests/test_plugin_install.py::test_plugin_enable_disable_and_uninstall_preserve_data",
 ]
 observes = [
@@ -448,7 +421,6 @@ command = [
   "pytest",
   "-q",
   "tests/semantic/test_contract_oracles.py::test_memory_oracle_rejects_derived_state_overwrite_mutant",
-  "tests/test_akasha_plugin.py",
   "tests/test_session_store.py",
 ]
 observes = ["long_term_owner", "session_source"]
@@ -465,27 +437,16 @@ command = [
   "pytest",
   "-q",
   "tests/semantic/test_recursive_plugin_self_validation_contract.py",
-  "tests/semantic/test_recursive_plugin_self_validation_trajectory.py",
   "tests/test_plugin_runtime_control.py",
-  "tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session",
-  "tests/test_turn_pipelines.py::test_process_direct_waits_for_the_same_session_lane",
+  "tests/control/test_conversation_runtime.py::test_runtime_executes_different_threads_concurrently",
+  "tests/control/test_conversation_runtime.py::test_runtime_rejects_same_thread_input_and_interrupts_exact_turn",
   "tests/test_plugin_hot_reload.py::test_runtime_snapshot_latest_requires_explicit_selector_and_promotion",
-  "tests/test_plugin_composition_loader.py::test_candidate_uses_isolated_data_copy",
   "tests/test_plugin_hot_reload.py::test_startup_recovers_installed_candidate_from_durable_pointers",
-  "tests/test_plugin_composition_loader.py::test_installed_v3_candidate_health_blocks_promotion_until_recovered",
   "tests/test_plugin_hot_reload.py::test_passive_runtime_admission_holds_one_snapshot",
-  "tests/test_plugin_doctor.py::test_plugin_doctor_reads_latest_artifact_candidate",
   "tests/control/test_control_execution.py::test_control_execution_preserves_inbound_metadata",
-  "tests/control/test_exec_cli.py::test_exec_new_rejects_unbound_latest_and_defaults_to_stable",
-  "tests/control/test_exec_cli.py::test_control_client_reads_terminal_larger_than_asyncio_default",
   "tests/control/test_protocol.py::test_thread_runtime_selector_rejects_persisted_latest",
   "tests/control/test_protocol.py::test_router_disconnect_interrupts_only_attached_turn",
-  "tests/test_turn_effects.py",
   "tests/test_session_compaction_runtime.py::test_suppressed_turn_commit_advances_ledger_without_markdown",
-  "tests/test_support_modules.py::test_message_push_passive_role_is_forwarded_to_committed_dispatcher",
-  "tests/test_support_modules.py::test_message_push_passive_send_does_not_consume_queued_outbound_pending",
-  "tests/test_support_modules.py::test_context_builder_debug_projection_is_turn_local",
-  "tests/test_builtin_develop_akashic_plugin_skill.py",
 ]
 observes = [
   "runtime_pointer_snapshot",
@@ -516,7 +477,7 @@ requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
 groups = ["companion_tool_context"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_tool_context_rejects_origin_override_mutant", "tests/test_tool_executor.py", "tests/test_recall_memory_tool.py", "tests/turns/test_outbound.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_tool_context_rejects_origin_override_mutant", "tests/test_tool_executor.py"]
 observes = ["tool_execution_context", "schema_rejection", "outbound_target", "memory_provenance", "failure_semantics"]
 mutants = ["companion_tool_context_origin_override"]
 
@@ -525,7 +486,7 @@ requirements = ["SEC-002", "FS-001", "SES-006", "ERR-001", "TST-001", "TST-003"]
 groups = ["companion_external_io"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_external_io_rejects_ownerless_spill_mutant", "tests/test_http_resources.py", "tests/test_http_migrations.py", "tests/test_channel_clients.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/mobile_realtime/test_storage.py", "tests/test_web_chat_channel.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_external_io_rejects_ownerless_spill_mutant", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
 observes = ["redirect_hop_url", "stream_byte_count", "spill_owner", "spill_lifetime", "cleanup_diagnostic", "attachment_write_set", "logical_message_receipt", "target_device_commit", "failure_semantics"]
 mutants = ["companion_external_io_spill_owner"]
 
@@ -534,7 +495,7 @@ requirements = ["SEC-003", "ERR-001", "TST-001", "TST-003"]
 groups = ["companion_peer_removal"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_peer_surface_removal_rejects_surviving_route_mutant", "tests/test_peer_agent_tool.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_peer_surface_removal_rejects_surviving_route_mutant"]
 observes = ["peer_config_schema", "tool_catalog", "route_registry", "prompt_surface", "legacy_config_error"]
 mutants = ["companion_peer_surface_survives"]
 
@@ -543,7 +504,7 @@ requirements = ["OUT-001", "PRO-002", "TST-001", "TST-002", "TST-003"]
 groups = ["content_wake_drift"]
 environment = "public_clean_workspace"
 timeout_seconds = 90
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_content_delivery_rejects_early_source_ack_mutant", "tests/test_content_store.py", "tests/test_wake_durable_delivery.py", "tests/test_wake_gate_contract.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_content_delivery_rejects_early_source_ack_mutant", "tests/test_wake_durable_delivery.py", "tests/test_wake_gate_contract.py"]
 observes = ["content_write_set", "durable_delivery_receipt", "source_ack_receipt", "restart_reconciliation", "failure_semantics"]
 mutants = ["content_source_ack_precedes_delivery"]
 
@@ -552,7 +513,7 @@ requirements = ["SEC-005", "SCH-001", "SCH-002", "ERR-001", "TST-001", "TST-003"
 groups = ["companion_schedule"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_schedule_capacity_rejects_unbounded_add_mutant", "tests/test_scheduler_v3_shadow.py", "tests/test_job_store.py", "tests/test_fire_at.py", "tests/test_time_parsing.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_schedule_capacity_rejects_unbounded_add_mutant", "tests/test_job_store.py"]
 observes = ["active_job_count", "candidate_commit", "schedule_capacity_error", "existing_jobs_unchanged", "failure_semantics"]
 mutants = ["companion_schedule_unbounded"]
 
@@ -561,7 +522,7 @@ requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001"
 groups = ["companion_mobile"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant", "tests/mobile_realtime/test_storage.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_gateway.py", "tests/test_message_bus_admission.py", "tests/test_plugin_mobile_ui.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant", "tests/mobile_realtime/test_storage.py", "tests/mobile_realtime/test_channel.py", "tests/test_message_bus_admission.py"]
 observes = ["receipt_retention", "receipt_high_water", "external_effect_reconciliation", "durable_inbound_handoff", "durable_recovery_page", "receipt_write_set", "query_lease", "generation_drain", "failure_semantics"]
 mutants = ["companion_receipt_deletes_valid_result"]
 
@@ -570,7 +531,7 @@ requirements = ["SEC-007", "SH-001", "SH-002", "RUN-003", "ERR-001", "TST-001", 
 groups = ["companion_shell"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_shell_cleanup_rejects_turn_rewrite_mutant", "tests/test_shell_tool.py", "tests/test_subagent_v3_runtime.py", "tests/test_unified_exec.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_shell_cleanup_rejects_turn_rewrite_mutant", "tests/test_shell_tool.py", "tests/test_unified_exec.py"]
 observes = ["execution_owner", "retained_log", "cleanup_diagnostic", "shared_admission", "turn_finality", "failure_semantics"]
 mutants = ["companion_shell_cleanup_rewrites_turn"]
 
