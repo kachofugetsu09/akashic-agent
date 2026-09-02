@@ -98,9 +98,8 @@ async def test_attached_child_freezes_candidate_and_parent_promotes_after_valida
             "_pluginRolloutGenerationId": "gen-2",
             "_pluginRolloutSourceRevision": "rev-2",
         },
-        (),
     )
-    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
     await _settle()
 
     assert manager.promoted == ["fitbit@github"]
@@ -127,7 +126,7 @@ async def test_unvalidated_or_failed_parent_discards_candidate(tmp_path: Path):
         ref_name="",
         sparse_paths=[],
     )
-    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
     await _settle()
 
     assert manager.promoted == []
@@ -155,7 +154,7 @@ async def test_reserved_child_capability_expires_when_parent_seals(
     )
     capability = rollout.mint_child_capability("turn-parent")
     assert rollout.child_binding(capability, False) is not None
-    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
 
     assert rollout.child_binding(capability, True) is None
     await _settle()
@@ -189,9 +188,8 @@ async def test_completed_exact_child_needs_no_plugin_specific_evidence(
             "_pluginRolloutGenerationId": "gen-2",
             "_pluginRolloutSourceRevision": "rev-2",
         },
-        (),
     )
-    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
     await _settle()
 
     assert manager.promoted == ["fitbit@github"]
@@ -225,9 +223,8 @@ async def test_child_with_wrong_candidate_identity_is_rejected(tmp_path: Path) -
             "_pluginRolloutGenerationId": "wrong-generation",
             "_pluginRolloutSourceRevision": "rev-2",
         },
-        (),
     )
-    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
     await _settle()
 
     assert manager.promoted == []
@@ -273,7 +270,7 @@ async def test_next_turn_waits_until_parent_rollout_is_resolved(tmp_path: Path):
         cast(Any, manager), workspace=tmp_path, uninstall=uninstall
     )
     await rollout.uninstall("turn-parent", "fitbit@github")
-    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
     waiter = asyncio.create_task(rollout.wait_for_turn_boundary())
     await asyncio.sleep(0)
 
@@ -281,6 +278,34 @@ async def test_next_turn_waits_until_parent_rollout_is_resolved(tmp_path: Path):
     release.set()
     await waiter
     assert "已卸载" in rollout.consume_fact()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_the_only_resolution_task(tmp_path: Path) -> None:
+    manager = _Manager()
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def uninstall(_plugin_id: str) -> dict[str, object]:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
+    )
+    await rollout.uninstall("turn-parent", "fitbit@github")
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
+    await entered.wait()
+
+    await rollout.shutdown()
+
+    assert cancelled.is_set()
+    await rollout.wait_for_turn_boundary()
 
 
 @pytest.mark.asyncio
@@ -302,7 +327,7 @@ async def test_revert_is_same_turn_only_and_uninstall_stays_reversible(
     with pytest.raises(RuntimeError, match="不能回滚上一 turn"):
         await rollout.revert("turn-other")
     result = await rollout.revert("turn-parent")
-    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {}, ())
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
     await _settle()
 
     assert result["reverted"] is True

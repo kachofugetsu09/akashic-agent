@@ -1019,10 +1019,6 @@ class RuntimeSnapshotStore:
     def current(self) -> RuntimeSnapshot | None:
         return self._current
 
-    @property
-    def stable(self) -> RuntimeSnapshot | None:
-        return self._current
-
     async def wait_for_stable_change(
         self,
         current: RuntimeSnapshot,
@@ -1124,8 +1120,6 @@ class RuntimeSnapshotStore:
     def begin_publish(
         self,
         candidate: RuntimeSnapshot,
-        *,
-        admission_gated: bool = False,
     ) -> SnapshotTransaction:
         if self._pending is not None or self._provisional is not None:
             raise RuntimeError("已有 RuntimeSnapshot 发布事务")

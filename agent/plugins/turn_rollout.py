@@ -48,7 +48,6 @@ class TurnPluginRollout:
         self._fact_path = Path(workspace) / "runtime" / "plugin-rollout-fact.json"
         self._pending: PendingPluginOperation | None = None
         self._lock = asyncio.Lock()
-        self._tasks: set[asyncio.Task[None]] = set()
         self._resolution_task: asyncio.Task[None] | None = None
         self._child_capabilities: dict[str, str] = {}
         self._reserved_child_capabilities: dict[str, str] = {}
@@ -208,11 +207,9 @@ class TurnPluginRollout:
         turn_id: str,
         status: TurnStatus,
         metadata: dict[str, object],
-        items: tuple[object, ...],
     ) -> None:
         """Record child evidence or seal a parent operation after lease release."""
 
-        del items
         # 1. A causally bound child can validate only its frozen generation.
         owner_turn_id = str(metadata.get("_pluginRolloutOwnerTurnId") or "")
         if owner_turn_id:
@@ -240,8 +237,6 @@ class TurnPluginRollout:
             name=f"plugin-turn-rollout:{turn_id}",
         )
         self._resolution_task = task
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
 
     async def wait_for_turn_boundary(self) -> None:
         """Keep the next admitted turn behind a sealed rollout resolution."""
@@ -261,11 +256,10 @@ class TurnPluginRollout:
             )
         self._child_capabilities.clear()
         self._reserved_child_capabilities.clear()
-        for task in self._tasks:
+        task = self._resolution_task
+        if task is not None:
             task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks.clear()
+            await asyncio.gather(task, return_exceptions=True)
 
     def consume_fact(self) -> str:
         """Consume one runtime-owned rollout fact for the next user turn."""

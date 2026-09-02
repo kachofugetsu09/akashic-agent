@@ -963,7 +963,7 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
     await store.wait_for_no_leases(latest)
     promoted = await store.promote_latest()
     assert promoted.previous is stable
-    assert store.stable is latest
+    assert store.current is latest
     await stable_lease.release()
     await store.retry_drains()
     assert drained == [stable.snapshot_id]
@@ -1004,7 +1004,7 @@ async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(
     stable_lease = store.lease()
     await latest_lease.release()
     assert await discarding is latest
-    assert store.stable is stable
+    assert store.current is stable
     assert store.latest is stable
     await stable_lease.release()
     await store.close()

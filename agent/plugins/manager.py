@@ -2392,10 +2392,7 @@ class PluginManager:
                 if exclusive_endpoint_changed or v3_channel_catalog_changed:
                     await self._snapshot_store.wait_for_no_leases(quiesced)
             self._snapshot_skill_catalogs[snapshot.snapshot_id] = catalog_id
-            transaction = self._snapshot_store.begin_publish(
-                snapshot,
-                admission_gated=quiesced is not None,
-            )
+            transaction = self._snapshot_store.begin_publish(snapshot)
             await self._post_snapshot_invariants(snapshot)
         except BaseException:
             if transaction is not None:
@@ -3756,10 +3753,7 @@ class PluginManager:
                     error=f"endpoint_quiesce: {error_text}",
                 )
                 raise
-        transaction = self._snapshot_store.begin_publish(
-            snapshot,
-            admission_gated=quiesced_snapshot is not None,
-        )
+        transaction = self._snapshot_store.begin_publish(snapshot)
         self._advance_reload(
             generation,
             "validating",

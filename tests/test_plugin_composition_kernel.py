@@ -1075,7 +1075,7 @@ async def test_snapshot_store_publishes_complete_composition_root() -> None:
     store.seal_candidate_validation(candidate)
     await store.promote_latest()
     await store.retry_drains()
-    assert store.stable is candidate
+    assert store.current is candidate
     assert drained == []
     await store.close()
     assert drained == ["candidate-ready"]
@@ -1372,7 +1372,7 @@ async def test_promotion_rechecks_candidate_topology_after_behavior_probe() -> N
     store.pause_candidate_admission(rebuilt)
     store.seal_candidate_validation(rebuilt)
     _ = await store.promote_latest()
-    assert store.stable is rebuilt
+    assert store.current is rebuilt
     await store.close()
     await root.dispose()
 

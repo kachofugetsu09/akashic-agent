@@ -66,7 +66,40 @@ DSH 没有跨进程旧 Root 续跑：reload 会停止旧 Fiber，进程崩溃会
 - 本次没有部署 hua-home；对它的检查只是消费者盘点。
 - operator 控制入口、Activity/Channel 切换和候选恢复仍有复杂度，是否多余要继续用生产消费者、历史原因和失败测试证明，不能从名字直接删除。
 
-## 7. 验收
+## 7. 第二轮熵审查
+
+第一轮提交后又用监管、反向、值班、极限成本和十岁视角独立发散，再按可落地性、影响和风险收敛。脑暴只产生候选，删除仍以真实消费者和失败边界为准。
+
+### 7.1 本批删除
+
+| 重复面 | 真实消费者 | 处理 |
+|---|---:|---|
+| `begin_publish(admission_gated=...)` | 0 次读取 | 删除形参与两处无效传值 |
+| `TurnPluginRollout._tasks` | 只有同一个 `_resolution_task` | 删除集合；shutdown 取消并等待唯一 task |
+| rollout terminal `items` | Tool/Skill evidence 删除后为 0 | 从内部 callback 删除，不改变 Turn items 的保存和输出 |
+| `RuntimeSnapshotStore.stable` | Core 仅四个测试断言 | 统一使用 `current`，不保留别名 |
+
+2026-09-02 12:54 CST 对 hua-home 做了只读检查。证据来自 `akashic-core.service`
+的 `AKASHIC_RUNTIME_CHECKOUT`、release manifest 和正式 plugin-home cache，不是主机上某个
+开发 worktree。实际运行 release 为 `376556c616de39d43af528f8fbdde15a0db83e7f`，
+两个 Core 容器均 healthy。在
+`/srv/data/services/akashic/state/plugin-home/cache` 内，`admission_gated`、
+`quiesce_current` 和 `TurnPluginRollout` 均为零命中；只有 shell-restore 和
+shell-safety 的测试实例化 `RuntimeSnapshotStore`，都没有读取 `.stable`。
+本次没有修改该主机。
+
+### 7.2 暂缓删除
+
+| 候选 | 暂缓理由 | 删除前证据 |
+|---|---|---|
+| `plugin/promote`、`plugin/discard`、`plugin/status` | 已进入 CLI 与 app-server v1 schema | 真实 control 日志、受支持客户端和跨仓协议 Gate 均证明零消费者 |
+| 无 owner 的 install/uninstall/disable | 仍是公开协议与 operator 行为 | 明确新的 operator 合同和 breaking migration 顺序 |
+| 泛化 `ActivityHost` | 当前只有 Background Job child，但它拥有 admission、drain、rollback 与 recovery | 单 child 全盘点和逐故障等价回放 |
+| Channel boot transaction 与 candidate recovery 分支 | journal 和外部 owner 的恢复语义尚未证明重复 | 冷启动、pointer 前后和外部 owner 残留故障矩阵 |
+
+暂缓项没有标 deprecated，也没有增加兼容层。它们保持现状，等独立证据证明后再整块删除。
+
+## 8. 验收
 
 - 代码净差异不再包含上述五组新接口。
 - exact child 检查不依赖插件类别或 TurnItem。
