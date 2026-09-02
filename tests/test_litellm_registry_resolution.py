@@ -100,14 +100,14 @@ def test_load_cached_catalog(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    loaded = m._load_cached_catalog_at(cache)
+    loaded = m._load_cached_catalog(cache)
     assert loaded is not None
     assert "deepseek/deepseek-v4-flash" in loaded
 
 
 def test_load_cached_catalog_missing_file(tmp_path: Path) -> None:
     cache = tmp_path / "missing.json"
-    assert m._load_cached_catalog_at(cache) is None
+    assert m._load_cached_catalog(cache) is None
 
 
 def test_context_window_uses_input_not_sum(monkeypatch) -> None:
