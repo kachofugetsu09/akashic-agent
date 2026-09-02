@@ -1,4 +1,6 @@
 tests/control/test_control_execution.py
+tests/control/test_channel_adapter.py
+tests/control/test_conversation_runtime.py
 tests/control/test_d8_control_admission_replay.py
 tests/control/test_protocol.py
 tests/control/test_scoped_turn.py
@@ -9,7 +11,6 @@ tests/mobile_realtime/test_isolated_e2e.py
 tests/mobile_realtime/test_isolated_gateway_faults.py
 tests/mobile_realtime/test_key_protection.py
 tests/mobile_realtime/test_message_content_http.py
-tests/mobile_realtime/test_mobile_realtime_protocol.py
 tests/mobile_realtime/test_pairing_auth.py
 tests/mobile_realtime/test_remote_media.py
 tests/mobile_realtime/test_storage.py

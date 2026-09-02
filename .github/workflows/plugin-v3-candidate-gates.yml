@@ -1,0 +1,147 @@
+name: Plugin v3 Candidate Gates
+
+on:
+  workflow_dispatch:
+
+jobs:
+  full-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e sdk/python
+          npm ci
+
+      - name: Run complete Python regressions
+        env:
+          PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
+        run: python -m pytest -q -W error tests/
+
+      - name: Run complete Node regressions
+        run: |
+          mapfile -t tests < <(git ls-files '*.test.mjs' 'tests/test_akasha_mobile_ui.mjs')
+          node --experimental-strip-types --test "${tests[@]}"
+
+  static-and-mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out full repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify locked plugin v3 fleet
+        run: |
+          python docker/debug/plugin_v3_fleet_gate.py --require-clean-core --require-full-core-history
+          python docker/debug/plugin_v3_mobile_gate.py --require-clean-core
+
+      - name: Upload static and Mobile evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-v3-static-mobile-${{ github.sha }}
+          path: |
+            docker/debug/reports/plugin-v3-fleet/
+            docker/debug/reports/plugin-v3-mobile/
+
+  composition:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out full repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Verify plugin v3 composition
+        run: |
+          python docker/debug/plugin_composition_v3_gate.py --require-clean-core
+          python docker/debug/plugin_passive_composition_v3_gate.py --require-clean-core
+          python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
+
+      - name: Upload composition evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-v3-composition-${{ github.sha }}
+          path: |
+            docker/debug/reports/plugin-composition-v3/
+            docker/debug/reports/plugin-passive-composition-v3/
+            docker/debug/reports/plugin-passive-webui-v3/
+
+  control-and-restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Verify programmatic control
+        run: |
+          python docker/debug/programmatic_control_probe.py --gate smoke
+          python docker/debug/programmatic_control_probe.py --gate failure-matrix
+          python docker/debug/programmatic_control_probe.py --gate memory-context
+
+      - name: Verify restart lifecycle
+        run: python docker/debug/restart_probe.py --soak
+
+      - name: Upload control and restart evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-v3-control-restart-${{ github.sha }}
+          path: |
+            docker/debug/reports/programmatic-control/
+            docker/debug/reports/restart/

@@ -113,7 +113,7 @@ Gate 根据 Git diff 选择场景，并把报告写入 `docker/debug/reports/cha
 
 生产路径与受保护合同同时变化时，Gate 必须扩大为完整公开场景执行，不能以结构性拒绝代替验证。测试失败先归因为实现、环境或契约冲突；修改断言、跳过场景和缩减 Gate 需要独立理由与授权。
 
-普通 Pull Request 运行 `tests_scenarios/contracts/pr-regression-files.txt` 中的 1080 项 Python 回归、`npm run test:web:pr` 中的 62 项 Web 回归和 change-impact Gate。完整测试资产仍留在仓库；change-impact Gate 可按生产 diff 选择清单外的行为边界，插件候选或发布里程碑还应运行完整 Python/Web 回归和相应的 static fleet、领域组合及 E1～E4 集中 E2E。清理记录和保留理由见[测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)。
+普通 Pull Request 运行 `tests_scenarios/contracts/pr-regression-files.txt` 中的 1080 项 Python 回归、`npm run test:web:pr` 中的 62 项 Web 回归和 change-impact Gate；`scripts/check_pr_regression_budget.py` 会拒绝无效清单或偏离完整集三分之一的收集数。完整测试资产仍留在仓库；change-impact Gate 可按生产 diff 选择清单外的行为边界。插件候选或发布里程碑运行手动 `Plugin v3 Candidate Gates` workflow、完整 Python/Web 回归和相应的 E1～E4 集中 E2E。清理记录和保留理由见[测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)。
 
 ## 6. Review 模式
 

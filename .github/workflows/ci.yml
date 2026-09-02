@@ -53,6 +53,7 @@ jobs:
         env:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
+          .venv/bin/python scripts/check_pr_regression_budget.py
           mapfile -t tests < tests_scenarios/contracts/pr-regression-files.txt
           .venv/bin/pytest -q -W error "${tests[@]}"
 

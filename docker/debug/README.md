@@ -357,7 +357,9 @@ Akashic workspace、正式凭据或 hua-home 服务。
 
 这些是插件候选与发布 Gate，不是普通 Core Pull Request 的固定矩阵。普通 Pull Request
 只运行聚焦回归和按 diff 选场景的统一变更影响 Gate；当改动进入插件候选或发布里程碑时，
-再按下列层次运行对应的 v3 Gate，避免在每个改动上重复搭建同一组 Docker 环境。
+由 `Plugin v3 Candidate Gates` 手动 workflow 运行 static、Mobile、composition、control
+与 restart Gate，再按下列层次补齐依赖正式来源副本的集中 E2E，避免在每个改动上重复搭建
+同一组 Docker 环境。
 
 ```text
 精确 fleet lock
