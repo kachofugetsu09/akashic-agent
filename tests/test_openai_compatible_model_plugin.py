@@ -136,7 +136,12 @@ class _Handler(BaseHTTPRequestHandler):
             vectors = (
                 ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
                 if len(inputs) == 2
-                else tuple([1.0, 0.0, 0.0] for _ in inputs)
+                else tuple(
+                    [float(value.removeprefix("item-")), 0.0, 0.0]
+                    if isinstance(value, str) and value.startswith("item-")
+                    else [1.0, 0.0, 0.0]
+                    for value in inputs
+                )
             )
             self._json(
                 200,
@@ -532,6 +537,32 @@ async def test_driver_discovers_chats_and_runs_nonstream_stream_and_embedding() 
         )
         assert sent["reasoning_effort"] == "high"
         assert sent["messages"][0] == {"role": "system", "content": "system"}
+
+
+@pytest.mark.asyncio
+async def test_embedding_uses_default_batch_limit_and_preserves_order() -> None:
+    with _provider() as (server, endpoint):
+        opened = await definition().open(_connection(endpoint), _Credential())
+        with pytest.raises(ValueError, match="embedding_batch_size"):
+            opened.bind_embedding(
+                _embedding_descriptor(),
+                {"embedding_batch_size": 0},
+            )
+        embedding = opened.bind_embedding(_embedding_descriptor(), {})
+
+        result = await embedding.embed(tuple(f"item-{index}" for index in range(23)))
+
+        requests = [
+            request["body"]["input"]
+            for request in server.requests
+            if request["path"] == "/v1/embeddings"
+        ]
+        assert [len(batch) for batch in requests] == [10, 10, 3]
+        assert result.vectors == tuple((float(index), 0.0, 0.0) for index in range(23))
+        assert result.usage is not None
+        assert result.usage.input_tokens == 12
+        assert result.usage.request_count == 3
+        assert result.usage.coverage is UsageCoverage.PARTIAL
 
 
 @pytest.mark.asyncio
