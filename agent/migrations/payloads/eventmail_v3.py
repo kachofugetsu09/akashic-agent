@@ -492,19 +492,13 @@ class ContentTransitionResult(TypedDict):
 class EventMailV3MigrationStore:
     """Persist Content revisions and expose source- and Wake-scoped transitions."""
 
-    def __init__(
-        self,
-        path: Path,
-        *,
-        data_access: Literal["read_write", "read_only"] = "read_write",
-    ) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self.data_access = data_access
 
     def initialize(self) -> None:
         """Create or validate the exact schema and SQLite file integrity."""
 
-        with self._transaction(write=self.data_access == "read_write") as connection:
+        with self._transaction(write=True) as connection:
             self._validate_schema(connection)
             result = connection.execute("PRAGMA integrity_check").fetchone()
             if result is None or result[0] != "ok":
@@ -2340,36 +2334,19 @@ class EventMailV3MigrationStore:
 
     @contextmanager
     def _transaction(self, *, write: bool) -> Generator[sqlite3.Connection]:
-        """Open one mode-aware SQLite transaction and close it at the boundary."""
+        """Open one SQLite transaction and close it at the boundary."""
 
-        # 1. Reject every candidate write at the store's single transaction boundary.
-        if write and self.data_access == "read_only":
-            raise PermissionError(
-                "Content read-only candidate cannot write shared data"
-            )
-
-        # 2. Preserve the formal store's serialized transaction and lazy schema setup.
-        if self.data_access == "read_write":
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(self.path)
-        else:
-            database_uri = self.path.resolve(strict=False).as_uri() + "?mode=ro"
-            connection = sqlite3.connect(database_uri, uri=True)
+        _ = write
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         try:
-            if self.data_access == "read_write":
-                _ = connection.execute("PRAGMA journal_mode = WAL")
-                _ = connection.execute("PRAGMA foreign_keys = ON")
-                _ = connection.execute("BEGIN IMMEDIATE")
-                self._ensure_schema(connection)
-            else:
-                _ = connection.execute("PRAGMA query_only = ON")
-                _ = connection.execute("BEGIN")
+            _ = connection.execute("PRAGMA journal_mode = WAL")
+            _ = connection.execute("PRAGMA foreign_keys = ON")
+            _ = connection.execute("BEGIN IMMEDIATE")
+            self._ensure_schema(connection)
             yield connection
-            if self.data_access == "read_write":
-                connection.commit()
-            else:
-                connection.rollback()
+            connection.commit()
         except BaseException:
             connection.rollback()
             raise

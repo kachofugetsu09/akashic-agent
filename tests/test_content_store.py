@@ -744,50 +744,6 @@ def test_exact_read_rejects_uncheckpointed_wal_instead_of_missing_row(tmp_path) 
     assert store.read_submission("feed-subscriptions", "one") is not None
 
 
-def test_read_only_store_reads_formal_state_and_rejects_every_write(tmp_path) -> None:
-    now = datetime(2026, 8, 23, 5, tzinfo=UTC)
-    path = tmp_path / "content.sqlite3"
-    formal = EventMailStore(path)
-    _ = formal.submit("feed", "poll:1", [_item("one", not_before=now)])
-    snapshot = formal.snapshot(now)
-    token = _select(formal, now)
-    candidate = EventMailStore(path, data_access="read_only")
-
-    candidate.initialize()
-    assert candidate.snapshot(now)["snapshot_seq"] == snapshot["snapshot_seq"]
-    assert (
-        candidate.selection({"session_id": "wake:fixture", "turn_id": "turn:one"})[
-            "selection_token"
-        ]
-        == token
-    )
-    assert candidate.unsettled("feed") == ()
-    assert candidate.state_counts() == {"selected": 1}
-
-    with pytest.raises(PermissionError, match="read-only candidate"):
-        candidate.submit("feed", "poll:2", [_item("two", not_before=now)])
-    with pytest.raises(PermissionError, match="read-only candidate"):
-        candidate.select(
-            snapshot["items"][0]["ref"],
-            snapshot["snapshot_seq"],
-            {"session_id": "wake:candidate", "turn_id": "turn:write"},
-            now,
-        )
-    with pytest.raises(PermissionError, match="read-only candidate"):
-        candidate.transition(token, "ready_for_delivery")
-    with pytest.raises(PermissionError, match="read-only candidate"):
-        candidate.ack("feed", "delivery:missing")
-
-
-def test_read_only_initialize_does_not_create_database_or_parent(tmp_path) -> None:
-    path = tmp_path / "missing" / "content.sqlite3"
-
-    with pytest.raises(sqlite3.OperationalError, match="open database"):
-        EventMailStore(path, data_access="read_only").initialize()
-
-    assert not path.parent.exists()
-
-
 def test_initialize_rejects_unknown_or_malformed_schema(tmp_path) -> None:
     unknown = tmp_path / "unknown.sqlite3"
     connection = sqlite3.connect(unknown)

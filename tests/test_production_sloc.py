@@ -111,8 +111,6 @@ def test_source_set_includes_only_approved_production_extensions_and_roots() -> 
     included = (
         "main.py",
         "agent/core/runtime.py",
-        "plugin_packages/example/plugin.py",
-        "plugin_packages/example/view.tsx",
         "sdk/python/src/sdk.py",
         "frontend/chat/src/main.tsx",
     )
@@ -124,7 +122,6 @@ def test_source_set_includes_only_approved_production_extensions_and_roots() -> 
         "frontend/chat/src/styles.css",
         "frontend/chat/src/types.d.ts",
         "frontend/chat/dist/bundle.js",
-        "plugin_packages/vendor/third_party.py",
     )
 
     assert all(sloc.is_production_source_path(path) for path in included)

@@ -32,8 +32,7 @@ companion_receipt_deletes_valid_result = "tests/semantic/test_companion_contract
 companion_shell_cleanup_rewrites_turn = "tests/semantic/test_companion_contract.py::test_shell_cleanup_rejects_turn_rewrite_mutant"
 companion_control_replay_drops_live_event = "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant"
 companion_dashboard_uses_html_sink = "tests/semantic/test_companion_contract.py::test_dashboard_rejects_html_sink_mutant"
-domain_event_legacy_order = "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_runs_after_legacy_fanout"
-domain_event_no_handler_early_return = "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_is_not_skipped_without_legacy_handlers"
+domain_event_bus_bridge = "tests/test_plugin_composition_lifecycle.py::test_event_bus_does_not_bridge_into_plugin_composition"
 domain_event_candidate_binding = "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_uses_bound_candidate_root"
 domain_event_wrong_task_fallback = "tests/test_plugin_composition_lifecycle.py::test_event_bus_rejects_inherited_wrong_task_binding"
 retrieval_event_payload = "tests/test_plugin_composition_lifecycle.py::test_retrieval_completed_event_payload"
@@ -380,8 +379,7 @@ command = [
   "-m",
   "pytest",
   "-q",
-  "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_runs_after_legacy_fanout",
-  "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_is_not_skipped_without_legacy_handlers",
+  "tests/test_plugin_composition_lifecycle.py::test_event_bus_does_not_bridge_into_plugin_composition",
   "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_uses_bound_candidate_root",
   "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_rejects_inherited_wrong_task_binding",
   "tests/test_plugin_composition_lifecycle.py::test_event_bus_rejects_inherited_wrong_task_binding",
@@ -391,7 +389,7 @@ command = [
 ]
 observes = [
   "domain_event_identity",
-  "legacy_before_composition",
+  "event_bus_composition_isolation",
   "candidate_root_binding",
   "wrong_task_failure",
   "event_bus_wrong_task_failure",
@@ -400,8 +398,7 @@ observes = [
   "leaf_contract_import",
 ]
 mutants = [
-  "domain_event_legacy_order",
-  "domain_event_no_handler_early_return",
+  "domain_event_bus_bridge",
   "domain_event_candidate_binding",
   "domain_event_wrong_task_fallback",
   "retrieval_event_payload",
@@ -473,7 +470,7 @@ command = [
   "tests/test_turn_pipelines.py::test_process_direct_runs_concurrently_with_another_session",
   "tests/test_turn_pipelines.py::test_process_direct_waits_for_the_same_session_lane",
   "tests/test_plugin_hot_reload.py::test_runtime_snapshot_latest_requires_explicit_selector_and_promotion",
-  "tests/test_plugin_composition_loader.py::test_installed_v3_shared_handoff_success_and_owner_failure",
+  "tests/test_plugin_composition_loader.py::test_candidate_uses_isolated_data_copy",
   "tests/test_plugin_hot_reload.py::test_startup_recovers_installed_candidate_from_durable_pointers",
   "tests/test_plugin_composition_loader.py::test_installed_v3_candidate_health_blocks_promotion_until_recovered",
   "tests/test_plugin_hot_reload.py::test_passive_runtime_admission_holds_one_snapshot",

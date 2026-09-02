@@ -909,7 +909,7 @@ def test_init_workspace_creates_expected_assets(tmp_path):
         encoding="utf-8"
     )
     assert not (workspace / "PROACTIVE_CONTEXT.md").exists()
-    assert (workspace / "mcp" / "servers").is_dir()
+    assert not (workspace / "mcp").exists()
     assert not (workspace / "proactive_sources.json").exists()
     assert not (workspace / "proactive.db").exists()
     assert (workspace / "skills").is_dir()

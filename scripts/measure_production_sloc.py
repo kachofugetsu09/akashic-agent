@@ -72,15 +72,11 @@ def production_source_root(path: str) -> str | None:
             return "main.py"
         if parts[0] in PYTHON_DIRECTORY_ROOTS:
             return parts[0]
-        if parts[0] == "plugin_packages":
-            return "plugin_packages"
         if parts[:3] == ["sdk", "python", "src"]:
             return "sdk/python/src"
         return None
 
     if name.endswith(".ts") or name.endswith(".tsx"):
-        if parts[0] == "plugin_packages":
-            return "plugin_packages"
         if len(parts) >= 4 and parts[0] == "frontend" and parts[2] == "src":
             return "/".join(parts[:3])
     return None

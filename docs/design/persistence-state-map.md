@@ -117,9 +117,9 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 | `model-registry.sqlite3` | onboarding 或设置事务增加含 credential payload 的 connection、model 和 role binding，并增加单调 revision；`model_definitions.context_window`/`max_output_tokens` 与各自 source 保存模型 capability snapshot | connection 的 key/token、Base URL、模型字段和角色绑定可原位更新；Codex token refresh 不增加模型 revision，其余成功模型事务增加 revision，旧 execution generation 只在 lease 归零后失效。预算 owner 只读取当前 generation 的 `context_window`、`max_output_tokens` 及字段来源；遗留 `effective_context_percent`/`compaction_trigger_percent` 列仅为 v1 schema identity 保留，完全惰性，不是配置或 capability source | 只有独立模型/来源删除操作可以减少；被 role 或 session 引用时必须拒绝，普通模型切换不得 cascade；数据库、WAL/SHM 与备份均按 secret 使用 `0600` |
 | `data/mobile/master-keys.json` | 文件型密钥 provider 初始化或轮换时追加随机 master key；离线迁移可按既有 ID 导入同一密钥 | 完整集合以 `0600` 原子替换发布；同 ID 同内容导入幂等，不同内容 fail-loud；旧 key 继续支持历史 keyset 回滚 | 当前没有自动删除协议；只能由名称明确的移动身份重置或密钥退役操作在备份、引用扫描和恢复验证后减少；Mobile key store owner 与 keyset manifest 提供恢复证据 |
 | `sessions.metadata.model_selection` | 会话首次固定 model ref/effort 时增加版本化对象 | 用户切换 model/effort 时仅更新该对象；旧字符串 override 在下一次显式选择时升级 | 用户选择“跟随默认”时只移除该 metadata 键；不得改写或减少 messages |
-| 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从 `skill_roots` 建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
-| 插件贡献的 MCP | 插件安装读取 `mcp_servers()` 并准备 runtime，generation readiness 通过后发布 MCP catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
-| `mcp/servers/*.toml` 与手工 skill 目录 | 当前代码仍允许绕过插件直接声明或放置能力 | watcher/loader 可以热加载这些兼容内容 | 目标架构不再扩展这条路径；应迁移成插件并删除第二套 owner，迁移完成前不得把兼容目录写成 canonical 产品资产 |
+| 插件贡献的 Skill/Drift skill | 插件 source 持有 skill 正文；安装把版本化副本发布到 cache，generation 从模块 `skill_roots` / `drift_skill_roots` 属性建 catalog | workspace `skills/` 和 `drift/skills/` 软链接随 active generation 重建 | 禁用/卸载插件可以移除已安装副本、catalog 和软链接；外部 canonical source 不归 workspace 或卸载流程所有 |
+| 插件贡献的 MCP | static manifest 提供 import-free admission identity；V3 `apply` 用 `MCP_SERVERS.register(...)` 建立 Fiber-owned runtime，generation readiness 核对两者完全一致后发布 catalog | 插件升级或热重载按 generation 原子替换，旧代随 lease 排空 | 禁用/卸载插件移除 MCP catalog 和 runtime；plugin-data 不级联删除 |
+| 旧 `mcp/servers/*.toml` | runtime loader、watcher、admin 与 workspace 初始化入口均已删除；既有目录不再被读取 | 无当前 writer 或热加载路径 | 用户确认且备份后可删除既有惰性目录；MCP 只通过 V3 插件 artifact 与 generation catalog 发布 |
 | `memes/manifest.json` | workspace 初始化时创建空 manifest；Meme 插件和管理 Skill 按显式用户操作增加类别与素材 | Meme 插件按 manifest mtime 重载；Dashboard/Skill 可原位更新 manifest 和类别目录 | 仅明确的 Meme 管理动作可在备份后减少；插件卸载、candidate discard 和 Core 清理不得删除正式素材根 |
 | 诊断 JSONL、`subagent-runs/` | 运行和调查持续追加产物 | 通常不原位改写 | 当前缺少统一 retention；没有策略前不得假装它们会永久存在，也不得擅自 prune 事故证据 |
 | lock、PID、readiness、socket | 进程启动时创建 | 随当前 boot 更新 | 由进程生命周期 owner 在停止或重启时移除；它们不是业务事实；`.app-server-token` 作为持久 secret 单独处理 |
@@ -450,15 +450,16 @@ H3 前的 `WakeStateStore` 保存以下表；H3 后旧 writer 已删除，H2 只
 
 | 路径 | owner | 性质 |
 |---|---|---|
-| `~/.akashic-plugin/manifest.toml` | `agent.plugins.manifest` | 已安装/启用插件和 package 的全局目录 |
+| `~/.akashic-plugin/manifest.toml` | `agent.plugins.manifest` | 已安装/启用 V3 插件的全局目录；只接受独立 plugin 条目 |
 | `~/.akashic-plugin/cache/` | install/source resolver | 可通过安装源重新获取的插件代码缓存 |
 | 外部插件 canonical source | 用户选择的源码仓库 | 开发资产，不等同于 cache，也不由 workspace 备份拥有 |
 
 **F-013：** 修改外部插件必须定位 canonical source；直接备份或编辑 cache 不能替代源码仓库和安装清单。
 
-插件包同时是 Skill 和 MCP 的能力交付单元：
+V3 插件 artifact 同时可以交付 Skill 和 MCP：
 
-1. 插件类通过 `skill_roots()`、`drift_skill_roots()` 和 `mcp_servers()` 声明能力。
+1. 插件模块通过 `skill_roots`、`drift_skill_roots` 属性声明 Skill；MCP 同时写入 static
+   manifest，并在 `apply` 中通过 `MCP_SERVERS.register(...)` 注册。
 2. `plugin-install` 在 staging 中复制插件代码并准备 MCP runtime，完成后原子发布到全局 cache，再更新 manifest。
 3. `PluginManager` 为候选 generation 准备 Skill/MCP catalog；readiness 失败时拒绝候选，旧 generation 继续服务。
 4. generation 发布后，`PluginSkillLinker` 才把 active plugin 的 skill 同步成 workspace 软链接。
@@ -479,13 +480,12 @@ H3 前的 `WakeStateStore` 保存以下表；H3 后旧 writer 已删除，H2 只
 
 `plugin-install` 由当前 Gateway 的 runtime owner staged publish，并等待 `latest_ready`；`RuntimeSnapshotStore` 只允许显式 selector 租用 latest，普通 turn 默认 stable。promote/discard 通过 pointer、journal 和 snapshot lease 收敛。安装成功只证明候选 ready，仍必须用 programmatic child 的 snapshot identity、SessionDB/tool trace 和领域 oracle 证明行为有效。
 
-### 10.3 MCP 的插件路径与现有直装路径
+### 10.3 MCP 的唯一插件路径
 
-- 目标路径：插件类的 `mcp_servers()` 声明 MCP；安装器准备 runtime；插件 generation 发布 MCP catalog。
+- static manifest 声明 import-free admission identity；V3 `apply` 通过 `MCP_SERVERS.register(...)`
+  注册 Fiber-owned runtime；generation readiness 要求两份声明逐字段一致。
 - 旧 `mcp/servers/*.toml`、`WorkspaceMcpAdmin` 和 `WorkspaceMcpWatcher` 已删除；MCP 声明只由插件静态 manifest 进入 Root registry 与 generation host。
-- 两条路径发生同名冲突时，当前启动流程 fail-loud。这证明它们确实是两套并列 owner，而不是同一安装流程的不同界面。
-
-产品意图已经确认：新增和保留的 MCP 应通过插件安装。直装声明需要迁移成插件贡献；完成迁移前保留兼容读取和恢复能力，但不再把它定义为长期 canonical 资产，也不新增依赖这条路径的功能。
+- 不再存在 workspace 直装读取或兼容 owner；既有惰性目录只按显式备份清理协议处理。
 
 ### 10.4 `skills/` 与 `drift/skills/`
 
@@ -569,7 +569,7 @@ listener 与 Dashboard 读写同一副本，discard 不改正式素材，promoti
 4. 没有一条仓库内工作流证明同一份快照能在隔离 workspace 恢复并通过应用级只读 smoke。
 5. SQLite 分别 backup 时，每个文件内部一致，但多个数据库与普通文件之间没有全局事务时点。
 6. 备份范围没有明确包含或排除 `.app-server-token`、diagnostic traces、旧或非模型全局凭据和全局插件 manifest。
-7. `mcp/servers/*.toml` 与 workspace 手工 skill 目录仍绕过插件安装系统，形成第二套能力 owner；现存内容尚未迁移。
+7. 旧 `mcp/servers/*.toml` runtime 已物理删除；正式 workspace 若仍有惰性历史目录，需要在备份和内容盘点后单独清理。
 8. 通用 rolling backup 尚不能把 WebUI publication DB 与它引用的 blobs 作为同一一致性 source；首版 publisher 必须至少导出可审阅 reachable manifest，并在发布正式资源前完成隔离恢复 smoke。
 
 这些缺口正是 `BAK-001` 和 `NOW.md` 中恢复演练事项尚未完成的部分。
@@ -642,9 +642,9 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### INT-011 Skill 和 MCP 通过插件安装 — 已确认
 
-确认内容：Skill、Drift skill 和 MCP 都由插件包声明和安装。插件 source 持有能力正文，cache 保存已安装版本与 MCP runtime，manifest 记录安装身份；workspace skill 软链接只是 active generation 的投影，plugin-data 继续留在主要 workspace。
+确认内容：Skill、Drift skill 和 MCP 都由 V3 插件 artifact 声明和安装。插件 source 持有能力正文，cache 保存已安装版本与 MCP runtime，manifest 记录安装身份；workspace skill 软链接只是 active generation 的投影，plugin-data 继续留在主要 workspace。
 
-已提升条款：PLG-009。当前 `mcp/servers/*.toml` 直装通道和 workspace 手工 skill 目录是待迁移兼容路径；恢复应根据插件 manifest/source 重装能力并重建投影，不复制链接目标。
+已提升条款：PLG-009。`mcp/servers/*.toml` 直装通道已删除；恢复根据插件 manifest/source 重装能力并重建投影，不复制历史目录或链接目标。
 
 ### INT-012 诊断数据需要有界保留，不自动进入长期记忆
 

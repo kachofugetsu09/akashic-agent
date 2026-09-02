@@ -4,7 +4,6 @@ from agent.plugin_composition.context import (
     Fiber,
     FiberHandle,
     HealthHandle,
-    Plugin,
     RuntimeScope,
 )
 from agent.plugin_composition.overlay import (
@@ -443,7 +442,6 @@ __all__ = [
     "MobileUiRegistry",
     "MobileUiRpcInvalidRequest",
     "ObserveEventKey",
-    "Plugin",
     "PluginChannels",
     "PluginCommands",
     "PluginBackgroundJobs",

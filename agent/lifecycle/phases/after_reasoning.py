@@ -593,9 +593,7 @@ class _BuildTurnSnapshotModule:
 def default_after_reasoning_modules(
     bus: EventBus,
     session_services: SessionServices,
-    plugin_modules: AfterReasoningModules | None = None,
 ) -> AfterReasoningModules:
-    legacy_modules = list(plugin_modules or [])
     builtins: AfterReasoningModules = [
         _BuildAfterReasoningCtxModule(),
         _EmitAfterReasoningCtxModule(bus),
@@ -611,7 +609,7 @@ def default_after_reasoning_modules(
     ]
     return cast(
         AfterReasoningModules,
-        topo_sort_modules(builtins + legacy_modules),
+        topo_sort_modules(builtins),
     )
 
 

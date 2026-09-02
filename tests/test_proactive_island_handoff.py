@@ -34,9 +34,8 @@ from agent.migrations.proactive_island.inventory import (
     inventory_digest,
     inventory_workspace,
 )
-from agent.lifecycle.types import BeforeTurnCtx
 from plugins.eventmail.store import EventMailStore
-from plugins.wake.legacy_rules import ArchivedRules
+from plugins.wake.legacy_rules import read_archived_rules
 from agent.migrations.proactive_island.wake_rules import WakeRulesArchiveAdapter
 from scripts.proactive_island_handoff import main as handoff_main
 from tests.fixtures.legacy_wake_state import (
@@ -772,8 +771,7 @@ def test_wake_rules_archive_keeps_exact_bytes_and_verified_lineage(
     assert plan_cli(workspace).status is HandoffStatus.APPLIED
 
 
-@pytest.mark.asyncio
-async def test_archived_rules_inject_only_into_wake_before_turn(tmp_path: Path) -> None:
+def test_archived_rules_are_read_from_handoff_archive(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "PROACTIVE_CONTEXT.md").write_text(
@@ -786,26 +784,9 @@ async def test_archived_rules_inject_only_into_wake_before_turn(tmp_path: Path) 
         ).status
         is HandoffStatus.APPLIED
     )
-    archived = ArchivedRules(workspace / "plugin-data" / "wake-builtin")
-
-    def context(channel: str) -> BeforeTurnCtx:
-        return BeforeTurnCtx(
-            session_key=f"{channel}:one",
-            channel=channel,
-            chat_id="one",
-            content="check",
-            timestamp=datetime(2026, 8, 23, tzinfo=UTC),
-            history_messages=(),
-            turn_id="turn:one",
-        )
-
-    wake = context("wake")
-    passive = context("telegram")
-    await archived.prepare(wake)
-    await archived.prepare(passive)
-
-    assert wake.extra_hints == ["# exact legacy rules"]
-    assert passive.extra_hints == []
+    assert read_archived_rules(
+        workspace / "plugin-data" / "wake-builtin"
+    ) == "# exact legacy rules"
 
 
 @pytest.mark.parametrize(

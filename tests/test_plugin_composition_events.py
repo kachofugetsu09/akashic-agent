@@ -749,15 +749,22 @@ async def test_dependency_loss_removes_listener_and_restore_registers_once() -> 
         async def apply(self, ctx) -> None:
             await ctx.provide(DEPENDENCY, "ready")
 
-    consumer = await root.mount(Consumer())
-    provider = await root.mount(Provider())
+    consumer_plugin = Consumer()
+    consumer = await root.mount(
+        consumer_plugin.apply,
+        name=consumer_plugin.name,
+        inject=consumer_plugin.inject,
+    )
+    provider_plugin = Provider()
+    provider = await root.mount(provider_plugin.apply, name=provider_plugin.name)
     root.context.emit(NOTICE, "first")
 
     await provider.dispose()
     assert consumer.state == FiberState.PENDING
     root.context.emit(NOTICE, "missing")
 
-    await root.mount(Provider(), name="replacement")
+    replacement = Provider()
+    await root.mount(replacement.apply, name="replacement")
     root.context.emit(NOTICE, "second")
 
     assert observed == ["first", "second"]

@@ -10,6 +10,7 @@ import logging
 import os
 import secrets
 import shutil
+import sqlite3
 import sys
 import tomllib
 from dataclasses import dataclass, replace
@@ -108,17 +109,11 @@ from agent.plugins.channel_credentials import CoreProviderClientFactory
 
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
-    load_package_manifest,
     load_plugin_manifest,
     plugins_root,
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
-    write_package_manifest,
     write_plugin_manifest,
-)
-from agent.plugins.packages import (
-    _select_enabled_plugin_packages,  # pyright: ignore[reportPrivateUsage]
-    discover_plugin_packages,
 )
 from infra.channels.base import SessionIdentityIndex
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
@@ -208,14 +203,6 @@ class _NoopProviderClientFactory:
 
     async def aclose(self) -> None:
         return None
-
-
-def _package_project_root(plugin_dirs: list[Path]) -> Path | None:
-    for plugin_dir in plugin_dirs:
-        root = plugin_dir.parent if plugin_dir.name == "plugins" else None
-        if root is not None and (root / "plugin_packages").is_dir():
-            return root
-    return None
 
 
 async def _complete_critical(awaitable: Awaitable[U]) -> tuple[U, bool]:
@@ -1147,21 +1134,7 @@ class PluginManager:
 
     def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
         entries = load_plugin_manifest(plugins_home)
-        project_root = _package_project_root(self._dirs)
-        if project_root is not None:
-            packages = discover_plugin_packages(project_root)
-            package_entries = load_package_manifest(plugins_home)
-            for package_id, package in packages.items():
-                if package_id not in package_entries:
-                    package_entries[package_id] = any(
-                        entries.get(member, False) for member in package.members
-                    )
-                for member in package.members:
-                    entries.pop(member, None)
-            _ = write_package_manifest(package_entries, plugins_home=plugins_home)
         for mod in self.discover(installed_selector="latest"):
-            if mod.get("package_id"):
-                continue
             _ = entries.setdefault(_resolve_plugin_id(mod), True)
         return write_plugin_manifest(entries, plugins_home=plugins_home)
 
@@ -1234,26 +1207,6 @@ class PluginManager:
     ) -> list[dict[str, str]]:
         mods: list[dict[str, str]] = []
         seen_names: set[str] = set()
-        project_root = _package_project_root(self._dirs)
-        packages = discover_plugin_packages(project_root) if project_root else {}
-        enabled_packages = (
-            _select_enabled_plugin_packages(
-                packages,
-                load_package_manifest(_plugins_home(self._installed_cache_root)),
-            )
-            if project_root
-            else {}
-        )
-        member_packages = {
-            member: package.id
-            for package in packages.values()
-            for member in package.members
-        }
-        enabled_members = {
-            member
-            for package in enabled_packages.values()
-            for member in package.members
-        }
         for source in resolve_plugin_sources(
             self._dirs,
             installed_cache_root=self._installed_cache_root,
@@ -1264,9 +1217,6 @@ class PluginManager:
                 source.source_type == "builtin"
                 and name in self._disabled_builtin_plugins
             ):
-                continue
-            package_id = member_packages.get(name, "")
-            if package_id and name not in enabled_members:
                 continue
             if name in seen_names and source.source_type == "builtin":
                 logger.warning("插件名重复，跳过: %s (%s)", name, source.plugin_root)
@@ -1289,7 +1239,6 @@ class PluginManager:
                     "import_path": f"akasic_plugin_{import_source}_{import_suffix}",
                     "marketplace": source.marketplace,
                     "source_type": source.source_type,
-                    "package_id": package_id,
                 }
             )
         return mods
@@ -2286,7 +2235,7 @@ class PluginManager:
         desired = {
             plugin_id
             for plugin_id, mod in discovered.items()
-            if mod.get("package_id") or manifest.get(plugin_id, True)
+            if manifest.get(plugin_id, True)
         }
         for plugin_id in sorted(set(self._active_generations) - desired):
             results.append(await self._deactivate_plugin(plugin_id))
@@ -2757,10 +2706,6 @@ class PluginManager:
             old_commands = _snapshot_command_catalog(self.current_snapshot)
             new_commands = _snapshot_command_catalog(ready.snapshot)
             stable_snapshot = self.current_snapshot
-            shared_handoff = _requires_shared_candidate_handoff(
-                ready.previous,
-                generation,
-            )
             v3_runtime_handoff = self._composition_runtime_declared(
                 ready.snapshot,
                 plugin_id,
@@ -2785,7 +2730,6 @@ class PluginManager:
                 exclusive_endpoint_changed
                 or command_catalog_changed
                 or v3_channel_catalog_changed
-                or shared_handoff
                 or formal_root_handoff
             )
             from agent.plugins.snapshot import get_current_runtime_lease
@@ -2793,7 +2737,6 @@ class PluginManager:
             if (
                 exclusive_endpoint_changed
                 or v3_channel_catalog_changed
-                or shared_handoff
             ) and get_current_runtime_lease() is not None:
                 raise RuntimeError(
                     "持有 RuntimeSnapshot lease 时不能切换 Channel runtime"
@@ -2809,7 +2752,7 @@ class PluginManager:
             )
             quiesced_snapshot = (
                 self._snapshot_store.pause_admission()
-                if publication_gated and not shared_handoff
+                if publication_gated
                 else None
             )
             runtime_restore_started = False
@@ -2818,10 +2761,6 @@ class PluginManager:
             provisional_cancelled = False
             if publication_gated:
                 try:
-                    if shared_handoff:
-                        await self._snapshot_store.wait_for_no_leases(ready.snapshot)
-                        self._snapshot_store.seal_candidate_validation(ready.snapshot)
-                        quiesced_snapshot = self._snapshot_store.pause_admission()
                     if (
                         exclusive_endpoint_changed
                         and self._endpoint_quiescer is not None
@@ -2830,13 +2769,11 @@ class PluginManager:
                     if quiesced_snapshot is not None and (
                         exclusive_endpoint_changed
                         or v3_channel_catalog_changed
-                        or shared_handoff
                         or formal_root_handoff
                     ):
                         await self._snapshot_store.wait_for_no_leases(quiesced_snapshot)
-                    if not shared_handoff:
-                        await self._snapshot_store.wait_for_no_leases(ready.snapshot)
-                        self._snapshot_store.seal_candidate_validation(ready.snapshot)
+                    await self._snapshot_store.wait_for_no_leases(ready.snapshot)
+                    self._snapshot_store.seal_candidate_validation(ready.snapshot)
                     (
                         provisional_transaction,
                         provisional_cancelled,
@@ -3410,10 +3347,6 @@ class PluginManager:
         expected_mcp_catalog_digests = (
             None if candidate_runtime is None else candidate_runtime.mcp_catalog_digests
         )
-        candidate_data_access = _snapshot_candidate_data_access(
-            generation,
-            ready.snapshot,
-        )
 
         # 1. 隔离 Root 已封存，先停止其任务，再进入任何 formal await。
         if self._dashboard_validation_releaser is not None:
@@ -3436,7 +3369,6 @@ class PluginManager:
                 generation,
                 candidate=ready.snapshot,
                 formal=replacement,
-                candidate_data_access=candidate_data_access,
             )
         except RuntimeError:
             await self._dispose_unreferenced_composition_root(replacement)
@@ -3595,7 +3527,6 @@ class PluginManager:
             raise RuntimeError("插件候选已被 runtime recovery 撤销准入")
         active = self._active_generations.get(plugin_id)
         stage_latest = _installed_generation_is_candidate(generation)
-        shared_handoff = _requires_shared_candidate_handoff(active, generation)
         try:
             if stage_latest:
                 if (
@@ -3685,7 +3616,6 @@ class PluginManager:
             exclusive_endpoint_changed
             or command_catalog_changed
             or v3_channel_catalog_changed
-            or shared_handoff
             or formal_root_handoff
         )
         if self._dashboard_preparer is not None:
@@ -3711,17 +3641,7 @@ class PluginManager:
                 )
 
         quiesced_snapshot: RuntimeSnapshot | None = None
-        if shared_handoff:
-            from agent.plugins.snapshot import get_current_runtime_lease
-
-            if get_current_runtime_lease() is not None:
-                error_text = "持有 RuntimeSnapshot lease 时不能交接 shared-read writer"
-                await self.discard_prepared(
-                    plugin_id,
-                    error=f"shared_read_lease: {error_text}",
-                )
-                raise RuntimeError(error_text)
-        if publication_gated and not shared_handoff:
+        if publication_gated:
             from agent.plugins.snapshot import get_current_runtime_lease
 
             if (
@@ -3782,15 +3702,6 @@ class PluginManager:
         if not stage_latest:
             try:
                 self._snapshot_store.seal_pending_validation(snapshot)
-                if shared_handoff:
-                    quiesced_snapshot = self._snapshot_store.pause_admission()
-                    if (
-                        exclusive_endpoint_changed
-                        and self._endpoint_quiescer is not None
-                    ):
-                        await self._endpoint_quiescer()
-                    assert quiesced_snapshot is not None
-                    await self._snapshot_store.wait_for_no_leases(quiesced_snapshot)
                 if publication_gated:
                     _, provisional_cancelled = await _complete_critical(
                         self._snapshot_store.commit_provisional(transaction)
@@ -4101,10 +4012,6 @@ class PluginManager:
         expected_mcp_catalog_digests = (
             None if candidate_runtime is None else candidate_runtime.mcp_catalog_digests
         )
-        candidate_data_access = _snapshot_candidate_data_access(
-            generation,
-            validation_snapshot,
-        )
         if self._dashboard_validation_releaser is not None:
             await self._dashboard_validation_releaser(validation_snapshot)
         await self._stop_runtime_snapshot(validation_snapshot)
@@ -4125,7 +4032,6 @@ class PluginManager:
                     generation,
                     candidate=validation_snapshot,
                     formal=production_snapshot,
-                    candidate_data_access=candidate_data_access,
                 )
             except RuntimeError:
                 await self._dispose_unreferenced_composition_root(production_snapshot)
@@ -4563,10 +4469,7 @@ class PluginManager:
         plugin_manifest = load_plugin_manifest(
             _plugins_home(self._installed_cache_root)
         )
-        if (
-            not mod.get("package_id")
-            and plugin_manifest.get(initial_plugin_id, True) is False
-        ):
+        if plugin_manifest.get(initial_plugin_id, True) is False:
             logger.info("插件已禁用（manifest.toml）: %s", initial_plugin_id)
             return None
         created_activation_data_dir = False
@@ -4929,20 +4832,19 @@ class PluginManager:
             if not activate and _installed_generation_is_candidate(generation):
                 generation.production_contributions = contributions
                 generation.production_data_dir = generation.data_dir
-                if not _generation_uses_shared_candidate_data(generation):
-                    assert generation.validation_workspace is not None
-                    validation_data_dir = (
-                        generation.validation_workspace
-                        / "plugin-data"
-                        / generation.data_dir.name
-                    )
-                    validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
-                    generation.validation_data_inventory = _copy_validation_data(
-                        generation.data_dir,
-                        validation_data_dir,
-                        _candidate_data_exclude_paths(generation),
-                    )
-                    generation.data_dir = validation_data_dir
+                assert generation.validation_workspace is not None
+                validation_data_dir = (
+                    generation.validation_workspace
+                    / "plugin-data"
+                    / generation.data_dir.name
+                )
+                validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
+                generation.validation_data_inventory = _copy_validation_data(
+                    generation.data_dir,
+                    validation_data_dir,
+                    _candidate_data_exclude_paths(generation),
+                )
+                generation.data_dir = validation_data_dir
             if not activate:
                 generation.runtime_snapshot = await self._compile_generation_snapshot(
                     generation,
@@ -5528,9 +5430,12 @@ class PluginManager:
             _ = resolve_declared_workspace_root(self._workspace, name)
         for name in plugin.workspace_files:
             _ = resolve_declared_workspace_file(self._workspace, name)
-        _ = await root.mount(
-            plugin,
+        _ = await root._mount_module(  # pyright: ignore[reportPrivateUsage]
+            plugin.apply,
             name=generation.plugin_id,
+            inject=plugin.inject,
+            plugin_module=plugin.module,
+            static_active=plugin.static_active,
             runtime=PluginRuntime(
                 plugin_id=generation.plugin_id,
                 generation_id=generation.generation_id,
@@ -5540,7 +5445,6 @@ class PluginManager:
                 config=generation.config,
                 workspace_roots=plugin.workspace_roots,
                 workspace_files=plugin.workspace_files,
-                data_access="read_write",
             ),
         )
 
@@ -5596,14 +5500,12 @@ class PluginManager:
             attempt_workspace,
         )
         for generation, clone, data_dir, config in clones:
-            data_access: Literal["read_write", "read_only"] = (
-                "read_only"
-                if _generation_uses_shared_candidate_data(generation)
-                else "read_write"
-            )
-            _ = await root.mount(
-                clone,
+            _ = await root._mount_module(  # pyright: ignore[reportPrivateUsage]
+                clone.apply,
                 name=generation.plugin_id,
+                inject=clone.inject,
+                plugin_module=clone.module,
+                static_active=clone.static_active,
                 runtime=PluginRuntime(
                     plugin_id=generation.plugin_id,
                     generation_id=generation.generation_id,
@@ -5613,7 +5515,6 @@ class PluginManager:
                     config=config,
                     workspace_roots=clone.workspace_roots,
                     workspace_files=clone.workspace_files,
-                    data_access=data_access,
                 ),
             )
 
@@ -5662,17 +5563,13 @@ class PluginManager:
         """重新导入一个 stable v3 插件并绑定 candidate 临时数据。"""
 
         plugin_dir = generation.plugin_dir
-        if _generation_uses_shared_candidate_data(generation):
-            data_dir = generation.production_data_dir or generation.data_dir
-            inventory: tuple[str, ...] = ()
-        else:
-            data_dir = attempt_workspace / "plugin-data" / generation.data_dir.name
-            _ = data_dir.parent.mkdir(parents=True, exist_ok=True)
-            inventory = _copy_validation_data(
-                generation.data_dir,
-                data_dir,
-                _candidate_data_exclude_paths(generation),
-            )
+        data_dir = attempt_workspace / "plugin-data" / generation.data_dir.name
+        _ = data_dir.parent.mkdir(parents=True, exist_ok=True)
+        inventory = _copy_validation_data(
+            generation.data_dir,
+            data_dir,
+            _candidate_data_exclude_paths(generation),
+        )
         if generation is candidate_owner:
             generation.validation_data_inventory = inventory
         module_path = (
@@ -7049,60 +6946,19 @@ def _candidate_data_exclude_paths(
     return tuple(sorted(excluded))
 
 
-def _generation_uses_shared_candidate_data(generation: PluginGeneration) -> bool:
-    manifest = generation.static_manifest
-    return manifest is not None and manifest.candidate_data_mode == "shared_read"
-
-
-def _requires_shared_candidate_handoff(
-    previous: PluginGeneration | None,
-    candidate: PluginGeneration,
-) -> bool:
-    return previous is not None and (
-        _generation_uses_shared_candidate_data(previous)
-        or _generation_uses_shared_candidate_data(candidate)
-    )
-
-
 def _validate_candidate_formal_snapshot_identity(
     generation: PluginGeneration,
     *,
     candidate: RuntimeSnapshot,
     formal: RuntimeSnapshot,
-    candidate_data_access: Literal["read_write", "read_only"] | None,
 ) -> None:
-    """Allow only the declared shared-read access change during formal rebuild."""
+    """Require the formal Root to preserve the validated candidate identity."""
 
-    # 1. A shared candidate changes exactly one Core-owned access assignment.
-    if _generation_uses_shared_candidate_data(generation):
-        formal_root = formal.composition_root
-        if formal_root is None:
-            raise RuntimeError("shared-read candidate 缺少 composition Root")
-        formal_access = formal_root.plugin_runtime(generation.plugin_id).data_access
-        if candidate_data_access != "read_only" or formal_access != "read_write":
-            raise RuntimeError(
-                "shared-read candidate data_access 变化无效: "
-                f"{candidate_data_access} -> {formal_access}"
-            )
-
-    # 2. Topology and every frozen catalog remain content-identical.
     if candidate.snapshot_id != formal.snapshot_id:
         raise RuntimeError(
             "候选隔离资源恢复后 snapshot identity 发生变化: "
             f"{candidate.snapshot_id} -> {formal.snapshot_id}"
         )
-
-
-def _snapshot_candidate_data_access(
-    generation: PluginGeneration,
-    snapshot: RuntimeSnapshot,
-) -> Literal["read_write", "read_only"] | None:
-    if not _generation_uses_shared_candidate_data(generation):
-        return None
-    root = snapshot.composition_root
-    if root is None:
-        raise RuntimeError("shared-read candidate 缺少 composition Root")
-    return root.plugin_runtime(generation.plugin_id).data_access
 
 
 def _copy_validation_data(
@@ -7140,17 +6996,31 @@ def _copy_validation_data(
             if path.is_symlink():
                 raise RuntimeError(f"candidate plugin-data 不允许复制符号链接: {path}")
 
-    # 3. Excluded paths are omitted before copytree opens their contents.
-    def ignore(directory: str, names: list[str]) -> list[str]:
-        current = Path(directory).resolve(strict=True)
-        relative_dir = current.relative_to(source_root)
-        ignored: list[str] = []
-        for name in names:
-            if _candidate_data_path_is_excluded(relative_dir / name, excluded):
-                ignored.append(name)
-        return ignored
-
-    _ = shutil.copytree(source_root, target, ignore=ignore)
+    # 3. Copy SQLite through its snapshot API; never race WAL/SHM companion files.
+    target.mkdir(parents=True)
+    for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
+        root = Path(directory)
+        relative_dir = root.relative_to(source_root)
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not _candidate_data_path_is_excluded(relative_dir / name, excluded)
+        ]
+        for name in dirnames:
+            relative = relative_dir / name
+            (target / relative).mkdir()
+        for name in filenames:
+            relative = relative_dir / name
+            if _candidate_data_path_is_excluded(relative, excluded):
+                continue
+            if name.endswith(("-wal", "-shm")):
+                continue
+            source_file = root / name
+            target_file = target / relative
+            if _is_sqlite_database(source_file):
+                _copy_sqlite_snapshot(source_file, target_file)
+            else:
+                _ = shutil.copy2(source_file, target_file)
 
     # 4. Freeze a relative file inventory for review and Gate evidence.
     inventory: list[str] = []
@@ -7159,6 +7029,24 @@ def _copy_validation_data(
         for filename in filenames:
             inventory.append(root.joinpath(filename).relative_to(target).as_posix())
     return tuple(sorted(inventory))
+
+
+def _is_sqlite_database(path: Path) -> bool:
+    with path.open("rb") as stream:
+        return stream.read(16) == b"SQLite format 3\x00"
+
+
+def _copy_sqlite_snapshot(source: Path, target: Path) -> None:
+    """Copy one transactionally consistent SQLite snapshot."""
+
+    reader = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    writer = sqlite3.connect(target)
+    try:
+        reader.backup(writer)
+    finally:
+        writer.close()
+        reader.close()
+    _ = shutil.copymode(source, target)
 
 
 def _candidate_data_path_is_excluded(

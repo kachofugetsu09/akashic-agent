@@ -418,10 +418,7 @@ async def apply(ctx: Context, config: object) -> None:
     """Publish typed source and consumer views over one EventMail store."""
 
     _ = config
-    store = EventMailStore(
-        ctx.data_root / "eventmail.sqlite3",
-        data_access=ctx.data_access,
-    )
+    store = EventMailStore(ctx.data_root / "eventmail.sqlite3")
     store.initialize()
     _ = await ctx.provide(
         EVENTMAIL_CONTENT_SOURCE,

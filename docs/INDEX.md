@@ -73,6 +73,8 @@
 
 | 文件或目录 | 回答的问题 | 读取策略 |
 |---|---|---|
+| [插件 V3 能力手册](design/plugin-v3-capabilities.md) | V3 当前有哪些原子能力、插件怎样使用 | 开发或审查 V3 插件时读取 |
+| [hua-home 插件运行事实](design/hua-home-plugin-runtime-source-of-truth.md) | 线上权威路径、固定查找方法、本地镜像边界和 exact fleet snapshot | 审计、同步或部署插件时先读取 |
 | [`WORKFLOW.md`](WORKFLOW.md) | 修改仓库文件时怎样从接手任务走到提交评审 | 每个修改任务读取 |
 | [`projectneed.md`](projectneed.md) | 系统必须保持什么 | 公共章节先读，再按领域展开 |
 | [`NOW.md`](NOW.md) | 当前还有什么没做 | 每个非简单任务读取；完成项不应存在 |

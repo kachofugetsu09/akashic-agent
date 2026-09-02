@@ -175,7 +175,7 @@ runtime 不变量无法建立时才结束 Core；本轮不定义 critical MCP �
 
 旧 cache 可能仍是 `cache/<marketplace>/<plugin>/<version>/` 单目录布局。source resolver 可以把一个旧可见版本作为初始 stable，但首次 staged 更新必须把新 revision 写入 `.artifacts/` 并建立 pointer pair；不得为了统一布局先删除或搬空当前 stable。
 
-本设计只覆盖插件静态 manifest 与 `mcp_servers()` Root 声明链。`mcp/servers/*.toml` 与 `WorkspaceMcpWatcher` 已删除，不能作为新的安装、恢复或 cache 删除 owner。
+本设计只覆盖插件 static manifest 与 `MCP_SERVERS.register(...)` Root 注册链。`mcp/servers/*.toml` 与 `WorkspaceMcpWatcher` 已删除，不能作为新的安装、恢复或 cache 删除 owner。
 
 ## 9. 已有证据
 

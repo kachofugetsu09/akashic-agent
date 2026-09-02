@@ -40,16 +40,15 @@ async def apply(ctx: Context, config: object) -> None:
     store = ModelsStore(
         ctx.workspace_file("model-registry.sqlite3"),
         backup_dir=ctx.runtime.workspace / "runtime" / "model-backups",
-        writable=ctx.data_access == "read_write",
+        writable=True,
     )
-    if ctx.data_access == "read_write":
-        store.initialize()
+    store.initialize()
     state = ModelsState(
         store,
         root_instance_token=ctx.root_instance_token,
         capability_catalog=LiteLlmCapabilityCatalog(
             ctx.data_root / "litellm-capabilities.json",
-            writable=ctx.data_access == "read_write",
+            writable=True,
         ),
     )
     _ = await ctx.effect(

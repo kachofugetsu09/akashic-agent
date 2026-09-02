@@ -35,7 +35,6 @@ from agent.lifecycle.phases.prompt_render import (
     default_prompt_render_modules,
 )
 from agent.lifecycle.types import AfterReasoningCtx, BeforeTurnCtx, PromptRenderCtx
-from agent.lifecycle.composition import observe_composition_domain_event
 from agent.plugin_composition import (
     Bail,
     CompositionError,
@@ -120,101 +119,8 @@ def _answer_ctx() -> AfterReasoningCtx:
     )
 
 
-@pytest.mark.asyncio
-async def test_prompt_seam_runs_before_legacy_phase_modules() -> None:
-    order: list[str] = []
-    root = CompositionRoot("prompt-seam")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(PROMPT_RENDER_EVENT, lambda _: order.append("composition"))
-
-    class LegacyModule:
-        slot = "legacy.prompt"
-        requires = ("prompt_render.emit", "prompt:ctx")
-
-        async def run(self, frame):
-            order.append("legacy-phase")
-            return frame
-
-    await root.mount(plugin, name="prompt-plugin")
-    bus = EventBus()
-    bus.on(PromptRenderCtx, lambda _: order.append("event-bus"))
-    modules = default_prompt_render_modules(
-        bus,
-        cast(Any, object()),
-        plugin_modules=cast(Any, [LegacyModule()]),
-    )
-    slots = [cast(str, getattr(module, "slot")) for module in modules]
-    frame = PromptRenderFrame(
-        input=cast(Any, None),
-        slots={"prompt:ctx": _prompt_ctx()},
-    )
-
-    async with _bound_root(root):
-        for module in modules[
-            slots.index("prompt_render.emit") : slots.index("legacy.prompt") + 1
-        ]:
-            frame = await module.run(frame)
-
-    assert order == ["event-bus", "composition", "legacy-phase"]
-    assert slots.index("legacy.prompt") < slots.index("prompt_render.collect_exports")
 
 
-@pytest.mark.asyncio
-async def test_context_prepared_seam_runs_after_legacy_before_turn_modules() -> None:
-    order: list[str] = []
-    observed: list[BeforeTurnCtx] = []
-    root = CompositionRoot("context-prepared-seam")
-
-    async def plugin(ctx) -> None:
-        def observe(payload: BeforeTurnCtx) -> None:
-            order.append("composition")
-            assert payload.extra_hints == ["legacy hint"]
-            observed.append(payload)
-
-        await ctx.on(CONTEXT_PREPARED_EVENT, observe)
-
-    class LegacyModule:
-        slot = "legacy.before_turn"
-        requires = ("before_turn.emit", "session:ctx")
-
-        async def run(self, frame):
-            order.append("legacy-phase")
-            frame.slots["session:extra_hint:legacy"] = "legacy hint"
-            return frame
-
-    await root.mount(plugin, name="context-plugin")
-    bus = EventBus()
-    bus.on(BeforeTurnCtx, lambda _: order.append("event-bus"))
-    modules = default_before_turn_modules(
-        bus,
-        cast(Any, object()),
-        cast(Any, object()),
-        plugin_modules=cast(Any, [LegacyModule()]),
-    )
-    slots = [cast(str, getattr(module, "slot")) for module in modules]
-    payload = _before_turn_ctx()
-    frame = BeforeTurnFrame(
-        input=cast(Any, None),
-        slots={"session:ctx": payload},
-    )
-
-    async with _bound_root(root):
-        for module in modules[
-            slots.index("before_turn.emit") : slots.index(
-                "before_turn.composition_context_prepared"
-            )
-            + 1
-        ]:
-            frame = await module.run(frame)
-
-    assert order == ["event-bus", "legacy-phase", "composition"]
-    assert observed == [payload]
-    assert (
-        slots.index("before_turn.collect_exports")
-        < slots.index("before_turn.composition_context_prepared")
-        < slots.index("before_turn.return")
-    )
 
 
 @pytest.mark.asyncio
@@ -283,67 +189,6 @@ async def test_lifecycle_seam_rejects_released_owner_lease() -> None:
     assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_INACTIVE"
 
 
-@pytest.mark.asyncio
-async def test_answer_seams_preserve_legacy_module_positions() -> None:
-    order: list[str] = []
-    root = CompositionRoot("answer-seam")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(
-            AFTER_REASONING_PREPROCESS_EVENT,
-            lambda _: order.append("preprocess"),
-        )
-        await ctx.on(
-            AFTER_REASONING_CLEANUP_EVENT,
-            lambda _: order.append("cleanup"),
-        )
-
-    class LegacyPre:
-        slot = "legacy.answer_pre"
-        requires = ("after_reasoning.build_ctx", "reasoning:ctx")
-
-        async def run(self, frame):
-            order.append("legacy-pre")
-            return frame
-
-    class LegacyPost:
-        slot = "legacy.answer_post"
-        requires = ("after_reasoning.emit", "reasoning:ctx")
-
-        async def run(self, frame):
-            order.append("legacy-post")
-            return frame
-
-    await root.mount(plugin, name="answer-plugin")
-    bus = EventBus()
-    bus.on(AfterReasoningCtx, lambda _: order.append("event-bus"))
-    modules = default_after_reasoning_modules(
-        bus,
-        cast(Any, object()),
-        plugin_modules=cast(Any, [LegacyPre(), LegacyPost()]),
-    )
-    slots = [cast(str, getattr(module, "slot")) for module in modules]
-    frame = AfterReasoningFrame(
-        input=cast(Any, None),
-        slots={"reasoning:ctx": _answer_ctx()},
-    )
-
-    async with _bound_root(root):
-        for module in modules[
-            slots.index("legacy.answer_pre") : slots.index(
-                "after_reasoning.composition_cleanup"
-            )
-            + 1
-        ]:
-            frame = await module.run(frame)
-
-    assert order == [
-        "legacy-pre",
-        "preprocess",
-        "event-bus",
-        "legacy-post",
-        "cleanup",
-    ]
 
 
 @pytest.mark.asyncio
@@ -460,7 +305,7 @@ async def test_runtime_start_ignores_snapshot_replaced_before_start(
 
 
 @pytest.mark.asyncio
-async def test_after_turn_committed_event_runs_after_legacy_fanout() -> None:
+async def test_after_turn_committed_event_runs_after_core_fanout() -> None:
     order: list[str] = []
     observed: list[TurnCommitted] = []
     root = CompositionRoot("after-turn-committed")
@@ -528,7 +373,7 @@ def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_after_turn_committed_event_keeps_legacy_path_without_root() -> None:
+async def test_after_turn_committed_event_keeps_core_path_without_root() -> None:
     observed: list[TurnCommitted] = []
     bus = EventBus()
     bus.on(TurnCommitted, observed.append)
@@ -543,60 +388,6 @@ async def test_after_turn_committed_event_keeps_legacy_path_without_root() -> No
     assert observed == [frame.slots["turn:committed"]]
 
 
-@pytest.mark.asyncio
-async def test_domain_observe_event_runs_after_legacy_fanout() -> None:
-    order: list[str] = []
-    observed: dict[str, object] = {}
-    root = CompositionRoot("domain-observe-order")
-
-    def observe(name: str):
-        def callback(event: object) -> None:
-            order.append(f"composition.{name}")
-            observed[name] = event
-
-        return callback
-
-    async def plugin(ctx) -> None:
-        await ctx.on(RETRIEVAL_COMPLETED_EVENT, observe("retrieval"))
-        await ctx.on(MEMORY_WRITTEN_EVENT, observe("memory"))
-
-    await root.mount(plugin, name="domain-observer")
-    bus = EventBus()
-    bus.on(RetrievalCompleted, lambda event: order.append("legacy.retrieval"))
-    bus.on(MemoryWritten, lambda event: order.append("legacy.memory"))
-    retrieval = _retrieval_completed_event()
-    memory = _memory_written_event()
-
-    async with _bound_root(root):
-        await bus.fanout(retrieval)
-        await bus.fanout(memory)
-
-    assert order == [
-        "legacy.retrieval",
-        "composition.retrieval",
-        "legacy.memory",
-        "composition.memory",
-    ]
-    assert observed == {
-        "retrieval": retrieval,
-        "memory": memory,
-    }
-
-
-@pytest.mark.asyncio
-async def test_domain_observe_event_is_not_skipped_without_legacy_handlers() -> None:
-    observed: list[MemoryWritten] = []
-    root = CompositionRoot("domain-observe-no-legacy")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, observed.append)
-
-    await root.mount(plugin, name="domain-observer")
-    event = _memory_written_event()
-    async with _bound_root(root):
-        await EventBus().fanout(event)
-
-    assert observed == [event]
 
 
 @pytest.mark.asyncio
@@ -614,14 +405,27 @@ async def test_domain_observe_event_uses_bound_candidate_root() -> None:
     await first.mount(first_plugin, name="first-observer")
     await second.mount(second_plugin, name="second-observer")
     event = _memory_written_event()
-    bus = EventBus()
-
     async with _bound_root(first):
-        await bus.fanout(event)
+        await observe_composition_event(MEMORY_WRITTEN_EVENT, event)
     async with _bound_root(second):
-        await bus.fanout(event)
+        await observe_composition_event(MEMORY_WRITTEN_EVENT, event)
 
     assert observed == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
+    observed: list[MemoryWritten] = []
+    root = CompositionRoot("event-bus-is-core-only")
+
+    async def plugin(ctx) -> None:
+        await ctx.on(MEMORY_WRITTEN_EVENT, observed.append)
+
+    await root.mount(plugin, name="domain-observer")
+    async with _bound_root(root):
+        await EventBus().fanout(_memory_written_event())
+
+    assert observed == []
 
 
 @pytest.mark.asyncio
@@ -719,8 +523,9 @@ async def test_retrieval_completed_event_payload() -> None:
     )
 
     async with _bound_root(root):
-        await observe_composition_domain_event(
-            build_retrieval_completed(request, result)
+        await observe_composition_event(
+            RETRIEVAL_COMPLETED_EVENT,
+            build_retrieval_completed(request, result),
         )
 
     assert len(observed) == 1
@@ -776,19 +581,6 @@ def _committed_event() -> TurnCommitted:
         persisted_user_message="hello",
         assistant_response="world",
         tools_used=[],
-    )
-
-
-def _retrieval_completed_event() -> RetrievalCompleted:
-    return RetrievalCompleted(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        query="query",
-        orig_query=None,
-        hits=[],
-        injected_count=0,
-        route_decision=None,
     )
 
 

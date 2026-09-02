@@ -335,7 +335,7 @@ class PluginTools:
         *,
         provided_for: ServiceKey[object] | None = None,
     ) -> None:
-        """Bind Root-local handlers; omission preserves stateless legacy exports."""
+        """Bind a Root-local handler or a named module export."""
 
         if (
             ctx._root_instance_token() is not self._root_instance_token

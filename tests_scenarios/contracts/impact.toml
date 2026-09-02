@@ -144,8 +144,6 @@ paths = [
 ]
 deleted_paths = [
   "agent/tool_hooks/**",
-  "plugin_packages/default-proactive/**",
-  "plugin_packages/wake-proactive/**",
 ]
 depends_on = ["lifecycle"]
 scenarios = ["plugin_generation_contract", "plugin_workload_contract", "plugin_uninstall_drain_finality", "mcp_process_lifecycle", "plugin_domain_observe_events"]

@@ -386,7 +386,6 @@ def default_after_turn_modules(
     bus: EventBus,
     outbound: OutboundPort,
     context: ContextBuilder,
-    plugin_modules: AfterTurnModules | None = None,
 ) -> AfterTurnModules:
     builtins: AfterTurnModules = [
         _BuildTurnWorkModule(context),
@@ -402,5 +401,5 @@ def default_after_turn_modules(
     ]
     return cast(
         AfterTurnModules,
-        topo_sort_modules(builtins + list(plugin_modules or [])),
+        topo_sort_modules(builtins),
     )

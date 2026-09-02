@@ -158,7 +158,6 @@ def default_before_reasoning_modules(
     tools: ToolRegistry,
     session_manager: SessionManager,
     context: ContextBuilder,
-    plugin_modules: BeforeReasoningModules | None = None,
 ) -> BeforeReasoningModules:
     builtins: BeforeReasoningModules = [
         _SyncToolContextModule(tools, session_manager),
@@ -170,5 +169,5 @@ def default_before_reasoning_modules(
     ]
     return cast(
         BeforeReasoningModules,
-        topo_sort_modules(builtins + list(plugin_modules or [])),
+        topo_sort_modules(builtins),
     )

@@ -10,16 +10,22 @@ from agent.plugin_composition import (
     CompositionError,
     CompositionRoot,
     ExecutorService,
+    Fiber,
     HealthHandle,
     SyncTask,
 )
+
+
+async def _mount_executor(root: CompositionRoot, max_workers: int) -> Fiber:
+    service = ExecutorService(max_workers=max_workers)
+    return await root.mount(service.apply, name=service.name)
 
 
 @pytest.mark.asyncio
 async def test_parallel_sync_runs_concurrently_and_preserves_result_order() -> None:
     barrier = threading.Barrier(2)
     root = CompositionRoot("executor-order")
-    await root.mount(ExecutorService(max_workers=2))
+    await _mount_executor(root, 2)
     executor = root.context.require(EXECUTOR_SERVICE)
 
     def run(value: str) -> str:
@@ -40,7 +46,7 @@ async def test_parallel_sync_runs_concurrently_and_preserves_result_order() -> N
 async def test_parallel_sync_waits_all_and_aggregates_errors() -> None:
     completed: list[str] = []
     root = CompositionRoot("executor-errors")
-    await root.mount(ExecutorService(max_workers=2))
+    await _mount_executor(root, 2)
     executor = root.context.require(EXECUTOR_SERVICE)
 
     def fail(name: str, error: Exception) -> None:
@@ -65,7 +71,7 @@ async def test_parallel_sync_waits_all_and_aggregates_errors() -> None:
 @pytest.mark.asyncio
 async def test_parallel_sync_worker_cannot_access_context() -> None:
     root = CompositionRoot("executor-context-boundary")
-    await root.mount(ExecutorService(max_workers=1))
+    await _mount_executor(root, 1)
     executor = root.context.require(EXECUTOR_SERVICE)
 
     with pytest.raises(BaseExceptionGroup) as caught:
@@ -81,7 +87,7 @@ async def test_parallel_sync_worker_cannot_access_context() -> None:
 @pytest.mark.asyncio
 async def test_parallel_sync_worker_cannot_mutate_saved_health_handle() -> None:
     root = CompositionRoot("executor-health-boundary")
-    await root.mount(ExecutorService(max_workers=1))
+    await _mount_executor(root, 1)
     handles: list[HealthHandle] = []
 
     async def plugin(ctx) -> None:
@@ -104,7 +110,7 @@ async def test_parallel_sync_worker_cannot_mutate_saved_health_handle() -> None:
 @pytest.mark.asyncio
 async def test_parallel_sync_worker_cannot_read_saved_fiber_handle() -> None:
     root = CompositionRoot("executor-fiber-boundary")
-    await root.mount(ExecutorService(max_workers=1))
+    await _mount_executor(root, 1)
     handle = await root.context.mount(lambda _: None, name="plugin")
     executor = root.context.require(EXECUTOR_SERVICE)
 
@@ -123,7 +129,7 @@ async def test_parallel_sync_cancellation_joins_running_thread() -> None:
     started = threading.Event()
     release = threading.Event()
     root = CompositionRoot("executor-cancel")
-    await root.mount(ExecutorService(max_workers=1))
+    await _mount_executor(root, 1)
     executor = root.context.require(EXECUTOR_SERVICE)
 
     def run() -> str:
@@ -153,7 +159,7 @@ async def test_parallel_sync_cancellation_drops_queued_task() -> None:
     release = threading.Event()
     queued_ran = threading.Event()
     root = CompositionRoot("executor-cancel-queued")
-    await root.mount(ExecutorService(max_workers=1))
+    await _mount_executor(root, 1)
     executor = root.context.require(EXECUTOR_SERVICE)
 
     def running() -> str:
@@ -186,7 +192,7 @@ async def test_parallel_sync_cancellation_drops_queued_task() -> None:
 @pytest.mark.asyncio
 async def test_executor_provider_dispose_closes_pool_and_removes_service() -> None:
     root = CompositionRoot("executor-dispose")
-    provider = await root.mount(ExecutorService(max_workers=1))
+    provider = await _mount_executor(root, 1)
     executor = root.context.require(EXECUTOR_SERVICE)
 
     await provider.dispose()
@@ -200,7 +206,7 @@ async def test_executor_provider_dispose_closes_pool_and_removes_service() -> No
 @pytest.mark.asyncio
 async def test_parallel_sync_empty_batch_is_valid() -> None:
     root = CompositionRoot("executor-empty")
-    await root.mount(ExecutorService(max_workers=1))
+    await _mount_executor(root, 1)
     executor = root.context.require(EXECUTOR_SERVICE)
 
     assert await executor.parallel_sync(()) == ()

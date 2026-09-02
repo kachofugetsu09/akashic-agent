@@ -13,7 +13,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, AsyncGenerator, Literal, Protocol, TypeVar, cast
+from typing import Any, AsyncGenerator, TypeVar, cast
 
 from agent.plugin_composition.effect import Effect, EffectSetup
 from agent.plugin_composition.diagnostics import (
@@ -51,10 +51,6 @@ T = TypeVar("T")
 R = TypeVar("R")
 PluginApply = Callable[["Context"], object]
 FiberObserver = Callable[["Fiber"], object]
-
-
-class Plugin(Protocol):
-    def apply(self, ctx: Context) -> object: ...
 
 
 class RuntimeScope:
@@ -209,12 +205,6 @@ class Context:
 
         return self.runtime.data_dir
 
-    @property
-    def data_access(self) -> Literal["read_write", "read_only"]:
-        """Return the access mode assigned to this exact plugin Root."""
-
-        return self.runtime.data_access
-
     def workspace_root(self, name: str) -> Path:
         """返回 Core 为当前 generation 投影的声明式 workspace root。"""
 
@@ -235,13 +225,15 @@ class Context:
 
     async def mount(
         self,
-        plugin: Plugin | PluginApply,
+        plugin: PluginApply,
         *,
         name: str | None = None,
         inject: Iterable[ServiceKey[object]] | None = None,
         required_for_readiness: bool = True,
     ) -> FiberHandle:
         reject_executor_context_access()
+        if not callable(plugin) or hasattr(plugin, "apply"):
+            raise TypeError("Context.mount 只接受 child callable")
         fiber = await self._root._mount(
             parent=self._fiber,
             plugin=plugin,
@@ -249,6 +241,8 @@ class Context:
             inject=inject,
             required_for_readiness=required_for_readiness,
             runtime=self._fiber.runtime,
+            plugin_module=self._fiber.plugin_module,
+            static_active=True,
         )
         return FiberHandle(fiber)
 
@@ -873,7 +867,7 @@ class CompositionRoot:
 
     async def mount(
         self,
-        plugin: Plugin | PluginApply,
+        plugin: PluginApply,
         *,
         name: str | None = None,
         inject: Iterable[ServiceKey[object]] | None = None,
@@ -886,6 +880,31 @@ class CompositionRoot:
             inject=inject,
             required_for_readiness=True,
             runtime=runtime,
+            plugin_module=None,
+            static_active=True,
+        )
+
+    async def _mount_module(
+        self,
+        plugin: PluginApply,
+        *,
+        name: str,
+        inject: Iterable[ServiceKey[object]],
+        runtime: PluginRuntime,
+        plugin_module: ModuleType,
+        static_active: bool,
+    ) -> Fiber:
+        """Mount one Manager-validated V3 module adapter."""
+
+        return await self._mount(
+            parent=self.root_fiber,
+            plugin=plugin,
+            name=name,
+            inject=inject,
+            required_for_readiness=True,
+            runtime=runtime,
+            plugin_module=plugin_module,
+            static_active=static_active,
         )
 
     async def dispose(self) -> None:
@@ -1174,11 +1193,13 @@ class CompositionRoot:
         self,
         *,
         parent: Fiber,
-        plugin: Plugin | PluginApply,
+        plugin: PluginApply,
         name: str | None,
         inject: Iterable[ServiceKey[object]] | None,
         required_for_readiness: bool,
         runtime: PluginRuntime | None,
+        plugin_module: ModuleType | None,
+        static_active: bool,
     ) -> Fiber:
         """Publish only after parent ownership exists, then reconcile."""
 
@@ -1200,7 +1221,6 @@ class CompositionRoot:
             )
 
         # 2. Parent ownership is visible before publication observers run.
-        static_active = getattr(plugin, "static_active", True)
         if not isinstance(static_active, bool):
             raise TypeError("插件 static_active 必须是 bool")
         fiber = Fiber(
@@ -1212,11 +1232,7 @@ class CompositionRoot:
             parent=parent,
             required_for_readiness=required_for_readiness,
             runtime=runtime,
-            plugin_module=(
-                module
-                if isinstance((module := getattr(plugin, "module", None)), ModuleType)
-                else parent.plugin_module
-            ),
+            plugin_module=plugin_module,
             static_active=static_active,
         )
         self._next_fiber_id += 1
@@ -1240,23 +1256,19 @@ class CompositionRoot:
 
     def _resolve_plugin(
         self,
-        plugin: Plugin | PluginApply,
+        plugin: PluginApply,
         *,
         name: str | None,
         inject: Iterable[ServiceKey[object]] | None,
     ) -> tuple[PluginApply, str, tuple[ServiceKey[object], ...]]:
-        if callable(plugin) and not hasattr(plugin, "apply"):
-            apply = cast(PluginApply, plugin)
-        else:
-            candidate = getattr(plugin, "apply", None)
-            if not callable(candidate):
-                raise TypeError("插件必须是 callable 或提供 apply(ctx)")
-            apply = cast(PluginApply, candidate)
+        if not callable(plugin) or hasattr(plugin, "apply"):
+            raise TypeError("插件必须是 callable")
+        apply = plugin
         resolved_name = name or str(getattr(plugin, "name", "")).strip()
         resolved_name = resolved_name or getattr(apply, "__name__", "plugin")
         raw_dependencies = inject
         if raw_dependencies is None:
-            raw_dependencies = getattr(plugin, "inject", ())
+            raw_dependencies = ()
         dependencies = tuple(cast(Iterable[ServiceKey[object]], raw_dependencies))
         if len(set(dependencies)) != len(dependencies):
             raise ValueError(f"插件依赖重复: {resolved_name}")

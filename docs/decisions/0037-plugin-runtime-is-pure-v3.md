@@ -1,6 +1,6 @@
 # 0037 · 插件运行时收敛为 pure v3
 
-- 状态：accepted / implementing
+- 状态：accepted / implemented
 - 日期：2026-08-18
 - 关联条款：PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-008
 - supersedes：[0008](0008-plugin-runtime-publishes-only-committed-snapshots.md) 的 API v2 与 legacy host 选择
@@ -24,12 +24,9 @@ Core 拥有 artifact、candidate、stable/latest、lease、journal、晋升与�
 2. 每个领域只保留一个 Core owner。Tool、Channel、Command、MCP、managed process、
    Job、UI、Skill、Dashboard 和被动链路均从 committed Root snapshot 读取。最后一个
    v2 consumer 迁走后立即删除对应 legacy owner，不保留 deprecated alias 或空壳。
-3. `default_proactive` 与 `wake_proactive` 可以继续使用 Core-private proactive bridge 及其只读
-   Dashboard reader，直到维护者另行批准迁移。这是一个指定的内建岛，不是外部插件可依赖的
-   兼容 API；外部同名插件不能获得该 bridge 或 reader。
-4. Computer Use Linux 与 Context Pressure 退出已跟踪 fleet。卸载只移除安装清单与
+3. Computer Use Linux 与 Context Pressure 退出已跟踪 fleet。卸载只移除安装清单与
    能力 cache；既有 `plugin-data` 默认保留，不因代码收敛而物理删除。
-5. 代码合并与 hua-home 正式替换分开。只有同一 clean head 上的 static fleet、Mobile、
+4. 代码合并与 hua-home 正式替换分开。只有同一 clean head 上的 static fleet、Mobile、
    WebUI、Tool/Passive composition 以及分组 E1～E4 报告全部通过，才能声明为线上替换
    candidate。正式 workspace 的备份、切换和回滚仍需单独授权。
 
@@ -45,15 +42,14 @@ Core 拥有 artifact、candidate、stable/latest、lease、journal、晋升与�
 │ typed capability host │ Tool / Channel / Command / MCP / Job / UI / Skill
 └──────────────────────┘
 
-Default/Wake private proactive bridge + Dashboard reader ──── Core-only、非公开 ABI
 ```
 
 ## 理由
 
 - breaking change 在可控的 fleet 迁移中比永久双轨更容易审计：一份声明、一张 Root、
   一个 publication owner、一套 cleanup 证据。
-- Default/Wake 的主动语义尚未被新 Service 完整承接；将特例限定在 Core-private admission
-  比对全部外部插件暴露 legacy host 更小。
+- 主动、调度和 Dashboard 已使用普通 V3 Service、event 和 generation host；不再保留专用
+  V2 admission 或 lifecycle 岛。
 - 数据安全不由 ABI 兼容保证。安全来自 candidate workspace 隔离、权威数据只追加/
   明确更新协议、外部效果三态回执、generation lease、journal 和可恢复备份。
 
@@ -61,6 +57,8 @@ Default/Wake private proactive bridge + Dashboard reader ──── Core-only�
 
 - 无 static manifest、`api_version != 3` 或还调用 v2 固定方法的外部插件将在 admission
   时 fail-loud，不再被自动包装或跳过。
+- `manifest.toml` 只声明独立插件；旧 `[packages]` 组合与 member 展开已删除，并在边界
+  fail-loud。
 - 历史 v2 测试、lock、Gate、文档与 CI 入口在零 production consumer 后删除。历史决策
   保留并标记 superseded。
 - 插件卸载不得级联删除 plugin-data、Session、memory、附件或外部 canonical source。
@@ -70,8 +68,8 @@ Default/Wake private proactive bridge + Dashboard reader ──── Core-only�
 
 - 静态 fleet 清单中每个启用插件都有 exact source commit、manifest 与 v3 module namespace；
   清单与正式安装清单的差异必须显式。
-- 扫描 production source、bootstrap、RuntimeSnapshot 和 Manager 不再存在可达 v2 Plugin lifecycle/
-  固定贡献 consumer；仅 Default/Wake 私有 proactive bridge 可由 exact builtin admission 达到。
+- 扫描 production source、bootstrap、RuntimeSnapshot 和 Manager 不再存在可达 V2 Plugin
+  lifecycle、固定贡献 consumer、phase module 注入口或 EventBus-to-V3 类型桥。
 - 每个领域完成 candidate discard/promote、old lease drain、Effect/resource cleanup、进程内失败与
   子进程崩溃恢复；不为断电或物理停机扩张本轮范围。
 - 同一 clean Core head 运行 static fleet、Mobile、Tool/Passive composition、WebUI 与 E1～E4；

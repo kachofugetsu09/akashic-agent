@@ -13,7 +13,7 @@ from agent.control.context import running_turn_id
 from agent.lifecycle.composition import (
     AFTER_REASONING_PREPROCESS_EVENT,
     PROMPT_RENDER_EVENT,
-    observe_composition_domain_event,
+    observe_composition_event,
 )
 from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 from agent.plugin_composition import (
@@ -61,6 +61,7 @@ from core.memory.engine import (
     MemoryToolSpec,
 )
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
+from agent.turn_events.observe import RETRIEVAL_COMPLETED_EVENT
 from bus.events_lifecycle import TurnCommitted
 from session.store import InteractionDeletion
 from .config import AkashaConfig, load_akasha_config
@@ -634,7 +635,10 @@ async def _inject_memory(
             value = result.trace.get(name)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 diagnostics.measure(f"memory.{name}", value)
-    await observe_composition_domain_event(build_retrieval_completed(request, result))
+    await observe_composition_event(
+        RETRIEVAL_COMPLETED_EVENT,
+        build_retrieval_completed(request, result),
+    )
     block = result.text_block.strip()
     if block:
         event.system_sections_bottom.append(

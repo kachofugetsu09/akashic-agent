@@ -21,7 +21,6 @@ from agent.plugins.artifacts import (
 )
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
-    load_package_manifest,
     load_plugin_manifest,
     remove_plugin_manifest_entry,
     set_plugin_enabled,
@@ -156,8 +155,6 @@ def install_git_plugin(
 
     # 1. 在任何 cache 改动前校验 manifest，避免坏配置把安装事务推到半路
     _ = load_plugin_manifest(home)
-    _ = load_package_manifest(home)
-
     with tempfile.TemporaryDirectory(
         dir=marketplace_root, prefix="clone-"
     ) as clone_dir:

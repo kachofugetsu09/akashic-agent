@@ -72,20 +72,3 @@ async def observe_composition_event(
     # 2. Observe owns failure isolation for ordinary plugin listeners; binding
     #    and caller cancellation failures remain fail-loud at this boundary.
     await snapshot.composition_root.context.observe(key, payload)
-
-
-async def observe_composition_domain_event(event: object) -> None:
-    """Bridge one domain event to its request-bound ObserveEventKey."""
-
-    # 1. Resolve only the three domain facts that have a stable v3 Observe seam.
-    from agent.turn_events.observe import (
-        MEMORY_WRITTEN_EVENT,
-        RETRIEVAL_COMPLETED_EVENT,
-    )
-    from core.memory.events import MemoryWritten, RetrievalCompleted
-
-    if isinstance(event, RetrievalCompleted):
-        await observe_composition_event(RETRIEVAL_COMPLETED_EVENT, event)
-        return
-    if isinstance(event, MemoryWritten):
-        await observe_composition_event(MEMORY_WRITTEN_EVENT, event)

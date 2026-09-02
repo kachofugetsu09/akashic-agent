@@ -99,7 +99,6 @@ class _ReturnAfterStepCtxModule:
 
 def default_after_step_modules(
     bus: EventBus,
-    plugin_modules: AfterStepModules | None = None,
 ) -> AfterStepModules:
     builtins: AfterStepModules = [
         _CopyInputToCtxModule(),
@@ -117,5 +116,5 @@ def default_after_step_modules(
     ]
     return cast(
         AfterStepModules,
-        topo_sort_modules(builtins + list(plugin_modules or [])),
+        topo_sort_modules(builtins),
     )

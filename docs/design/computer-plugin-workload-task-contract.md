@@ -402,7 +402,7 @@ rollout 保持 degraded，不把 pointer 恢复冒充服务已恢复。
 在回滚中，新 formal 也必须先返回上节的强 stop 回执；未证明 container/mount 全部
 释放时，禁止重启旧 formal，并保留唯一可重试 failure owner。
 
-候选永远使用 candidate data root。即使插件声明 `candidate_data_mode = "shared_read"`，包含可写 profile 的
+候选永远使用 candidate data root。旧 `candidate_data_mode = "shared_read"` 已删除；包含可写 profile 的
 WorkloadData 也不能挂正式目录；Computer candidate 只使用隔离复制或空目录完成协议验证。
 
 ## 8. Computer 插件责任

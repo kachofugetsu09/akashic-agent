@@ -125,14 +125,27 @@ async def _run(workspace: Path) -> dict[str, object]:
 
     # 2. New plugins prove required waiting and optional nested injection.
     trace = ProbeTrace()
-    consumer = await root.mount(ProbeConsumer(trace))
+    consumer_plugin = ProbeConsumer(trace)
+    consumer = await root.mount(
+        consumer_plugin.apply,
+        name=consumer_plugin.name,
+        inject=consumer_plugin.inject,
+    )
     pending_receipt = root.receipt()
+    first_provider_plugin = ProbeProvider("first", trace)
     provider = await root.mount(
-        ProbeProvider("first", trace),
+        first_provider_plugin.apply,
+        name=first_provider_plugin.name,
+        inject=first_provider_plugin.inject,
         runtime=provider_runtime,
     )
     optional_receipt = root.receipt()
-    _ = await root.mount(ProbeFormatterProvider())
+    formatter_plugin = ProbeFormatterProvider()
+    _ = await root.mount(
+        formatter_plugin.apply,
+        name=formatter_plugin.name,
+        inject=formatter_plugin.inject,
+    )
     ready_receipt = root.receipt()
     initial_signal = root.context.require(PROBE_SIGNAL)
 
@@ -145,8 +158,11 @@ async def _run(workspace: Path) -> dict[str, object]:
     )
     await provider.dispose()
     removed_receipt = root.receipt()
+    second_provider_plugin = ProbeProvider("second", trace)
     _ = await root.mount(
-        ProbeProvider("second", trace),
+        second_provider_plugin.apply,
+        name=second_provider_plugin.name,
+        inject=second_provider_plugin.inject,
         runtime=provider_runtime,
     )
     restored_receipt = root.receipt()

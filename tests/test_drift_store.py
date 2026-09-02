@@ -65,17 +65,6 @@ def test_drift_store_cas_loser_cannot_select_same_revision(tmp_path) -> None:
     assert second["selected"] is False
 
 
-def test_drift_read_only_candidate_validates_without_writing(tmp_path) -> None:
-    path = tmp_path / "drift.sqlite3"
-    formal = DriftStore(path)
-    formal.initialize()
-    candidate = DriftStore(path, data_access="read_only")
-    candidate.initialize()
-    assert candidate.snapshot(datetime.now(UTC))["proposals"] == ()
-    with pytest.raises(PermissionError, match="read-only candidate"):
-        candidate.propose("forbidden", "1", {}, datetime.now(UTC))
-
-
 def test_drift_same_turn_second_proposal_is_explicit_cas_loser(tmp_path) -> None:
     now = datetime(2026, 8, 23, 8, tzinfo=UTC)
     store = DriftStore(tmp_path / "drift.sqlite3")

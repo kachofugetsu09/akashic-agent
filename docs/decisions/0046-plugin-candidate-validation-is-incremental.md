@@ -43,7 +43,7 @@ RuntimeSnapshot 把 stable 中未替换 owner 的不可变 catalog contribution 
 - 未知 required Service：candidate Fiber 保持 pending，latest 不发布。
 - candidate 删除仍被 stable consumer 要求的 Service：完整选择图缺依赖，latest 不发布。
 - candidate 与未替换 owner 重复提供 Service 或 catalog key：拒绝候选。
-- candidate closure 的 workspace/data 仍按声明采用 isolated copy 或 shared read；未进入 closure 的正式数据零读取、零复制、零清理。
+- candidate closure 的 workspace/data 一律复制到 attempt；未进入 closure 的正式数据零读取、零复制、零清理。`shared_read` 已删除，candidate 不取得正式 plugin-data 路径。
 - Python 插件仍是受信代码；绕过 Context 直接访问任意绝对路径不由该机制伪装成安全沙箱。
 
 ## 验收

@@ -169,8 +169,6 @@ def default_before_turn_modules(
     bus: EventBus,
     session_manager: SessionManager,
     context_store: ContextStore,
-    *,
-    plugin_modules: BeforeTurnModules | None = None,
 ) -> BeforeTurnModules:
     builtins: BeforeTurnModules = [
         _AcquireSessionModule(session_manager),
@@ -183,5 +181,5 @@ def default_before_turn_modules(
     ]
     return cast(
         BeforeTurnModules,
-        topo_sort_modules(builtins + list(plugin_modules or [])),
+        topo_sort_modules(builtins),
     )

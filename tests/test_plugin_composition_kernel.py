@@ -15,6 +15,7 @@ from agent.plugin_composition import (
     CompositionOverlay,
     CompositionRoot,
     EmitEventKey,
+    Fiber,
     FiberState,
     HealthHandle,
     ParallelEventKey,
@@ -49,6 +50,16 @@ class GreetingProvider:
 
     async def apply(self, ctx) -> None:
         await ctx.provide(GREETING, self.value)
+
+
+async def _mount_greeting(
+    root: CompositionRoot,
+    value: str = "hello",
+    *,
+    name: str = "greeting-provider",
+) -> Fiber:
+    plugin = GreetingProvider(value)
+    return await root.mount(plugin.apply, name=name)
 
 
 @pytest.mark.asyncio
@@ -255,34 +266,6 @@ async def test_data_root_is_core_assigned_and_shared_by_nested_fibers(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_data_access_is_core_assigned_and_shared_by_nested_fibers(
-    tmp_path: Path,
-) -> None:
-    runtime = PluginRuntime(
-        plugin_id="probe@builtin",
-        generation_id="test-generation",
-        plugin_dir=tmp_path / "plugin",
-        data_dir=tmp_path / "plugin-data" / "probe-builtin",
-        workspace=tmp_path,
-        config=None,
-        data_access="read_only",
-    )
-    observed: list[str] = []
-
-    async def child(ctx) -> None:
-        observed.append(ctx.data_access)
-
-    async def parent(ctx) -> None:
-        observed.append(ctx.data_access)
-        _ = await ctx.mount(child, name="child")
-
-    root = CompositionRoot("data-access")
-    _ = await root.mount(parent, name="parent", runtime=runtime)
-
-    assert observed == ["read_only", "read_only"]
-
-
-@pytest.mark.asyncio
 async def test_workspace_root_is_declared_and_shared_by_nested_fibers(tmp_path) -> None:
     memes = tmp_path / "memes"
     memes.mkdir()
@@ -323,6 +306,24 @@ def test_data_root_requires_core_assigned_plugin_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_public_mount_rejects_object_apply_abi() -> None:
+    class LegacyPlugin:
+        async def apply(self, _ctx) -> None:
+            return None
+
+    root = CompositionRoot("callable-only")
+    legacy = LegacyPlugin()
+    with pytest.raises(TypeError, match="callable"):
+        await root.mount(legacy)  # type: ignore[arg-type]
+
+    async def parent(ctx) -> None:
+        with pytest.raises(TypeError, match="child callable"):
+            await ctx.mount(legacy)  # type: ignore[arg-type]
+
+    _ = await root.mount(parent, name="parent")
+
+
+@pytest.mark.asyncio
 async def test_required_dependency_follows_provider_lifecycle() -> None:
     events: list[str] = []
 
@@ -338,11 +339,17 @@ async def test_required_dependency_follows_provider_lifecycle() -> None:
             )
 
     root = CompositionRoot("required-lifecycle")
-    consumer = await root.mount(Consumer())
+    consumer_plugin = Consumer()
+    consumer = await root.mount(
+        consumer_plugin.apply,
+        name=consumer_plugin.name,
+        inject=consumer_plugin.inject,
+    )
     assert consumer.state == FiberState.PENDING
     assert root.receipt().required_pending == ("consumer",)
 
-    first_provider = await root.mount(GreetingProvider("first"))
+    first_plugin = GreetingProvider("first")
+    first_provider = await root.mount(first_plugin.apply, name=first_plugin.name)
     assert consumer.state == FiberState.ACTIVE
     assert events == ["load:first"]
     assert root.receipt().ready is True
@@ -351,7 +358,8 @@ async def test_required_dependency_follows_provider_lifecycle() -> None:
     assert consumer.state == FiberState.PENDING
     assert events == ["load:first", "unload"]
 
-    await root.mount(GreetingProvider("second"))
+    second_plugin = GreetingProvider("second")
+    await root.mount(second_plugin.apply, name=second_plugin.name)
     assert consumer.state == FiberState.ACTIVE
     assert events == ["load:first", "unload", "load:second"]
 
@@ -372,7 +380,8 @@ async def test_nested_inject_is_optional_for_candidate_readiness() -> None:
             await ctx.inject((FORMATTER,), use_formatter, name="optional-formatter")
 
     root = CompositionRoot("optional-inject")
-    parent = await root.mount(Parent())
+    parent_plugin = Parent()
+    parent = await root.mount(parent_plugin.apply, name=parent_plugin.name)
     receipt = root.receipt()
     assert parent.state == FiberState.ACTIVE
     assert receipt.ready is True
@@ -385,7 +394,8 @@ async def test_nested_inject_is_optional_for_candidate_readiness() -> None:
         async def apply(self, ctx) -> None:
             await ctx.provide(FORMATTER, lambda value: value.upper())
 
-    await root.mount(FormatterProvider())
+    formatter_plugin = FormatterProvider()
+    await root.mount(formatter_plugin.apply, name=formatter_plugin.name)
     assert events == ["READY"]
     assert root.receipt().optional_pending == ()
 
@@ -617,7 +627,7 @@ async def test_stale_dependency_epoch_never_becomes_active() -> None:
     apply_gate = asyncio.Event()
     events: list[str] = []
     root = CompositionRoot("stale-epoch")
-    provider = await root.mount(GreetingProvider())
+    provider = await _mount_greeting(root)
 
     async def consume(ctx) -> None:
         events.append(f"start:{ctx.require(GREETING)}")
@@ -722,11 +732,8 @@ async def test_dispose_observer_failure_is_contained_and_peers_run() -> None:
 @pytest.mark.asyncio
 async def test_duplicate_provider_fails_without_replacing_first_owner() -> None:
     root = CompositionRoot("duplicate-service")
-    first = await root.mount(GreetingProvider("first"))
-    duplicate = await root.mount(
-        GreetingProvider("second"),
-        name="second-provider",
-    )
+    first = await _mount_greeting(root, "first")
+    duplicate = await _mount_greeting(root, "second", name="second-provider")
     assert first.state == FiberState.ACTIVE
     assert duplicate.state == FiberState.FAILED
     assert root.context.require(GREETING) == "first"
@@ -736,7 +743,7 @@ async def test_duplicate_provider_fails_without_replacing_first_owner() -> None:
 @pytest.mark.asyncio
 async def test_root_disposal_drains_children_effects_and_services() -> None:
     root = CompositionRoot("root-dispose")
-    await root.mount(GreetingProvider())
+    await _mount_greeting(root)
     await root.dispose()
     receipt = root.receipt()
     assert receipt.fibers == ()
@@ -770,7 +777,7 @@ async def test_root_disposal_rejects_mount_during_slow_cleanup() -> None:
 async def test_provider_cleanup_survives_all_dependent_cleanup_failures() -> None:
     cleaned: list[str] = []
     root = CompositionRoot("dependent-cleanup-failure")
-    provider = await root.mount(GreetingProvider())
+    provider = await _mount_greeting(root)
 
     async def consume(ctx) -> None:
         name = ctx.fiber.name
@@ -789,7 +796,7 @@ async def test_provider_cleanup_survives_all_dependent_cleanup_failures() -> Non
     assert sorted(cleaned) == ["consumer-a", "consumer-b"]
     assert provider.state == FiberState.DISPOSED
     assert root.context.get(GREETING) is None
-    replacement = await root.mount(GreetingProvider(), name="replacement-provider")
+    replacement = await _mount_greeting(root, name="replacement-provider")
     assert replacement.state == FiberState.ACTIVE
     assert root.context.require(GREETING) == "hello"
 
@@ -1054,7 +1061,7 @@ async def test_snapshot_store_publishes_complete_composition_root() -> None:
     compiler = RuntimeSnapshotCompiler()
     stable = compiler.compile({}, snapshot_revision="stable")
     root = CompositionRoot("candidate-ready")
-    await root.mount(GreetingProvider())
+    await _mount_greeting(root)
     candidate = compiler.compile(
         {},
         snapshot_revision="candidate",
@@ -1084,7 +1091,7 @@ async def test_snapshot_store_publishes_complete_composition_root() -> None:
 @pytest.mark.asyncio
 async def test_snapshot_store_rejects_topology_drift_after_compile() -> None:
     root = CompositionRoot("candidate-drift")
-    provider = await root.mount(GreetingProvider())
+    provider = await _mount_greeting(root)
     await root.mount(
         lambda _: None,
         name="consumer",
@@ -1160,7 +1167,7 @@ async def test_plugin_fiber_handle_hides_core_owned_mutable_state() -> None:
 @pytest.mark.asyncio
 async def test_provider_restart_alone_invalidates_sealed_revision() -> None:
     root = CompositionRoot("service-revision")
-    provider = await root.mount(GreetingProvider())
+    provider = await _mount_greeting(root)
     compiler = RuntimeSnapshotCompiler()
     candidate = compiler.compile({}, composition_root=root)
     compiled = candidate.composition_topology
@@ -1316,7 +1323,8 @@ async def test_topology_identity_includes_parent_ownership() -> None:
 async def test_topology_view_identity_includes_declared_dependencies() -> None:
     async def build(dependency: ServiceKey[object]) -> str:
         root = CompositionRoot("dependency-view")
-        await root.mount(GreetingProvider())
+        greeting_plugin = GreetingProvider()
+        await root.mount(greeting_plugin.apply, name=greeting_plugin.name)
 
         class FormatterProvider:
             name = "formatter-provider"
@@ -1325,7 +1333,8 @@ async def test_topology_view_identity_includes_declared_dependencies() -> None:
             async def apply(self, ctx) -> None:
                 await ctx.provide(FORMATTER, lambda value: value)
 
-        await root.mount(FormatterProvider())
+        formatter_plugin = FormatterProvider()
+        await root.mount(formatter_plugin.apply, name=formatter_plugin.name)
         await root.mount(
             lambda _: None,
             name="consumer",
@@ -1342,7 +1351,7 @@ async def test_topology_view_identity_includes_declared_dependencies() -> None:
 @pytest.mark.asyncio
 async def test_promotion_rechecks_candidate_topology_after_behavior_probe() -> None:
     root = CompositionRoot("candidate-promotion-recheck")
-    provider = await root.mount(GreetingProvider())
+    provider = await _mount_greeting(root)
     await root.mount(
         lambda _: None,
         name="consumer",
@@ -1360,7 +1369,7 @@ async def test_promotion_rechecks_candidate_topology_after_behavior_probe() -> N
     with pytest.raises(RuntimeError, match="组合拓扑未就绪"):
         await store.promote_latest()
 
-    _ = await root.mount(GreetingProvider())
+    _ = await _mount_greeting(root)
     assert root.topology_identity() == candidate.composition_topology.identity  # type: ignore[union-attr]
     with pytest.raises(RuntimeError, match="发生过结构变化"):
         store.seal_candidate_validation(candidate)
@@ -1488,7 +1497,7 @@ async def test_promotion_requires_sealed_receipt_and_rejects_later_write(
     root = CompositionRoot("sealed-validation", audit=audit)
     data = PluginDataAccess(tmp_path, audit).for_plugin("probe")
     data.write_text("state.json", "first")
-    _ = await root.mount(GreetingProvider())
+    _ = await _mount_greeting(root)
     compiler = RuntimeSnapshotCompiler()
     candidate = compiler.compile({}, composition_root=root)
     store = RuntimeSnapshotStore()

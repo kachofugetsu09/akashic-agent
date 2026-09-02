@@ -269,20 +269,13 @@ def _write_static_v3_manifest(
     root: Path,
     name: str,
     version: str,
-    *,
-    candidate_data_mode: str | None = None,
 ) -> None:
-    candidate_data = (
-        ""
-        if candidate_data_mode is None
-        else f"candidate_data_mode = {candidate_data_mode!r}\n"
-    )
     (root / "akashic.plugin.toml").write_text(
         "schema_version = 1\n"
         f"name = {name!r}\n"
         f"version = {version!r}\n"
         "api_version = 3\n"
-        f"entrypoint = 'plugin.py'\n{candidate_data}",
+        "entrypoint = 'plugin.py'\n",
         encoding="utf-8",
     )
 
@@ -300,28 +293,23 @@ writer_task = None
 async def apply(ctx, config):
     database = ctx.data_root / 'writer.sqlite3'
     root_token = id(ctx._root_instance_token())
-    if ctx.data_access == 'read_only':
-        connection = sqlite3.connect(f'file:{{database}}?mode=ro', uri=True)
-        connection.execute('SELECT COUNT(*) FROM writes').fetchone()
-        connection.close()
-    else:
-        ctx.data_root.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(database)
-        connection.execute(
-            'CREATE TABLE IF NOT EXISTS owner ('
-            'slot INTEGER PRIMARY KEY CHECK (slot = 1), version TEXT NOT NULL)'
-        )
-        connection.execute(
-            'CREATE TABLE IF NOT EXISTS trace ('
-            'seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)'
-        )
-        connection.execute(
-            'CREATE TABLE IF NOT EXISTS writes ('
-            'seq INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT NOT NULL, '
-            'root_token INTEGER NOT NULL)'
-        )
-        connection.commit()
-        connection.close()
+    ctx.data_root.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(database)
+    connection.execute(
+        'CREATE TABLE IF NOT EXISTS owner ('
+        'slot INTEGER PRIMARY KEY CHECK (slot = 1), version TEXT NOT NULL)'
+    )
+    connection.execute(
+        'CREATE TABLE IF NOT EXISTS trace ('
+        'seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)'
+    )
+    connection.execute(
+        'CREATE TABLE IF NOT EXISTS writes ('
+        'seq INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT NOT NULL, '
+        'root_token INTEGER NOT NULL)'
+    )
+    connection.commit()
+    connection.close()
 
     async def started(_event):
         global writer_task
@@ -375,7 +363,7 @@ def _sqlite_scalar(database: Path, query: str) -> object:
 
 
 @pytest.mark.asyncio
-async def test_shared_read_candidate_uses_formal_data_without_copy(
+async def test_candidate_uses_isolated_data_copy(
     tmp_path: Path,
 ) -> None:
     _ = _write_plugin(
@@ -385,7 +373,6 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
         "name = 'isolated_reader'\n"
         "version = '1.0.0'\n"
         "async def apply(ctx, config):\n"
-        "    assert ctx.data_access == 'read_write'\n"
         "    ctx.data_root.mkdir(parents=True, exist_ok=True)\n"
         "    (ctx.data_root / 'isolated.txt').write_text('isolated')\n",
     )
@@ -397,7 +384,6 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
         "version = '1.0.0'\n"
         "async def apply(ctx, config):\n"
         "    import sqlite3\n"
-        "    assert ctx.data_access == 'read_write'\n"
         "    ctx.data_root.mkdir(parents=True, exist_ok=True)\n"
         "    connection = sqlite3.connect(ctx.data_root / 'state.sqlite3')\n"
         "    connection.execute('CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY)')\n"
@@ -405,12 +391,7 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
         "    connection.commit()\n"
         "    connection.close()\n",
     )
-    _write_static_v3_manifest(
-        plugin_dir,
-        "shared_reader",
-        "1.0.0",
-        candidate_data_mode="shared_read",
-    )
+    _write_static_v3_manifest(plugin_dir, "shared_reader", "1.0.0")
     manager = _manager(tmp_path)
     await manager.load_all()
     stable = manager.generation("shared_reader")
@@ -418,11 +399,10 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     assert stable is not None and isolated is not None
     assert stable.source_type == "builtin"
     assert stable.static_manifest is not None
-    assert stable.static_manifest.candidate_data_mode == "shared_read"
     database = stable.data_dir / "state.sqlite3"
     sparse = stable.data_dir / "large.sparse"
     with sparse.open("wb") as stream:
-        stream.truncate(512 * 1024 * 1024)
+        stream.truncate(1024 * 1024)
     formal_inode = database.stat().st_ino
     formal_digest = hashlib.sha256(database.read_bytes()).hexdigest()
     proactive = tmp_path / "workspace" / "proactive.db"
@@ -438,7 +418,7 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
         "version = '2.0.0'\n"
         "async def apply(ctx, config):\n"
         "    import json, sqlite3\n"
-        "    assert ctx.data_access == 'read_only'\n"
+        "    (ctx.data_root / 'candidate-marker').write_text('candidate')\n"
         "    database = ctx.data_root / 'state.sqlite3'\n"
         "    connection = sqlite3.connect(f'file:{database}?mode=ro', uri=True)\n"
         "    rows = connection.execute('SELECT COUNT(*) FROM items').fetchone()[0]\n"
@@ -454,18 +434,14 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
         "    )\n",
         encoding="utf-8",
     )
-    _write_static_v3_manifest(
-        plugin_dir,
-        "shared_reader",
-        "2.0.0",
-        candidate_data_mode="shared_read",
-    )
+    _write_static_v3_manifest(plugin_dir, "shared_reader", "2.0.0")
 
     candidate = await manager.prepare_candidate("shared_reader")
 
     assert candidate is not None and candidate.runtime_snapshot is not None
     assert candidate.validation_workspace is not None
-    assert candidate.validation_data_inventory == ()
+    assert "state.sqlite3" in candidate.validation_data_inventory
+    assert "large.sparse" in candidate.validation_data_inventory
     candidate_root = candidate.runtime_snapshot.composition_root
     assert candidate_root is not None
     candidate_fibers = {
@@ -473,8 +449,7 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
     }
     candidate_runtime = candidate_fibers["shared_reader"].runtime
     assert candidate_runtime is not None
-    assert candidate_runtime.data_dir == stable.data_dir
-    assert candidate_runtime.data_access == "read_only"
+    assert candidate_runtime.data_dir != stable.data_dir
     assert "isolated_reader" not in candidate_fibers
     assert (isolated.data_dir / "isolated.txt").read_text() == "isolated"
     validation_root = candidate.validation_workspace.parent
@@ -484,13 +459,12 @@ async def test_shared_read_candidate_uses_formal_data_without_copy(
         "rows": 1,
         "write_rejected": True,
     }
-    assert not tuple(validation_root.rglob("state.sqlite3"))
-    assert not tuple(validation_root.rglob("large.sparse"))
+    assert len(tuple(validation_root.rglob("state.sqlite3"))) == 1
+    assert len(tuple(validation_root.rglob("large.sparse"))) == 1
+    assert len(tuple(validation_root.rglob("candidate-marker"))) == 1
     assert not tuple(validation_root.rglob("proactive.db"))
     assert not tuple(validation_root.rglob("wake_proactive.db"))
-    assert sum(path.stat().st_blocks * 512 for path in validation_root.rglob("*")) < (
-        1024 * 1024
-    )
+    assert not (stable.data_dir / "candidate-marker").exists()
     assert database.stat().st_ino == formal_inode
     assert hashlib.sha256(database.read_bytes()).hexdigest() == formal_digest
     assert proactive.stat().st_ino == proactive_inode
@@ -659,24 +633,17 @@ async def test_candidate_cannot_remove_service_required_by_stable_plugin(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner_commit_fails", [False, True])
-@pytest.mark.parametrize("new_data_mode", ["shared_read", "isolated_copy"])
-async def test_shared_read_direct_publish_drains_old_writer_before_new_start(
+async def test_isolated_candidate_publish_drains_old_writer_before_new_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     owner_commit_fails: bool,
-    new_data_mode: str,
 ) -> None:
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "shared_writer",
         _shared_writer_source("v1"),
     )
-    _write_static_v3_manifest(
-        plugin_dir,
-        "shared_writer",
-        "v1",
-        candidate_data_mode="shared_read",
-    )
+    _write_static_v3_manifest(plugin_dir, "shared_writer", "v1")
     manager = _manager(tmp_path)
     await manager.load_all()
     stable = manager.generation("shared_writer")
@@ -693,21 +660,13 @@ async def test_shared_read_direct_publish_drains_old_writer_before_new_start(
         _shared_writer_source("v2"),
         encoding="utf-8",
     )
-    _write_static_v3_manifest(
-        plugin_dir,
-        "shared_writer",
-        "v2",
-        candidate_data_mode=new_data_mode,
-    )
+    _write_static_v3_manifest(plugin_dir, "shared_writer", "v2")
     candidate = await manager.prepare_candidate("shared_writer")
     assert candidate is not None
     assert candidate.instance.module.writer_task is None
     assert candidate.runtime_snapshot is not None
     candidate_root = candidate.runtime_snapshot.composition_root
     assert candidate_root is not None
-    assert candidate_root.plugin_runtime("shared_writer").data_access == (
-        "read_only" if new_data_mode == "shared_read" else "read_write"
-    )
     if owner_commit_fails:
 
         def fail_owner_commit(*_args: object) -> None:
@@ -802,7 +761,7 @@ async def test_shared_read_direct_publish_drains_old_writer_before_new_start(
 
 
 @pytest.mark.asyncio
-async def test_shared_read_formal_rebuild_rejects_other_topology_drift(
+async def test_formal_rebuild_rejects_candidate_topology_drift(
     tmp_path: Path,
 ) -> None:
     plugin_dir = _write_plugin(
@@ -810,12 +769,7 @@ async def test_shared_read_formal_rebuild_rejects_other_topology_drift(
         "shared_writer",
         _shared_writer_source("v1"),
     )
-    _write_static_v3_manifest(
-        plugin_dir,
-        "shared_writer",
-        "v1",
-        candidate_data_mode="shared_read",
-    )
+    _write_static_v3_manifest(plugin_dir, "shared_writer", "v1")
     manager = _manager(tmp_path)
     await manager.load_all()
     stable = manager.generation("shared_writer")
@@ -830,16 +784,11 @@ async def test_shared_read_formal_rebuild_rejects_other_topology_drift(
     mutant = _shared_writer_source("v2").replace(
         "    await ctx.on(RUNTIME_STOPPING, stopping)\n",
         "    await ctx.on(RUNTIME_STOPPING, stopping)\n"
-        "    if ctx.data_access == 'read_write':\n"
+        "    if 'plugin-validation' not in str(ctx.data_root):\n"
         "        await ctx.on(RUNTIME_STARTED, lambda _: None)\n",
     )
     (plugin_dir / "plugin.py").write_text(mutant, encoding="utf-8")
-    _write_static_v3_manifest(
-        plugin_dir,
-        "shared_writer",
-        "v2",
-        candidate_data_mode="shared_read",
-    )
+    _write_static_v3_manifest(plugin_dir, "shared_writer", "v2")
     candidate = await manager.prepare_candidate("shared_writer")
     assert candidate is not None
 
@@ -4042,12 +3991,10 @@ async def test_installed_v3_candidate_incident_overflow_blocks_promotion(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner_commit_fails", [False, True])
-@pytest.mark.parametrize("new_data_mode", ["shared_read", "isolated_copy"])
-async def test_installed_v3_shared_handoff_success_and_owner_failure(
+async def test_installed_v3_isolated_handoff_success_and_owner_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     owner_commit_fails: bool,
-    new_data_mode: str,
 ) -> None:
     plugin_base = tmp_path / "home" / "cache" / "lab" / "installed_v3"
     stable_artifact = plugin_base / ".artifacts" / "1.0.0-aaaa"
@@ -4081,18 +4028,8 @@ async def test_installed_v3_shared_handoff_success_and_owner_failure(
         source.replace("version = '1.0.0'", "version = '2.0.0'"),
         encoding="utf-8",
     )
-    _write_static_v3_manifest(
-        stable_artifact,
-        "installed_v3",
-        "1.0.0",
-        candidate_data_mode="shared_read",
-    )
-    _write_static_v3_manifest(
-        latest_artifact,
-        "installed_v3",
-        "2.0.0",
-        candidate_data_mode=new_data_mode,
-    )
+    _write_static_v3_manifest(stable_artifact, "installed_v3", "1.0.0")
+    _write_static_v3_manifest(latest_artifact, "installed_v3", "2.0.0")
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     latest_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
     write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)

@@ -29,3 +29,12 @@ def test_workspace_mcp_manager_owner_and_builtin_skill_are_removed() -> None:
     assert not (
         Path(__file__).parents[1] / "skills/manage-workspace-mcp" / "SKILL.md"
     ).exists()
+
+
+def test_workspace_init_does_not_create_removed_mcp_directories() -> None:
+    source = (Path(__file__).parents[1] / "bootstrap/init_workspace.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"mcp"' not in source
+    assert '"mcp/servers"' not in source

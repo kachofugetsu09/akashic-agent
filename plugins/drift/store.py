@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator, Literal, NotRequired, TypedDict
+from typing import Generator, NotRequired, TypedDict
 
 _SCHEMA_VERSION = 2
 _TABLE_SQL_V1 = """
@@ -97,19 +97,13 @@ class DriftSelectionReceipt(TypedDict):
 class DriftStore:
     """Persist Drift proposals and their Turn-bound lifecycle."""
 
-    def __init__(
-        self,
-        path: Path,
-        *,
-        data_access: Literal["read_write", "read_only"] = "read_write",
-    ) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self.data_access = data_access
 
     def initialize(self) -> None:
         """Create or validate the exact Drift schema."""
 
-        with self._transaction(write=self.data_access == "read_write") as connection:
+        with self._transaction(write=True) as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if version != _SCHEMA_VERSION:
                 raise RuntimeError(f"不支持的 Drift schema version: {version}")
@@ -478,31 +472,18 @@ class DriftStore:
 
     @contextmanager
     def _transaction(self, *, write: bool) -> Generator[sqlite3.Connection]:
-        """Open one mode-aware SQLite transaction."""
+        """Open one SQLite transaction."""
 
-        if write and self.data_access == "read_only":
-            raise PermissionError("Drift read-only candidate cannot write shared data")
-        if self.data_access == "read_write":
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(self.path)
-        else:
-            connection = sqlite3.connect(
-                self.path.resolve(strict=False).as_uri() + "?mode=ro", uri=True
-            )
+        _ = write
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         try:
-            if self.data_access == "read_write":
-                connection.execute("PRAGMA journal_mode = WAL")
-                connection.execute("BEGIN IMMEDIATE")
-                self._ensure_schema(connection)
-            else:
-                connection.execute("PRAGMA query_only = ON")
-                connection.execute("BEGIN")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("BEGIN IMMEDIATE")
+            self._ensure_schema(connection)
             yield connection
-            if self.data_access == "read_write":
-                connection.commit()
-            else:
-                connection.rollback()
+            connection.commit()
         except BaseException:
             connection.rollback()
             raise

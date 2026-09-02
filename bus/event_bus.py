@@ -148,12 +148,6 @@ class EventBus:
                     len(handlers),
                 )
 
-        # 2. Legacy EventBus handlers settle first; composition observers then
-        #    consume the same object under the request's exact RuntimeSnapshot.
-        from agent.lifecycle.composition import observe_composition_domain_event
-
-        await observe_composition_domain_event(event)
-
     def enqueue(
         self,
         event: object,

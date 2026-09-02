@@ -7,8 +7,6 @@ import json
 from pathlib import Path
 from typing import cast
 
-from agent.plugin_composition import BeforeTurnCtx
-
 RULES_DIRECTORY = "legacy-rules"
 RULES_ARCHIVE = "PROACTIVE_CONTEXT.md"
 RULES_RECEIPT = "receipt.json"
@@ -44,18 +42,4 @@ def read_archived_rules(data_root: Path) -> str | None:
     return content.decode("utf-8").strip()
 
 
-class ArchivedRules:
-    """Inject a verified legacy archive into Wake BeforeTurn only."""
-
-    def __init__(self, data_root: Path) -> None:
-        self._data_root = data_root
-
-    async def prepare(self, turn: BeforeTurnCtx) -> None:
-        if turn.channel != "wake":
-            return
-        rules = read_archived_rules(self._data_root)
-        if rules:
-            turn.extra_hints.append(rules)
-
-
-__all__ = ["ArchivedRules", "read_archived_rules"]
+__all__ = ["read_archived_rules"]

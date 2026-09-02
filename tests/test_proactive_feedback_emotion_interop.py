@@ -219,7 +219,6 @@ async def _mount(
             workspace=sandbox / "workspace",
             config=None,
             workspace_roots=workspace_roots,
-            data_access="read_write",
         ),
     )
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import shutil
 import sys
@@ -253,53 +252,6 @@ async def test_plugin_scope_continues_after_cancelled_cleanup():
 
 
 @pytest.mark.asyncio
-async def test_plugin_scope_reports_failed_task_and_is_idempotent():
-    scope = PluginScope("task-failure")
-    cleaned: list[str] = []
-
-    async def fail() -> None:
-        raise RuntimeError("task failed")
-
-    task = scope.create_task(fail(), name="worker")
-    with pytest.raises(RuntimeError, match="task failed"):
-        await task
-    scope.defer("marker", lambda: cleaned.append("marker"))
-
-    failures = await scope.aclose()
-
-    assert cleaned == ["marker"]
-    assert [(failure.resource, failure.error) for failure in failures] == [
-        ("task:worker", "task failed")
-    ]
-    assert await scope.aclose() == []
-
-
-@pytest.mark.asyncio
-async def test_plugin_scope_reports_task_failure_before_close(caplog):
-    scope = PluginScope("task-runtime-failure")
-
-    async def fail() -> None:
-        raise RuntimeError("runtime task failed")
-
-    with caplog.at_level(logging.ERROR, logger="agent.plugins.scope"):
-        task = scope.create_task(fail(), name="runtime-worker")
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-    assert task.done()
-    record = next(
-        record for record in caplog.records if record.name == "agent.plugins.scope"
-    )
-    assert record.exc_info is not None
-    assert record.exc_info[0] is RuntimeError
-    assert "runtime task failed" in caplog.text
-    failures = await scope.aclose()
-    assert [(failure.resource, failure.error) for failure in failures] == [
-        ("task:runtime-worker", "runtime task failed")
-    ]
-
-
-@pytest.mark.asyncio
 async def test_plugin_scope_finishes_cleanup_after_external_cancellation():
     scope = PluginScope("cancelled-close")
     entered = asyncio.Event()
@@ -333,21 +285,12 @@ async def test_plugin_scope_finishes_cleanup_after_external_cancellation():
 
 
 @pytest.mark.asyncio
-async def test_closed_plugin_scope_does_not_create_resources():
+async def test_closed_plugin_scope_does_not_accept_cleanup():
     scope = PluginScope("closed")
-    bus = EventBus()
     _ = await scope.aclose()
 
     with pytest.raises(RuntimeError, match="作用域已关闭"):
-        _ = scope.subscribe(bus, str, lambda _event: None)
-
-    async def wait() -> None:
-        await asyncio.Event().wait()
-
-    with pytest.raises(RuntimeError, match="作用域已关闭"):
-        _ = scope.create_task(wait())
-
-    assert bus.handler_count() == 0
+        scope.defer("late", lambda: None)
 
 
 @pytest.mark.asyncio

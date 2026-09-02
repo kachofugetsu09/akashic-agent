@@ -356,14 +356,12 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
 
         assert candidate is not None and candidate.runtime_snapshot is not None
         candidate_content = candidate.runtime_snapshot.generations["eventmail"]
-        candidate_path = candidate_content.data_dir / "eventmail.sqlite3"
         candidate_root = candidate.runtime_snapshot.composition_root
         assert candidate_root is not None
         candidate_runtime = candidate_root.plugin_runtime("eventmail")
+        candidate_path = candidate_runtime.data_dir / "eventmail.sqlite3"
         assert candidate_content.static_manifest is not None
-        assert candidate_content.static_manifest.candidate_data_mode == "shared_read"
-        assert candidate_runtime.data_access == "read_only"
-        assert candidate_path == content_path
+        assert candidate_path != content_path
         candidate_wake = candidate_root.context.require(EVENTMAIL_WAKE)
         candidate_source = candidate_root.context.require(
             EVENTMAIL_CONTENT_SOURCE
@@ -377,19 +375,18 @@ async def test_candidate_root_has_no_timer_poll_or_formal_write(
         assert "settlement_ref" not in recovered
         assert candidate_wake.selected() == (recovered,)
         assert candidate_wake.snapshot(now)["items"] == ()
-        with pytest.raises(PermissionError, match="read-only candidate"):
-            candidate_source.submit(
-                "poll:1",
-                (
-                    {
-                        "item_id": "forbidden",
-                        "revision": "1",
-                        "payload": {"kind": "candidate-write"},
-                        "not_before": now,
-                    },
-                ),
-            )
-        assert candidate_hint_probe.count == 0
+        candidate_source.submit(
+            "poll:1",
+            (
+                {
+                    "item_id": "candidate-only",
+                    "revision": "1",
+                    "payload": {"kind": "candidate-write"},
+                    "not_before": now,
+                },
+            ),
+        )
+        assert candidate_hint_probe.count == 1
         assert sum(len(timer.handles) for timer in timers) == 1
         assert source_store.state(now) == before
         assert _sqlite_hashes(content_path) == formal_hashes
@@ -518,8 +515,7 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
             formal_path = (
                 workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
             )
-            assert candidate_runtime.data_access == "read_only"
-            assert candidate_runtime.data_dir / "eventmail.sqlite3" == formal_path
+            assert candidate_runtime.data_dir / "eventmail.sqlite3" != formal_path
             candidate_wake = candidate_root.context.require(EVENTMAIL_WAKE)
             candidate_snapshot = cast(dict[str, Any], candidate_wake.snapshot(now))
             candidate_count = len(candidate_snapshot["items"])
@@ -533,8 +529,7 @@ async def test_shared_candidate_stays_readable_during_concurrent_submit(
             candidate_source = candidate_root.context.require(
                 EVENTMAIL_CONTENT_SOURCE
             ).bind("concurrent-candidate-probe")
-            with pytest.raises(PermissionError, match="read-only candidate"):
-                candidate_source.submit("poll:forbidden", ())
+            candidate_source.submit("poll:candidate-only", ())
         finally:
             stop.set()
             await writer

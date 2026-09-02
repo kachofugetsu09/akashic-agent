@@ -140,10 +140,7 @@ async def apply(ctx: Context, config: object) -> None:
     """Publish the narrow Drift view over one generation-scoped store."""
 
     _ = config
-    store = DriftStore(
-        ctx.data_root / "drift.sqlite3",
-        data_access=ctx.data_access,
-    )
+    store = DriftStore(ctx.data_root / "drift.sqlite3")
     store.initialize()
     _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store))
     _ = await ctx.provide(DRIFT_WAKE, _WakeServices(store))

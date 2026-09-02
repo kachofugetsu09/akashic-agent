@@ -3,18 +3,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, TypeVar
-
 from agent.plugin_composition.diagnostics import plugin_entrypoint
-from bus.event_bus import EventBus, EventSubscription, Handler
+Cleanup = Callable[[], Awaitable[None] | None]
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
-Cleanup = Callable[[], Awaitable[None] | None]
 
 
 @dataclass(frozen=True)
@@ -23,8 +18,8 @@ class CleanupFailure:
     error: str
 
 
-# 插件资源接口：现有插件通过 context 或直接使用 scope 登记订阅、任务和 cleanup。
-# 迁移插件前不得绕过逆序清理、聚合失败和清理完成后再恢复取消的语义。
+# Core generation host 的资源作用域。V3 插件只使用 Context/Fiber/Effect；这个对象不属于
+# 公开插件 API。Host cleanup 保持逆序、聚合失败，并在清理完成后恢复调用方取消。
 class PluginScope:
     def __init__(
         self,
@@ -52,57 +47,6 @@ class PluginScope:
         if not callable(cleanup):
             raise TypeError(f"插件清理动作不可调用: {self.plugin_id}:{resource}")
         self._cleanups.append((resource, cleanup))
-
-    def subscribe(
-        self,
-        event_bus: EventBus,
-        event_type: type[T],
-        handler: Handler[T],
-    ) -> EventSubscription:
-        self._ensure_open()
-        subscription = event_bus.on(event_type, handler)
-        self.defer(
-            f"event:{event_type.__name__}",
-            subscription.close,
-        )
-        return subscription
-
-    def create_task(
-        self,
-        coroutine: Coroutine[Any, Any, T],
-        *,
-        name: str | None = None,
-    ) -> asyncio.Task[T]:
-        if self._closed:
-            coroutine.close()
-            self._ensure_open()
-        task = asyncio.create_task(coroutine, name=name)
-
-        def report_failure(completed: asyncio.Task[T]) -> None:
-            if completed.cancelled():
-                return
-            error = completed.exception()
-            if error is None:
-                return
-            logger.error(
-                "插件作用域任务异常: plugin=%s task=%s",
-                self.plugin_id,
-                completed.get_name(),
-                exc_info=(type(error), error, error.__traceback__),
-            )
-
-        task.add_done_callback(report_failure)
-
-        async def cancel() -> None:
-            if not task.done():
-                _ = task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                return
-
-        self.defer(f"task:{name or task.get_name()}", cancel)
-        return task
 
     async def aclose(self) -> list[CleanupFailure]:
         """按逆序完成全部资源清理，并在末尾恢复外部取消。"""

@@ -55,7 +55,7 @@ v2/legacy Channel ──► agent.looping.InterruptController ──► Core 私
 - 证据：内建 scheduler/subagent 的 `is_active(ServiceView)` 仍读取 timers、scoped turns、deliveries、continuations 的 `.formal`；外部 proactive-feedback v3 源码仍读取 `SessionReadService.formal`，用来阻止 candidate Root 启动 worker 或写插件数据库。
 - 失败：scheduler/subagent 在静态准入阶段抛 `AttributeError`；proactive-feedback candidate/formal 行为失去判别入口。
 - 处理：`19a51040` 已恢复五个可观察属性；SessionRead、subagent、scheduler 非 soft 路径 17 项通过。
-- 上位替代：长期应由一个 runtime mode owner 表达 candidate/formal；`Context.data_access` 已覆盖 apply 阶段，`ServiceView` 应只表达能力是否可用。但外部插件和静态准入必须先同步迁移。
+- 后续收口：candidate 现在始终使用独立可写副本；`Context.data_access` 与无生产者的 read-only candidate 分支已经删除。
 - 结论：本 PR 不能静默删除。跨仓库迁移完成前，保留派生只读属性比伪装删除更安全。
 
 ### 4. `ToolGrant.except_names()` 被删时 scheduler 仍调用

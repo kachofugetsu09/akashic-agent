@@ -11,7 +11,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, cast
+from typing import cast
 from urllib.parse import urlsplit
 
 STATIC_MANIFEST_FILENAME = "akashic.plugin.toml"
@@ -34,7 +34,6 @@ _TOP_LEVEL_KEYS = frozenset(
         "version",
         "api_version",
         "entrypoint",
-        "candidate_data_mode",
         "python",
         "validation",
         "mcp",
@@ -109,7 +108,6 @@ class StaticPluginManifest:
     version: str
     api_version: int
     entrypoint: str
-    candidate_data_mode: Literal["isolated_copy", "shared_read"]
     python: tuple[StaticPythonRuntime, ...]
     exclude_data_paths: tuple[str, ...]
     mcp_servers: tuple[StaticMcpDeclaration, ...]
@@ -249,8 +247,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     )
     if not entrypoint.endswith(".py"):
         raise ValueError("插件静态 manifest entrypoint 必须指向 Python 文件")
-    candidate_data_mode = _candidate_data_mode(raw.get("candidate_data_mode"))
-
     # 2. Requirements are complete before the artifact is published.
     python = _python_runtimes(root, raw.get("python", []))
     exclude_data_paths = _validation_paths(root, raw.get("validation", {}))
@@ -284,8 +280,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
             for channel, paths in channel_credentials
         ],
     }
-    if "candidate_data_mode" in raw:
-        identity["candidate_data_mode"] = candidate_data_mode
     identity_digest = hashlib.sha256(
         json.dumps(
             identity,
@@ -300,7 +294,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         version=version,
         api_version=api_version,
         entrypoint=entrypoint,
-        candidate_data_mode=candidate_data_mode,
         python=python,
         exclude_data_paths=exclude_data_paths,
         mcp_servers=mcp_servers,
@@ -309,19 +302,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         channel_credentials=channel_credentials,
         identity_digest=identity_digest,
     )
-
-
-def _candidate_data_mode(
-    raw: object,
-) -> Literal["isolated_copy", "shared_read"]:
-    if raw is None:
-        return "isolated_copy"
-    if not isinstance(raw, str) or raw not in {"isolated_copy", "shared_read"}:
-        raise ValueError(
-            "插件静态 manifest candidate_data_mode 必须为 "
-            "isolated_copy 或 shared_read"
-        )
-    return cast(Literal["isolated_copy", "shared_read"], raw)
 
 
 def _channel_credentials(
