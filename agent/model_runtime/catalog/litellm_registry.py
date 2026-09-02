@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Mapping, cast
 
 # LiteLLM 默认允许在线刷新价格表。这里不再强制使用固定 wheel 快照：
 # 模型能力（尤其是新模型的上下文窗口）应以在线注册表为准，本地缓存兜底。
