@@ -476,12 +476,20 @@ class ModelsStore:
             current = self.read_snapshot()
             if current is None:
                 raise RuntimeError("model registry disappeared during catalog sync")
-            if not _sync_would_change(current, target_connection, items):
-                return False
             existing = _existing_model_ids(connection, target_connection)
+            legacy_keys = frozenset(
+                key for key, (_, _, legacy) in existing.items() if legacy
+            )
+            if not _sync_would_change(
+                current,
+                target_connection,
+                items,
+                legacy_keys=legacy_keys,
+            ):
+                return False
             used = _all_model_ids(connection)
             desired = {(item.kind, item.model) for item in items}
-            for key, (model_id, discovery_owned) in existing.items():
+            for key, (model_id, discovery_owned, _) in existing.items():
                 if discovery_owned and key not in desired:
                     table = (
                         "model_definitions"
@@ -496,7 +504,7 @@ class ModelsStore:
             for item in items:
                 key = (item.kind, item.model)
                 stored = existing.get(key)
-                if stored is not None and not stored[1]:
+                if stored is not None and not stored[1] and not stored[2]:
                     continue
                 model_id = (
                     stored[0]
@@ -682,8 +690,8 @@ def _revision(connection: sqlite3.Connection) -> int:
 def _existing_model_ids(
     connection: sqlite3.Connection,
     connection_id: str,
-) -> dict[tuple[ModelKind, str], tuple[str, bool]]:
-    result: dict[tuple[ModelKind, str], tuple[str, bool]] = {}
+) -> dict[tuple[ModelKind, str], tuple[str, bool, bool]]:
+    result: dict[tuple[ModelKind, str], tuple[str, bool, bool]] = {}
     for table, kind in (
         ("model_definitions", ModelKind.CHAT),
         ("embedding_models", ModelKind.EMBEDDING),
@@ -703,7 +711,12 @@ def _existing_model_ids(
                 raise RuntimeError(
                     f"duplicate stored model identity: {kind.value}/{row[1]}"
                 )
-            result[key] = (str(row[0]), _payload_source(row[2]) == "discovery")
+            raw_payload = row[2]
+            result[key] = (
+                str(row[0]),
+                _payload_source(raw_payload) == "discovery",
+                raw_payload is None or not str(raw_payload),
+            )
     return result
 
 
@@ -737,6 +750,8 @@ def _sync_would_change(
     snapshot: StoredSnapshot,
     connection_id: str,
     items: tuple[DiscoveredModel, ...],
+    *,
+    legacy_keys: frozenset[tuple[ModelKind, str]] = frozenset(),
 ) -> bool:
     current = {
         (model.kind, model.model): model
@@ -751,7 +766,11 @@ def _sync_would_change(
         return True
     for item in items:
         stored = current.get((item.kind, item.model))
-        if stored is not None and not stored.discovery_owned:
+        if (
+            stored is not None
+            and not stored.discovery_owned
+            and (item.kind, item.model) not in legacy_keys
+        ):
             continue
         desired = StoredModel(
             model_id=(

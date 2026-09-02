@@ -119,8 +119,7 @@ def test_removed_agent_compaction_trigger_fails_at_config_boundary(
         load_config(path, workspace=tmp_path)
 
 
-def test_model_runtime_output_edge_is_directly_bounded_by_context_window() -> None:
+def test_model_runtime_input_limit_does_not_subtract_output_budget() -> None:
     provider = _BudgetProvider(1025)
-    assert hard_input_limit(BoundChatModelFake(provider), 1024) == 1
-    with pytest.raises(ValueError, match="max_output_tokens"):
-        hard_input_limit(BoundChatModelFake(_BudgetProvider(1024)), 1024)
+    assert hard_input_limit(BoundChatModelFake(provider), 1024) == 1025
+    assert hard_input_limit(BoundChatModelFake(_BudgetProvider(1024)), 1024) == 1024

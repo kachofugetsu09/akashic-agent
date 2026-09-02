@@ -993,14 +993,14 @@ def hard_input_limit(provider: BoundChatModel, max_output_tokens: int) -> int:
         raise ValueError("context_window 必须是正整数")
     if not isinstance(max_output_tokens, int) or isinstance(max_output_tokens, bool):
         raise ValueError("max_output_tokens 必须是整数")
-    if max_output_tokens < 0 or max_output_tokens >= context_window:
-        raise ValueError("max_output_tokens 必须在 [0, context_window) 内")
-    return context_window - max_output_tokens
+    if max_output_tokens < 0:
+        raise ValueError("max_output_tokens 必须是非负整数")
+    return context_window
 
 
 def _validate_output_budget(provider: BoundChatModel, value: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError("max_output_tokens 必须是 [0, context_window) 内的整数")
+        raise ValueError("max_output_tokens 必须是非负整数")
     if _context_window(provider) > 0:
         hard_input_limit(provider, value)
     return value
@@ -1018,14 +1018,13 @@ def _summary_output_limit(
 ) -> int:
     estimated_input = provider.estimate_context_tokens(summary_input, [])
     context_window = _context_window(provider)
-    available = context_window - estimated_input
-    if available <= 1:
+    if estimated_input > context_window:
         raise ContextCompactionError(
             "context_compaction_summary_input_exceeds_window "
             f"estimated={estimated_input} window={context_window}"
         )
     configured_max_output = _provider_max_output_tokens(provider)
-    limits = [SUMMARY_MAX_TOKENS, available - 1]
+    limits = [SUMMARY_MAX_TOKENS]
     if configured_max_output > 0:
         limits.append(configured_max_output)
     return max(1, min(limits))

@@ -508,7 +508,7 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
     assert len(fallback.calls) == 1
     assert current.calls[0]["model"] == "selected-model"
     assert fallback.calls[0]["model"] == "default-model"
-    assert _call_int(fallback.calls[0], "max_tokens") <= fallback.context_window
+    assert _call_int(fallback.calls[0], "max_tokens") == 8_192
     assert result.checkpoint is not None
     assert result.checkpoint.model_runtime_id == "main"
     assert result.checkpoint.model == "default-model"
@@ -671,16 +671,16 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
     assert all(value not in committed_prompt for value in ("U1", "U2", "U3"))
 
 
-def test_summary_output_limit_keeps_strict_input_boundary() -> None:
-    summary_input = [{"role": "user", "content": "summary", "tokens": 1}]
+def test_summary_output_limit_keeps_input_and_output_limits_independent() -> None:
+    summary_input = [{"role": "user", "content": "summary", "tokens": 2}]
     assert (
-        _summary_output_limit(_Provider(context_window=8_193), summary_input) == 8_191
+        _summary_output_limit(_Provider(context_window=8_193), summary_input) == 8_192
     )
     assert (
-        _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_190
+        _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_192
     )
     with pytest.raises(ContextCompactionError, match="summary_input_exceeds_window"):
-        _summary_output_limit(_Provider(context_window=2), summary_input)
+        _summary_output_limit(_Provider(context_window=1), summary_input)
 
     capped = _Provider(context_window=8_193)
     capped.max_output_tokens = 123
@@ -813,7 +813,7 @@ def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
     assert provider.attempts == 1
 
 
-def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
+def test_request_output_limit_does_not_move_input_edge() -> None:
     class _BoundaryProvider(_Provider):
         def __init__(self) -> None:
             super().__init__(context_window=100)
@@ -876,7 +876,7 @@ def test_request_output_limit_moves_hard_edge_for_each_payload() -> None:
             max_output_tokens=50,
         )
     )
-    assert above.compacted
+    assert not above.compacted
 
 
 def test_soft_limit_uses_fixed_context_window_ratio() -> None:

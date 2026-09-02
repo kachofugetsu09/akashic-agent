@@ -17,6 +17,10 @@ Provider 的 `/models` 是账号当前可用模型的权威目录，但 OpenCode
 同一个 model key，只补全 Provider 未声明的字段。公共目录不增加、删除或改名 Provider 返回的模型，也不
 改变 wire transport。Provider 字段优先；公开目录不能覆盖 Provider 已声明的事实。
 
+旧版本迁入且尚无 capability ownership payload 的同 wire identity 模型，在首次成功同步时保留原 model
+ID 并转为 discovery owner，使存量模型也进入同一自动刷新链。用户后来明确手工新增且已有 ownership
+payload 的模型继续受保护，不被同步覆盖或禁用。
+
 每次显式同步都尝试刷新，因此已有连接可以吸收 LiteLLM 后来增加或修正的能力。刷新只访问固定 HTTPS
 地址，使用短超时、禁止跳转、限制响应大小和条目数，并校验完整 JSON。成功快照以 schema、ETag、摘要和
 抓取时间组成完整 envelope，在插件自己的 data root 中 fsync 后原子替换。

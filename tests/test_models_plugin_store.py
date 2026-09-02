@@ -686,6 +686,39 @@ def test_discovery_sync_is_one_revision_and_preserves_store_owned_id(
     revision = store.add_model(
         AddModel(
             expected_revision=revision,
+            model_id="legacy",
+            connection_id="connection",
+            kind=ModelKind.CHAT,
+            model="legacy-wire",
+            capabilities=ModelCapabilities(context_window=50),
+            capability_sources=CapabilitySources(context_window="legacy"),
+            driver_config={"profile": "legacy"},
+        )
+    )
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute(
+            "UPDATE model_definitions SET capabilities_json = NULL WHERE id = 'legacy'"
+        )
+        connection.commit()
+    legacy = DiscoveredModel(
+        kind=ModelKind.CHAT,
+        model="legacy-wire",
+        capabilities=ModelCapabilities(context_window=999),
+        capability_sources=CapabilitySources(context_window="provider"),
+        driver_config={"profile": "provider"},
+    )
+    revision = store.sync_models(revision, "connection", (updated, legacy))
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert snapshot.models["legacy"].discovery_owned is True
+    assert snapshot.models["legacy"].capabilities.context_window == 999
+    assert snapshot.models["legacy"].driver_config == {"profile": "provider"}
+    revision = store.sync_models(revision, "connection", (updated,))
+    assert store.read_snapshot().models["legacy"].enabled is False  # type: ignore[union-attr]
+
+    revision = store.add_model(
+        AddModel(
+            expected_revision=revision,
             model_id="manual",
             connection_id="connection",
             kind=ModelKind.CHAT,
