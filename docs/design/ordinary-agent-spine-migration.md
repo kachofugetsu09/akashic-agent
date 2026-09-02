@@ -9,13 +9,14 @@
 - 初始迁移基线：`f1f4560892ae92e96779ff89f848223afdcc9919`
 - 最终复审实现 head：`33864d9b77dcab2a0de5a31b440005542cfc4616`
 - Git worktree：`/mnt/data/coding/akasic-agent-worktrees/react-plugin-spine`
-- 当前实现 head：`33864d9b77dcab2a0de5a31b440005542cfc4616`；M1a～M1c 已落地，M1d 尚未开始
+- 当前实现 head：`27f223495eae5c99f2c9e98cc6e241da40b61a29`；M1a～M1d 已落地，下一批 M1e
 - 恢复引用：`backup/pre-react-plugin-spine-20260901-f1f45608`、`backup/pre-dsh-spec-rewrite-20260901`、
   `backup/pre-m1-retired-error-fix-20260901`、`backup/pre-m2-system-prompt-20260901`、
   `backup/pre-concept-review-20260901`、`backup/pre-concept-p1-fixes-20260901`、
   `backup/pre-concept-p1-round2-20260901`、`backup/pre-concept-p1-round3-20260901`、
   `backup/pre-concept-p1-round4-20260902`、`backup/pre-concept-p1-round5-20260902`、
-  `backup/pre-m2-delivery-gap-fix-20260902`、`backup/pre-m1d-activity-switch-20260902`
+  `backup/pre-m2-delivery-gap-fix-20260902`、`backup/pre-m1d-activity-switch-20260902`、
+  `backup/pre-m1d-switch-input-20260902`、`backup/pre-m1d-docs-20260902`
 
 ## 1. 结果、范围与停止条件
 
@@ -1738,6 +1739,13 @@ enter/start new，并在选择新 pointer 后才开放 lease；切换中核对�
   同批把 callback 收窄为携带 exact `snapshot_id` 的五个动作，并让 cold boot 先收完整 CLOSED target、
   mini Root 只做 preflight、`RUNTIME_STARTED` 才能 spawn。该批只用 fake registry/part，没有业务名称或
   production consumer，也不删除 Activity。
+  2026-09-02 验收：实现 commit `27f223495eae5c99f2c9e98cc6e241da40b61a29`、代码树
+  `db164cdc11767ccfdc73b78b0e472ff678fda67b` 取得两份 `IMPLEMENTATION PASS` 与一份 `NAME PASS`。
+  86 个定向测试、260 个邻接测试通过；扩大集合 542 个通过，唯一失败是基线实验脚本仍调用从未存在的
+  `RuntimeSnapshotStore.wait_for_no_leases`。全量 Pyright 为 0 errors；change Gate 报告为
+  `docker/debug/reports/change-gate/20260902-075216-90b184ae`。首次 `recover` 前已用 absence → exact
+  transition 写 journal 并 pin，旧的无事务 `save_parts` 已物理删除；本批没有 production consumer 或可删除的
+  Activity owner。
 
 - **M1e · Hold access：** 增加 `Context.hold(key)`，只允许 direct inject 或 own provide，并要求调用 Fiber
   就是该逻辑插件唯一 SwitchPart 的注册 Fiber。把 M1c 私有 holder 改成 Core 推导的 stable Fiber namespace，加入 task/recipe/

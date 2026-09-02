@@ -34,8 +34,8 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
   PluginSkillLinker、host capability、candidate Gate 与 normal/drift 来源仍跨越多个 owner；已按 DSH 的
   registry/source/product 三层拆开并以 hua-home live artifact/目录入账。2026-09-02 整份规格及 M1d/M1e
   实现前改正已经重新取得
-  `CONCEPT PASS` 与 `NAME PASS`；M1a exact work、M1b Root switch 与 M1c Service hold 已完成。当前下一批是
-  M1d Switch input：补 affine direct input、snapshot callback 与 closed-root cold boot；随后 M1e 增加
+  `CONCEPT PASS` 与 `NAME PASS`；M1a exact work、M1b Root switch、M1c Service hold 与 M1d Switch input 已完成。
+  当前下一批是 M1e：增加
   `Context.hold`、stable Fiber namespace、permit 与完整 `RootRecipe`。两批都只用 fake plugin，不接业务 consumer。
   之后依次为 M2a agents、M2b agent-loop、M2c source delivery、M2d ordinary jobs。M2d 是第一名 production plugin
   consumer，同批删除 ActivityHost、Manager participant/provider、snapshot job 分支与 bootstrap bind；再做
