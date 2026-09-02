@@ -82,6 +82,7 @@ class _ConnectionConfig:
 @dataclass(frozen=True, slots=True)
 class _ModelConfig:
     max_tool_schemas: int | None
+    embedding_batch_size: int
 
 
 class _BoundChat:
@@ -159,18 +160,21 @@ class _BoundEmbedding:
 
         if not texts or any(not isinstance(text, str) for text in texts):
             raise ValueError("embedding texts must be a non-empty string sequence")
-        body: dict[str, Any] = {
-            "model": self._descriptor.model,
-            "input": list(texts),
-        }
-        payload = await _request_json(
-            self._connection,
-            self._credential,
-            "POST",
-            "/embeddings",
-            body=body,
-        )
-        return _parse_embedding_response(payload, expected_count=len(texts))
+        vectors: list[tuple[float, ...]] = []
+        usages: list[ModelUsage | None] = []
+        for start in range(0, len(texts), self._config.embedding_batch_size):
+            batch = texts[start : start + self._config.embedding_batch_size]
+            payload = await _request_json(
+                self._connection,
+                self._credential,
+                "POST",
+                "/embeddings",
+                body={"model": self._descriptor.model, "input": list(batch)},
+            )
+            result = _parse_embedding_response(payload, expected_count=len(batch))
+            vectors.extend(result.vectors)
+            usages.append(result.usage)
+        return EmbeddingResult(vectors=tuple(vectors), usage=_merge_usage(usages))
 
 
 def definition() -> ModelDriverDefinition:
@@ -349,6 +353,7 @@ def _connection_config(descriptor: DriverConnectionDescriptor) -> _ConnectionCon
 def _model_config(config: Mapping[str, Any]) -> _ModelConfig:
     allowed = {
         "format_version",
+        "embedding_batch_size",
         "max_tool_schemas",
         "use_responses_lite",
         "reasoning_summary",
@@ -370,7 +375,17 @@ def _model_config(config: Mapping[str, Any]) -> _ModelConfig:
         raise ValueError("use_responses_lite belongs to a different driver")
     if config.get("reasoning_summary", "none") not in {"", "none"}:
         raise ValueError("reasoning_summary belongs to a different driver")
-    return _ModelConfig(max_tool_schemas=max_tool_schemas)
+    embedding_batch_size = config.get("embedding_batch_size", 10)
+    if (
+        not isinstance(embedding_batch_size, int)
+        or isinstance(embedding_batch_size, bool)
+        or embedding_batch_size <= 0
+    ):
+        raise ValueError("embedding_batch_size must be a positive integer")
+    return _ModelConfig(
+        max_tool_schemas=max_tool_schemas,
+        embedding_batch_size=embedding_batch_size,
+    )
 
 
 def _chat_body(
@@ -940,6 +955,43 @@ def _usage(raw: Mapping[str, Any]) -> ModelUsage:
         cached_input_tokens=cached,
         output_tokens=output_tokens,
         reasoning_output_tokens=reasoning,
+        covered_request_count=covered,
+        coverage=coverage,
+    )
+
+
+def _merge_usage(items: Sequence[ModelUsage | None]) -> ModelUsage | None:
+    """Merge per-request usage while preserving unknown token counts."""
+
+    if not any(item is not None for item in items):
+        return None
+    normalized = tuple(item or ModelUsage() for item in items)
+
+    def total(field: str) -> int | None:
+        known = [
+            value
+            for item in normalized
+            if (value := getattr(item, field)) is not None
+        ]
+        return sum(known) if known else None
+
+    request_count = sum(item.request_count for item in normalized)
+    covered = sum(item.covered_request_count for item in normalized)
+    coverage = (
+        UsageCoverage.UNAVAILABLE
+        if all(item.coverage is UsageCoverage.UNAVAILABLE for item in normalized)
+        else UsageCoverage.EXACT
+        if covered == request_count
+        and all(item.coverage is UsageCoverage.EXACT for item in normalized)
+        else UsageCoverage.PARTIAL
+    )
+    return ModelUsage(
+        input_tokens=total("input_tokens"),
+        cache_write_input_tokens=total("cache_write_input_tokens"),
+        cached_input_tokens=total("cached_input_tokens"),
+        output_tokens=total("output_tokens"),
+        reasoning_output_tokens=total("reasoning_output_tokens"),
+        request_count=request_count,
         covered_request_count=covered,
         coverage=coverage,
     )
