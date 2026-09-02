@@ -715,7 +715,7 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 
 普通请求只租用已验证的 stable；latest 仍是 Core 内部候选，但只由发起 install 的 parent turn 所创建的 attached programmatic child 因果继承。父 turn 保持旧 stable；detached child、其他 turn 和没有匹配 generation/source identity 的请求不得取得候选。Agent 不手工选择 latest 或调用 promote/discard。
 
-install 成功只表示候选可验证。至少一个匹配当前候选的 attached child 正常完成、没有 revert 且 parent 正常结束时，Core 才在 lease 释放后自动提交；无验证、child/parent 非正常终结或身份漂移必须丢弃。Core 只检查 child 的因果归属、generation/source identity 和正常终态，不要求某类插件、Tool 或 Skill 提供特制证明；parent 负责判断本次检查是否满足业务目标。独占 managed service 使用 Core 分配的隔离端口和 plugin-data 副本；插件必须声明并读取 `validation_port_env`，否则 fail-loud。Channel 正式 ownership 只在 turn 后切换。cache artifact 按 source revision/tree digest 不可变保存，旧代码保留到提交、readiness、恢复检查和 lease 排空完成。
+install 成功只表示候选可验证。至少一个匹配当前候选的 attached child 正常完成、没有 revert 且 parent 正常结束时，Core 才在 lease 释放后自动提交；无验证、child/parent 非正常终结或身份漂移必须丢弃。Core 只检查 child 的因果归属、generation/source identity 和正常终态，不要求某类插件、Tool 或 Skill 提供特制证明；parent 负责判断本次检查是否满足业务目标，检查失败必须在 parent terminal 前执行 `plugin-revert`。独占 managed service 使用 Core 分配的隔离端口和 plugin-data 副本；插件必须声明并读取 `validation_port_env`，否则 fail-loud。Channel 正式 ownership 只在 turn 后切换。cache artifact 按 source revision/tree digest 不可变保存，旧代码保留到提交、readiness、恢复检查和 lease 排空完成。
 
 外部 operator 已经独立承担信任判断时，可以在 Supervisor 与 Runtime 均停止后使用名称明确的 trusted batch 入口，把完整 commit SHA 指向的 pure-v3 artifact 直接发布为 stable/latest。Runtime 消费 plugin-home 的整个生命周期都必须独占该 home 的 publication lock；trusted batch 必须先取得 supervisor/runtime 两把 workspace 生命周期锁，再取得同一 publication lock，拒绝 active turn、分支 ref、未知 batch 字段和非 v3 static manifest。回执必须写明 `programmaticValidation=bypassed_by_operator_trust`，不得伪造行为验证成功。在线安装、Agent 自改进和普通 `plugin-install` 继续无例外地走 candidate + attached programmatic child。
 

@@ -60,7 +60,6 @@
 | [0052](0052-compaction-and-markdown-memory-are-ordinary-plugins.md) | accepted / implementing | Compaction 与 Markdown 记忆是普通插件 | CTX-007、MEM-001～MEM-011、PLG-001～PLG-014、SES-003～SES-005 |
 | [0053](0053-plugins-declare-managed-workloads.md) | accepted / implementing | 插件声明受管 Workload | RUN-016、PLG-017、WEBUI-008、WSP-006 |
 | [0054](0054-model-sync-refreshes-public-capabilities.md) | accepted / implementing | 模型同步刷新公共能力目录 | RUN-011、ONB-001、WSP-001 |
-| [0055](0055-child-turn-checks-plugin.md) | accepted | Child Turn 检查插件候选 | PLG-010、PLG-013、PLG-014、RUN-007、ERR-001 |
 
 ## 新增规则
 

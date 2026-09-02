@@ -13,11 +13,177 @@ from typing import Any, cast
 import certifi
 import pytest
 
+from agent.control.context import mint_plugin_child_capability
+from agent.control.models import TurnRequest
+from agent.control.ports import ControlExecutionResult
+from agent.control.runtime import ConversationRuntime
+from agent.control.service import ControlService
+from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
+from agent.plugins.reload_journal import ReloadJournal
+from agent.plugins.turn_rollout import TurnPluginRollout
 from agent.tools.registry import ToolRegistry
 from bootstrap.app import AppRuntime
 from bus.event_bus import EventBus
+from session.manager import SessionManager
+
+
+@pytest.mark.asyncio
+async def test_turn_owned_candidate_promotes_after_exact_child(
+    tmp_path: Path,
+) -> None:
+    """Run the real parent-child rollout through snapshot, journal, and pointer owners."""
+
+    # 1. Build one stable Root and one immutable candidate with Tool and Skill assets.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    builtin = tmp_path / "builtin" / "baseline"
+    _write_v3_plugin(builtin, name="baseline")
+    source = tmp_path / "candidate"
+    _write_tool_skill_plugin(source)
+    _commit(source)
+    event_bus = EventBus()
+    sessions = SessionManager(workspace)
+    manager = PluginManager(
+        plugin_dirs=[builtin.parent],
+        event_bus=event_bus,
+        tool_registry=ToolRegistry(),
+        session_manager=sessions,
+        workspace=workspace,
+        installed_cache_root=tmp_path / "plugins-home" / "cache",
+    )
+    await manager.load_all()
+    stable = manager.current_snapshot
+    assert stable is not None and stable.composition_root is not None
+
+    async def uninstall(_plugin_id: str) -> dict[str, object]:
+        raise AssertionError("install promotion must not call uninstall")
+
+    rollout = TurnPluginRollout(manager, workspace=workspace, uninstall=uninstall)
+    parent_release = asyncio.Event()
+    installed = asyncio.Event()
+    install_result: PluginInstallResult | None = None
+    install_status: dict[str, object] | None = None
+    seen_snapshots: dict[str, object] = {}
+
+    async def execute(request: TurnRequest) -> ControlExecutionResult:
+        nonlocal install_result, install_status
+        selector = cast(Any, request.metadata.get("runtime", "stable"))
+        lease = manager.snapshot_store.lease(selector=selector)
+        async with lease as snapshot:
+            assert snapshot.composition_root is not None
+            seen_snapshots[request.input] = snapshot
+            if request.input == "install candidate":
+                turn_id = str(request.metadata["turnId"])
+                install_result, install_status = await rollout.install(
+                    turn_id,
+                    source=str(source),
+                    marketplace="lab",
+                    ref_name="",
+                    sparse_paths=[],
+                )
+                installed.set()
+                await parent_release.wait()
+            return ControlExecutionResult(response="ok")
+
+    runtime = ConversationRuntime(
+        sessions.control_store,
+        execute,
+        turn_terminal=rollout.turn_terminal,
+    )
+    service = ControlService(
+        runtime,
+        sessions,
+        workspace,
+        plugin_child_binding=rollout.child_binding,
+        plugin_turn_barrier=rollout.wait_for_turn_boundary,
+    )
+    parent_handle = None
+    child_handle = None
+    try:
+        # 2. The real parent Turn owns install while retaining its stable lease.
+        parent_thread = service.start_thread({})
+        parent_thread_id = str(parent_thread["id"])
+        parent_handle = await service.start_turn(
+            parent_thread_id,
+            "install candidate",
+            {},
+        )
+        await asyncio.wait_for(installed.wait(), timeout=10)
+        assert install_result is not None and install_status is not None
+        candidate = manager.latest_snapshot
+        assert candidate is not None and candidate is not stable
+        assert seen_snapshots["install candidate"] is stable
+
+        # 3. Reserve and consume the registered one-shot capability through Control.
+        capability = mint_plugin_child_capability(parent_handle.id)
+        assert capability
+        child_thread = service.start_thread(
+            {},
+            plugin_rollout_capability=capability,
+        )
+        child_thread_id = str(child_thread["id"])
+        child_handle = await service.start_turn(
+            child_thread_id,
+            "check candidate",
+            {},
+            attached=True,
+        )
+        child_result = await child_handle.result()
+        assert child_result.status.value == "completed"
+        await runtime.wait_thread_available(child_thread_id)
+        assert seen_snapshots["check candidate"] is candidate
+
+        # 4. No revert plus a normal parent terminal is the sole commit grant.
+        parent_release.set()
+        parent_result = await parent_handle.result()
+        assert parent_result.status.value == "completed"
+        await runtime.wait_thread_available(parent_thread_id)
+        await rollout.wait_for_turn_boundary()
+        await manager.snapshot_store.retry_drains()
+
+        assert manager.current_snapshot is candidate
+        assert manager.latest_snapshot is candidate
+        assert manager.ready_candidate is None
+        assert "已经成功提交" in rollout.consume_fact()
+
+        # 5. Verify durable recovery facts, not only in-memory publication state.
+        tx_id = str(install_status["candidate_reload_tx_id"])
+        journal = ReloadJournal(workspace)
+        record = journal.get(tx_id)
+        assert record.phase == "complete"
+        events = journal.events(tx_id)
+        details = [event.details for event in events]
+        assert any(item.get("event") == "turn_operation_registered" for item in details)
+        assert any(
+            item.get("event") == "candidate_child_terminal"
+            and item.get("identity_match") is True
+            and item.get("candidate_checked") is True
+            for item in details
+        )
+        assert "promoting" in [event.phase for event in events]
+        assert "committed" in [event.phase for event in events]
+
+        plugin_base = install_result.installed_path.parents[1]
+        pointers = read_pointers(plugin_base)
+        assert pointers is not None and pointers.stable == pointers.latest
+        active = manager.generation("candidate@lab")
+        assert active is not None
+        assert resolve_pointer(plugin_base, pointers.stable) == active.plugin_dir
+    finally:
+        parent_release.set()
+        for handle in (child_handle, parent_handle):
+            if handle is not None and handle.record()["status"] == "in_progress":
+                _ = await handle.result()
+        await service.shutdown()
+        await rollout.shutdown()
+        await runtime.shutdown()
+        if manager.ready_candidate is not None:
+            await manager.drop_candidate("candidate@lab")
+        await manager.terminate_all()
+        sessions.close()
+        await event_bus.aclose()
 
 
 @pytest.mark.asyncio
@@ -594,6 +760,56 @@ def _write_v3_plugin(
             "entrypoint = \"plugin.py\"\n",
             encoding="utf-8",
         )
+
+
+def _write_tool_skill_plugin(plugin_dir: Path) -> None:
+    """Write one ordinary v3 candidate that contributes both Tool and Skill."""
+
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.py").write_text(
+        "from agent.plugin_composition import TOOL_CATALOG, PluginToolDefinition\n\n"
+        "api_version = 3\n"
+        "name = 'candidate'\n"
+        "version = '1.0.0'\n"
+        "inject = (TOOL_CATALOG,)\n"
+        "skill_roots = ('skills',)\n\n"
+        "async def candidate_probe(context, arguments):\n"
+        "    del context, arguments\n"
+        "    return 'candidate-ready'\n\n"
+        "async def apply(ctx, config):\n"
+        "    del config\n"
+        "    await ctx.require(TOOL_CATALOG).register(ctx, PluginToolDefinition(\n"
+        "        name='candidate_probe',\n"
+        "        description='Check the candidate.',\n"
+        "        parameters={\n"
+        "            'type': 'object',\n"
+        "            'properties': {},\n"
+        "            'required': [],\n"
+        "            'additionalProperties': False,\n"
+        "        },\n"
+        "        handler_export='candidate_probe',\n"
+        "        risk='read-only',\n"
+        "    ))\n",
+        encoding="utf-8",
+    )
+    skill = plugin_dir / "skills" / "candidate-check"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: candidate-check\n"
+        "description: Check the installed candidate.\n"
+        "---\n\n"
+        "# Candidate check\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "akashic.plugin.toml").write_text(
+        "schema_version = 1\n"
+        'name = "candidate"\n'
+        'version = "1.0.0"\n'
+        "api_version = 3\n"
+        'entrypoint = "plugin.py"\n',
+        encoding="utf-8",
+    )
 
 
 def _commit_all(repo: Path, message: str) -> None:
