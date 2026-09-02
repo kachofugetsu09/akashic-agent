@@ -54,7 +54,13 @@ async def test_remote_catalog_recognizes_exact_new_vision_model(tmp_path: Path) 
     async def respond(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"deepseek-v4-flash-vision-exp": {"supports_vision": True}},
+            json={
+                "deepseek-v4-flash-vision-exp": {
+                    "max_input_tokens": 1_000_000,
+                    "max_output_tokens": 393_216,
+                    "supports_vision": True,
+                }
+            },
             headers={"etag": '"catalog-1"'},
         )
 
@@ -64,6 +70,11 @@ async def test_remote_catalog_recognizes_exact_new_vision_model(tmp_path: Path) 
 
     assert len(result) == 1
     assert result[0].capabilities.input_modalities == ("text", "image")
+    assert result[0].capabilities.context_window == 1_000_000
+    assert result[0].capabilities.max_output_tokens == 393_216
+    assert result[0].capability_sources.context_window.startswith(
+        "litellm-remote@sha256:"
+    )
     assert result[0].capability_sources.input_modalities.startswith(
         "litellm-remote@sha256:"
     )
@@ -71,6 +82,9 @@ async def test_remote_catalog_recognizes_exact_new_vision_model(tmp_path: Path) 
     assert envelope["schema_version"] == 1
     assert envelope["etag"] == '"catalog-1"'
     assert envelope["sha256"]
+    assert envelope["models"]["deepseek-v4-flash-vision-exp"][
+        "max_input_tokens"
+    ] == 1_000_000
 
 
 @pytest.mark.asyncio
@@ -124,7 +138,13 @@ async def test_refresh_failure_reuses_last_valid_remote_snapshot(
     async def first(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"deepseek-v4-flash-vision-exp": {"supports_vision": True}},
+            json={
+                "deepseek-v4-flash-vision-exp": {
+                    "max_input_tokens": 1_000_000,
+                    "max_output_tokens": 393_216,
+                    "supports_vision": True,
+                }
+            },
             headers={"etag": '"catalog-1"'},
         )
 
@@ -142,6 +162,8 @@ async def test_refresh_failure_reuses_last_valid_remote_snapshot(
     ).enrich((_model(),), provider_id="opencode-go")
 
     assert recovered[0].capabilities.input_modalities == ("text", "image")
+    assert recovered[0].capabilities.context_window == 1_000_000
+    assert recovered[0].capabilities.max_output_tokens == 393_216
     assert recovered[0].capability_sources.input_modalities.startswith(
         "litellm-remote@sha256:"
     )
@@ -267,7 +289,7 @@ async def test_suspiciously_small_remote_does_not_replace_last_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_catalog_matching_is_exact_and_never_adds_provider_models(
+async def test_catalog_fuzzy_matching_keeps_provider_inventory(
     tmp_path: Path,
 ) -> None:
     async def respond(_request: httpx.Request) -> httpx.Response:
@@ -286,7 +308,10 @@ async def test_catalog_matching_is_exact_and_never_adds_provider_models(
     )
 
     assert len(result) == 1
-    assert result[0].capability_sources.input_modalities == "unknown"
+    assert result[0].capabilities.input_modalities == ("text", "image")
+    assert result[0].capability_sources.input_modalities.startswith(
+        "litellm-remote@sha256:"
+    )
 
 
 @pytest.mark.asyncio

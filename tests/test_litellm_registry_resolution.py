@@ -8,9 +8,6 @@ network or touching the live plugin-data cache. They construct a small in-memory
 registry/cache to verify the resolution order and fuzzy matching semantics.
 """
 
-import json
-from pathlib import Path
-
 from agent.model_runtime.catalog import litellm_registry as m
 
 
@@ -87,27 +84,15 @@ def test_fuzzy_entry_vision_modality() -> None:
     assert hit.get("supports_vision") is True
 
 
-def test_load_cached_catalog(tmp_path: Path) -> None:
-    cache = tmp_path / "litellm-capabilities.json"
-    cache.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "etag": "test",
-                "sha256": "unused",
-                "models": _sample_online(),
-            }
-        ),
-        encoding="utf-8",
+def test_explicit_catalog_mapping_is_used() -> None:
+    caps = m.resolve_catalog_capabilities(
+        "openai-compatible",
+        "zai-org/GLM-5.2",
+        models=_sample_online(),
     )
-    loaded = m._load_cached_catalog(cache)
-    assert loaded is not None
-    assert "deepseek/deepseek-v4-flash" in loaded
 
-
-def test_load_cached_catalog_missing_file(tmp_path: Path) -> None:
-    cache = tmp_path / "missing.json"
-    assert m._load_cached_catalog(cache) is None
+    assert caps is not None
+    assert caps.context_window == 1_048_576
 
 
 def test_context_window_uses_input_not_sum(monkeypatch) -> None:

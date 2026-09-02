@@ -12,10 +12,11 @@ import zlib
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Mapping
 
 import httpx
 
+from agent.model_runtime.catalog.litellm_registry import resolve_catalog_capabilities
 from agent.plugin_composition import DiscoveredModel
 
 logger = logging.getLogger(__name__)
@@ -351,51 +352,43 @@ def _enrich_model(
     models: Mapping[str, Mapping[str, Any]],
     source: str,
 ) -> DiscoveredModel:
-    if model.capability_sources.input_modalities != "unknown":
+    resolved = resolve_catalog_capabilities(
+        provider_id,
+        model.model,
+        models=models,
+    )
+    if resolved is None:
         return model
-    raw = _exact_entry(models, provider_id=provider_id, model=model.model)
-    if raw is None:
-        return model
-    modalities = _input_modalities(raw)
-    if modalities is None:
-        return model
-    capabilities = replace(model.capabilities, input_modalities=modalities)
-    sources = replace(model.capability_sources, input_modalities=source)
-    return replace(model, capabilities=capabilities, capability_sources=sources)
-
-
-def _exact_entry(
-    models: Mapping[str, Mapping[str, Any]],
-    *,
-    provider_id: str,
-    model: str,
-) -> Mapping[str, Any] | None:
-    normalized_provider = provider_id.strip().lower().replace("_", "-")
-    normalized_model = model.strip()
-    candidates = []
-    if normalized_provider and not normalized_model.startswith(
-        f"{normalized_provider}/"
+    capabilities = model.capabilities
+    sources = model.capability_sources
+    if sources.context_window == "unknown" and resolved.context_window > 0:
+        capabilities = replace(
+            capabilities,
+            context_window=resolved.context_window,
+        )
+        sources = replace(sources, context_window=source)
+    if sources.max_output_tokens == "unknown" and resolved.max_output_tokens > 0:
+        capabilities = replace(
+            capabilities,
+            max_output_tokens=resolved.max_output_tokens,
+        )
+        sources = replace(sources, max_output_tokens=source)
+    if sources.input_modalities == "unknown" and resolved.input_modalities_known:
+        capabilities = replace(
+            capabilities,
+            input_modalities=resolved.input_modalities,
+        )
+        sources = replace(sources, input_modalities=source)
+    if (
+        sources.reasoning_efforts == "unknown"
+        and resolved.supported_reasoning_efforts
     ):
-        candidates.append(f"{normalized_provider}/{normalized_model}")
-    candidates.append(normalized_model)
-    for candidate in candidates:
-        entry = models.get(candidate)
-        if entry is not None:
-            return entry
-    return None
-
-
-def _input_modalities(raw: Mapping[str, Any]) -> tuple[str, ...] | None:
-    declared = raw.get("supported_modalities")
-    if isinstance(declared, list):
-        if not all(isinstance(item, str) and item.strip() for item in declared):
-            return None
-        normalized = {item.lower() for item in cast(list[str], declared)}
-        return ("text", "image") if "image" in normalized else ("text",)
-    vision = raw.get("supports_vision")
-    if isinstance(vision, bool):
-        return ("text", "image") if vision else ("text",)
-    return None
+        capabilities = replace(
+            capabilities,
+            supported_reasoning_efforts=resolved.supported_reasoning_efforts,
+        )
+        sources = replace(sources, reasoning_efforts=source)
+    return replace(model, capabilities=capabilities, capability_sources=sources)
 
 
 def _models_bytes(models: Mapping[str, Mapping[str, Any]]) -> bytes:
