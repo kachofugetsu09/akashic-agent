@@ -232,6 +232,76 @@ async def test_child_with_wrong_candidate_identity_is_rejected(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_child_with_wrong_source_revision_is_rejected(tmp_path: Path) -> None:
+    manager = _Manager()
+
+    async def uninstall(_plugin_id: str) -> dict[str, object]:
+        return {}
+
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
+    )
+    await rollout.install(
+        "turn-parent",
+        source="repo",
+        marketplace="github",
+        ref_name="",
+        sparse_paths=[],
+    )
+    rollout.turn_terminal(
+        "turn-child",
+        TurnStatus.COMPLETED,
+        {
+            "_pluginRolloutOwnerTurnId": "turn-parent",
+            "_pluginRolloutGenerationId": "gen-2",
+            "_pluginRolloutSourceRevision": "wrong-revision",
+        },
+    )
+    rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
+    await _settle()
+
+    assert manager.promoted == []
+    assert manager.discarded == ["fitbit@github"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [TurnStatus.FAILED, TurnStatus.CANCELLED])
+async def test_noncompleted_parent_discards_checked_candidate(
+    tmp_path: Path,
+    status: TurnStatus,
+) -> None:
+    manager = _Manager()
+
+    async def uninstall(_plugin_id: str) -> dict[str, object]:
+        return {}
+
+    rollout = TurnPluginRollout(
+        cast(Any, manager), workspace=tmp_path, uninstall=uninstall
+    )
+    await rollout.install(
+        "turn-parent",
+        source="repo",
+        marketplace="github",
+        ref_name="",
+        sparse_paths=[],
+    )
+    rollout.turn_terminal(
+        "turn-child",
+        TurnStatus.COMPLETED,
+        {
+            "_pluginRolloutOwnerTurnId": "turn-parent",
+            "_pluginRolloutGenerationId": "gen-2",
+            "_pluginRolloutSourceRevision": "rev-2",
+        },
+    )
+    rollout.turn_terminal("turn-parent", status, {})
+    await _settle()
+
+    assert manager.promoted == []
+    assert manager.discarded == ["fitbit@github"]
+
+
+@pytest.mark.asyncio
 async def test_same_revision_install_creates_no_pending_rollout(tmp_path: Path):
     manager = _Manager()
     manager.staged_candidate = False
@@ -281,19 +351,15 @@ async def test_next_turn_waits_until_parent_rollout_is_resolved(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cancels_the_only_resolution_task(tmp_path: Path) -> None:
+async def test_shutdown_finishes_the_only_resolution_task(tmp_path: Path) -> None:
     manager = _Manager()
     entered = asyncio.Event()
-    cancelled = asyncio.Event()
+    release = asyncio.Event()
 
     async def uninstall(_plugin_id: str) -> dict[str, object]:
         entered.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancelled.set()
-            raise
-        raise AssertionError("unreachable")
+        await release.wait()
+        return {}
 
     rollout = TurnPluginRollout(
         cast(Any, manager), workspace=tmp_path, uninstall=uninstall
@@ -301,10 +367,14 @@ async def test_shutdown_cancels_the_only_resolution_task(tmp_path: Path) -> None
     await rollout.uninstall("turn-parent", "fitbit@github")
     rollout.turn_terminal("turn-parent", TurnStatus.COMPLETED, {})
     await entered.wait()
+    shutdown = asyncio.create_task(rollout.shutdown())
+    await asyncio.sleep(0)
 
-    await rollout.shutdown()
+    assert not shutdown.done()
+    release.set()
+    await shutdown
 
-    assert cancelled.is_set()
+    assert "已卸载" in rollout.consume_fact()
     await rollout.wait_for_turn_boundary()
 
 

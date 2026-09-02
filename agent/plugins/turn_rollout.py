@@ -246,7 +246,7 @@ class TurnPluginRollout:
             await asyncio.shield(task)
 
     async def shutdown(self) -> None:
-        """Finish or cancel owned background resolutions during runtime shutdown."""
+        """Finish sealed background work before runtime shutdown returns."""
 
         pending = self._pending
         if pending is not None:
@@ -258,8 +258,7 @@ class TurnPluginRollout:
         self._reserved_child_capabilities.clear()
         task = self._resolution_task
         if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.shield(task)
 
     def consume_fact(self) -> str:
         """Consume one runtime-owned rollout fact for the next user turn."""

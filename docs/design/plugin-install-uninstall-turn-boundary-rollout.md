@@ -101,7 +101,7 @@ Core 记录 `owner_turn_id + candidate_generation_id + source_revision`。child 
 
 至少一个绑定当前候选的 attached child 必须正常完成，当前 turn 才能授权提交。child 失败、取消、超时、身份不一致或根本没有运行时，Core 在 turn 结束时取消 pending install，不发布候选。
 
-Core 只核对 child 确实绑定候选、真实 terminal/tool trace 存在且没有越过 write-set 边界。Fitbit 领域结果与轨迹是否符合修改目标由 Agent 判断；不符合时 Agent 必须在结束 turn 前执行 `plugin-revert`。
+Core 只核对 child 属于当前 parent、绑定 exact generation/source，并且正常完成。Fitbit 领域结果与轨迹是否符合修改目标由 Agent 判断；不符合时 Agent 必须在结束 turn 前执行 `plugin-revert`。
 
 ### 4.3 `plugin-uninstall`
 

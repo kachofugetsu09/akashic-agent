@@ -16,7 +16,7 @@ stable snapshot ── parent Turn ── attached child ───────�
 parent 完成 ── stable 指针切换 ── journal 完成 ── 旧 lease 排空
 ```
 
-DeepSeek Harness 提供了复杂度基线。它用普通配置行装配插件，依赖可用性决定 Fiber 激活顺序（`packages/bundle/base/cordis.patch.yml`）；Service 绑定当前 Fiber，Fiber 卸载时逆序清理 Effect（`vendor/cordis/src/reflect.ts`、`vendor/cordis/src/fiber.ts`）。`agent-loop` 也只是依赖 agents、sessions、llm、tools 与 systemPrompt 的普通 Service 插件（`packages/core/agent-loop/src/index.ts`）。
+DeepSeek Harness 提供了复杂度基线。它用普通配置行装配插件，依赖可用性决定 Fiber 激活顺序（`packages/bundle/base/cordis.patch.yml`）；Service 绑定当前 Fiber，Fiber 卸载时逆序清理 Effect（`vendor/cordis/src/reflect.ts`、`vendor/cordis/src/fiber.ts`）。`agent-loop` 也只是依赖 agents、sessions、llm、tools、systemPrompt 与 sessionProjections 的普通 Service 插件（`packages/core/agent-loop/src/index.ts`）。
 
 DSH 没有跨进程旧 Root 续跑：reload 会停止旧 Fiber，进程崩溃会把 open Turn 修成 interrupted，再用当前插件世界开始新 Turn（`packages/core/session/src/repair.ts`、`packages/session/session-persistence/src/coordinator.ts`）。Akashic 保留 snapshot lease 来让同进程旧请求排空，但不额外发明跨进程旧世界复活协议。
 
