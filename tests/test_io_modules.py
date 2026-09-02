@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock
 from typing import cast
 
 import pytest
+from PIL import Image
+
 import agent.mcp.client as mcp_client_module
 import agent.tools.filesystem as filesystem_module
 
@@ -26,7 +28,6 @@ from agent.tools.filesystem import (
     ListDirTool,
     ReadFileTool,
     WriteFileTool,
-    _IMAGE_TARGET_B64_LEN,
     _READ_MAX_BYTES,
     _READ_MAX_LINES,
     _FILE_MUTATION_LOCKS,
@@ -34,7 +35,7 @@ from agent.tools.filesystem import (
     _run_with_file_mutation_lock,
 )
 from tests.model_plugin_fakes import bind_test_model_snapshot
-from agent.tools.vision import _encode_image_data_uri
+from agent.media import MAX_IMAGE_DATA_URI_BYTES, encode_image_data_uri
 from bus.events import OutboundMessage
 from bus.queue import MessageBus
 
@@ -110,7 +111,7 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert "outside" in _as_text(await reader.execute("../outside.txt"))
 
     image = base / "a.png"
-    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(image)
     image_provider = SimpleNamespace(input_modalities=("text", "image"))
     async with bind_test_model_snapshot(image_provider):
         image_result = await reader.execute("a.png")
@@ -122,7 +123,7 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     )
 
     weird_image = base / "image.bin"
-    weird_image.write_bytes(b"\x89PNG\r\n\x1a\nrest")
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(weird_image, format="PNG")
     async with bind_test_model_snapshot(image_provider):
         weird_image_result = await reader.execute("image.bin")
     assert isinstance(weird_image_result, ToolResult)
@@ -149,18 +150,37 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert isinstance(svg_result, str)
     assert "<svg>" in svg_result
 
-    from PIL import Image
-
     big = base / "big.png"
-    noisy = Image.effect_noise((4000, 3000), 100).convert("RGB")
+    noisy = Image.effect_noise((5000, 1000), 100).convert("RGB")
     noisy.save(big, format="PNG")
     async with bind_test_model_snapshot(image_provider):
         big_result = await reader.execute("big.png")
     assert isinstance(big_result, ToolResult)
-    assert "已自动压缩" in big_result.text
     big_url = big_result.content_blocks[0]["image_url"]["url"]
     assert big_url.startswith("data:image/jpeg;base64,")
-    assert len(big_url.split(",", 1)[1]) <= _IMAGE_TARGET_B64_LEN
+    assert len(big_url.split(",", 1)[1]) <= MAX_IMAGE_DATA_URI_BYTES
+
+    oversized = base / "oversized.png"
+    oversized.write_bytes(b"\x89PNG\r\n\x1a\n")
+    with oversized.open("r+b") as handle:
+        handle.truncate(20 * 1024 * 1024 + 1)
+    oversized_result = await reader.execute("oversized.png")
+    assert isinstance(oversized_result, str)
+    assert "单张图片不能超过 20MB" in oversized_result
+
+    import struct
+    import zlib
+
+    pixel_bomb = base / "pixel-bomb.png"
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(pixel_bomb)
+    payload = bytearray(pixel_bomb.read_bytes())
+    payload[16:20] = struct.pack(">I", 10_000)
+    payload[20:24] = struct.pack(">I", 5_000)
+    payload[29:33] = struct.pack(">I", zlib.crc32(payload[12:29]))
+    pixel_bomb.write_bytes(payload)
+    pixel_result = await reader.execute("pixel-bomb.png")
+    assert isinstance(pixel_result, str)
+    assert "图片像素过多" in pixel_result
 
     # 验证行号前缀格式（改动九）
     full_content = await reader.execute("a.txt")
@@ -300,7 +320,7 @@ def test_vision_rejects_extension_only_image(tmp_path: Path):
     fake_image.write_text("secret text", encoding="utf-8")
 
     with pytest.raises(ValueError, match="不支持的图片格式"):
-        _encode_image_data_uri(fake_image)
+        encode_image_data_uri(fake_image)
 
 
 def test_vision_rejects_forged_magic_bytes_image(tmp_path: Path):
@@ -308,7 +328,7 @@ def test_vision_rejects_forged_magic_bytes_image(tmp_path: Path):
     fake_image.write_bytes(b"\x89PNG\r\n\x1a\nsecret text")
 
     with pytest.raises(ValueError, match="图片文件无法解码"):
-        _encode_image_data_uri(fake_image)
+        encode_image_data_uri(fake_image)
 
 
 def test_vision_reencodes_image_before_sending(tmp_path: Path):
@@ -318,7 +338,7 @@ def test_vision_reencodes_image_before_sending(tmp_path: Path):
     Image.new("RGB", (2, 2), (255, 0, 0)).save(image)
     image.write_bytes(image.read_bytes() + b"secret text")
 
-    data_uri = _encode_image_data_uri(image)
+    data_uri = encode_image_data_uri(image)
     payload = data_uri.split(",", 1)[1]
 
     assert b"secret text" not in base64.b64decode(payload)
@@ -329,14 +349,14 @@ def test_vision_rejects_image_when_compression_still_exceeds_limit(
     tmp_path: Path,
 ):
     from PIL import Image
-    from agent.tools import vision
+    from agent import media
 
     image = tmp_path / "large.png"
     Image.new("RGB", (32, 32), (255, 0, 0)).save(image)
-    monkeypatch.setattr(vision, "_VL_MAX_DATA_URI_BYTES", 10)
+    monkeypatch.setattr(media, "MAX_IMAGE_DATA_URI_BYTES", 10)
 
     with pytest.raises(ValueError, match="压缩后仍然过大"):
-        _encode_image_data_uri(image)
+        encode_image_data_uri(image)
 
 
 def test_append_tool_result_supports_multimodal_blocks() -> None:

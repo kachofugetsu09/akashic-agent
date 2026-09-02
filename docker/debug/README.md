@@ -406,7 +406,16 @@ E4 不把这些可重建 sidecar 计入 plugin-data 身份，但仍逐字节固�
 最终 rehearsal 非零退出。正式 workspace 备份和 hua-home 切换不属于这些 Gate
 的授权范围。
 
-## 第一次配置
+## 第一次启动
+
+全新的 profile 可以直接启动。入口会初始化只含 Core 和 workspace 的空白本地实例；随后打开
+`http://127.0.0.1:2236`，在“模型”页连接订阅或 API。模型和已知能力都从页面同步，不要求先在终端填写。
+
+```bash
+docker compose -f docker/debug/docker-compose.yml up akashic-debug
+```
+
+只有需要同时配置专用 Telegram bot 时才运行交互向导：
 
 ```bash
 docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug setup

@@ -7,7 +7,7 @@
 
 ## 1. 目标与当前差距
 
-用户可以配置多个 Provider connection，在每个 connection 下启用一个或多个模型，把模型绑定到 `default`、`fast`、`agent` 和 `vision`，并在 Gateway 运行期间修改。数据库始终保存最新 revision；已经开始的执行保持旧快照，下一执行读取新 revision。首次设置先登录 Codex、登录 OpenCode，或填写 Base URL、API Key 和 Model Name；随后明确选择启用记忆、使用哪种引擎，或暂不启用。
+用户可以配置多个 Provider connection，在每个 connection 下启用一个或多个模型，把模型绑定到 `default`、`fast`、`agent` 和 `vision`，并在 Gateway 运行期间修改。数据库始终保存最新 revision；已经开始的执行保持旧快照，下一执行读取新 revision。首次设置先登录 Codex、登录 OpenCode，或填写 Base URL 与 API Key 后检测模型；目录不可用时才手填 Model Name。随后明确选择启用记忆、使用哪种引擎，或暂不启用。
 
 实施前 `bootstrap/providers.py` 在启动时一次性构造 provider，`bootstrap/tools.py` 随后把实例注入所有消费者。`bootstrap/settings_api.py` 写配置后调用 Supervisor restart bridge；Supervisor 向 Gateway 发送 `SIGUSR2`，`main.py` 排空全局 Turn 后退出。因此原实现没有运行时模型 owner。
 
@@ -79,18 +79,21 @@ Supervisor 在启动任何 Gateway 之前先取得 `2236`，并在整个进程�
 
 ## 5. 模型能力注册表
 
-固定 `litellm==1.95.0` 只作为本地能力 registry，不接管请求 transport、重试、fallback 或错误类型。设置进程从 wheel 内置 `model_cost` 读取 max input、output、vision/modalities、reasoning effort、tool call 和 parallel tool call；内部总上下文由 max input 与 max output 相加，避免把输入上限误当总预算。`LITELLM_LOCAL_MODEL_COST_MAP=True` 禁止运行时联网刷新。版本更新必须作为依赖变更评审，避免上游变化静默进入运行配置。
+固定 `litellm==1.95.0` 不接管请求 transport、重试、fallback 或错误类型。Provider 目录决定账号有哪些模型；用户创建连接或再次同步时，`models` 插件从 LiteLLM 官方公开 JSON 目录精确补全 Provider 未声明的图片输入能力。启动、目录读取和 Turn 执行均不联网。远端刷新经过固定 HTTPS 地址、短超时、禁止跳转、响应大小、条目数、JSON 与摘要校验，成功后在插件 data root 原子保存完整快照。
+
+远端不可用时依次使用最近一次通过校验的远端快照、固定 wheel 随包目录和 unknown。一次失败不阻止 Provider 模型提交，也不把已知能力降回 unknown。重复同步会再次刷新，使已有连接可以吸收 LiteLLM 后来新增或修正的能力。依赖版本仍精确固定并走供应链评审；远端目录是经过边界校验的非执行数据，不能增加 Provider 未返回的模型或改变 wire transport。
 
 LiteLLM 曾发生 `1.82.7`、`1.82.8` PyPI 供应链事故，因此这两个版本明确禁止。当前依赖精确固定到带 GitHub tag 的 `1.95.0`；升级 Gate 必须同时核对 release tag、wheel 版本、registry contract tests 和依赖安全报告，不能改成范围版本。
 
 字段级来源优先级：
 
-1. 用户打开高级设置后显式覆盖；
-2. Codex/OpenCode 或目标 provider 的权威目录；
-3. 固定版本 LiteLLM 本地注册表；
-4. unknown。
+1. 手工创建的模型整行由用户拥有；
+2. Codex/OpenCode 或目标 provider 的权威字段；
+3. 当前或最近可信的 LiteLLM 公开能力快照；
+4. 固定版本 LiteLLM 随包目录；
+5. unknown。
 
-通用 Base URL 先由 `genai-prices` 的 provider API 正则识别，随后用 LiteLLM 的 provider/model key 解析能力。无法确定 provider/model 时保持 unknown。Unknown runtime 的 `context_window=0`、`max_output_tokens=0`、文本输入基线只代表当前请求形状，不声明模型没有其他能力；UI 显示“能力未知”，Core 关闭主动压缩和硬预算，让 provider 错误保持原义。任意自建网关可隐藏或改名上游模型，不能仅凭 Base URL 保证识别；这种情况不得猜测。
+Usage 归一化可以按 Base URL 使用 `genai-prices` 的 provider API 规则；模型能力不从 URL 猜测，只使用连接模板或用户显式填写的 `catalog_provider_id` 加精确 model key。无法确定 provider/model 时保持 unknown。Unknown runtime 的 `context_window=0`、`max_output_tokens=0`、文本输入基线只代表当前请求形状，不声明模型没有其他能力；UI 显示“能力未知”，Core 关闭主动压缩和硬预算，让 provider 错误保持原义。任意自建网关可隐藏或改名上游模型，不能仅凭 Base URL 保证识别；这种情况不得猜测。
 
 模型注册表中的 `context_window`、`max_output_tokens` 和各自字段级 source 是运行时预算
 owner 的 capability snapshot。`model_definitions` 遗留的
@@ -98,7 +101,7 @@ owner 的 capability snapshot。`model_definitions` 遗留的
 读写完全惰性，不参与配置、能力解析、generation 或 session compaction policy；新的
 model/config flow 不得把它们当作有效能力。
 
-Custom API 的 transport provider 继续是 `openai` 兼容协议，注册表另存 `catalog_provider_id`。已知 Base URL 可把它解析成 `deepseek`、`openrouter` 等 usage/catalog 身份，但不得借此更换 wire transport 或重试策略。
+Custom API 的 transport provider 继续是 `openai` 兼容协议，注册表另存模板或用户显式填写的 `catalog_provider_id`。该身份只参与能力目录精确匹配，不得更换 wire transport 或重试策略。
 
 ## 6. Usage 归一化
 
@@ -110,7 +113,7 @@ Extractor 找不到 provider、flavor 或字段时只捕获明确的 `LookupErro
 
 ## 7. Onboarding 与 Chat UI
 
-设置页按具名 Provider connection 展示多套账号或 API Key，并提供 Codex、OpenCode、DeepSeek 和自定义 API 四个互斥入口。入口决定后续认证语义：Codex 只显示订阅登录，OpenCode 只显示本机登录或其 API Key，DeepSeek 只显示预填官方地址的 API 表单，自定义 API 显示全空表单；进入表单后不再二次切换认证类型。API 连接先填写连接名称、Provider ID、Base URL 和 API Key，再通过 provider `/models` 发现 model；目录不可用时才手工填写 Model Name。Codex 与 OpenCode 保存后从权威目录自动同步模型，无需用户先选模型。模型识别后展示 effort 等能力，unknown 字段保持未知。
+设置页按具名 Provider connection 展示多套账号或 API Key，并提供 Codex、OpenCode、DeepSeek 和自定义 API 四个互斥入口。入口决定后续认证语义：Codex 只显示订阅登录，OpenCode 只显示本机登录或其 API Key，DeepSeek 只显示预填官方地址的 API 表单，自定义 API 显示全空表单；进入表单后不再二次切换认证类型。API 连接先填写连接名称、Base URL 和 API Key，再用未落盘的连接候选通过 provider `/models` 发现 model；Provider ID 是通常无需修改的能力目录高级项。用户从目录中选择默认模型，目录不可用时才手工填写 Model Name。Codex 与 OpenCode 保存后从权威目录自动同步模型，无需用户先选模型。模型识别后展示图片等能力及来源，unknown 字段保持未知。
 
 Chat composer 上方只保留一个等宽向上展开胶囊，显示“model：来源”并按 Provider connection 分组滚动。模型列表底部固定一行“思考强度”；点击后在同一宽度和高度内切换到当前模型支持的 effort 二级列表，返回按钮恢复模型列表。选择模型或 effort 时面板保持展开，点击外部或 Escape 收起；不兼容的旧 effort 按“模型默认 → medium → 第一项”选择可用值。切换在发送下一条消息时随 inbound frame 提交；服务端校验后更新 `sessions.metadata.model_selection = {schema_version, model_ref, reasoning_effort}`。当前 active Turn 不受影响。重新打开 session 时从服务端读取选择；选择“跟随默认”删除该对象。旧 `model_runtime_override` 字符串继续只读兼容，并在下一次显式选择时转成新结构。
 
@@ -208,7 +211,7 @@ Provider/模型 Logo 候选使用 MIT 的 `@lobehub/icons`，已覆盖 Codex、D
 | session model selection | 首次固定 model ref/effort | 切换 model 或 effort | 清除 selection 后跟随 default | 只删除 metadata 单键；消息不变 | sessions.db 完整消息快照 |
 | turn binding/usage | 新 Turn 提交时追加 | terminal metadata 按既有协议更新 | 后续 Turn 使用新代 | 不自动删除 | turn/message join + Observe DB |
 | messages | 新 Turn 原子 INSERT | 不允许 | 不适用 | 仅用户撤销/删除会话 | SQLite backup + full snapshot |
-| capability snapshot | 保存 runtime 时从固定 wheel 派生 | 用户换模型时更新 | 新 runtime generation supersede 旧快照 | 仅随独立 runtime 删除；本任务不自动删除 | config backup + dependency pin + registry test |
+| capability snapshot | 保存或同步 runtime 时从 Provider 与公共目录派生 | 重复同步时更新 | 新 runtime generation supersede 旧快照 | 仅随独立 runtime 删除；本任务不自动删除 | operation backup + capability source + registry test |
 | 首次 workspace 基线 | 首次合法模型配置后创建缺失的 VEDA、数据库与目录 | 本任务不覆盖既有基线 | 不适用 | 本任务不减少 | init summary + 文件/DB 完整性检查 |
 
 ## 9. Edge cases
@@ -235,7 +238,7 @@ Provider/模型 Logo 候选使用 MIT 的 `@lobehub/icons`，已覆盖 Codex、D
 
 1. 引入 registry、execution scope、role proxy 和 generation reload 回执。
 2. 把 Turn、plugin job、proactive tick 和 memory run 接入 scope。
-3. 用固定 LiteLLM registry 加入能力解析和简化设置 API/UI。
+3. 用可刷新、可离线降级的 LiteLLM 能力目录加入能力解析和简化设置 API/UI。
 4. 加入 Chat runtime selector 与 session metadata。
 5. 用 `genai-prices` 统一 transport usage，并升级插件结果契约。
 6. 运行针对性单测、前端检查、静态检查和 Change Gate。
@@ -264,3 +267,14 @@ Provider/模型 Logo 候选使用 MIT 的 `@lobehub/icons`，已覆盖 Codex、D
 - SessionDB 四个 terminal Turn 均为 `coverage=exact`：input 分别为 `12452/12388/12814/11999`，cache hit 为 `4992/4992/4992/0`，output 为 `80/32/11/21`，reasoning output 为 `70/23/0/8`。DeepSeek 的独立 reasoning token 为 `0`，表示该响应没有返回可归一化的独立字段，不影响 `medium` effort 已随 inbound metadata 提交。
 - Observe 固定安装并晋升 commit `4d85b9dc64ef0d8d96c5a635586ca17dd94b59cd`；从该 stable snapshot 冷启动后记录同四个 session/turn，output、prompt 与 cache hit 和 SessionDB 完全一致。聚合为 `turn_count=4`、`tracked_turn_count=4`、`prompt_tokens=49653`、`hit_tokens=14976`。
 - `model-registry.sqlite3` 与 credential lock 均为 `0600`；三类 connection 的 secret 只在 SQLite JSON payload 中，隔离 `config.toml` 不含 API Key、token、Provider URL 或模型表。
+
+### 10.3 新模型能力与重复同步回归
+
+2026-09-01 使用全新临时 HOME/workspace、独立 Compose project、随机 host port `22436` 和本地 Provider
+目录夹具验证；正式 workspace、正式插件 cache 和正式 `2236` 未写入。全新目录没有 `config.toml`，debug
+entrypoint 先执行标准 `init`，随后同一 `docker compose up` 启动可用服务。
+
+- 当前 LiteLLM 公共目录精确命中 `deepseek-v4-flash-vision-exp`，持久模型记录为 `text,image`，能力来源带远端快照 SHA-256；缓存权限为 `0600`。
+- CloakBrowser 通过 Playwright CDP 新建 OpenCode Go 连接后，连接卡显示“1 个模型 · 1 个可看图”，视觉模型下拉框只列出并可选择该模型。
+- 不修改名称、URL 或凭据，编辑连接后直接执行“重新同步模型与能力”，再次识别仍显示“1 个模型 · 1 个可看图”。两个目录实例并发刷新也按 ETag 发布顺序串行，不会由较早请求覆盖较新快照。
+- Provider 夹具只模拟账号模型目录，不模拟真实图片推理。维护者订阅的实际图片 Turn 留给本决策最后一项验收，不把夹具成功记作真实推理成功。

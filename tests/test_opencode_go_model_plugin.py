@@ -404,6 +404,7 @@ async def test_driver_discovers_and_runs_opencode_go_chat_contract() -> None:
         assert discovered[0].capabilities.supported_reasoning_efforts == ()
         assert discovered[0].capabilities.supports_tool_calls is None
         assert discovered[0].capability_sources.tool_calls == "unknown"
+        assert discovered[0].capability_sources.input_modalities == "unknown"
 
         opened = await driver.open(_connection(endpoint), credential)
         chat = opened.bind_chat(_chat_descriptor(), {})

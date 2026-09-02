@@ -581,7 +581,7 @@ Provider connection 的 Base URL、API Key、Codex access/refresh token 与账�
 
 ### RUN-011 模型能力来自带来源的注册表
 
-Codex、OpenCode 等 Provider 插件的权威目录优先提供模型能力；其余已知模型由对应 driver 使用固定版本的公共模型目录派生快照。Core 不保存模型能力对照表。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
+Codex、OpenCode 等 Provider 插件的权威目录优先提供模型能力；其余已知模型由 `models` 插件在用户同步时从经过边界校验的公共模型目录派生快照，并保留最近一次可信快照和固定随包目录作为离线降级。公共目录只补全 Provider 未声明的字段，不能增加 Provider 未返回的模型。Core 不保存模型能力对照表。显式高级覆盖只覆盖对应字段。每个能力字段保留来源，未知字段保持 unknown，不猜测多模态、上下文窗口或输出上限。上下文窗口 unknown 时关闭依赖确定窗口的主动压缩和本地硬预算，保留 provider 的明确错误；不得要求普通 onboarding 为已识别模型重复填写这些字段。
 
 `model_definitions.context_window`、`max_output_tokens` 及其字段级 source 是预算 owner
 读取的 capability snapshot。遗留 `effective_context_percent` 和
@@ -631,7 +631,7 @@ Controller 强 stop 自己持有的全部 Workload lease，但保留 plugin-data
 
 ### ONB-001 首次模型配置使用三个渐进入口
 
-首次启动只展示“登录 Codex”“登录或检测 OpenCode”“Base URL + API Key + Model Name”三个主要入口。已识别模型自动填充能力并隐藏高级覆盖；无法识别能力仍允许保存连接，但必须明确显示哪些能力 unknown。没有配置时 Supervisor 仍须在 `2236` 提供统一 Dashboard 壳层：访问根路径 `/` 时地址不跳转，壳层默认选中 Chat，发送区明确显示尚未连接模型并能原地进入模型设置。保存合法配置后同一入口恢复聊天，不要求用户改 URL、端口或重启浏览器。
+首次启动只展示“登录 Codex”“登录或检测 OpenCode”“Base URL + API Key”三个主要入口。API 连接先用未落盘的凭据读取 Provider 模型目录，用户从结果中选择默认模型；目录不可用时才手工填写模型名。新连接检测和已有连接的显式同步都重新读取 Provider 模型并识别已知能力；无法识别能力仍允许保存连接，但必须明确显示哪些能力 unknown。没有配置时 Supervisor 仍须在 `2236` 提供统一 Dashboard 壳层：访问根路径 `/` 时地址不跳转，壳层默认选中 Chat，发送区明确显示尚未连接模型并能原地进入模型设置。保存合法配置后同一入口恢复聊天，不要求用户改 URL、端口或重启浏览器。
 
 `2236` 是唯一 Web 监听和唯一用户可见入口。模型设置、Chat、知识与运行及 Dashboard 使用同源路径；不得再启动 `6321`、`6322`，也不得依据浏览器端口判断页面类型。Gateway 未启动、正在换代或异常退出时，Supervisor 拥有的 `2236` 壳层继续存活并显示真实状态；启动脚本不得因 Gateway 尚未 ready 而杀死仍在 onboarding 的 Supervisor。
 

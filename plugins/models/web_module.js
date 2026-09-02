@@ -6,8 +6,26 @@ const ROLE_LABELS = [
   ["default", "默认模型", "普通模型调用与系统默认"],
   ["agent", "Agent 模型", "被动对话与计划任务 ReAct"],
   ["fast", "轻量模型", "压缩、标签与后台提取"],
-  ["vision", "视觉模型", "包含图片的输入"],
+  ["vision", "视觉模型", "看图与包含图片的对话"],
 ];
+
+export async function readJsonResponse(response) {
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const code = body && typeof body.code === "string" ? body.code : null;
+    const message = code === "forbidden_contract"
+      ? "服务已更新，请刷新页面后重试。"
+      : body && typeof body.detail === "string" ? body.detail : `请求失败：${response.status}`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.code = code;
+    throw error;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("服务返回了无效 JSON");
+  }
+  return body;
+}
 
 export function activate(ctx) {
   return ctx.ui.inject("shell.pages.v1", (mount) => mount.register({
@@ -70,11 +88,7 @@ export function activate(ctx) {
 
       const request = async (path, init) => {
         const response = await ctx.http.request(path, init);
-        const body = await response.json();
-        if (!response.ok) {
-          throw new Error(typeof body.detail === "string" ? body.detail : `请求失败：${response.status}`);
-        }
-        return body;
+        return readJsonResponse(response);
       };
       const reads = createLatestCatalogRead(
         (signal) => request("/api/dashboard/models/catalog", {signal}),
@@ -125,7 +139,7 @@ export function activate(ctx) {
         title.textContent = hasConnections ? "模型连接" : "连接你的第一个模型";
         description.textContent = hasConnections
           ? "每套账号或 API Key 都是独立连接；未知模型能力不会被猜测。"
-          : "选择登录方式或 API 服务。连接成功后，再选择聊天和向量模型。";
+          : "选择登录方式或 API 服务。连接后会自动同步模型并识别图片能力。";
         search.hidden = !hasConnections;
         connectedSection.hidden = !hasConnections;
         roles.hidden = !hasConnections;
@@ -133,7 +147,7 @@ export function activate(ctx) {
         templatesTitle.textContent = hasConnections ? "添加其他连接" : "选择连接方式";
         templatesDetail.textContent = hasConnections
           ? "可以继续添加另一个账号或服务。"
-          : "Codex 与 OpenCode 登录后自动同步模型；API 服务可手动填写模型。";
+          : "登录后自动同步模型和已知能力；无法确认时会明确显示待识别。";
         renderConnections(chatConnections);
         renderBindings(chatModels);
         for (const button of providers.querySelectorAll("button")) button.disabled = false;
@@ -171,7 +185,7 @@ export function activate(ctx) {
           available.innerHTML = "<span></span>";
           available.append(connection.availability === "available" ? "已连接" : connection.availability);
           const count = document.createElement("small");
-          count.textContent = `${models.length} 个模型`;
+          count.textContent = capabilitySummary(models);
           meta.append(available, count);
           item.append(copy, meta);
           item.insertAdjacentHTML("beforeend", CHEVRON_ICON);
@@ -186,10 +200,11 @@ export function activate(ctx) {
       function renderBindings(chatModels) {
         bindings.replaceChildren();
         for (const [role, label, detail] of ROLE_LABELS) {
+          const availableModels = modelsForRole(chatModels, role);
           bindings.appendChild(bindingRow({
             label,
             detail,
-            models: chatModels,
+            models: availableModels,
             value: catalog.roleBindings[role] ?? "",
             change(modelId) {
               return command({type: "set_default", expected_revision: catalog.revision, role, model_id: modelId});
@@ -248,6 +263,25 @@ export function activate(ctx) {
           if (modelId) await command({type: "set_default", expected_revision: revision, role: "default", model_id: modelId});
         };
         const actions = Object.freeze({
+          async discover(input, signal) {
+            if (connection) throw new Error("已有连接请使用重新检测");
+            const result = await request("/api/dashboard/models/discover", {
+              method: "POST",
+              signal,
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({
+                expected_revision: catalog.revision,
+                connection_id: connectionId,
+                name: input.name,
+                driver_id: entry.id,
+                endpoint: input.endpoint,
+                auth_identity: `api:${connectionId}`,
+                credential: input.credential,
+                driver_config: input.driverConfig,
+              }),
+            });
+            return result.models;
+          },
           async createManual(input) {
             if (connection) throw new Error("已有连接不能重复创建");
             const modelId = `${connectionId}__${randomToken()}`;
@@ -491,6 +525,21 @@ export function createDialogAuthOwner(cancelAttempt) {
       return Promise.all([...attempts].map(cancel));
     },
   };
+}
+
+export function capabilitySummary(models) {
+  const visionCount = models.filter((model) => model.capabilities.inputModalities.includes("image")).length;
+  const unknownCount = models.filter((model) => model.capabilitySources.inputModalities === "unknown").length;
+  return [
+    `${models.length} 个模型`,
+    visionCount ? `${visionCount} 个可看图` : "",
+    unknownCount ? `${unknownCount} 个待识别` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+export function modelsForRole(models, role) {
+  if (role !== "vision") return models;
+  return models.filter((model) => model.capabilities.inputModalities.includes("image"));
 }
 
 function randomToken() {

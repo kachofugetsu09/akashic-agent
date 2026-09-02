@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from types import MappingProxyType
-from typing import Any, AsyncIterator, Mapping, Sequence, cast
+from typing import Any, AsyncIterator, Mapping, Protocol, Sequence, cast
 
 from agent.plugin_composition import (
     AddConnection,
@@ -30,6 +30,7 @@ from agent.plugin_composition import (
     DriverChatModel,
     DriverEmbeddingModel,
     DriverUnavailableError,
+    DiscoveredModel,
     Effect,
     EMBEDDINGS,
     EmbeddingResult,
@@ -61,6 +62,15 @@ from .store import ModelsStore, StoredConnection, StoredModel, StoredSnapshot
 
 logger = logging.getLogger(__name__)
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
+
+
+class _CapabilityCatalog(Protocol):
+    async def enrich(
+        self,
+        discovered: tuple[DiscoveredModel, ...],
+        *,
+        provider_id: str,
+    ) -> tuple[DiscoveredModel, ...]: ...
 
 
 class _BoundChat:
@@ -245,6 +255,9 @@ class _SettingsView:
     def __init__(self, state: ModelsState) -> None:
         self._state = state
 
+    async def discover(self, connection: AddConnection) -> tuple[DiscoveredModel, ...]:
+        return await self._state.discover_models(connection)
+
     async def apply(self, command: ModelChange) -> SettingsReceipt:
         return await self._state.apply_change(command)
 
@@ -274,9 +287,16 @@ class _MemoryCredential:
 class ModelsState:
     """Own one model revision store and one Root-local frozen driver registry."""
 
-    def __init__(self, store: ModelsStore, *, root_instance_token: object) -> None:
+    def __init__(
+        self,
+        store: ModelsStore,
+        *,
+        root_instance_token: object,
+        capability_catalog: _CapabilityCatalog | None = None,
+    ) -> None:
         self.store = store
         self.root_instance_token = root_instance_token
+        self.capability_catalog = capability_catalog
         self._driver_registrations: dict[str, ModelDriverDefinition] = {}
         self._drivers: Mapping[str, ModelDriverDefinition] = MappingProxyType({})
         self.sealed = False
@@ -681,6 +701,21 @@ class ModelsState:
         finally:
             await lease.release()
 
+    async def discover_models(
+        self,
+        connection: AddConnection,
+    ) -> tuple[DiscoveredModel, ...]:
+        """Discover one unsaved connection without publishing durable state."""
+
+        lease = lease_current_runtime_snapshot()
+        if lease is None:
+            raise RuntimeError("model settings 缺少当前 task 的 runtime snapshot lease")
+        try:
+            self._check_snapshot_service(lease.snapshot, MODEL_SETTINGS, self.settings)
+            return await self._discover_new_connection(connection)
+        finally:
+            await lease.release()
+
     def _check_snapshot_service(
         self,
         snapshot: object,
@@ -748,11 +783,52 @@ class ModelsState:
                 connection.auth_identity,
             ),
         )
+        if self.capability_catalog is not None:
+            discovered = await self.capability_catalog.enrich(
+                discovered,
+                provider_id=_capability_provider_id(
+                    connection.driver_config,
+                    connection.driver_id,
+                ),
+            )
         return self.store.sync_models(
             command.expected_revision,
             connection.connection_id,
             discovered,
         )
+
+    async def _discover_new_connection(
+        self,
+        connection: AddConnection,
+    ) -> tuple[DiscoveredModel, ...]:
+        """Read and enrich a provider catalog using an in-memory credential."""
+
+        definition = self._driver_required(connection.driver_id)
+        if definition.discover is None:
+            raise ValueError(f"driver 不支持模型发现: {connection.driver_id}")
+        descriptor = DriverConnectionDescriptor(
+            connection_id=connection.connection_id,
+            name=connection.name,
+            driver_id=connection.driver_id,
+            endpoint=connection.endpoint,
+            auth_identity=connection.auth_identity,
+            config=connection.driver_config,
+        )
+        credential = _MemoryCredential(
+            connection.connection_id,
+            connection.auth_identity,
+            connection.credential,
+        )
+        discovered = await definition.discover(descriptor, credential)
+        if self.capability_catalog is not None:
+            discovered = await self.capability_catalog.enrich(
+                discovered,
+                provider_id=_capability_provider_id(
+                    connection.driver_config,
+                    connection.driver_id,
+                ),
+            )
+        return discovered
 
     async def _probe_new_connection(self, command: AddConnection) -> None:
         definition = self._driver_required(command.driver_id)
@@ -1130,6 +1206,22 @@ def _driver_connection_descriptor(
         auth_identity=connection.auth_identity,
         config=connection.driver_config,
     )
+
+
+def _capability_provider_id(
+    config: Mapping[str, Any],
+    driver_id: str,
+) -> str:
+    """Use the optional catalog identity without accepting malformed config."""
+
+    value = config.get("catalog_provider_id")
+    if value is None or value == "":
+        return driver_id
+    if not isinstance(value, str):
+        raise ValueError("driver_config.catalog_provider_id 必须是字符串")
+    if value != value.strip():
+        raise ValueError("driver_config.catalog_provider_id 不能包含首尾空白")
+    return value
 
 
 def _embedding_descriptor(

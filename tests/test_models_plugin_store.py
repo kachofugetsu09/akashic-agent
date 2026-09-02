@@ -97,6 +97,75 @@ def _connection(
 
 
 @pytest.mark.asyncio
+async def test_unsaved_discovery_uses_catalog_provider_without_persisting(
+    tmp_path: Path,
+) -> None:
+    seen_provider_ids: list[str] = []
+
+    async def discover(_connection: object, credential: object):
+        assert await credential.read() == {  # type: ignore[attr-defined]
+            "driver": "api_key",
+            "access_token": "temporary",
+        }
+        return (
+            DiscoveredModel(
+                kind=ModelKind.CHAT,
+                model="future-vision",
+                capabilities=ModelCapabilities(),
+                capability_sources=CapabilitySources(),
+            ),
+        )
+
+    class CapabilityCatalog:
+        async def enrich(self, models, *, provider_id: str):
+            seen_provider_ids.append(provider_id)
+            return (
+                DiscoveredModel(
+                    kind=models[0].kind,
+                    model=models[0].model,
+                    capabilities=ModelCapabilities(input_modalities=("text", "image")),
+                    capability_sources=CapabilitySources(input_modalities="catalog"),
+                ),
+            )
+
+    store = ModelsStore(
+        tmp_path / "model-registry.sqlite3",
+        backup_dir=tmp_path / "backups",
+    )
+    store.initialize()
+    state = ModelsState(
+        store,
+        root_instance_token=object(),
+        capability_catalog=CapabilityCatalog(),  # type: ignore[arg-type]
+    )
+    state._driver_registrations["fake"] = ModelDriverDefinition(  # noqa: SLF001
+        driver_id="fake",
+        contract_version="1",
+        open=lambda *_args: None,  # type: ignore[arg-type]
+        discover=discover,
+    )
+    await state.seal(None)  # type: ignore[arg-type]
+    connection = AddConnection(
+        expected_revision=0,
+        connection_id="preview",
+        name="Preview",
+        driver_id="fake",
+        endpoint="https://example.test/v1",
+        auth_identity="preview",
+        credential={"driver": "api_key", "access_token": "temporary"},
+        driver_config={"catalog_provider_id": "deepseek"},
+    )
+
+    discovered = await state._discover_new_connection(connection)  # noqa: SLF001
+
+    assert discovered[0].capabilities.input_modalities == ("text", "image")
+    assert seen_provider_ids == ["deepseek"]
+    snapshot = store.read_snapshot()
+    assert snapshot is not None
+    assert snapshot.revision == 0 and not snapshot.connections and not snapshot.models
+
+
+@pytest.mark.asyncio
 async def test_saved_model_service_rejects_another_runtime_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

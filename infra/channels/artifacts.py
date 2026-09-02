@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
+from agent.media import detect_supported_image_mime
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
 from session.store import AttachmentArtifactRecord, SessionStore
 
@@ -26,6 +27,7 @@ class _SourceFingerprint:
     size_bytes: int
     mtime_ns: int
     sha256: str
+    signature_head: bytes
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,21 @@ async def _complete_critical(awaitable: Awaitable[T]) -> tuple[T, bool]:
         except asyncio.CancelledError:
             cancelled = True
     return task.result(), cancelled
+
+
+def _verified_attachment_type(
+    declared_kind: AttachmentKind,
+    declared_media_type: str | None,
+    signature_head: bytes,
+) -> tuple[AttachmentKind, str | None]:
+    """用受支持的文件签名拥有图片 kind，不信任文件名或 MIME。"""
+
+    detected = detect_supported_image_mime(signature_head)
+    if detected is not None:
+        return AttachmentKind.IMAGE, detected
+    if declared_kind is AttachmentKind.IMAGE:
+        return AttachmentKind.FILE, declared_media_type
+    return declared_kind, declared_media_type
 
 
 class _ArtifactReadLease:
@@ -129,6 +146,11 @@ class ChannelAttachmentArtifactStore:
             raise ValueError(
                 f"attachment 超过导入上限: {len(data)} > {self._max_import_bytes}"
             )
+        kind, media_type = _verified_attachment_type(
+            kind,
+            media_type,
+            data[:12],
+        )
         candidate = AttachmentRef(
             artifact_id=uuid4().hex,
             kind=kind,
@@ -165,6 +187,7 @@ class ChannelAttachmentArtifactStore:
                 filename,
                 media_type,
                 None,
+                None,
             )
         )
         if cancelled:
@@ -176,22 +199,50 @@ class ChannelAttachmentArtifactStore:
         source: Path,
         *,
         allowed_root: Path,
-        artifact_id: str,
-        kind: AttachmentKind,
-        filename: str | None,
-        media_type: str | None,
+        expected_ref: AttachmentRef,
     ) -> AttachmentRef:
-        """以调用方预分配的 opaque identity 幂等导入一个 finalized file。"""
+        """仅在 finalized file 仍等于 durable expected ref 时发布。"""
+
+        if not isinstance(expected_ref, AttachmentRef):
+            raise TypeError("expected_ref 必须是 AttachmentRef")
 
         result, cancelled = await _complete_critical(
             asyncio.to_thread(
                 self._adopt_file,
                 source,
                 allowed_root,
+                expected_ref.kind,
+                expected_ref.filename,
+                expected_ref.media_type,
+                expected_ref.artifact_id,
+                expected_ref,
+            )
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def inspect_file_with_artifact_id(
+        self,
+        source: Path,
+        *,
+        allowed_root: Path,
+        artifact_id: str,
+        kind: AttachmentKind,
+        filename: str | None,
+        media_type: str | None,
+    ) -> AttachmentRef:
+        """在 durable handoff 前冻结将要发布的 exact ref，不写入状态。"""
+
+        result, cancelled = await _complete_critical(
+            asyncio.to_thread(
+                self._inspect_file_ref,
+                source,
+                allowed_root,
+                artifact_id,
                 kind,
                 filename,
                 media_type,
-                artifact_id,
             )
         )
         if cancelled:
@@ -301,18 +352,22 @@ class ChannelAttachmentArtifactStore:
         filename: str | None,
         media_type: str | None,
         artifact_id: str | None,
+        expected_ref: AttachmentRef | None,
     ) -> AttachmentRef:
         """两次核对 source identity，并把内容复制进 Core artifact root。"""
 
         source_path, fingerprint = self._inspect_source(source, allowed_root)
-        ref = AttachmentRef(
+        ref = self._ref_from_fingerprint(
+            fingerprint,
             artifact_id=uuid4().hex if artifact_id is None else artifact_id,
             kind=kind,
             filename=filename,
             media_type=media_type,
-            size_bytes=fingerprint.size_bytes,
-            sha256=fingerprint.sha256,
         )
+        if expected_ref is not None and ref != expected_ref:
+            raise ValueError(
+                f"attachment source 与 durable ref 不一致: {expected_ref.artifact_id}"
+            )
 
         def copy_source(target_fd: int) -> None:
             source_fd = os.open(
@@ -341,6 +396,49 @@ class ChannelAttachmentArtifactStore:
                 os.close(source_fd)
 
         return self._publish_content(ref, copy_source)
+
+    def _inspect_file_ref(
+        self,
+        source: Path,
+        allowed_root: Path,
+        artifact_id: str,
+        kind: AttachmentKind,
+        filename: str | None,
+        media_type: str | None,
+    ) -> AttachmentRef:
+        """核对 Mobile-owned 文件并构造发布时应保持不变的 ref。"""
+
+        _source_path, fingerprint = self._inspect_source(source, allowed_root)
+        return self._ref_from_fingerprint(
+            fingerprint,
+            artifact_id=artifact_id,
+            kind=kind,
+            filename=filename,
+            media_type=media_type,
+        )
+
+    @staticmethod
+    def _ref_from_fingerprint(
+        fingerprint: _SourceFingerprint,
+        *,
+        artifact_id: str,
+        kind: AttachmentKind,
+        filename: str | None,
+        media_type: str | None,
+    ) -> AttachmentRef:
+        kind, media_type = _verified_attachment_type(
+            kind,
+            media_type,
+            fingerprint.signature_head,
+        )
+        return AttachmentRef(
+            artifact_id=artifact_id,
+            kind=kind,
+            filename=filename,
+            media_type=media_type,
+            size_bytes=fingerprint.size_bytes,
+            sha256=fingerprint.sha256,
+        )
 
     def _publish_content(
         self,
@@ -548,10 +646,13 @@ class ChannelAttachmentArtifactStore:
                     f"{file_stat.st_size} > {self._max_import_bytes}"
                 )
             digest = hashlib.sha256()
+            signature_head = b""
             while True:
                 chunk = os.read(fd, 1024 * 1024)
                 if not chunk:
                     break
+                if not signature_head:
+                    signature_head = chunk[:12]
                 digest.update(chunk)
             after = os.fstat(fd)
             if (
@@ -567,6 +668,7 @@ class ChannelAttachmentArtifactStore:
                 size_bytes=file_stat.st_size,
                 mtime_ns=file_stat.st_mtime_ns,
                 sha256=digest.hexdigest(),
+                signature_head=signature_head,
             )
         finally:
             os.close(fd)

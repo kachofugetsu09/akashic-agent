@@ -2142,7 +2142,7 @@ class MobileRealtimeChannel:
             )
             if not claimed_session:
                 _ = ctx.session_manager.get_or_create(session_id)
-            refs = self._prepare_message_attachment_refs(
+            refs = await self._prepare_message_attachment_refs(
                 device_id=device_id,
                 session_id=session_id,
                 client_message_id=frame.payload.client_message_id,
@@ -2174,6 +2174,7 @@ class MobileRealtimeChannel:
                     session_id=session_id,
                     client_message_id=frame.payload.client_message_id,
                     attachment_ids=tuple(frame.payload.media_refs),
+                    expected_refs=refs,
                 )
                 if committed != refs:
                     raise RuntimeError(
@@ -2232,7 +2233,7 @@ class MobileRealtimeChannel:
         ):
             raise MobileCommandError("turn_not_retryable", "这条消息现在不能重试")
 
-    def _prepare_message_attachment_refs(
+    async def _prepare_message_attachment_refs(
         self,
         *,
         device_id: str,
@@ -2248,6 +2249,12 @@ class MobileRealtimeChannel:
             client_message_id=client_message_id,
             attachment_ids=attachment_ids,
         )
+        if not mappings:
+            return ()
+        store = self._channel_attachment_store
+        if store is None:
+            raise RuntimeError("Mobile channel attachment store 未绑定")
+        allowed_root = self._require_ctx().attachment_store.root
         refs: list[AttachmentRef] = []
         for mapping in mappings:
             record = self._runtime.storage.read_attachment(mapping.mobile_attachment_id)
@@ -2256,7 +2263,9 @@ class MobileRealtimeChannel:
                     f"Mobile finalized attachment 丢失: {mapping.mobile_attachment_id}"
                 )
             refs.append(
-                AttachmentRef(
+                await store.inspect_file_with_artifact_id(
+                    Path(record.local_path),
+                    allowed_root=allowed_root,
                     artifact_id=mapping.artifact_id,
                     kind=(
                         AttachmentKind.IMAGE
@@ -2265,8 +2274,6 @@ class MobileRealtimeChannel:
                     ),
                     filename=record.filename,
                     media_type=record.content_type,
-                    size_bytes=record.size_bytes,
-                    sha256=record.sha256,
                 )
             )
         return tuple(refs)
@@ -2278,6 +2285,7 @@ class MobileRealtimeChannel:
         session_id: str,
         client_message_id: str,
         attachment_ids: tuple[str, ...],
+        expected_refs: tuple[AttachmentRef, ...],
     ) -> tuple[AttachmentRef, ...]:
         """Resume MobileDB mappings and publish every finalized file to Core."""
 
@@ -2290,8 +2298,12 @@ class MobileRealtimeChannel:
             client_message_id=client_message_id,
             attachment_ids=attachment_ids,
         )
+        if tuple(mapping.artifact_id for mapping in mappings) != tuple(
+            ref.artifact_id for ref in expected_refs
+        ):
+            raise RuntimeError("Mobile attachment mapping 与 durable refs 不一致")
         refs: list[AttachmentRef] = []
-        for mapping in mappings:
+        for mapping, expected_ref in zip(mappings, expected_refs, strict=True):
             record = self._runtime.storage.read_attachment(mapping.mobile_attachment_id)
             if record is None:
                 raise AttachmentStateError(
@@ -2300,14 +2312,7 @@ class MobileRealtimeChannel:
             ref = await store.adopt_file_with_artifact_id(
                 Path(record.local_path),
                 allowed_root=self._require_ctx().attachment_store.root,
-                artifact_id=mapping.artifact_id,
-                kind=(
-                    AttachmentKind.IMAGE
-                    if record.content_type.startswith("image/")
-                    else AttachmentKind.FILE
-                ),
-                filename=record.filename,
-                media_type=record.content_type,
+                expected_ref=expected_ref,
             )
             if mapping.phase == "prepared":
                 _ = self._runtime.storage.advance_attachment_import(
@@ -2858,10 +2863,11 @@ class MobileRealtimeChannel:
                     (item.device_id, item.session_id, item.client_message_id)
                 ].append(item)
         for (device_id, session_id, client_message_id), items in groups.items():
-            if not self._require_ctx().bus.has_pending_mobile_handoff(
+            expected_refs = self._require_ctx().bus.pending_mobile_attachment_refs(
                 session_key=session_id,
                 client_message_id=client_message_id,
-            ):
+            )
+            if expected_refs is None:
                 continue
             ordered = sorted(items, key=lambda item: item.ordinal)
             await self._import_message_attachments(
@@ -2869,6 +2875,7 @@ class MobileRealtimeChannel:
                 session_id=session_id,
                 client_message_id=client_message_id,
                 attachment_ids=tuple(item.mobile_attachment_id for item in ordered),
+                expected_refs=expected_refs,
             )
 
     async def _deliver_passive_message(

@@ -212,6 +212,7 @@ class _Bus:
     def __init__(self) -> None:
         self.inbound: list[object] = []
         self.pending_handoff = False
+        self.pending_refs: tuple[AttachmentRef, ...] | None = None
         self.order: list[str] = []
 
     async def publish_inbound(self, message: object) -> None:
@@ -259,6 +260,14 @@ class _Bus:
         client_message_id: str,
     ) -> bool:
         return self.pending_handoff
+
+    def pending_mobile_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> tuple[AttachmentRef, ...] | None:
+        return self.pending_refs if self.pending_handoff else None
 
 
 class _FailingBus(_Bus):
@@ -1823,6 +1832,7 @@ async def test_mobile_message_adopts_finalized_upload_before_bus_admission(
     inbound = cast(RawInbound, bus.inbound[0])
     artifact_ids = cast(list[str], inbound.message.metadata["attachment_ids"])
     assert tuple(ref.artifact_id for ref in inbound.message.attachments) == artifact_ids
+    assert inbound.message.attachments[0].kind is V3AttachmentKind.FILE
     assert len(artifact_ids) == 1
     imported = storage.list_attachment_imports(
         session_id=session_id,
@@ -1872,6 +1882,101 @@ async def test_mobile_message_adopts_finalized_upload_before_bus_admission(
         )[0].phase
         == "message_bound"
     )
+
+    await restarted.stop()
+    manager.close()
+    storage.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve(
+    tmp_path: Path,
+) -> None:
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    runtime = _Runtime(storage)
+    bus = _Bus()
+    bus.pending_handoff = True
+    workspace = tmp_path / "workspace"
+    manager = SessionManager(workspace)
+    legacy_store = AttachmentStore(tmp_path / "uploads")
+    legacy_store.root.mkdir(parents=True)
+    source = legacy_store.root / "upload.bin"
+    original = b"reserved attachment bytes"
+    source.write_bytes(original)
+    session_id = f"akashic:{uuid4()}"
+    client_message_id = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    storage.create_attachment(
+        AttachmentRecord(
+            attachment_id="upload-after-crash",
+            device_id=device_id,
+            session_id=session_id,
+            direction="upload",
+            filename="upload.bin",
+            content_type="application/octet-stream",
+            size_bytes=len(original),
+            sha256=hashlib.sha256(original).hexdigest(),
+            local_path=str(source),
+            transferred_bytes=len(original),
+            state="ready",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    mapping = storage.prepare_attachment_imports(
+        device_id=device_id,
+        session_id=session_id,
+        client_message_id=client_message_id,
+        attachment_ids=("upload-after-crash",),
+    )[0]
+    artifact_store = ChannelAttachmentArtifactStore(
+        workspace=workspace,
+        session_store=manager.control_store,
+    )
+    expected = await artifact_store.inspect_file_with_artifact_id(
+        source,
+        allowed_root=legacy_store.root,
+        artifact_id=mapping.artifact_id,
+        kind=V3AttachmentKind.FILE,
+        filename="upload.bin",
+        media_type="application/octet-stream",
+    )
+    bus.pending_refs = (expected,)
+    context = cast(
+        Any,
+        SimpleNamespace(
+            bus=bus,
+            session_manager=manager,
+            event_bus=_EventBus(),
+            push_tool=_PushTool(),
+            interrupt_controller=None,
+            attachment_store=legacy_store,
+        ),
+    )
+
+    source.write_bytes(b"changed after durable reserve")
+    failed = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    failed.bind_channel_attachment_store(artifact_store)
+    with pytest.raises(ValueError, match="durable ref 不一致"):
+        await failed.start(context)
+    assert manager.control_store.get_attachment(mapping.artifact_id) is None
+    assert artifact_store.audit_orphan_artifact_ids() == ()
+    assert storage.list_attachment_imports(
+        session_id=session_id,
+        client_message_id=client_message_id,
+    )[0].phase == "prepared"
+    await failed.stop()
+
+    source.write_bytes(original)
+    restarted = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    restarted.bind_channel_attachment_store(artifact_store)
+    await restarted.start(context)
+    assert artifact_store.resolve_refs((mapping.artifact_id,)) == (expected,)
+    assert storage.list_attachment_imports(
+        session_id=session_id,
+        client_message_id=client_message_id,
+    )[0].phase == "artifact_committed"
 
     await restarted.stop()
     manager.close()

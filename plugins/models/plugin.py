@@ -10,6 +10,7 @@ from agent.plugin_composition import (
     Context,
 )
 
+from .litellm_catalog import LiteLlmCapabilityCatalog
 from .state import ModelsState
 from .store import ModelsStore
 
@@ -43,7 +44,14 @@ async def apply(ctx: Context, config: object) -> None:
     )
     if ctx.data_access == "read_write":
         store.initialize()
-    state = ModelsState(store, root_instance_token=ctx.root_instance_token)
+    state = ModelsState(
+        store,
+        root_instance_token=ctx.root_instance_token,
+        capability_catalog=LiteLlmCapabilityCatalog(
+            ctx.data_root / "litellm-capabilities.json",
+            writable=ctx.data_access == "read_write",
+        ),
+    )
     _ = await ctx.effect(
         lambda: state.close_auth_attempts,
         label="model-auth-attempts",

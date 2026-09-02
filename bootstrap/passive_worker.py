@@ -21,16 +21,18 @@ from agent.control.models import (
 from agent.control.runtime import ConversationRuntime, TurnHandle
 from agent.looping.core import AgentLoop
 from agent.plugin_composition.channels import (
+    AttachmentKind,
+    AttachmentReadLease,
+    AttachmentRef,
     ChannelCommitRole,
     DeliveryStatus as ChannelDeliveryStatus,
-    AttachmentRef,
     InboundEnvelope,
     InboundOwner,
     OutboundEnvelope,
-    AttachmentReadLease,
     ChannelDeliveryReceipt,
     ChannelTerminalStatus,
 )
+from agent.media import validate_image_attachment_budget
 from bus.events import (
     ChannelMessage,
     InboundMessage,
@@ -753,6 +755,9 @@ class PassiveMessageWorker:
     ) -> tuple[_ModelAttachmentLease, ...]:
         if not refs:
             return ()
+        validate_image_attachment_budget(
+            [ref.size_bytes for ref in refs if ref.kind is AttachmentKind.IMAGE]
+        )
         store = self._attachment_store
         if store is None:
             raise RuntimeError("PassiveWorker attachment store 未绑定")

@@ -81,6 +81,13 @@ class DurableInboundStore(Protocol):
         client_message_id: str,
     ) -> bool: ...
 
+    def read_inbound_handoff(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> dict[str, str | None] | None: ...
+
     def complete_inbound_handoff(self, handoff_id: str) -> None: ...
 
 
@@ -628,6 +635,28 @@ class MessageBus:
                 client_message_id=client_message_id,
             )
         )
+
+    def pending_mobile_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> tuple[AttachmentRef, ...] | None:
+        """读取 durable Mobile handoff 冻结的 exact attachment refs。"""
+
+        store = self._durable_inbound_store
+        if store is None:
+            return None
+        row = store.read_inbound_handoff(
+            session_key=session_key,
+            client_message_id=client_message_id,
+        )
+        if row is None:
+            return None
+        raw = _raw_mobile_from_handoff(row)
+        if raw is None:
+            raise RuntimeError("pending handoff 不是 v3 Mobile exact handoff")
+        return raw.message.attachments
 
     def bind_channel_outbound_dispatcher(
         self,

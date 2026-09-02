@@ -124,7 +124,7 @@ async def test_vision_tool_uses_turn_vision_binding(
     image = tmp_path / "image.png"
     image.write_bytes(b"fixture")
     monkeypatch.setattr(
-        "agent.tools.vision._encode_image_data_uri",
+        "agent.tools.vision.encode_image_data_uri",
         lambda _path: "data:image/png;base64,AA==",
     )
     model = _VisionModel()
@@ -203,7 +203,7 @@ async def test_vision_tool_preserves_public_model_error(
     image = tmp_path / "image.png"
     image.write_bytes(b"fixture")
     monkeypatch.setattr(
-        "agent.tools.vision._encode_image_data_uri",
+        "agent.tools.vision.encode_image_data_uri",
         lambda _path: "data:image/png;base64,AA==",
     )
     chat_models = _ChatModels(_VisionModel(ModelUnavailableError("vision missing")))
@@ -225,7 +225,7 @@ async def test_vision_tool_does_not_hide_internal_image_errors(
     def fail(_path: Path) -> str:
         raise AssertionError("internal-marker")
 
-    monkeypatch.setattr("agent.tools.vision._encode_image_data_uri", fail)
+    monkeypatch.setattr("agent.tools.vision.encode_image_data_uri", fail)
 
     with pytest.raises(AssertionError, match="internal-marker"):
         await ReadImageVisionTool().execute(str(image), "describe")
@@ -239,7 +239,7 @@ async def test_vision_tool_rejects_execution_without_turn_snapshot(
     image = tmp_path / "image.png"
     image.write_bytes(b"fixture")
     monkeypatch.setattr(
-        "agent.tools.vision._encode_image_data_uri",
+        "agent.tools.vision.encode_image_data_uri",
         lambda _path: "data:image/png;base64,AA==",
     )
 
@@ -255,7 +255,7 @@ async def test_vision_tool_rejects_inherited_child_task(
     image = tmp_path / "image.png"
     image.write_bytes(b"fixture")
     monkeypatch.setattr(
-        "agent.tools.vision._encode_image_data_uri",
+        "agent.tools.vision.encode_image_data_uri",
         lambda _path: "data:image/png;base64,AA==",
     )
     chat_models = _ChatModels(_VisionModel())

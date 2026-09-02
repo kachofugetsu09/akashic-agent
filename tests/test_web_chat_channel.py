@@ -1308,6 +1308,11 @@ async def test_web_v3_native_delivery_marks_partial_broadcast_unknown() -> None:
 async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
     tmp_path: Path,
 ) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(image_path)
+    image_bytes = image_path.read_bytes()
     session_manager = SessionManager(tmp_path)
     bus = _Bus()
     ingress = _Inbound()
@@ -1326,18 +1331,25 @@ async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
     with TestClient(app) as client:
         upload = client.post(
             "/api/chat/uploads",
-            params={"filename": "meme.png"},
-            content=b"image",
+            params={"filename": "meme"},
+            content=image_bytes,
         )
         payload = upload.json()
         assert upload.status_code == 200
-        assert payload["filename"] == "meme.png"
+        assert payload["filename"] == "meme"
         assert payload["kind"] == "image"
+        assert payload["media_type"] == "image/png"
         assert payload["artifact_id"]
         assert "upload_path" not in payload
         assert all(str(tmp_path) not in str(value) for value in payload.values())
 
         readback = client.get(payload["upload_url"])
+        forged = client.post(
+            "/api/chat/uploads",
+            params={"filename": "forged.png"},
+            content=b"not an image",
+        ).json()
+        assert forged["kind"] == "file"
         traversal = client.get("/api/chat/artifacts/../sessions.db")
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "session.create", "request_id": "create"})
@@ -1351,7 +1363,7 @@ async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
             })
 
     assert readback.status_code == 200
-    assert readback.content == b"image"
+    assert readback.content == image_bytes
     assert traversal.status_code in {404, 405}
     assert bus.inbound == []
     assert len(ingress.messages) == 1

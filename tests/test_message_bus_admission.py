@@ -875,9 +875,18 @@ async def test_v3_mobile_bus_close_retains_durable_handoff_for_next_boot(
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     bus.bind_mobile_session_admission_owner(manager)
+    expected_ref = AttachmentRef(
+        artifact_id="artifact-3",
+        kind=AttachmentKind.IMAGE,
+        filename="photo.png",
+        media_type="image/png",
+        size_bytes=123,
+        sha256="a" * 64,
+    )
     envelope, lease = _v3_inbound(
         channel="akashic",
         message_id="client-message-3",
+        attachments=(expected_ref,),
         metadata={
             "session_key_override": session_key,
             "client_message_id": "client-message-3",
@@ -887,6 +896,10 @@ async def test_v3_mobile_bus_close_retains_durable_handoff_for_next_boot(
     )
 
     await bus.publish_channel_inbound(envelope)
+    assert bus.pending_mobile_attachment_refs(
+        session_key=session_key,
+        client_message_id="client-message-3",
+    ) == (expected_ref,)
     await bus.aclose()
 
     assert envelope.state is InboundState.TERMINAL
@@ -1609,6 +1622,94 @@ async def test_v3_channel_worker_holds_session_admission_until_terminal(
     await dispatch_task
     await runtime.shutdown()
     manager.close()
+
+
+@pytest.mark.asyncio
+async def test_channel_worker_rejects_image_budget_before_acquiring_leases(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    from bootstrap.passive_worker import PassiveMessageWorker
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+
+    session_store = SessionStore(tmp_path / "artifact-sessions.db")
+    artifact_store = ChannelAttachmentArtifactStore(
+        workspace=tmp_path,
+        session_store=session_store,
+    )
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(image_path)
+    extensionless_refs = tuple(
+        [
+            await artifact_store.import_bytes(
+                image_path.read_bytes(),
+                kind=AttachmentKind.FILE,
+                filename=f"extensionless-{index}",
+                media_type=None,
+            )
+            for index in range(5)
+        ]
+    )
+    session_store.close()
+    assert all(ref.kind is AttachmentKind.IMAGE for ref in extensionless_refs)
+
+    class Store:
+        def __init__(self) -> None:
+            self.acquire_calls = 0
+
+        async def acquire(self, _ref: AttachmentRef) -> object:
+            self.acquire_calls += 1
+            raise AssertionError("budget validation must run before acquire")
+
+    store = Store()
+    worker = object.__new__(PassiveMessageWorker)
+    worker._attachment_store = cast(Any, store)
+
+    with pytest.raises(ValueError, match="最多可以添加 4 张图片"):
+        await worker._acquire_attachment_refs(extensionless_refs)
+
+    too_many = tuple(
+        AttachmentRef(
+            artifact_id=f"image-{index}",
+            kind=AttachmentKind.IMAGE,
+            filename=f"{index}.png",
+            media_type="image/png",
+            size_bytes=1,
+            sha256=f"{index:064x}",
+        )
+        for index in range(5)
+    )
+    with pytest.raises(ValueError, match="最多可以添加 4 张图片"):
+        await worker._acquire_attachment_refs(too_many)
+
+    oversized = (
+        AttachmentRef(
+            artifact_id="oversized-image",
+            kind=AttachmentKind.IMAGE,
+            filename="oversized.png",
+            media_type="image/png",
+            size_bytes=21 * 1024 * 1024,
+            sha256=f"{100:064x}",
+        ),
+    )
+    with pytest.raises(ValueError, match="单张图片不能超过 20MB"):
+        await worker._acquire_attachment_refs(oversized)
+
+    too_large = tuple(
+        AttachmentRef(
+            artifact_id=f"large-{index}",
+            kind=AttachmentKind.IMAGE,
+            filename=f"large-{index}.png",
+            media_type="image/png",
+            size_bytes=15 * 1024 * 1024,
+            sha256=f"{index + 10:064x}",
+        )
+        for index in range(3)
+    )
+    with pytest.raises(ValueError, match="图片合计不能超过 40MB"):
+        await worker._acquire_attachment_refs(too_large)
+    assert store.acquire_calls == 0
 
 
 @pytest.mark.asyncio

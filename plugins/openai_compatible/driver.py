@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zlib
 import math
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -48,6 +49,11 @@ _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 _DRIVER_ID = "openai-compatible"
 _CONTRACT_VERSION = "1"
+_DISCOVERY_CONNECT_TIMEOUT_SECONDS = 5.0
+_DISCOVERY_READ_TIMEOUT_SECONDS = 10.0
+_DISCOVERY_TOTAL_TIMEOUT_SECONDS = 15.0
+_DISCOVERY_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+_DISCOVERY_MAX_MODELS = 10_000
 _SAFETY_CODES = (
     "content_filter",
     "content_policy_violation",
@@ -245,17 +251,48 @@ async def _discover(
 ) -> tuple[DiscoveredModel, ...]:
     connection = _connection_config(descriptor)
     _check_credential_scope(descriptor, credential)
-    payload = await _request_json(connection, credential, "GET", "/models")
+    discovery_connection = _ConnectionConfig(
+        base_url=connection.base_url,
+        connect_timeout=_DISCOVERY_CONNECT_TIMEOUT_SECONDS,
+        read_timeout=_DISCOVERY_READ_TIMEOUT_SECONDS,
+        max_retries=0,
+        allow_unverified_manual=connection.allow_unverified_manual,
+    )
+    try:
+        async with asyncio.timeout(_DISCOVERY_TOTAL_TIMEOUT_SECONDS):
+            payload = await _request_limited_json(
+                discovery_connection,
+                credential,
+                "GET",
+                "/models",
+                max_bytes=_DISCOVERY_MAX_RESPONSE_BYTES,
+            )
+    except asyncio.CancelledError:
+        raise
+    except TimeoutError as error:
+        raise ModelTimeoutError("model discovery timed out") from error
     raw_models = payload.get("data")
     if not isinstance(raw_models, list):
         raise TransportError("models response is missing data array")
+    if len(raw_models) > _DISCOVERY_MAX_MODELS:
+        raise TransportError(f"models response exceeds {_DISCOVERY_MAX_MODELS} entries")
     result: list[DiscoveredModel] = []
+    seen_models: set[str] = set()
     for raw in raw_models:
         if not isinstance(raw, Mapping):
             raise TransportError("models response contains a non-object item")
         model = raw.get("id")
         if not isinstance(model, str) or not model.strip():
             raise TransportError("models response contains an invalid id")
+        if model != model.strip():
+            raise TransportError("models response contains an id with outer whitespace")
+        if len(model) > 256:
+            raise TransportError(
+                "models response contains an id longer than 256 characters"
+            )
+        if model in seen_models:
+            raise TransportError(f"models response contains duplicate id: {model}")
+        seen_models.add(model)
         result.append(
             DiscoveredModel(
                 kind=ModelKind.CHAT,
@@ -390,6 +427,103 @@ async def _request_json(
             last_error = mapped
             await asyncio.sleep(min(8.0, float(2**attempt)))
     raise TransportError("request failed without result") from last_error
+
+
+async def _request_limited_json(
+    connection: _ConnectionConfig,
+    credential: CredentialHandle,
+    method: str,
+    path: str,
+    *,
+    max_bytes: int,
+) -> dict[str, Any]:
+    """Read one discovery response with a hard byte limit and no retries."""
+
+    try:
+        token = _credential_token(await credential.read())
+        async with _client(connection, token) as client:
+            async with client.stream(
+                method,
+                path,
+                headers={"Accept-Encoding": "gzip, identity"},
+            ) as response:
+                content = await _read_limited_response(response, max_bytes=max_bytes)
+        bounded = httpx.Response(
+            status_code=response.status_code,
+            content=content,
+            request=response.request,
+        )
+        _raise_status(bounded, secret=token)
+        return _json_bytes_object(content)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        mapped = _map_error(error)
+        if mapped is error and not isinstance(error, ModelError):
+            raise
+        raise mapped from error
+
+
+async def _read_limited_response(
+    response: httpx.Response,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Stop reading as soon as Content-Length or streamed bytes exceed the cap."""
+
+    encoding = response.headers.get("content-encoding", "").strip().lower()
+    if encoding in {"", "identity"}:
+        decoder: Any | None = None
+    elif encoding == "gzip":
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    else:
+        raise TransportError(
+            f"provider returned unsupported Content-Encoding: {encoding}"
+        )
+    raw_length = response.headers.get("content-length")
+    if raw_length is not None:
+        try:
+            content_length = int(raw_length)
+        except ValueError as error:
+            raise TransportError(
+                "provider returned an invalid Content-Length"
+            ) from error
+        if content_length < 0 or content_length > max_bytes:
+            raise TransportError(f"provider response exceeds {max_bytes} bytes")
+    content = bytearray()
+    raw_bytes = 0
+    try:
+        async for chunk in response.aiter_raw(chunk_size=64 * 1024):
+            raw_bytes += len(chunk)
+            if raw_bytes > max_bytes:
+                raise TransportError(f"provider response exceeds {max_bytes} bytes")
+            if decoder is None:
+                decoded = chunk
+            else:
+                remaining = max_bytes - len(content)
+                decoded = decoder.decompress(chunk, remaining + 1)
+                if decoder.unconsumed_tail:
+                    raise TransportError(
+                        f"provider response exceeds {max_bytes} decoded bytes"
+                    )
+            if len(content) + len(decoded) > max_bytes:
+                raise TransportError(
+                    f"provider response exceeds {max_bytes} decoded bytes"
+                )
+            content.extend(decoded)
+        if decoder is not None:
+            remaining = max_bytes - len(content)
+            decoded = decoder.flush(remaining + 1)
+            if len(content) + len(decoded) > max_bytes:
+                raise TransportError(
+                    f"provider response exceeds {max_bytes} decoded bytes"
+                )
+            content.extend(decoded)
+            if not decoder.eof or decoder.unused_data:
+                raise TransportError("provider returned an invalid gzip response")
+    except zlib.error as error:
+        raise TransportError("provider returned an invalid gzip response") from error
+    return bytes(content)
 
 
 async def _stream_chat(
@@ -898,6 +1032,16 @@ def _retryable(error: Exception) -> bool:
 def _json_object(response: httpx.Response) -> dict[str, Any]:
     try:
         payload = response.json()
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise TransportError("provider response is not valid JSON") from error
+    if not isinstance(payload, dict):
+        raise TransportError("provider response must be a JSON object")
+    return cast(dict[str, Any], payload)
+
+
+def _json_bytes_object(content: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(content)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise TransportError("provider response is not valid JSON") from error
     if not isinstance(payload, dict):

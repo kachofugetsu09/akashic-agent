@@ -212,8 +212,15 @@ export function chatModelState(payload: unknown): ChatModelState {
 export async function uploadFiles(files: ComposerFile[], signal: AbortSignal): Promise<UploadedFile[]> {
   const result: UploadedFile[] = [];
   for (const file of files) {
-    if (!file.url) throw new Error(`附件 ${file.filename || "未命名"} 缺少内容 URL`);
-    const sourceResponse = await fetch(file.url, { signal });
+    const label = file.filename || "未命名";
+    if (!file.url) throw new Error(`附件 ${label} 缺少内容 URL`);
+    let sourceResponse: Response;
+    try {
+      sourceResponse = await fetch(file.url, { signal });
+    } catch (error) {
+      if (isAbortError(error) || !(error instanceof TypeError)) throw error;
+      throw new Error(`无法读取附件 ${label}，请移除后重新选择`, { cause: error });
+    }
     if (!sourceResponse.ok) throw new Error(`读取附件失败: ${sourceResponse.status}`);
     const blob = await sourceResponse.blob();
     const filename = file.filename || "upload.bin";

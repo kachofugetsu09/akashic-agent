@@ -1,12 +1,9 @@
 """文件系统工具：读取、写入、编辑文件，以及列举目录。"""
 
-import base64
 import asyncio
 import builtins
 import difflib
-import io
 import logging
-import mimetypes
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -14,6 +11,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from agent.plugin_composition import CHAT_MODELS, ModelRole
+from agent.media import detect_supported_image_mime, encode_image_data_uri
 from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.tools.base import Tool, ToolResult
 from infra.persistence.json_store import atomic_write_text
@@ -130,84 +128,20 @@ async def _run_with_file_mutation_lock(
 
 _READ_MAX_LINES = 400
 _READ_MAX_BYTES = 10_000
-_IMAGE_MAX_EDGE = 1568
-_IMAGE_TARGET_B64_LEN = 8_000_000
-_IMAGE_MIN_QUALITY = 45
 _READ_PROBE_BYTES = 4096
 
 
-def _encode_image_for_model(
-    file_path: Path, detected_mime: str | None = None
-) -> tuple[str, str, bool]:
-    raw = file_path.read_bytes()
-    raw_b64 = base64.b64encode(raw).decode()
-    mime = detected_mime
-    if mime is None:
-        mime, _ = mimetypes.guess_type(file_path.name)
-    if mime and mime.startswith("image/") and len(raw_b64) <= _IMAGE_TARGET_B64_LEN:
-        return mime, raw_b64, False
-
-    try:
-        from PIL import Image, ImageOps
-    except ModuleNotFoundError as e:
-        raise RuntimeError(
-            "当前环境未安装 Pillow，无法压缩大图片；请安装 Pillow 后重试"
-        ) from e
-
-    with Image.open(file_path) as img:
-        img = ImageOps.exif_transpose(img)
-        if img.mode not in ("RGB", "L"):
-            canvas = Image.new("RGB", img.size, (255, 255, 255))
-            alpha = img.getchannel("A") if "A" in img.getbands() else None
-            canvas.paste(img.convert("RGB"), mask=alpha)
-            img = canvas
-        elif img.mode == "L":
-            img = img.convert("RGB")
-
-        if max(img.size) > _IMAGE_MAX_EDGE:
-            img.thumbnail((_IMAGE_MAX_EDGE, _IMAGE_MAX_EDGE))
-
-        chosen: bytes | None = None
-        for quality in (85, 75, 65, 55, _IMAGE_MIN_QUALITY):
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=quality, optimize=True)
-            candidate = buf.getvalue()
-            candidate_b64 = base64.b64encode(candidate).decode()
-            chosen = candidate
-            if len(candidate_b64) <= _IMAGE_TARGET_B64_LEN:
-                return "image/jpeg", candidate_b64, True
-
-    if chosen is None:
-        raise RuntimeError("图片压缩失败")
-    return "image/jpeg", base64.b64encode(chosen).decode(), True
-
-
-def _read_image(file_path: Path, detected_mime: str | None = None) -> ToolResult:
-    mime, b64, compressed = _encode_image_for_model(file_path, detected_mime)
-    note = "，已自动压缩" if compressed else ""
+def _read_image(file_path: Path) -> ToolResult:
+    data_uri = encode_image_data_uri(file_path)
     return ToolResult(
-        text=f"[已读取图片文件 {file_path.name}{note}，图片内容已提供给多模态模型]",
+        text=f"[已读取图片文件 {file_path.name}，图片内容已提供给多模态模型]",
         content_blocks=[
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+                "image_url": {"url": data_uri, "detail": "high"},
             }
         ],
     )
-
-
-def _detect_supported_image_mime_from_header(head: bytes) -> str | None:
-    if head.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if head.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if head.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if head.startswith(b"BM"):
-        return "image/bmp"
-    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
-        return "image/webp"
-    return None
 
 
 def _looks_binary(head: bytes) -> bool:
@@ -376,9 +310,12 @@ class ReadFileTool(Tool):
 
             with builtins.open(file_path, "rb") as fh:
                 head = fh.read(_READ_PROBE_BYTES)
-            image_mime = _detect_supported_image_mime_from_header(head)
+            image_mime = detect_supported_image_mime(head)
             if image_mime:
-                return _read_image(file_path, image_mime)
+                try:
+                    return _read_image(file_path)
+                except ValueError as error:
+                    return f"图片处理失败：{error}"
             if _looks_binary(head):
                 return (
                     f"错误：{path} 看起来是二进制文件，read_file 仅适合文本和图片。"

@@ -81,6 +81,10 @@ case "$cmd" in
         ensure_app_server_config
         ;;
     run|serve)
+        if [ ! -f "$CONFIG" ]; then
+            echo "未找到调试配置，正在初始化空白本地实例：$CONFIG"
+            as_host python main.py init --config "$CONFIG" --workspace "$WORKSPACE"
+        fi
         ensure_app_server_config
         exec_as_host python main.py --config "$CONFIG" --workspace "$WORKSPACE" "$@"
         ;;

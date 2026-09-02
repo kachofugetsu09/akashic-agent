@@ -342,7 +342,7 @@ async def _discover(
                         if max_output_tokens
                         else "unknown"
                     ),
-                    input_modalities="opencode-go-wire",
+                    input_modalities="unknown",
                     tool_calls=(
                         ("opencode-cli" if cli_owned else "opencode-go-catalog")
                         if supports_tools is not None

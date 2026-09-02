@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ast
+import gzip
 import json
 import os
 import shutil
@@ -74,12 +75,21 @@ class _Credential:
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], *, models_status: int = 200) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        *,
+        models_status: int = 200,
+        model_ids: list[str] | None = None,
+        gzip_models: bool = False,
+    ) -> None:
         super().__init__(address, _Handler)
         self.requests: list[dict[str, Any]] = []
         self.slow_started = threading.Event()
         self.release_plain_done = threading.Event()
         self.models_status = models_status
+        self.model_ids = model_ids
+        self.gzip_models = gzip_models
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -96,10 +106,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(
                 self.server.models_status,
                 (
-                    {"object": "list", "data": [{"id": "chat-a"}]}
+                    {
+                        "object": "list",
+                        "data": [
+                            {"id": model_id}
+                            for model_id in (self.server.model_ids or ["chat-a"])
+                        ],
+                    }
                     if self.server.models_status == 200
                     else {"error": {"message": "catalog unavailable"}}
                 ),
+                gzip_response=self.server.gzip_models,
             )
             return
         self._json(404, {"error": {"message": "missing"}})
@@ -275,10 +292,20 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def _json(self, status: int, payload: Mapping[str, Any]) -> None:
+    def _json(
+        self,
+        status: int,
+        payload: Mapping[str, Any],
+        *,
+        gzip_response: bool = False,
+    ) -> None:
         encoded = json.dumps(payload).encode()
+        if gzip_response:
+            encoded = gzip.compress(encoded)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        if gzip_response:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         try:
@@ -295,8 +322,18 @@ def _text_response(content: str) -> dict[str, Any]:
 
 
 @contextmanager
-def _provider(*, models_status: int = 200) -> Iterator[tuple[_Server, str]]:
-    server = _Server(("127.0.0.1", 0), models_status=models_status)
+def _provider(
+    *,
+    models_status: int = 200,
+    model_ids: list[str] | None = None,
+    gzip_models: bool = False,
+) -> Iterator[tuple[_Server, str]]:
+    server = _Server(
+        ("127.0.0.1", 0),
+        models_status=models_status,
+        model_ids=model_ids,
+        gzip_models=gzip_models,
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -576,6 +613,66 @@ async def test_manual_gateway_does_not_require_models_catalog() -> None:
         closed = _connection(closed_endpoint)
     with pytest.raises(TransportError):
         await definition().probe(closed, _Credential())  # type: ignore[misc]
+
+
+@pytest.mark.asyncio
+async def test_discovery_has_fixed_retry_size_and_entry_limits() -> None:
+    driver = definition()
+    assert driver.discover is not None
+    credential = _Credential()
+
+    with _provider(model_ids=["compressed-model"], gzip_models=True) as (
+        _server,
+        endpoint,
+    ):
+        models = await driver.discover(_connection(endpoint), credential)
+        assert [model.model for model in models] == ["compressed-model"]
+
+    with _provider(models_status=429) as (server, endpoint):
+        base = _connection(endpoint)
+        unbounded_request = DriverConnectionDescriptor(
+            connection_id=base.connection_id,
+            name=base.name,
+            driver_id=base.driver_id,
+            endpoint=base.endpoint,
+            auth_identity=base.auth_identity,
+            config={
+                "format_version": 1,
+                "max_retries": 1_000_000,
+                "connect_timeout": 1_000_000,
+                "read_timeout": 1_000_000,
+            },
+        )
+        with pytest.raises(RateLimitError):
+            await driver.discover(unbounded_request, credential)
+        assert [item["path"] for item in server.requests] == ["/v1/models"]
+
+    with _provider(model_ids=[f"model-{index}" for index in range(10_001)]) as (
+        _server,
+        endpoint,
+    ):
+        with pytest.raises(TransportError, match="10000 entries"):
+            await driver.discover(_connection(endpoint), credential)
+
+    with _provider(model_ids=["x" * (4 * 1024 * 1024)]) as (_server, endpoint):
+        with pytest.raises(TransportError, match="exceeds 4194304 bytes"):
+            await driver.discover(_connection(endpoint), credential)
+
+    with _provider(
+        model_ids=["x" * (4 * 1024 * 1024)],
+        gzip_models=True,
+    ) as (_server, endpoint):
+        with pytest.raises(TransportError, match="4194304 decoded bytes"):
+            await driver.discover(_connection(endpoint), credential)
+
+    for model_ids, message in (
+        (["duplicate", "duplicate"], "duplicate id"),
+        ([" outer-space"], "outer whitespace"),
+        (["x" * 257], "longer than 256"),
+    ):
+        with _provider(model_ids=model_ids) as (_server, endpoint):
+            with pytest.raises(TransportError, match=message):
+                await driver.discover(_connection(endpoint), credential)
 
 
 @pytest.mark.asyncio

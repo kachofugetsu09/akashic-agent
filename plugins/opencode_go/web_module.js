@@ -16,16 +16,16 @@ export function activate(ctx) {
     render(host, _view, rawProps) {
       const props = requireProps(rawProps);
       const existing = props.state.connection;
-      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${existing ? `编辑 ${escapeHtml(existing.name)}` : "连接 OpenCode Go"}</h2><p class="settings-dialog-description">使用本机 OpenCode 登录或单独的 API Key，模型会自动同步。</p></div>
+      host.innerHTML = `<header class="settings-dialog-header"><div class="settings-dialog-heading"><h2 class="settings-dialog-title">${existing ? `编辑 ${escapeHtml(existing.name)}` : "连接 OpenCode Go"}</h2><p class="settings-dialog-description">使用本机 OpenCode 登录或单独的 API Key，模型和已知能力会自动同步。</p></div>
         <button type="button" class="settings-icon-button" aria-label="关闭" data-close>${CLOSE_ICON}</button></header>
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
-          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" required type="url" placeholder="https://api.example.com/v1"></label>
+          <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing ? "留空则保持原地址" : "https://api.example.com/v1"}"></label>
           <label class="settings-secret is-wide"><span>API Key（可留空使用本机登录）</span><input name="apiKey" aria-label="API Key" type="password" autocomplete="off" placeholder="sk-…"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
-        <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>模型自动同步</h3><p>保存后读取账号当前可用的全部模型，无需手动选择。</p></div></header></section>
+        <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>模型与能力自动同步</h3><p>保存后读取账号当前可用的模型，并识别图片等已知能力；断网时仍可连接。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会显示在页面中</span><button type="submit" class="settings-primary-button">保存并同步模型</button></footer></form>`;
+        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会显示在页面中</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>重新同步模型与能力</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并同步" : "保存并同步模型与能力"}</button></span></footer></form>`;
       const form = host.querySelector("form");
       form.elements.name.value = existing?.name ?? "OpenCode Go";
       form.elements.endpoint.value = existing ? "" : "https://opencode.ai/zen/go/v1";
@@ -37,6 +37,10 @@ export function activate(ctx) {
         showKey.innerHTML = visible ? EYE_ICON : EYE_OFF_ICON;
       });
       host.querySelector("[data-close]").addEventListener("click", props.close);
+      host.querySelector("[data-resync]")?.addEventListener("click", (event) => {
+        submit(form, props.actions.sync()
+          .then(() => props.changed("模型与能力已重新同步")), event.currentTarget);
+      });
       form.addEventListener("submit", (event) => {
         event.preventDefault();
         const data = new FormData(form);
@@ -84,19 +88,20 @@ function requireProps(value) {
   return value;
 }
 
-function submit(form, work) {
-  const button = form.querySelector("[type=submit]");
+function submit(form, work, button = form.querySelector("[type=submit]")) {
+  const actionButtons = form.querySelectorAll(".settings-dialog-actions button");
   const error = form.querySelector("[data-error]");
-  button.disabled = true;
-  button.replaceChildren(htmlNode(SPINNER_ICON), "保存中");
+  const idleLabel = button.textContent;
+  for (const actionButton of actionButtons) actionButton.disabled = true;
+  button.replaceChildren(htmlNode(SPINNER_ICON), "同步中");
   error.hidden = true;
   error.textContent = "";
   work.catch((reason) => {
     error.textContent = reason instanceof Error ? reason.message : String(reason);
     error.hidden = false;
   }).finally(() => {
-    button.disabled = false;
-    button.textContent = "保存并同步模型";
+    for (const actionButton of actionButtons) actionButton.disabled = false;
+    button.textContent = idleLabel;
   });
 }
 
