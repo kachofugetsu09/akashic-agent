@@ -29,7 +29,7 @@ class PendingPluginOperation:
     generation_id: str = ""
     source_revision: str = ""
     reload_tx_id: str = ""
-    validation_evidence: tuple[str, ...] = ()
+    child_checked: bool = False
     sealed: bool = False
 
 
@@ -212,10 +212,16 @@ class TurnPluginRollout:
     ) -> None:
         """Record child evidence or seal a parent operation after lease release."""
 
+        del items
         # 1. A causally bound child can validate only its frozen generation.
         owner_turn_id = str(metadata.get("_pluginRolloutOwnerTurnId") or "")
         if owner_turn_id:
-            self._record_child_terminal(owner_turn_id, status, metadata, items)
+            self._record_child_terminal(
+                turn_id,
+                owner_turn_id,
+                status,
+                metadata,
+            )
             return
 
         # 2. The parent terminal seals once and hands slow work to a background task.
@@ -279,10 +285,10 @@ class TurnPluginRollout:
 
     def _record_child_terminal(
         self,
+        child_turn_id: str,
         owner_turn_id: str,
         status: TurnStatus,
         metadata: dict[str, object],
-        items: tuple[object, ...],
     ) -> None:
         pending = self._pending
         if (
@@ -307,27 +313,17 @@ class TurnPluginRollout:
                 source_revision,
             )
             return
-        evidence = (
-            self._manager.candidate_child_evidence(
-                pending.plugin_id,
-                generation_id,
-                items,
-            )
-            if status is TurnStatus.COMPLETED
-            else ()
-        )
-        pending.validation_evidence = tuple(
-            sorted({*pending.validation_evidence, *evidence})
-        )
+        if status is TurnStatus.COMPLETED:
+            pending.child_checked = True
         self._manager.annotate_reload(
             pending.reload_tx_id,
             {
                 "event": "candidate_child_terminal",
                 "owner_turn_id": owner_turn_id,
-                "child_turn_id": str(metadata.get("turnId") or ""),
+                "child_turn_id": child_turn_id,
                 "status": status.value,
                 "identity_match": True,
-                "candidate_evidence": list(evidence),
+                "candidate_checked": status is TurnStatus.COMPLETED,
             },
         )
 
@@ -339,10 +335,10 @@ class TurnPluginRollout:
         try:
             if status is not TurnStatus.COMPLETED:
                 await self._cancel(pending, f"parent turn {status.value}")
-            elif pending.kind == "install" and not pending.validation_evidence:
+            elif pending.kind == "install" and not pending.child_checked:
                 await self._cancel(
                     pending,
-                    "attached programmatic child 没有成功使用 candidate-owned Tool/Skill",
+                    "attached programmatic child 没有完成 exact candidate 检查",
                 )
             elif pending.kind == "install":
                 await self._manager.switch_ready(pending.plugin_id)

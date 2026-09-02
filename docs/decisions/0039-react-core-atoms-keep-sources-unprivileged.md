@@ -1,10 +1,10 @@
 # 0039 · React 原子能力留在 Core，来源保持非特权
 
-- 状态：superseded by 0054
+- 状态：accepted
 - 日期：2026-08-22
 - 关联条款：RUN-001～RUN-003、RUN-007～RUN-009、OUT-001～OUT-004、PLG-003、PLG-006、PLG-014、SCH-001～SCH-003、PRO-001、CTRL-003、SEC-005、SEC-007、TST-001～TST-006
 - supersedes：无
-- superseded by：0040（只修订 Wake duty gate 的放置）、0050（只修订模型冻结 owner）、0054（把 React owner 迁入普通 `agent-loop` 插件）
+- superseded by：0040（只修订 Wake duty gate 的放置）、0050（只修订模型冻结 owner）
 
 ## 背景
 

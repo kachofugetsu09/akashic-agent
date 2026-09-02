@@ -1,0 +1,74 @@
+# 插件自更新复杂度审查
+
+## 1. 结论
+
+插件自更新不需要新的特权插件，也不需要第二套 Root 切换系统。现有链路已经拥有安全迁移所需的状态和边界。本次只放宽候选检查的类别限制，并删除没有业务调用者的新设计。
+
+## 2. 现有链路
+
+```text
+source ── immutable artifact ── candidate generation ── latest snapshot
+                                                        │
+stable snapshot ── parent Turn ── attached child ───────┘
+       │                                      │
+       └──────── 旧请求继续使用 lease          └── 检查 exact candidate
+
+parent 完成 ── stable 指针切换 ── journal 完成 ── 旧 lease 排空
+```
+
+DeepSeek Harness 提供了复杂度基线。它用普通配置行装配插件，依赖可用性决定 Fiber 激活顺序（`packages/bundle/base/cordis.patch.yml`）；Service 绑定当前 Fiber，Fiber 卸载时逆序清理 Effect（`vendor/cordis/src/reflect.ts`、`vendor/cordis/src/fiber.ts`）。`agent-loop` 也只是依赖 agents、sessions、llm、tools 与 systemPrompt 的普通 Service 插件（`packages/core/agent-loop/src/index.ts`）。
+
+DSH 没有跨进程旧 Root 续跑：reload 会停止旧 Fiber，进程崩溃会把 open Turn 修成 interrupted，再用当前插件世界开始新 Turn（`packages/core/session/src/repair.ts`、`packages/session/session-persistence/src/coordinator.ts`）。Akashic 保留 snapshot lease 来让同进程旧请求排空，但不额外发明跨进程旧世界复活协议。
+
+状态 owner 没有变化：
+
+| 事实 | Owner |
+|---|---|
+| artifact 内容与 source revision | 插件安装器 |
+| stable/latest snapshot 与 generation | `PluginManager` |
+| 一个请求使用哪份运行时 | `RuntimeSnapshot` lease |
+| candidate 是否提交 | parent `TurnPluginRollout` |
+| 崩溃后读取哪个 stable | stable 指针与 reload journal |
+
+## 3. 删除证据
+
+2026-09-02 对 Core、仓库内插件、外部插件源码和 hua-home 正式安装 cache 做了静态消费者检查：
+
+| 新接口 | 生产消费者 | 结论 |
+|---|---:|---|
+| `ServiceCall` | 0 | 与已有 Service 调用重复 |
+| `TaskControl` | 0 | 没有插件取得或调用 |
+| `RootSwitch` / `SwitchPart` | 0 个 part | 与 stable/latest 和现有领域切换重复 |
+| `SwitchInput` | 0 | 没有输入来源 |
+| `ServiceHold` / `ctx.hold` | 0 | 与 snapshot lease 和进程 owner 重复 |
+
+“存在接入点”没有算作消费者。检查同时覆盖动态注册、manifest 声明、插件 cache 和 hua-home 当前运行 revision。当前没有外部迁移义务，因此直接删除，不保留 deprecated 名称或兼容壳。
+
+## 4. 保留资产
+
+- 不可变 artifact 和 source hash 检查。
+- stable/latest 与候选 generation。
+- candidate Root 和 plugin-data 隔离。
+- RuntimeSnapshot lease 与旧 generation 排空。
+- attached child 的 parent/generation/source binding。
+- parent Turn 的自动提交、丢弃和 reload journal 恢复。
+- operator trusted batch 的独立信任边界。
+
+## 5. 修正的问题
+
+原实现把候选检查写成“成功使用候选拥有的 Tool 或 Skill”。这让 UI、Channel、模型、Job 等普通插件被类别歧视，也迫使 Core 理解业务证明。
+
+修正后，Core 只确认 exact attached child 正常完成。Agent 在旧 stable 的 parent 中决定 child 做什么检查；检查使用候选公开的普通能力。这样新增插件类别不需要修改 Core。
+
+## 6. 未改动和未知
+
+- 本次没有改变进程崩溃时的 Turn 恢复语义；崩溃中的 Turn 仍是中断，不伪装成外部效果回滚。
+- 本次没有部署 hua-home；对它的检查只是消费者盘点。
+- operator 控制入口、Activity/Channel 切换和候选恢复仍有复杂度，是否多余要继续用生产消费者、历史原因和失败测试证明，不能从名字直接删除。
+
+## 7. 验收
+
+- 代码净差异不再包含上述五组新接口。
+- exact child 检查不依赖插件类别或 TurnItem。
+- 相关插件安装、热重载、候选隔离、lease 与 journal 测试通过。
+- PR 记录第二轮熵审查发现、保留理由和实际删除项。

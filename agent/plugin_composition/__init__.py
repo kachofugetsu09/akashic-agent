@@ -5,7 +5,7 @@ from agent.plugin_composition.context import (
     FiberHandle,
     HealthHandle,
     Plugin,
-    RootScope,
+    RuntimeScope,
 )
 from agent.plugin_composition.overlay import (
     CompositionOverlay,
@@ -194,18 +194,6 @@ from agent.plugin_composition.interaction_undo import (
     InteractionUndoResult,
     InteractionUndoService,
     SourceMutationFence,
-)
-from agent.plugin_composition.tasks import (
-    TaskCancel,
-    TaskLease,
-    TaskStart,
-    TaskWait,
-)
-from agent.plugin_composition.root_switch import (
-    ROOT_SWITCH as ROOT_SWITCH,
-    RootSwitch as RootSwitch,
-    SwitchInput as SwitchInput,
-    SwitchPart as SwitchPart,
 )
 from agent.plugin_composition.mcp_slots import (
     MCP_SERVERS,
@@ -455,10 +443,6 @@ __all__ = [
     "MobileUiRegistry",
     "MobileUiRpcInvalidRequest",
     "ObserveEventKey",
-    "TaskCancel",
-    "TaskLease",
-    "TaskStart",
-    "TaskWait",
     "Plugin",
     "PluginChannels",
     "PluginCommands",
@@ -536,18 +520,14 @@ __all__ = [
     "PluginTimers",
     "RUNTIME_STARTED",
     "RUNTIME_STOPPING",
-    "ROOT_SWITCH",
     "SNAPSHOT_SEALING",
-    "RootSwitch",
     "RuntimeStarted",
     "RuntimeStopping",
-    "RootScope",
+    "RuntimeScope",
     "SnapshotSealing",
     "SerialEventKey",
     "SyncTask",
     "StopReceipt",
-    "SwitchInput",
-    "SwitchPart",
     "TopologyFiberView",
     "TopologyView",
     "ToolGrant",

@@ -17,7 +17,6 @@ import agent.plugins.manager as plugin_manager_module
 from agent.plugin_composition import (
     BACKGROUND_JOBS,
     CHANNELS,
-    ROOT_SWITCH,
     AttachmentKind,
     ChannelCapability,
     ChannelDefinition,
@@ -29,7 +28,6 @@ from agent.plugin_composition import (
     PluginChannels,
     PluginRuntime,
     ProviderClientFactory,
-    RootSwitch,
     ServiceView,
 )
 from agent.plugins.composable import ComposablePlugin
@@ -124,15 +122,11 @@ async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs
     """让全部 activity catalog 随载荷一起切换到正式 Root。"""
 
     async def compile_snapshot(label: str):
-        # 1. 每棵 Root 独立拥有 activity catalog 与 switch part 集合。
+        # 1. 每棵 Root 独立拥有 background-job activity catalog。
         root = CompositionRoot(label)
         _ = await root.context.provide(
             BACKGROUND_JOBS,
             PluginBackgroundJobs(root.instance_token),
-        )
-        _ = await root.context.provide(
-            ROOT_SWITCH,
-            RootSwitch(root.instance_token),
         )
         snapshot = RuntimeSnapshotCompiler().compile(
             {},
@@ -156,11 +150,7 @@ async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs
             setattr(source, name, distinct_source_identity)
 
         old_catalogs = (target.background_job_catalog,)
-        old_parts = target.switch_parts
         assert all(catalog is not None for catalog in old_catalogs)
-        assert old_parts is not None
-        assert source.switch_parts is not None
-        assert source.switch_parts is not old_parts
         target.state = "validating"
 
         plugin_manager_module._replace_snapshot_payload(  # pyright: ignore[reportPrivateUsage]
@@ -177,7 +167,6 @@ async def test_replace_snapshot_payload_rebinds_all_exact_root_activity_catalogs
             assert catalog.root_instance_token is formal_root.instance_token
         for name in identity_fields:
             assert getattr(target, name) is getattr(source, name)
-        assert target.switch_parts is source.switch_parts
         assert target.composition_root is formal_root
         RuntimeSnapshotStore._validate_composition(  # pyright: ignore[reportPrivateUsage]
             target
@@ -4078,7 +4067,7 @@ async def test_installed_v3_shared_handoff_success_and_owner_failure(
             "    disposed = False\n"
             "    token = id(ctx._root_instance_token())\n"
             "    async def started(_):\n"
-            "        async with ctx.root_scope():\n"
+            "        async with ctx.runtime_scope():\n"
             "            started_roots.append(token)\n"
             "    await ctx.on(RUNTIME_STARTED, started)\n"
         "    await ctx.on(RUNTIME_STOPPING, lambda _: stopped_roots.append(token))\n"

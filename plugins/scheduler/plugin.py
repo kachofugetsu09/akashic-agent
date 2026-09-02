@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from agent.plugins.errors import RootRetired
+from agent.control.scoped_turn import TurnAdmissionRetiredError
 from agent.control.timer import TimerHandle, TimerStatus
 from agent.plugin_composition import (
     DELIVERIES,
@@ -254,7 +254,7 @@ class SchedulerRuntime:
         except asyncio.CancelledError:
             cancelled = True
             raise
-        except RootRetired:
+        except TurnAdmissionRetiredError:
             handed_off = True
         except Exception:
             logger.exception("scheduler job failed: %s", job.id)

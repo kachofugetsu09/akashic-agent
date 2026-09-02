@@ -10,7 +10,6 @@ import sys
 import threading
 import time
 from contextlib import closing
-from contextvars import Context as VarContext
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -27,7 +26,6 @@ from agent.plugin_composition import (
     EMBEDDINGS,
     MODEL_CATALOG,
     CapabilitySources,
-    CompositionError,
     CreateConnectionWithModel,
     DiscoveredModel,
     ModelCapabilities,
@@ -400,23 +398,19 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         async with chat_models.execution() as parent_execution:
 
             async def inherited_chat_child() -> None:
-                async with root.context.root_scope():
+                async with root.context.runtime_scope():
                     async with chat_models.execution():
                         pass
 
-            with pytest.raises(CompositionError) as caught:
+            with pytest.raises(RuntimeError, match="不能由子 task 继承"):
                 await asyncio.create_task(inherited_chat_child())
-            assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
 
             async def independent_child() -> object:
-                async with root.context.root_scope():
+                async with root.context.runtime_scope():
                     async with chat_models.independent_execution() as execution:
                         return execution
 
-            child_execution = await asyncio.create_task(
-                independent_child(),
-                context=VarContext(),
-            )
+            child_execution = await asyncio.create_task(independent_child())
             assert child_execution is not parent_execution
 
         child_ready = asyncio.Event()
@@ -440,7 +434,7 @@ async def _configure_and_call(manager: PluginManager, workspace: Path) -> None:
         await lease.release()
 
     # Core 给后台操作绑定同一 Root 的短 lease；退出后不长期占用 generation。
-    async with root.context.root_scope():
+    async with root.context.runtime_scope():
         async with root.context.require(EMBEDDINGS).bind() as embedding:
             assert embedding.descriptor.identity == described.identity
 

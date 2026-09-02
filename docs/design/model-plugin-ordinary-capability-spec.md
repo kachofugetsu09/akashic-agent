@@ -192,7 +192,7 @@ ModelExecution
 
 实现只补两个通用组合不变量，不增加模型原子：candidate 重建沿明确 `inject` 与冻结 topology 取得完整双向连通 component，避免只重建 provider 或 consumer 的半个注册表；Root 在全部插件 mount/readiness 完成、snapshot compile 前发送一次通用 `SNAPSHOT_SEALING` 串行事件，让 contribution owner 冻结私有 registry。`models` 使用该事件冻结 driver，不要求 `RuntimeSnapshotCompiler` 识别模型。`Context.get()` 仍是即时可选查询，不声明 activation 或热更新依赖；需要随 Service 安装、升级重建的插件必须显式 `inject`。
 
-每个无父 lease 的 HTTP、Mobile 和设置 request boundary 先通过现有 `RuntimeSnapshotStore.acquire()` 取得 current generic lease，绑定 owner task 后才从 exact Root 读取 Service。有父 lease 的 `CHAT_MODELS.execution()` 直接通过通用 `agent.plugins.snapshot.lease_current_runtime_snapshot()` fork 当前 exact lease；模型契约不重导出第二个 lease API。没有当前 task binding 时，调用者必须按该 operation 的错误语义 fail-loud，不能自行读取 current。普通插件自行创建的 timer/worker 若要调用其他插件 Service，只能用 Core 的 `ctx.root_scope()` 给一次短操作绑定该插件所在的 exact Root；不得让长期 task 持有 Root lease。事件转交给异步 worker 时，在同步 listener 内 fork source lease，并由 worker 在 `finally` 中释放。三条路径都复用同一 snapshot lease，不新增 model lease、model acquire helper 或 `lease.require()`。
+每个无父 lease 的 HTTP、Mobile 和设置 request boundary 先通过现有 `RuntimeSnapshotStore.acquire()` 取得 current generic lease，绑定 owner task 后才从 exact Root 读取 Service。有父 lease 的 `CHAT_MODELS.execution()` 直接通过通用 `agent.plugins.snapshot.lease_current_runtime_snapshot()` fork 当前 exact lease；模型契约不重导出第二个 lease API。没有当前 task binding 时，调用者必须按该 operation 的错误语义 fail-loud，不能自行读取 current。普通插件自行创建的 timer/worker 若要调用其他插件 Service，只能用 Core 的 `ctx.runtime_scope()` 给一次短操作绑定该插件所在的 exact Root；不得让长期 task 持有 Root lease。事件转交给异步 worker 时，在同步 listener 内 fork source lease，并由 worker 在 `finally` 中释放。三条路径都复用同一 snapshot lease，不新增 model lease、model acquire helper 或 `lease.require()`。
 
 Core 不再为 plugin snapshot 与 model revision 增加共同 fence 或 ordered operation。删掉它成立的前提是更简单、也更严格的 driver 演进合同：
 
@@ -475,7 +475,7 @@ ReAct 不读取模型数据库、不选择 default、不持有全局 model servi
 
 ### 10.3 Akasha
 
-Akasha 把 `TEXT_EMBEDDING_SETTINGS` 替换为 `EMBEDDINGS`。Prompt、Tool、post-commit 和 Wake semantic scoring 都由 Akasha 的窄 adapter 在调用边界建立 embedding binding；已有 Turn 复用当前 generic root scope，detached post-commit 携带 source scope，Wake timer 用 `ctx.root_scope()` 建立一次短 scope：
+Akasha 把 `TEXT_EMBEDDING_SETTINGS` 替换为 `EMBEDDINGS`。Prompt、Tool、post-commit 和 Wake semantic scoring 都由 Akasha 的窄 adapter 在调用边界建立 embedding binding；已有 Turn 复用当前 generic runtime scope，detached post-commit 携带 source scope，Wake timer 用 `ctx.runtime_scope()` 建立一次短 scope：
 
 ```python
 inject = (COMMANDS, TOOL_CATALOG, UI_SLOTS, EMBEDDINGS, INTERACTION_UNDO)

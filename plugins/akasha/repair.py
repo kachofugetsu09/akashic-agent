@@ -100,7 +100,7 @@ async def reindex(
     workspace: Path,
     data_root: Path,
     config: AkashaConfig,
-    root_scope: Callable[[], AbstractAsyncContextManager[None]],
+    runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
 ) -> ReindexResult:
     """Back up inputs, fill one new space, then publish verified sidecars."""
 
@@ -127,7 +127,7 @@ async def reindex(
         descriptor=descriptor,
         sessions=sessions,
         build_config=build_config,
-        root_scope=root_scope,
+        runtime_scope=runtime_scope,
     )
     audit = audit_source_embeddings(sessions, build_config)
     if not audit.complete:
@@ -162,7 +162,7 @@ async def _fill_embeddings(
     descriptor: EmbeddingSpaceDescriptor,
     sessions: Path,
     build_config: BuildConfig,
-    root_scope: Callable[[], AbstractAsyncContextManager[None]],
+    runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
 ) -> int:
     audit = audit_source_embeddings(sessions, build_config)
     messages = _issue_messages(sessions, tuple(item.message_id for item in audit.issues))
@@ -173,7 +173,7 @@ async def _fill_embeddings(
     try:
         for offset in range(0, len(messages), _BATCH_SIZE):
             batch = messages[offset : offset + _BATCH_SIZE]
-            async with root_scope():
+            async with runtime_scope():
                 async with embeddings.bind(model_id=descriptor.model_id) as bound:
                     if bound.descriptor.identity != descriptor.identity:
                         raise RuntimeError("Akasha reindex 期间 embedding 空间已变化")

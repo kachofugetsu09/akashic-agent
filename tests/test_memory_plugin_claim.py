@@ -499,7 +499,7 @@ async def test_akasha_post_commit_worker_uses_the_source_snapshot(
     monkeypatch.setattr(akasha_plugin, "_register_tools", skip_tools)
     root = CompositionRoot("akasha-post-commit-scope")
     store = RuntimeSnapshotStore()
-    root._bind_lease(
+    root._bind_runtime_scope_acquirer(
         lambda: store.acquire_composition_root(root)
     )
     _ = await root.context.provide(EMBEDDINGS, embeddings)
@@ -581,8 +581,8 @@ async def test_akasha_reindex_worker_runs_after_public_start_and_retains_failure
         embedding_api = SimpleNamespace(model_id="test-space")
 
     async def fake_reindex(**kwargs: object):
-        root_scope = kwargs["root_scope"]
-        async with root_scope():  # type: ignore[operator]
+        runtime_scope = kwargs["runtime_scope"]
+        async with runtime_scope():  # type: ignore[operator]
             assert get_current_runtime_snapshot() is not None
         attempted.set()
         if repair_fails:
@@ -601,7 +601,7 @@ async def test_akasha_reindex_worker_runs_after_public_start_and_retains_failure
 
     root = CompositionRoot("akasha-reindex-hot-start")
     store = RuntimeSnapshotStore()
-    root._bind_lease(lambda: store.acquire_composition_root(root))
+    root._bind_runtime_scope_acquirer(lambda: store.acquire_composition_root(root))
     _ = await root.context.provide(EMBEDDINGS, Embeddings())
     _ = await root.context.provide(COMMANDS, PluginCommands())
     _ = await root.context.provide(TOOL_CATALOG, PluginTools(root.instance_token))
@@ -690,8 +690,8 @@ async def test_akasha_reindex_cancel_retains_request_for_fresh_root_retry(
     async def fake_reindex(**kwargs: object):
         nonlocal calls
         calls += 1
-        root_scope = kwargs["root_scope"]
-        async with root_scope():  # type: ignore[operator]
+        runtime_scope = kwargs["runtime_scope"]
+        async with runtime_scope():  # type: ignore[operator]
             snapshot = get_current_runtime_snapshot()
             assert snapshot is not None
             bound_snapshots.append(snapshot)
@@ -714,7 +714,7 @@ async def test_akasha_reindex_cancel_retains_request_for_fresh_root_retry(
     async def mount_root(generation: str):
         root = CompositionRoot(generation)
         store = RuntimeSnapshotStore()
-        root._bind_lease(
+        root._bind_runtime_scope_acquirer(
             lambda: store.acquire_composition_root(root)
         )
         _ = await root.context.provide(EMBEDDINGS, Embeddings())

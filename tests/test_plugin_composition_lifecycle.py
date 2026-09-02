@@ -431,7 +431,7 @@ async def test_runtime_start_ignores_snapshot_replaced_before_start(
 
     async def old_plugin(ctx) -> None:
         async def start(_event: object) -> None:
-            async with ctx.root_scope():
+            async with ctx.runtime_scope():
                 calls.append("old")
 
         await ctx.on(RUNTIME_STARTED, start)

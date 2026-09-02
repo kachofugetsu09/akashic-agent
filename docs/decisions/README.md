@@ -44,7 +44,7 @@
 | [0036](0036-plugin-composition-keeps-promotion-owner.md) | accepted | 插件组合内核保留现有晋升 owner | PLG-001～PLG-013、WSP-001～WSP-005、ERR-001、TST-001～TST-007 |
 | [0037](0037-plugin-runtime-is-pure-v3.md) | accepted / implementing | 插件运行时收敛为 pure v3 | PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-008 |
 | [0038](0038-operator-trust-can-publish-offline-plugin-batches.md) | accepted | Operator 信任可以离线发布 exact 插件批次 | PLG-013、RUN-015、ERR-001 |
-| [0039](0039-react-core-atoms-keep-sources-unprivileged.md) | superseded by 0054 | React 原子能力留在 Core，来源保持非特权 | RUN-001～RUN-003、RUN-007～RUN-009、OUT-001～OUT-004、PLG-014、SCH-001～SCH-003、PRO-001、SEC-005、SEC-007 |
+| [0039](0039-react-core-atoms-keep-sources-unprivileged.md) | accepted | React 原子能力留在 Core，来源保持非特权 | RUN-001～RUN-003、RUN-007～RUN-009、OUT-001～OUT-004、PLG-014、SCH-001～SCH-003、PRO-001、SEC-005、SEC-007 |
 | [0040](0040-wake-duty-gate-lives-in-scoped-react.md) | accepted | Wake duty gate 属于 Wake scoped react | RUN-003、RUN-007～RUN-009、OUT-001～OUT-003、PLG-014、PRO-001～PRO-002 |
 | [0041](0041-turn-effects-and-memory-plugins-are-orthogonal.md) | accepted / implementing | Turn 副作用与 Memory 插件保持正交 | SES-001、SES-007～SES-008、MEM-002、MEM-009～MEM-011、PLG-001～PLG-014、RUN-003、RUN-007～RUN-009 |
 | [0042](0042-plugin-diagnostics-preserve-domain-owners.md) | accepted / implementing | 插件诊断保留领域 owner | OBJ-002、PLG-003、PLG-006、PLG-014～PLG-015、ERR-001 |
@@ -59,7 +59,7 @@
 | [0051](0051-web-ui-composes-ordinary-plugin-modules.md) | accepted / implementing | WebUI 由普通插件递归组合 | WEBUI-001～WEBUI-007、PLG-001～PLG-016、ONB-001、MOB-001 |
 | [0052](0052-compaction-and-markdown-memory-are-ordinary-plugins.md) | accepted / implementing | Compaction 与 Markdown 记忆是普通插件 | CTX-007、MEM-001～MEM-011、PLG-001～PLG-014、SES-003～SES-005 |
 | [0053](0053-plugins-declare-managed-workloads.md) | accepted / implementing | 插件声明受管 Workload | RUN-016、PLG-017、WEBUI-008、WSP-006 |
-| [0054](0054-agent-spine-is-ordinary-plugins.md) | accepted / implementing | Agent 由普通插件组成 | STA-001～STA-003、CAP-001～CAP-002、RUN-001～RUN-012、OUT-001～OUT-005、PLG-001～PLG-018、TST-001～TST-006 |
+| [0055](0055-child-turn-checks-plugin.md) | accepted | Child Turn 检查插件候选 | PLG-010、PLG-013、PLG-014、RUN-007、ERR-001 |
 
 ## 新增规则
 

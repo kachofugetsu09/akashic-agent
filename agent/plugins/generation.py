@@ -88,7 +88,6 @@ class PluginGeneration:
     scope: PluginScope
     contributions: PluginContributions
     gate_result: GateResult
-    config_path: Path | None = None
     config_projection: dict[str, object] = field(default_factory=dict)
     source_type: Literal["builtin", "installed"] = "builtin"
     static_manifest: StaticPluginManifest | None = None
@@ -105,7 +104,6 @@ class PluginGeneration:
     minimum_resource_count: int = 0
     state: str = "active"
     lease_count: int = 0
-    hold_count: int = 0
     reload_tx_id: str | None = None
     production_contributions: PluginContributions | None = None
     production_data_dir: Path | None = None

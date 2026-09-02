@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, cast
 
-from agent.plugins.errors import RootRetired
+from agent.control.scoped_turn import TurnAdmissionRetiredError
+
 from agent.plugins.generation import PluginGeneration
-from agent.plugins.artifact_pins import _artifact_value
 from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
 from agent.tools.registry import ToolRegistry
 from agent.skills import SkillIndex
@@ -29,7 +29,6 @@ from agent.plugin_composition import (
     CompositionError,
     CompositionSnapshotRoot,
     MobileUiRegistry,
-    ServiceKey,
     UI_SLOTS,
     TopologyView,
 )
@@ -63,13 +62,6 @@ from agent.plugin_composition.tool_catalog import (
     PluginTools,
     _freeze_plugin_tools,
 )
-from agent.plugin_composition.root_switch import (
-    ROOT_SWITCH,
-    _PartNeed,
-    _PartSet,
-    _freeze_root_switch,
-    _merge_root_switch,
-)
 
 SnapshotState = Literal[
     "compiled",
@@ -86,7 +78,6 @@ class RuntimeSnapshot:
     snapshot_id: str
     generations: Mapping[str, PluginGeneration]
     skill_catalog_generation_id: str | None
-    source_snapshot: str | None = None
     dashboard_bindings: tuple[object, ...] = ()
     web_ui_catalog: WebUiCatalog | None = None
     web_ui_catalog_identity: str | None = None
@@ -106,7 +97,6 @@ class RuntimeSnapshot:
     plugin_tool_catalog: PluginToolCatalog | None = None
     plugin_tool_catalog_identity: str | None = None
     plugin_tool_facades: tuple[PluginTools, ...] = field(default=(), repr=False)
-    switch_parts: _PartSet | None = field(default=None, repr=False)
     tool_registry: ToolRegistry | None = None
     plugin_skill_index: SkillIndex | None = None
     command_registry: CommandRegistry | None = None
@@ -120,7 +110,6 @@ class RuntimeSnapshot:
     )
     state: SnapshotState = "compiled"
     lease_count: int = 0
-    hold_count: int = 0
     accepting_leases: bool = True
     _store_token: object | None = field(default=None, repr=False)
 
@@ -138,7 +127,6 @@ class RuntimeSnapshot:
         if (
             self.state != "compiled"
             or self.lease_count
-            or self.hold_count
             or self._store_token is not None
         ):
             raise RuntimeError("RuntimeSnapshot 不是可发布的全新 compiled 快照")
@@ -163,7 +151,6 @@ class RuntimeSnapshotCompiler:
         replaced_plugin_ids: frozenset[str] = frozenset(),
         core_channel_definitions: tuple[CoreChannelDefinition, ...] = (),
         require_composition_ready: bool = True,
-        source_snapshot: str | None = None,
     ) -> RuntimeSnapshot:
         ordered = [generations[key] for key in sorted(generations)]
         if any(generation.plugin_id != key for key, generation in generations.items()):
@@ -204,7 +191,6 @@ class RuntimeSnapshotCompiler:
         background_job_catalog: BackgroundJobCatalog | None = None
         plugin_tool_catalog: PluginToolCatalog | None = None
         plugin_tool_facades: tuple[PluginTools, ...] = ()
-        switch_parts: _PartSet | None = None
         web_ui_catalog: WebUiCatalog | None = None
         if base_snapshot is None and replaced_plugin_ids:
             raise ValueError("replaced_plugin_ids 需要 base_snapshot")
@@ -233,44 +219,6 @@ class RuntimeSnapshotCompiler:
             composition_topology = composition_root.topology_view()
             composition_active_plugin_ids = composition_root.active_plugin_ids()
             identity += f"|composition:{composition_topology.identity}"
-            root_switch = catalog_context.get(ROOT_SWITCH)
-            changed_parts = (
-                None
-                if root_switch is None
-                else _freeze_root_switch(
-                    root_switch,
-                    catalog_root_token,
-                    artifacts={
-                        owner: _artifact_value(generation)
-                        for owner, generation in generations.items()
-                    },
-                    needs=_switch_needs(
-                        generations,
-                        composition_root.service_fibers(),
-                        composition_root,
-                    ),
-                    plugin_ids=(
-                        None if base_snapshot is None else replaced_plugin_ids
-                    ),
-                )
-            )
-            if changed_parts is not None:
-                self._check_parts(
-                    changed_parts,
-                    generations,
-                    composition_root,
-                )
-            switch_parts = (
-                changed_parts
-                if base_snapshot is None
-                else _merge_root_switch(
-                    base_snapshot.switch_parts,
-                    changed_parts,
-                    replaced_plugin_ids,
-                )
-            )
-            if switch_parts is not None:
-                identity += f"|root-switch:{switch_parts.identity}"
             ui_slots = catalog_context.get(UI_SLOTS)
             if ui_slots is not None:
                 freeze = getattr(ui_slots, "freeze", None)
@@ -631,7 +579,6 @@ class RuntimeSnapshotCompiler:
         snapshot_id = hashlib.sha256(canonical_identity.encode()).hexdigest()[:16]
         return RuntimeSnapshot(
             snapshot_id=snapshot_id,
-            source_snapshot=source_snapshot or snapshot_id,
             generations=MappingProxyType(dict(generations)),
             skill_catalog_generation_id=(
                 catalog_owner.skill_catalog.generation_id
@@ -676,7 +623,6 @@ class RuntimeSnapshotCompiler:
                 None if plugin_tool_catalog is None else plugin_tool_catalog.identity
             ),
             plugin_tool_facades=plugin_tool_facades,
-            switch_parts=switch_parts,
             plugin_skill_index=(
                 catalog_owner.skill_catalog.normal_plugins
                 if catalog_owner is not None and catalog_owner.skill_catalog is not None
@@ -763,127 +709,6 @@ class RuntimeSnapshotCompiler:
                     "RuntimeSnapshot plugin Tool 不属于 exact generation: "
                     f"{binding.plugin_id}:{binding.generation_id}"
                 )
-
-    @staticmethod
-    def _check_parts(
-        parts: _PartSet,
-        generations: Mapping[str, PluginGeneration],
-        composition_root: CompositionSnapshotRoot,
-    ) -> None:
-        """Bind every switch part to its selected immutable artifact."""
-
-        for binding in parts.values():
-            ref = binding.ref
-            generation = generations.get(ref.owner)
-            if (
-                generation is None
-                or generation.generation_id != ref.generation
-                or _artifact_value(generation) != ref.artifact
-            ):
-                raise RuntimeError(
-                    "RuntimeSnapshot Root switch part 不属于 exact artifact: "
-                    f"{ref.owner}:{ref.name}:{ref.generation}"
-                )
-            owner_fibers = {
-                fiber.name
-                for fiber in composition_root.plugin_topology(ref.owner).fibers
-            }
-            if ref.fiber not in owner_fibers:
-                raise RuntimeError(
-                    "RuntimeSnapshot Root switch part Fiber 不属于 owner: "
-                    f"{ref.owner}:{ref.fiber}"
-                )
-            for item in ref.inputs:
-                contributor = generations.get(item.owner)
-                if (
-                    contributor is None
-                    or contributor.generation_id != item.generation
-                    or _artifact_value(contributor) != item.artifact
-                ):
-                    raise RuntimeError(
-                        "RuntimeSnapshot Root switch input 不属于 exact artifact: "
-                        f"{ref.owner}:{item.owner}:{item.generation}"
-                    )
-                input_fibers = {
-                    fiber.name
-                    for fiber in composition_root.plugin_topology(item.owner).fibers
-                }
-                if item.fiber not in input_fibers:
-                    raise RuntimeError(
-                        "RuntimeSnapshot Root switch input Fiber 不属于 owner: "
-                        f"{item.owner}:{item.fiber}"
-                    )
-            for need in ref.needs:
-                needed = generations.get(need.owner)
-                if (
-                    needed is None
-                    or needed.generation_id != need.generation
-                    or _artifact_value(needed) != need.artifact
-                ):
-                    raise RuntimeError(
-                        "RuntimeSnapshot Root switch dependency 不属于 exact artifact: "
-                        f"{ref.owner}:{need.owner}:{need.generation}"
-                    )
-
-
-def _switch_needs(
-    generations: Mapping[str, PluginGeneration],
-    service_fibers: Mapping[ServiceKey[object], tuple[str, str]],
-    composition_root: CompositionSnapshotRoot,
-) -> dict[tuple[str, str], tuple[_PartNeed, ...]]:
-    """Freeze the provider closure of each exact plugin Fiber."""
-
-    providers = {key.name: value for key, value in service_fibers.items()}
-    fibers = {
-        plugin_id: {
-            fiber.name: fiber
-            for fiber in composition_root.plugin_topology(plugin_id).fibers
-        }
-        for plugin_id in generations
-    }
-    result: dict[tuple[str, str], tuple[_PartNeed, ...]] = {}
-    for start_owner, owner_fibers in fibers.items():
-        for start_fiber in owner_fibers:
-            selected: set[str] = set()
-            seen: set[tuple[str, str]] = set()
-            pending = [(start_owner, start_fiber)]
-            while pending:
-                owner, fiber_name = pending.pop()
-                node = (owner, fiber_name)
-                if node in seen:
-                    continue
-                seen.add(node)
-                topology = fibers.get(owner)
-                if topology is None or fiber_name not in topology:
-                    raise RuntimeError(
-                        "Root switch dependency Fiber 不属于 exact plugin: "
-                        f"{owner}:{fiber_name}"
-                    )
-                fiber = topology[fiber_name]
-                if fiber.parent is not None:
-                    pending.append((owner, fiber.parent))
-                for service_name in fiber.dependencies:
-                    provider = providers.get(service_name)
-                    if provider is None:
-                        continue
-                    provider_owner, provider_fiber = provider
-                    if provider_owner not in generations:
-                        raise RuntimeError(
-                            "Root switch dependency owner 不属于 snapshot: "
-                            f"{provider_owner}:{service_name}"
-                        )
-                    if provider_owner != start_owner:
-                        selected.add(provider_owner)
-                    pending.append((provider_owner, provider_fiber))
-            result[(start_owner, start_fiber)] = tuple(
-                _PartNeed(
-                    owner=owner,
-                    generation=generations[owner].generation_id,
-                    artifact=_artifact_value(generations[owner]),
-                )
-                for owner in sorted(selected)
-            )
-    return result
 
 
 def _merge_command_registries(
@@ -1260,7 +1085,6 @@ class RuntimeSnapshotStore:
             and (
                 snapshot.state in {"validating", "committed"}
                 or snapshot.lease_count > 0
-                or snapshot.hold_count > 0
             )
             and any(item is generation for item in snapshot.generations.values())
             for snapshot in self._snapshots.values()
@@ -1277,7 +1101,6 @@ class RuntimeSnapshotStore:
             and (
                 snapshot.state in {"validating", "committed"}
                 or snapshot.lease_count > 0
-                or snapshot.hold_count > 0
             )
             and snapshot.composition_root is root
             for snapshot in self._snapshots.values()
@@ -1422,22 +1245,6 @@ class RuntimeSnapshotStore:
     ) -> None:
         """Open a provisional stable and retire its rollback snapshot."""
 
-        await self.select_provisional(
-            transaction,
-            before_open=before_open,
-            after_open=after_open,
-        )
-        await self.open_provisional(transaction)
-
-    async def select_provisional(
-        self,
-        transaction: SnapshotTransaction,
-        *,
-        before_open: Callable[[], None] | None = None,
-        after_open: Callable[[], None] | None = None,
-    ) -> None:
-        """Select the candidate pointer while both sides remain closed."""
-
         # 1. Complete fallible projection work while the old stable stays visible.
         self._require_provisional(transaction)
         self._validate_composition(transaction.candidate)
@@ -1458,27 +1265,15 @@ class RuntimeSnapshotStore:
                 self._activate_plugin_tool_catalog(previous)
             raise
 
+        # 3. Open the new stable only after all publication work succeeded.
+        transaction.candidate.accepting_leases = True
+        if previous is not None:
+            previous.state = "retired"
+            previous.accepting_leases = False
+        self._provisional = None
+        if previous is not None:
+            self._schedule_drain(previous)
         async with self._condition:
-            self._condition.notify_all()
-
-    async def open_provisional(
-        self,
-        transaction: SnapshotTransaction,
-    ) -> None:
-        """Open a selected candidate after every closed participant settled."""
-
-        async with self._condition:
-            self._require_provisional(transaction)
-            if self._current is not transaction.candidate:
-                raise RuntimeError("RuntimeSnapshot provisional candidate 尚未选中")
-            transaction.candidate.accepting_leases = True
-            previous = transaction.previous
-            if previous is not None:
-                previous.state = "retired"
-                previous.accepting_leases = False
-            self._provisional = None
-            if previous is not None:
-                self._schedule_drain(previous)
             self._condition.notify_all()
 
     async def rollback_provisional(
@@ -1494,12 +1289,8 @@ class RuntimeSnapshotStore:
         self._require_provisional(transaction)
         candidate = transaction.candidate
         previous = transaction.previous
-        if self._current is not previous and self._current is not candidate:
+        if self._current is not previous:
             raise RuntimeError("RuntimeSnapshot provisional stable 指针已漂移")
-        if self._current is candidate:
-            self._current = previous
-            if previous is not None:
-                self._activate_plugin_tool_catalog(previous)
         if previous is not None:
             previous.state = "committed"
             previous.accepting_leases = reopen_previous
@@ -1598,7 +1389,7 @@ class RuntimeSnapshotStore:
             candidate.state = "aborted"
             candidate.accepting_leases = False
             self._latest = self._current
-        await self._wait_for_no_refs(candidate)
+        await self.wait_for_no_leases(candidate)
         self._schedule_drain(candidate)
 
         # 2. Wait for validation leases and candidate-owned resources to drain.
@@ -1631,7 +1422,7 @@ class RuntimeSnapshotStore:
         if snapshot is None:
             return None
         try:
-            await self._wait_for_no_refs(snapshot)
+            await self.wait_for_no_leases(snapshot)
         except BaseException:
             await self.resume(snapshot)
             raise
@@ -1687,11 +1478,9 @@ class RuntimeSnapshotStore:
             None if root is None else root.instance_token
         )
 
-    async def _wait_for_no_refs(self, snapshot: RuntimeSnapshot) -> None:
-        """Wait until neither live work nor durable work retains this Root."""
-
+    async def wait_for_no_leases(self, snapshot: RuntimeSnapshot) -> None:
         async with self._condition:
-            while snapshot.lease_count or snapshot.hold_count:
+            while snapshot.lease_count:
                 await self._condition.wait()
 
     async def resume(self, snapshot: RuntimeSnapshot | None) -> None:
@@ -1743,8 +1532,8 @@ class RuntimeSnapshotStore:
                     None,
                 )
                 if snapshot is None:
-                    raise RootRetired(
-                        "composition Root 已退役，不能接收新工作"
+                    raise TurnAdmissionRetiredError(
+                        "composition Root 已退役，Turn 尚未进入 admission"
                     )
                 if (
                     snapshot is self._current
@@ -1757,15 +1546,14 @@ class RuntimeSnapshotStore:
     async def close(self) -> None:
         if self._pending is not None or self._provisional is not None:
             raise RuntimeError("RuntimeSnapshot 发布事务尚未结束")
-        retained = [
+        leased = [
             snapshot.snapshot_id
             for snapshot in self._snapshots.values()
-            if snapshot.lease_count or snapshot.hold_count
+            if snapshot.lease_count
         ]
-        if retained:
+        if leased:
             raise RuntimeError(
-                "RuntimeSnapshot 仍被 work 保留: "
-                + ", ".join(sorted(retained))
+                f"RuntimeSnapshot 仍有 lease: {', '.join(sorted(leased))}"
             )
         await self.retry_drains()
         latest = self.unpromoted_candidate
@@ -1813,57 +1601,6 @@ class RuntimeSnapshotStore:
         if self._snapshots.get(candidate.snapshot_id) is not candidate:
             raise RuntimeError("RuntimeSnapshot publication target 未被 Store 持有")
         return self._claim_lease(candidate)
-
-    def _check_hold(self, lease: RuntimeSnapshotLease) -> RuntimeSnapshot:
-        """Validate that durable work still owns the live stable Root."""
-
-        snapshot = lease.snapshot
-        if (
-            not lease.active
-            or self._snapshots.get(snapshot.snapshot_id) is not snapshot
-            or snapshot.state != "committed"
-            or snapshot is not self._current
-            or not snapshot.accepting_leases
-        ):
-            raise RuntimeError("ServiceHold 需要 live exact snapshot lease")
-        return snapshot
-
-    def _retain_hold(self, lease: RuntimeSnapshotLease) -> RuntimeSnapshot:
-        """Retain the exact live Root for durable work without choosing a Root."""
-
-        snapshot = self._check_hold(lease)
-        snapshot.hold_count += 1
-        for generation in snapshot.generations.values():
-            generation.hold_count += 1
-        return snapshot
-
-    def _restore_hold(self, snapshot: RuntimeSnapshot) -> RuntimeSnapshot:
-        """Adopt one fresh held Root rebuilt from durable artifact pins."""
-
-        current = self._snapshots.get(snapshot.snapshot_id)
-        if current is not None:
-            if current is not snapshot:
-                raise RuntimeError("ServiceHold snapshot id 重复")
-            retained = current
-        else:
-            self._validate_composition(snapshot)
-            self._adopt(snapshot)
-            snapshot.state = "retired"
-            snapshot.accepting_leases = False
-            self._snapshots[snapshot.snapshot_id] = snapshot
-            retained = snapshot
-        retained.hold_count += 1
-        for generation in retained.generations.values():
-            generation.hold_count += 1
-        return retained
-
-    def _lease_hold(self, snapshot_id: str) -> RuntimeSnapshotLease:
-        """Lease one exact held Root without opening normal admission."""
-
-        snapshot = self._snapshots.get(snapshot_id)
-        if snapshot is None or snapshot.hold_count <= 0:
-            raise RuntimeError("ServiceHold exact Root 未恢复")
-        return self._claim_lease(snapshot)
 
     def _claim_lease(self, snapshot: RuntimeSnapshot) -> RuntimeSnapshotLease:
         snapshot.lease_count += 1
@@ -1916,30 +1653,12 @@ class RuntimeSnapshotStore:
         async with self._condition:
             self._condition.notify_all()
 
-    async def _release_hold(self, snapshot: RuntimeSnapshot) -> None:
-        """Release one durable Root hold and wake closed publication gates."""
-
-        if snapshot.hold_count <= 0:
-            raise RuntimeError(
-                f"RuntimeSnapshot hold 计数失衡: {snapshot.snapshot_id}"
-            )
-        snapshot.hold_count -= 1
-        for generation in snapshot.generations.values():
-            if generation.hold_count <= 0:
-                raise RuntimeError(
-                    f"PluginGeneration hold 计数失衡: {generation.plugin_id}"
-                )
-            generation.hold_count -= 1
-        self._schedule_drain(snapshot)
-        async with self._condition:
-            self._condition.notify_all()
-
     async def wait_for_generation_drained(
         self,
         generation: PluginGeneration,
     ) -> None:
         async with self._condition:
-            while generation.lease_count or generation.hold_count:
+            while generation.lease_count:
                 await self._condition.wait()
         await self.retry_drains()
 
@@ -1948,7 +1667,6 @@ class RuntimeSnapshotStore:
             self._snapshots.get(snapshot.snapshot_id) is not snapshot
             or snapshot.state not in {"retired", "aborted"}
             or snapshot.lease_count
-            or snapshot.hold_count
         ):
             return
         existing = self._drain_tasks.get(snapshot.snapshot_id)

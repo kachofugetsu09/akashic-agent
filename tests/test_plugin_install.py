@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import json
 import subprocess
 import sys
 import tomllib
@@ -10,8 +9,6 @@ from pathlib import Path
 import pytest
 
 import agent.plugins.install as install_module
-from agent.plugin_composition import SwitchPart
-from agent.plugin_composition.root_switch import _PartEntry, _PartRef, _PartSet
 from agent.plugins.artifacts import (
     ArtifactPointer,
     discard_latest_pointer,
@@ -22,9 +19,6 @@ from agent.plugins.install import (
     install_git_plugin,
     set_installed_plugin_enabled,
 )
-from agent.plugins.reload_journal import ReloadJournal
-from agent.plugins.root_switch import _SwitchRun
-from agent.plugins.source_hash import file_hash, file_revision, source_revision
 from agent.plugins.manifest import plugins_root
 from agent.plugins.source_resolver import resolve_plugin_sources
 
@@ -108,73 +102,6 @@ def test_install_git_plugin_reads_static_v3_manifest(tmp_path: Path) -> None:
     assert result.plugin_version == "2.0.0"
     assert (result.installed_path / "plugin.py").is_file()
     assert (result.installed_path / "akashic.plugin.toml").is_file()
-
-
-def test_install_refuses_pointer_change_during_root_switch(tmp_path: Path) -> None:
-    repo = tmp_path / "feed"
-    _write_v3_plugin(repo, name="feed", marker="v1")
-    _commit(repo)
-    workspace = tmp_path / "workspace"
-    home = tmp_path / "plugins-home"
-    first = install_git_plugin(
-        workspace=workspace,
-        source=str(repo),
-        marketplace="lab",
-        plugins_home=home,
-    )
-    config_path = first.data_path / "config.local.toml"
-    artifact = json.dumps(
-        {
-            "config_hash": file_hash(config_path),
-            "config_path": str(config_path.resolve(strict=False)),
-            "config_revision": file_revision(config_path),
-            "data_path": str(first.data_path.resolve()),
-            "entrypoint": "plugin.py",
-            "path": str(first.installed_path.resolve()),
-            "source_revision": source_revision(first.installed_path),
-            "source_type": "installed",
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-    async def none(_snapshot: str) -> None:
-        return None
-
-    async def recover(_snapshot: str, _active: bool) -> None:
-        return None
-
-    part = SwitchPart(
-        "shared",
-        stop=none,
-        leave=none,
-        enter=none,
-        start=none,
-        recover=recover,
-    )
-    entry = _PartEntry(
-        _PartRef("shared", "feed@lab", "old-generation", artifact, "feed@lab"),
-        part,
-    )
-    work = _SwitchRun(ReloadJournal(workspace)).prepare(
-        "pending-install",
-        old_snapshot="old-snapshot",
-        old_parts=_PartSet({"shared": entry}),
-        new_snapshot="new-snapshot",
-        new_parts=None,
-    )
-    assert work is not None
-    _write_v3_plugin(repo, name="feed", version="1.1.0", marker="v2")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "v2")
-
-    with pytest.raises(RuntimeError, match="正在执行 RootSwitch"):
-        install_git_plugin(
-            workspace=workspace,
-            source=str(repo),
-            marketplace="lab",
-            plugins_home=home,
-        )
 
 
 def test_install_git_plugin_prepares_declared_mcp_runtime(

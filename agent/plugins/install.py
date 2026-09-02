@@ -104,15 +104,8 @@ def finalize_uninstall_plugin(
     plugin_name, marketplace = _split_installed_plugin_id(plugin_id)
     cache_path = home / "cache" / marketplace / plugin_name
     data_path = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
-    from agent.plugins.reload_journal import ReloadJournal
-    from agent.plugins.artifact_pins import _ArtifactPins
-
-    pins = _ArtifactPins(workspace, ReloadJournal(workspace))
-    with pins.lock():
-        if cache_path.exists() and pins.has(cache_path):
-            raise RuntimeError(f"插件 artifact 仍被 durable work pin: {cache_path}")
-        if cache_path.exists():
-            shutil.rmtree(cache_path)
+    if cache_path.exists():
+        shutil.rmtree(cache_path)
     _ = remove_plugin_manifest_entry(plugin_id, plugins_home=home)
     return cache_path, data_path
 
@@ -185,35 +178,31 @@ def install_git_plugin(
             static_manifest.version,
             "插件 version",
         )
-        from agent.plugins.artifact_pins import _ArtifactPins
-        from agent.plugins.reload_journal import ReloadJournal
-
-        with _ArtifactPins(workspace, ReloadJournal(workspace)).lock():
-            activation = _activate_plugin_version(
-                plugin_name=plugin_name,
-                plugin_version=plugin_version,
-                static_manifest=static_manifest,
-                marketplace=marketplace,
-                clone_root=clone_root,
-                cache_root=cache_root,
-                data_root=workspace.resolve(strict=False) / "plugin-data",
-                workspace=workspace,
-                source_revision=source_revision,
-                stage_candidate=stage_candidate,
-                refresh_existing_artifact=refresh_existing_artifact,
+        activation = _activate_plugin_version(
+            plugin_name=plugin_name,
+            plugin_version=plugin_version,
+            static_manifest=static_manifest,
+            marketplace=marketplace,
+            clone_root=clone_root,
+            cache_root=cache_root,
+            data_root=workspace.resolve(strict=False) / "plugin-data",
+            workspace=workspace,
+            source_revision=source_revision,
+            stage_candidate=stage_candidate,
+            refresh_existing_artifact=refresh_existing_artifact,
+        )
+        plugin_id = f"{plugin_name}@{marketplace}"
+        try:
+            # 2. manifest 原子写入成功后，cache 才算完成安装
+            _ = upsert_plugin_manifest(
+                plugin_id,
+                enabled=True,
+                plugins_home=home,
             )
-            plugin_id = f"{plugin_name}@{marketplace}"
-            try:
-                # 2. manifest 原子写入成功后，cache 才算完成安装
-                _ = upsert_plugin_manifest(
-                    plugin_id,
-                    enabled=True,
-                    plugins_home=home,
-                )
-            except BaseException:
-                activation.rollback()
-                raise
-            activation.finalize()
+        except BaseException:
+            activation.rollback()
+            raise
+        activation.finalize()
     return activation.result
 
 
@@ -300,14 +289,6 @@ def _activate_plugin_version(
     validate_workspace_plugin_data_path(data_path, workspace)
     plugin_base = cache_root / plugin_name
     _ensure_directory(plugin_base)
-    from agent.plugins.reload_journal import ReloadJournal
-    from agent.plugins.artifact_pins import _ArtifactPins
-
-    pins = _ArtifactPins(workspace, ReloadJournal(workspace))
-    if pins.switching(plugin_base):
-        raise RuntimeError(
-            f"插件 artifact 正在执行 RootSwitch: {plugin_name}@{marketplace}"
-        )
     visible_versions = _cache_version_dirs(plugin_base)
     if visible_versions:
         paths = ", ".join(str(path) for path in visible_versions)
@@ -336,11 +317,6 @@ def _activate_plugin_version(
         if refresh_existing_artifact and stable.path is not None
         else None
     )
-    if superseded_artifact is not None:
-        if pins.has(superseded_artifact):
-            raise RuntimeError(
-                f"插件 artifact 仍被 durable work pin: {superseded_artifact}"
-            )
     target_root = (
         artifacts_root / f"{artifact_id}-restaged-{uuid4().hex[:16]}"
         if refresh_existing_artifact and base_target_root.exists()

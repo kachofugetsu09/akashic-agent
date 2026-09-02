@@ -222,18 +222,6 @@ class CompositionOverlay:
             listeners=listeners,
         )
 
-    def plugin_topology(self, plugin_id: str) -> TopologyView:
-        """Freeze one dispatched plugin's full Fiber topology."""
-
-        matches = tuple(
-            root
-            for root, owner in self.dispatch_order
-            if owner == plugin_id
-        )
-        if len(matches) != 1:
-            raise RuntimeError(f"composition plugin topology 不唯一: {plugin_id}")
-        return matches[0].plugin_topology(plugin_id)
-
     def topology_identity(self) -> str:
         return self.topology_view().identity
 
@@ -266,24 +254,6 @@ class CompositionOverlay:
                 key: owner
                 for key, owner in self.candidate.plugin_service_owners().items()
                 if owner in self.replaced_plugin_ids
-            },
-        }
-
-    def service_fibers(
-        self,
-    ) -> dict[ServiceKey[object], tuple[str, str]]:
-        """Return exact provider Fibers from the selected Roots."""
-
-        return {
-            **{
-                key: value
-                for key, value in self.stable.service_fibers().items()
-                if value[0] in self.stable_plugin_ids
-            },
-            **{
-                key: value
-                for key, value in self.candidate.service_fibers().items()
-                if value[0] in self.replaced_plugin_ids
             },
         }
 

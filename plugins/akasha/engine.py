@@ -189,11 +189,11 @@ class _EmbeddingApiAdapter:
         self,
         embeddings: Embeddings,
         descriptor: EmbeddingSpaceDescriptor,
-        root_scope: Callable[[], AbstractAsyncContextManager[None]],
+        runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
     ) -> None:
         self._embeddings = embeddings
         self._descriptor = descriptor
-        self._root_scope = root_scope
+        self._runtime_scope = runtime_scope
 
     @property
     def model_id(self) -> str:
@@ -204,7 +204,7 @@ class _EmbeddingApiAdapter:
         return vectors[0]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        async with self._root_scope():
+        async with self._runtime_scope():
             async with self._embeddings.bind(
                 model_id=self._descriptor.model_id,
             ) as bound:
@@ -380,7 +380,7 @@ class AkashaMemoryEngine:
         *,
         embeddings: Embeddings,
         embedding_space: EmbeddingSpaceDescriptor,
-        root_scope: Callable[[], AbstractAsyncContextManager[None]],
+        runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
         akasha_config: AkashaConfig,
         workspace: Path,
         event_publisher: EventBus | None,
@@ -392,7 +392,7 @@ class AkashaMemoryEngine:
         self._embedder = _EmbeddingApiAdapter(
             embeddings,
             embedding_space,
-            root_scope,
+            runtime_scope,
         )
         self._config = akasha_config
         self._workspace = workspace

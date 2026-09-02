@@ -41,7 +41,7 @@ from agent.plugin_composition import (
     PluginToolDefinition,
     PluginDiagnosticContext,
     PluginDiagnostics,
-    RootScope,
+    RuntimeScope,
     ConversationSemanticInterest,
     SourceMutationFence,
     ServiceKey,
@@ -394,7 +394,7 @@ async def apply(ctx: Context, config: object) -> None:
                 embeddings=embeddings,
                 workspace=workspace,
                 akasha_config=akasha_config,
-                root_scope=ctx.root_scope,
+                runtime_scope=ctx.runtime_scope,
             ),
             embedding_identity=lambda: embeddings.describe().identity,
         )
@@ -436,7 +436,7 @@ async def apply(ctx: Context, config: object) -> None:
             request = load_request(ctx.data_root)
             if request is None:
                 return
-            async with ctx.root_scope():
+            async with ctx.runtime_scope():
                 descriptor = embeddings.describe()
             await runtime.reset()
             result = await reindex(
@@ -446,7 +446,7 @@ async def apply(ctx: Context, config: object) -> None:
                 workspace=workspace,
                 data_root=ctx.data_root,
                 config=akasha_config,
-                root_scope=ctx.root_scope,
+                runtime_scope=ctx.runtime_scope,
             )
             if runtime.try_get() is None:
                 raise RuntimeError(runtime.unavailable_reason)
@@ -497,7 +497,7 @@ async def apply(ctx: Context, config: object) -> None:
     # 2. Prompt retrieval and post-commit projection are normal lifecycle listeners.
     diagnostics = ctx.diagnostics
     queue: asyncio.Queue[
-        tuple[TurnCommitted, PluginDiagnosticContext | None, RootScope]
+        tuple[TurnCommitted, PluginDiagnosticContext | None, RuntimeScope]
     ] = asyncio.Queue()
     worker_task: asyncio.Task[None] | None = None
 
@@ -507,7 +507,7 @@ async def apply(ctx: Context, config: object) -> None:
         if worker_task is not None and worker_task.done():
             raise RuntimeError("Akasha post-commit worker 已停止")
         queue.put_nowait(
-            (event, diagnostics.capture(), ctx.capture_scope())
+            (event, diagnostics.capture(), ctx.capture_runtime_scope())
         )
 
     async def project_commits() -> None:
@@ -527,7 +527,7 @@ async def apply(ctx: Context, config: object) -> None:
                     _event, _parent, pending_scope = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                await pending_scope.release()
+                await pending_scope.close()
                 queue.task_done()
 
     worker_task = await ctx.spawn(project_commits(), name="akasha-post-commit")
@@ -573,14 +573,14 @@ def _build_runtime(
     embeddings: Embeddings,
     workspace: Path,
     akasha_config: AkashaConfig,
-    root_scope: Callable[[], AbstractAsyncContextManager[None]],
+    runtime_scope: Callable[[], AbstractAsyncContextManager[None]],
 ) -> AkashaMemoryEngine:
     """Build one exact-Root Akasha kernel from declared workspace paths."""
 
     return AkashaMemoryEngine(
         embeddings=embeddings,
         embedding_space=embeddings.describe(),
-        root_scope=root_scope,
+        runtime_scope=runtime_scope,
         akasha_config=akasha_config,
         workspace=workspace,
         event_publisher=None,

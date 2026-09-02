@@ -960,7 +960,7 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
         )
     store.pause_candidate_admission(latest)
     await latest_lease.release()
-    await store._wait_for_no_refs(latest)
+    await store.wait_for_no_leases(latest)
     promoted = await store.promote_latest()
     assert promoted.previous is stable
     assert store.stable is latest
@@ -1103,7 +1103,7 @@ async def test_runtime_runner_holds_publication_until_started_scope_finishes(
         ),
         body=(
             "    async def start(_event):\n"
-            "        async with ctx.root_scope():\n"
+            "        async with ctx.runtime_scope():\n"
             "            started.set()\n"
             "            await allow_finish.wait()\n"
             "    async def stop(_event):\n"

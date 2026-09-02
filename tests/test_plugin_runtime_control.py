@@ -13,7 +13,6 @@ from typing import Any, cast
 import certifi
 import pytest
 
-from agent.control.models import TurnItem, TurnItemKind
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.tools.registry import ToolRegistry
@@ -242,66 +241,6 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         assert registry.get_non_read_only_source_tool_names(
             "mcp", "runtime_probe"
         ) == set()
-        assert manager.candidate_child_evidence(
-            plugin_id,
-            candidate.generation_id,
-            (
-                TurnItem(
-                    TurnItemKind.ASSISTANT_MESSAGE,
-                    "workspace-skill-collision",
-                    {"metadata": {"_activeSkillNames": ["runtime-probe"]}},
-                ),
-                TurnItem(
-                    TurnItemKind.TOOL_CALL,
-                    "wrong-snapshot-skill",
-                    {
-                        "name": "load_skill",
-                        "status": "success",
-                        "runtimeProvenance": {
-                            "kind": "plugin-skill",
-                            "skillName": "runtime-probe",
-                            "pluginId": plugin_id,
-                            "skillCatalogGenerationId": (
-                                candidate.skill_catalog.generation_id
-                            ),
-                            "runtimeSnapshotId": "stable-or-forged-snapshot",
-                        },
-                    },
-                ),
-            ),
-        ) == ()
-        assert manager.candidate_child_evidence(
-            plugin_id,
-            candidate.generation_id,
-            (
-                TurnItem(
-                    TurnItemKind.TOOL_CALL,
-                    "candidate-probe",
-                    {
-                        "name": "mcp_runtime_probe__probe",
-                        "status": "success",
-                    },
-                ),
-                TurnItem(
-                    TurnItemKind.TOOL_CALL,
-                    "candidate-skill",
-                    {
-                        "name": "load_skill",
-                        "status": "success",
-                        "runtimeProvenance": {
-                            "kind": "plugin-skill",
-                            "skillName": "runtime-probe",
-                            "pluginId": plugin_id,
-                            "skillCatalogGenerationId": (
-                                candidate.skill_catalog.generation_id
-                            ),
-                            "runtimeSnapshotId": manager.latest_snapshot.snapshot_id,
-                        },
-                    },
-                ),
-            ),
-        ) == ("skill:runtime-probe", "tool:mcp_runtime_probe__probe")
-
         await app._promote_plugin(plugin_id)
 
         active = manager.generation(plugin_id)
