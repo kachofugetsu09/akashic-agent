@@ -1,5 +1,7 @@
 # 插件 v3 最终迁移地图
 
+> 历史迁移地图：E1～E4 是 2026-08 的分批计划，不是当前可执行 Gate。当前入口与删除依据分别见 [`docs/WORKFLOW.md`](../WORKFLOW.md) 和[测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md)。
+
 本文记录 Issue [#394](https://github.com/kachofugetsu09/akashic-agent/issues/394)
 这一轮 Cordis 风格插件改造的目标结构、当前实现栈、剩余迁移范围和 v2 物理删除顺序。
 它是 2026-08-16 的实施接手点，不替代

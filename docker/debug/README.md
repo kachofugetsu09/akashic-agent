@@ -33,37 +33,14 @@ python docker/debug/gate.py plan --base origin/main
 
 公开 Gate 不安装也不枚举私有插件，不依赖外部私有验证或 provider 身份；公开报告是当前仓库的合并依据。
 
-## Citation + Meme 纯 v3 组合 Gate
+## Citation + Meme 纯 v3 WebUI Gate
 
-`plugin_passive_composition_v3_gate.py` 从锁文件 fresh checkout 纯 v3 Citation、Meme
-与公共插件合同，在临时 workspace 中通过真实 `PluginManager.load_all()` 发布 stable
-snapshot。Gate 只从该 snapshot lease 执行 prompt、回复预处理和清理事件，并验证
-Service/Fiber 依赖、Skill、Dashboard、workspace asset 零改写和终止回收。
-
-```text
-┌─ Citation Fiber ── provide citation.protocol ───────────────┐
-│  ├─ prompt protocol                                        │
-│  ├─ citation metadata                                      │
-│  └─ final protocol cleanup                                 │
-│                                                            ▼
-└─────────────────────────────── Meme Fiber (required inject)
-                                 ├─ prompt catalog
-                                 ├─ reply media decoration
-                                 ├─ meme-manage Skill
-                                 └─ Dashboard + workspace/memes
-```
-
-```bash
-python docker/debug/plugin_passive_composition_v3_gate.py --require-clean-core
-```
-
-证据写入 `docker/debug/reports/plugin-passive-composition-v3/gate.json`。运行期间只写
-临时 checkout、临时 workspace 与被 Git 忽略的报告目录，不读取或修改正式 workspace。
-
-同一组 exact commits 还必须通过完整 WebUI runtime：Gate 用 installed stable artifact
+Gate 用 exact commits 和 installed stable artifact
 布局启动 supervised Gateway，只保留 WebUI channel，经公开 WebSocket 完成一轮回复，再从
 公开 HTTP 读取消息、媒体、Dashboard 与 capability。它同时核对模型 prompt 中
 Citation→Meme 顺序、SessionDB、artifact 前后摘要以及 Compose 零残留。
+`plugin_passive_composition_v3_gate.py` 仅保留为该 runner 的 exact source、装配和摘要 helper，
+不再作为独立 Gate 执行。
 
 ```bash
 python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
@@ -154,13 +131,12 @@ workspace 手工 TOML、watcher/admin 和独立热重载路径已删除；Gate �
 
 ```bash
 python docker/debug/plugin_v3_fleet_gate.py
-python docker/debug/plugin_composition_v3_gate.py --require-clean-core
 python docker/debug/restart_probe.py --soak
 ```
 
-每个报告必须记录同一源码 HEAD、manifest/artifact digest、候选与 stable generation、真实
-MCP handshake/readiness、进程/stdio cleanup 和无残留资源；不能用旧 workspace MCP probe
-替代 v3 插件 Gate。
+fleet 报告固定来源和 v3-only 静态合同；真实 MCP handshake/readiness、进程/stdio cleanup
+由保留的行为回归和每周 restart soak 负责。已删除的 composition Gate 只是按固定插件排列
+重复内部 snapshot，不再作为独立证据。
 
 ## Content / Wake / Drift 真实插件互操作 Gate
 
@@ -352,23 +328,20 @@ container
 
 ## 插件变更 Gate
 
-pure-v3 发布证据以集中 E1～E4 为主，Mobile 和公共 WebUI 补充用户可见边界。所有 Gate
+pure-v3 候选证据由 fleet、Mobile 和公共 WebUI 三个边界组成。所有 Gate
 使用 exact commit 锁、一次性 workspace/plugin-home/HOME 与受控端点，不读写正式
 Akashic workspace、正式凭据或 hua-home 服务。
 
 这些是插件候选与发布 Gate，不是普通 Core Pull Request 的固定矩阵。普通 Pull Request
 运行全部保留回归和按 diff 选场景的统一变更影响 Gate；当改动进入插件候选时，
-`Plugin v3 Candidate Gates` 手动 workflow 只运行 fleet completeness、Mobile、公共 WebUI、E1 和 E2。
-E4 依赖维护者显式提供的正式来源副本，只在本地发布验收中运行。
+`Plugin v3 Candidate Gates` 手动 workflow 只运行 fleet completeness、Mobile 和公共 WebUI。
 
 ```text
 精确能力 lock
       │
       ├── fleet ─────── 全插件来源、v3-only 与 retired exclusion
       ├── Mobile ────── Python catalog / JS ABI / plugin tests
-      ├── WebUI ─────── Citation / Meme / public WebSocket
-      ├── E1/E2 ────── state plugins / typed Tool / MCP / process finality
-      └── E3/E4 ────── fleet coverage / copied-workspace rehearsal
+      └── WebUI ─────── Citation / Meme / public WebSocket
 ```
 
 候选 workflow 保留的独立边界：
@@ -378,36 +351,13 @@ python docker/debug/plugin_v3_fleet_gate.py \
   --require-clean-core --require-full-core-history
 python docker/debug/plugin_v3_mobile_gate.py --require-clean-core
 python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
-python docker/debug/plugin_v3_e1_gate.py
-python docker/debug/plugin_v3_e2_gate.py --require-clean-core
 ```
 
-E4 只在能力接线全部完成且正式来源副本可用时运行：
-
-```bash
-python docker/debug/plugin_v3_e4_gate.py \
-  --source-workspace /path/to/source-workspace \
-  --source-config /path/to/config.toml \
-  --plugin-home /path/to/plugin-home
-```
-
-仓库当前没有 E3 runner；E3 Fleet/Channel/Proactive 报告仍是发布就绪清单中的未完成项，
-不能由其他 Gate 冒充。E4 会校验对应 `plugin-v3-e3/gate.json` 并在缺失或身份不匹配时
-fail closed，因此在 E3 runner 和同一 Core head 的报告落地前不能声明 E1～E4 完成。
-
-所有集中 Gate 默认使用 Python/操作系统选择的临时目录；E1、E2 与 E4 可通过 `--tmp-root`
-显式选择已有目录。测试源码不绑定维护者 HOME、正式 workspace 或一次性试运行路径。
-
-E1 覆盖 Akasha、Citation/Meme、Observe、Emotion、Proactive Feedback 与
-Plugin Undo；E2 覆盖 Shell 三件与 MCP/process 插件；E4 覆盖正式来源 workspace 的组合激活边界。E4 不重复逐插件运行，而是从同一 Core head
-的 E1～E3 报告建立覆盖集，再在复制 workspace 中验证 SQLite 完整性、messages
-只追加、plugin-data 权威文件与 artifact/pointer 不变，以及进程内失败/子进程崩溃恢复。
-SQLite 在线备份可能在只读源旁创建或触碰 `-wal`/`-shm`/`-journal` 运行 sidecar；
-E4 不把这些可重建 sidecar 计入 plugin-data 身份，但仍逐字节固定主数据库和其他文件。
-
-报告中任何 `blocked`、不同 Core head、非 exact lock、未覆盖 fleet 或 cleanup 残留都会令
-最终 rehearsal 非零退出。正式 workspace 备份和 hua-home 切换不属于这些 Gate
-的授权范围。
+被删除的 E1/E2 固定了 2026-08 的组合 API；Core 在 2026-09-02 删除 v2 兼容后，
+锁定的 Emotion 和 Calendar 插件分别仍导入已删除的 `CoreEvent` 与
+`PROACTIVE_COMPONENTS`，所以两条 Gate 只会阻止当前合法演进。E4 又依赖 E1 和仓库中
+不存在的 E3 runner，无法形成可执行发布合同，也一并删除。正式 workspace 的发布验收
+应在拥有真实部署输入的发布流程中重建，不能由仓库内永远 blocked 的脚本冒充。
 
 ## 第一次启动
 

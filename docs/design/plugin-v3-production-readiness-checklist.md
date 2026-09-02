@@ -1,5 +1,7 @@
 # 插件 v3 生产替代清单
 
+> 历史执行清单：其中 E1～E4 表格记录 2026-08 的迁移计划，不再是当前 CI 或发布命令。2026-09-02 的 Gate 去留与代码演进依据见[测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md)；当前候选入口以 [`docs/WORKFLOW.md`](../WORKFLOW.md) 为准。
+
 本文是 Issue [#394](https://github.com/kachofugetsu09/akashic-agent/issues/394) 的唯一执行清单。
 [插件 v3 最终迁移地图](plugin-v3-final-migration-map.md)负责解释目标架构、现有 PR DAG 和删除顺序；
 本文只记录每项能力是否已经具备可替代生产的证据。状态必须由实际 commit、测试和 Gate 推进，

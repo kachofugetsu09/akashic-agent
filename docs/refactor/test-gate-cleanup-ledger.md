@@ -52,11 +52,13 @@ Python 的 1080 是仓库完整收集数，不是从完整套件中挑出的 PR 
 ### Gate 清理
 
 - 普通 PR 从 8 个 job 收敛到 `check-and-test` 与 `change-impact-gate` 两个。2026-07-18 引入的统一 Gate 已能按 diff 选择 P0 mutant/oracle 并对未知映射 fail closed，因此保留；它是当前 Core 变更的单一语义 owner。
-- 2026-07-14 的 control 三连跑和 restart soak、2026-08-18 的 static fleet、2026-08-15～16 的旧 composition 不再进入每个 PR。control/restart 已合并为一个每周 lifecycle job；旧 composition 已被 2026-08-18 引入的正式 E1/E2 能力批次取代。
-- 手动候选 workflow 从 4 个 job 收敛到 1 个，只运行 fleet completeness、Mobile、公共 WebUI、E1 和 E2。四个行为批次分别固定用户可见 Mobile ABI、真实 WebSocket 插件面、状态型插件生命周期和 Tool/MCP/process finality。fleet 静态检查还扫描 18 个锁定插件的来源身份、禁止 v2 import/base/method、`api_version` 和 retired exclusion；E1/E2/Mobile 的并集尚未覆盖 `setup_helper`、`feishu`、`qqbot`、`huayue-skills` 和 `github_watch`，所以 E3 落地前不能删除。workflow 不再重复 1080/62 回归或旧 composition。
-- `programmatic-control-nightly.yml` 改为每周唯一的 full-process lifecycle job，顺序运行 failure matrix、100-turn resource soak 与 restart soak；进程级 SIGTERM/crash、workspace lock 和资源泄漏因此仍有明确 owner，但不阻塞每个 PR。E4 保留为本地正式发布 Gate，因为它需要显式的正式来源 workspace 副本，不能安全地放进普通 GitHub runner。
+- 2026-07-14 的 control 三连跑和 restart soak、2026-08-18 的 static fleet、2026-08-15～16 的旧 composition 不再进入每个 PR。control/restart 已合并为一个每周 lifecycle job；旧 composition 已由当前 plugin lifecycle、hot reload 和可观察插件边界覆盖。
+- 手动候选 workflow 从 4 个 job 收敛到 1 个，只运行 fleet completeness、Mobile 和公共 WebUI。它们分别固定全部 18 个锁定插件的来源/v3-only/retired 排除、用户可见 Mobile ABI，以及 Citation/Meme 的真实公共 WebSocket 行为；不重复 1080/62 回归。
+- 2026-08-18 引入的 E1/E2 在 2026-09-02 Core 删除 v2 compatibility 后失效：锁定的 Emotion 仍导入已删除的 `CoreEvent`，Calendar 仍导入已删除的 `PROACTIVE_COMPONENTS`。这两条失败固定的是历史 API，不是当前可观察回归，因此删除 `plugin_v3_e1_gate.py` 与 `plugin_v3_e2_gate.py`，不通过升级外部插件来维持 Gate。E4 硬依赖 E1 报告和仓库中从未存在 runner 的 E3 报告，不能执行其发布合同，也删除 `plugin_v3_e4_gate.py`。恢复方式是 revert 本清理提交；若未来需要正式发布 rehearsal，应以当时的 Core、锁定插件和真实部署输入重新建立合同。
+- 2026-08-15 的 `plugin_composition_v3_gate.py` 只有历史文档调用者，并重复固定 Tool/plugin snapshot 排列，因此物理删除。`plugin_passive_composition_v3_gate.py` 不再作为独立 CI Gate，但公共 WebUI runner 真实复用它的 exact source、装配和摘要 helper；clean-head 验证暴露这一动态模块依赖后已恢复，避免为了删文件复制同一套逻辑。
+- `programmatic-control-nightly.yml` 改为每周唯一的 full-process lifecycle job，顺序运行 failure matrix、100-turn resource soak 与 restart soak；进程级 SIGTERM/crash、workspace lock 和资源泄漏因此仍有明确 owner，但不阻塞每个 PR。
 - semantic scenario 与 Content/Wake lock/H5 manifest 都只引用仍保留的测试；已删除的 slot、pipeline、gateway、shadow 和 support 测试不再被 Gate 间接复活。
-- E3 Fleet/Channel/Proactive runner 仍是既有 P2 缺口；E4 对缺失或身份不匹配报告 fail closed。本次清理不伪造发布通过。
+- 正式 workspace 演练不再由缺失前置报告的仓库脚本占位；未来需要时由拥有部署输入的发布流程重新建立可执行合同。本次清理不伪造发布通过。
 
 ### 恢复与验证
 

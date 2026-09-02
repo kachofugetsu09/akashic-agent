@@ -32,8 +32,6 @@ jobs:
           python docker/debug/plugin_v3_fleet_gate.py --require-clean-core --require-full-core-history
           python docker/debug/plugin_v3_mobile_gate.py --require-clean-core
           python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
-          python docker/debug/plugin_v3_e1_gate.py
-          python docker/debug/plugin_v3_e2_gate.py --require-clean-core
 
       - name: Upload commit-bound evidence
         if: always()
@@ -44,5 +42,3 @@ jobs:
             docker/debug/reports/plugin-v3-mobile/
             docker/debug/reports/plugin-v3-fleet/
             docker/debug/reports/plugin-passive-webui-v3/
-            docker/debug/reports/plugin-v3-e1/
-            docker/debug/reports/plugin-v3-e2/

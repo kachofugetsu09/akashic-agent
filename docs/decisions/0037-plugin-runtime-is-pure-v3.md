@@ -6,6 +6,8 @@
 - supersedes：[0008](0008-plugin-runtime-publishes-only-committed-snapshots.md) 的 API v2 与 legacy host 选择
 - superseded by：无
 
+> 2026-09-02 对账：本决策的 pure-v3 runtime 结论仍有效；下文 E1～E4 是当时的迁移验收计划，已被当前 fleet、Mobile、公共 WebUI 候选 Gate 和发布流程拥有的真实环境验收取代。E1/E2 固定的 API 已随 v2 compatibility 删除，E4 又依赖不存在的 E3 runner，不能继续作为当前合并条件。
+
 ## 背景
 
 API v2 曾用 `prepare/activate/retire/terminate` 与固定贡献字段建立第一版原子发布。

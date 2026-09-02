@@ -98,9 +98,6 @@ FORBIDDEN_V2_FIXED_METHODS = frozenset(
         "mobile_ui_query",
     }
 )
-E2E_NOT_RUN_REASON = (
-    "static Gate 第一阶段不执行 runtime E2E；需最终 Core/plugin 组合与受控环境"
-)
 GIT_COMMAND_TIMEOUT_SECONDS = 30
 
 
@@ -111,89 +108,6 @@ class PluginLock:
     requested_ref: str
     resolved_sha: str
     change_source_pr_head: str
-
-
-@dataclass(frozen=True, slots=True)
-class E2ECase:
-    id: str
-    title: str
-    required_plugins: tuple[str, ...]
-    oracle: tuple[str, ...]
-
-
-E2E_CATALOG = (
-    E2ECase(
-        "E1",
-        "Passive/Data/Mobile",
-        (
-            "akasha",
-            "citation",
-            "meme",
-            "emotion",
-            "observe",
-            "proactive_feedback",
-            "plugin_undo",
-        ),
-        (
-            "prompt/recall/metadata/media",
-            "bounded mobile query and lease",
-            "append-only SessionDB write set",
-        ),
-    ),
-    E2ECase(
-        "E2",
-        "Tool/MCP/Process",
-        (
-            "shell_restore",
-            "shell_safety",
-            "calendar-mcp",
-            "feed-mcp",
-            "fitbit-mcp",
-            "steam-mcp",
-        ),
-        (
-            "transform/authorize/invoke",
-            "MCP and process readiness",
-            "cancel and process cleanup",
-            "controlled external read-only calls",
-        ),
-    ),
-    E2ECase(
-        "E3",
-        "Fleet/Channel/Proactive",
-        (
-            "setup_helper",
-            "status_commands",
-            "feishu",
-            "qqbot",
-            "emotion",
-            "calendar-mcp",
-            "feed-mcp",
-            "fitbit-mcp",
-            "steam-mcp",
-            "huayue-skills",
-            "github_watch",
-        ),
-        (
-            "full boot and catalog",
-            "candidate discard and promotion",
-            "loopback channel recording",
-            "fixed-clock background-job restart",
-            "controlled repository probe",
-        ),
-    ),
-    E2ECase(
-        "E4",
-        "Production Rehearsal",
-        ("E1", "E2", "E3"),
-        (
-            "copied-workspace database integrity",
-            "complete write set",
-            "artifact/pointer and restart",
-            "stop cleanup and restore evidence",
-        ),
-    ),
-)
 
 
 class GateError(RuntimeError):
@@ -721,9 +635,7 @@ def _build_report(
     plugins: tuple[dict[str, object], ...] | list[dict[str, object]],
     errors: list[str],
 ) -> dict[str, object]:
-    """Build one report whose runtime E2E entries cannot claim execution."""
-
-    e2e = _e2e_report()
+    """Build one report for the locked fleet's static contract."""
     return {
         "status": "passed" if not errors else "failed",
         "phase": "static",
@@ -740,28 +652,7 @@ def _build_report(
             "status": "passed" if not errors else "failed",
             "error_count": len(errors),
         },
-        "e2e": e2e,
         "errors": list(errors),
-    }
-
-
-def _e2e_report() -> dict[str, object]:
-    catalog = [
-        {
-            **asdict(case),
-            "required_plugins": list(case.required_plugins),
-            "oracle": list(case.oracle),
-            "status": "not_run",
-            "executed": False,
-            "reason": E2E_NOT_RUN_REASON,
-        }
-        for case in E2E_CATALOG
-    ]
-    return {
-        "status": "not_run",
-        "catalog_sha256": _json_sha256(catalog),
-        "catalog": catalog,
-        "reason": E2E_NOT_RUN_REASON,
     }
 
 

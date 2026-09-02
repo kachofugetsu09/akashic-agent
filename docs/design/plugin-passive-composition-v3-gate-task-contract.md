@@ -1,5 +1,7 @@
 # Citation + Meme 纯 v3 组合 Gate 任务合同
 
+> 历史任务合同：对应 runner 已在 2026-09-02 退出独立 CI Gate，但文件仍作为公共 WebUI Gate 的 exact source、装配和摘要 helper。内部 listener/snapshot 排列不再单独运行；当前依据见[测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md)。
+
 ## 1. 目标
 
 用一个可公开复现的跨仓 Gate 证明 Citation 与 Meme 在删除 v2 shell 后，仍能通过
@@ -57,10 +59,4 @@ public v3 contract ──► PluginManager.load_all ──► stable snapshot le
 
 ## 5. 验收
 
-```bash
-python docker/debug/plugin_passive_composition_v3_gate.py --require-clean-core
-python -m basedpyright --level error docker/debug/plugin_passive_composition_v3_gate.py
-git diff --check
-```
-
-真实 Gate 的 `gate.json` 必须 `status=passed`；命令失败或报告缺失都不能称为迁移成功。
+当时的验收要求是 runner 报告 `status=passed`、静态检查和 `git diff --check` 通过；当前不再把该历史报告作为迁移或合并条件。
