@@ -398,6 +398,10 @@ python docker/debug/plugin_v3_e4_gate.py \
   --plugin-home /path/to/plugin-home
 ```
 
+仓库当前没有 E3 runner；E3 Fleet/Channel/Proactive 报告仍是发布就绪清单中的未完成项，
+不能由其他 Gate 冒充。E4 会校验对应 `plugin-v3-e3/gate.json` 并在缺失或身份不匹配时
+fail closed，因此在 E3 runner 和同一 Core head 的报告落地前不能声明 E1～E4 完成。
+
 所有集中 Gate 默认使用 Python/操作系统选择的临时目录；E1、E2 与 E4 可通过 `--tmp-root`
 显式选择已有目录。测试源码不绑定维护者 HOME、正式 workspace 或一次性试运行路径。
 
