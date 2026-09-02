@@ -67,7 +67,10 @@ rsync -a --delete --exclude=.publication.lock \
 
 ## 3. 2026-09-02 exact snapshot
 
-- Core release：`8304a02420a98ba3cd4600d983f552422186e5b3`
+- Core release：`9f30b079619523cafb2c49374260c9ea9ea9a180`
+- Core image：`sha256:f1acf299d15ee2dcacbd025fe8074ad0574aac98aea834f8a9796a7483f56b17`
+- 激活状态：`activation/active.json` 为 `active`，Core/Host Bridge active，Core/workload 容器与
+  `akashic-release doctor` 均为 healthy
 - manifest SHA-256：`7c9f8f274a0ea4b274d1a1227c6d978d53801259e8d7e37095f1ea0934d612bf`
 - enabled manifest entries：33（17 builtin + 16 external）
 - external artifact directories：40；逐个 static manifest + entrypoint 扫描后 non-V3 为 0
