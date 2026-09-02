@@ -3,8 +3,13 @@
 - 状态：accepted
 - 日期：2026-08-08
 - supersedes：[0024](0024-plugin-self-validation-uses-stable-and-latest.md) 的 Agent 显式 latest/promote/discard 接口；保留其内部双快照与 session 并发机制
+- superseded by：[0056](0056-no-revert-promotes-candidate.md) 只取代第 4 条的 child/parent 成功 Gate
 - refines：[0008](0008-plugin-runtime-publishes-only-committed-snapshots.md)、[0015](0015-cleanup-does-not-own-turn-or-restart-finality.md)
 - 关联条款：PLG-010、PLG-012、PLG-013、RUN-007、CTRL-003、ERR-001、TST-001～TST-006
+
+> 历史说明：第 4 条及其旧验收中的 child/parent 成功 Gate 已由
+> [0056](0056-no-revert-promotes-candidate.md) 取代。当前目标是 install 没有
+> `plugin-revert` 就晋升；以下原文保留决策演进，不得作为现行 Gate。
 
 ## 背景
 

@@ -27,6 +27,7 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 ## P1 · Agent Harness 抽象收敛
 
+- [`普通 Agent Loop 规格`](design/ordinary-agent-loop.md) 正在设计评审：目标是 exact snapshot 中只有一个普通插件提供 `REACT`，Core 只保留 Turn、snapshot、提交和发布 owner；先迁出 Tool search、system prompt 等特殊规则，再切换默认 loop，最后从 production artifact commits 迁移外部插件并删除全部旧入口。不得运行 shadow/gray，不得留下兼容壳。
 - 目标骨架只使用 `Message`、`Turn`、`Session`：Message 组成 Turn，Turn 归入 Session；`Loop` 表达“输入 Message → 内部 `react` → 输出 Message”。当前从 `AgentLoop._react → PassiveTurnPipeline` 继续向内审查；只有独占权威状态、不变量、控制流、生命周期或真实边界的层才保留。纯转发、重复结果包装、字段复制、内部重复校验和平行模型分批内联、合并或删除；命名使用普通英语和 Python 风格，不再引入 `Unit` 一类没有独立事实的概念。
 - Turn 的待审目标是：多次 user 输入可以跨越被中断的执行尝试，最后与唯一 terminal assistant 构成一个完整 Turn；主动投喂、scheduler、spawn 和不依赖 user query 的消息可以各自成为独立 Turn，再由 Turn 组合时间线与 Akasha 节点。当前 SES-007、SES-008、RUN-008、OUT-001、OUT-004 和 OUT-005 的 `logical interaction / execution attempt`、主动送达与 `message_push` 合同仍是权威语义；改变名称、数据库身份或归属前，必须先用 SessionDB 与 runtime 日志证明真实路径，再单独批准规格、数据和迁移，不能借普通 refactor 偷改。
 - 接手顺序固定为从内向外的小批次：`ReasonerResult` metadata dict 已类型化、`AfterReasoningResult` 已内联进 `TurnSnapshot`（less-is-more PR62/PR63）；剩余先审查重复 input DTO（`BeforeReasoningInput`/`AfterReasoningInput`/`PromptRenderInput` 与 GATE ctx 的平行字段）是否重述同一事实，审查结论写进账本；再完整画出 Message、Turn、Session、interaction 和 attempt 的 owner/写入链，确认非唯一 attempt 的真实频率与恢复用途；最后才评估 proactive、scheduler、spawn 和 `message_push` 怎样由同一组原子能力拼接。每个 PR 只处理一个冗余组，不为未来预建总框架，也不把现有独立实现直接包进新的总抽象。

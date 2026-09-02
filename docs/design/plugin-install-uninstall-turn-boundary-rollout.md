@@ -1,10 +1,14 @@
 # 插件 install/uninstall/revert 与 turn 边界发布设计合同
 
-- 状态：implemented；Core 与 Skill 已实现，真实 Fitbit source 适配和扩展 crash matrix 记录在 `NOW.md`
+- 状态：implemented baseline；[0056](../decisions/0056-no-revert-promotes-candidate.md) 的 no-revert 规则尚未实现
 - 日期：2026-08-08
 - 基线：`origin/main@31b976d82cbd5766e6450d7e287ceda71d9b7573`
 - 关联条款：OBJ-002、STA-001～STA-003、CAP-001～CAP-002、ERR-001、RUN-003、PLG-001～PLG-013、BAK-001、TST-001～TST-006
-- 关联决策：[0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md)、[0015](../decisions/0015-cleanup-does-not-own-turn-or-restart-finality.md)、[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)
+- 关联决策：[0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md)、[0015](../decisions/0015-cleanup-does-not-own-turn-or-restart-finality.md)、[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)、[0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md)、[0056](../decisions/0056-no-revert-promotes-candidate.md)
+
+> 本文正文和验收矩阵描述 0056 的已确认目标。当前代码仍是 PR #527 baseline：需要
+> child/parent 正常完成。该差异由普通 Agent Loop stack 的 PR 1 实施，完成前不能把目标当作
+> 运行证据。
 
 ## 1. 用户可见目标
 
@@ -18,23 +22,23 @@ plugin-revert     撤销当前 turn 最近一次尚未提交的 install/uninstal
 
 Agent 不再执行 `plugin-status`、`plugin-promote`、`plugin-discard` 或手工 restart。Core 保留 stable/latest、准备、验证绑定、提交、丢弃、排空、端点切换和恢复等内部机制，但不要求 Agent 理解或编排这些阶段。
 
-`plugin-install` 成功后，当前 turn 自己仍绑定原 stable；由该 turn 启动的 attached programmatic child 自动绑定刚安装的候选。Agent 根据真实 child 结果和工具轨迹决定：符合目标就正常结束 turn，不符合就先 `plugin-revert`，修改源码后继续递归。
+`plugin-install` 成功后，当前 turn 自己仍绑定原 stable；由该 turn 启动的 attached programmatic child 自动绑定刚安装的候选。Agent 根据真实 child 结果和工具轨迹决定：不符合就先 `plugin-revert`，修改源码后继续递归；没有 revert 就默认晋升。
 
-当前 turn 正常结束且候选已完成 programmatic 验证时，Core 才在旧 lease 释放后自动切换。下一 turn 自动绑定新 stable。
+parent turn 封口时没有 revert，Core 就在旧 lease 释放后自动切换。下一 turn 自动绑定新 stable。Core 不把 child/parent terminal status 当成第二次业务判断。
 
 ## 2. 当前事实与有意语义变化
 
 当前实现已经具备不可变 artifact、stable/latest pointer、snapshot lease、reload journal、managed service 切换、Channel 切换和失败恢复骨架。普通卸载也已经由 runtime owner 异步等待旧 lease 排空。
 
-当前 PLG-013、决策 0024 和递归自验证设计要求 Agent 在 `plugin-install` 后显式选择 `runtime=latest`，再根据验证结果执行 promote/discard。改变独占 managed service 或 Channel 的 candidate 被 `endpoint_coexistence` Gate 拒绝，因为同进程 stable/latest 不能安全拥有同一个进程级资源。
+PR #527 代码和 pre-0056 的 PLG-013 文本曾要求 Agent 在 `plugin-install` 后显式选择 `runtime=latest`，再根据验证结果执行 promote/discard。这是历史 baseline，不是现行条款。改变独占 managed service 或 Channel 的 candidate 被 `endpoint_coexistence` Gate 拒绝，因为同进程 stable/latest 不能安全拥有同一个进程级资源。
 
 2026-08-07 Fitbit 事故中，调用者为完成这组内部操作而绕过 coexistence Gate，随后形成 stable snapshot、全局 endpoint 和 admission 分裂。本设计保留 Gate 保护和 programmatic 自验证，改变的是 Agent 可见操作面与最终提交 owner：
 
 1. latest 继续存在，但只由发起 install 的 turn 所创建的 programmatic child 因果继承。
 2. 验证失败由 Agent 表达为 `revert`；Core 内部完成 candidate discard。
-3. 验证通过不再需要 promote；当前 turn 正常完成就是对尚未 revert 候选的提交授权。
+3. 验证通过不再需要 promote；没有 `plugin-revert` 就是对候选的提交授权。
 4. turn 后的 lease 排空、endpoint 切换、stable/manifest 提交和恢复全部由 Core 拥有。
-5. implementation 必须新建 accepted 决策，明确勘误 0024 的公开 promote/discard 流程，不能抹除历史。
+5. [0056](../decisions/0056-no-revert-promotes-candidate.md) 已记录 accepted 目标并保留 0024/0026 的历史原文。
 
 ## 3. 能力与状态 owner
 
@@ -76,10 +80,10 @@ Fitbit 候选版本安装成功。
 从现在开始，本 turn 启动的 programmatic 验证会自动使用新版本。
 
 请执行 programmatic 验证：
-- 如果行为和工具轨迹正确，正常结束当前 turn；
+- 如果行为和工具轨迹正确，不需要额外提交动作；
 - 如果不正确，执行 plugin-revert，然后继续修改。
 
-验证通过并结束当前 turn 后，系统会自动重启 Fitbit 服务。
+没有执行 plugin-revert，parent 封口后系统会自动重启 Fitbit 服务。
 下一 turn 使用新版本。你不需要 promote、discard 或 restart。
 ```
 
@@ -99,9 +103,7 @@ Turn T 执行 install S1
 
 Core 记录 `owner_turn_id + candidate_generation_id + source_revision`。child 在创建时冻结候选身份；T 后续安装其他 revision 不得让已经运行的 child 半途换代。
 
-至少一个绑定当前候选的 attached child 必须正常完成，当前 turn 才能授权提交。child 失败、取消、超时、身份不一致或根本没有运行时，Core 在 turn 结束时取消 pending install，不发布候选。
-
-Core 只核对 child 属于当前 parent、绑定 exact generation/source，并且正常完成。Fitbit 领域结果与轨迹是否符合修改目标由 Agent 判断；不符合时 Agent 必须在结束 turn 前执行 `plugin-revert`。
+attached child 只用于业务检查。Core 保证它属于当前 parent，并绑定 exact generation/source；child 是否运行、怎样结束以及输出什么都不是 promotion Gate。Fitbit 领域结果与轨迹是否符合修改目标由 Agent 判断；不符合时 Agent 必须在 parent 封口前执行 `plugin-revert`。
 
 ### 4.3 `plugin-uninstall`
 
@@ -146,7 +148,7 @@ revert 只能撤销本 turn 最近一次 install 或 uninstall，不能回滚上
 ## 5. Turn 边界与最终结果
 
 ```text
-当前 turn 内                         当前 turn 正常结束后
+当前 turn 内                         parent turn 封口后
 ────────────                         ──────────────────
 install/uninstall 仍可 revert        pending operation 封口
 父 turn 继续绑定旧 snapshot          等待全部旧 generation lease 归零
@@ -154,16 +156,15 @@ programmatic child 验证候选           切换 endpoint 与 snapshot
 旧代码和恢复源必须保留                成功后清理不再引用的旧代码
 ```
 
-只有以下条件同时满足，pending install 才进入 turn 后切换：
+pending install 进入 turn 后切换只需要：
 
 ```text
 install 前置检查成功
-AND 当前 candidate 完成真实 attached programmatic 验证
 AND 没有 revert
-AND parent turn 正常完成
+AND parent turn 已封口
 ```
 
-parent turn interrupted/failed、验证 child 非正常终结或候选身份变化时，Core 自动取消候选，旧 stable 不变。pending uninstall 只有在 parent turn 正常完成且没有 revert 时才执行。
+child/parent 的 terminal status 不改变 install 决定。候选结构在提交时已不再 ready 等发布事务失败，仍按 Core 结构错误处理，不能伪装成 Agent 的业务 revert。pending uninstall 继续只有在 parent turn 正常完成且没有 revert 时才执行；0056 不改变卸载语义。
 
 Core 不主动创建 turn、不主动发送用户消息，也不向 SessionDB 追加伪造对话。用户下一次主动发起 turn 时，runtime 从 journal 与当前 snapshot 派生最近一次相关操作的事实，供 Agent 自然语言回答，不要求 status 或轮询。
 
@@ -244,7 +245,7 @@ new Channel.start()
 - admission 暂停后的每条分支必须 resume 或明确 degraded，不能无限等待。
 - prepared、等待 lease、旧 endpoint 已停、新 endpoint 已启未提交和恢复途中崩溃，都从 journal、pointer、manifest 和真实进程/Channel identity 恢复。
 - 重复安装相同 revision 返回幂等结果，不因 installer 自己创建的 runtime symlink 误判 artifact。
-- operation 在 turn terminal 前被取消或 revert 时不得产生后置 endpoint 效果。
+- install 只有显式 revert 才取消默认晋升；uninstall 在 turn terminal 前被取消或 revert 时不得产生后置 endpoint 效果。
 
 ## 10. 实现任务合同
 
@@ -256,7 +257,7 @@ Agent 只用 `install/uninstall/revert` 管理插件；install 后的 programmat
 
 - [x] Agent 可见插件管理动作只有 install、uninstall、revert。
 - [x] 当前 turn 自己保持旧 snapshot；其 attached programmatic child 自动、精确绑定当前 candidate。
-- [x] 没有真实 programmatic 验证、child 非正常结束、parent 非正常结束或已经 revert 时，candidate 不得发布。
+- [ ] 没有 revert 时 candidate 默认发布，不再检查 child/parent terminal status；已经 revert 时不得发布。
 - [x] revert 只撤销同一 turn 最近 pending install/uninstall，不能跨 turn 回滚。
 - [x] install/uninstall 返回说明已发生、未发生、后续动作和 Agent 下一步。
 - [x] 独占 service/Channel 不绕过 coexistence Gate，在隔离验证或 turn 后维护切换中处理。
@@ -283,7 +284,7 @@ client_only_alternative: "只改 Skill 无法关闭 Agent 手工 promote/discard
 invariants:
   - "父 turn 从 admission 到 terminal 始终绑定旧 snapshot。"
   - "attached programmatic child 按 owner turn 精确绑定候选。"
-  - "未验证、已 revert 或非正常终结的候选不得发布。"
+  - "install candidate 默认发布，只有同一 parent 的 plugin-revert 取消。"
   - "独占 endpoint 先停 admission，再等待全部旧 lease 归零。"
   - "endpoint、snapshot、pointer 和 manifest 共同提交或恢复。"
   - "plugin-data、SessionDB/messages 和 memory 不因插件管理减少。"
@@ -335,12 +336,12 @@ forbidden_effects:
 validation:
   - "plugin install/uninstall/revert、hot reload、service host、ChannelHost 与 control targeted tests"
   - "CLI/Skill 合同测试，证明 Agent 可见管理面只有三个动作"
-  - "parent/child lineage、candidate 冻结、无验证、revert、取消和超时测试"
+  - "parent/child lineage、candidate 冻结、无 child、child/parent 各终态和 revert 测试"
   - "故障注入：每个 crash point、admission resume、恢复失败、相同 revision 重装和 cleanup residue"
   - "semantic mutants：coexistence 绕过、提前提交、pointer-only rollback、跨 turn revert、错误 child 继承"
   - "python docker/debug/gate.py run --base origin/main"
   - "一次性 workspace 中真实 fixture；Fitbit 外部 Gate 单独固定依赖与 revision"
-rollback: "实现前基线 bundle；实现提交可整体 revert。运行事务在 turn commit 前取消 pending，在切换失败时恢复并重新验证 previous。"
+rollback: "实现前基线 bundle；实现提交可整体 revert。install 运行事务只由同 turn plugin-revert 取消，在切换失败时恢复并重新验证 previous。"
 worktree_writer: "Codex /root"
 handoff_head: "PR branch; exact head recorded at delivery"
 external_revisions: []
@@ -363,8 +364,10 @@ schema_lineages:
 | install 后父 turn | 父继续使用 S0；返回明确要求 programmatic 验证 |
 | attached programmatic child | 自动绑定 S1，真实 tool/Skill/trace 来自同一 candidate identity |
 | programmatic 失败后 revert | S1不发布，S0始终不变；修复后可 install S2继续递归 |
-| 没有 programmatic 就结束 | pending install自动取消，下一 turn仍是 S0 |
-| 验证通过且正常结束 | turn 后排空 S0并提交 S1；下一 turn自动使用 S1 |
+| 没有 programmatic 就封口 | 没有 revert，turn 后排空 S0并提交 S1 |
+| child failed/cancelled | 没有 revert，仍提交 S1；Core 不替 Agent 投票 |
+| parent failed/cancelled | 没有 revert，仍提交 S1；恢复按 journal 继续 |
+| 任意检查后 revert | S1 不发布，S0 始终不变 |
 | pending uninstall 后 revert | manifest、代码、能力和 plugin-data均保持原样 |
 | uninstall 正常提交 | turn 后停止 endpoint、移除能力和代码；plugin-data保留 |
 | 跨 turn revert | 明确失败，不改变当前 stable；需要修复后 install或明确 uninstall |

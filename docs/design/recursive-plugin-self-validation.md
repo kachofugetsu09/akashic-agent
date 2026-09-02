@@ -8,7 +8,7 @@
 
 ## 1. 结论
 
-> 2026-08-08 勘误：本文保留 stable/latest、session lane、attached cancellation 和真实 child trace 的机制说明，但不再定义 Agent 操作。当前合同见 [插件 install/uninstall/revert 与 turn 边界发布](plugin-install-uninstall-turn-boundary-rollout.md)：父 turn 只执行 install/uninstall/revert，attached child 自动继承候选，正常 terminal 后由 Core 提交。本文后续出现的显式 `--runtime latest`、promote/discard 仅是历史设计，不得用于当前 Agent 流程。
+> 2026-09-02 勘误：本文只保留 stable/latest、session lane、attached cancellation 和真实 child trace 的历史机制说明，不再定义 Agent 操作。当前目标见 [0056](../decisions/0056-no-revert-promotes-candidate.md) 和 [turn 边界发布合同](plugin-install-uninstall-turn-boundary-rollout.md)：父 turn 只执行 install/uninstall/revert，attached child 自动继承候选；没有 revert 就晋升。本文后续出现的 terminal success Gate、显式 `--runtime latest`、promote/discard 都是历史设计，不得用于当前 Agent 流程。
 
 原实现不能在写完插件的同一 turn 内证明插件可用，不是因为缺少一条等待命令，而是因为候选能力、执行机会和验收反馈没有形成闭环：当前 turn 绑定旧 snapshot，程序化子 turn 又被两层全局执行锁挡在父 turn 后面。实现已移除跨 session 整轮互斥，并接通 stable/latest、runtime selector、attached cancellation 和候选管理接口；父 turn 现在能在自己结束前取得隔离 latest 的真实行为结果，再决定 promote 或 discard。
 
