@@ -28,9 +28,9 @@ Core 拥有 artifact、candidate、stable/latest、lease、journal、晋升与�
    v2 consumer 迁走后立即删除对应 legacy owner，不保留 deprecated alias 或空壳。
 3. Computer Use Linux 与 Context Pressure 退出已跟踪 fleet。卸载只移除安装清单与
    能力 cache；既有 `plugin-data` 默认保留，不因代码收敛而物理删除。
-4. 代码合并与 hua-home 正式替换分开。只有同一 clean head 上的 static fleet、Mobile、
-   WebUI、Tool/Passive composition 以及分组 E1～E4 报告全部通过，才能声明为线上替换
-   candidate。正式 workspace 的备份、切换和回滚仍需单独授权。
+4. 代码合并与 hua-home 正式替换分开。同一 clean head 必须通过 fleet source/API compatibility、
+   Mobile 与公共 WebUI 候选 Gate；正式 workspace 的备份、真实环境验收、切换和回滚由发布
+   流程拥有并仍需单独授权。
 
 ```text
 外部插件 source
@@ -74,8 +74,8 @@ Core 拥有 artifact、candidate、stable/latest、lease、journal、晋升与�
   lifecycle、固定贡献 consumer、phase module 注入口或 EventBus-to-V3 类型桥。
 - 每个领域完成 candidate discard/promote、old lease drain、Effect/resource cleanup、进程内失败与
   子进程崩溃恢复；不为断电或物理停机扩张本轮范围。
-- 同一 clean Core head 运行 static fleet、Mobile、Tool/Passive composition、WebUI 与 E1～E4；
-  E4 从前三组报告定位身份并证明复制 workspace 中 `sessions.db/messages`、memory、
-  plugin-data、artifact 与 pointer 的受保护摘要不发生未授权变化。
+- 同一 clean Core head 运行 fleet source/API compatibility、Mobile 与公共 WebUI；发布流程
+  另外用真实部署输入证明 `sessions.db/messages`、memory、plugin-data、artifact 与 pointer
+  不发生未授权变化。
 - 完成状态必须由测试和 Gate 报告确认；还有 v2 consumer 、blocked scenario 或非同 head
   证据时不得声称 pure-v3 ready。

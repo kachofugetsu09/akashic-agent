@@ -76,7 +76,8 @@ artifact/workspace、或 v2 provider 行为漂移都停止交付。
 
 实现 head 的独立复核未发现 P0/P1。集成分支已运行 Mobile UI、Manager、lifecycle、loader、kernel 与
 hot-reload 累计回归 `372 passed`；相关 Basedpyright 为 `0 errors`，compileall 与 `git diff --check` 通过。
-完整 E1/E4 仍由最终 exact plugin lock 统一执行，本合同不把定向回归写成生产替换证据。
+最终 exact plugin lock 由 fleet source/API compatibility 与 Mobile Gate 对账；正式 workspace
+替换证据仍由拥有部署输入的发布流程负责，本合同不把定向回归写成生产替换证据。
 
 ## 5. 回滚
 

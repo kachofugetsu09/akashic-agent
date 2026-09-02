@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib
 import json
 import re
 import subprocess
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import cast
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 DEFAULT_LOCK = ROOT / "docker" / "debug" / "plugin-v3-fleet.lock.json"
 DEFAULT_REPORT = ROOT / "docker" / "debug" / "reports" / "plugin-v3-fleet" / "gate.json"
 GATE_VERSION = 1
@@ -336,7 +339,7 @@ def _matching_refs(output: str, sha: str) -> tuple[str, ...]:
 
 
 def _inspect_static_plugin(root: Path, plugin_id: str) -> dict[str, object]:
-    """Inspect manifest, v3 namespace, and generic v2 imports without importing code."""
+    """Inspect manifest, v3 namespace, and declared Core imports."""
 
     # 1. Parse the import-free manifest and choose its declared entrypoint.
     manifest, manifest_errors = _inspect_manifest(root)
@@ -349,6 +352,7 @@ def _inspect_static_plugin(root: Path, plugin_id: str) -> dict[str, object]:
     # 3. Scan production Python sources for generic v2 import and class edges.
     forbidden = _find_forbidden_v2_imports(root)
     forbidden_classes = _find_forbidden_v2_classes(root)
+    missing_core_imports = _find_missing_core_imports(root)
     errors = [*manifest_errors, *cast(list[str], namespace["errors"])]
     manifest_name = manifest.get("name")
     namespace_name = namespace.get("name")
@@ -366,6 +370,8 @@ def _inspect_static_plugin(root: Path, plugin_id: str) -> dict[str, object]:
         errors.append("发现 generic v2 import")
     if forbidden_classes:
         errors.append("发现 legacy v2 Plugin class/fixed methods")
+    if missing_core_imports:
+        errors.append("发现当前 Core 不再导出的导入符号")
     return {
         "status": "passed" if not errors else "failed",
         "plugin_id": plugin_id,
@@ -373,8 +379,63 @@ def _inspect_static_plugin(root: Path, plugin_id: str) -> dict[str, object]:
         "namespace": namespace,
         "forbidden_v2_imports": forbidden,
         "forbidden_v2_classes": forbidden_classes,
+        "missing_core_imports": missing_core_imports,
         "errors": errors,
     }
+
+
+def _find_missing_core_imports(root: Path) -> list[dict[str, object]]:
+    """Reject plugin imports that the current Core cannot satisfy."""
+
+    violations: list[dict[str, object]] = []
+    modules: dict[str, object] = {}
+    for source in sorted(root.rglob("*.py")):
+        if any(
+            part in {".git", ".venv", "__pycache__", "scripts", "tests"}
+            for part in source.parts
+        ):
+            continue
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, ast.ImportFrom)
+                or node.level
+                or node.module is None
+                or not node.module.startswith("agent.")
+            ):
+                continue
+            try:
+                if node.module not in modules:
+                    modules[node.module] = importlib.import_module(node.module)
+                module = modules[node.module]
+            except (ImportError, ModuleNotFoundError) as error:
+                violations.append(
+                    {
+                        "path": _relative_or_name(source, root),
+                        "line": node.lineno,
+                        "module": node.module,
+                        "error": f"{type(error).__name__}: {error}",
+                    }
+                )
+                continue
+            missing = sorted(
+                alias.name
+                for alias in node.names
+                if alias.name != "*" and not hasattr(module, alias.name)
+            )
+            if missing:
+                violations.append(
+                    {
+                        "path": _relative_or_name(source, root),
+                        "line": node.lineno,
+                        "module": node.module,
+                        "names": missing,
+                    }
+                )
+    return violations
 
 
 def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:

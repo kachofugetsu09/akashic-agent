@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
 import hashlib
 import inspect
@@ -38,14 +37,6 @@ from agent.plugins.snapshot import (  # noqa: E402
 from bus.event_bus import EventBus  # noqa: E402
 
 DEFAULT_LOCK = ROOT / "docker" / "debug" / "plugin-passive-composition-v3.lock.json"
-DEFAULT_REPORT = (
-    ROOT
-    / "docker"
-    / "debug"
-    / "reports"
-    / "plugin-passive-composition-v3"
-    / "gate.json"
-)
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 GATE_VERSION = 1
 PROTOCOL_SOURCE_REPOSITORY = "https://github.com/kachofugetsu09/akashic-agent.git"
@@ -127,88 +118,6 @@ class CleanupEvidence:
     services: tuple[str, ...]
     dashboard_bindings: int
     dashboard_module_loaded: bool
-
-
-def main() -> None:
-    """Checkout exact sources and verify the stable passive composition boundary."""
-
-    # 1. Freeze the Core and cross-repository evidence identities.
-    args = _parse_args()
-    core_status = _git_output(ROOT, "status", "--porcelain").splitlines()
-    if args.require_clean_core and core_status:
-        raise RuntimeError(f"核心工作树不干净: {core_status}")
-    lock = _load_lock(args.lock.resolve())
-
-    # 2. Build one isolated formal runtime from fresh exact-commit checkouts.
-    with tempfile.TemporaryDirectory(prefix="akashic-passive-v3-") as raw:
-        sandbox = Path(raw)
-        contract_checkout = sandbox / "contract"
-        contract_evidence = _checkout_locked_source(lock.contract, contract_checkout)
-        providers = sandbox / "providers"
-        providers.mkdir()
-        plugin_evidence = tuple(
-            _checkout_locked_source(item, providers / item.id) for item in lock.plugins
-        )
-        contract_report = _verify_static_contract(
-            contract_checkout,
-            tuple(providers / item.id / "plugin.py" for item in lock.plugins),
-        )
-        runtime = asyncio.run(_verify_composition(providers, sandbox))
-
-    # 3. Persist reconstructible evidence outside the disposable sandbox.
-    report = _build_report(
-        core_status=core_status,
-        lock_path=args.lock.resolve(),
-        contract_evidence=contract_evidence,
-        contract_report=contract_report,
-        plugin_evidence=plugin_evidence,
-        runtime=runtime,
-    )
-    report_path = args.report.resolve()
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    print(f"passive plugin composition v3 gate passed: {report_path}")
-
-
-def _build_report(
-    *,
-    core_status: list[str],
-    lock_path: Path,
-    contract_evidence: SourceEvidence,
-    contract_report: ContractEvidence,
-    plugin_evidence: tuple[SourceEvidence, ...],
-    runtime: dict[str, object],
-) -> dict[str, object]:
-    return {
-        "status": "passed",
-        "gate_version": GATE_VERSION,
-        "checked_at": datetime.now(UTC).isoformat(),
-        "core": {
-            "head": _git_output(ROOT, "rev-parse", "HEAD"),
-            "tree": _git_output(ROOT, "rev-parse", "HEAD^{tree}"),
-            "dirty_status": core_status,
-        },
-        "lock": str(lock_path.relative_to(ROOT)),
-        "lock_sha256": _sha256(lock_path),
-        "protocol_source": _protocol_source_evidence(),
-        "contract_source": asdict(contract_evidence),
-        "contract_report": asdict(contract_report),
-        "plugins": [asdict(item) for item in plugin_evidence],
-        "scenario_profile": SCENARIO_PROFILE,
-        "scenario_catalog_sha256": _scenario_catalog_sha256(),
-        **runtime,
-    }
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="验证 Citation + Meme 纯 v3 组合")
-    parser.add_argument("--lock", type=Path, default=DEFAULT_LOCK)
-    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
-    parser.add_argument("--require-clean-core", action="store_true")
-    return parser.parse_args()
 
 
 def _load_lock(path: Path) -> GateLock:
@@ -608,7 +517,3 @@ def _run(command: tuple[str, ...], *, cwd: Path) -> subprocess.CompletedProcess[
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-
-
-if __name__ == "__main__":
-    main()

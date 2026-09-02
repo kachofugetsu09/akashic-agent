@@ -69,7 +69,8 @@ pending user row                    Akasha sidecars
 - Core 进程崩溃：重开 engine/Manager 后只从已提交 Session rows 与 sidecar 恢复；未提交 staged
   marker 不出现，已提交 Inspector/recall 等价。
 - 不扩展到任意断电时点或停机 checkpoint；SQLite/现有 sidecar 发布协议继续拥有自己的 durability。
-- 最终 E1/E4 在一次 copied-workspace Gate 中验证 feedback、active/persisted recall、Dashboard、Mobile、
-  sidecar hash、SessionDB append-only 与 cleanup；本任务不写正式 workspace。
+- 当前候选 Gate 验证 Mobile 与公共插件边界；正式发布流程在获授权的 workspace 副本上验证
+  feedback、active/persisted recall、Dashboard、sidecar hash、SessionDB append-only 与 cleanup。
+  本任务不写正式 workspace。
 
 恢复点：`backup/akasha-plugin-v3-pre-20260817`。

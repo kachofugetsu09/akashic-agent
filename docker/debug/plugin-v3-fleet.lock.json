@@ -32,16 +32,16 @@
     {
       "id": "calendar-mcp",
       "repository": "https://github.com/akashic-plugins/calendar-mcp",
-      "requested_ref": "293d6ba824950ee087e05bfcb02187339d840973",
-      "resolved_sha": "293d6ba824950ee087e05bfcb02187339d840973",
-      "change_source_pr_head": "293d6ba824950ee087e05bfcb02187339d840973"
+      "requested_ref": "048c8e809559f0e4f25b2633e7f8606e37129ca1",
+      "resolved_sha": "048c8e809559f0e4f25b2633e7f8606e37129ca1",
+      "change_source_pr_head": "048c8e809559f0e4f25b2633e7f8606e37129ca1"
     },
     {
       "id": "emotion",
       "repository": "https://github.com/akashic-plugins/emotion",
-      "requested_ref": "3d14315ec91dc40eb2e2cf9ba66411f12dd20d3d",
-      "resolved_sha": "3d14315ec91dc40eb2e2cf9ba66411f12dd20d3d",
-      "change_source_pr_head": "3d14315ec91dc40eb2e2cf9ba66411f12dd20d3d"
+      "requested_ref": "d828fd7ec97e027bc1ee4a39e5501a2cf25296a2",
+      "resolved_sha": "d828fd7ec97e027bc1ee4a39e5501a2cf25296a2",
+      "change_source_pr_head": "d828fd7ec97e027bc1ee4a39e5501a2cf25296a2"
     },
     {
       "id": "plugin_undo",
@@ -53,9 +53,9 @@
     {
       "id": "observe",
       "repository": "https://github.com/akashic-plugins/observe",
-      "requested_ref": "06e4f4b13223cb5621c19f4dbf0fa160c5bdb183",
-      "resolved_sha": "06e4f4b13223cb5621c19f4dbf0fa160c5bdb183",
-      "change_source_pr_head": "06e4f4b13223cb5621c19f4dbf0fa160c5bdb183"
+      "requested_ref": "09214c23f287f659eee6280706208b9ba7d2ed13",
+      "resolved_sha": "09214c23f287f659eee6280706208b9ba7d2ed13",
+      "change_source_pr_head": "09214c23f287f659eee6280706208b9ba7d2ed13"
     },
     {
       "id": "setup_helper",
@@ -74,9 +74,9 @@
     {
       "id": "feed-mcp",
       "repository": "https://github.com/akashic-plugins/feed-mcp",
-      "requested_ref": "91f645ab24742acd8200f51db48561c1e1515604",
-      "resolved_sha": "91f645ab24742acd8200f51db48561c1e1515604",
-      "change_source_pr_head": "91f645ab24742acd8200f51db48561c1e1515604"
+      "requested_ref": "dccbcd90d9c03e56ccfd5ef8451e13cb0cbc637f",
+      "resolved_sha": "dccbcd90d9c03e56ccfd5ef8451e13cb0cbc637f",
+      "change_source_pr_head": "dccbcd90d9c03e56ccfd5ef8451e13cb0cbc637f"
     },
     {
       "id": "feishu",
@@ -88,16 +88,16 @@
     {
       "id": "fitbit-mcp",
       "repository": "https://github.com/akashic-plugins/fitbit-mcp",
-      "requested_ref": "eda9a879c751f4d2268a3dbc4c7b1f847de79f34",
-      "resolved_sha": "eda9a879c751f4d2268a3dbc4c7b1f847de79f34",
-      "change_source_pr_head": "eda9a879c751f4d2268a3dbc4c7b1f847de79f34"
+      "requested_ref": "e0eda11d822e2ca0cf4abeee1e3ef93d60cc1a80",
+      "resolved_sha": "e0eda11d822e2ca0cf4abeee1e3ef93d60cc1a80",
+      "change_source_pr_head": "e0eda11d822e2ca0cf4abeee1e3ef93d60cc1a80"
     },
     {
       "id": "steam-mcp",
       "repository": "https://github.com/akashic-plugins/steam-mcp",
-      "requested_ref": "337c8f1898e3d4e23c02da0d78e86877d10940d2",
-      "resolved_sha": "337c8f1898e3d4e23c02da0d78e86877d10940d2",
-      "change_source_pr_head": "337c8f1898e3d4e23c02da0d78e86877d10940d2"
+      "requested_ref": "d2ddd1bc8766f0c90e13ff8b5e2fe187c0429a94",
+      "resolved_sha": "d2ddd1bc8766f0c90e13ff8b5e2fe187c0429a94",
+      "change_source_pr_head": "d2ddd1bc8766f0c90e13ff8b5e2fe187c0429a94"
     },
     {
       "id": "qqbot",
