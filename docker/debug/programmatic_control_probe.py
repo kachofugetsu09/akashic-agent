@@ -1981,7 +1981,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 {
                     "projection": parity_evidence,
                     "lanes": lane_evidence,
-                    "mediaCoverage": "tests/test_web_chat_channel.py adapter fixture",
+                    "mediaCoverage": "tests/mobile_realtime/test_attachments.py boundary fixture",
                 },
             )
         )

@@ -101,6 +101,8 @@ Git worktree 保存源码、测试和项目文档。Akashic `<workspace>` 保存
 
 ## 5. Gate
 
+测试只固定现实可观察的回归、非平凡不变量或边界，以及具体 bug。代码发生变化或覆盖率提高本身不是新增测试的理由。优先复用行为边界上的既有覆盖，不测试字面量、映射、显然控制流、实现细节或已经删除的能力；只有“能力不存在”本身是合同时才验证其缺失。并发测试在实际可行时使用确定性协调或受控调度，不用 sleep 猜测时序。
+
 完成相关测试和静态检查后运行：
 
 ```bash
@@ -110,6 +112,8 @@ python docker/debug/gate.py run --base origin/main
 Gate 根据 Git diff 选择场景，并把报告写入 `docker/debug/reports/change-gate/<run-id>/`。报告的 `sourceDigest`、`planDigest` 和当前源码必须匹配。源码在计划生成后发生变化会使原计划失效，此时重新运行 Gate。
 
 生产路径与受保护合同同时变化时，Gate 必须扩大为完整公开场景执行，不能以结构性拒绝代替验证。测试失败先归因为实现、环境或契约冲突；修改断言、跳过场景和缩减 Gate 需要独立理由与授权。
+
+普通 Pull Request 运行聚焦后的 Python/Web 回归和 change-impact Gate。插件 v3 的 static fleet、领域组合及 E1～E4 集中 E2E 用于插件候选或发布里程碑，不在每个 Core Pull Request 重复执行。清理记录和保留理由见[测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)。
 
 ## 6. Review 模式
 

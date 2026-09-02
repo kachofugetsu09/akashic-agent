@@ -355,6 +355,10 @@ pure-v3 发布证据分成静态 fleet、领域组合与四个集中 E2E 批次�
 使用 exact commit 锁、一次性 workspace/plugin-home/HOME 与受控端点，不读写正式
 Akashic workspace、正式凭据或 hua-home 服务。
 
+这些是插件候选与发布 Gate，不是普通 Core Pull Request 的固定矩阵。普通 Pull Request
+只运行聚焦回归和按 diff 选场景的统一变更影响 Gate；当改动进入插件候选或发布里程碑时，
+再按下列层次运行对应的 v3 Gate，避免在每个改动上重复搭建同一组 Docker 环境。
+
 ```text
 精确 fleet lock
       │

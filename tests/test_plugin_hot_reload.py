@@ -1750,7 +1750,9 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
                 )
                 == 1012
             )
-            await asyncio.wait_for(publication, timeout=5)
+            # The 1012 close is the release coordination; publication owns its
+            # own drain timeout, so a second wall-clock race adds no contract.
+            await publication
 
     await manager.snapshot_store.retry_drains()
     await manager.terminate_all()

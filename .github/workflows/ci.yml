@@ -7,6 +7,59 @@ on:
       - main
 
 jobs:
+  check-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Python dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip install -r requirements-dev.txt
+          .venv/bin/python -m pip install -e sdk/python
+
+      - name: Check Python
+        run: |
+          .venv/bin/pyright --level error
+          .venv/bin/pyright --project pyrightconfig.tests.json --level error
+          .venv/bin/python scripts/generate_control_schema.py --check
+
+      - name: Check Python SDK
+        run: |
+          cd sdk/python
+          ../../.venv/bin/pyright src tests --level error
+          ../../.venv/bin/pytest -q tests
+
+      - name: Run Python regressions
+        timeout-minutes: 10
+        env:
+          PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
+        run: .venv/bin/pytest -q -W error tests/
+
+      - name: Run Web regressions
+        run: |
+          npm ci
+          npm run test:web
+          npm run typecheck
+
   change-impact-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -16,250 +69,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Show public impact plan
-        continue-on-error: true
+      - name: Show selected semantic scenarios
         run: python docker/debug/gate.py plan --base origin/main
 
       - name: Enforce append-only Yoyo migrations
         run: python scripts/check_yoyo_migrations.py --base origin/main
 
-      - name: Run public semantic gate
+      - name: Run selected semantic scenarios
         run: python docker/debug/gate.py run --base origin/main
 
-      - name: Upload change gate evidence
+      - name: Upload Gate evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: change-impact-gate
           path: docker/debug/reports/change-gate/
-
-  plugin-v3-mobile-gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Verify locked pure-v3 Mobile fleet
-        run: python docker/debug/plugin_v3_mobile_gate.py --require-clean-core
-
-      - name: Upload pure-v3 Mobile evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: plugin-v3-mobile-gate
-          path: docker/debug/reports/plugin-v3-mobile/
-
-  plugin-v3-fleet-static-gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check out full repository history
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Verify locked pure-v3 fleet and retired-plugin exclusions
-        run: >-
-          python docker/debug/plugin_v3_fleet_gate.py
-          --require-clean-core
-          --require-full-core-history
-
-      - name: Upload pure-v3 fleet evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: plugin-v3-fleet-static-gate
-          path: docker/debug/reports/plugin-v3-fleet/
-
-  plugin-passive-composition-v3-gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements.txt
-
-      - name: Install runtime dependencies
-        run: python -m pip install -r requirements.txt
-
-      - name: Verify locked Citation and Meme v3 composition
-        run: python docker/debug/plugin_passive_composition_v3_gate.py --require-clean-core
-
-      - name: Verify Citation and Meme through public WebUI
-        run: python docker/debug/plugin_passive_webui_v3_e2e.py --require-clean-core
-
-      - name: Upload passive v3 composition evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: plugin-passive-composition-v3-gate
-          path: |
-            docker/debug/reports/plugin-passive-composition-v3/
-            docker/debug/reports/plugin-passive-webui-v3/
-
-  plugin-composition-v3-gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements.txt
-
-      - name: Install runtime dependencies
-        run: python -m pip install -r requirements.txt
-
-      - name: Verify locked v3 plugin composition
-        run: python docker/debug/plugin_composition_v3_gate.py --require-clean-core
-
-      - name: Upload v3 plugin composition evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: plugin-composition-v3-gate
-          path: docker/debug/reports/plugin-composition-v3/
-
-  check-and-test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -r requirements.txt
-          .venv/bin/python -m pip install -r requirements-dev.txt
-          .venv/bin/python -m pip install -e sdk/python
-
-      - name: Run pyright
-        run: |
-          .venv/bin/pyright --level error
-      - name: Run pyright for tests
-        run: |
-          .venv/bin/pyright --project pyrightconfig.tests.json --level error
-
-      - name: Check control protocol schema
-        run: .venv/bin/python scripts/generate_control_schema.py --check
-
-      - name: Check Python SDK
-        run: |
-          cd sdk/python
-          ../../.venv/bin/pyright src tests --level error
-          ../../.venv/bin/pytest -q tests
-
-      - name: Run pytest
-        timeout-minutes: 15
-        env:
-          PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
-        run: |
-          .venv/bin/pytest -q -W error tests/
-
-  docker-control-gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Run deterministic control gates
-        run: |
-          python docker/debug/programmatic_control_probe.py --gate smoke
-          python docker/debug/programmatic_control_probe.py --gate failure-matrix
-          python docker/debug/programmatic_control_probe.py --gate memory-context
-
-      - name: Upload control gate evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: programmatic-control-gate
-          path: docker/debug/reports/programmatic-control/
-
-  restart-gate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements.txt
-
-      - name: Install runtime dependencies
-        run: python -m pip install -r requirements.txt
-
-      - name: Run restart soak gate
-        run: python docker/debug/restart_probe.py --soak
-
-      - name: Verify restart cleanup evidence
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          def latest(pattern: str) -> dict[str, object]:
-              reports = list(Path("docker/debug/reports").glob(pattern))
-              if not reports:
-                  raise SystemExit(f"缺少 Gate 报告: {pattern}")
-              path = max(reports, key=lambda item: item.stat().st_mtime_ns)
-              return json.loads(path.read_text(encoding="utf-8"))
-
-          restart = latest("restart/*/gate.json")
-          assert restart["status"] == "passed"
-          assert restart["head"] == os.environ["GITHUB_SHA"]
-          assert restart["dirtyStatus"] == []
-          assert not any(restart["residualResources"].values())
-          PY
-
-      - name: Upload restart evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: restart-gate
-          path: |
-            docker/debug/reports/restart/
