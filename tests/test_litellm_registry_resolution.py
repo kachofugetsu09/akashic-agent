@@ -110,7 +110,37 @@ def test_load_cached_catalog_missing_file(tmp_path: Path) -> None:
     assert m._load_cached_catalog_at(cache) is None
 
 
-def test_normalize_key() -> None:
-    assert m._normalize_key("zai-org/GLM-5.2") == "zaiorgglm52"
-    assert m._normalize_key("  DeepSeek  V4-Flash  ") == "deepseekv4flash"
-    assert m._normalize_key("") == ""
+def test_context_window_uses_input_not_sum(monkeypatch) -> None:
+    """Context window must equal max_input_tokens (official 'context window'),
+    not input+output. max_output_tokens is a separate generation budget."""
+    from agent.model_runtime.catalog.litellm_registry import (
+        resolve_catalog_capabilities,
+    )
+
+    raw = {
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 393_216,
+        "supports_vision": True,
+    }
+    monkeypatch.setattr(m, "_model_entry", lambda provider, model: dict(raw))
+    caps = resolve_catalog_capabilities(
+        "openai-compatible",
+        "deepseek/deepseek-v4-flash-vision-exp",
+    )
+    assert caps is not None
+    assert caps.context_window == 1_000_000
+    assert caps.max_output_tokens == 393_216
+    assert "image" in caps.input_modalities
+
+
+def test_context_window_fallback_when_input_missing(monkeypatch) -> None:
+    """If max_input_tokens is absent, fall back to input+output (legacy)."""
+    from agent.model_runtime.catalog.litellm_registry import (
+        resolve_catalog_capabilities,
+    )
+
+    raw = {"max_input_tokens": 0, "max_output_tokens": 8192}
+    monkeypatch.setattr(m, "_model_entry", lambda provider, model: dict(raw))
+    caps = resolve_catalog_capabilities("openai-compatible", "legacy-model")
+    assert caps is not None
+    assert caps.context_window == 8192

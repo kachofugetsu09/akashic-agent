@@ -77,12 +77,17 @@ def resolve_catalog_capabilities(
     max_output_tokens = _positive_int(
         raw.get("max_output_tokens") or raw.get("max_tokens")
     )
+    # 上下文窗口 = 模型可接受的输入长度（max_input_tokens）。
+    # 多数现代模型（DeepSeek/GPT/Gemini/Claude 等）官方口径的
+    # "context window" 即 input 上限；max_output_tokens 是单独的输出
+    # 预算，不应计入上下文窗口（否则会把 1M 误算成 1.4M，导致
+    # 上下文超限）。只有 max_input_tokens 缺失时才回退到 input+output。
+    if max_input_tokens:
+        context_window = max_input_tokens
+    else:
+        context_window = max_input_tokens + max_output_tokens
     return CatalogCapabilities(
-        context_window=(
-            max_input_tokens + max_output_tokens
-            if max_input_tokens and max_output_tokens
-            else max_input_tokens
-        ),
+        context_window=context_window,
         max_output_tokens=max_output_tokens,
         input_modalities=modalities,
         input_modalities_known=modalities_known,
