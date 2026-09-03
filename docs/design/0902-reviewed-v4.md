@@ -1,4 +1,4 @@
-# Akashic v4：只有 Session 与 Message
+# Akashic v4：Message WAL 与普通插件组合
 
 - 文档版本：0902-reviewed-v4
 - 日期：2026-09-03
@@ -8,6 +8,15 @@
 - 本文不授权：实现、数据库迁移、正式 workspace 写入、删除、部署或合并
 
 ## 结论
+
+v4 不是只有一次数据库减法。它同时做两件彼此正交的事：
+
+1. **事实层做减法**：对话事实只剩 Session 与 Message；
+2. **行为层做拆分**：原来固定在 Core/Bootstrap 的被动回复大链路，变成普通插件组合。
+
+两件事缺一不可。只做第二件，会让插件继续围着 Turn/Run 等重复状态转；只做第一件，
+则只是把新 WAL 塞回旧的 `PassiveMessageWorker → AgentLoop → PassiveTurnPipeline`
+巨型流水线，并没有得到可替换的 Agent。
 
 Akashic 的对话事实层只保留两个名词：
 
@@ -40,6 +49,29 @@ Message。它们若要影响或进入对话，只能被 Message 的类型化内�
 Message，因此不进入 Session。重启后可以丢失这些执行过程；不能丢失的只有已经
 提交的 Message。
 
+被动回复也不是第三个事实对象。它只是一个普通插件提供的函数：读到已提交的
+Message，调用其他普通插件，最后再产生 Message。Core 不认识 passive、proactive、
+Wake 或某一种 Agent 算法。
+
+~~~text
+对话事实                         普通插件行为
+────────────────────            ─────────────────────────────
+Session                          committed Message
+  └── Message WAL ─────────────▶ MESSAGE_REACTOR
+         ▲                         ├── COMMANDS
+         │                         └── AGENT_PROGRAM
+         │                               ├── Prompt contributions
+         └──────── append Message ◀──────┼── Context projection
+                                         ├── Tool selection
+                                         └── Model / Tool ports
+
+同一份 Message WAL ──▶ Chat / Model context / Memory / Sync / Delivery projection
+~~~
+
+`MESSAGE_REACTOR`、`AGENT_PROGRAM` 和各项依赖是运行时 capability，不是实体、日志
+记录或另一种消息载体。替换 Agent Program 不改变 Session schema；停用自动回复插件
+也不会删除已经收到的 user Message。
+
 ### 把我当六岁
 
 Session 是唯一一本作业本。Message 是已经用墨水写完的一行字。
@@ -49,6 +81,13 @@ Session 是唯一一本作业本。Message 是已经用墨水写完的一行字�
 - 抄进去以后，这一行有自己的编号 `message_id`，也有所在页码 `seq`。
 - 聊天页、模型看到的上下文和“这一轮”的括号，都只是拿彩笔从作业本里画出来。
 - 擦掉彩笔，作业本没有少东西；换一种画法，也不用迁移事实。
+
+旁边还有一个会读作业本、再写新行的机器人，它就是插件：
+
+- 换一个机器人，只是换回答办法，作业本格式不变；
+- 关掉机器人，孩子写下的 user Message 仍在，只是不再自动回答；
+- 机器人找模型、挑工具、重试网络，都是它工作时的动作，不是作业本里的新东西；
+- 机器人只有把一句话写完整并交给作业本，才算 Agent 真的说过。
 
 所以 U1 后模型断网三次，最后生成 A，作业本仍只有两行：
 
@@ -351,7 +390,11 @@ Scheduler 可以在插件边界拥有自己的时间表和 due cursor；那是�
 第三种对话事实。若“由计划任务触发”本身必须进入对话历史，就由 producer 把它写成
 普通、类型明确的 Message 内容，而不是给 Core 增加来源分支。
 
-## 七、其余全部是视图
+## 七、其余对话状态全部是视图
+
+“全部是视图”说的是**持久对话状态**：除了 Session 与 Message，不再保存一个平行
+状态来解释对话进行到哪里。插件行为本身不是 projection，也不是事实；它是读取
+Message、调用 capability、再产生 Message 的短命函数。
 
 | 视图 | 从 Session Message 得到什么 |
 |---|---|
@@ -472,131 +515,448 @@ ID 的旧 append 重试只返回原 `seq` 与 gone 结果，永远不比较、�
 - `packages/session/session-projection/src/index.ts:40`：projection 是按 seq fold 的
   versioned cache。
 
-## 十一、目标写入路径
+## 十一、v4 的另一半：把被动回复大链路变成普通插件
+
+### 11.1 现在真正需要替换的链路
+
+当前基线的被动回复不是普通插件组合，而是一条固定 owner 链：
 
 ~~~text
-Sources                         Session Message WAL
-──────────────────────          ─────────────────────────────
-Mobile user Message ───────┐    ┌──────────────────────────┐
-Scheduler Message ─────────┼───▶│ append + seq + durability│
-Assistant complete output ─┤    └────────────┬─────────────┘
-Tool result Message ────────┘                 │
-                                             ├──▶ Chat
-                                             ├──▶ Model context
-                                             ├──▶ Web/Mobile cursor
-                                             ├──▶ Memory/Search
-                                             └──▶ Delivery queue
+PassiveMessageWorker
+  ├── 入站 custody / attachment / per-session lane
+  ▼
+ConversationRuntime
+  ▼
+AgentLoop._react()
+  ▼
+PassiveTurnPipeline
+  ├── command short-circuit
+  ├── BeforeTurn
+  ├── BeforeReasoning
+  ├── reasoner + BeforeStep / AfterStep
+  ├── AfterReasoning：parse + persistence + outbound
+  └── AfterTurn：事件 + dispatch / ACK
 ~~~
 
-公开原子能力保持很小：
+代码证据也显示这些责任仍被固定装配：
+
+- `bootstrap/passive_worker.py:96`：`PassiveMessageWorker` 拥有消息准入、lane task 和
+  结果 task；
+- `agent/looping/core.py:556`：`AgentLoop._react()` 只把请求转给固定 pipeline；
+- `agent/core/passive_turn.py:355`：`PassiveTurnPipeline` 构造固定的四段 phase；
+- `agent/core/passive_turn.py:440`：command 在 Session/model 准入前走专门短路；
+- `agent/core/passive_turn.py:524`：默认被动回复仍由一个固定 `run()` 入口统管。
+
+这会让插件只能在旧流水线上挂 hook，而不能真正替换业务。新增语音 Agent、无工具
+Agent、plan/execute Agent 或另一种回复策略时，要么继续给 Core 加分支，要么复制整条
+pipeline。单独换成 Message WAL 并不会消除这个问题。
+
+### 11.2 目标：`Message → react → Message`
+
+默认产品提供一个普通 `passive-conversation` 插件。它与第三方插件经过同一套加载、
+依赖解析、candidate 校验、generation 发布和生命周期清理；Core 不给它后门。
+
+这不是再建第二套插件框架。当前代码已经有可复用的骨架：
+
+- `agent/plugin_composition/model.py:28` 已定义类型化 `ServiceKey`；
+- `agent/plugin_composition/context.py:148` 已提供绑定 exact Root 的短命 runtime scope；
+- `plugins/models/plugin.py:58` 已用普通 `provide()` 发布 model services；
+- `plugins/compaction/plugin.py:468` 已用普通插件发布 provider request projection；
+- `plugins/markdown_memory/plugin.py:67` 已把 Prompt 与 post-commit memory 行为接入普通
+  plugin lifecycle。
 
 ~~~text
-SessionStore.append(message, expected_head_seq?) -> committed Message
-SessionStore.read(session_id, after_seq?, limit?) -> Message[]
-SessionStore.head(session_id) -> seq
+passive-conversation plugin
+  provides MESSAGE_REACTOR
+  injects  SESSION_READ, SESSION_FEED, SESSION_APPEND
+           COMMANDS, AGENT_PROGRAM
+
+default-agent plugin
+  provides AGENT_PROGRAM
+  injects  SESSION_READ, SESSION_APPEND
+           PROVIDER_REQUEST_PROJECTION
+           PROMPT_PARTS
+           TOOL_SELECTOR
+           ASSISTANT_TRANSFORMS
+           CHAT_MODELS
+           TOOL_EXECUTOR
+           STREAM_PREVIEW
 ~~~
 
-工具关联、删除应用、上下文选择和 UI 分组都是对 `read()` 结果的函数。插件只得到完成
-任务所需的窄能力；projection 不持有任意 SQL 或删除权限。
+这些大写名字都是普通 `ServiceKey`，不是 Core 固定 slot，更不是新领域对象：
 
-## 十二、迁移路线
+- `SESSION_READ` 只提供 read/head，`SESSION_FEED` 只发布 committed Message，
+  `SESSION_APPEND` 只签发绑定 Session、role 与 CAS/typed precondition 的 writer；三者
+  共用一个 WAL owner，但权限彼此独立，都没有任意 SQL、原位改写或删除能力；
+- `MESSAGE_REACTOR` 读一个已经 committed 的输入 Message，按最新 WAL projection 判断
+  `idle / command / respond / recover tool`，再选择 command 或 `AGENT_PROGRAM`；它不
+  保存自己的 outcome；
+- `AGENT_PROGRAM` 拥有默认模型/工具算法，包括 provider retry、Tool Search、空回复
+  修正、terminal tool deadline 和继续生成；
+- 其他 key 只是 `default-agent` 自己的依赖。不使用工具的 Agent 不需要提供假的
+  `TOOL_SELECTOR`，Core 也不维护一张“所有 Agent 都必须有”的选择表。
 
-当前 `projectneed`、代码和数据库仍有 Turn/Run/attempt 合同。本文是替代设计，不允许
-借普通重构偷偷改变线上语义。批准后按以下顺序迁移：
+接口只传已有身份，不发明 ReactionId、ProgramId 或通用 context 袋子：
 
-### Phase 0：冻结目标合同
+~~~text
+MESSAGE_REACTOR.react(session_id, cause_message_id) -> None
+AGENT_PROGRAM.respond(session_id, cause_message_id, scoped_messages) -> None
+~~~
 
-- 批准“失败 attempt 不进入 Session”的信息损失；
-- 批准单一 pre-commit `message_id`；
-- 批准 stale assistant output 由 head CAS 丢弃；
-- 批准 tool `unknown` 与不支持幂等 provider 的边界；
-- 修改 `projectneed` 和相关 decisions，明确旧合同被替代。
+`None` 只表示函数已经结束；可观察结果只能是 WAL 中新增了哪些 Message。异常、取消、
+provider retry 和临时资源留在当前 Fiber/telemetry。它们不能通过另一个 result record
+偷偷变成第二份对话事实。
 
-### Phase 1：只读转换器
+不保留 v3 的 `decide() → handle()` 双阶段，也不新增 ReactionPlan。能否继续只由最新
+Message 前缀算出；同一 `cause_message_id` 被重复唤醒时，projection 已经是 idle 就直接
+结束，否则最终仍由 append 的 CAS/typed precondition 仲裁。
 
-- 从现有 `sessions.db/messages` 和有必要的 tool 数据重建目标 Message WAL；
-- 现有 message ID 原样保留；只有缺少 ID 的历史数据才在一次性迁移中分配；
-- 对无法证明顺序、角色或 tool outcome 的记录 fail-loud，不能猜默认值；
-- 固定真实 Session fixture，比对 Chat、Model context、Tool status 和 Mobile 输出。
+`passive-conversation` 自己用普通 Effect 订阅 committed Message，并在自己的 Fiber
+里调用 `MESSAGE_REACTOR`。因此 Core 甚至不需要知道这个 ServiceKey。产品 profile
+要求自动回复时，candidate 必须恰好解析出一个 provider；依赖缺失或重复 provider
+在发布前 fail-loud。停用这个插件以后：
 
-### Phase 2：切换唯一 writer
+- 渠道仍可把 user Message 写入 WAL；
+- Chat、同步和历史仍正常；
+- 不再自动产生 assistant Message；
+- UI projection 可以显示“Agent 未启用”，Core 不偷偷启用 legacy fallback。
 
-- 所有 user、assistant、tool 和 scheduler producer 改走同一个 append；
-- 输入 transport 直接复用 `message_id`，删除平行 retry identity；
-- 模型 retry 保留在 pre-append 内存流程；
-- projection 先 shadow rebuild，证明读取等价后再接管消费者；
-- 不长期 dual-write 两套事实。
+这里的 `passive` 只是默认插件包名，不是 Message 字段、Session 模式或 Core 分支。
+Scheduler、Wake、Channel 和 subagent 都只产生普通 Message，或者显式依赖同一个
+`AGENT_PROGRAM`；来源不会复制一套执行模型。
 
-### Phase 3：删除旧权威结构
+### 11.3 固定 phase 不原样搬家
 
-- 在可恢复备份和影响清单上删除旧 Turn/Run/Step/attempt/delivery Core rows 与 API；
-- 删除 proactive 分支，让 scheduler 只产生普通 Message；
-- 若 seq 发生变化，客户端执行一次明确 snapshot/cursor reset；
-- 重建 projection，并核对每个 Session 的 message 数、ID 唯一性、seq 连续性、tool
-  配对与 delete 结果。
+插件化不是把 `PassiveTurnPipeline` 整块移动到 `plugins/`。现有每项能力先找到唯一
+owner；没有独立不变量或真实消费者的 phase/hook 直接删除：
 
-迁移前后都不能改写正式 workspace，除非另有明确授权和恢复方案。
+| 当前固定行为 | v4 owner |
+|---|---|
+| channel envelope、附件导入 | Channel/Artifact adapter；artifact ready 后才 append user Message |
+| 入站 durable handoff / ACK | Channel adapter；user Message durable 后结算 |
+| command catalog 与短路 | `passive-conversation` + 注入的 `COMMANDS` |
+| Session/history 准备 | `SESSION_READ` + pure Session projection |
+| system prompt、skills、memory、profile | 有序、不可变的 `PROMPT_PARTS` contributions |
+| history 裁切、摘要与 compaction retry | `PROVIDER_REQUEST_PROJECTION`；沿用普通 compaction plugin |
+| tool schema preload / Tool Search 解锁 | `TOOL_SELECTOR`，由 `default-agent` 使用 |
+| Tool 展示 | `TOOL_SELECTOR`；只能缩小当前可见集合 |
+| Tool 授权与真实执行 | 受保护的 `TOOL_EXECUTOR`；调用边界重新校验 |
+| 默认 ReAct、provider retry、空回复重试、terminal deadline | `AGENT_PROGRAM` |
+| model/provider 绑定 | models/provider 插件；从当前 exact Root 注入 |
+| Citation、Meme、最终文本/媒体改写 | append 前的有序、不可变 `ASSISTANT_TRANSFORMS` |
+| assistant/tool 写入、幂等、seq、CAS | `SESSION_APPEND` 签发的 scoped writer |
+| Memory、Akasha、compaction 派生数据 | committed Message observers / projections |
+| partial token 展示 | `STREAM_PREVIEW`；可丢失且无权 append 半条 Message |
+| error reply、quiet | reactor/program 产生普通 assistant `text` 或 `no_reply` Message |
+| continuation、crash 后下一步 | 从 WAL 重建的 `Next action` projection |
+| assistant 对外发送、重试、provider ACK | 独立 Delivery projection/effect，只引用 `message_id` |
+| generation 固定、取消、资源清理 | 通用 plugin Root lease + Fiber/Effect 生命周期 |
 
-## 十三、验收 Gate
+Command 若只读或只生成回复，可以直接产生 assistant Message；若会付款、发信、改 Git
+等产生外部副作用，必须先生成普通 `tool_call` Message，再走同一 Tool 协议。不能因为
+它叫 command，就在 WAL 看不见的短路里执行一次可能重复的外部动作。
 
-### 13.1 概念 Gate
+Prompt 与 assistant transform 的顺序必须确定，但“顺序确定”不表示插件可以任意叠加。
+每个 contribution 不可变，只有 composition owner 能形成最终序列；candidate Gate 要拒绝
+重复 owner、冲突位置和循环依赖。transform 必须在 assistant Message append 前结束；
+post-commit observer 无权回来改正文。
+
+### 11.4 Tool 可见性不是 Tool 权限
+
+`default-agent` 可以用 `TOOL_SELECTOR` 决定本次把哪些 schema 给模型看，但它不能扩大
+当前授权。模型产生 `tool_call` 后：
+
+1. 按本次可见 schema 校验并把 exact immutable `tool_binding` 写进 assistant Message；
+2. `TOOL_EXECUTOR` 在真实副作用边界重新检查当前授权；
+3. 已撤权时不执行，append 一个明确的 `tool_result(error)`；
+4. 未知外部结果按第四节写 `unknown`，不能由 Agent Program 猜成 success。
+
+因此替换 `AGENT_PROGRAM` 只能改变算法，不能绕过工具权限 owner。
+
+## 十二、Thin Core 最终保留什么
+
+Core 只保留来源无关、产品算法无法安全拥有的原子能力：
+
+1. **Plugin composition**：`ServiceKey`、`provide/require/inject`、依赖冲突校验、exact
+   committed Root lease、candidate/stable、Fiber/Effect 清理、health/incident；
+2. **Session Message WAL**：append、read、subscribe、head、幂等、seq、CAS 和受限
+   writer；用户删除 Session/Message 的 Data Management 是另一个显式管理入口；
+3. **短命执行安全**：取消、超时、per-session 串行准入和有界资源 scope；这些可以
+   丢失，不分配持久身份；
+4. **真实外部边界**：模型调用、Tool 授权/执行、stream preview、channel ingress/ACK
+   和 delivery effect 的窄 port；具体 provider 与策略仍由普通插件提供；
+5. **类型化观察**：只发布 committed Message；observer 失败不能回滚、覆盖或补造
+   WAL 事实。
+
+Core 不认识下面这些产品词：
+
+~~~text
+passive / proactive / Wake / Scheduler / command
+compaction / memory / Citation / Meme / Tool Search
+某个 model/provider 名称 / 某个 channel 名称
+~~~
+
+如果 Core 源码需要按这些名字分支，说明 capability owner 仍没有拆干净。反过来，
+`ServiceKey`、Root lease 和 Fiber 也不进入 Session；它们是让插件安全工作的机器零件，
+不是对话事实。
+
+## 十三、完整目标链路
+
+~~~text
+Channel adapter
+  │  先让 artifact durable
+  │  append user Message(message_id)
+  │  durable 后 ACK inbound
+  ▼
+┌──────────────────────── Session Message WAL ────────────────────────┐
+│ user / system / assistant(tool_call|text|no_reply) / tool / delete │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │ committed feed
+                               ▼
+                    passive-conversation Effect
+                               │ exact Root lease
+                               ▼
+                       MESSAGE_REACTOR
+                      ┌────────┴────────┐
+                  known command    AGENT_PROGRAM
+                                      │
+                  ┌───────────────────┼────────────────────┐
+                  ▼                   ▼                    ▼
+        provider request view   prompt/tool selection   model retry
+                                                          │ complete
+                                                          ▼
+                                            append assistant Message
+                                            ├── text/no_reply ─────┐
+                                            └── tool_call          │
+                                                   │ commit first  │
+                                                   ▼               │
+                                             TOOL_EXECUTOR         │
+                                                   │ complete      │
+                                                   ▼               │
+                                            append tool Message    │
+                                                   └── generate ───┘
+
+committed Message feed
+  ├──▶ Chat / Web / Mobile cursor
+  ├──▶ Model context / Memory / Search projections
+  └──▶ Delivery projector ── provider send/retry/ACK
+~~~
+
+这里有两个故意分开的 commit 点：
+
+- **输入事实**：channel 在 user Message durable 后就可以 ACK。Agent 后来是否回答，
+  不能反过来决定“用户有没有说过”；
+- **输出事实**：assistant Message append 表示 Agent 已经说出。外部渠道是否送达由
+  Delivery effect 继续处理，不能回滚或复制 assistant Message。
+
+这会有意替换当前将入站 custody、回复终态和 delivery 结算绑在同一大链中的行为。
+它不是漏迁移，而是由“Message 是唯一消息载体”直接推导出的新边界。
+
+## 十四、重启、热更新与并发不需要 Run
+
+### 14.1 活着时固定一个 exact Root
+
+一次 `react()` 调用开始时拿到 exact committed Root lease，到函数完成或取消才释放。
+其中的 model retry、Prompt、tool selection 和 transform 都看同一 Root。热更新可以发布
+新 Root，但不能在半次调用中偷换依赖。
+
+Fiber、取消 token、超时和 per-session lane 都是内存资源。U2 到来时可以尽早取消旧
+生成；即使取消来不及，旧输出也会被 `expected_head_seq` 拒绝。正确性来自 WAL CAS，
+不是来自一个持久 Run 状态。
+
+### 14.2 崩溃后只从 Message 恢复
+
+- assistant Message append 前崩溃：没有事实；重启后可用最新 Root 重新生成；
+- assistant `tool_call` 已 append：从其 `call_ref` 与 `tool_binding` 查询或恢复；
+- tool Message 已 append：下一次从最新 WAL 继续生成 assistant Message；
+- assistant text/`no_reply` 已 append：该前缀已经有结果，projection 得到 idle；
+- delivery 中崩溃：继续用同一 `message_id` 查询或重试，不重新生成正文。
+
+`tool_binding` 中的 generation identity 是 Message 内容的一部分，不需要 RunId。由 WAL
+派生的 unresolved-tool projection 为所引用的插件 generation 加 retention lease；进程
+启动时先重建这些 lease，再允许清理旧 generation。若安全 owner 撤销权限，就写明确
+的 tool error Message 并释放 lease，不能执行过期授权。
+
+这只保证一段仍活着的函数内部使用同一 Root。崩溃后的新函数可以使用新 Root；唯一
+必须保持的是已提交 tool binding 的执行身份。为了跨崩溃保存整套旧算法而新增 durable
+Run，成本大于它保护的事实，本设计明确不做。
+
+### 14.3 Candidate 与外部插件边界
+
+- 内置插件与外部插件使用同一 loader、manifest、依赖图和生命周期 API；
+- 缺少依赖、重复 Service provider、贡献顺序冲突在 candidate 阶段 fail-loud；
+- candidate 使用隔离 Session feed，不得订阅生产 Session、发送真实 delivery 或执行
+  高风险 Tool；
+- 普通插件不得 import Core 私有模块、获得完整 workspace/repository/SQL 或删除能力；
+- generation 下线前必须 drain 自己的 Effects、listeners、tasks 与 leases；
+- 一个仓库外 fixture 必须能提供替代 `AGENT_PROGRAM`，不改 Core 就完成真实回复。
+
+## 十五、迁移路线：WAL 与插件化一起完成
+
+当前 `projectneed`、decisions、代码和数据库仍有 Turn/Run/attempt 合同。本文是有意的
+替代设计；当前行为是调查证据，不是正确性的来源。批准前不实现，批准后也不能把
+旧名词藏进 adapter 永久保留。
+
+### Phase 0：批准新合同
+
+- 批准 Session/Message 是唯一对话事实，失败 attempt 不进入 Session；
+- 批准单一 pre-commit `message_id`、head CAS、tool `unknown` 和外部 exactly-once
+  边界；
+- 批准 inbound ACK 与 Agent reply/delivery 解耦；
+- 以新条款 supersede `projectneed` 和相关 decisions 中的 Turn/Run 合同；
+- 建立数据库、附件引用、插件 generation 和客户端 cursor 的可恢复备份与影响清单。
+
+### Phase 1：先冻结完整行为账单
+
+在改动 owner 前，用真实 Session fixture 和受控 provider/tool 记录当前大链的：
+
+- 输入与附件、command、Prompt sections、model request、tool schemas 与调用顺序；
+- compaction retry、Tool Search 解锁、空回复 retry、terminal tool、continuation；
+- Citation/Meme/媒体变换、partial stream、error/no_reply；
+- Message 写集、Memory/Akasha 观察、Web/Mobile cursor、delivery 与两侧 ACK；
+- 热更新时的 exact generation、取消和资源清理。
+
+每个差异必须先标成“保留能力”“按 v4 有意替换”或“已证明的旧 bug”。oracle 不要求
+盲目复制现状；它要求任何消失的能力都有明确决定。旧 phase 名称本身不是能力，没有
+消费者的 hook 不迁移。
+
+### Phase 2：建立目标 WAL 与窄 capability
+
+- 从现有数据只读重建目标 Message WAL；已有 message ID 原样保留；
+- 无法证明顺序、角色、tool pairing 或 outcome 的记录 fail-loud；
+- 实现正交的 `SESSION_READ`、`SESSION_FEED`、`SESSION_APPEND` 与 scoped CAS writer；
+- Chat、Model context、Tool status、Next action、Memory 和 Mobile 先 shadow rebuild；
+- 还未切换生产 writer，不改正式 workspace。
+
+### Phase 3：先抽出普通 `AGENT_PROGRAM`
+
+- 把默认 Reasoner/ReAct、provider retry、Tool Search、空回复和 terminal policy 从
+  `AgentLoop`/pipeline 抽成 `default-agent` 插件；
+- 把 Prompt、context、tool selection 和 assistant transforms 变成普通依赖/contribution；
+- 用临时窄 adapter 接回旧入口，比对 Phase 1 oracle；adapter 只存在于迁移期并登记
+  删除 commit；
+- 用一个无工具替代 Agent Program 证明 Core 与默认算法已解耦。
+
+### Phase 4：接入 `passive-conversation` 并 shadow
+
+- 插件订阅 shadow Message feed，调用 `MESSAGE_REACTOR → AGENT_PROGRAM`；
+- command、附件、error/no_reply、tool loop、continuation 与输出 transform 逐项对账；
+- shadow 禁止真实 append、Tool 副作用和 delivery，只比较计划产生的 Message 与
+  外部调用；
+- candidate/stable 切换期间验证 exact Root 和所有 Effect 均可排空。
+
+### Phase 5：一次切换唯一 writer
+
+- Channel 先 append user Message，再 ACK inbound；
+- user、assistant、tool、scheduler producer 全部只走同一个 WAL append；
+- 只启用 `passive-conversation` 的生产 subscriber，旧 worker 变为不可达；
+- Delivery projector 只消费 committed assistant Message；
+- projection 完成 cursor reset/shadow 对账后接管读取；不长期 dual-write 两套事实。
+
+### Phase 6：删除旧链和旧权威结构
+
+- 删除 `PassiveMessageWorker → ConversationRuntime → AgentLoop._react →
+  PassiveTurnPipeline` 固定业务链；
+- 删除 Before/After phase DAG、proactive/source 分支和无消费者的兼容 hook；
+- 删除旧 Turn/Run/Step/attempt/delivery Core rows、API 与双重 message identity；
+- 卸掉所有迁移 adapter，确认没有插件 cache、动态消费者或恢复任务仍引用它们；
+- 重建 projection，核对每个 Session 的 Message 数、ID、seq、tool pairing、delete、
+  plugin generation retention 与客户端 cursor。
+
+迁移前后都不能改写正式 workspace，除非另有明确授权、恢复点和执行前后完整性检查。
+
+## 十六、验收 Gate
+
+### 16.1 概念 Gate
 
 - Core schema 和领域 API 只有 Session、Message；
-- 不存在 TurnRef、RunRef、StepRef、DeliveryRef、ProjectionClaim 或 SessionEvent 壳；
+- 不存在 TurnRef、RunRef、StepRef、AttemptRef、DeliveryRef、ProjectionClaim 或
+  SessionEvent 壳；
+- `MESSAGE_REACTOR`、`AGENT_PROGRAM`、Root、Fiber 和 projection 不可序列化成第三种
+  对话事实；
 - tool call 只用 Message 内可派生的 `call_ref`；
 - proactive 不是类型、字段、状态机或特殊 commit 路径；
-- 新增任何第三个权威名词时，必须先证明 Session/Message 无法表达其独立不变量。
+- 没有 `metadata/context/intent` 通用可变袋子绕过 typed Message 与 capability。
 
-### 13.2 WAL Gate
+### 16.2 WAL Gate
 
 - 同 `message_id` 同内容重试只得到同一 `seq`；
 - 同 `message_id` 不同内容 fail-loud；
 - commit 前崩溃没有 Message，commit 后 ACK 丢失不会重复 Message；
-- 每个 Session 的 seq 唯一连续，projection 失败不影响 commit；
-- 正常路径没有 UPDATE/DELETE Message。
+- 每个 Session 的 seq 唯一连续，projection/observer 失败不影响 commit；
+- 正常路径没有 UPDATE/DELETE Message；受控物理擦除只走 Data Management；
+- U2 抢先提交时，基于旧 head 的 A 被拒绝；两个 worker 也只有一个能提交。
 
-### 13.3 行为 Gate
+### 16.3 插件组合 Gate
 
-- 模型断网和 partial stream 不写 Session；
-- U2 抢先提交时，基于旧 head 的 A 被拒绝并重新生成；
-- 两个并发 worker 只有一个 assistant Message 能提交；
-- tool_call 先提交再执行，crash 后按 `call_ref` 查询或安全恢复；
+- Core/Bootstrap 不再 import 或构造 `PassiveMessageWorker`、`AgentLoop` 默认算法和
+  `PassiveTurnPipeline`；
+- Core 源码不按 passive/proactive/Wake/Scheduler/Citation/Meme/compaction/provider
+  名称分支；
+- 停用 `passive-conversation` 后，输入 Message、历史与同步仍工作，只停止自动回答；
+- 替换 `AGENT_PROGRAM` fixture 无需修改 Core、WAL schema 或 channel adapter；
+- 缺失/重复 Service 和 contribution 冲突在 candidate 发布前失败；
+- Prompt 与 transform 次序确定，post-commit 插件不能修改 Message；
+- 仓库外测试插件经正式安装链提供 `AGENT_PROGRAM`，不使用 Core 私有 import；
+- generation 下线后无遗留 task、listener、subscription、Root lease 或 tool binding lease。
+
+### 16.4 行为 Gate
+
+- command short-circuit、附件、Prompt、compaction、Tool Search 和模型绑定都有目标 owner；
+- provider 断网、retry 与 partial stream 不写 Session；
+- `tool_call` 先提交再执行，crash 后按 `call_ref/tool_binding` 查询或安全恢复；
+- Tool 可见性不能扩大真实授权，撤权产生明确 tool error；
 - 不可确认的外部效果产生 `unknown`，不会盲目重复；
-- `no_due` 不产生 Message；quiet 产生普通 `[no_reply]` assistant Message，Chat 隐藏；
+- 空回复 retry、terminal deadline、continuation、error reply 和 transform 有受控 fixture；
+- `no_due` 不产生 Message；quiet 产生普通 `no_reply` assistant Message，Chat 隐藏；
+- user Message durable 后即可 ACK，reply/delivery 失败不会抹掉输入；
+- assistant Message durable 后 Delivery 独立重试同一 `message_id`，不会重新生成正文；
 - Web/Mobile 只用 `message_id + seq + cursor` 完成重复、断线和追赶；
 - delete Message 到达后所有 projection 一致隐藏目标，旧 retry 不会复活它。
 
-### 13.4 明确接受的非目标
+### 16.5 迁移 Gate
+
+- Phase 1 每项行为都有 preserve/replace/bug 分类和可复跑 fixture；
+- WAL shadow 重建与旧读取逐 Session 对账；无法转换的数据有显式阻塞清单；
+- 切换点只有一个生产 writer、一个自动回复 subscriber，没有窗口式 dual-write；
+- 数据迁移、客户端 cursor reset 和 generation retention 均从备份做过恢复演练；
+- 删除清单逐项证明静态 import、插件源码/cache、测试、数据库、日志和运行进程都无消费者。
+
+### 16.6 明确接受的非目标
 
 - 不从 Session 审计失败 provider attempt；
 - 不恢复半截 token；
-- 不给执行尝试稳定 ID；
-- 不保证外部 provider 的 exactly-once，除非 provider 提供幂等或查询合同；
+- 不给执行尝试分配稳定 ID；
+- 不跨崩溃固定整套旧 Agent Program；只保留已提交 tool binding；
+- 不保证外部 provider exactly-once，除非 provider 提供幂等或查询合同；
 - 不让 UI 分组成为持久身份。
 
-## 十四、对 v3 和前一版 v4 的最终减法
+## 十七、对 v3 和前一版 v4 的最终减法
 
 | 删除的东西 | 原因 | 现在由什么承担 |
 |---|---|---|
 | MessageBody / SessionEntry 两层 | 同一正文两种 owner | Message WAL record |
 | SessionEvent 壳 | Message 已经是日志记录 | Message |
-| Turn / Run / Step | 把临时执行升级成事实 | head CAS + projection |
-| Attempt 状态 | 失败重试发生在 append 前 | 内存 + telemetry |
+| Turn / Run / Step / Attempt | 把短命执行升级成事实 | head CAS + Fiber + telemetry + projection |
 | client/retry message IDs | 同一 Message 多个身份 | 唯一 `message_id` |
 | ToolCallId | 可由调用所在位置确定 | `message_id + block index` |
-| proactive 分支 | 来源不应改变执行语义 | 普通 input/output Message |
-| DeliveryId / delivery rows | 投递不能复制消息身份 | `message_id` + provider 能力 |
+| proactive/source 执行分支 | 来源不应改变执行语义 | 普通 input Message + 同一 reactor |
+| DeliveryId / conversation delivery rows | 投递不能复制消息身份 | `message_id` + provider projection/effect |
 | ProjectionClaim | projection 不配拥有事实 | version + source seq cache |
+| Core 中的默认 AgentLoop | 产品算法不可替换 | 普通 `default-agent` 插件 |
+| `PassiveTurnPipeline` 固定 phase DAG | 把业务、持久化和外部效果绑死 | `MESSAGE_REACTOR` + 普通依赖/contributions |
+| `PassiveMessageWorker` 大 owner | 同时拥有 ingress、reply 和 delivery | Channel adapter + plugin Effect + Delivery projector |
+| Citation/Meme/ToolSearch 等 Core 特判 | 产品能力侵入基础设施 | 普通插件 contribution/service |
+| 通用 metadata/context 袋子 | 隐藏第二套协议和 owner | typed Message content + 窄 capability |
 
-最终模型不是“把许多事件放进一份账本”，而是更直接：
+最终不是“只做 WAL”，也不是“把旧 pipeline 移进插件目录”，而是三句可以独立验证的
+规则：
 
 ~~~text
-Session
-  └── Message
-        ├── user text
-        ├── assistant text / tool_call
-        ├── tool_result
-        └── delete
-
-除此以外，Core 内都只是读取这本账的方式。
+事实：Session = ordered Message WAL
+行为：ordinary plugins read Message and append Message
+视图：projection = fold(Messages up to source_seq)
 ~~~
+
+Core 只保护 append、权限、外部边界和插件生命周期。它不再决定 Agent 怎样回答，
+也不再为回答过程发明另一套可持久化名词。
