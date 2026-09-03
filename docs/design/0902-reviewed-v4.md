@@ -176,10 +176,11 @@ seq 2  user       U2
 seq 3  assistant  reply(U1), reply(U2), text(A)
 ~~~
 
-append owner 必须验证 target 与新 Message 属于同一 Session、target `seq` 更小、没有
-重复或前向/跨 Session 引用，而且 target 是当前 reactor 允许反应的 typed Message。
-v4 初始合同只允许 assistant role 携带 `reply`；它不是 UI 引用/引用回复的万能字段。
-这条边使用已有 `message_id`，没有 AckId、ReactionId 或处理 cursor。
+Session owner 必须验证 target 与新 Message 属于同一 Session、target `seq` 更小、没有
+重复或前向/跨 Session 引用，并且 target set 与短命 grant 完全相等。当前 reactor policy
+是否允许反应由 grant issuer 在签发前判断，不复制进 Core。v4 初始合同只允许 assistant
+role 携带 `reply`；它不是 UI 引用/引用回复的万能字段。这条边使用已有 `message_id`，
+没有 AckId、ReactionId 或处理 cursor。
 
 `tool_result.call_ref` 是另一条类型化因果边：它只确认对应的 `tool_call`。如果 assistant
 先用 `reply(U1), tool_call(...)` 推进 U1，恢复时先完成 unresolved tool；tool Message
@@ -319,12 +320,17 @@ object capability。
 
 ~~~text
 session_id
-caller = exact plugin Root generation 或具体 host adapter
+caller = 由 runtime scope 绑定的 exact plugin Root generation 或具体 host adapter
 allowed role + allowed content variants
-allowed reply targets / call_ref
+required reply target set / exact call_ref
 observed_head_seq 或另一项 typed atomic precondition
 expiry + one-shot append budget
 ~~~
+
+`caller` 不是调用者自己传入的字符串；composition host 从当前 scope 注入。assistant
+Message 的 `reply` target set 必须与 grant 绑定的 cause set **完全相等**。如果 reactor
+决定分别回答 U1 和 U2，它必须先明确选择 `{U1}`，再为这一小组签一份 grant；不能拿
+`{U1, U2}` 的宽权限只确认其中一条。
 
 谁能写什么由真实信任边界决定：
 
@@ -337,9 +343,11 @@ expiry + one-shot append budget
 | Data Management | 已预览 closure 的 `system delete`；普通插件拿不到 |
 | 一次性 migration | 只在离线恢复流程写固定清单；runtime 永不复用 |
 
-Session owner 在同一个 append 事务中校验 grant、Message 结构、同 Session 因果边和 CAS。
-跨 Session、越权 role/content、错误 cause/call、过期或已撤销 generation 都 fail-loud。
-generation 在外部 effect 完成后被撤销时，Tool owner只能用受限 completion grant 记录
+Session owner 在同一个 append 事务中只校验 grant、Message 结构、同 Session 因果边和
+CAS；“哪些输入应当一起回答”由 reactor 选择，再由 exact cause set grant 固定，Core 不
+复制这项产品策略。跨 Session、越权 role/content、错误 cause/call、过期或已撤销
+generation 都 fail-loud。generation 在外部 effect 完成后被撤销时，Tool owner 只能用
+受限 completion grant 记录
 `error/unknown`，不能借旧授权再次执行副作用。
 
 ## 四、工具调用也只是 Message
@@ -388,6 +396,58 @@ seq 12  assistant  根据结果回答
 这承认一个不能被数据模型消灭的边界：Session 回滚不了已经发出的付款、邮件或 Git
 操作。正确做法是保留调用意图、复用一个幂等地址并诚实记录 `unknown`，不是再加一套
 Run/effect 状态机假装获得 exactly-once。
+
+### 4.3 正常执行和崩溃恢复共用一个 Tool 入口
+
+已提交的 `tool_call` 不能依赖“碰巧仍活着的 Agent Program”才能完成。Tool runtime 通过
+普通 composition 提供一项受保护的窄服务：
+
+~~~text
+TOOL_EXECUTOR.execute_or_recover(call_ref) -> None
+~~~
+
+它没有 execution ID，也不返回另一份结果对象：成功、失败或不确定的唯一可观察结果，
+仍是 exact `call_ref` 的一条 tool Message。`session_id`、参数和 exact binding 都从
+`call_ref` 指向的既有 assistant Message 读取，不让调用者再传一份可能漂移的副本。它
+同时承担两条入口：
+
+1. `AGENT_PROGRAM` 提交 `tool_call` 后立即调用；
+2. Tool runtime 的普通 Effect 在启动时扫描、运行时订阅 committed Message feed，对每个
+   未删除且没有终态 result 的 call 调用同一接口。
+
+两条入口可以重复到达，但 exact `call_ref` 的本地互斥、provider query/idempotency 与
+result append 幂等会把它们收敛成一次结果。执行前必须重新校验 unresolved 状态、exact
+binding、当前授权和 delete projection；随后取得 binding generation retention lease，
+在真实副作用边界查询或执行，并用 Tool completion grant append 结果。
+
+停用 `MESSAGE_REACTOR` 或 `AGENT_PROGRAM` 只是不再生成新的回复，不能遗弃已经 committed
+的 `tool_call`；Tool recovery Effect 仍会把它结算，之后的 result 留在 WAL，等待未来的
+reactor。若管理员要停用 Tool runtime，candidate 必须先拒绝新的 tool call，并 drain
+所有 unresolved call。exact generation 意外丢失时写 `unknown` 并报 incident，不能换用
+一个“差不多”的新 generation，更不能盲重试。
+
+### 4.4 删除与外部副作用共用一个短命闸门
+
+工具和 Delivery 在真正开始外部 I/O 前，都必须取得该 Session 的短命 shared effect
+lease；Data Management append delete 前取得同一闸门的 exclusive lease。lease 只存在于
+内存，没有 ID、表或恢复语义，因此不是第三种对话事实。
+
+shared 路径在 lease 内重新读取最新 delete graph。若目标已删除，工具拒绝开始，Delivery
+直接进入 `suppressed`；否则工具保持 lease 直到 append result/`unknown`，Delivery 保持
+lease 直到 durable `delivered/rejected/unknown`。超时或取消也必须先查询并写出
+`unknown`，不能释放后假装副作用没有发生。
+
+exclusive 路径会阻止新的 shared lease，并等待已经开始的 effect 得到 result 或
+`unknown`；然后从最新 head 重算 closure、append delete，再释放。于是只有两个结果：
+
+~~~text
+effect 先取得 shared lease  ──▶ delete 等它结算，再把结果纳入 closure
+delete 先取得 exclusive lease ──▶ 新 effect 看见 delete，永不开始
+~~~
+
+进程崩溃会丢掉 lease，所以启动顺序必须固定：先从完整 WAL 重建 delete/tool settlement
+projection 和 generation lease，再启动 Tool/Delivery worker。恢复仍只依赖既有 Message、
+provider query/idempotency 和 `unknown`，不会恢复一个 Run。
 
 ## 五、旧 Turn 和 Run 去哪里
 
@@ -522,10 +582,14 @@ cursor:   最后完整应用的 seq
 客户端用 `message_id` 去重和引用，用 `seq` 排序与追赶。projection 晚到、重复或重建
 都不能改变 WAL。
 
-恢复时也不读 Run 状态。`Next action` projection 对整份 WAL 做一次因果 fold：
+恢复时也不读 Run 状态。`Next action` projection 对整份 WAL 做一次因果 fold。它先从
+**完整历史**收集 reply 与 call/result settlement 边，再应用 delete manifest 决定哪些
+内容可见、哪些 call 不再可执行；隐藏一条旧 result 绝不能把已经结算的 call 变回 pending：
 
 1. 校验并收集所有 `reply(target_message_id)` 与 `tool_result.call_ref` 边；
-2. 有尚无任何确定 result 的 `tool_call`，先查询或安全恢复；
+2. 有尚无终态 result、且未被 delete 覆盖的 `tool_call`，输出 `await_tool(call_ref)`；
+   Tool recovery Effect 调用 `TOOL_EXECUTOR.execute_or_recover(call_ref)`，projection 本身不执行
+   外部动作；
 3. 否则选出尚未被 `reply` 明确认领、且按当前 reactor policy 可反应的 user/system/tool
    Message；delete Message 永不触发回复，command 默认单独选择，普通连续输入可以
    显式组成 cause set；
@@ -534,7 +598,8 @@ cursor:   最后完整应用的 seq
 5. 没有 unresolved tool call 或 unacknowledged cause 才是 idle。
 
 被多个 feed callback 重复唤醒时，它们会算出同一个 pending set；只有一个输出能通过
-observed head CAS。失败者重新 fold，看到 reply 边后结束。这里没有处理 cursor，也不
+observed head CAS。失败者重新 fold，看到 reply 边后结束。`await_tool` 只会唤醒幂等的
+Tool executor；`MESSAGE_REACTOR` 自己返回等待，不偷做恢复。这里没有处理 cursor，也不
 从“最后一条是什么 role”猜是否完成。
 
 两个容易出错的例子：
@@ -597,20 +662,25 @@ digest。正常状态只单调前进：
 
 ~~~text
 prepared ──fsync──▶ provider_started ──▶ delivered ──▶ settled
-    │                         ├─────────▶ rejected
+    │                         ├─────────▶ rejected (terminal)
     │                         └─────────▶ unknown
     └──────────────────────────────────▶ suppressed
 ~~~
 
 - `prepared` 在任何 provider I/O 前冻结 route 与 exact plugin binding；
-- `provider_started` 必须先 durable，随后才可调用 provider；
+- 取得 shared effect lease 并重读 delete graph 后，先把 `provider_started` durable，
+  随后才可调用 provider；直到结果状态 durable 前不释放 lease；
 - crash/timeout 后先用 `message_id` 幂等键或 receipt query；能确认才写 `delivered`；
-- provider 明确拒绝写 `rejected`；可能已经发生但无法确认写 `unknown`；两者都不盲重发；
+- provider 的永久拒绝写 `rejected`，它是终态，永不重试；只有 provider 能证明
+  没有产生外部效果时，才能保持 `provider_started` 并用同一 `message_id`/binding
+  安全重试；无法证明就写 `unknown`，不盲重发；
 - delete 在 provider I/O 前把 `prepared` 单调推进为 `suppressed`；已经
   `provider_started` 只能查询真实结果，不能倒退成未发送；
 - `delivered` 后，source plugin 才推进自己的 ACK/dedupe/cooldown，再写 `settled`；
 - observer 在 Message commit 后、`prepared` 前崩溃时，恢复扫描按 SessionRoute 补建缺失
-  record；同 `message_id`/同 binding 幂等，binding 冲突 fail-loud；
+  record；它必须先应用 delete manifest，若 Message 已删除就直接建
+  `suppressed`，不先建 `prepared`；同 `message_id`/同 binding 幂等，binding 冲突
+  fail-loud；
 - unresolved record 固定对应 channel generation；恢复先重建 retention lease，再清理
   旧 generation。
 
@@ -620,7 +690,8 @@ prepared ──fsync──▶ provider_started ──▶ delivered ──▶ set
 assistant Message 已提交
         │
         ├── provider 发送成功
-        ├── provider 明确失败，可按策略重试同一个 message_id
+        ├── provider 证明未产生效果，可用同一 message_id 安全重试
+        ├── provider 永久拒绝，写 rejected 后结束
         └── ACK 不明，先查询；不能确认时标记外部状态 unknown
 ~~~
 
@@ -643,20 +714,25 @@ Data Management 操作预览目标、备份、验证 provider/source 已不再�
 
 ## 九、删除仍只使用 Message
 
-正常路径永远只追加。用户明确撤销 Message 时，Data Management 先在 Session head `H`
-上冻结一份因果 closure，而不是只删界面当前点中的一行。
+正常路径永远只追加。用户明确撤销 Message 时，Data Management 先取得第
+4.4 节同一个 per-session exclusive lease。它会停止签发新 reactor grant，并阻止
+新的 Tool/Delivery effect 开始。
 
-计算前先取得该 Session 的短命独占管理 barrier，停止签发新的 reactor/tool write grant。
-closure 中若有 unresolved tool call：尚未开始外部 I/O 的先取消；已经可能发生的先按
-第四节查询，并 append 确定 result 或 `unknown`，再从新 head 重算。不能一边删除调用
-意图，一边让 executor 在看不见的地方继续执行。
+已经取得 shared lease 的 effect 先写出 result 或 `unknown`。尚未取得 shared lease
+的 unresolved tool call 可以明确 append `tool_result(error: deleted_before_start)`，不调用
+provider。启动时遗留的不确定 call 必须在 Data Management 对外 ready 前已按第
+4.3 节查询或写 `unknown`，不能把“进程里没有 task”误当成“从未开始”。已有
+Delivery record 按第八节结算；尚未建 record 且目标将被删除时，只建
+`suppressed`。这些完成后才在最新 Session head `H` 上计算 closure。
 
-closure 从明确目标开始，沿已有 typed edge 只向后展开：
+先归一化 seed，再沿已有 typed edge 向后展开：
 
-1. assistant `reply(target_message_id)` 指向 closure 中 Message，则加入该 assistant；
-2. closure 中 assistant 的 `tool_call` 对应的 tool result 加入；
-3. reply 该 tool result 的后续 assistant 继续加入，直到没有新后代；
-4. 上游 cause 不自动加入；“撤销整组”由 UI 在请求中明确给出需要一起作为 seed 的
+1. 若 seed 是 tool result Message，同时加入包含它所引用 `tool_call` 的 assistant
+   Message。Message 不可拆，所以该 assistant 内其他 call 的 result 也会在后续闭包中加入；
+2. assistant `reply(target_message_id)` 指向 closure 中 Message，则加入该 assistant；
+3. closure 中 assistant 的 `tool_call` 对应的 tool result 加入；
+4. reply 该 tool result 的后续 assistant 继续加入，直到没有新后代；
+5. 上游 cause 不自动加入；“撤销整组”由 UI 在请求中明确给出需要一起作为 seed 的
    user/system Message。
 
 然后用 Data Management 专属 grant 和 `expected_head_seq=H` 一次 append **一条**普通
@@ -675,13 +751,14 @@ Redaction row 或另一套版本号。若 head 在计算期间变化，append �
 | owner | 必须做什么 |
 |---|---|
 | Chat / Model context | 隐藏全部目标和依赖输出，不留下孤立 tool result |
-| `Next action` | deleted input/call/result 永不重新进入 pending；被删除 assistant 的旧 reply 边仍证明上游曾被处理，不能自动重跑 command/effect |
+| `Next action` | 先用完整历史的 reply/result 边结算，再应用可见性；deleted input/call/result 永不重新进入 pending，被删除 result 也不会让旧 call 复活 |
 | Memory / Search / Akasha | 按目标 `message_id` 撤销派生项，或从 WAL 重建到 manifest 的 `source_seq` |
 | Delivery | `prepared` 停止发送；`provider_started` 先查询并记 delivered/unknown；已经 delivered 只能尝试 provider 明确支持的 recall，不能伪装成未发送 |
 | Artifact owner | 重新计算引用；只有引用归零且另有物理删除授权时才减少字节 |
 
-因此删 U1 会同时隐藏 reply U1 的 assistant、其 tool call/result 和最终回答；删一个
-tool_call 也不会留下无主 tool result。只删 assistant A 时，上游 U1 可以继续显示，但
+因此删 U1 会同时隐藏 reply U1 的 assistant、其 tool call/result 和最终回答；从
+tool result 开始删也会先纳入它的 call Message，不会留下一个看似 pending 的
+call。只删 assistant A 时，上游 U1 可以继续显示，但
 不会因 A 被隐藏而自动触发第二次回复；用户要重新问，必须再 append 一条新 user
 Message。
 
@@ -798,6 +875,11 @@ default-agent plugin
            CHAT_MODELS
            TOOL_EXECUTOR
            STREAM_PREVIEW
+
+tool-runtime plugin
+  provides TOOL_EXECUTOR + recovery Effect
+  injects  SESSION_READ, SESSION_FEED, SESSION_APPEND
+           exact tool bindings + shared effect lease
 ~~~
 
 这些大写名字都是普通 `ServiceKey`，不是 Core 固定 slot，更不是新领域对象：
@@ -806,10 +888,12 @@ default-agent plugin
   `SESSION_APPEND` 只签发绑定 Session、role 与 CAS/typed precondition 的 writer；三者
   共用一个 WAL owner，但权限彼此独立，都没有任意 SQL、原位改写或删除能力；
 - `MESSAGE_REACTOR` 读一个已经 committed 的输入 Message，按最新 WAL projection 判断
-  `idle / command / respond / recover tool`，再选择 command 或 `AGENT_PROGRAM`；它不
-  保存自己的 outcome；
+  `idle / command / respond / await tool`，再选择 command 或 `AGENT_PROGRAM`；它不执行
+  Tool，也不保存自己的 outcome；
 - `AGENT_PROGRAM` 拥有默认模型/工具算法，包括 provider retry、Tool Search、空回复
   修正、terminal tool deadline 和继续生成；
+- `TOOL_EXECUTOR` 只结算 committed `tool_call`；即时调用和 crash recovery 走同一个
+  `execute_or_recover()`，因此它不依赖某次 Agent Program 仍然活着；
 - 其他 key 只是 `default-agent` 自己的依赖。不使用工具的 Agent 不需要提供假的
   `TOOL_SELECTOR`，Core 也不维护一张“所有 Agent 都必须有”的选择表。
 
@@ -818,6 +902,7 @@ default-agent plugin
 ~~~text
 MESSAGE_REACTOR.react(session_id) -> None
 AGENT_PROGRAM.respond(session_id, cause_message_ids[]) -> None
+TOOL_EXECUTOR.execute_or_recover(call_ref) -> None
 ~~~
 
 `None` 只表示函数已经结束；可观察结果只能是 WAL 中新增了哪些 Message。异常、取消、
@@ -849,6 +934,10 @@ Message 因果图算出；同一个 Session 被重复唤醒时，projection 已�
 Scheduler、Wake、Channel 和 subagent 都只产生普通 Message，或者显式依赖同一个
 `AGENT_PROGRAM`；来源不会复制一套执行模型。
 
+Tool recovery 是另一条普通 Effect：它订阅同一 feed，只把 unresolved call 交给
+`TOOL_EXECUTOR`。它不塞进 `passive-conversation`，所以关掉自动回复也不会让已经提交
+的外部意图悬空。这是两个正交生命周期，不是 proactive/passive 的新特判。
+
 ### 11.3 固定 phase 不原样搬家
 
 插件化不是把 `PassiveTurnPipeline` 整块移动到 `plugins/`。现有每项能力先找到唯一
@@ -864,7 +953,7 @@ owner；没有独立不变量或真实消费者的 phase/hook 直接删除：
 | history 裁切、摘要与 compaction retry | `PROVIDER_REQUEST_PROJECTION`；沿用普通 compaction plugin |
 | tool schema preload / Tool Search 解锁 | `TOOL_SELECTOR`，由 `default-agent` 使用 |
 | Tool 展示 | `TOOL_SELECTOR`；只能缩小当前可见集合 |
-| Tool 授权与真实执行 | 受保护的 `TOOL_EXECUTOR`；调用边界重新校验 |
+| Tool 授权、执行与恢复 | `tool-runtime` 的受保护 `TOOL_EXECUTOR` + recovery Effect；调用边界重新校验 |
 | 默认 ReAct、provider retry、空回复重试、terminal deadline | `AGENT_PROGRAM` |
 | model/provider 绑定 | models/provider 插件；从当前 exact Root 注入 |
 | Citation、Meme、最终文本/媒体改写 | append 前的有序、不可变 `ASSISTANT_TRANSFORMS` |
@@ -874,6 +963,7 @@ owner；没有独立不变量或真实消费者的 phase/hook 直接删除：
 | error reply、quiet | reactor/program 产生普通 assistant `text` 或 `no_reply` Message |
 | continuation、crash 后下一步 | 从 WAL 重建的 `Next action` projection |
 | assistant 对外发送、重试、provider ACK | 独立 Delivery projection/effect，只引用 `message_id` |
+| delete 与外部 effect 竞态 | 通用 per-session shared/exclusive lease；短命、无 ID、不落盘 |
 | generation 固定、取消、资源清理 | 通用 plugin Root lease + Fiber/Effect 生命周期 |
 
 Command 若只读或只生成回复，可以直接产生 assistant Message；若会付款、发信、改 Git
@@ -891,9 +981,12 @@ post-commit observer 无权回来改正文。
 当前授权。模型产生 `tool_call` 后：
 
 1. 按本次可见 schema 校验并把 exact immutable `tool_binding` 写进 assistant Message；
-2. `TOOL_EXECUTOR` 在真实副作用边界重新检查当前授权；
-3. 已撤权时不执行，append 一个明确的 `tool_result(error)`；
-4. 未知外部结果按第四节写 `unknown`，不能由 Agent Program 猜成 success。
+2. `TOOL_EXECUTOR` 固定 exact binding lease，取得 shared effect lease，并在真实副作用
+   边界重新检查当前授权与 delete graph；
+3. 能证明尚未开始且已撤权时不执行，append 一个明确的 `tool_result(error)`；
+4. 已经可能开始但无法确认时按第四节写 `unknown`，不能由 Agent Program 猜成 success；
+5. 正常调用、feed replay 和启动扫描都走同一个 `execute_or_recover()`，不会因换入口而
+   绕过上述检查。
 
 因此替换 `AGENT_PROGRAM` 只能改变算法，不能绕过工具权限 owner。
 
@@ -905,8 +998,8 @@ Core 只保留来源无关、产品算法无法安全拥有的原子能力：
    committed Root lease、candidate/stable、Fiber/Effect 清理、health/incident；
 2. **Session Message WAL**：append、read、subscribe、head、幂等、seq、CAS 和受限
    writer；用户删除 Session/Message 的 Data Management 是另一个显式管理入口；
-3. **短命执行安全**：取消、超时、per-session 串行准入和有界资源 scope；这些可以
-   丢失，不分配持久身份；
+3. **短命执行安全**：取消、超时、per-session 串行准入、effect shared/exclusive lease
+   和有界资源 scope；这些可以丢失，不分配持久身份；
 4. **真实外部边界**：模型调用、Tool 授权/执行、stream preview、channel ingress/ACK
    和 delivery effect 的窄 port；具体 provider 与策略仍由普通插件提供；
 5. **类型化观察**：只发布 committed Message；observer 失败不能回滚、覆盖或补造
@@ -932,41 +1025,34 @@ Channel adapter
   │  Channel grant → append user Message(message_id)
   │  durable 后 ACK inbound
   ▼
-┌──────────────────────── Session Message WAL ────────────────────────┐
-│ user / system / assistant(tool_call|text|no_reply) / tool / delete │
-└──────────────────────────────┬──────────────────────────────────────┘
+┌──────────────────────── Session Message WAL ─────────────────────────┐
+│ user / system / assistant(tool_call|text|no_reply) / tool / delete  │
+└──────────────────────────────┬───────────────────────────────────────┘
                                │ committed feed
-                               ▼
-                    passive-conversation Effect
-                               │ exact Root lease
-                               ▼
-                       MESSAGE_REACTOR
-                       causal fold → cause set
-                      ┌────────┴────────┐
-                  known command    AGENT_PROGRAM
-                                      │
-                  ┌───────────────────┼────────────────────┐
-                  ▼                   ▼                    ▼
-        provider request view   prompt/tool selection   model retry
-                                                          │ complete
-                                                          ▼
-                                            Agent grant + head CAS
-                                            append assistant Message
-                                            reply(each cause)
-                                            ├── text/no_reply ─────┐
-                                            └── tool_call          │
-                                                   │ commit first  │
-                                                   ▼               │
-                                             TOOL_EXECUTOR         │
-                                                   │ complete      │
-                                                   ▼               │
-                                            append tool Message    │
-                                                   └── reply(tool) ┘
-
-committed Message feed
-  ├──▶ Chat / Web / Mobile cursor
-  ├──▶ Model context / Memory / Search projections
-  └──▶ durable DeliveryEffect[message_id] ── provider send/retry/ACK
+             ┌─────────────────┼──────────────────┬──────────────────┐
+             ▼                 ▼                  ▼                  ▼
+ passive-conversation    Tool recovery       Chat / Model      Delivery projector
+       Effect                Effect           / Memory          message_id only
+         │                    │                  view                 │
+         ▼                    │                                       ▼
+ MESSAGE_REACTOR              └──────────────┐              DeliveryEffect record
+ causal fold → cause set                     │                       │
+      ┌───────┴────────┐                      │              shared effect lease
+ known command   AGENT_PROGRAM                │                       ▼
+                       │                      │                 provider send/ACK
+       prompt/tool selection + model retry    │
+                       │ complete             │
+                       ▼                      │
+            exact-cause grant + head CAS      │
+            append assistant Message ─────────┼──────────────────────▶ WAL
+            ├── text/no_reply                 │
+            └── tool_call ── commit first ────┤
+                                              ▼
+                                       TOOL_EXECUTOR
+                                       shared effect lease
+                                              │ result/unknown
+                                              ▼
+                                   completion grant → tool Message ──▶ WAL
 ~~~
 
 这里有两个故意分开的 commit 点：
@@ -994,15 +1080,19 @@ Fiber、取消 token、超时和 per-session lane 都是内存资源。U2 到来
 ### 14.2 崩溃后只从 Message 恢复
 
 - assistant Message append 前崩溃：没有事实；重启后可用最新 Root 重新生成；
-- assistant `tool_call` 已 append：从其 `call_ref` 与 `tool_binding` 查询或恢复；
+- assistant `tool_call` 已 append：独立 Tool recovery Effect 从其 `call_ref` 与
+  `tool_binding` 调用同一个 `execute_or_recover()`，不要求旧 Agent Program 复活；
 - tool Message 已 append：下一次从最新 WAL 继续生成 assistant Message；
 - assistant text/`no_reply` 已 append：该前缀已经有结果，projection 得到 idle；
-- delivery 中崩溃：继续用同一 `message_id` 查询或重试，不重新生成正文。
+- delivery 中崩溃：继续用同一 `message_id` 查询或安全重试，不重新生成正文；若 Message
+  已删除且 effect record 缺失，直接补 `suppressed`。
 
 `tool_binding` 中的 generation identity 是 Message 内容的一部分，不需要 RunId。由 WAL
 派生的 unresolved-tool projection 为所引用的插件 generation 加 retention lease；进程
-启动时先重建这些 lease，再允许清理旧 generation。若安全 owner 撤销权限，就写明确
-的 tool error Message 并释放 lease，不能执行过期授权。
+启动时先应用全部 delete manifest，再重建这些 lease，并在开放 reactor、delivery 和
+Data Management 前结算崩溃遗留的 unresolved call。若安全 owner 在可证明尚未开始时
+撤销权限，就写明确的 tool error Message；若是否开始已不可知就写 `unknown`。两者都
+释放 lease，不能执行过期授权。
 
 这只保证一段仍活着的函数内部使用同一 Root。崩溃后的新函数可以使用新 Root；唯一
 必须保持的是已提交 tool binding 的执行身份。为了跨崩溃保存整套旧算法而新增 durable
@@ -1050,6 +1140,8 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - 批准 inbound ACK 与 Agent reply/delivery 解耦；
 - 批准 `message_id`-keyed durable DeliveryEffect、单 external route/Session 和 causal
   delete closure；
+- 批准 `rejected` 是不可重试终态，以及 delete/effect 以短命 shared/exclusive lease
+  线性化；lease 不进入 schema；
 - 分别批准 Scheduler、Wake、Drift、EventMail、Channel、subagent 与 `message_push` 的
   preserve/replace/retire 选择，不能用一句“删除 proactive”代替；
 - 批准 in-process plugin 是可信代码；若目标是恶意插件隔离，另立 out-of-process 合同；
@@ -1065,11 +1157,13 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - compaction retry、Tool Search 解锁、空回复 retry、terminal tool、continuation；
 - Citation/Meme/媒体变换、partial stream、error/no_reply；
 - Message 写集、Memory/Akasha 观察、Web/Mobile cursor、delivery 与两侧 ACK；
-- 热更新时的 exact generation、取消和资源清理。
+- 热更新时的 exact generation、取消和资源清理；
 - Scheduler schedule/missed-tick、EventMail transitions、Wake tick/reservoir/hazard/ACK/
   cooldown、Drift cursor/journal、`message_push` raw-body caller 和 subagent recovery；
 - `runtime/deliveries/settlements.sqlite` 的 route、provider_started、receipt、unknown 与
-  settle 恢复窗口，以及 Channel handoff 的 exact binding。
+  settle 恢复窗口，以及 Channel handoff 的 exact binding；
+- delete 分别早于/晚于 Tool 与 Delivery effect start、只删 tool result、effect record
+  尚未建立和永久 rejected 的受控竞态。
 
 每个差异必须先标成“保留能力”“按 v4 有意替换”或“已证明的旧 bug”。oracle 不要求
 盲目复制现状；它要求任何消失的能力都有明确决定。旧 phase 名称本身不是能力，没有
@@ -1082,6 +1176,8 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
   assistant Message 只有在唯一因果前缀可证明时才补 reply，歧义数据进入人工阻塞清单；
 - 实现正交的 `SESSION_READ`、`SESSION_FEED`、`SESSION_APPEND`、短命
   `MessageWriteGrant` 与 scoped CAS writer；
+- 实现不落盘的 per-session shared/exclusive effect lease，以及统一
+  `TOOL_EXECUTOR.execute_or_recover(call_ref)`；
 - Chat、Model context、Tool status、Next action、Memory 和 Mobile 先 shadow rebuild；
 - 用 U1 command + U2、U1/U2 合并回答、tool continuation、replay、并发 CAS 和 delete
   closure fixture 验证因果 fold；
@@ -1104,7 +1200,7 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - command、附件、error/no_reply、tool loop、continuation 与输出 transform 逐项对账；
 - shadow 禁止真实 append、Tool 副作用和 delivery，只比较计划产生的 Message 与
   外部调用；
-- candidate/stable 切换期间验证 exact Root 和所有 Effect 均可排空。
+- candidate/stable 切换期间验证 exact Root 和所有 Effect 均可排空；
 - 完成 broad `PluginRuntime.workspace` 消费者盘点与移除；仓库外 fixture 走正式安装链，
   同时验证其可信进程边界和所有可执行的 capability 拒绝。
 
@@ -1113,6 +1209,8 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - Channel 先 append user Message，再 ACK inbound；
 - user、assistant、tool 与各 source producer 全部只走带正确 grant 的同一个 WAL append；
 - 只启用 `passive-conversation` 的生产 subscriber，旧 worker 变为不可达；
+- 启用独立 Tool recovery subscriber；它先应用 delete graph、重建 binding lease 并结算
+  crash 遗留 call，再把 reactor、Delivery 和 Data Management 标成 ready；
 - Channel/Delivery plugin 先完成 `SessionRoute` 和 `DeliveryEffect[message_id]` handoff，再
   让新 projector 消费 committed assistant Message；
 - Scheduler/Wake/Drift/EventMail 连续性 owner 全部 handoff 或显式 retire 后，才允许新
@@ -1146,6 +1244,7 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - tool call 只用 Message 内可派生的 `call_ref`；
 - `MessageWriteGrant` 没有 ID、序列化或恢复语义；`DeliveryEffect` 只能以既有
   `message_id` 寻址且不复制正文；
+- effect shared/exclusive lease 没有 ID、持久状态或对话语义；
 - proactive 不是 Message 类型、字段或 Core commit 路径；source plugin state 仍由各自
   owner 持有；
 - 没有 `metadata/context/intent` 通用可变袋子绕过 typed Message 与 capability。
@@ -1158,6 +1257,8 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - 每个 Session 的 seq 唯一连续，projection/observer 失败不影响 commit；
 - reply 只能指向同 Session 的 prior reactable Message；跨 Session、前向、重复或缺失
   cause fail-loud；
+- assistant 的 reply target set 必须与 grant 的 exact cause set 相等；需要拆答时先由
+  reactor 选择更小 cause set，不能消费一部分宽授权；
 - Agent Program snapshot 与 cause/head 不匹配时不能取得可写 grant；
 - 正常路径没有 UPDATE/DELETE Message；受控物理擦除只走 Data Management；
 - U2 抢先提交时，基于旧 head 的 A 被拒绝；两个 worker 也只有一个能提交。
@@ -1169,6 +1270,8 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - Core 源码不按 passive/proactive/Wake/Scheduler/Citation/Meme/compaction/provider
   名称分支；
 - 停用 `passive-conversation` 后，输入 Message、历史与同步仍工作，只停止自动回答；
+- 停用 `MESSAGE_REACTOR`/`AGENT_PROGRAM` 后，独立 Tool recovery Effect 仍会结算已提交
+  call；停用 Tool runtime 前必须 drain unresolved call；
 - 替换 `AGENT_PROGRAM` fixture 无需修改 Core、WAL schema 或 channel adapter；
 - 缺失/重复 Service 和 contribution 冲突在 candidate 发布前失败；
 - Prompt 与 transform 次序确定，post-commit 插件不能修改 Message；
@@ -1185,6 +1288,8 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - command short-circuit、附件、Prompt、compaction、Tool Search 和模型绑定都有目标 owner；
 - provider 断网、retry 与 partial stream 不写 Session；
 - `tool_call` 先提交再执行，crash 后按 `call_ref/tool_binding` 查询或安全恢复；
+- 即时执行、feed replay 与启动恢复都调用同一个
+  `TOOL_EXECUTOR.execute_or_recover(call_ref)`；
 - Tool 可见性不能扩大真实授权，撤权产生明确 tool error；
 - 不可确认的外部效果产生 `unknown`，不会盲目重复；
 - 空回复 retry、terminal deadline、continuation、error reply 和 transform 有受控 fixture；
@@ -1195,9 +1300,16 @@ result 越权、未声明 workspace path、raw SQL 和 candidate real effect。�
 - assistant Message durable 后，Delivery 从 immutable SessionRoute 建立
   `DeliveryEffect[message_id]`；prepared/provider_started/delivered/unknown/rejected/
   suppressed/settled 每个 crash 窗口都有恢复 fixture；
+- `rejected` 永不重试；只有 provider 证明未产生效果时，`provider_started` 才能用原
+  `message_id`/binding 安全重试；
+- delete 先取得 exclusive lease 时 Tool/Delivery 不开始；effect 先取得 shared lease 时
+  delete 等 result/unknown 后重算 closure；
+- recovery scanner 看见已删除且缺失 DeliveryEffect 的 Message 时只建 `suppressed`；
 - Web/Mobile 只用 `message_id + seq + cursor` 完成重复、断线和追赶；
 - causal delete manifest 原子覆盖 reply/tool descendants；Chat、Model、Memory、Delivery
   与 Next action 一致处理，旧 retry 不会复活或重放 effect。
+- 只以 tool result 为 seed 时 closure 自动纳入对应 call Message；即使读取旧的不完整
+  delete manifest，历史 result edge 也不会让 call 再执行。
 
 ### 16.5 迁移 Gate
 
