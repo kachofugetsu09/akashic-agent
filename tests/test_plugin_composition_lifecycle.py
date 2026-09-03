@@ -102,8 +102,7 @@ def _prompt_ctx() -> PromptRenderCtx:
     )
 
 
-@pytest.mark.asyncio
-async def test_akasha_inserts_first_user_context_frame_block() -> None:
+async def _assert_akasha_inserts_first_user_context_frame_block() -> None:
     ctx = _prompt_ctx()
     runtime = SimpleNamespace(
         query=AsyncMock(return_value=MemoryQueryResult(text_block="fresh recall"))
@@ -122,7 +121,7 @@ async def test_akasha_inserts_first_user_context_frame_block() -> None:
     ] == [("memory", "fresh recall", 10)]
 
 
-def test_context_frame_keeps_dynamic_memory_after_stable_history() -> None:
+def _assert_context_frame_keeps_dynamic_memory_after_stable_history() -> None:
     history = [
         {"role": "user", "content": "old question"},
         {"role": "assistant", "content": "old answer"},
@@ -568,7 +567,10 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
 
 
 @pytest.mark.asyncio
-async def test_retrieval_completed_event_payload() -> None:
+async def test_retrieval_and_prompt_projection_contracts() -> None:
+    await _assert_akasha_inserts_first_user_context_frame_block()
+    _assert_context_frame_keeps_dynamic_memory_after_stable_history()
+
     observed: list[RetrievalCompleted] = []
     root = CompositionRoot("retrieval-completed")
 
