@@ -102,6 +102,7 @@ class _RenderPromptModule:
             ),
             system_sections_top=ctx.system_sections_top,
             system_sections_bottom=ctx.system_sections_bottom,
+            context_frame_sections=ctx.context_frame_sections,
         )
         if ctx.extra_hints:
             rendered.messages.append(

@@ -49,7 +49,6 @@ class SectionCache:
 
 _CONTEXT_FRAME_SECTIONS = {
     "active_skills",
-    "retrieved_memory",
 }
 SYSTEM_CONTEXT_FRAME_MARKER = '<system-reminder data-system-context-frame="true">'
 SYSTEM_CONTEXT_FRAME_END = "</system-reminder>"
@@ -99,6 +98,7 @@ class PromptAssembler:
         turn_injection_context: dict[str, str] | None = None,
         system_sections_top: list[PromptSectionRender] | None = None,
         system_sections_bottom: list[PromptSectionRender] | None = None,
+        context_frame_sections: list[PromptSectionRender] | None = None,
     ) -> AssembledTurnInput:
         # assembler 负责把“主 prompt + turn injection + message envelope”
         # 收束成一份统一输入，避免调用方各自手拼消息顺序。
@@ -135,11 +135,23 @@ class PromptAssembler:
             for section in all_sections
             if section.name not in _CONTEXT_FRAME_SECTIONS
         ]
-        frame_sections = [
+        built_frame_sections = [
             section
             for section in all_sections
             if section.name in _CONTEXT_FRAME_SECTIONS
         ]
+        contributed_frame_sections = [
+            section
+            for section in (context_frame_sections or [])
+            if section.name not in disabled
+        ]
+        frame_sections = [*built_frame_sections, *contributed_frame_sections]
+        frame_sections.sort(
+            key=lambda section: (
+                section.order is None,
+                section.order if section.order is not None else 0,
+            )
+        )
         for name, content in injection_context.items():
             text = content.strip()
             if text:
@@ -171,6 +183,7 @@ class PromptAssembler:
                 *_section_meta(top_sections),
                 *_section_meta(built_sections),
                 *_section_meta(bottom_sections),
+                *_section_meta(contributed_frame_sections),
             ],
         )
 
