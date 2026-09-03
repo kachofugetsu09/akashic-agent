@@ -567,7 +567,7 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
 
 
 @pytest.mark.asyncio
-async def test_retrieval_and_prompt_projection_contracts() -> None:
+async def test_retrieval_completed_event_payload() -> None:
     await _assert_akasha_inserts_first_user_context_frame_block()
     _assert_context_frame_keeps_dynamic_memory_after_stable_history()
 
