@@ -54,7 +54,9 @@ jobs:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
           .venv/bin/python scripts/check_test_budget.py
-          .venv/bin/pytest -q -W error tests/
+          .venv/bin/pytest -q -W error \
+            -W "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning" \
+            tests/
 
       - name: Run Web regressions
         run: |
