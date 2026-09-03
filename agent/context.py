@@ -273,6 +273,7 @@ class ContextBuilder:
         *,
         system_sections_top: list[PromptSectionRender] | None = None,
         system_sections_bottom: list[PromptSectionRender] | None = None,
+        context_frame_sections: list[PromptSectionRender] | None = None,
     ) -> AssembledTurnInput:
         turn_injection_context = self.build_turn_injection_context(
             turn_injection_prompt=request.turn_injection_prompt
@@ -290,6 +291,7 @@ class ContextBuilder:
             turn_injection_context=turn_injection_context,
             system_sections_top=system_sections_top,
             system_sections_bottom=system_sections_bottom,
+            context_frame_sections=context_frame_sections,
         )
         self._last_render_diagnostics.set(
             (

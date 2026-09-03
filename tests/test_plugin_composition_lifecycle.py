@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
 from agent.core.response_parser import ResponseMetadata
+from agent.context import MessageEnvelopeBuilder
 from agent.lifecycle.composition import (
     AFTER_REASONING_CLEANUP_EVENT,
     AFTER_REASONING_PREPROCESS_EVENT,
@@ -61,6 +64,12 @@ from core.memory.engine import MemoryQueryResult, MemoryRecord
 from core.memory.events import MemoryWritten, RetrievalCompleted
 from agent.retrieval.events import build_retrieval_completed
 from agent.retrieval.protocol import RetrievalRequest
+from agent.prompting import PromptAssembler, PromptSectionRender
+from plugins.akasha.plugin import _inject_memory
+from plugins.openai_compatible.driver import (
+    _merge_leading_system_messages,
+    _normalize_messages,
+)
 
 
 @asynccontextmanager
@@ -91,6 +100,76 @@ def _prompt_ctx() -> PromptRenderCtx:
         disabled_sections=set(),
         turn_injection_prompt="",
     )
+
+
+async def _assert_akasha_inserts_first_user_context_frame_block() -> None:
+    ctx = _prompt_ctx()
+    runtime = SimpleNamespace(
+        query=AsyncMock(return_value=MemoryQueryResult(text_block="fresh recall"))
+    )
+    diagnostics = SimpleNamespace(
+        operation=lambda _name: nullcontext(),
+        measure=lambda _name, _value: None,
+    )
+
+    await _inject_memory(ctx, cast(Any, runtime), cast(Any, diagnostics))
+
+    assert ctx.system_sections_bottom == []
+    assert [
+        (section.name, section.content, section.order)
+        for section in ctx.context_frame_sections
+    ] == [("memory", "fresh recall", 10)]
+
+
+def _assert_context_frame_keeps_dynamic_memory_after_stable_history() -> None:
+    history = [
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+
+    class _ContextStub:
+        _envelope_builder = MessageEnvelopeBuilder()
+
+        @staticmethod
+        def _build_system_prompt_sections(**_kwargs: object) -> list[PromptSectionRender]:
+            return [
+                PromptSectionRender("stable", "stable system", True, order=20),
+                PromptSectionRender("active_skills", "active skill", False, order=50),
+            ]
+
+    assembler = PromptAssembler(cast(Any, _ContextStub()))
+
+    def assemble(memory: str):
+        return assembler.assemble(
+            history=history,
+            current_message="current question",
+            multimodal=False,
+            context_frame_sections=[
+                PromptSectionRender("memory", memory, False, order=10)
+            ],
+        )
+
+    first = assemble("recall one")
+    second = assemble("recall two")
+    provider_messages = _merge_leading_system_messages(
+        _normalize_messages(first.messages)
+    )
+
+    assert first.system_prompt == second.system_prompt == "stable system"
+    assert first.messages[:3] == second.messages[:3]
+    assert [message["role"] for message in provider_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "user",
+    ]
+    reminder = provider_messages[-2]
+    assert reminder["role"] == "user"
+    assert str(reminder["content"]).startswith("<system-reminder")
+    assert str(reminder["content"]).index("## memory") < str(
+        reminder["content"]
+    ).index("## active_skills")
 
 
 def _before_turn_ctx() -> BeforeTurnCtx:
@@ -489,6 +568,9 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
 
 @pytest.mark.asyncio
 async def test_retrieval_completed_event_payload() -> None:
+    await _assert_akasha_inserts_first_user_context_frame_block()
+    _assert_context_frame_keeps_dynamic_memory_after_stable_history()
+
     observed: list[RetrievalCompleted] = []
     root = CompositionRoot("retrieval-completed")
 

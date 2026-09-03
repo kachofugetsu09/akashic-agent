@@ -91,6 +91,9 @@ class PromptRenderCtx:
     system_sections_bottom: list[PromptSectionRender] = field(
         default_factory=list[PromptSectionRender]
     )
+    context_frame_sections: list[PromptSectionRender] = field(
+        default_factory=list[PromptSectionRender]
+    )
 
 
 # 保留旧导入名；运行时结果由 ContextBuilder 的唯一组装结果承载。

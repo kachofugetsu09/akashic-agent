@@ -641,11 +641,12 @@ async def _inject_memory(
     )
     block = result.text_block.strip()
     if block:
-        event.system_sections_bottom.append(
+        event.context_frame_sections.append(
             PromptSectionRender(
-                name="memory",
+                name=RETRIEVED_MEMORY_SECTION,
                 content=block,
                 is_static=False,
+                order=10,
             )
         )
 
