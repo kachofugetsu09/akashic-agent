@@ -113,7 +113,7 @@ async def test_akasha_inserts_first_user_context_frame_block() -> None:
         measure=lambda _name, _value: None,
     )
 
-    await _inject_memory(ctx, runtime, diagnostics)
+    await _inject_memory(ctx, cast(Any, runtime), cast(Any, diagnostics))
 
     assert ctx.system_sections_bottom == []
     assert [
