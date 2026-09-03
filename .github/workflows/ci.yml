@@ -55,7 +55,7 @@ jobs:
         run: |
           .venv/bin/python scripts/check_test_budget.py
           .venv/bin/pytest -q -W error \
-            -W "ignore::DeprecationWarning:anyio._lazyimport" \
+            -W "ignore::DeprecationWarning:starlette.testclient" \
             tests/
 
       - name: Run Web regressions
