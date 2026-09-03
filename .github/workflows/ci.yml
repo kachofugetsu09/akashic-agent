@@ -55,7 +55,7 @@ jobs:
         run: |
           .venv/bin/python scripts/check_test_budget.py
           .venv/bin/pytest -q -W error \
-            -W "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning" \
+            -W "ignore::DeprecationWarning:anyio._lazyimport" \
             tests/
 
       - name: Run Web regressions
