@@ -111,6 +111,31 @@
 
 ## 6. 产物、失败和回滚
 
+### 桌面连接与异步任务
+
+桌面 controller 使用 Effect v3 管理 WebSocket 重连、发送等待和状态轮询。选用稳定版，
+先固定资源泄漏与轮询重叠的回归，再替换手写 timer 和取消记账；不增加独立连接管理类。
+TypeScript 固定为 5.9.3，沿用现有 strict、ES2022 和 bundler 配置。
+
+```text
+┌─ React controller 生命周期 ─────────────────┐
+│ 连接任务 → socket / 监听器 → 释放 → 重试等待 │
+│ 轮询任务 → fetch 完成 → 等待 → 下一次 fetch │
+└───────────────────┬────────────────────────┘
+                    └─ 卸载：中断任务并释放资源
+```
+
+自动重试保留十二次上限、指数退避、三十秒上限和随机延迟；成功连接重置计数。
+主动发送可以提前结束重试等待，但不重放已经发送的消息。发送等待的成功只表示
+`WebSocket.send` 完成，不代表服务端确认；超时、关闭和取消仍以错误返回。
+状态轮询在上次请求结束后等待 1.2 秒，卸载时中断 fetch，旧请求不能在卸载后发布状态。
+
+消息解析、Session/Turn、流式投影、插件 ABI 和 Android 原生连接 owner 保持不变。
+`desktop-chat-lifecycle.test.mjs` 挂载真实 controller，使用受控 socket、HTTP 完成顺序和
+时钟验证重连后卸载、串行轮询、重试上限及 React StrictMode。
+
+### 构建与恢复
+
 - `npm run package:mobile-web` 只接受干净 Git tree，ZIP 内写入 source repository、commit、tree 和资产摘要。
 - Android 在解包前核对外部 SHA-256；不匹配时 Gradle 失败，不使用旧缓存或网络 fallback。
 - WebUI 构建失败不会改变移动端原生状态；产物升级只替换 APK 构建输入。
