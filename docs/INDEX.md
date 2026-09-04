@@ -99,6 +99,7 @@
 
 | 任务 | 必读顺序 | 随后检查的真实入口 |
 |---|---|---|
+| Message 日志、无状态 Turn 投影、完整回复链插件化 | [已批准设计与分层实施合同](design/0902-reviewed-v4.md) → 本文对应持久化、插件和会话路由 | `session/`、`agent/control/`、`agent/core/passive_turn.py`、`plugins/`；第 15 节保留插件功能，第 16 节给出 PR 与 yoyo 归属 |
 | 任何会修改仓库文件的任务 | 本索引 → [`WORKFLOW.md`](WORKFLOW.md) → 下方对应领域 | 当前分支、目标分支、完整 diff、验证报告 |
 | Web/Mobile 共享 Session、Akashic Channel 或客户端 adapter | `projectneed` AKC-001～AKC-003 → [0044](decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) → [Akashic Channel 与客户端 Adapter 规格](design/akashic-channel-client-adapters.md) → [持久化状态地图](design/persistence-state-map.md) | `session/`、`infra/channels/`、`infra/mobile_realtime/`、`bootstrap/app.py`、`bootstrap/chat_api.py`、`plugins/scheduler/`、`plugins/wake/`、`plugins/akasha/`；实现仍需独立授权 |
 | 其他 Akashic 产品路线、Project Session、Project Akasha 或大型 tool result | [未来方向与 Issue 拆分草案](design/akashic-future-roadmap-issue-drafts.md) → 草案中对应领域的现行条款、决策与设计 | `session/`、`agent/scheduler.py`、`plugins/eventmail/`、`plugins/wake/`、`plugins/drift/`、`plugins/akasha/`、`agent/tools/message_push.py`；草案未提升为现行合同前不得直接实现 |
