@@ -113,7 +113,7 @@ Gate 根据 Git diff 选择场景，并把报告写入 `docker/debug/reports/cha
 
 生产路径与受保护合同同时变化时，Gate 必须扩大为完整公开场景执行，不能以结构性拒绝代替验证。测试失败先归因为实现、环境或契约冲突；修改断言、跳过场景和缩减 Gate 需要独立理由与授权。
 
-仓库保留 1080 项 Python 回归和 62 项 Web 回归。普通 Pull Request 运行全部保留测试与 change-impact Gate；`scripts/check_test_budget.py` 会拒绝数量偏离、无效清单或藏在 `tests_scenarios/contracts/retained-test-files.txt` 外的测试文件。插件候选运行手动 `Plugin v3 Candidate Gates` workflow 的 fleet completeness、Mobile 和公共 WebUI。正式发布所需的真实 workspace 演练由拥有部署输入的发布流程负责，仓库 CI 不伪造该证据。删除范围、保留理由、已知取舍与恢复点见[测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)。
+普通 Pull Request 运行仓库现有 Python/Web 回归与 change-impact Gate；测试数量和测试文件集合不再由固定预算或保留清单门控，新增测试按真实可观察回归、非平凡不变量、边界和具体 bug 判断。插件候选运行手动 `Plugin v3 Candidate Gates` workflow 的 fleet completeness、Mobile 和公共 WebUI。正式发布所需的真实 workspace 演练由拥有部署输入的发布流程负责，仓库 CI 不伪造该证据。历史清理范围、保留理由、已知取舍与恢复点见[测试与 Gate 清理账本](refactor/test-gate-cleanup-ledger.md)。
 
 ## 6. Review 模式
 

@@ -1,6 +1,12 @@
 # 测试与 Gate 清理账本
 
-本账本记录测试与 Gate 的永久收敛。数量只是预算，不是删除依据；取舍按用户可观察失败、持久化与安全边界、并发 finality、恢复能力和插件 v3 生命周期排序。
+本账本记录测试与 Gate 的永久收敛。数量只是历史观察指标，不是删除依据；取舍按用户可观察失败、持久化与安全边界、并发 finality、恢复能力和插件 v3 生命周期排序。
+
+## 2026-09-04：移除固定测试预算门槛
+
+1080 项 Python、62 项 Web 和 72 个 Python 测试文件是 2026-09-02 清理的历史快照，不再是当前合同。删除固定数量检查、Python 保留清单和 Web 数量断言；CI 继续运行仓库实际存在的 Python 测试，Web runner 自动发现源目录下的 `.test.mjs` 文件。后续测试只按用户可观察回归、非平凡不变量、边界或具体 bug 保留，新增或删除不因数量本身失败。
+
+本批次恢复点：`/mnt/data/akasic-agent-backups/test-cleanup-followup-20260904-before/pre-cleanup.bundle`，SHA-256 `3af27673dc5b20ee969ab16cb7a7d32154bed9ef1f32d9df5976e1a55988a6f7`。
 
 ## 2026-09-02：保留最高价值的三分之一
 
@@ -12,7 +18,7 @@
 | Node | 194 项 / 34 文件 | 62 项 / 4 文件 | 132 项 / 30 文件 | 低于三分之一 |
 | PR CI job | 8 | 2 | 6 | 低于三分之一 |
 
-Python 的 1080 是仓库完整收集数，不是从完整套件中挑出的 PR 子集。`scripts/check_test_budget.py` 同时固定数量和文件集合；任何未列入 `tests_scenarios/contracts/retained-test-files.txt` 的新测试都会使 CI 失败。Node 只保留 mobile message state、pairing response schema、Web transport 和 Akasha mobile UI 四个行为边界，由唯一命令 `npm run test:web` 执行。
+当时的 Python 1080 是仓库完整收集数，不是从完整套件中挑出的 PR 子集。旧实现中的 `scripts/check_test_budget.py` 同时固定数量和文件集合；任何未列入 `tests_scenarios/contracts/retained-test-files.txt` 的新测试都会使 CI 失败。Node 当时只保留 mobile message state、pairing response schema、Web transport 和 Akasha mobile UI 四个行为边界，由唯一命令 `npm run test:web` 执行。
 
 删除的精确路径以本次提交的 delete diff 为准。Python 删除清单 SHA-256 为 `e807c64144b4693959d85edd23bea2832832ad138e662cab752cd55c8a967785`，Node 删除清单 SHA-256 为 `9b6cc344774d16dbd7d4f9a4e2bc154c1c7285ef5434aaccfb905d786b1c01d1`；摘要基于排序后的仓库相对路径，每行一个。
 

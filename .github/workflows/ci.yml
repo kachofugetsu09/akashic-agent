@@ -53,7 +53,6 @@ jobs:
         env:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
         run: |
-          .venv/bin/python scripts/check_test_budget.py
           .venv/bin/pytest -q tests/
 
       - name: Run Web regressions

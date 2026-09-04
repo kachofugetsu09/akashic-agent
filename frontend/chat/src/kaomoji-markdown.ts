@@ -2,8 +2,8 @@ import type { MarkdownIt } from "stream-markdown-parser";
 
 const MARKDOWN_OPERATOR = /[*_^~+=`]/u;
 const FACE_SYMBOL = /[・ωΩ∀▽дД﹏꒳｀´＾＿ー…×╥◕≧≦＞＜●○★☆♥♡ﾟ゜ᴗಥಠツシノヽヾ╭╮]/u;
-const DECORATED_FACE_SIGNAL = /[・ωΩ∀▽дД﹏꒳｀´＾＿ー…×╥◕≧≦＞＜●○★☆♥♡ﾟ゜ᴗಥಠツシノヽヾ╭╮•✧♬ฅ꒰꒱₍₎٩ᵕᐢ૮ა❛❤ʓԽ໒\[]/u;
-const DECORATED_FACE_SIGNAL_GLOBAL = /[・ωΩ∀▽дД﹏꒳｀´＾＿…×╥◕≧≦＞＜●○★☆♥♡ﾟ゜ᴗಥಠヽヾ╭╮•✧♬ฅ꒰꒱₍₎٩ᵕᐢ૮ა❛❤ʓԽ໒\[]/gu;
+const DECORATED_FACE_SIGNAL = /[・ωΩ∀▽дД﹏꒳｀´＾＿ー…×╥◕≧≦＞＜●○★☆♥♡ﾟ゜ᴗಥಠツシノヽヾ╭╮•✧♬ฅ꒰꒱₍₎٩ᵕᐢ૮ა❛❤ʓԽ໒[]/u;
+const DECORATED_FACE_SIGNAL_GLOBAL = /[・ωΩ∀▽дД﹏꒳｀´＾＿…×╥◕≧≦＞＜●○★☆♥♡ﾟ゜ᴗಥಠヽヾ╭╮•✧♬ฅ꒰꒱₍₎٩ᵕᐢ૮ა❛❤ʓԽ໒[]/gu;
 const ASCII_FACE = /^(?:[=~]?)([xXoOTt^*;:8>])[-_^'.oOqQvVwW]+([xXoOTt^*;:8<])(?:[=~]?)$/u;
 const BARE_ASCII_FACE = /^(?:\^[-_.oOqQvVwW]+\^|(?=[-_]*-)(?=[-_]*_)[-_]{3,}|[TtXxOo][-_.][TtXxOo])(?=$|\s|[),）,.!?，。！？])/u;
 const MAX_KAOMOJI_LENGTH = 80;
@@ -63,7 +63,7 @@ export function readKaomojiLiteral(source: string, offset: number): string | und
   if (!inner || inner.includes("\n") || !MARKDOWN_OPERATOR.test(inner)) return undefined;
   const compact = inner.replace(/\s/gu, "");
   const hasShortNonProseFace = compact.length <= 40
-    && /[^\x00-\x7F]/u.test(compact)
+    && /\P{ASCII}/u.test(compact)
     && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{2}/u.test(compact);
   if (!FACE_SYMBOL.test(compact) && !ASCII_FACE.test(compact) && !hasShortNonProseFace) return undefined;
   return source.slice(offset, end + 1);

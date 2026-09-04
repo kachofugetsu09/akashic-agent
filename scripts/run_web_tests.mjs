@@ -1,12 +1,30 @@
+import { readdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const expectedTests = 62;
-const files = [
-  "frontend/chat/src/mobile-message-state.test.mjs",
-  "frontend/chat/src/mobile-pairing.test.mjs",
-  "frontend/chat/src/web-chat-transport.test.mjs",
-  "tests/test_akasha_mobile_ui.mjs",
-];
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const testRoots = ["frontend", "plugins", "scripts", "tests"];
+
+async function findTestFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.sort((left, right) => left.name.localeCompare(right.name)).map((entry) => {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return findTestFiles(path);
+      return entry.isFile() && entry.name.endsWith(".test.mjs") ? [path] : [];
+    }),
+  );
+  return files.flat();
+}
+
+const files = (
+  await Promise.all(testRoots.map((root) => findTestFiles(`${repoRoot}/${root}`)))
+).flat().sort();
+
+if (files.length === 0) {
+  throw new Error("未找到 Web 测试文件");
+}
 
 const child = spawn(
   process.execPath,
@@ -14,10 +32,7 @@ const child = spawn(
   { stdio: ["inherit", "pipe", "inherit"] },
 );
 
-let output = "";
-child.stdout.setEncoding("utf8");
 child.stdout.on("data", (chunk) => {
-  output += chunk;
   process.stdout.write(chunk);
 });
 
@@ -29,12 +44,5 @@ child.on("error", (error) => {
 child.on("close", (code) => {
   if (code !== 0) {
     process.exitCode = code ?? 1;
-    return;
-  }
-  const match = output.match(/^# tests (\d+)$/m);
-  const actual = match ? Number(match[1]) : null;
-  if (actual !== expectedTests) {
-    console.error(`Web 测试必须恰好为 ${expectedTests} 项: actual=${actual}`);
-    process.exitCode = 1;
   }
 });
