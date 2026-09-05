@@ -1,0 +1,16 @@
+{
+  "name": "akashic-computer-driver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "classic-level": "3.0.0",
+    "zxing-wasm": "3.1.2"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2"
+  }
+}

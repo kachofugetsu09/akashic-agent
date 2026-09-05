@@ -440,8 +440,9 @@ Browser Use 分成只读 `browser_observe` 和写入 `browser_action`。前者�
 标签页和文档内有效，导航或 DOM 节点失效后必须明确报 stale。后者提供 `navigate`、基于 snapshot ref 的 `click`、
 `fill`、`type`、`press`、`scroll`、`wait`、前进后退、刷新和标签页操作。Browser Tool 直接使用 CDP，
 点击和文字输入使用 CDP 原生 Input 事件；不得转发 OpenCLI argv，也不得让模型猜 CLI 语法。
-截图结果原子写入 Computer plugin-data 下的有界文件集合并返回绝对路径；文字模型随后用
-`read_image_vision` 读取，不能把 base64 图片正文塞回模型上下文。每次写入只保留最近 32 张截图。
+截图结果原子写入 Computer plugin-data 下的有界文件集合并返回绝对路径，统一提示用 `read_file`
+读取。`read_file` 按当前 Agent 的真实模型能力提供图片内容；不支持图片时才提示使用
+`read_image_vision`。截图工具不把 base64 当作文本返回；每次写入仍只保留最近 32 张截图。
 
 视觉 Computer Use 首版只有：`observe`、`move`、`click`、`double_click`、`drag`、`scroll`、`type`、`key`
 和 `wait`。Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户通过完整 RFB client 直接使用
