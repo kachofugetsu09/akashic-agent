@@ -5,7 +5,7 @@ import json
 from dataclasses import replace
 from typing import TypeVar
 
-from agent.plugin_composition.context import CompositionRoot, Fiber
+from agent.plugin_composition.context import CompositionRoot, Context, Fiber
 from agent.plugin_composition.events import (
     Bail,
     EmitEventKey,
@@ -240,6 +240,23 @@ class CompositionOverlay:
     def plugin_runtime(self, plugin_id: str) -> PluginRuntime:
         root = self.candidate if plugin_id in self.replaced_plugin_ids else self.stable
         return root.plugin_runtime(plugin_id)
+
+    def context_owner(self, context: Context) -> str | None:
+        """只接受 Overlay 实际选择的插件 Context。"""
+        for root, selected in self.dispatch_order:
+            owner = root.context_owner(context)
+            if owner == selected:
+                return owner
+        return None
+
+    def plugin_dependencies(self) -> dict[str, frozenset[ServiceKey[object]]]:
+        """使用与 Overlay provider 相同的 generation 选择。"""
+        return {
+            owner: dependencies
+            for root, selected in self.dispatch_order
+            for owner, dependencies in root.plugin_dependencies().items()
+            if owner == selected
+        }
 
     def plugin_service_owners(self) -> dict[ServiceKey[object], str]:
         """Return service owners from the exact stable/candidate selection."""

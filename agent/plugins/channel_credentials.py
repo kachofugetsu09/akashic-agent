@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
 from agent.plugin_composition.channels import CredentialRef, ProviderClient
+from agent.plugins.config import read_config_source
 
 
 class CoreProviderClient:
@@ -51,9 +51,10 @@ class CoreProviderClientFactory:
 
         if self._closed:
             raise RuntimeError("provider client factory 已关闭")
-        if _file_revision(self._config_path) != self._raw_config_revision:
+        content, revision = read_config_source(self._config_path)
+        if revision != self._raw_config_revision:
             raise RuntimeError("channel credential config revision 已漂移")
-        raw = _read_raw_config(self._config_path)
+        raw = {} if content is None else tomllib.loads(content.decode("utf-8"))
         values: dict[tuple[str, ...], str] = {}
         for name, ref in credentials.items():
             if not isinstance(name, str) or not isinstance(ref, CredentialRef):
@@ -77,12 +78,6 @@ class CoreProviderClientFactory:
         self._closed = True
 
 
-def _read_raw_config(path: Path) -> Mapping[str, object]:
-    if not path.is_file():
-        return {}
-    return tomllib.loads(path.read_text(encoding="utf-8"))
-
-
 def _resolve_path(value: object, path: tuple[str, ...]) -> object:
     current = value
     for segment in path:
@@ -90,13 +85,6 @@ def _resolve_path(value: object, path: tuple[str, ...]) -> object:
             raise RuntimeError(f"channel credential 不存在: {'.'.join(path)}")
         current = current[segment]
     return current
-
-
-def _file_revision(path: Path) -> str:
-    digest = hashlib.sha256()
-    digest.update(str(path.resolve(strict=False)).encode())
-    digest.update(path.read_bytes() if path.is_file() else b"<missing>")
-    return digest.hexdigest()
 
 
 __all__ = ["CoreProviderClientFactory"]

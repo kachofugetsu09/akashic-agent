@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Protocol
 
 from agent.plugin_composition import Context, ServiceKey
-from plugins.drift.store import DriftStore
+from .store import DriftStore
 
 api_version = 3
 name = "drift"

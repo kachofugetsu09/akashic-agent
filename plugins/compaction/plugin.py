@@ -7,7 +7,7 @@ from typing import Any, cast
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.control.replay_format import split_replay_batches
-from plugins.compaction.engine import (
+from .engine import (
     CommittedContextUnit,
     ContextCompactionError,
     ContextCompactor,
@@ -31,8 +31,8 @@ from agent.plugin_composition import (
 )
 from core.error_context import current_provider_attempt, current_provider_operation
 from agent.prompting import is_context_frame
-from plugins.compaction.receipts import SqliteCompactionReceipts
-from plugins.compaction.runtime import (
+from .receipts import SqliteCompactionReceipts
+from .runtime import (
     CompactionProjection,
     SessionCompactionRuntime,
     validate_committed_receipt,

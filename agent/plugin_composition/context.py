@@ -1163,6 +1163,23 @@ class CompositionRoot:
             if (runtime := provider.owner.runtime) is not None
         }
 
+    def context_owner(self, context: Context) -> str | None:
+        """只识别本 Root 实际存活的插件 Context，不接受重建的身份字段。"""
+        for fiber in self._fibers.values():
+            if fiber.context is context:
+                if fiber.state != FiberState.ACTIVE or fiber.runtime is None:
+                    raise RuntimeError("注册 Context 已失效或没有插件 owner")
+                return fiber.runtime.plugin_id
+        return None
+
+    def plugin_dependencies(self) -> Mapping[str, frozenset[ServiceKey[object]]]:
+        """收集各插件及子 Fiber 声明的服务依赖。"""
+        dependencies: dict[str, set[ServiceKey[object]]] = {}
+        for fiber in self._fibers.values():
+            if fiber.runtime is not None:
+                dependencies.setdefault(fiber.runtime.plugin_id, set()).update(fiber.dependencies)
+        return {owner: frozenset(keys) for owner, keys in dependencies.items()}
+
     def validation_identity(self) -> str:
         """Bind the Core-observed topology and audit receipt at validation close."""
 

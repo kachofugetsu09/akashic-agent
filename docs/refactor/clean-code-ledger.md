@@ -2847,3 +2847,15 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 
 - 删除 `start_candidate()` / `start_formal()` wrapper 后，测试已统一调用 `start_generation(mode=...)`；一处循环把 `candidate` / `formal` literal 推断成普通 `str`，GitHub test Pyright 正确拒绝。
 - 只为该 fixture 的两组 case 标注 `McpMode`，不改变生产签名、mode 校验或运行行为。恢复点：`backup/pr525-before-test-pyright-fix-20260901` 固定修复前 head `dfa1d3b0`。
+
+
+## 2026-09-05 Message 插件栈第 06 层
+
+- 基线：`17367c083b6c0e5f8becd073073827c99b09397d`；恢复点：独立 worktree 旁 `_backups/message-plugins-06-start/base.bundle` 与各文件原始备份。正式 workspace 未改写。
+- 移除 Manager 与 channel credential factory 各自的 `_file_revision` 和 credential 独立二次读配置 helper。实际消费者只有加载/监测与 credential factory；统一由 `read_config_source` 一次读取产生 bytes 和 revision，消除校验 A 后解析 B 的竞态。既有 `PluginConfig` 保留；配置路径、revision 算法和 CredentialRef allowlist 不变。
+- Drift 与 compaction 的包内绝对 import 改为相对 import，消除从当前全局 `plugins.*` 取得另一 generation 实现的路径。没有删除能力、插件配置或记忆状态。
+- generation 的可执行代码/资源与安装来源分开：模块、candidate clone、stable alias、Skills 及静态命令读取归档代码；安装指针只承担来源/发布，Python 环境由显式 owner 提供。Skills 软链路径断言改为对应 generation 的代码归档，正文与 promote/discard 行为断言保留。
+- 不新增 archive active claim、业务 terminal 或持久 refcount；BindingScope 只拥有本次 lease 的生命周期。旧回复链路尚未在本层删除，其接管与删除验收仍在第 08–10 层。
+- 定向验证包含配置竞态、源码变更后的延迟 import/asset、原始插件目录删除后的恢复、缺失/损坏归档、真实 contributor Context、子 Fiber 依赖闭包、无关插件隔离、保留 lease 与取消排空。完整 Gate 和独立 Terra 结果随本层 PR 记录。
+
+- 完整 Gate 的 MCP fixture 将 CA 路径写死在 `__file__` 对应代码目录的 `.venv` 下，暴露代码与环境耦合。改用实际 interpreter 内 `certifi.where()`，代码身份断言改为 generation 的 code_dir；CA 仍须属于原安装环境，删除旧 CA 的负向 oracle、真实进程 PID、candidate 数据隔离与卸载 drain 断言全部保留。不向 Core 添加兼容路径或环境变量。

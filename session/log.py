@@ -227,6 +227,19 @@ class MessageLog:
                 "INSERT INTO bindings VALUES (?, ?)", (binding_id, payload)
             )
 
+    def read_binding(self, binding_id: str) -> Mapping[str, object]:
+        """读取不可变绑定；缺失引用不能用当前实现补齐。"""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT descriptor FROM bindings WHERE binding_id=?", (binding_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(binding_id)
+        value = json.loads(row[0])
+        if not isinstance(value, dict):
+            raise ValueError("binding descriptor 必须是对象")
+        return cast(Mapping[str, object], freeze_json(cast(dict[str, object], value)))
+
     def close(self) -> None:
         """释放数据库并唤醒所有追赶者，让它们正常退出。"""
         with self._lock:

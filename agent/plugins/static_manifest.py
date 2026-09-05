@@ -199,6 +199,8 @@ def materialize_static_command(
     plugin_root: Path,
     manifest: StaticPluginManifest,
     declaration: StaticMcpDeclaration | StaticManagedProcessDeclaration,
+    *,
+    environment_root: Path | None = None,
 ) -> tuple[str, ...]:
     """Bind a static Python command to its staged artifact interpreter."""
 
@@ -219,7 +221,9 @@ def materialize_static_command(
     )
     if runtime is None:
         raise RuntimeError(f"静态 command 引用了未知 Python runtime: {runtime_root}")
-    interpreter = staged_python_interpreter(plugin_root, runtime)
+    if environment_root is None:
+        raise RuntimeError("静态 Python command 缺少显式运行环境")
+    interpreter = staged_python_interpreter(environment_root, runtime)
     return (str(interpreter), *declaration.command[1:])
 
 

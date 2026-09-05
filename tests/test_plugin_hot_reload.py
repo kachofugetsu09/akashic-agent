@@ -626,12 +626,12 @@ async def test_installed_candidate_promotion_syncs_stable_skill_projection(
     ).sync(manager.active_plugins())
     loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
     stable_link = workspace / "skills" / "stable-skill"
-    assert stable_link.resolve() == stable_root / "skills" / "stable-skill"
+    assert stable_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "stable-skill"
     assert loader.load_skill_body("stable-skill") == "stable body\n"
 
     write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
     assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-    assert stable_link.resolve() == stable_root / "skills" / "stable-skill"
+    assert stable_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "stable-skill"
     assert not (workspace / "skills" / "candidate-skill").exists()
     await manager.drop_candidate("installed_snapshot@lab")
 
@@ -649,7 +649,7 @@ async def test_installed_candidate_promotion_syncs_stable_skill_projection(
     candidate_link = workspace / "skills" / "candidate-skill"
     assert promoted["publication_state"] == "promoted"
     assert not stable_link.exists()
-    assert candidate_link.resolve() == candidate_root / "skills" / "candidate-skill"
+    assert candidate_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "candidate-skill"
     assert loader.load_skill_body("candidate-skill") == "candidate body\n"
     await manager.terminate_all()
 
@@ -1226,7 +1226,7 @@ async def test_plugin_watcher_updates_skill_links_when_plugin_is_toggled(
         plugin_roots=manager.skill_projection_roots,
     ).sync(manager.active_plugins())
     link = tmp_path / "workspace" / "skills" / "opencli"
-    assert link.resolve() == skill_dir.resolve()
+    assert link.resolve() == manager.generation("computer").code_dir / "skills" / "opencli"
 
     watcher = PluginWatcher(
         manager,
@@ -1248,7 +1248,7 @@ async def test_plugin_watcher_updates_skill_links_when_plugin_is_toggled(
             break
         await asyncio.sleep(0.01)
     assert manager.generation("computer") is not None
-    assert link.resolve() == skill_dir.resolve()
+    assert link.resolve() == manager.generation("computer").code_dir / "skills" / "opencli"
 
     watcher.stop()
     await task
