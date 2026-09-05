@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -63,6 +64,7 @@ async def test_computer_plugin_mounts_with_static_manifest(tmp_path: Path) -> No
         from types import SimpleNamespace
 
         from agent.plugin_composition.workload_slots import _freeze_plugin_workloads
+        from agent.plugins.generation import PluginGeneration
         from agent.plugins.manager import _validate_static_manifest_runtime
         from agent.plugins.snapshot import RuntimeSnapshot
 
@@ -79,7 +81,13 @@ async def test_computer_plugin_mounts_with_static_manifest(tmp_path: Path) -> No
         )
         _validate_static_manifest_runtime(
             snapshot,
-            {"computer": SimpleNamespace(static_manifest=manifest, plugin_dir=path)},
+            {
+                # 静态校验只使用这份 generation 的 manifest、目录和派生命令字段。
+                "computer": cast(
+                    PluginGeneration,
+                    SimpleNamespace(static_manifest=manifest, plugin_dir=path),
+                )
+            },
         )
     finally:
         await root.dispose()
@@ -151,19 +159,23 @@ async def test_computer_control_against_container(tmp_path: Path) -> None:
         )
         handler = next(iter(catalog.values())).handler
 
-        def context(call):
+        def context(call: str) -> ToolExecutionContext:
             return ToolExecutionContext(
                 origin_session_key="real-context",
                 turn_id="real-turn",
                 execution_id=call,
             )
 
+        async def run(call: str, code: str) -> str:
+            """确认通用工具接口返回 Computer 的 JSON 文本，并提供可取消的协程。"""
+            value = await handler(context(call), {"code": code})
+            assert isinstance(value, str)
+            return value
+
         output = json.loads(
-            await handler(
-                context("first"),
-                {
-                    "code": "nodeRepl.write(41+1); await nodeRepl.emitImage((await sky.get_screenshot())[0].bytes);"
-                },
+            await run(
+                "first",
+                "nodeRepl.write(41+1); await nodeRepl.emitImage((await sky.get_screenshot())[0].bytes);",
             )
         )
         assert "42" in json.dumps(output)
@@ -255,12 +267,12 @@ async def test_computer_control_against_container(tmp_path: Path) -> None:
         assert receipt == {"cancelled": True, "released": True, "effects": "may_remain"}
         writer.close()
         await writer.wait_closed()
-        assert "healthy" in await handler(
-            context("after"), {"code": "nodeRepl.write('healthy');"}
+        assert "healthy" in await run(
+            "after", "nodeRepl.write('healthy');"
         )
         async with httpx.AsyncClient(base_url=gateway) as client:
             running = asyncio.create_task(
-                handler(context("task-cancel"), {"code": "await new Promise(()=>{});"})
+                run("task-cancel", "await new Promise(()=>{});")
             )
             async with asyncio.timeout(10):
                 while not (await client.get("/activity")).json()["active"]:
@@ -268,8 +280,8 @@ async def test_computer_control_against_container(tmp_path: Path) -> None:
             running.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(running, 30)
-        assert "after cancel" in await handler(
-            context("post-cancel"), {"code": "nodeRepl.write('after cancel');"}
+        assert "after cancel" in await run(
+            "post-cancel", "nodeRepl.write('after cancel');"
         )
         async with httpx.AsyncClient(base_url=gateway) as client:
             new = await client.post(
@@ -282,12 +294,12 @@ async def test_computer_control_against_container(tmp_path: Path) -> None:
             )
             closed.raise_for_status()
         scratch = json.loads(
-            await handler(
-                context("scratch"),
-                {"code": "nodeRepl.write((await browser.tabs.new()).id);"},
+            await run(
+                "scratch",
+                "nodeRepl.write((await browser.tabs.new()).id);",
             )
         )["content"][0]["text"]
-        from agent.plugin_composition import RUNTIME_STOPPING
+        from agent.plugin_composition import RUNTIME_STOPPING, RuntimeStopping
         from agent.plugins.snapshot import (
             RuntimeSnapshot,
             RuntimeSnapshotStore,
@@ -323,7 +335,7 @@ async def test_computer_control_against_container(tmp_path: Path) -> None:
                     tools_used=["computer"],
                 ),
             )
-            await root.context.serial(RUNTIME_STOPPING, None)
+            await root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
         finally:
             reset_runtime_snapshot(token)
             await lease.release()
