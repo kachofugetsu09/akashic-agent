@@ -766,12 +766,14 @@ Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。�
 |---|---|---|
 | 01 合同 | 本设计、真实插件功能落点、验收和删除边界 | 无持久变化，不创建空迁移 |
 | 02 Message 类型与 Turn 能力 | 不可变 Message 合同、无状态投影普通插件；用独立调用证明分组无需执行对象 | 不改 schema，不接管旧 writer；Turn 不建表，不创建空迁移 |
-| 03 Message 日志 | 窄读取/追加/CAS、schema 与历史转换在隔离 fixture 验收 | yoyo 与新 schema 同层提交；转换已有 messages，核对 ID/seq/正文、重复执行和 crash 恢复；旧 turns 原样保留，由第 06 层接管 |
-| 04 内容与 Context | 提供普通 Content/Context 能力与临时内容索引；Citation/Meme 形态样例；第 06 层接入后取代共享可变编排 | 仅改变新消息内容无需重写旧消息；有配置归属迁移时随本 PR |
-| 05 Model、Tool 与资源 | 单次推理/工具独立调用、通用 Task、持久绑定、最终参数授权与 effect 恢复 | 所需 binding/receipt schema 与配置脚本随本 PR；执行前后 crash point，不盲重跑 |
-| 06 回复与消费接入 | ReAct/conversation、Akasha/compaction/记忆读者及实时协议使用新日志；接管命令、暂停/恢复 | 本层引入的旧 turns 尾部、Akasha provenance/消费 ledger 与控制状态迁移同 PR；学习状态保全 |
-| 07 Delivery 与来源 | 独立发送/重试；Scheduler/Subagent/Wake 组合公开能力；发布操作脱离父 Turn | Delivery/来源状态脚本随本 PR；已发送不重发、ACK 丢失与重启验收 |
-| 08 删除与累计验收 | 删除旧 Worker/Pipeline/Attempt 执行权与重复入口；同步长期规格、能力手册和删除账本 | 不 DROP 历史表或自动删除数据；剩余实际 schema 变化仍附本层脚本，不能补漏前层迁移 |
+| 03 Message 日志 | 窄读取/追加/CAS、schema 与历史转换在隔离 fixture 验收 | yoyo 与新 schema 同层提交；转换已有 messages，核对 ID/seq/正文、重复执行和 crash 恢复；旧 turns 原样保留，由第 08 层接管 |
+| 04 内容与 Context | 提供普通 Content/Context 能力与临时内容索引；Citation/Meme 形态样例；第 08 层接入后取代共享可变编排 | 仅改变新消息内容无需重写旧消息；有配置归属迁移时随本 PR |
+| 05 任务、事务与调用记录 | 通用 Task、受限 owner 事务；现有 Model 单次入口在 I/O 前后记录调用，冻结请求 | `owner_records` 与 `model_calls` 各附 yoyo；原子回滚、取消、费用 unknown 与重复迁移 |
+| 06 耐久绑定 | 归档完整代码与配置闭包；按引用打开 exact 短命 scope，不维护业务执行状态 | 所需绑定 schema/归档脚本同 PR；卸载当前 cache、重启与归档损坏验收 |
+| 07 单次工具与模型投影 | Tool 的最终参数授权、effect receipt 与恢复；Model 从 Message 投影协议并生成 replay facts | 所需 receipt schema 同 PR；独立调用及执行前后 crash point，不盲重跑 |
+| 08 回复与消费接入 | ReAct/conversation、Akasha/compaction/记忆读者及实时协议使用新日志；接管命令、暂停/恢复 | 本层引入的旧 turns 尾部、Akasha provenance/消费 ledger 与控制状态迁移同 PR；学习状态保全 |
+| 09 Delivery 与来源 | 独立发送/重试；Scheduler/Subagent/Wake 组合公开能力；发布操作脱离父 Turn | Delivery/来源状态脚本随本 PR；已发送不重发、ACK 丢失与重启验收 |
+| 10 删除与累计验收 | 删除旧 Worker/Pipeline/Attempt 执行权与重复入口；同步长期规格、能力手册和删除账本 | 不 DROP 历史表或自动删除数据；剩余实际 schema 变化仍附本层脚本，不能补漏前层迁移 |
 
 用户补充的发布背景：整个 stacked PR 栈全部 review 后一起合并、统一上生产。分层按职责与相邻 diff 的可审阅性拆分，不要求每个中间 PR 单独可部署，也不为此建立兼容壳或把所有实现塞进一张大 PR。对应 yoyo 放在引入该持久变化的层；正式发布时按依赖执行整套迁移。新能力在隔离环境分别验收，最终栈顶必须证明 writer、所有消费者、Delivery、来源和所需外部插件同时可用；正式环境一次性接管。每层描述相邻验证、尚未接入部分和累计未完成项，不以中间代码尚未完成冒充功能已删除。
 
@@ -783,7 +785,7 @@ Yoyo 脚本只追加到 `migrations/yoyo/`，显式声明 `__depends__`，不修
 
 ## 17. 旧日志迁移的具体保全合同
 
-第 03 层引入 Message schema 与同层 yoyo，仅转换已有 messages；旧 turns 和其引用原样保留。第 06 层在回复、控制和消费者接管时，附自己的 yoyo 处理下述旧 turns 尾部及消费边界。整栈一起 review、合并和发布，不要求中间 release 独立运行。以下转换只在隔离副本验收，本次不操作正式 workspace。
+第 03 层引入 Message schema 与同层 yoyo，仅转换已有 messages；旧 turns 和其引用原样保留。第 08 层在回复、控制和消费者接管时，附自己的 yoyo 处理下述旧 turns 尾部及消费边界。整栈一起 review、合并和发布，不要求中间 release 独立运行。以下转换只在隔离副本验收，本次不操作正式 workspace。
 
 旧 messages 的 `id/session_key/seq/ts/content/tool_chain/extra/role` 都是迁移输入。原 message ID、seq、接纳时间和正文文本保持；原始 `tool_chain`、`extra` JSON 文本作为已声明的历史内容保全，不通过 parse/re-encode 冒充字节相同。`role` 只是旧协议角色，不足以证明真实作者；作者标为 `legacy-attribution-unknown`，原 role 留在 provenance。没有来源证据的旧消息进入稳定 `legacy-unattributed` source；不从 proactive=true 猜 Wake、Scheduler 或具体 producer。该来源没有默认响应插件，不自动接纳新工作。
 
@@ -791,7 +793,7 @@ Yoyo 脚本只追加到 `migrations/yoyo/`，显式声明 `__depends__`，不修
 
 `history.provenance` 保存原 role、原始 extra 及 digest。已登记的附件仍使用原 artifact ID 和原 message binding；媒体、delivery、client ID、旧 interaction 等真实关联必须在新历史投影中可读取，不能只在备份中存在。Context 仍能读取旧聊天正文、附件及不可执行的历史工具轨迹；“不调度旧 source”不等于把用户过去的对话从上下文抹掉。
 
-旧可续接输入不能一律归档。第 06 层按最新未完成记录及明确的 `continuedFromTurnId/interactionId` 恢复旧链，再独立核对旧 channel/chat/inbound 身份；执行链本身不证明来源。缺少来源证据的记录只归档并列入迁移报告，不升级成可执行 conversation。已经有确切最终 Message 引用的尾部先核对提交事实，不能仅按 failed 状态判定尚待回复。
+旧可续接输入不能一律归档。第 08 层按最新未完成记录及明确的 `continuedFromTurnId/interactionId` 恢复旧链，再独立核对旧 channel/chat/inbound 身份；执行链本身不证明来源。缺少来源证据的记录只归档并列入迁移报告，不升级成可执行 conversation。已经有确切最终 Message 引用的尾部先核对提交事实，不能仅按 failed 状态判定尚待回复。
 
 对已证明属于 conversation 的 open 链，按整条链的 `USER_MESSAGE.ordinal` 枚举全部用户输入。每项通过明确的 item/message/client 引用映射已有 Message，或按旧 record/item 身份迁入 Input；不按正文或时间去重。旧时代缺少 ordinal 的记录保留原证据，不猜恢复顺序。每个已证明的 open conversation 链，无论是否新增 Input，都在同一 SQLite 事务提交 migration-author 的 `pause(through_seq)`、需要迁入的 Input 及全部旧 item→existing/new Message 映射 receipt。through_seq 固定为该链迁后 conversation 前缀的最高已接纳 seq，覆盖全已落消息与部分未落两种情况；commit 后才通知消费者。启动不为 `seq <= through_seq` 的输入创建任务；以后真实接纳的 Input 超过该边界便可唤醒，并在 Context 中带上这些旧输入。pause 是前缀截止，不是永久禁用来源。
 
@@ -826,6 +828,7 @@ Turn 成员、消费次数、引用、特征、权重与恢复差异报告
 
 - 每个数据库使用 native backup，传输后校验哈希、SQLite 完整性与外键；跨数据库独立快照不冒充全局同一时刻。原始副本只读保存，迁移、旧/新重放分别使用独立输出目录。真实正文与数据库不提交 Git 或 PR。
 - 固定相同历史、embedding、配置、时钟和算法版本。先比输入成员与来源，再比 Akasha 逻辑状态；文件字节相同不是唯一标准。旧实现也在隔离目录运行，不把重放写入正式 Akasha，重放不执行历史工具或发送消息。
+- 旧实现跨主机对照已验证 OpenBLAS 线程数会改变浮点归约及后续特征选择。固定同一旧代码、embedding 和 16 线程后，两端 5571 个 Turn、5403 个 hub、24735 条关系及完整逻辑状态哈希一致（`9f0e647b9a249e5176d3a7ed2f27cdf04f7c7b073177003e56d2fe2dc110c197`）。新旧比较沿用固定线程数；18 线程旧重放的差异不计为新投影语义变化。此项仅证明旧基线可复现，新消费者仍须独立验收。
 - `u1 → interrupt → u2 → interrupt → u3 → a` 必须由同一来源投影成包含三个输入与一个最终回答的完整 Turn；暂停/失败不产生提前学习。Akasha 实际消费只提交一次，重复通知、分页、重启和重复重放不能重复强化。
 - 在上述序列每个切点插入其他来源的 proactive、定时输入/输出及其工具结果；这些来源可以成为共同 Context，但不能切断 conversation 的学习单元或混入它的成员。单独验证各来源的完整 Turn。
 - 补充 abandon 与晚到工具结果、同一 Output 多工具乱序返回、新输入使旧模型输出 CAS 失败、终态前崩溃、学习成功但消费 ACK 丢失、插件 generation 切换、未知费用/工具/发送结果和精确暂停控制。
@@ -840,4 +843,22 @@ Content 的 `ContentSchema` 只声明内容校验；需要文本语法时用 `Te
 
 Context 接收 `Materials` 中已取得的系统提示、低信任检索内容和已发布摘要。摘要只声明实际覆盖的消息前缀；Context 把完整快照和覆盖末尾 `after_seq` 一起交给 Model 的只读投影，不能先裁掉 provider 仍需要的 replay facts。Model 无法安全保留时明确拒绝该请求。系统提示只在请求 messages 中出现一次，避免不同 provider 重复加入 instructions。
 
-历史搜索使用 Context 内存 FTS 索引，正常只幂等追加已提交消息；重启按消息日志重建，不保存另一份磁盘正文或持久 cursor。控制记录不作为正文搜索，但仍参与消息身份冲突检查。源消息的显式管理删除由接入 owner 重建索引，不把缓存删除升级成源消息删除权。第 04 层不引入新的持久 schema，因此没有空 yoyo；第 03 层旧 FTS 的替代索引在此提供，实际消费者在第 06 层一次切换。
+历史搜索使用 Context 内存 FTS 索引，正常只幂等追加已提交消息；重启按消息日志重建，不保存另一份磁盘正文或持久 cursor。控制记录不作为正文搜索，但仍参与消息身份冲突检查。源消息的显式管理删除由接入 owner 重建索引，不把缓存删除升级成源消息删除权。第 04 层不引入新的持久 schema，因此没有空 yoyo；第 03 层旧 FTS 的替代索引在此提供，实际消费者在第 08 层一次切换。
+
+### 18.2 第 05 层的执行事实与状态边界
+
+`Tasks.admit(key, callback)` 的同步回调不跨 await；同一事件循环中启动、控制和 effect start 按实际调用顺序接纳，不另存锁表。每个 Task 只拥有短命 handle、同步资源撤销和实际排空。取消先撤销 writer，再通知运行任务；重复取消不打断已经开始的结算。失败的准入撤销本次新任务，完成的任务按 exact identity 移出 registry；调用者持有的 handle 仍可 join。Task 不持久化、不提供逻辑 Turn 或业务终态。
+
+`OwnerStore` 只授予一个状态空间。同步事务内可以用已获授权的 Message writer 追加，并以版本 CAS 更新本 owner 的 JSON 状态；不能执行任意 SQL、跨库写入或在 await 期间持锁。部分写入失败即使被调用方捕获，整个事务仍回滚。`owner_records` 正常增加记录，允许 owner 按其领域规则原位推进版本；没有自动减少路径，也不复制 Message 正文。公开服务和实际消费者在第 08 层一起接入。
+
+Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在构造边界冻结 messages/tools；Context 不重复拥有冻结规则。Model 在调用 driver 前向自有 `model-registry.sqlite3/model_calls` 追加 `started`，返回后原位记录实际 usage；异常或取消记为 `unknown` 并继续抛出原错误。成功响应带 `call_record_id`，没有 usage 就保留未知值，不能补零。进程崩溃留下的 started 只证明请求曾被接纳，不能证明没有费用或触发自动重放。配置 revision 不因模型调用变化，不通过配置修改的整库备份路径记账，也不持久保存请求正文、原始输出或 credential。调用记录没有自动删除路径。Model 的事实引用可从此记录读取 binding 与 usage，避免在 Message 再存一份计费账。
+
+本层两个 yoyo 分别增加 `owner_records` 和 `model_calls`。已有库须先迁移，初始化只为新空库创建新表。迁移使用独立 SQLite 备份，重复执行保留既有记录；正常模型调用不因此重写旧会话、模型配置或学习状态。生产数据副本验收中，两项迁移均成功且重复运行返回 current；14613 条 Message、2244 条旧 Turn 及所有模型配置表的行数与内容摘要未变，两个数据库 integrity/FK 检查通过。原始数据、恢复副本及完整摘要只留在受限的本地 fixture，不进入 Git。
+
+### 18.3 耐久绑定只保存引用，不重述业务执行状态
+
+执行层 Gate 还复现了旧 Shell 在 deadline 附近丢失最后输出的竞态。DSH 的 subprocess 同样把进程 exit 与输出 close 分开；本栈沿此边界修复：收集截止时发现进程已退出，先完成有界输出排空，再生成终态响应和清理记录；继承 pipe 的残留子进程不能无限拖延结束。这不改变 Message 或逻辑 Turn 的终态。
+
+第 06 层按内容 hash 保存独立于 installed cache 的不可变归档。binding 引用完整代码、运行要求、manifest 与可复建配置闭包；凭据只保存受保护引用，plugin-data 仍由原 owner 管理。需要历史业务状态的能力必须自行保存其不可变输入，Core 不快照整个运行 workspace。打开 binding 时只从该归档构建短命 exact scope；缺失、损坏或不兼容必须明确失败，不切到 stable/latest。
+
+本轮不增加 active claim、持久 refcount 或 terminal 表：Tool、Delivery、Akasha 已各自拥有调用、发送或消费事实，是否需要打开 binding 从这些事实计算。内存 lease 关闭后释放运行资源；归档文件不阻挡当前插件 drain 或卸载。归档是耐久恢复材料，没有自动 GC；当前 cache 的清理不拥有它。归档写成但 Message/receipt 提交失败时允许留下未引用文件，不自动减少恢复材料。未来若要回收归档，须单独制定显式减少协议，不能倒推当前需要另一套业务状态机。

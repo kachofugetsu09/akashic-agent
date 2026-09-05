@@ -47,6 +47,8 @@ _EXPLICIT_PROGRAMMATIC_EFFECTS_ID = "20260829_02_backfill_explicit_programmatic_
 _RETIRE_CORE_MODEL_CONFIG_ID = "20260829_03_retire_core_model_config"
 _COMPACTION_PLUGIN_CONFIG_ID = "20260831_01_migrate_compaction_plugin_config"
 _MESSAGE_LOG_ID = "20260905_01_message_log"
+_OWNER_RECORDS_ID = "20260905_02_owner_records"
+_MODEL_CALLS_ID = "20260905_03_model_calls"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -77,6 +79,8 @@ _CURRENT_IDS = (
     _RETIRE_CORE_MODEL_CONFIG_ID,
     _COMPACTION_PLUGIN_CONFIG_ID,
     _MESSAGE_LOG_ID,
+    _OWNER_RECORDS_ID,
+    _MODEL_CALLS_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -420,6 +424,8 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
         _MESSAGE_LOG_ID,
+        _OWNER_RECORDS_ID,
+        _MODEL_CALLS_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -480,6 +486,8 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
         _MESSAGE_LOG_ID,
+        _OWNER_RECORDS_ID,
+        _MODEL_CALLS_ID,
     )
     migrated = tomllib.loads(config.read_text())
     assert migrated["agent"]["wiring"]["toolsets"] == toolsets
@@ -528,6 +536,8 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
         _MESSAGE_LOG_ID,
+        _OWNER_RECORDS_ID,
+        _MODEL_CALLS_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -605,6 +615,8 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
         _MESSAGE_LOG_ID,
+        _OWNER_RECORDS_ID,
+        _MODEL_CALLS_ID,
     )
 
 
@@ -954,6 +966,8 @@ api_key = "secret"
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
         _MESSAGE_LOG_ID,
+        _OWNER_RECORDS_ID,
+        _MODEL_CALLS_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

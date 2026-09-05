@@ -535,7 +535,15 @@ class ShellProcessManager:
             except asyncio.TimeoutError:
                 break
 
-        # 最后再 drain 一次，覆盖截止点与 append 同时发生的竞争。
+        # 截止附近已退出的进程仍可能有未读输出；先有界排空，再发布终态。
+        pump = execution.pump_task
+        if execution.process.returncode is not None and pump is not None:
+            _, pending = await asyncio.wait({pump}, timeout=POST_EXIT_DRAIN_GRACE_S)
+            if pending:
+                _ = pump.cancel()
+                _ = await asyncio.gather(pump, return_exceptions=True)
+
+        # producer 已结束或仍持有续读句柄，最后一次 drain 不会丢掉尾部。
         async with execution.output_lock:
             final = execution.output_buffer.drain()
             execution.output_event.clear()

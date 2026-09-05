@@ -248,6 +248,8 @@ async def test_output_collection_stays_bounded_across_repeated_drains() -> None:
     manager = ShellProcessManager()
     execution = SimpleNamespace(
         output_buffer=HeadTailBuffer(),
+        process=SimpleNamespace(returncode=0),
+        pump_task=None,
         output_lock=asyncio.Lock(),
         output_event=asyncio.Event(),
         exit_event=asyncio.Event(),
@@ -291,6 +293,8 @@ async def test_output_collection_preserves_prior_omissions() -> None:
     output.push_chunk(b"overflow")
     execution = SimpleNamespace(
         output_buffer=output,
+        process=SimpleNamespace(returncode=0),
+        pump_task=None,
         output_lock=asyncio.Lock(),
         output_event=asyncio.Event(),
         exit_event=asyncio.Event(),
@@ -599,6 +603,44 @@ async def test_completed_command_preserves_nonzero_exit_code() -> None:
         assert result["exit_code"] == 17
         assert "execution_id" not in result
     finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_deadline_after_exit_waits_for_last_output() -> None:
+    """进程退出不能取消尚未提交的最后一段输出。"""
+    reading = asyncio.Event()
+    release = asyncio.Event()
+
+    class DelayedOutputManager(ShellProcessManager):
+        async def _append_output(self, execution, chunk: bytes) -> None:
+            reading.set()
+            await release.wait()
+            await super()._append_output(execution, chunk)
+
+        async def _collect_until_deadline(self, execution, deadline: float):
+            await reading.wait()
+            await execution.process.wait()
+            asyncio.get_running_loop().call_soon(release.set)
+            return await super()._collect_until_deadline(execution, time.monotonic())
+
+    manager = DelayedOutputManager()
+    shell = ShellTool(manager)
+    try:
+        terminal = _decode(
+            await shell.execute(
+                command="printf final",
+                description="验证退出后排空",
+                shell="/bin/sh",
+                login=False,
+                yield_time_ms=250,
+            )
+        )
+        assert terminal["output"] == "final"
+        assert terminal["process_status"] == "succeeded"
+        assert "execution_id" not in terminal
+    finally:
+        release.set()
         await manager.shutdown()
 
 

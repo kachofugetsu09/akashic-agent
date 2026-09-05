@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from session.message_codec import json_value
+
 from agent.plugin_composition import (
     BoundModelDescriptor,
     BoundChatModel,
@@ -105,17 +107,17 @@ class BoundChatModelFake:
         ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
         kwargs = {
-            "messages": list(request.messages),
-            "tools": list(request.tools),
+            "messages": json_value(request.messages),
+            "tools": json_value(request.tools),
             "model": self.descriptor.model,
             "max_tokens": request.max_output_tokens,
-            "tool_choice": request.tool_choice,
+            "tool_choice": json_value(request.tool_choice),
             "disable_thinking": request.disable_reasoning,
             "on_content_delta": request.on_delta,
             "cache_namespace": request.prompt_cache_key,
         }
         if continuation is not None:
-            kwargs["model_state"] = dict(continuation.payload)
+            kwargs["model_state"] = json_value(continuation.payload)
         response = await self.provider.chat(**kwargs)
         continuation = None
         response_continuation = getattr(response, "continuation", None)
