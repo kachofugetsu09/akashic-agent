@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
+import socket
+import struct
 import sys
 import uuid
 from datetime import UTC, datetime
@@ -11,6 +14,9 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+import httpx
+from control import endpoint_name
 
 BASE_URL = os.environ.get("COMPUTER_URL", "").rstrip("/")
 PROTOCOL = "2025-11-25"
@@ -27,7 +33,7 @@ TOOLS = (
         "description": (
             "Inspect the persistent Chromium browser without changing page state. "
             "Use snapshot before actions so later calls can target stable element refs. "
-            "Screenshots are saved as local files; use read_image_vision with the returned path."
+            "Screenshots are saved as local files; use read_file with the returned path."
         ),
         "inputSchema": {
             "type": "object",
@@ -97,7 +103,7 @@ TOOLS = (
         "name": "computer_observe",
         "description": (
             "Read the current desktop screenshot or Computer activity state. Screenshots "
-            "are saved as local files; use read_image_vision with the returned path."
+            "are saved as local files; use read_file with the returned path."
         ),
         "inputSchema": {
             "type": "object",
@@ -130,6 +136,7 @@ TOOLS = (
                         "wait",
                     ],
                 },
+                "mouse_button": {"type": "string", "enum": ["left", "middle", "right"]},
                 "x": {"type": "integer", "minimum": 0, "maximum": 1279},
                 "y": {"type": "integer", "minimum": 0, "maximum": 799},
                 "to_x": {"type": "integer", "minimum": 0, "maximum": 1279},
@@ -241,7 +248,7 @@ def screenshot_result(raw: bytes, media_type: str) -> dict[str, object]:
         "kind": "screenshot_file",
         "path": path,
         "mime_type": media_type,
-        "next": "Call read_image_vision with this path to inspect the screenshot.",
+        "next": "Call read_file with this path to inspect the screenshot.",
     }
     return {"content": [{"type": "text", "text": json.dumps(value)}]}
 
@@ -250,7 +257,7 @@ def call_tool(name: str, arguments: object) -> dict[str, object]:
     """Execute one known tool and build MCP content blocks."""
 
     if not isinstance(arguments, dict):
-        raise ValueError("tool arguments must be an object")
+        raise TypeError("tool arguments must be an object")
     if name == "browser_observe":
         raw, _ = request("/browser/observe", arguments)
         value = json.loads(raw)
@@ -324,28 +331,185 @@ def reply(message: dict[str, Any]) -> dict[str, object] | None:
     }
 
 
-def main() -> None:
-    """Serve newline-delimited MCP messages over stdio."""
-
-    for line in sys.stdin:
-        request_id: object = None
-        try:
-            message = json.loads(line)
-            if not isinstance(message, dict):
-                raise ValueError("message must be an object")
-            request_id = message.get("id")
-            response = reply(message)
-        except Exception as error:
-            response = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32603, "message": str(error)},
-            }
-        if response is not None:
-            print(
-                json.dumps(response, ensure_ascii=False, separators=(",", ":")),
-                flush=True,
+def driver_content(value: dict[str, Any]) -> dict[str, object]:
+    """驱动图片继续使用原截图 owner 保存，避免绕开保留与路径合同。"""
+    content = []
+    for item in value["content"]:
+        if item.get("type") == "image":
+            content.extend(
+                screenshot_result(
+                    base64.b64decode(item["data"], validate=True), item["mimeType"]
+                )["content"]
             )
+        else:
+            content.append(item)
+    return {"content": content, "call_id": value["call_id"]}
+
+
+async def control_connection(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
+    """控制连接断开或取消时，等待容器 drain 后才给调用者回执。"""
+    task = None
+    cancellation = None
+    context = None
+    try:
+        peer = writer.get_extra_info("socket")
+        _, uid, _ = struct.unpack(
+            "3i", peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        )
+        if uid != os.getuid():
+            raise PermissionError("Computer control peer has a different uid")
+        raw = await reader.readline()
+        payload = json.loads(raw)
+        context = payload["context"]
+        async with httpx.AsyncClient(
+            base_url=BASE_URL, timeout=330 if payload["op"] == "end_turn" else 170
+        ) as client:
+
+            async def send(path, body):
+                response = await client.post(path, json=body)
+                if response.status_code >= 400:
+                    raise RuntimeError(
+                        f"Computer returned {response.status_code}: {response.text[:16000]}"
+                    )
+                if len(response.content) > 8 * 1024 * 1024:
+                    raise RuntimeError("Computer response is too large")
+                return response.json()
+
+            if payload["op"] not in {"run", "end_turn"}:
+                raise ValueError("Unknown Computer control operation")
+            if payload.get("reset") is True:
+                await send("/driver/reset", {"session_id": context["session_id"]})
+            task = asyncio.create_task(
+                send(
+                    "/driver/run",
+                    {
+                        "context": context,
+                        "code": payload.get("code", ""),
+                        "endTurn": payload["op"] == "end_turn",
+                        "timeoutMs": payload.get("timeoutMs", 60000),
+                    },
+                )
+            )
+            cancellation = asyncio.create_task(reader.readline())
+            try:
+                done, _ = await asyncio.wait(
+                    {task, cancellation}, return_when=asyncio.FIRST_COMPLETED
+                )
+            except asyncio.CancelledError:
+                await send("/driver/cancel", {"call_id": context["call_id"]})
+                await asyncio.gather(task, return_exceptions=True)
+                raise
+            if cancellation in done:
+                await send("/driver/cancel", {"call_id": context["call_id"]})
+                # 原请求仍须读完，确认它不再执行；副作用不当作已经回滚。
+                await asyncio.gather(task, return_exceptions=True)
+                result = {"cancelled": True, "released": True, "effects": "may_remain"}
+            else:
+                result = driver_content(await task)
+        writer.write(json.dumps(result, ensure_ascii=False).encode() + b"\n")
+        await writer.drain()
+    except (
+        ValueError,
+        KeyError,
+        TypeError,
+        RuntimeError,
+        OSError,
+        httpx.HTTPError,
+    ) as error:
+        if not writer.is_closing():
+            writer.write(json.dumps({"error": str(error)}).encode() + b"\n")
+            try:
+                await writer.drain()
+            except (ConnectionError, BrokenPipeError):
+                pass
+    finally:
+        if cancellation is not None:
+            cancellation.cancel()
+            await asyncio.gather(cancellation, return_exceptions=True)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        writer.close()
+        await writer.wait_closed()
+
+
+async def serve() -> None:
+    """MCP 和本代控制连接共用一个事件循环，旧工具保持原协议。"""
+    async with httpx.AsyncClient(base_url=BASE_URL, timeout=15) as client:
+        status = await client.get("/driver/status")
+        status.raise_for_status()
+        info = status.json()
+        if (
+            info.get("version") != 2
+            or info.get("source") is not True
+            or info.get("ready") is not True
+        ):
+            raise RuntimeError(
+                "Computer requires the v2 source driver image; publish it and update the plugin image digest"
+            )
+    data_root = os.environ.get("AKA_PLUGIN_DATA_DIR") or os.environ.get(
+        "AKASHIC_PLUGIN_DATA_DIR"
+    )
+    control_name = endpoint_name(Path(data_root)) if data_root else None
+    active_connections = set()
+
+    async def connection(reader, writer):
+        task = asyncio.current_task()
+        active_connections.add(task)
+        try:
+            await control_connection(reader, writer)
+        finally:
+            active_connections.remove(task)
+
+    control = None
+    if control_name:
+        control = await asyncio.start_unix_server(
+            connection, path="\0" + control_name, limit=256 * 1024
+        )
+    reader = asyncio.StreamReader(limit=256 * 1024)
+    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
+    )
+    try:
+        while line := await reader.readline():
+            request_id: object = None
+            try:
+                message = json.loads(line)
+                if not isinstance(message, dict):
+                    raise TypeError("message must be an object")
+                request_id = message.get("id")
+                response = await asyncio.to_thread(reply, message)
+            except Exception as error:  # noqa: BLE001 - JSON-RPC 边界将工具失败显式返回。
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32603, "message": str(error)},
+                }
+            if response is not None:
+                print(
+                    json.dumps(response, ensure_ascii=False, separators=(",", ":")),
+                    flush=True,
+                )
+    finally:
+        transport.close()
+        if control is not None:
+            control.close()
+            await control.wait_closed()
+        # 每条连接有自己的 HTTP deadline；停止接收后先收完回执再退出进程。
+        if active_connections:
+            pending = list(active_connections)
+            for task in pending:
+                task.cancel()
+            results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    raise result
+
+
+def main() -> None:
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":
