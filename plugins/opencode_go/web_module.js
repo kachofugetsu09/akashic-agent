@@ -21,11 +21,11 @@ export function activate(ctx) {
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization"></label>
           <label class="is-wide"><span>Base URL</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="${existing ? "留空则保持原地址" : "https://api.example.com/v1"}"></label>
-          <label class="settings-secret is-wide"><span>API Key（可留空使用本机登录）</span><input name="apiKey" aria-label="API Key" type="password" autocomplete="off" placeholder="sk-…"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
+          <label class="settings-secret is-wide"><span>API Key（${existing ? "留空保留现有密钥" : "可留空使用本机登录"}）</span><input name="apiKey" aria-label="API Key" type="password" autocomplete="off" placeholder="sk-…"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
         <section class="settings-model-discovery settings-model-discovery--automatic"><header><div><h3>模型与能力自动同步</h3><p>保存后读取账号当前可用的模型，并识别图片等已知能力；断网时仍可连接。</p></div></header></section>
         <p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会显示在页面中</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>重新同步模型与能力</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并同步" : "保存并同步模型与能力"}</button></span></footer></form>`;
+        <footer class="settings-dialog-footer"><span class="settings-dialog-footer-note">${SHIELD_ICON}凭据保存后不会显示在页面中</span><span class="settings-dialog-actions">${existing ? '<button type="button" class="settings-secondary-button" data-resync>检测已保存连接</button>' : ""}<button type="submit" class="settings-primary-button">${existing ? "保存连接并同步" : "保存并同步模型与能力"}</button></span></footer></form>`;
       const form = host.querySelector("form");
       form.elements.name.value = existing?.name ?? "OpenCode Go";
       form.elements.endpoint.value = existing ? "" : "https://opencode.ai/zen/go/v1";
@@ -59,8 +59,14 @@ export function activate(ctx) {
             endpoint: endpoint || null,
             credential: apiKey ? {driver: "api_key", access_token: apiKey} : null,
             driverConfig: null,
-          }).then(() => props.actions.sync())
-            .then(() => props.changed("OpenCode Go 连接已更新")));
+          }).then(async () => {
+            try {
+              await props.actions.sync();
+            } catch (error) {
+              throw new Error(`连接已保存，但模型同步失败。${error instanceof Error ? error.message : String(error)} 请点击“检测已保存连接”重试。`);
+            }
+            props.changed("OpenCode Go 连接已更新");
+          }));
           return;
         }
         submit(form, props.actions.startAuth(input)
