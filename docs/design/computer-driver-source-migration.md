@@ -73,7 +73,8 @@ JS 执行对象、标签连接、拖拽句柄只属于本代进程；重启后�
 - [x] Linux 原生源码重建。
 - [x] 无障碍源码及其他二进制依赖处理。
 - 行为对照、集成验证与独立评审以第 8 节的验证报告为准。
-- [ ] 镜像发布、双处 digest 更新与正式插件安装（待发布授权）。
+- [x] 核验已发布镜像并同步静态 manifest 与运行时声明的 digest。
+- [ ] 正式插件安装（不包含在源码合并中）。
 
 该清单是本次任务执行状态，不改变 `projectneed` 的权威语义，也不代表未完成项已交付。
 
@@ -151,11 +152,16 @@ reward 为 0，与原版 Browser + Desktop 相同。最终冻结镜像复验记�
 `tests/test_computer_driver_plugin.py` 验证；需要一次性容器时显式设置 `COMPUTER_TEST_GATEWAY`。
 将测试复制到一次性容器后，`node --test /opt/computer/test/*.test.mjs` 验证源码 AX、标签和输入生命周期。
 
-当前未发布或部署。插件 `plugin.py` 与 `akashic.plugin.toml` 的镜像 pin 暂保留已发布基线；
-**安装发布前必须一起更新为新镜像的 registry manifest digest**。本地 image ID 不是 registry
-manifest digest，不能冒充该 pin。MCP 启动检查 driver v2/source/ready，旧镜像会明确拒绝加载。
-发布动作不包含在本次只改驱动的授权内；不能把源码验收当作正式 generation 已升级。
+两处插件镜像声明固定为已发布的 Linux amd64 manifest：
+`ghcr.io/kachofugetsu09/akashic-computer@sha256:9bd4f6e215b4848e91f0dbfea75a7b227faeba96268c422d62e81a9b64d5ac92`。
+该镜像由既有 CI 从 `a9a25b1f6106a20bab4e9a4f238540512747f738` 构建；拉取后核对 revision 标签和
+43 个 driver 文件与源码一致。本地 image ID 为 `sha256:544fb0a4024b21664af710ea276947f151c2f1b32b392131e92f719b1f65d9af`，
+它与 registry manifest digest 含义不同。MCP 启动仍检查 driver v2/source/ready。
+
+合并前用该 registry digest 启动一次性容器，复用上述真实插件集成和 Node 生命周期验证，报告位于
+`docker/debug/reports/computer-merge-20260905/`。不重跑模型 benchmark；后续 Agent benchmark
+实验保留在原 worktree，未加入本次合并。正式 generation 与 profile 没有切换。
 
 构建命令：`docker build -f docker/computer/Dockerfile -t akashic-computer:driver-source-20260905 .`。
-现有镜像工作流仍可发布这个 Dockerfile。发布后更新两处 pin，再走正式插件安装/candidate 链；
+现有镜像工作流仍可发布这个 Dockerfile。后续更新镜像时核验 registry digest，再同步两处 pin 并走正式插件安装/candidate 链；
 不手改 cache。恢复使用开工备份与旧镜像 digest，profile 不迁移也不清空。
