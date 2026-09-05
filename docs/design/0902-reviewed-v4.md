@@ -716,7 +716,7 @@ Content 普通插件拥有一次内容组装；协议插件拥有自己的语法
 
 一次请求从构建 Context 到内容组装、附件导入并 append 完成持有同一协议集合的 exact generation lease。进程崩溃或 decode/import/append 失败后尚未提交的模型输出属于未接纳的临时结果，允许丢弃，不承诺从诊断原文恢复；重启后从已提交 Message 建立新请求和新协议集合，不把旧文本交给新解码器。Model owner 在 I/O 前耐久记录调用与配置要求的费用占额，在 I/O 后记录实际 usage 或计费 unknown；新请求独立计费并受剩余预算约束，不以丢弃输出清零额度。工具只有在 call Output 已提交后才执行，因此这一窗口不会隐藏已执行工具。原始模型输出若留作诊断仍由 Model owner 管理；已经提交的 provider replay facts 随 Message 保留，不能依靠可清理诊断恢复会话。
 
-两种直接调用足够：模型文本调用 `content.decode(output, protocols, references)`；已经结构化的程序直接构造 text/artifact/citation parts，并走同一附件导入与 Message 校验。普通回复、Wake、定时发送和 `message_push` 都能使用 Content；ReAct 没有专属入口。用户输入、工具结果和引用的代码不会因为经过存储或 Delivery 被再次解析。
+两种直接调用足够：模型文本在 `async with content.bind()` 中调用 `view.decode(output, references)`；已经结构化的程序直接构造 text/artifact/citation parts，并走同一附件导入与 Message 校验。普通回复、Wake、定时发送和 `message_push` 都能使用 Content；ReAct 没有专属入口。用户输入、工具结果和引用的代码不会因为经过存储或 Delivery 被再次解析。
 
 Citation 保留隐藏内部标记、清理其自有 inline 引用、显式引用列表与召回兜底。新内容区分证据：`declared` 表示模型明确声明，`retrieved` 表示实际召回候选。无显式引用时，候选可作为旧产品行为的兜底，但不能被持久记录成“模型确认用过”。召回 owner 返回结构化 reference，Citation 不扫描名字恰好叫 `recall_memory` 的任意 JSON。未知引用记录无法解析的状态；不得造出来源或静默映射成别的记忆。Akasha 决定不同证据怎样参与强化；既有已学习权重不因新标记自动重算。
 
@@ -767,7 +767,7 @@ Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。�
 | 01 合同 | 本设计、真实插件功能落点、验收和删除边界 | 无持久变化，不创建空迁移 |
 | 02 Message 类型与 Turn 能力 | 不可变 Message 合同、无状态投影普通插件；用独立调用证明分组无需执行对象 | 不改 schema，不接管旧 writer；Turn 不建表，不创建空迁移 |
 | 03 Message 日志 | 窄读取/追加/CAS、schema 与历史转换在隔离 fixture 验收 | yoyo 与新 schema 同层提交；转换已有 messages，核对 ID/seq/正文、重复执行和 crash 恢复；旧 turns 原样保留，由第 06 层接管 |
-| 04 内容与 Context | 移除共享可变 Prompt/AfterReasoning 编排；Citation/Meme 形态的普通能力样例 | 仅改变新消息内容无需重写旧消息；有配置归属迁移时随本 PR |
+| 04 内容与 Context | 提供普通 Content/Context 能力与临时内容索引；Citation/Meme 形态样例；第 06 层接入后取代共享可变编排 | 仅改变新消息内容无需重写旧消息；有配置归属迁移时随本 PR |
 | 05 Model、Tool 与资源 | 单次推理/工具独立调用、通用 Task、持久绑定、最终参数授权与 effect 恢复 | 所需 binding/receipt schema 与配置脚本随本 PR；执行前后 crash point，不盲重跑 |
 | 06 回复与消费接入 | ReAct/conversation、Akasha/compaction/记忆读者及实时协议使用新日志；接管命令、暂停/恢复 | 本层引入的旧 turns 尾部、Akasha provenance/消费 ledger 与控制状态迁移同 PR；学习状态保全 |
 | 07 Delivery 与来源 | 独立发送/重试；Scheduler/Subagent/Wake 组合公开能力；发布操作脱离父 Turn | Delivery/来源状态脚本随本 PR；已发送不重发、ACK 丢失与重启验收 |
@@ -806,3 +806,38 @@ Akasha 的旧样本、权重、向量、原 message IDs 与旧 provenance 原样
 迁移先验证已知表结构和引用，再做原生 SQLite 一致备份，固定来源 logical digest 与行数；未知同版本异构 schema、缺失关联或 digest 不符均停止且不修改权威数据。转换在单库事务中完成，保留已有 FK/附件绑定与 Session 的不复用序号；提交后复核全部旧消息正文、身份、seq、raw provenance、附件绑定以及 integrity/foreign_key_check。Yoyo ledger 在实际转换完成后落账；若转换已提交但 ledger 尚未写入，重跑先核对提交 receipt，不再次导入。数据库之外的文件发布另有耐久 receipt，不假称能靠 SQLite rollback 撤回。
 
 第 03 层删除旧 messages.content FTS 派生表及其三个触发器，原消息 rowid 保持。第 04 层由历史读取/检索能力建立新内容索引；整栈顶验收必须证明搜索可用，中间层不宣称已经接管旧检索。迁移前识别其实际 schema，不因对象名字相同就视作可删除缓存。
+
+
+## 18. 历史素材与端到端验收
+
+用户要求本栈完成更多真实数据与组合行为验收。历史记录是测试素材，旧实现不是唯一正确答案；不为通过旧新逐字比较恢复 Attempt 或旧 hook。改变可观察行为时，报告旧结果、新结果、设计理由、涉及的原始 Message IDs 和学习状态影响。
+
+```text
+hua-home 原生 SQLite 一致快照（记录实际 release 与哈希）
+                 │
+       ┌─────────┴──────────┐
+       ▼                    ▼
+旧实现隔离重放         副本运行 yoyo → 新实现隔离重放
+       │                    │
+       └─────────┬──────────┘
+                 ▼
+Turn 成员、消费次数、引用、特征、权重与恢复差异报告
+```
+
+- 每个数据库使用 native backup，传输后校验哈希、SQLite 完整性与外键；跨数据库独立快照不冒充全局同一时刻。原始副本只读保存，迁移、旧/新重放分别使用独立输出目录。真实正文与数据库不提交 Git 或 PR。
+- 固定相同历史、embedding、配置、时钟和算法版本。先比输入成员与来源，再比 Akasha 逻辑状态；文件字节相同不是唯一标准。旧实现也在隔离目录运行，不把重放写入正式 Akasha，重放不执行历史工具或发送消息。
+- `u1 → interrupt → u2 → interrupt → u3 → a` 必须由同一来源投影成包含三个输入与一个最终回答的完整 Turn；暂停/失败不产生提前学习。Akasha 实际消费只提交一次，重复通知、分页、重启和重复重放不能重复强化。
+- 在上述序列每个切点插入其他来源的 proactive、定时输入/输出及其工具结果；这些来源可以成为共同 Context，但不能切断 conversation 的学习单元或混入它的成员。单独验证各来源的完整 Turn。
+- 补充 abandon 与晚到工具结果、同一 Output 多工具乱序返回、新输入使旧模型输出 CAS 失败、终态前崩溃、学习成功但消费 ACK 丢失、插件 generation 切换、未知费用/工具/发送结果和精确暂停控制。
+- 迁移覆盖生产副本、干净空库、已知历史 schema、重复执行与中途进程退出。检查正文、ID、seq、附件、embedding、旧学习状态与迁移 receipt；未知 schema 或未决副作用明确阻止切换，不忽略或重新执行。
+- 端到端覆盖接纳 ACK、预览与持久消息同步、命令、ReAct、内容、附件、工具授权/恢复、Delivery、Wake ACK、Scheduler/Subagent、Akasha/compaction 与插件卸载/热更。组合测试使用真实存储和普通插件；受控 Model/Tool/渠道用于确定性故障注入，实际 provider 验收单独标明。
+- 每张 PR 提交前由 `gpt-5.6-terra`、`xhigh` 独立审查相邻 diff；最终再审累计行为。测试通过、独立审查、历史重放和生产验证分别报告，不互相替代。
+
+
+### 18.1 第 04 层可观察边界
+
+Content 的 `ContentSchema` 只声明内容校验；需要文本语法时用 `TextProtocol` 一起声明提示与 decoder。所有实际 view 都来自 `Content.bind()`，共享请求 generation lease；结构化程序无需伪造文本协议。
+
+Context 接收 `Materials` 中已取得的系统提示、低信任检索内容和已发布摘要。摘要只声明实际覆盖的消息前缀；Context 把完整快照和覆盖末尾 `after_seq` 一起交给 Model 的只读投影，不能先裁掉 provider 仍需要的 replay facts。Model 无法安全保留时明确拒绝该请求。系统提示只在请求 messages 中出现一次，避免不同 provider 重复加入 instructions。
+
+历史搜索使用 Context 内存 FTS 索引，正常只幂等追加已提交消息；重启按消息日志重建，不保存另一份磁盘正文或持久 cursor。控制记录不作为正文搜索，但仍参与消息身份冲突检查。源消息的显式管理删除由接入 owner 重建索引，不把缓存删除升级成源消息删除权。第 04 层不引入新的持久 schema，因此没有空 yoyo；第 03 层旧 FTS 的替代索引在此提供，实际消费者在第 06 层一次切换。
