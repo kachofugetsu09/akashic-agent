@@ -1,9 +1,15 @@
 ---
 name: computer
-description: Use the container browser and Linux desktop with persistent JavaScript bindings, accessible elements, locators, and screenshots.
+description: Read or operate browser and desktop UI when a task needs interaction, login state, visual inspection, or content that web search/fetch cannot obtain.
 ---
 
 # Computer
+
+Prefer `web_search` / `web_fetch` for information that can be retrieved without operating UI.
+Use `computer` when the task needs browser interaction, an existing login or tab, desktop controls,
+visual inspection, or when search/fetch fails or returns insufficient content. If UI interaction is
+clearly required, start here without a redundant search/fetch attempt. Prefer a suitable dedicated
+skill, connector, API, or CLI when available. Respect an explicit user request to use the browser.
 
 Use the `computer` tool for browser and desktop work. It runs JavaScript inside the existing Computer
 container, using its logged-in Chromium profile. `browser`, `agent`, `sky`, and `nodeRepl` are ready.
@@ -24,7 +30,8 @@ listed before use. macOS application AX and optional desktop audio are unavailab
    Derive indices from the latest AX state; derive selectors from observed page structure.
 2. Use `fill()` for typed controls such as dates and range sliders, and `selectOption()` for native
    selects. Do not type an ISO date into Chromium's segmented date editor.
-3. Batch related actions and their resulting observation in one call. The driver waits after input;
+3. Verify the resulting UI state before claiming success; partial content does not prove completeness.
+   Batch related actions and their resulting observation in one call. The driver waits after input;
    use page state or locator waits when loading is asynchronous.
 4. Use `sky` for native dialogs, browser chrome, and coordinate actions. Coordinates refer to the
    container's 1280 × 800 desktop. It supports click, move, drag, scroll, press_key, type_text and screenshot.
@@ -53,5 +60,4 @@ reports that the current model cannot accept images.
 `sky.get_screenshot()` returns bytes and a data URL, without a separate temporary filepath. AX state is
 currently full text; its formatting and compression are not claimed identical to the original WASM.
 
-The four legacy `browser_observe/action` and `computer_observe/action` tools remain compatibility entrypoints.
-Prefer `computer` for new work. OpenCLI remains a separate ordinary shell command and uses the same browser.
+OpenCLI remains a separate ordinary shell command and uses the same browser.

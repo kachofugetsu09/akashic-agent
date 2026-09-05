@@ -51,7 +51,7 @@ _IMAGE = (
 
 
 async def apply(ctx: Context, config: object) -> None:
-    """Register the Computer workload and its narrow MCP adapter."""
+    """注册唯一的 Computer 工具、容器和驱动连接。"""
 
     _ = config
     control_name = endpoint_name(ctx.data_root)
@@ -110,7 +110,12 @@ async def apply(ctx: Context, config: object) -> None:
         PluginToolDefinition(
             name="computer",
             description=(
-                "Run JavaScript against the persistent container browser and Linux desktop. "
+                "Read or operate browser and desktop UI in the persistent container. "
+                "Prefer web_search/web_fetch for information available without UI interaction; "
+                "use this for interactive or login-dependent pages, visual inspection, or when "
+                "search/fetch fails or cannot provide the needed content. "
+                "Prefer suitable dedicated skills, connectors, APIs or CLIs when available. "
+                "Run JavaScript with the initialized browser and desktop APIs. "
                 "Use browser.tabs, tab.ax, tab.playwright, tab.dom_cua or sky. "
                 "Bindings persist within this Session. Call nodeRepl.write(value) or "
                 "nodeRepl.emitImage(bytes) for output. Read the computer skill first."
@@ -183,13 +188,6 @@ async def apply(ctx: Context, config: object) -> None:
         McpServerDefinition(
             name="computer",
             command=("mcp_server.py",),
-            required_tools=(
-                "browser_observe",
-                "browser_action",
-                "computer_observe",
-                "computer_action",
-            ),
-            candidate_read_only_tools=("browser_observe", "computer_observe"),
             workload_env=(WorkloadEnv("COMPUTER_URL", "computer", "gateway"),),
         ),
     )

@@ -165,3 +165,36 @@ reward 为 0，与原版 Browser + Desktop 相同。最终冻结镜像复验记�
 构建命令：`docker build -f docker/computer/Dockerfile -t akashic-computer:driver-source-20260905 .`。
 现有镜像工作流仍可发布这个 Dockerfile。后续更新镜像时核验 registry digest，再同步两处 pin 并走正式插件安装/candidate 链；
 不手改 cache。恢复使用开工备份与旧镜像 digest，profile 不迁移也不清空。
+
+## 7. 单一工具入口与网页工具选择
+
+模型只使用普通插件工具 `computer`。删除四个旧 MCP 工具的声明、schema 和动作适配；
+旧工具名再次调用会显式失败，历史消息和调用记录保持原样。无需迁移 profile 或更换容器镜像。
+
+参考 `codex-desktop-rev/computer-use-plugin/unified-computer-use/resources/` 的
+`server-instructions.md`、`js-tool-description.md`、`browser-description.md` 和
+`computer-description.md`：参考项目将 CU 定义为通过持久 JS 读取或操作界面，
+优先使用已有专用 skill、connector、API 或 CLI，并在首次调用返回后按需读取 API 文档。
+该本地参考快照没有明确的 web_search/web_fetch 分流条款；以下规则是维护者确认的 Akashic 适配，
+不冒充参考项目原文：
+
+- 普通信息查询优先 `web_search` / `web_fetch`。
+- 交互、登录态、已有标签、视觉检查或桌面控制使用 `computer`；检索抓取失败或内容不足时也使用它。
+- 已明确需要界面操作时直接使用，不强制先失败一次。用户明确指定浏览器时遵从。
+- 根据实际页面状态确认结果，不把部分内容称为完整结果，不为某个网站增加专用规则。
+
+```text
+信息查询 ──→ web_search / web_fetch
+                   │ 内容不足或失败
+                   ▼
+界面操作 ──→ computer skill → computer → Browser / Desktop
+```
+
+MCP 子进程仍承接现有 WorkloadEnv 注入、v2/source/ready 检查和控制连接取消回执；
+`tools/list` 返回空列表，它不再向模型发布工具。普通插件 Context 当前没有 Workload endpoint
+读取接口，删除该进程需要另改 Core 生命周期；本次不引入这样的扩展。
+容器 HTTP 路由仍被既有 Cua benchmark adapter 和驱动集成检查使用，不以删除 Agent 工具为由
+破坏这些消费者。Dashboard 的 activity/display 和人工接管保持不变。
+
+验收复用真实 Root 与容器夹具：普通工具目录唯一入口、MCP 空目录与旧调用拒绝、
+截图直传/文字模型提示、取消释放和 Turn 标签收尾。真实模型任务另检查无需提示工具名称的发现路径。

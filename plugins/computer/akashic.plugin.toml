@@ -51,8 +51,6 @@ pids = 0
 [[mcp]]
 name = "computer"
 command = ["mcp_server.py"]
-required_tools = ["browser_observe", "browser_action", "computer_observe", "computer_action"]
-candidate_read_only_tools = ["browser_observe", "computer_observe"]
 
 [[mcp.workload_env]]
 env = "COMPUTER_URL"
