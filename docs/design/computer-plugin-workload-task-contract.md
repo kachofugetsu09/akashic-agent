@@ -414,8 +414,8 @@ WorkloadData 也不能挂正式目录；Computer candidate 只使用隔离复制
 - Gateway：`/health`、`/activity`、`/screenshot`、`/input` 和结构化 Browser route；
 - 同一 Xvnc 桌面、轻量窗口管理器、Chromium/profile 与 RFB WebSocket bridge 的启动和监督；
 - OpenCLI daemon/extension 配对和登录自动刷新；
-- 直接通过 CDP 实现的 `browser_observe`、`browser_action`，以及视觉
-  `computer_observe`、`computer_action` MCP Tool；
+- 唯一的普通插件工具 `computer`，组合 Browser 与 Desktop 驱动；
+- MCP 子进程只承接 WorkloadEnv、启动检查和驱动控制连接，不发布模型工具；
 - `opencli` Skill；Skill 只教 Agent 通过普通 `shell` 调用 CLI，不把 CLI 参数包装成 Browser Tool；
 - `conversation.tools.v1` 中的 Computer 标签；标签使用标准 noVNC RFB client，不自行模拟鼠标或键盘；
 - 人工输入经 generation-bound dashboard WebSocket 到 RFB；Agent 视觉输入经 Gateway 到同一个 Xvnc display；
@@ -435,26 +435,22 @@ OpenCLI daemon、extension 和 connectivity 可用。登录态是各站自己的
 
 ## 9. Agent 能力
 
-Browser Use 分成只读 `browser_observe` 和写入 `browser_action`。前者首版提供 `snapshot`、`get_content`、
-`get_url`、`get_title`、`screenshot` 和 `tab_list`；每次 snapshot 返回不透明 `snapshot_id`，ref 只在该快照、
-标签页和文档内有效，导航或 DOM 节点失效后必须明确报 stale。后者提供 `navigate`、基于 snapshot ref 的 `click`、
-`fill`、`type`、`press`、`scroll`、`wait`、前进后退、刷新和标签页操作。Browser Tool 直接使用 CDP，
-点击和文字输入使用 CDP 原生 Input 事件；不得转发 OpenCLI argv，也不得让模型猜 CLI 语法。
+Agent 使用 `computer` 执行持久 JavaScript，通过 `browser` 读取页面结构和操作元素，通过
+`sky` 完成桌面输入和截图。调用身份、取消、标签归属和 Turn 收尾见
+[驱动源码迁移](computer-driver-source-migration.md)。原四个 MCP 工具已移除。
 截图结果原子写入 Computer plugin-data 下的有界文件集合并返回绝对路径，统一提示用 `read_file`
 读取。`read_file` 按当前 Agent 的真实模型能力提供图片内容；不支持图片时才提示使用
 `read_image_vision`。截图工具不把 base64 当作文本返回；每次写入仍只保留最近 32 张截图。
 
-视觉 Computer Use 首版只有：`observe`、`move`、`click`、`double_click`、`drag`、`scroll`、`type`、`key`
-和 `wait`。Gateway 只接受这组固定动作和有界参数。Agent 通过 MCP 调用；用户通过完整 RFB client 直接使用
-全部鼠标按钮、移动、拖动、滚轮、普通键、组合键、连续输入和剪贴板。两条路径不建立第二套桌面、浏览器或 profile。
-
-`move`、`click` 和 `double_click` 使用 1280×800 画面中的 `x`、`y`；`drag` 额外使用同一边界内的
-`to_x`、`to_y`。
+用户通过完整 RFB client 使用桌面；Agent 通过同一个容器内的驱动操作。两条路径复用同一桌面、
+浏览器和 profile。原 HTTP 路由仍供已有 benchmark 与驱动检查使用，不作为模型工具发布。
 
 能力选择顺序：
 
 ```text
-OpenCLI Skill + shell → Browser Use → visual Computer Use → 用户完成登录
+普通信息 → web_search / web_fetch
+专用站点能力 → OpenCLI skill + shell
+界面交互、登录态、视觉检查或抓取不足 → computer skill + computer
 ```
 
 ## 10. 数据与迁移
