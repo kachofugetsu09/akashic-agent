@@ -167,11 +167,19 @@ Critical Context
 保留工具结果、路径、错误、外部 effect、execution ID、关键数值和验证证据；不得补写未
 出现的事实。
 
+旧历史摘要完成后，若当前任务还没有临时摘要，先保留当前任务全部原文并重新计算完整
+messages/tools 的长度。已同时低于软水位和硬边界时，不再生成当前任务摘要；仍超限才
+压缩已闭合的工具批次。已有临时摘要在旧历史摘要更新后仍沿原路径刷新，避免遗漏新的
+历史摘要。当前任务原文不会进入持久 checkpoint 的 source plan。
+
 当前 session 选中的模型先执行 summary；失败后使用同一个冻结 execution generation 的
 configured default 模型。两者都失败、正文为空/格式错误或 summary input 不能落入其硬
 边界时，业务调用明确阻断。summary provider request 使用 `tools=[]`、
 `disable_thinking=True`，不递归进入 business-call Gate；它仍使用自身的硬输入边界并把
 实际 runtime/model/usage 写进 checkpoint/receipt。
+摘要请求使用 `max_output_tokens=0`，由 provider 默认策略决定输出长度，不再设置 8192
+或从模型能力复制输出上限；主模型、fallback 和分块摘要使用同一规则。摘要输入容量
+校验、完整单元分块以及超窗后的错误语义保持不变。
 
 ## 6. Markdown exact source plan
 
