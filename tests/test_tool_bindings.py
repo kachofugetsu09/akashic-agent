@@ -40,7 +40,7 @@ inject = (ServiceKey("tools.v1"),)
 async def apply(ctx, config):
     class Target:
         idempotent = False
-        async def prepare(self, arguments):
+        async def prepare(self, arguments, source=None):
             if not isinstance(arguments["value"], str):
                 raise ValueError("value must be text")
             return {"value": arguments["value"].strip()}
@@ -53,7 +53,7 @@ async def apply(ctx, config):
         async def query(self, key):
             return None
     @asynccontextmanager
-    async def open_target():
+    async def open_target(state):
         yield Target()
     await ctx.require(inject[0]).register(
         ctx, name="example", description="Example target A",

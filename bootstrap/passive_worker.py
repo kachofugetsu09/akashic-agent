@@ -134,8 +134,6 @@ class PassiveMessageWorker:
     async def run(self) -> None:
         self._running = True
         try:
-            # 1. 仅重放有界 durable handoff 页，lane 准入由 MessageBus 统一持有。
-            await self._bus.recover_durable_inbounds()
             while self._running:
                 try:
                     item = await asyncio.wait_for(

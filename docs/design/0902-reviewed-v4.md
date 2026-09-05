@@ -139,7 +139,7 @@ call_ref  = { message_id, part_index }
 
 Input/Output 表示消息用途，不替代 author：应用可以提交待处理输入，人类之外的来源也可以产生 Input。工具正文是否成功由 ToolResult 表达，不从自然语言猜测。`quiet` 是生产者明确选择无可见回复；空 provider 输出不是 quiet。`failure` 只记录已观察到的失败，不谎称 Agent 生成了一段错误正文。
 
-`binding_id` 指向能力 owner 保存的不可变工具绑定，包含工具、generation、参数 schema 与授权依据；它不等于可重新解析到最新版的工具名。调用提交前确定该绑定。各内容 owner 的纯 schema 校验函数也返回本块引用的 binding IDs，无引用则返回空 tuple；日志不识别具体内容 kind，将这些引用与 ToolCall.binding_id 在提交事务中一并保存，避免 call 已落盘但 receipt 尚未 prepare 时热更丢失旧实现。执行前仍检查当前权限；旧授权记录不能绕过后来撤权。
+`binding_id` 指向能力 owner 保存的不可变工具绑定，包含工具、generation、参数 schema 与授权依据；它不等于可重新解析到最新版的工具名。调用提交前确定该绑定。各内容 owner 的纯 schema 检查返回 `ContentReferences(binding_ids, artifact_ids)`，无引用则两项为空 tuple。binding 按集合合并；artifact 严格保留本块正文中的出现次序和重复项，不额外附带无关资源。`artifact_ref` 正文只保存 ID；不可变元数据唯一归附件表拥有，reader 按消息返回完整引用。日志不识别具体内容 kind，在同一事务检查附件已 ready，并将有序引用及 ToolCall.binding_id 一并保存，避免 call 已落盘但 receipt 尚未 prepare 时热更丢失旧实现。执行前仍检查当前权限；旧授权记录不能绕过后来撤权。
 
 Control 的目标由消息自身的 Session/source 与 `through_seq` 共同确定：仅影响该来源截至此序号的未完成输入及其已提交调用，不是“执行时碰巧存在的任务”。来源 owner 校验目标属于当前可控制的前缀；旧 scope handle 只作接纳时的并发条件，不落成持久运行身份。完整控制规则见 7.4。
 
@@ -277,7 +277,7 @@ Tool 提供 `execute(key, binding, args)` 与 `execute_call(reply)` 两个入口
 
 Core 持有权限授予、资源访问和原子存储的硬边界；Tool execution、Delivery、provider、具体工具、渠道均由普通插件实现。内置插件与仓库外插件使用相同的权限、安装链和生命周期合同，不存在 builtin 专享 writer、私有业务入口或执行顺序。可信进程内插件的窄接口用于减少误用，不伪装成恶意代码沙箱；不可信执行仍须经过进程/OS 隔离边界。
 
-普通插件之间的依赖有明确公共合同，但不要求每项合同各装一个包；同一职责内的函数保持内聚。Core 不直接导入默认业务实现作为 fallback。缺少必需服务时组合明确失败；没有安装 Conversation/ReAct 时，Core 仍能提供接纳和同步消息的底层能力。
+普通插件之间的依赖有明确公共合同，但不要求每项合同各装一个包；同一职责内的函数保持内聚。Core 不直接导入默认业务实现作为 fallback。缺少必需服务时组合明确失败；没有安装自动回复程序时，来源插件仍可使用 Core 的接纳与同步能力。没有来源接纳 provider 时明确拒绝渠道输入，Core 不代替它选择来源或签发业务 writer。
 
 ### 5.2 conversation：只拥有输入响应策略
 
@@ -290,6 +290,10 @@ conversation 订阅输入和控制事实，决定何时启用默认程序、哪�
 无已知指令的正文进入默认 Agent。未知命令、拒绝、失败保留可区分结果；不能使用 `handled=true` 或空返回偷偷消费输入。无外部副作用的只读命令不必创建工具调用；有副作用的命令须使用该领域持久 receipt，同一命令重放不能重复产生效果。
 
 命令结果也有稳定提交身份，绑定原输入与 handler；无可见回复则追加 quiet。effect 已成功而回复未提交时，从领域 receipt 恢复同一结果，再按同一 message_id 提交，不能重跑副作用或追加第二份答复。
+
+入站直接调用普通来源能力，不再经过内存 inbound queue 或 `PassiveMessageWorker`。ChannelHost 从已取得的 exact snapshot 调用 `CHANNEL_INPUT`，来源插件提交 Input 后，传输 owner 完成 custody 与 ACK。Mobile 在提交前已有的耐久 handoff 继续保留：崩溃恢复使用相同身份重新接纳，Input 已存在时直接结算，不能重启模型。普通输入不再占用“直到最终回复才释放”的 passive lane 计数。
+
+来源接纳与自动回复分开安装：`conversation` 提供输入、控制和同来源 Task 准入；`reply` 追赶日志并选择默认程序。`Conversation.start(program)` 不把程序绑定在接纳对象上，关闭自动回复仍可保存输入和历史同步。这里修正原验收中“关掉 conversation”的包名说法，保留关闭自动回复而不丢输入的行为。启动的程序接收 `(task, reader, source)`；它取得 Content 与 Model 资源后自行签发 Output writer，紧接着同步登记 Task 撤权。Source 无需在同步准入中打开异步 Content 资源。
 
 ### 5.3 ReAct：只拥有循环决策
 
@@ -448,6 +452,8 @@ Tool 与 Delivery 都需要外部效果记录，但各自拥有不同状态和�
 | resume | 恢复尚未 abandon 的输入 | 先处理原调用状态，不复制调用 | 不改写它们原有状态 |
 | abandon | 明确放弃，在 through_seq 关闭该前缀 | 未开始的结算 denied/cancelled-before-start；已开始的保留真实结果或 unknown | 保持独立，不能被并入放弃范围 |
 
+默认 conversation 的唤醒策略在本层明确为：`resume` 或新的 Input 都恢复该来源尚未关闭的工作，先按当前权限恢复原 prepared 调用，再读取全部输入继续推理。暂停期间只到达 ToolResult 不会唤醒；unknown 不因新 Input 获得重试授权。这保持来源有序，不建立“已经 final，却另有旧调用等 resume”的并行工作模型。后文“保留待 resume”也包括该默认来源由新 Input 明确唤醒后的恢复。
+
 pause/failure 后到达的 ToolResult 不解除暂停；abandon 后的 late result 不进入新段，按 4.1 的 call 归属规则处理。暂停尚未开始的调用可以保留待 resume；abandon 则必须明确拒绝再启动它。新输入不会自动授权重试 unknown 效果，解除该阻塞需要工具领域的明确核对结果或新授权。
 
 UI 的 scope handle 和来源 head 前置条件在控制提交时一起核对；过期则返回 conflict，不落控制事实。旧 scope 在失去所有权后报告的失败只进入该调用诊断，不能再写当前来源的 failure。发生重启后，仅按已接纳 Control 的持久边界恢复。若产品以后需要“忽略所有后续输入，直到解除”的整个来源开关，它属于来源插件配置；不能把一次 /stop 偷换成这种模式。
@@ -560,7 +566,7 @@ UI 的 scope handle 和来源 head 前置条件在控制提交时一起核对；
 
 普通 conversation 插件消费日志并启动默认程序；渠道在接纳后 ACK，发送由 Delivery 独立消费。接管停止/继续、命令、流完成、容量、来源 head CAS 和资源收束。
 
-退出：外部插件能替换默认 conversation/Agent；关掉 conversation 后入站保存和历史同步仍可工作；关掉 Akasha 不影响回复送达。发送重试不调用模型。
+退出：外部插件能替换默认 conversation/Agent；关掉默认 reply/ReAct 后入站保存和历史同步仍可工作；关掉 Akasha 不影响回复送达。发送重试不调用模型。
 
 ### F. 收回旧运行身份与特权链
 
@@ -748,7 +754,7 @@ Observe 不依靠最终 Turn 事件夹带整份 context/tool/model 状态。Mode
 
 `turn_projection.project(messages, source)` 对一个明确、完整的日志前缀返回分段引用。返回值只有来源、边界、状态、Input/Output 成员 message IDs 和实际工具观察的 `(call_ref, result_message_id)` 引用；正文从 Message 读取。工具是否应当结算后才写 finish 由生产者保证，投影不复查执行授权或结算规则。插件没有数据库、后台 worker、订阅 cursor、学习队列或新的 Turn 身份。分段版本是算法合同，不是用户消息字段；它必须固定算法 artifact digest 和输入 schema，不能由可复用的显示版本号或 latest 指针代替。
 
-Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。它自己保存 `(projection_version, ending_message_id)` 的已应用事实、消费进度、向量和反馈，并以普通 durable binding 保留该 projection artifact；离线重建按此身份解析。旧 artifact 缺失时明确停止对应重建，不能自动换成新版；更换规则要先比较样本并显式迁移学习状态。处理成功及其进度在 Akasha 自有事务内一致提交。其他需要逻辑 Turn 的消费者可复用同一服务，各自拥有进度；不要求只需要 seq 的读者使用 Turn。
+Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。它自己保存 `(learning_binding, ending_message_id)` 的已应用事实、消费进度、向量和反馈，并以普通 learning binding 保留学习服务及其显式依赖的 projection artifact；离线重建按此身份解析。旧 artifact 缺失时明确停止对应重建，不能自动换成新版；更换规则要先比较样本并显式迁移学习状态。处理成功及其进度在 Akasha 自有事务内一致提交。其他需要逻辑 Turn 的消费者可复用同一服务，各自拥有进度；不要求只需要 seq 的读者使用 Turn。
 
 分页必须包含待处理的 open 前缀或由消费者保存足够的消息引用后重新读取；不能把每一页开头误当新 Turn。投影本身不保存这些引用。若删除管理使已读成员失效，由明确的管理结果通知消费者，不能让投影通过读到空内容猜测删除已成功。
 
@@ -841,7 +847,7 @@ Turn 成员、消费次数、引用、特征、权重与恢复差异报告
 
 Content 的 `ContentSchema` 只声明内容校验；需要文本语法时用 `TextProtocol` 一起声明提示与 decoder。所有实际 view 都来自 `Content.bind()`，共享请求 generation lease；结构化程序无需伪造文本协议。
 
-Context 接收 `Materials` 中已取得的系统提示、低信任检索内容和已发布摘要。摘要只声明实际覆盖的消息前缀；Context 把完整快照和覆盖末尾 `after_seq` 一起交给 Model 的只读投影，不能先裁掉 provider 仍需要的 replay facts。Model 无法安全保留时明确拒绝该请求。系统提示只在请求 messages 中出现一次，避免不同 provider 重复加入 instructions。
+Context 接收 `Materials` 中已取得的系统提示、低信任检索内容和已发布摘要。摘要只声明实际覆盖的连续消息区间；Context 把完整快照、覆盖末尾 `after_seq` 和摘要引用交给 Model 的只读投影，不能先裁掉 provider facts。明确提供摘要引用时，从摘要开始新请求；只接续同一摘要之后成功 Output 的 opaque state。只给 `after_seq` 不授权清空 replay，无法安全接续时明确拒绝。系统提示只在请求 messages 中出现一次，避免不同 provider 重复加入 instructions。
 
 历史搜索使用 Context 内存 FTS 索引，正常只幂等追加已提交消息；重启按消息日志重建，不保存另一份磁盘正文或持久 cursor。控制记录不作为正文搜索，但仍参与消息身份冲突检查。源消息的显式管理删除由接入 owner 重建索引，不把缓存删除升级成源消息删除权。第 04 层不引入新的持久 schema，因此没有空 yoyo；第 03 层旧 FTS 的替代索引在此提供，实际消费者在第 08 层一次切换。
 
@@ -870,7 +876,7 @@ Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在
 - 代码归档保留 manifest 和 requirements；`.venv`、`node_modules` 属于运行环境，不作为代码归档。第 06 层只分开代码/cwd 与安装环境，不打开历史外部 runtime。第 07 层已由安装 owner 在最终路径创建并固定 Python 环境；历史调用按所选目标校验环境引用，缺失或不匹配明确失败。当前 installed cache 不参与历史环境恢复，具体边界见下一节。
 - binding 从所需 Service 的实际 provider 出发，只向上收集插件与子 Fiber 的声明依赖。Content、Tool 等注册表由自己选择目标的注册 Context，再将真实 Context 交给 binding；Core 校验其属于当前所选 Root 的存活 Fiber，随后将其 owner 纳入同一闭包。调用者不拼 plugin ID，也不恢复整个 fleet。目标选择和 definition 身份属于 registry 的不可变 metadata；第 07 层完成这些具体注册表消费者接入。
 - 配置正文与 revision 来自同一次读取。归档保存可复建投影和已捕获的静态启用选择，不重算当前环境下的 `is_active`。日期和 CredentialRef 使用明确的值编码；凭据解析仍通过其 owner 的 revision fence，不在归档中存 secret 原文。
-- 打开历史 binding 只装配其闭包和 Root 本地注册表，不装正式 Session、Turn、timer、Delivery 或 Undo 端口，不执行 `runtime.started`。尚依赖旧业务端口的目标明确不可恢复；Akasha 等在第 08 层移除旧依赖后接入，不能用空数据或 candidate 兼容壳冒充成功。
+- 打开历史 binding 只装配其闭包和 Root 本地注册表，不执行 `runtime.started`。第 08 层允许归档目标显式声明所需的通用 Message 读写、owner state、Bindings、Tasks、Timer 和 Artifact 读口；未声明的能力不可用。旧 Session、Turn、Delivery 和 Undo 业务端口仍不进入归档。纯注册不打开目标，实际资源由目标的 open 和 scope 释放；不能用空数据或 candidate 兼容壳冒充恢复成功。
 - scope 退出先停止接纳新 lease，等待保留的 lease 排空，再在取消保护中释放 Root 和模块。它管理真实运行生命周期，不是任意 Python 对象的可撤销沙箱；服务必须在 `async with` 内使用。具体 Tool/Model/Delivery/MCP facade 在执行入口检查 exact scope 和目标，这是各资源 owner 的职责，不增加透明代理。
 - 本层复用第 03 层的 `bindings`/`message_bindings` 表，不引入 SQL schema 或配置迁移，因此没有空 yoyo。binding descriptor 与 archive 都是不可变恢复材料；Message 对它的引用仍与正文同事务提交，不持久保存另一份 active claim。
 
@@ -911,3 +917,84 @@ MCP 的公开 open 要求调用 Context 是该声明的实际 owner；其他插�
 本层没有新的 SQL 或配置 schema，Tool receipt 复用第 05 层 owner_records，因此不增加空 yoyo。环境新增、保留及恢复材料见[状态地图](persistence-state-map.md)的第 07 层。没有上线过的第 06 层 component v1 明确拒绝，不增加临时格式兼容壳；整栈一起上线。旧安装 cache 缺少环境引用时，显式重装发布新的代码 artifact 与引用，旧 cache 不被原位改写；普通读取不会偷偷安装依赖。
 
 本层验证了实际归档、Python 环境、MCP 子进程、工具 receipt 和 provider 请求投影。ReAct、conversation、Akasha 及现有 Computer 工具注册仍待第 08 层接入，Delivery 与各来源待第 09 层切换；本节不代表完整被动链路已经运行在新组合上。
+
+### 17. 第 08 层的消费与恢复约束（实施中）
+
+Akasha 不再另建 Turn 内容表或 SQL 消费表。现有学习图本来按完整 SQLite 快照发布，`metadata.consumer_state_json` 随图保存版本、旧学习前缀身份、切换时各 Session head，以及已应用的 learning binding、结束消息、成员/观察引用和来源 digest。learning binding 同时固定学习代码、实际投影依赖、文本规则和 embedding 空间；不再并存一个可与它矛盾的投影版本字段或无可执行物的 policy 名称。数组位置就是旧前缀之后的图节点位置，不再复制 node ID 或一份跨 Session 序号。消费状态不保存消息正文；它属于 Akasha，Turn Projection 仍然只有无状态读取函数。
+
+旧前缀由固定旧索引及完整学习材料 digest 验证，恢复直接装载已学习图，不重复 `MemoryCycle.commit`。新后缀恢复必须打开原 learning binding，从结束消息对应的完整日志前缀重投影，逐项校验成员、观察和 digest，再使用固定消息 embedding 还原临时学习材料。缺失 artifact、来源、向量或版本不一致都停止恢复；不存在自动换新投影、自动重嵌入或自动重学。默认问答学习规则接纳有非空输入和最终回答的 complete 样本；quiet、没有输入的通知与 open/abandoned 仍可读取，但不成为普通问答节点。来源选择由 Akasha 配置，不在 Core 固定 proactive/passive 名称。
+
+图与消费进度在同一候选文件中完整校验，文件 fsync 后 replace，再 fsync 目录。发布发生错误时当前消费者停止服务；它不能仅回退内存来声称文件未提交。重新读取耐久快照后决定是否已经消费，重复结束消息不重复强化。旧 writer 不得覆盖已有消费状态的图。普通程序只使用消费者读取/提交接口，不获得任意数据库改写能力。
+
+本层 yoyo `20260905_04_akasha_consumption` 在安装锁内验证真实 schema 谱系、旧学习图和旧索引，创建可恢复 SQLite 备份，在副本仅增加切换元数据，验证学习图逻辑 hash 与旧索引均不变后发布。切换记录本身允许“文件发布成功、yoyo 未落账”后的幂等重试。`20260905_05_message_embeddings` 接管已有消息向量表；旧库缺表时先备份再建表，不改已有向量。新库由 MessageLog owner 初始化同一 schema，现有库不能借普通启动绕开 yoyo。
+
+放弃工作保留聊天正文，但请求投影剥离该来源未结束区间里的工具协议、model facts 和旧 opaque continuation。此前已完成的调用/结果仍然配对；其他来源按各自的放弃边界处理。晚到结果继续留在日志，不混入新段。未启动调用可由 Tool 的普通拒绝能力提交 denied，且无需打开旧可执行物；已有执行先排空并保留真实结果，只有 start 而无可确认结果时不能伪称 denied。
+
+实际程序组合已验证 Content 检查器覆盖工具结果与最终 Output 的提交；ReAct 建立子任务时显式转交 exact RuntimeScope，不允许靠继承 ContextVar 冒用权限。Output 写权随来源任务撤销，已开始工具的 ToolResult 写权保留到真实结算。普通工具执行仍沿原有取消合同；新 Input 或 Control 在取消通知到达前，也会阻止尚未开始的旧效果。
+
+这些条目还在接线和验收中，不代表第 08 层可以单独运行于生产。整栈仍须完成真实 ingress、读者、Delivery 与其他来源切换以及最终旧链路删除。
+
+工具需要调用出处时，`prepare(arguments, CallSource | None)` 只取得已提交 ToolCall 的不可变 Session 前缀和 CallRef。来源和上界由消息本身推导，不重复保存字段。独立调用没有 CallSource；目标不拿 MessageReader、writer 或 Task。所有影响实际调用的隐式参数必须在 prepare 解析为最终参数并随 prepared receipt 固定；invoke/query 不读取当前 Session，重启也不重新 prepare。
+
+
+反馈工具的最终参数保存真实 Message ID；旧 `current_user_message` 仅是工具输入别名，按已提交调用的前缀解析为最后一个同源 Input。反馈目标从已发布 Consumption 与固定旧索引读取，所有多输入成员映射到同一图节点。未知目标、遗忘尚未学习的当前输入和同节点相反动作在准备阶段返回可修正的工具 error；该结果与 done receipt 一次提交，没有 start 或外部调用。一个 Output 中的反馈请求联合检查，因此不必读取后来接纳的 Input 或等待同批 ToolResult。若同批反馈带参数转换贡献，原始请求不足以证明最终联合语义，明确要求分开调用；普通单次调用仍执行已固定转换。
+
+新图的 embedding 空间不另存第三份字段：旧图的模型身份来自固定旧索引，新后缀来自原 learning binding，维度来自真实向量。恢复在每个 binding 的材料还原前核对；在线在任何 embedding 调用或写入前核对。不同模型即使维度相同也不能混进一张图；不匹配必须走单独的显式重建合同。
+
+实际查询由 Akasha 的 `recall:*` OwnerStore 记录拥有，与 `cycle.recalls` 的学习读出证据分开。后者允许因图推进重算，不能冒称曾出现在 Prompt 中。新记录保存原学习绑定、图版本、context 前缀或实际 CallRef、筛选参数、按结果顺序排列的完整学习成员引用与分数；`presented_message_ids` 另保存预算内实际呈现的消息，Citation 只能从这份材料取得本地引用证据；没有 Message 来源的独立程序查询保存自己的 key 与 query 文本。查询完成并发布记录后才能返回 Materials.references；零命中也有查询事实。Citation 的 `retrieval_ref` 引用这份记录，continue 与 complete 都不依赖稍后的学习提交。记录表示实际查询，Citation 表示本地材料关联；目前 Model 仅记录 request digest，不能据此独立证明具体材料已发送给 provider。新查询记录使用已有 owner_records，因此没有空 yoyo；旧学习表与索引继续由本层 04 迁移保留。实际召回、Context 材料和归档 recall 工具已在候选入口接通；正式入口切换仍须完成本层其余功能与累计验收。
+
+
+消息运行对象已将 Context 查询与学习接在同一个串行 owner 上。查询使用调用者固定的完整 Message 前缀，多输入共享学习阶段的文本与向量聚合；已有消息向量只读，缺口先补齐。图读取不推进学习；先按预算构造 Materials，再将命中成员与实际呈现成员一次保存，发布成功后才返回引用。零命中仍保存真实查询记录。关闭自身被取消时，也先排空查询线程并归还 writer，之后才传播取消。
+
+归档召回所需的读取路径先用 SQLite 原生备份固定临时副本，再复用原 learning binding 的完整恢复校验。它不抢正式 writer、不打开模型或重学历史，调用者只拿副本图与消费出处。正式 writer 在读取期间继续发布不会改变该副本；缺图、缺出处或缺归档不能降级为空图。临时副本在读取作用域退出后清理，不减少正式学习状态。归档 recall 工具的 prepare 固定学习 binding、模型选择和呈现预算。插件同名配置由 Manager 一次读取并随 binding 归档；重启、当前配置变化或源码移除后，invoke 仍读取原图和原规则，query 只恢复原查询材料。候选入口仅在正式启动事件取得学习 writer，打开归档闭包不会启动第二个学习运行。
+
+
+候选 Inspector 导航读取真实查询记录及其原 Message，命中成员和预算内实际呈现分别标记。移动 DTO `akasha.queries.v1` 使用有明确截断标记的文本预览，保留每项命中、全部成员和顺序；完整编码仍超过 192 KiB 时明确失败，不用丢掉尾部来伪造完整结果。UI 回调只持有启动时固定的读取函数和 MessageCatalog，不在线程池申请运行权限、调用 embedding 或重算学习图。当前列表仍读取该 owner 的全部查询记录后排序，第一页成本随查询总量增长；本层没有为显示新增一份并行持久索引。旧学习诊断、本轮召回卡片及桌面接线还须按各自事实来源迁移，不能把导航 Inspector 通过当作这些功能完成。
+
+### 08：摘要缩减与回复请求的接入进度
+
+候选回复链已把缩减回调归入 `ContextMaterials` 的唯一 `summary_source` 授权。一次请求只取得一遍 Prompt、检索正文和引用；摘要 owner 只返回新的已发布 `Summary`，不能重写其他材料。Context 仍是纯组装器，本地容量错误携带已构造的完整请求。ReAct 先询问软水位或本地超限缩减，真实 provider 返回容量错误后至多强制缩减并重试一次；没有缩减进展时保留原错误。
+
+`None` 表示保留原摘要；同一引用不能换正文或来源；只换引用而正文、来源都不变不算缩减。耗时缩减结束后，普通回复程序再次核对新输入与任务状态，避免通知尚未送达时继续旧 provider 请求。当前模型和材料的原 binding 作用域覆盖整个过程。相关 40 项测试通过，独立 Terra/xhigh 子范围评审通过；正式 compaction 入口尚未切换。
+
+新 `SummaryRecords` 候选存储使用 compaction 自己的 `OwnerStore`，同事务创建不可变摘要与推进 Session head。它保留完整来源 ID、parent/generation、正文、实际模型调用 ID 和生成条件；同一出处只能幂等重放相同内容，旧 parent 无权覆盖新 head。`compaction.summaries.v1` 只按 binding 中固定的 `record_ref/session_id` 解析原记录并检查父链，没有发布或模型调用权。候选归档测试证明：head 推进、进程重启、当前源码移除后，仍读取原摘要而非当前 head。
+
+候选生成器保留完整近期分组；跨来源交错不会切开 call/result。Context 和生成器共用已结算或同来源明确放弃的前缀判断，abandon 无须伪造 ToolResult。摘要请求按模型容量分批，provider 拒绝时只减少本批完整分组；单组过大明确失败。可恢复的生成错误才使用当前 execution 已固定的 DEFAULT，配置或请求合同错误直接传播。正式 shell adapter 接线前仍须补齐活跃 execution 的原文保留，不能只凭摘要提示替代旧合同。
+
+当前 open Turn 的 Inputs 由现有 TurnProjection 选定，摘要覆盖它们后仍在本次请求中按原 seq 呈现，并读取原 Artifact；旧输入、其他来源输入及工具协议不重复。摘要覆盖所选近期窗口中的连续区间，不回填首次窗口之前的旧历史，也不另存一份 tail 正文。新的摘要引用明确开启 fresh 请求，原 opaque 留在日志；成功 Output 同时保存 `model.facts` 和实际 `context.summary` 后，后续同摘要请求可以接续自己的 continuation。直接只传 cutoff 的旧调用保留拒绝不明 opaque 的边界。
+
+成功模型 Output 的 `continue` 与 `complete` 都随正文原子追加实际使用的摘要 binding；普通 Input 没有该内容 grant。失败 provider 或未提交 Output 不产生使用记录。候选 Markdown 消费者在启动后跟随这些消息，按摘要出处复用既有 before-image/draft/applied receipt。若某个 parent 摘要从未被使用，后续使用 child 时仍从最近已写入祖先之后取完整原文，不遗漏 parent 覆盖的事实。恢复测试证明 Output 先提交后停机可以补写；MEMORY 已写而 SELF 失败，或 SQLite 准备只写了一部分时，重启从完整 model draft 补齐 order 与两份 document draft，不重新调用模型。进度从既有双文件 applied receipt 派生，并核对同一父链；迟到的旧 generation 不会在已应用 child 之后重写档案。文件锁使用可取消的非阻塞等待，等待中与持锁时取消都关闭句柄。
+
+当前真实候选默认回复已验证“生成并发布摘要 → 业务模型 → 工具结算 → 最终回答”，两次成功响应保留同一摘要引用，所有旧 Message 原文不变。请求只发送摘要正文和 binding，完整来源 IDs 留在 owner 记录中，避免长历史身份列表再次撑满窗口。本子范围 90 项相关回归通过，目标源码类型检查无错误和警告；独立 Terra/xhigh 评审的 P1 已清零。旧 Markdown 入口原有 18 个类型 warning 不在此零告警范围内。本文的候选进度不等于第 08 层完成：旧 ledger/prepare/receipt 迁移、新 programmatic 来源的投影资格、活跃 execution 保留，以及正式入口切换仍待整体验收。
+
+
+摘要模型材料已补齐迟到结果过滤：按完整 Message 快照中的实际 ToolCall、同来源 abandon 与 `through_seq` 判定；控制事实在上一代摘要范围内时同样有效。只有放弃之后才到达的对应 ToolResult 正文被排除，其他来源的观察保留。原始日志、摘要来源 ID 范围和近期分组不变。相关摘要、默认回复与归档记录 17 项回归通过，两个目标模块类型检查无错误和警告；独立 Terra/xhigh 对本子边界复核 PASS。Markdown 随后的原文消费也使用完整快照的同一迟到结果过滤；实际双文件投影测试证明迟到正文不进入模型或档案，而原消息保留。
+
+**首次范围已确认（2026-09-06）：** 用户要求取最近的 `<= 阈值` 窗口。Context 估算完整业务请求，包含系统材料、检索、工具与当前输入，并同时检查输出预留后的硬边界；从最近完整单元逐步增加，下一单元使其越界就停止。已完成 Turn 及跨来源交错的重叠区间不能拆开；open 工作的已结算工具批次仍可按既有合同压缩，当前 Input 原文重呈。`Summary.source_message_ids` 定位实际连续区间，不增加重复的 start_seq；子代必须同起点且严格扩展。窗口之外的更早消息既不进入摘要模型，也不进入业务请求，但保留在原始日志。
+
+旧 `session_compactions` 的首代可能只覆盖近期窗口，后续行保存增量；旧 v4 receipt 也没有新 `model_call_ids` 或成功 Output 的 `context.summary` 使用证据。因此不能自动将旧行发布为新摘要 head，或虚构模型调用与使用记录。旧 ledger、prepare 与 receipt 保持恢复证据，转换暂留代码 TODO。用户同时授权：后续未决语义保守保持原部分，写 TODO 与记录后继续独立工作；本次先完成仓库内重构及全部 draft PR 的审阅准备，外部插件源码迁移另行处理。
+
+
+历史记忆排除已核对到现行事实：0041 及 `20260826_01_migrate_turn_effects` 把旧排除转换为每条原消息的 `effects.post_commit=suppress`；Message 迁移将原始 extra 保存在 `history.provenance`。已退役的 Session 标记与 scheduler 前缀规则不得重新进入 runtime。当前默认来源选择与 Akasha 切换 head 防止常规历史重学，但 operator 允许其他来源、或旧 open 输入跨切换边界闭合时，仍须由学习规则核对整个样本；Markdown 也不能只删 suppress 行后学习同一旧工作单元的其余正文。Content 已提供严格的历史原文 decoder，验证已知 schema、原始 extra digest 与重复 JSON 字段，再复用现行 effects 语义；不恢复旧字段。Akasha 和 Markdown 均按完整成员排除，Akasha 在 embedding 之前拒绝；恢复已学习样本也核对同一资格。Markdown 空资料不调用模型或制造 applied receipt，后续有真实资料的子代仍能消费。新的 programmatic 来源准入是另一项待验收合同，历史 decoder 不能代替它。
+
+
+近期范围收尾验证：8 组相关测试在历史 decoder 接入前为 70 项通过；独立复核后相同集合含新历史用例为 75 项通过，近期范围概念 Gate PASS。历史排除与 Markdown 迟到结果的专项集合 30 项通过，3 个目标模块类型检查无错误和警告。以上均是第 08 层的分项证据，整层命令接入、旧 turns 保全以及最终累计 Gate 仍须完成。
+
+
+压缩触发后的失败由摘要 owner 明确抛出：没有合法近期窗口、不能满足 raw tail 保留量、没有摘要资料、没有降低请求容量，或重建后仍超过软水位/硬边界，均不发布新的摘要 head、不调用业务模型。摘要模型可能已有真实调用账，它作为未被使用的审计事实保留。正常回复链覆盖有合法切点、硬容量无切点、仅软水位无切点和摘要后仍超水位四种情况；不在通用 Context 或 ReAct 中写入 compaction 特判。
+
+
+### 08：命令与旧执行的迁移进度
+
+conversation 的 `/stop` 在同一 Task 准入回调中选择当前 handle、提交 pause 并撤权；返回前等待原工作排空。重复停止不把后来接纳的新 Input 再次暂停。命令匹配发生在默认回复打开模型、材料与工具之前。不可变 command intent 只保存原 Input 与 handler binding，结果正文只在稳定身份的 Output 中存在；`CommandInvocation.message_id` 供领域 receipt 固定调用身份。只读 handler 可声明 `read_only`；带副作用的恢复只能使用原归档 handler 的 `recover` 查询领域回执，缺回执时明确失败，不能重跑。暂停和失败保留恢复意图，abandon 阻止后续调用；原 intent 与领域证据不删除。多条待恢复命令按 Input.seq 结算，旧结果不能关闭较新的输入。空成功回复以 quiet 提交。候选 Akasha 保留 `/akasha_reindex` 名称并明确报告暂不可用；固定旧规则的重建转换仍为 TODO，不自动重学。
+
+`20260906_01_turn_messages` 只在隔离副本验收。迁移保存旧 turns 每行全部 nullable 标量及原始 JSON 文本为 `history.record`，由独立 history source 发布 quiet；默认模型内容投影不读这种审计记录。旧 messages、turns、向量与附件对象不改写或删除，原附件关系只允许增加新 Input 的引用。新增 `history.turn_input` 保留已核对的旧 item 身份与 metadata，历史 effects 排除仍由 Content owner 解读。
+
+恢复来源的证据比旧 Turn metadata 更严格：旧 generic Control 客户端可以填写 `channelMessageId/channelSnapshotId/channelGenerationId/channelBindingToken`，所以这些字段齐全也不能证明渠道接纳。当前仅接管每个 USER_MESSAGE 都有同 Session/client 身份的独立 `inbound_handoffs`、正文及 channel/chat/sender、metadata 和 media 一致、ordinal 连续且精确 Message 引用无冲突的 open 链。缺少独立证据或旧媒体没有明确映射时完整归档并记录原因。任一可续接链仍含旧 toolCall 时，因现行 status/resultPreview 不是领域 terminal receipt，迁移停止并报告原 record/item；这项恢复合同继续保留 TODO。
+
+Input 映射、必要的新 Input、归档、pause 与 manifest 在单个 SQLite 事务内提交。既有已映射 Message 保持原 legacy source；只有迁移 writer 可以把 conversation pause 截止固定在对应的旧全局 seq，普通 Conversation.control 仍要求同来源。迁移前创建并校验 SQLite 原生备份，提交前核对旧正文、身份、原始 JSON、向量、附件和外键；提交成功而 yoyo 尚未落账时，按 manifest 核对同一批 Message，不能重复分配 seq。本轮已验证事务提交前故障全回滚、提交后中断幂等恢复、未知 schema 和原记录损坏拒绝；这仍是仓库内候选证据，正式 workspace 未运行迁移。
+
+
+Channel 接纳以 Input 原子提交为边界，Core 启动在全部渠道完成 start 后重放 durable handoff，不依赖旧回复 worker。恢复按 `(created_at, handoff_id)` 扫描有限页，跳过仍在处理的 exact owner；单行失败释放本页尚未执行的恢复 claim，保留原始交接记录。已提交 Input 重放复用原身份与 seq，只完成传输清理，不重跑回复。提交前取消保留原始附件引用，提交后取消等待删除交接记录与 lease 释放；清理暂时失败后关闭进程仍保留 durable row。旧 BUS/LANE/LOOP 测试替换关系见测试与 Gate 清理账本，公开 Mobile receipt 场景同时覆盖新 Channel 输入与独立回复消费者。正式 Core 的唯一 MessageLog 生命周期和全部客户端读取切换仍属第 10 层，当前 fixture 证据不冒充正式启动验收。
+
+第 08 层交付前核对远端 main `31136520`：摘要请求同步 `e17cb95f` 的 provider 默认输出长度合同，不再添加旧 8192/model-cap 输出上限。当前批准的单个 Summary 与近期窗口模型不恢复旧引擎的 persistent/temporary 双摘要。其余 Host Bridge、Computer 与界面更新在最终栈顶整合并重新验收，已发布分支不重写历史。

@@ -5,6 +5,7 @@ import hashlib
 import os
 import threading
 from pathlib import Path
+from dataclasses import asdict
 
 import pytest
 from PIL import Image

@@ -3,122 +3,25 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Awaitable, Callable, Hashable, Mapping
-from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from collections.abc import Hashable, Mapping
+from typing import cast
 
-from agent.plugin_composition.tasks import Task, Tasks, TaskSlot
+from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from session.log import (
-    MessageReader,
-    MessageWriter,
     OwnerRecord,
     OwnerStore,
     OwnerTransaction,
 )
 from session.message import (
-    CallRef,
     ContentPart,
-    Output,
-    ToolCall,
     ToolResult,
     freeze_json,
 )
 from session.message_codec import json_value
 
-Outcome = Literal["success", "denied", "error", "unknown"]
-
-
-@dataclass(frozen=True, slots=True)
-class Result:
-    outcome: Outcome
-    parts: tuple[ContentPart, ...]
-
-    def __post_init__(self) -> None:
-        if self.outcome not in {"success", "denied", "error", "unknown"}:
-            raise ValueError("工具结果状态无效")
-        parts = tuple(self.parts)
-        if any(not isinstance(part, ContentPart) for part in parts):
-            raise TypeError("工具结果必须是内容块")
-        object.__setattr__(self, "parts", parts)
-
-
-@dataclass(frozen=True, slots=True)
-class MessageReply:
-    """已获授的调用结果写入位置；独立程序调用不需要它。"""
-
-    message_id: str
-    call_ref: CallRef
-    reader: MessageReader
-    writer: MessageWriter
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.message_id, str) or not self.message_id:
-            raise ValueError("工具结果 message_id 不能为空")
-        if not isinstance(self.call_ref, CallRef):
-            raise TypeError("工具结果必须引用 CallRef")
-
-    def request(self) -> ToolCall:
-        """直接读取已提交请求，调用者不能另外指定 binding、参数或执行 key。"""
-        if self.reader.session_id != self.writer.session_id:
-            raise ValueError("结果 reader 与 writer 的 Session 不一致")
-        message = self.reader.get(self.call_ref.message_id)
-        if message is None or not isinstance(message.body, Output):
-            raise ValueError("工具调用消息缺失")
-        if self.call_ref.part_index >= len(message.body.parts):
-            raise ValueError("工具调用位置不存在")
-        call = message.body.parts[self.call_ref.part_index]
-        if not isinstance(call, ToolCall):
-            raise ValueError("调用引用不指向 ToolCall")
-        return call
-
-    def check(self, state: OwnerStore) -> None:
-        state.check_access(self.reader, self.writer)
-        self.writer.check(ToolResult(self.call_ref, "unknown", ()))
-
-    def read(self, pointer: object) -> Result:
-        """按持久指针读取正文，不在工具回执中保留第二份结果。"""
-        if not isinstance(pointer, Mapping):
-            raise ValueError("工具结果指针损坏")
-        value = cast(Mapping[str, object], pointer)
-        if (
-            set(value) != {"message_id", "seq"}
-            or value["message_id"] != self.message_id
-        ):
-            raise ValueError("工具结果指针不匹配")
-        seq = value["seq"]
-        if type(seq) is not int or seq < 0:
-            raise ValueError("工具结果序号无效")
-        messages = self.reader.read(after_seq=seq - 1, through_seq=seq, limit=1)
-        if len(messages) != 1 or messages[0].message_id != self.message_id:
-            raise ValueError("工具结果消息缺失")
-        body = messages[0].body
-        if not isinstance(body, ToolResult) or body.call_ref != self.call_ref:
-            raise ValueError("工具结果不属于原调用")
-        return Result(body.outcome, body.parts)
-
-
-class Denied(Exception):
-    """授权 owner 明确拒绝当前最终参数；没有发生本次调用。"""
-
-
-class BoundTool(Protocol):
-    @property
-    def idempotent(self) -> bool: ...
-
-    async def prepare(
-        self, arguments: Mapping[str, object]
-    ) -> Mapping[str, object]: ...
-
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result: ...
-
-    async def query(self, key: str) -> Result | None:
-        """查询原调用；None 只表示无法确定，不能解释为没有效果。"""
-        ...
-
-
-OpenTool = Callable[[str], AbstractAsyncContextManager[BoundTool]]
-Authorize = Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object]]]
+from plugins.tools.api import (
+    Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
+)
 
 
 class ToolExecution:
@@ -127,7 +30,7 @@ class ToolExecution:
     def __init__(
         self,
         state: OwnerStore,
-        tasks: Tasks,
+        tasks: TaskAdmission,
         open_tool: OpenTool,
         authorize: Authorize,
         *,
@@ -157,6 +60,40 @@ class ToolExecution:
             separators=(",", ":"),
         )
         return await self._execute(key, call.binding_id, call.arguments, reply)
+
+    async def deny_call(self, reply: MessageReply, reason: str) -> Result:
+        """结算不再获准启动的调用；已有执行先排空，崩溃后的 start 不能伪称未发生。"""
+        self._state.check_access(reply.reader, reply.writer)
+        call = reply.request()
+        key = "message:" + json.dumps(
+            [reply.call_ref.message_id, reply.call_ref.part_index],
+            ensure_ascii=False, separators=(",", ":"),
+        )
+        fingerprint = _fingerprint(call.binding_id, call.arguments, reply)
+
+        async def deny(task: Task) -> Result:
+            record = self._record(key, fingerprint)
+            if record is not None:
+                if record.value["phase"] == "done":
+                    return reply.read(record.value["result"])
+            reply.check(self._state)
+            if record is None:
+                record = self._save(key, None, {
+                    "version": 1, "request": fingerprint, "binding": call.binding_id,
+                    "phase": "prepared", "arguments": call.arguments,
+                })
+            outcome: Outcome = "unknown" if record.value["phase"] == "started" else "denied"
+            return self._finish(key, record, Result(outcome, (ContentPart("text", reason),)), reply)
+
+        def admit(slot: TaskSlot) -> Task:
+            return slot.current if slot.current is not None else slot.start(deny)
+
+        task = await self._tasks.admit((self._task_key, key), admit)
+        # 已经跨过 start 的 owner 不因放弃而被强杀，真实结果仍由原调用结算。
+        result = cast(Result, await task.join())
+        if self._record(key, fingerprint) is None:
+            raise RuntimeError("工具结算缺少回执")
+        return result
 
     async def _execute(
         self,
@@ -203,16 +140,8 @@ class ToolExecution:
         reply: MessageReply | None,
     ) -> Result:
         """恢复先查回执；最终授权后先落盘 start，再进入真实工具。"""
-        record = self._state.read(key)
+        record = self._record(key, fingerprint)
         if record is not None:
-            if record.value["version"] != 1 or record.value["phase"] not in {
-                "prepared",
-                "started",
-                "done",
-            }:
-                raise ValueError("工具回执版本或阶段无效")
-            if record.value["request"] != fingerprint:
-                raise ValueError("同一工具 key 的 binding 或参数不一致")
             if record.value["phase"] == "done":
                 return (
                     _read_result(record.value["result"])
@@ -226,7 +155,14 @@ class ToolExecution:
             async with self._open_tool(binding_id) as tool:
                 # 2. prepare 的最终参数只固定一次，恢复不重新随机化或改写。
                 if record is None:
-                    final = freeze_json(await tool.prepare(arguments))
+                    source = None if reply is None else reply.source()
+                    try:
+                        final = freeze_json(await tool.prepare(arguments, source))
+                    except InvalidArguments as error:
+                        return self._finish(
+                            key, None, Result("error", (ContentPart("text", str(error)),)), reply,
+                            initial={"version": 1, "request": fingerprint, "binding": binding_id},
+                        )
                     if not isinstance(final, Mapping):
                         raise TypeError("工具 prepare 必须返回参数对象")
                     value: dict[str, object] = {
@@ -256,6 +192,8 @@ class ToolExecution:
                 # 4. 只为即将发生的调用授权；撤权不能抹掉可查询的历史结果。
                 try:
                     permission = await self._authorize(binding_id, final_arguments)
+                    if reply is not None:
+                        reply.check_start()
                 except Denied as error:
                     return self._finish(
                         key,
@@ -310,6 +248,16 @@ class ToolExecution:
                 raise failure from record_failure
             raise
 
+    def _record(self, key: str, fingerprint: str) -> OwnerRecord | None:
+        """在工具回执读取边界验证格式和请求身份。"""
+        record = self._state.read(key)
+        if record is not None:
+            if record.value["version"] != 1 or record.value["phase"] not in {"prepared", "started", "done"}:
+                raise ValueError("工具回执版本或阶段无效")
+            if record.value["request"] != fingerprint:
+                raise ValueError("同一工具 key 的 binding 或参数不一致")
+        return record
+
     def _save(
         self, key: str, previous: OwnerRecord | None, value: Mapping[str, object]
     ) -> OwnerRecord:
@@ -324,11 +272,16 @@ class ToolExecution:
     def _finish(
         self,
         key: str,
-        record: OwnerRecord,
+        record: OwnerRecord | None,
         result: Result,
         reply: MessageReply | None,
+        *, initial: Mapping[str, object] | None = None,
     ) -> Result:
         """结果正文与 receipt 指针同事务提交；独立调用直接保存结果。"""
+
+        value = initial if record is None else record.value
+        if value is None:
+            raise RuntimeError("工具结果缺少原请求身份")
 
         def commit(transaction: OwnerTransaction) -> None:
             saved: Mapping[str, object]
@@ -343,8 +296,8 @@ class ToolExecution:
                 saved = {"message_id": message.message_id, "seq": message.seq}
             _ = transaction.save(
                 key,
-                {**record.value, "phase": "done", "result": saved},
-                expected_version=record.version,
+                {**value, "phase": "done", "result": saved},
+                expected_version=None if record is None else record.version,
             )
 
         self._state.transact(commit)

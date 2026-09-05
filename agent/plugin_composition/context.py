@@ -167,6 +167,22 @@ class Context:
         async with RuntimeScope(lease):
             yield
 
+    def require_runtime_owner(self, key: ServiceKey[object], service: object) -> str:
+        """验证当前 scope 的实际服务与 Context，返回 Core 分配的插件 owner。"""
+        reject_executor_context_access()
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        lease = get_current_runtime_lease()
+        if lease is None or lease.snapshot.composition_root is None:
+            raise RuntimeError("授权需要实际 runtime scope")
+        root = lease.snapshot.composition_root
+        if root.context.require(key) is not service:
+            raise RuntimeError("授权服务不属于当前 runtime scope")
+        owner = root.context_owner(self)
+        if owner is None:
+            raise PermissionError("Context 不属于当前 runtime scope")
+        return owner
+
     def capture_runtime_scope(self) -> RuntimeScope:
         """Fork the exact scope bound to this callback for one detached operation."""
 

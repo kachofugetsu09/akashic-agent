@@ -49,6 +49,10 @@ _COMPACTION_PLUGIN_CONFIG_ID = "20260831_01_migrate_compaction_plugin_config"
 _MESSAGE_LOG_ID = "20260905_01_message_log"
 _OWNER_RECORDS_ID = "20260905_02_owner_records"
 _MODEL_CALLS_ID = "20260905_03_model_calls"
+_AKASHA_CONSUMPTION_ID = "20260905_04_akasha_consumption"
+_MESSAGE_EMBEDDINGS_ID = "20260905_05_message_embeddings"
+_MESSAGE_ARTIFACTS_ID = "20260905_06_message_artifacts"
+_TURN_MESSAGES_ID = "20260906_01_turn_messages"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -81,6 +85,10 @@ _CURRENT_IDS = (
     _MESSAGE_LOG_ID,
     _OWNER_RECORDS_ID,
     _MODEL_CALLS_ID,
+    _AKASHA_CONSUMPTION_ID,
+    _MESSAGE_EMBEDDINGS_ID,
+    _MESSAGE_ARTIFACTS_ID,
+    _TURN_MESSAGES_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -426,6 +434,10 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _MESSAGE_LOG_ID,
         _OWNER_RECORDS_ID,
         _MODEL_CALLS_ID,
+        _AKASHA_CONSUMPTION_ID,
+        _MESSAGE_EMBEDDINGS_ID,
+        _MESSAGE_ARTIFACTS_ID,
+        _TURN_MESSAGES_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -488,6 +500,10 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         _MESSAGE_LOG_ID,
         _OWNER_RECORDS_ID,
         _MODEL_CALLS_ID,
+        _AKASHA_CONSUMPTION_ID,
+        _MESSAGE_EMBEDDINGS_ID,
+        _MESSAGE_ARTIFACTS_ID,
+        _TURN_MESSAGES_ID,
     )
     migrated = tomllib.loads(config.read_text())
     assert migrated["agent"]["wiring"]["toolsets"] == toolsets
@@ -538,6 +554,10 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _MESSAGE_LOG_ID,
         _OWNER_RECORDS_ID,
         _MODEL_CALLS_ID,
+        _AKASHA_CONSUMPTION_ID,
+        _MESSAGE_EMBEDDINGS_ID,
+        _MESSAGE_ARTIFACTS_ID,
+        _TURN_MESSAGES_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -617,6 +637,10 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _MESSAGE_LOG_ID,
         _OWNER_RECORDS_ID,
         _MODEL_CALLS_ID,
+        _AKASHA_CONSUMPTION_ID,
+        _MESSAGE_EMBEDDINGS_ID,
+        _MESSAGE_ARTIFACTS_ID,
+        _TURN_MESSAGES_ID,
     )
 
 
@@ -968,6 +992,10 @@ api_key = "secret"
         _MESSAGE_LOG_ID,
         _OWNER_RECORDS_ID,
         _MODEL_CALLS_ID,
+        _AKASHA_CONSUMPTION_ID,
+        _MESSAGE_EMBEDDINGS_ID,
+        _MESSAGE_ARTIFACTS_ID,
+        _TURN_MESSAGES_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

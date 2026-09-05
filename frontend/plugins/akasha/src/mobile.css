@@ -1,0 +1,47 @@
+@import "../../../../plugins/akasha/mobile_ui.css";
+
+.akasha-mobile-inspector .akasha-mobile-memories li {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.akasha-mobile-inspector .akasha-mobile-memories li > div {
+  min-width: 0;
+}
+
+.akasha-mobile-inspector article {
+  margin-block-start: 12px;
+}
+
+.akasha-mobile-inspector small {
+  overflow-wrap: anywhere;
+  color: var(--ak-color-text-secondary, var(--ak-color-text-primary));
+}
+
+.akasha-mobile-inspector > nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.akasha-mobile-inspector > nav button,
+.akasha-mobile-inspector > button {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--akasha-mobile-rule-strong);
+  border-radius: var(--akasha-mobile-radius-sm);
+  background: var(--ak-color-bg-surface);
+  color: var(--ak-color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.akasha-mobile-inspector > nav button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.akasha-mobile-inspector button:focus-visible {
+  outline: 2px solid var(--akasha-mobile-accent);
+  outline-offset: 2px;
+}

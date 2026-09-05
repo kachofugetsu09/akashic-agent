@@ -799,9 +799,7 @@ def build_core_runtime(
             session_manager=session_manager,
         )
     )
-    plugin_manager.channel_generation_host.bind_inbound_publisher(
-        bus.publish_channel_inbound
-    )
+    plugin_manager.channel_generation_host.bind_input_custody(bus)
     loop.bind_runtime_snapshot_store(plugin_manager.snapshot_store)
     return CoreRuntime(
         config=config,

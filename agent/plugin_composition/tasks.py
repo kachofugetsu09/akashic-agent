@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Hashable
-from typing import TypeVar
+from typing import TypeVar, Protocol
+
+from agent.plugin_composition.context import Context, RuntimeScope
 from uuid import uuid4
 
 from agent.plugin_composition.model import ServiceKey
@@ -31,6 +33,11 @@ class Task:
         self.handle = uuid4().hex
         self._active = True
         self._cancel_requested = False
+        self._running = False
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        lease = get_current_runtime_lease()
+        self._scope = None if lease is None else RuntimeScope(lease.fork())
         self._cleanup: list[Callable[[], None]] = []
         self._task = asyncio.create_task(self._run(operation, admitted))
 
@@ -70,7 +77,9 @@ class Task:
         try:
             self._close()
         finally:
-            _ = self._task.cancel()
+            # 尚未运行的 coroutine 也要进入 finally，归还接纳时已取得的 generation lease。
+            if self._running:
+                _ = self._task.cancel()
 
     async def join(self) -> object:
         """等待真正排空；等待者取消不再次取消已开始结算的工作。"""
@@ -79,12 +88,21 @@ class Task:
     async def _run(
         self, operation: Callable[[Task], Awaitable[object]], admitted: asyncio.Event
     ) -> object:
+        self._running = True
         try:
+            if self._cancel_requested:
+                raise asyncio.CancelledError
             # eager task factory 也必须等同步准入成功，才能运行用户代码。
             _ = await admitted.wait()
+            if self._scope is not None:
+                await self._scope.__aenter__()
             return await operation(self)
         finally:
-            self._close()
+            try:
+                self._close()
+            finally:
+                if self._scope is not None:
+                    await self._scope.close()
 
 
 class TaskSlot:
@@ -137,7 +155,7 @@ class Tasks:
 
     async def admit(self, key: Hashable, callback: Callable[[TaskSlot], _T]) -> _T:
         """回调只做同步准入；长操作在 Task 中运行，不能持锁跨 I/O。"""
-        # 本段没有 await；同一事件循环内，准入不会与其他任务交错。
+        # 成功准入和回调不跨 await；拒绝只在回调退出后等待自己的清理。
         if self._closed:
             raise RuntimeError("Task 服务已关闭")
         slot = TaskSlot(self, key)
@@ -151,12 +169,32 @@ class Tasks:
             return result
         except BaseException as failure:
             if slot._started is not None:
+                # 拒绝在回调退出后排空；调用方收到错误时不会留下占 key 的幽灵任务。
+                task = slot._started
+                cleanup_failures: list[BaseException] = []
                 try:
-                    slot._started.cancel()
+                    task.cancel()
                 except Exception as cleanup_failure:
+                    cleanup_failures.append(cleanup_failure)
+                caller = asyncio.current_task()
+                cancellations = 0 if caller is None else caller.cancelling()
+                interrupted = False
+                while not task.done:
+                    try:
+                        _ = await task.join()
+                    except asyncio.CancelledError:
+                        interrupted = interrupted or (
+                            caller is not None and caller.cancelling() > cancellations
+                        )
+                    except BaseException as cleanup_failure:
+                        cleanup_failures.append(cleanup_failure)
+                self._release(key, task)
+                if cleanup_failures:
                     raise BaseExceptionGroup(
-                        "Task 准入及撤销失败", [failure, cleanup_failure]
+                        "Task 准入及撤销失败", [failure, *cleanup_failures]
                     ) from None
+                if interrupted:
+                    raise asyncio.CancelledError from failure
             raise
         finally:
             slot._active = False
@@ -180,4 +218,41 @@ class Tasks:
             raise ExceptionGroup("Task 关闭失败", failures)
 
 
-TASKS = ServiceKey[Tasks]("core.tasks")
+class TaskAdmission(Protocol):
+    async def admit(self, key: Hashable, callback: Callable[[TaskSlot], _T]) -> _T: ...
+
+
+class PluginTasks:
+    """Core 按真实插件 owner 保留 Task 服务，热更新不会丢失同 owner 的活动工作。"""
+
+    def __init__(self, *, formal: bool = True):
+        self._formal = formal
+        self._owners: dict[str, Tasks] = {}
+        self._closed = False
+
+    def start(self) -> None:
+        if self._closed and self._owners:
+            raise RuntimeError("旧插件 Task 尚未排空")
+        self._closed = False
+
+    def open(self, ctx: Context) -> TaskAdmission:
+        if not self._formal or self._closed:
+            raise RuntimeError("当前不能接纳正式 Task")
+        owner = ctx.require_runtime_owner(TASKS, self)
+        if owner not in self._owners:
+            self._owners[owner] = Tasks()
+        return self._owners[owner]
+
+    async def close(self) -> None:
+        """关闭属于本 runtime 的全部 owner，逐一排空并保留真实错误。"""
+        self._closed = True
+        results = await asyncio.gather(
+            *(tasks.close() for tasks in self._owners.values()), return_exceptions=True
+        )
+        failures = [result for result in results if isinstance(result, BaseException)]
+        if failures:
+            raise BaseExceptionGroup("插件 Task 关闭失败", failures)
+        self._owners.clear()
+
+
+TASKS = ServiceKey[PluginTasks]("core.tasks")

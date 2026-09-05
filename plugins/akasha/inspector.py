@@ -6,6 +6,7 @@ import json
 import math
 import sqlite3
 import threading
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +16,10 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from agent.plugin_composition import MobileUiRpcInvalidRequest
+from session.log import MessageCatalog
+from session.message import ContentPart, Input, Output
+from .recalls import ContextSource, ProgramSource, Recall, ToolSource
 from .config import AkashaConfig, resolve_memory_path
 from .infrastructure.sparse_index.schema import (
     INDEX_VERSION,
@@ -1000,3 +1005,66 @@ def _render_lane(
 def _parse_time(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return parsed.replace(tzinfo=_LOCAL_TZ) if parsed.tzinfo is None else parsed
+
+
+class RecallInspector:
+    """只读查询事实与原消息，不把学习读出重算成实际召回。"""
+
+    def __init__(self, *, read: Callable[[str], Recall | None],
+                 list_records: Callable[[], tuple[tuple[str, Recall], ...]], catalog: MessageCatalog):
+        self._read = read
+        self._list = list_records
+        self._catalog = catalog
+
+    def recent(self, *, page: int = 1, page_size: int = 30, session_id: str = "") -> dict[str, object]:
+        rows = tuple((identity, recall) for identity, recall in self._list()
+                     if not session_id or (not isinstance(recall.source, ProgramSource)
+                                           and recall.source.session_id == session_id))
+        start = (page - 1) * page_size
+        return self._mobile_result({"items": [self._summary(identity, recall) for identity, recall in rows[start:start + page_size]],
+                                    "total": len(rows), "page": page, "page_size": page_size})
+
+    @staticmethod
+    def _summary(identity: str, recall: Recall) -> dict[str, object]:
+        source = recall.source
+        if isinstance(source, ContextSource):
+            title = f"上下文查询 · {source.source} · #{source.through_seq}"
+        elif isinstance(source, ToolSource):
+            title = f"工具查询 · {source.call_ref.message_id}:{source.call_ref.part_index}"
+        else:
+            title = source.query
+        origin = source.model_dump(mode="json", exclude={"query"})
+        return {"query_id": identity, "query_text": title[:180], "query_text_truncated": len(title) > 180,
+                "ts": recall.timestamp.isoformat(), "source": origin, "graph_version": recall.graph_version,
+                "hit_count": len(recall.hits), "presented_count": len(recall.presented_message_ids)}
+
+    def mobile_detail(self, identity: str) -> dict[str, object] | None:
+        """命中和实际呈现分开显示；正文只从查询记录指向的原消息读取。"""
+        recall = self._read(identity)
+        if recall is None:
+            return None
+        hits: list[dict[str, object]] = []
+        for hit in recall.hits:
+            messages: list[dict[str, object]] = []
+            for message_id in hit.message_ids:
+                message = self._catalog.reader(hit.session_id).get(message_id)
+                if message is None:
+                    raise ValueError(f"召回出处消息缺失: {message_id}")
+                if not isinstance(message.body, (Input, Output)):
+                    raise ValueError(f"召回成员不是输入或输出: {message_id}")
+                text = "\n".join(cast(str, part.value) for part in message.body.parts
+                                 if isinstance(part, ContentPart) and part.kind == "text")
+                messages.append({"message_id": message_id, "preview": text[:240],
+                                 "truncated": len(text) > 240,
+                                 "presented": message_id in recall.presented_message_ids})
+            hits.append({"score": hit.score, "lane": hit.lane, "sources": list(hit.sources), "messages": messages})
+        return self._mobile_result({**self._summary(identity, recall), "hits": hits, "pushes": recall.pushes,
+                                    "residual_l1": recall.residual_l1})
+
+    @staticmethod
+    def _mobile_result(payload: dict[str, object]) -> dict[str, object]:
+        """移动投影保留全部成员；完整编码超限时明确失败，不裁掉尾部。"""
+        result: dict[str, object] = {"schema": "akasha.queries.v1", **payload}
+        if len(json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()) > 192 * 1024:
+            raise MobileUiRpcInvalidRequest("本条检索出处过多，超出移动页面容量；查询记录仍完整保留")
+        return result

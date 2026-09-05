@@ -44,6 +44,21 @@ class ContentPart:
 
 
 @dataclass(frozen=True, slots=True)
+class ContentReferences:
+    """内容检查声明的耐久链接；附件保留正文出现次序和重复项。"""
+
+    binding_ids: tuple[str, ...] = ()
+    artifact_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for values in (self.binding_ids, self.artifact_ids):
+            if not isinstance(values, tuple) or any(
+                not isinstance(value, str) or not value for value in values
+            ):
+                raise TypeError("内容引用必须是非空 ID 的 tuple")
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCall:
     binding_id: str
     arguments: Mapping[str, object]

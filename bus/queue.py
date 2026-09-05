@@ -72,6 +72,7 @@ class DurableInboundStore(Protocol):
         self,
         *,
         limit: int | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[dict[str, str | None]]: ...
 
     def has_inbound_handoff(
@@ -518,57 +519,69 @@ class MessageBus:
         store = self._durable_inbound_store
         if store is None:
             return
-        exact_rows: list[tuple[str, RawInbound]] = []
-        async with self._durable_handoff_lock:
-            # 1. 只读取有限页，避免启动时把整个 durable backlog 搬入内存。
-            rows = store.list_inbound_handoffs(
-                limit=_DURABLE_INBOUND_RECOVERY_PAGE_SIZE
-            )
-            # 2. 仍在处理中的 live owner 不得被分页重放复制成第二个 owner。
-            in_flight: set[str] = set()
-            for owner in self._inbound_accepted.values():
-                item = owner.item
-                if isinstance(item, InboundMessage) and item.handoff_id is not None:
-                    in_flight.add(item.handoff_id)
-            in_flight.update(self._mobile_v3_handoffs.values())
-            in_flight.update(
-                handoff_id
-                for handoff_id, admission in self._mobile_v3_admissions.items()
-                if not admission.recoverable
-            )
-            for row in rows:
-                handoff_id = row.get("handoff_id")
-                if (
-                    not isinstance(handoff_id, str)
-                    or handoff_id in self._recovery_claimed
-                    or handoff_id in in_flight
-                ):
-                    continue
-                item = _inbound_from_handoff(row)
-                self._recovery_claimed.add(handoff_id)
-                raw = _raw_mobile_from_handoff(row)
-                if raw is not None:
-                    exact_rows.append((handoff_id, raw))
-                    continue
-                try:
-                    await self._reserve_and_queue_mobile(
-                        item, allow_existing_handoff=True
-                    )
-                except BaseException:
-                    self._recovery_claimed.discard(handoff_id)
-                    raise
-        recoverer = self._mobile_inbound_recoverer
-        for handoff_id, raw in exact_rows:
-            if recoverer is None:
-                raise RuntimeError("v3 Mobile inbound recovery port 未绑定")
+        after: tuple[str, str] | None = None
+        while not self._outbound_closed:
+            exact_rows: list[tuple[str, RawInbound]] = []
+            legacy_page = bool(self._inbound_accepted)
             try:
-                accepted = await recoverer(raw)
-            except BaseException:
-                self._recovery_claimed.discard(handoff_id)
-                raise
-            if not accepted:
-                self._recovery_claimed.discard(handoff_id)
-                raise RuntimeError("v3 Mobile inbound recovery 被 current binding 拒绝")
+                async with self._durable_handoff_lock:
+                    # 1. 只读取有限页，避免启动时把整个 durable backlog 搬入内存。
+                    rows = store.list_inbound_handoffs(
+                        limit=_DURABLE_INBOUND_RECOVERY_PAGE_SIZE, after=after,
+                    )
+                    # 2. 仍在处理中的 live owner 不得被分页重放复制成第二个 owner。
+                    in_flight: set[str] = set()
+                    for owner in self._inbound_accepted.values():
+                        item = owner.item
+                        if isinstance(item, InboundMessage) and item.handoff_id is not None:
+                            in_flight.add(item.handoff_id)
+                    in_flight.update(self._mobile_v3_handoffs.values())
+                    in_flight.update(
+                        handoff_id
+                        for handoff_id, admission in self._mobile_v3_admissions.items()
+                        if not admission.recoverable
+                    )
+                    for row in rows:
+                        handoff_id = row.get("handoff_id")
+                        if (
+                            not isinstance(handoff_id, str)
+                            or handoff_id in self._recovery_claimed
+                            or handoff_id in in_flight
+                        ):
+                            continue
+                        item = _inbound_from_handoff(row)
+                        raw = _raw_mobile_from_handoff(row)
+                        self._recovery_claimed.add(handoff_id)
+                        if raw is not None:
+                            exact_rows.append((handoff_id, raw))
+                            continue
+                        legacy_page = True
+                        try:
+                            await self._reserve_and_queue_mobile(
+                                item, allow_existing_handoff=True
+                            )
+                        except BaseException:
+                            self._recovery_claimed.discard(handoff_id)
+                            raise
+                if not rows:
+                    return
+                last = rows[-1]
+                created_at, last_id = last["created_at"], last["handoff_id"]
+                if created_at is None or last_id is None:
+                    raise RuntimeError("durable handoff 缺少分页身份")
+                after = created_at, last_id
+                recoverer = self._mobile_inbound_recoverer
+                for handoff_id, raw in exact_rows:
+                    if recoverer is None:
+                        raise RuntimeError("v3 Mobile inbound recovery port 未绑定")
+                    if not await recoverer(raw):
+                        raise RuntimeError("v3 Mobile inbound recovery 被 current binding 拒绝")
+                if legacy_page:
+                    # 旧 worker 删除前维持原本逐次完成再 pump 一页的容量边界。
+                    return
+            finally:
+                # 失败后的未执行行必须允许重试；已接纳行由 exact admission 去重。
+                self._recovery_claimed.difference_update(row_id for row_id, _ in exact_rows)
 
     async def reserve_mobile_channel_handoff(self, raw: RawInbound) -> bool:
         """Reserve the Mobile saga before attachment publication can become visible."""
@@ -678,48 +691,36 @@ class MessageBus:
         self._raise_inbound_cleanup_error()
         await self._publish_inbound(msg, allow_existing_handoff=False)
 
-    async def publish_channel_inbound(self, envelope: InboundEnvelope) -> None:
-        """Accept one exact Channel envelope into the Bus-owned queue."""
-
+    async def prepare_channel_input(self, envelope: InboundEnvelope) -> None:
+        """接管耐久 Mobile handoff；普通输入不排队，也不占用回复 lane。"""
         self._raise_inbound_cleanup_error()
         if self._outbound_closed:
-            await envelope.close(InboundOwner.INGRESS)
             raise RuntimeError("message bus 已关闭")
-        if (
-            envelope.owner is not InboundOwner.INGRESS
-            or envelope.state is not InboundState.ADMITTED
-        ):
-            raise RuntimeError("v3 Channel inbound 必须由 INGRESS/ADMITTED 交给 Bus")
+        if envelope.owner is not InboundOwner.INGRESS or envelope.state is not InboundState.ADMITTED:
+            raise RuntimeError("Channel input 必须仍由 INGRESS 持有")
         if _has_mobile_handoff(envelope):
-            await self._reserve_and_queue_mobile_channel(envelope)
-            return
-        await self._chat_lane.mark_passive_pending(
-            envelope.channel,
-            envelope.chat_id,
-        )
-        if self._outbound_closed:
-            await self._chat_lane.mark_passive_done(
-                envelope.channel,
-                envelope.chat_id,
-            )
-            await envelope.close(InboundOwner.INGRESS)
-            raise RuntimeError("message bus 已关闭")
-        envelope.handoff(InboundOwner.INGRESS, InboundOwner.BUS)
-        try:
-            self._inbound.put_nowait(envelope)
-        except BaseException:
-            await envelope.close(InboundOwner.BUS)
-            await self._chat_lane.mark_passive_done(
-                envelope.channel,
-                envelope.chat_id,
-            )
-            raise
+            await self._reserve_mobile_input(envelope)
 
-    async def _reserve_and_queue_mobile_channel(
+    async def complete_channel_input(self, envelope: InboundEnvelope) -> None:
+        """Input 已持久提交后结算传输；不等待任何回复或学习消费者。"""
+        handoff_id = self._mobile_v3_handoffs.get(id(envelope))
+        if handoff_id is None:
+            await envelope.close(InboundOwner.INGRESS)
+        else:
+            await self._complete_mobile_v3_inbound(envelope, handoff_id)
+
+    async def retain_channel_input(self, envelope: InboundEnvelope) -> None:
+        """提交前失败只释放 exact lease，保留已有耐久 handoff 供恢复。"""
+        if id(envelope) in self._mobile_v3_handoffs:
+            await self._retain_mobile_channel_inbound(envelope, InboundOwner.INGRESS)
+        else:
+            await envelope.close(InboundOwner.INGRESS)
+
+    async def _reserve_mobile_input(
         self,
         envelope: InboundEnvelope,
     ) -> None:
-        """Durably reserve a v3 Mobile envelope before the Bus owns its lease."""
+        """在 Input 提交前固定耐久 handoff 的唯一 exact envelope。"""
 
         metadata = dict(envelope.metadata)
         handoff_id = metadata.get(_MOBILE_V3_HANDOFF_ID)
@@ -730,6 +731,7 @@ class MessageBus:
             or not handoff_id
             or not isinstance(client_message_id, str)
             or not client_message_id
+            or metadata.get("session_key_override") != envelope.session_key
         ):
             await envelope.close(InboundOwner.INGRESS)
             raise RuntimeError("v3 Mobile inbound 缺少 durable handoff identity")
@@ -770,27 +772,6 @@ class MessageBus:
                 await envelope.close(InboundOwner.INGRESS)
                 raise RuntimeError("v3 Mobile inbound durable handoff identity 漂移")
             admission = self._mobile_v3_admissions[handoff_id]
-            lane_pending = False
-            try:
-                await self._chat_lane.mark_passive_pending(
-                    envelope.channel,
-                    envelope.chat_id,
-                )
-                lane_pending = True
-                if self._outbound_closed:
-                    raise RuntimeError("message bus 已关闭")
-                envelope.handoff(InboundOwner.INGRESS, InboundOwner.BUS)
-                self._inbound.put_nowait(envelope)
-            except BaseException:
-                admission.recoverable = True
-                if lane_pending:
-                    await self._chat_lane.mark_passive_done(
-                        envelope.channel,
-                        envelope.chat_id,
-                    )
-                if envelope.owner in {InboundOwner.INGRESS, InboundOwner.BUS}:
-                    await envelope.close(envelope.owner)
-                raise
             admission.envelope = envelope
             admission.recoverable = False
             self._mobile_v3_handoffs[id(envelope)] = handoff_id
@@ -1067,7 +1048,7 @@ class MessageBus:
                 )
                 admission.cleanup_pending = True
                 self._schedule_inbound_cleanup_retry(id(envelope))
-                raise
+                return
             except Exception as error:
                 self._record_inbound_cleanup_fatal(error, id(envelope))
                 raise
@@ -1102,7 +1083,7 @@ class MessageBus:
             admission = self._mobile_v3_admissions.get(handoff_id)
             if admission is None or admission.envelope is not envelope:
                 raise RuntimeError("Mobile exact Session recovery owner 丢失")
-            await self._release_channel_inbound(envelope, expected_owner)
+            await envelope.close(expected_owner)
             admission.envelope = None
             admission.cleanup_pending = False
             admission.recoverable = True
@@ -1266,7 +1247,7 @@ class MessageBus:
             raise RuntimeError("Mobile exact admission 在完成期间变更")
         if self._mobile_v3_handoffs.get(id(envelope)) != handoff_id:
             raise RuntimeError("Mobile exact handoff 在完成期间变更")
-        await self._release_channel_inbound(envelope, InboundOwner.LOOP)
+        await envelope.close(InboundOwner.INGRESS)
         owner = self._mobile_session_admission_owner
         if owner is None:
             raise RuntimeError("mobile session admission owner 未绑定")
@@ -1376,12 +1357,7 @@ class MessageBus:
                 envelope = admission.envelope
                 if envelope is not None:
                     if envelope.owner is not InboundOwner.CLOSED:
-                        await self._release_channel_inbound(envelope, envelope.owner)
-                    else:
-                        await self._chat_lane.mark_passive_done(
-                            envelope.channel,
-                            envelope.chat_id,
-                        )
+                        await envelope.close(envelope.owner)
                     self._mobile_v3_handoffs.pop(id(envelope), None)
                 assert owner is not None
                 owner.release_admission(admission.admission_id)

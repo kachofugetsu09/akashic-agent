@@ -6,7 +6,7 @@ import hashlib
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator, BinaryIO, cast
+from typing import Any, AsyncGenerator, cast
 
 from agent.lifecycle.composition import PROMPT_RENDER_EVENT
 from agent.lifecycle.types import PromptRenderCtx
@@ -85,7 +85,7 @@ async def apply(ctx: Context, config: object) -> None:
     )
     _ = await ctx.on(
         RUNTIME_STARTED,
-        lambda _event: _start_store(
+        lambda _event: start_store(
             store,
             lock_path,
             pending_path,
@@ -142,7 +142,7 @@ async def _project_committed(
         )
         if fact is None:
             raise RuntimeError("Markdown memory 无法读取 committed projection fact")
-        async with _profile_lock(lock_path):
+        async with profile_lock(lock_path):
             for pending_source_ref in store.pending_source_refs():
                 store.apply_pending(pending_source_ref)
             if store.is_applied(event.source_ref):
@@ -161,7 +161,7 @@ async def _project_committed(
                     session_key=fact.session_key,
                     generation=fact.generation,
                 )
-            _validate_draft(draft)
+            check_draft(draft)
             store.apply_draft(event.source_ref, draft)
 
 
@@ -187,10 +187,10 @@ async def _prepare_draft(
     if receipt.get("version") != 4:
         raise ValueError("Markdown memory 不支持此 compaction receipt version")
     source = _source_text(cast(dict[str, object], receipt))
-    return await _prepare_profile_draft(source, store, chat_models)
+    return await prepare_profile_draft(source, store, chat_models)
 
 
-async def _prepare_profile_draft(
+async def prepare_profile_draft(
     source: str,
     store: MarkdownProfileStore,
     chat_models: ChatModels,
@@ -236,7 +236,7 @@ async def _prepare_profile_draft(
     }
 
 
-async def _start_store(
+async def start_store(
     store: MarkdownProfileStore,
     lock_path: Path,
     pending_path: Path,
@@ -245,7 +245,7 @@ async def _start_store(
 ) -> None:
     """Recover document commits, then retire the old pending queue."""
 
-    async with _profile_lock(lock_path):
+    async with profile_lock(lock_path):
         for source_ref in store.pending_source_refs():
             store.apply_pending(source_ref)
     await _migrate_pending(
@@ -266,7 +266,7 @@ async def _migrate_pending(
 ) -> None:
     """Merge exact retired queue bytes once, then preserve their file boundary."""
 
-    async with _profile_lock(lock_path):
+    async with profile_lock(lock_path):
         migration = store.read_legacy_pending_migration()
         if migration is None:
             pending = (
@@ -324,7 +324,7 @@ async def _migrate_pending(
                     session_key="legacy-pending",
                     generation=0,
                 )
-            _validate_draft(draft)
+            check_draft(draft)
             store.apply_draft(source_ref, draft)
         archive = json.dumps(
             {"source_ref": source_ref, **migration},
@@ -449,12 +449,12 @@ SELF.md 只能包含这四个标题：# Akashic 的自我认知、## 人格与�
 当前 SELF.md：
 {self_profile}
 
-本次精确来源（v2 legacy draft 或 v4 source plan）：
+本次精确来源：
 {source}
 """
 
 
-def _validate_draft(payload: dict[str, object]) -> None:
+def check_draft(payload: dict[str, object]) -> None:
     memory = payload.get("memory")
     self_profile = payload.get("self")
     memory_before = payload.get("memory_before")
@@ -523,23 +523,18 @@ def _validate_self(content: str) -> None:
 
 
 @asynccontextmanager
-async def _profile_lock(path: Path) -> AsyncGenerator[None]:
-    """Serialize profile projections across sessions and live plugin generations."""
-
+async def profile_lock(path: Path) -> AsyncGenerator[None]:
+    """跨 Session 和 generation 串行写档案；取消等待不会遗留持锁线程。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = await asyncio.to_thread(_open_and_lock, path)
-    try:
-        yield
-    finally:
-        await asyncio.to_thread(_unlock_and_close, handle)
-
-
-def _open_and_lock(path: Path) -> BinaryIO:
-    handle = path.open("a+b")
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-    return handle
-
-
-def _unlock_and_close(handle: BinaryIO) -> None:
-    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    handle.close()
+    with path.open("a+b") as handle:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                await asyncio.sleep(0.05)
+            else:
+                break
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

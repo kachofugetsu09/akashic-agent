@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 import json
 from typing import Any, cast
@@ -17,7 +17,7 @@ from agent.plugin_composition.channels import (
     AttachmentRef,
     ChannelAttachmentReadPort,
 )
-from session.message import ContentPart, freeze_json
+from session.message import ContentPart, Control, Message, ToolCall, freeze_json
 from session.message_codec import json_value
 
 
@@ -60,12 +60,27 @@ def render_content(
     part: ContentPart,
     *,
     artifacts: Mapping[str, tuple[Mapping[str, Any], ...]],
+    read_message: Callable[[str], Message | None] | None = None,
 ) -> tuple[Mapping[str, Any], ...]:
     """基础正文与附件按协议投影；其余已声明内容作为带 kind 的低信任数据。"""
     if part.kind == "text":
         return ({"type": "text", "text": part.value},)
     if part.kind == "artifact_ref":
         return artifacts[cast(str, part.value)]
+    if part.kind in {"model.selection", "tool.selection", "context.summary", "history.record", "history.turn_input"}:
+        return ()
+    if part.kind == "reply_ref":
+        if read_message is None:
+            raise RuntimeError("回复引用投影需要当前 Session 的消息读取口")
+        target = read_message(cast(str, part.value))
+        text = None if target is None or isinstance(target.body, Control) else "\n".join(
+            cast(str, item.value) for item in target.body.parts
+            if not isinstance(item, ToolCall) and item.kind == "text"
+        )
+        return ({"type": "text", "text": json.dumps(
+            {"reply_to": part.value, "quoted_text": text, "available": target is not None},
+            ensure_ascii=False,
+        )},)
     if part.kind == "model.facts":
         raise ValueError("model.facts 必须由 Model replay owner 单独处理")
     return (

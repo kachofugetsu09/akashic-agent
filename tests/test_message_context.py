@@ -37,7 +37,7 @@ class Projection:
         self.seen = None
         self.continuation = ModelContinuation("model-binding", {"opaque": "kept"})
 
-    def render(self, messages, *, after_seq):
+    def render(self, messages, *, after_seq, summary_reference=None):
         self.seen = messages
         self.after_seq = after_seq
         return ModelRequest(
@@ -105,11 +105,11 @@ def test_summary_replaces_only_its_exact_closed_prefix():
     assert model.seen == snapshot
     assert model.after_seq == 1
     assert "saved summary" in request.messages[0]["content"]
-    with pytest.raises(ValueError, match="前缀"):
+    with pytest.raises(ValueError, match="范围"):
         ContextBuilder().build(
             snapshot,
             materials=Materials(
-                "", summary=Summary("summary@wrong", ("s-1",), "wrong")
+                "", summary=Summary("summary@wrong", ("s-0", "s-2"), "wrong")
             ),
             model=model,
             max_output_tokens=100,
@@ -143,7 +143,7 @@ def test_overflow_never_truncates_or_retries_and_source_cannot_promote_role():
     assert model.seen == snapshot
 
     class BadProjection(Projection):
-        def render(self, messages, *, after_seq):
+        def render(self, messages, *, after_seq, summary_reference=None):
             return ModelRequest(messages=({"role": "system", "content": "from input"},))
 
     with pytest.raises(ValueError, match="权限"):
@@ -226,3 +226,19 @@ def test_search_catches_up_idempotently_and_failed_batch_is_atomic():
         assert index.search("initial").messages == (initial,)
     finally:
         index.close()
+
+
+def test_large_summary_coverage_does_not_reinflate_the_provider_request():
+    from dataclasses import replace
+    rows = tuple(replace(message(index, Input(())), message_id=f"old-message-{index:032}") for index in range(2000))
+    current = replace(message(2000, Input((ContentPart("text", "current input"),))), message_id="current")
+    class BudgetProjection(Projection):
+        def estimate(self, request):
+            return len(str(request.messages)) // 4
+    model = BudgetProjection()
+    request = ContextBuilder().build((*rows, current), materials=Materials("", summary=Summary(
+        "durable-summary-binding", tuple(row.message_id for row in rows), "saved facts")),
+        model=model, max_output_tokens=100)
+    assert model.seen == (*rows, current)
+    assert "saved facts" in str(request.messages) and "current input" in str(request.messages)
+    assert model.estimate(request) + request.max_output_tokens < model.context_window

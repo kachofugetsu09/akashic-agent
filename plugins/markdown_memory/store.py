@@ -75,6 +75,32 @@ class MarkdownProfileStore:
             for document in ("memory", "self")
         )
 
+    def latest_applied(self, session_key: str) -> tuple[str, int] | None:
+        """从已有顺序与双文件 receipt 读取进度，不建立第二份消费 ledger。"""
+        with closing(sqlite3.connect(str(self.receipts_path), timeout=30.0)) as conn:
+            rows = conn.execute("SELECT source_ref, payload FROM consolidation_writes WHERE kind=?",
+                                ("markdown_projection_order_v1",)).fetchall()
+        latest: tuple[str, int] | None = None
+        seen: set[int] = set()
+        for source_ref, payload in rows:
+            raw: object = json.loads(payload)
+            if not isinstance(raw, dict):
+                raise ValueError("Markdown 顺序 receipt schema 无效")
+            order = cast(dict[str, object], raw)
+            if set(order) != {"session_key", "generation"}:
+                raise ValueError("Markdown 顺序 receipt schema 无效")
+            key, generation = order["session_key"], order["generation"]
+            if not isinstance(key, str) or type(generation) is not int or generation < 0:
+                raise ValueError("Markdown 顺序 receipt 身份无效")
+            if key != session_key or not self.is_applied(source_ref):
+                continue
+            if generation in seen:
+                raise ValueError("同一 Session generation 出现多条已应用档案")
+            seen.add(generation)
+            if latest is None or generation > latest[1]:
+                latest = (source_ref, generation)
+        return latest
+
     def pending_source_refs(self) -> tuple[str, ...]:
         """List drafts whose two document receipts have not both committed."""
 
@@ -165,7 +191,11 @@ class MarkdownProfileStore:
 
     def apply_pending(self, source_ref: str) -> None:
         """Converge each document from its own immutable draft and receipt."""
-
+        draft = self.read_draft(source_ref)
+        if draft is None:
+            raise RuntimeError(f"Markdown 已准备文档缺少完整 model draft: {source_ref}")
+        # model draft 先落盘；中途退出可能只留下其中一份文档 draft。
+        self._write_document_drafts(source_ref, draft)
         self._apply_document(source_ref, "memory", self.memory_path)
         self._apply_document(source_ref, "self", self.self_path)
 

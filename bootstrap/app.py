@@ -483,6 +483,8 @@ class AppRuntime:
                     )
                 )
             await self.channel_host.start_all()
+            # 渠道已打开 exact ingress 后恢复 Input；不依赖回复 worker。
+            await self.bus.recover_durable_inbounds()
             if self.readiness is not None:
                 self.readiness.mark_stage("channels.ready")
             if plugin_manager is None:

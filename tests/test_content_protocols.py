@@ -1,3 +1,4 @@
+from session.message import ContentReferences
 import json
 import re
 from contextlib import asynccontextmanager
@@ -79,7 +80,7 @@ def citation_protocol():
                 raise ValueError("citation proof")
         if not value["declared"] and value["retrieval_ref"] is None:
             raise ValueError("fallback requires retrieval proof")
-        return ()
+        return ContentReferences()
 
     async def decode(source, references):
         matches = list(source.matches(pattern))
@@ -149,7 +150,7 @@ def meme_protocol(picks):
     def check(part):
         if set(part.value) != {"category", "artifact_id"}:
             raise ValueError("meme schema")
-        return ()
+        return ContentReferences()
 
     async def decode(source, _references):
         matches = list(source.matches(pattern))
@@ -329,13 +330,13 @@ async def test_plain_schema_needs_no_text_protocol_and_owns_its_kind():
     def check(part):
         if part.value != "saved":
             raise ValueError("invalid structured fact")
-        return ()
+        return ContentReferences()
 
     schema = ContentSchema(name="structured", content={"fact": check})
     async with bound_content((schema,)) as view:
         assert view.prompts == ()
         assert await view.decode("plain") == (ContentPart("text", "plain"),)
-        assert view.checks["fact"](ContentPart("fact", "saved")) == ()
+        assert view.checks["fact"](ContentPart("fact", "saved")) == ContentReferences()
         with pytest.raises(ValueError, match="invalid structured"):
             view.checks["fact"](ContentPart("fact", "bad"))
     duplicate = ContentSchema(name="other", content={"fact": check})

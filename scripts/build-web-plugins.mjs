@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
 import autoprefixer from "autoprefixer";
-import { transform } from "esbuild";
+import { build as bundle, transform } from "esbuild";
 import tailwindcss from "tailwindcss";
 import { build } from "vite";
 import webUiPreset from "../packages/akashic-web-ui-v1/tailwind-preset.mjs";
@@ -86,3 +86,13 @@ for (const plugin of modules) {
     },
   });
 }
+
+// 新 Message Inspector 的源文件与其他前端一样保存在 frontend 下。
+await bundle({
+  entryPoints: [resolve(repoRoot, "frontend/plugins/akasha/src/mobile.js")],
+  bundle: true,
+  format: "esm",
+  target: "es2022",
+  minify: true,
+  outfile: resolve(pluginsRoot, "akasha/message_ui.js"),
+});

@@ -41,15 +41,21 @@ class Bindings:
 
     def __init__(
         self,
-        log: MessageLog,
+        log: MessageLog | None,
         archive: PluginArchive,
         open_components: Callable[
             [tuple[str, ...]], AbstractAsyncContextManager[BindingScope]
         ],
     ):
-        self._log = log
+        self._storage = log
         self._archive = archive
         self._open_components = open_components
+
+    @property
+    def _log(self) -> MessageLog:
+        if self._storage is None:
+            raise RuntimeError("candidate 验证期禁止固定或打开正式 binding")
+        return self._storage
 
     def bind(
         self,
@@ -61,6 +67,7 @@ class Bindings:
         """从当前真实 lease 固定实现，随后 Message 可原子引用此 binding。"""
         from agent.plugins.snapshot import get_current_runtime_lease
 
+        log = self._log
         lease = get_current_runtime_lease()
         if lease is None or lease.snapshot.composition_root is None:
             raise RuntimeError("固定 binding 需要实际 runtime scope")
@@ -112,8 +119,18 @@ class Bindings:
             allow_nan=False,
         )
         identity = hashlib.sha256(payload.encode()).hexdigest()
-        self._log.save_binding(identity, descriptor)
+        log.save_binding(identity, descriptor)
         return identity
+
+    def describe(self, identity: str, service: ServiceKey[object]) -> Mapping[str, object]:
+        """只读绑定的业务选择；展示或请求投影无需启动归档目标。"""
+        descriptor = self._log.read_binding(identity)
+        if descriptor["version"] != 1 or descriptor["service"] != service.name:
+            raise ValueError("binding 版本或服务不匹配")
+        metadata = descriptor["metadata"]
+        if not isinstance(metadata, Mapping):
+            raise ValueError("binding metadata 必须是对象")
+        return cast(Mapping[str, object], metadata)
 
     @asynccontextmanager
     async def open(
