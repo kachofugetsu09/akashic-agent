@@ -82,6 +82,9 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
             <LazyRuntimeDashboard />
           </Suspense>
         ) : <section className="chat-main">
+        <header className="conversation-heading">
+          <h1 title={sidebarSessions.find((s) => s.active)?.title || "新会话"}>{sidebarSessions.find((session) => session.active)?.title || "新会话"}</h1>
+        </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={messages.length ? "conversation-content" : "conversation-content empty"}>
             {messages.length === 0 ? <DesktopEmptyState shellStatus={shellState?.status ?? null} /> : (
