@@ -56,6 +56,8 @@ async def test_computer_plugin_mounts_with_static_manifest(tmp_path: Path) -> No
         registry = _freeze_plugin_mcp_servers(mcp, root.instance_token)
         binding = next(iter(registry.values()))
         assert dict(binding.definition.env) == {}
+        assert binding.definition.required_tools == ()
+        assert binding.definition.candidate_read_only_tools == ()
         assert len(registry) == 1
         catalog = _freeze_plugin_tools(
             tools, root.instance_token, {"computer": "computer-test"}
@@ -226,19 +228,18 @@ async def test_computer_control_against_container(tmp_path: Path) -> None:
                     assert len(messages) == 1
                     assert isinstance(messages[0]["content"], str)
 
-        # 1. 新 JS 驱动和两条旧 MCP 截图入口使用相同的读图合同。
+        # 1. 唯一 JS 入口保留读图合同；实际 MCP discovery 不再发布旧工具。
         await check_screenshot_read(output)
-        for request_id, name in enumerate(["computer_observe", "browser_observe"], 2):
-            child.stdin.write(
-                json.dumps({
-                    "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
-                    "params": {"name": name, "arguments": {"observe": "screenshot"}},
-                }).encode() + b"\n"
-            )
-            await child.stdin.drain()
-            reply = json.loads(await asyncio.wait_for(child.stdout.readline(), 20))
-            assert reply["id"] == request_id
-            await check_screenshot_read(reply["result"])
+        child.stdin.write(b'{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n')
+        await child.stdin.drain()
+        reply = json.loads(await child.stdout.readline())
+        assert reply["result"]["tools"] == []
+        child.stdin.write(
+            b'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_action","arguments":{"action":"navigate","url":"about:blank"}}}\n'
+        )
+        await child.stdin.drain()
+        reply = json.loads(await child.stdout.readline())
+        assert reply["error"]["code"] == -32601
 
         # 2. 保留既有取消及 Turn 收尾验证。
         reader, writer = await asyncio.open_unix_connection(
