@@ -2692,3 +2692,16 @@ button {
     transition-duration: 1ms !important;
   }
 }
+
+/* 两端阅读字号一致，输入框与触摸按钮保留移动端尺寸。 */
+.mobile-message-anchor .agent-content,
+.mobile-plain-message-view__content,
+.mobile-plain-message-view.user .mobile-plain-message-view__content,
+.mobile-message-anchor .user-bubble {
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+.mobile-message-anchor .agent-content h1 { font-size: 1.375rem; }
+.mobile-message-anchor .agent-content h2 { font-size: 1.175rem; }
+.mobile-message-anchor .agent-content h3 { font-size: 1.025rem; }
+.mobile-message-anchor .agent-content h4 { font-size: 0.875rem; }

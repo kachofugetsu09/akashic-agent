@@ -1,3 +1,4 @@
+import { ThinkingPlaceholder } from "./thinking-placeholder";
 import React, {
   lazy,
   startTransition,
@@ -2458,7 +2459,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
 
 const mobileStreamMarkdownBatchCharacters = 4;
 
-/** 流式纯文本保持零解析路径；Markdown 交给 Markstream 增量渲染。 */
+/** 纯文本和 Markdown 共用 Markstream 的平滑流式输出。 */
 const MobileStreamingMessageView = React.memo(function MobileStreamingMessageView({
   source,
   leadingContent,
@@ -2486,7 +2487,8 @@ const MobileStreamingMessageView = React.memo(function MobileStreamingMessageVie
           />
         ) : null}
         {attachmentContent}
-        {source.content ? messageNeedsMarkdown(source.content) ? (
+        {!source.content && source.blocks.length === 0 ? <ThinkingPlaceholder /> : null}
+        {source.content ? (
           <Suspense fallback={<p className="plain-message-response mobile-streaming-answer">{source.content}</p>}>
             <LazyMessageResponse
               isAnimating
@@ -2495,8 +2497,6 @@ const MobileStreamingMessageView = React.memo(function MobileStreamingMessageVie
               {source.content}
             </LazyMessageResponse>
           </Suspense>
-        ) : (
-          <p className="plain-message-response mobile-streaming-answer">{source.content}</p>
         ) : null}
         {answerEndContent}
       </div>
@@ -3345,7 +3345,7 @@ function MobileComposer({
           )}
           </div>
         </div>
-        <ComposerStatsLine tracker={turnMetrics} />
+        <ComposerStatsLine tracker={turnMetrics} hideWaiting={snapshot.messages.some((message) => message.role === "assistant" && message.streaming)} />
       </div>
     </div>
   );

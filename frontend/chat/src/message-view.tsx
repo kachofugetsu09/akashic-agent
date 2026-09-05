@@ -1,3 +1,4 @@
+import { ThinkingPlaceholder } from "./thinking-placeholder";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -159,13 +160,6 @@ export function ChatMessageView({
       </MessageContent>
     </Message>
   );
-}
-
-export function ThinkingPlaceholder() {
-  return <div className="thinking-placeholder" role="status">
-    <span className="thinking-placeholder__dots" aria-hidden="true"><i /><i /><i /></span>
-    <span>等待回应</span>
-  </div>;
 }
 
 const MessageAttachments = memo(function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
