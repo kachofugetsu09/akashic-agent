@@ -210,5 +210,5 @@ class ContextBuilder:
 CONTEXT = ServiceKey[ContextBuilder]("context.v1")
 
 
-async def apply(ctx: Context, _config: object) -> None:
+async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(CONTEXT, ContextBuilder())

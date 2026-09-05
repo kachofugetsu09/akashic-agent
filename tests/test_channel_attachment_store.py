@@ -556,3 +556,45 @@ async def test_adopt_rejects_source_path_replacement_after_fd_open(
     report = session_store.validate_attachment_metadata_integrity()
     assert report.artifact_count == 0
     assert len(report.incomplete_import_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_model_artifact_projection_reads_verified_bytes_without_changing_original(
+    stores,
+):
+    import io
+    from plugins.models.content import load_artifacts, render_content
+    from session.message import ContentPart
+
+    session_store, artifact_store = stores
+    buffer = io.BytesIO()
+    Image.new("RGBA", (16, 12), (10, 20, 30, 150)).save(buffer, format="PNG")
+    original = buffer.getvalue()
+    ref = await artifact_store.import_bytes(
+        original,
+        kind=AttachmentKind.IMAGE,
+        filename="photo.png",
+        media_type="image/png",
+    )
+    before = session_store.get_attachment(ref.artifact_id)
+    loaded = await load_artifacts(artifact_store, (ref,), accepts_images=True)
+    rendered = render_content(
+        ContentPart("artifact_ref", ref.artifact_id), artifacts=loaded
+    )
+    assert ref.artifact_id in rendered[0]["text"]
+    assert rendered[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    with pytest.raises(TypeError):
+        loaded[ref.artifact_id][1]["image_url"]["url"] = "changed"
+    text_only = await load_artifacts(artifact_store, (ref,), accepts_images=False)
+    assert len(text_only[ref.artifact_id]) == 1
+    assert "不接收图片" in text_only[ref.artifact_id][0]["text"]
+    assert ref.artifact_id in text_only[ref.artifact_id][0]["text"]
+    lease = await artifact_store.acquire(ref)
+    try:
+        assert await lease.read_bytes(max_bytes=len(original)) == original
+    finally:
+        await lease.aclose()
+    assert session_store.get_attachment(ref.artifact_id) == before
+    report = await artifact_store.validate_filesystem_integrity()
+    assert report.ready_count == 1
+    assert report.verified_bytes == len(original)

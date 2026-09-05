@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
+
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 
 from agent.plugins.artifacts import (
     ArtifactPointer,
@@ -332,7 +334,9 @@ def _activate_plugin_version(
     try:
         # 2. 在不可发现的 staging 目录复制代码并准备依赖，旧版本保持可见
         _ = shutil.copytree(clone_root, staging_root, dirs_exist_ok=True)
-        _prepare_static_python_runtimes(staging_root, static_manifest)
+        _prepare_static_python_runtimes(
+            staging_root, static_manifest, workspace=workspace
+        )
 
         # 3. 先落完整 artifact，再原子切换 stable/latest 指针对。
         if target_root.exists():
@@ -347,7 +351,21 @@ def _activate_plugin_version(
             existing_revision = _run_git(["rev-parse", "HEAD"], cwd=target_root)
             if existing_revision != source_revision:
                 raise RuntimeError(f"插件 artifact 身份冲突: {target_root}")
-            _remove_path(staging_root)
+            environment_ref = staging_root / ENVIRONMENT_FILE
+            previous_ref = target_root / ENVIRONMENT_FILE
+            if environment_ref.exists() and (
+                not previous_ref.is_file()
+                or previous_ref.is_symlink()
+                or previous_ref.read_bytes() != environment_ref.read_bytes()
+            ):
+                # 显式重装旧环境时发布新 artifact，失败仍可恢复完整旧 pointer。
+                target_root = (
+                    artifacts_root / f"{artifact_id}-runtime-{uuid4().hex[:16]}"
+                )
+                os.replace(staging_root, target_root)
+                created_artifact = True
+            else:
+                _remove_path(staging_root)
         else:
             os.replace(staging_root, target_root)
             created_artifact = True
@@ -508,47 +526,20 @@ def _validate_source_tree(
 def _prepare_static_python_runtimes(
     plugin_root: Path,
     manifest: StaticPluginManifest,
+    *,
+    workspace: Path,
 ) -> None:
-    """Stage all manifest-declared Python runtimes before publishing an artifact."""
-
-    # 1. Each requirements parent owns its own immutable .venv.
-    for index, runtime in enumerate(manifest.python):
-        requirements = plugin_root / runtime.requirements
-        runtime_root = requirements.parent
-        _ = _ensure_python_runtime(
-            runtime_root,
-            requirements,
-            f"{manifest.name} python[{index}]",
-        )
-
-
-def _ensure_python_runtime(
-    runtime_root: Path,
-    requirements: Path,
-    server_name: str,
-) -> Path:
-    venv_dir = runtime_root / ".venv"
-    venv_python = _venv_python_path(venv_dir)
-    if not venv_python.exists():
-        _run_command(
-            [sys.executable, "-m", "venv", str(venv_dir)],
-            cwd=runtime_root,
-            label=f"{server_name} venv",
-        )
-    _run_command(
-        [str(venv_python), "-m", "pip", "install", "-r", str(requirements)],
-        cwd=runtime_root,
-        label=f"{server_name} pip install",
-    )
-    return venv_python
-
-
-def _venv_python_path(venv_dir: Path) -> Path:
-    return (
-        venv_dir / "Scripts" / "python.exe"
-        if os.name == "nt"
-        else venv_dir / "bin" / "python"
-    )
+    """在最终耐久路径准备环境；安装 cache 只保存不可变引用。"""
+    if manifest.python:
+        environments = PythonEnvironments(workspace)
+        refs = {
+            runtime.runtime_root: environments.prepare(plugin_root, runtime)
+            for runtime in manifest.python
+        }
+        with (plugin_root / ENVIRONMENT_FILE).open("w") as stream:
+            _ = stream.write(json.dumps(refs, sort_keys=True))
+            stream.flush()
+            os.fsync(stream.fileno())
 
 
 def _run_git(args: list[str], cwd: Path | None = None) -> str:
@@ -565,27 +556,5 @@ def _run_git(args: list[str], cwd: Path | None = None) -> str:
     raise RuntimeError(
         "git 命令失败: "
         + " ".join(args)
-        + f"\nstdout:\n{result.stdout.strip()}\nstderr:\n{result.stderr.strip()}"
-    )
-
-
-def _run_command(
-    args: list[str],
-    *,
-    cwd: Path,
-    label: str,
-) -> None:
-    result = subprocess.run(
-        args,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=os.environ.copy(),
-    )
-    if result.returncode == 0:
-        return
-    raise RuntimeError(
-        f"{label} 失败: {' '.join(args)}"
         + f"\nstdout:\n{result.stdout.strip()}\nstderr:\n{result.stderr.strip()}"
     )

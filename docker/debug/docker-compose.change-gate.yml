@@ -15,7 +15,7 @@ services:
       AKASHIC_PLUGIN_HOME: /sandbox/plugin-home
       HOME: /sandbox/home
       npm_config_offline: "true"
-      PYTEST_ADDOPTS: "-p no:cacheprovider"
+      PYTEST_ADDOPTS: "-p no:cacheprovider --basetemp=/sandbox/pytest"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ${AKASHIC_CHANGE_GATE_SANDBOX:?set by gate.py}/app:/app:ro

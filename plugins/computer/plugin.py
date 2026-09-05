@@ -62,7 +62,7 @@ async def apply(ctx: Context, config: object) -> None:
         ctx,
         McpServerDefinition(
             name="computer",
-            command=("mcp_server.py",),
+            command=("python", "mcp_server.py"),
             required_tools=(
                 "browser_observe",
                 "browser_action",

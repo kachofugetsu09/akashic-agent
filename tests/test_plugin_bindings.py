@@ -359,3 +359,60 @@ async def apply(ctx, config):
         log.close()
         await other.terminate_all()
         await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_content_binding_keeps_registered_protocol_owner_after_source_removal(
+    tmp_path,
+):
+    from plugins.content.plugin import CONTENT, open_content
+
+    sources = tmp_path / "plugins"
+    sources.mkdir()
+    shutil.copytree(
+        Path(__file__).resolve().parents[1] / "plugins" / "content",
+        sources / "content",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    protocol = sources / "protocol"
+    protocol.mkdir()
+    (protocol / "plugin.py").write_text("""
+from agent.plugin_composition import ServiceKey
+from plugins.content.api import TextProtocol, Span
+from session.message import ContentPart
+api_version = 3
+name = "protocol"
+version = "1.0.0"
+inject = (ServiceKey("content.v1"),)
+async def apply(ctx, config):
+    async def decode(source, references):
+        return (Span(len(source.text), len(source.text), (ContentPart("sample", "fixed A"),)),)
+    await ctx.require(inject[0]).register(ctx, TextProtocol(
+        name="sample", content={"sample": lambda part: ()},
+        prompt="Protocol A", decode=decode,
+    ))
+""")
+    host = manager(tmp_path, [sources])
+    log = MessageLog(tmp_path / "messages.db")
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            content = snapshot.composition_root.context.require(CONTENT)
+            identity = content.save_binding(bindings)
+            async with content.bind() as view:
+                original = await view.decode("body")
+        await host.terminate_all()
+        shutil.rmtree(sources)
+        restored = manager(tmp_path, [])
+        bindings = Bindings(log, restored._archive, restored.open_binding)
+        async with open_content(bindings, identity) as view:
+            assert view.prompts == ("Protocol A",)
+            assert await view.decode("body") == original
+            assert set(view.checks) == {"text", "sample"}
+        with pytest.raises(RuntimeError, match="释放"):
+            await view.decode("late")
+        await restored.terminate_all()
+    finally:
+        log.close()
+        await host.terminate_all()

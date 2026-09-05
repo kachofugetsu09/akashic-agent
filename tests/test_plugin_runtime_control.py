@@ -4,13 +4,11 @@ import asyncio
 import hashlib
 import json
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import certifi
 import pytest
 
 from agent.control.context import mint_plugin_child_capability
@@ -19,6 +17,7 @@ from agent.control.ports import ControlExecutionResult
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
 from agent.plugins.artifacts import read_pointers, resolve_pointer
+from agent.plugins.generation import PluginGeneration
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.reload_journal import ReloadJournal
@@ -256,6 +255,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
     old_generation = old_lease.snapshot.generations[plugin_id]
     old_runtime = _composition_runtime(manager, old_generation)
     old_server = _mcp_server(old_runtime)
+    old_ca_bundle = _runtime_ca_bundle(old_generation)
 
     try:
         # 1. 同版本提交新 revision，并等待真实 latest MCP 可租用。
@@ -288,7 +288,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
             )
         } == {
             "artifact": str(old_generation.code_dir),
-            "ca_bundle": str(_runtime_ca_bundle(old_artifact)),
+            "ca_bundle": str(old_ca_bundle),
             "ca_certificates": old_probe["ca_certificates"],
             "data_dir": str(
                 tmp_path / "workspace" / "plugin-data" / "runtime_mcp-lab"
@@ -302,6 +302,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         assert "runtime/plugin-validation" in str(latest_probe["data_dir"])
         assert latest_probe["pid"] != old_probe["pid"]
         assert latest_probe["runtime_version"] == "v2"
+        assert latest_probe["ca_bundle"] != str(old_ca_bundle)
 
         # 3. 候选 lease 排空后，promotion 必须等待旧 stable lease 排空。
         candidate_snapshot = latest_lease.snapshot
@@ -333,6 +334,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         data_path = Path(str(updated["dataPath"]))
         _ = await app._uninstall_plugin(plugin_id)
         assert not plugin_base.exists()
+        assert old_ca_bundle.is_file()
         assert data_path.is_dir()
     finally:
         for lease in (latest_lease, promoted_lease, old_lease):
@@ -432,14 +434,15 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
     old_generation = old_lease.snapshot.generations[plugin_id]
     old_runtime = _composition_runtime(manager, old_generation)
     old_server = _mcp_server(old_runtime)
+    old_ca_bundle = _runtime_ca_bundle(old_generation)
 
     try:
-        # 1. 建立新 latest 后模拟旧安装器提前删除 CA bundle。
+        # 1. 建立新 latest 后模拟旧环境材料丢失。
         _write_runtime_mcp_source(source, runtime_version="v2")
         _commit_all(source, "runtime-v2")
         _ = await app._install_plugin(str(source), "lab", "", [])
         latest_lease = manager.snapshot_store.lease(selector="latest")
-        _runtime_ca_bundle(old_artifact).unlink()
+        old_ca_bundle.unlink()
 
         # 2. 旧 MCP 在调用时才读取路径，oracle 必须命中原事故而不是静默切新代。
         error_result = await old_server.route().call("probe", {})
@@ -450,6 +453,7 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
         latest_runtime = _composition_runtime(manager, latest_generation)
         latest_probe = await _call_runtime_probe(_mcp_server(latest_runtime))
         assert latest_probe["runtime_version"] == "v2"
+        assert latest_probe["ca_bundle"] != str(old_ca_bundle)
     finally:
         if latest_lease is not None and latest_lease.active:
             await latest_lease.release()
@@ -655,9 +659,6 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "    print(json.dumps(response), flush=True)\n",
         encoding="utf-8",
     )
-    ca_bundle = _runtime_ca_bundle(source)
-    ca_bundle.parent.mkdir(parents=True, exist_ok=True)
-    _ = ca_bundle.write_bytes(Path(certifi.where()).read_bytes())
     _ = (source / "akashic.plugin.toml").write_text(
         "schema_version = 1\n"
         "name = \"runtime_mcp\"\n"
@@ -675,20 +676,16 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
     )
 
 
-def _runtime_ca_bundle(root: Path) -> Path:
-    """返回与 PATH 实际启动的 MCP Python 版本一致的 certifi 路径。"""
-
-    python_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
-    return (
-        root
-        / "mcp"
-        / ".venv"
-        / "lib"
-        / python_dir
-        / "site-packages"
-        / "certifi"
-        / "cacert.pem"
+def _runtime_ca_bundle(generation: PluginGeneration) -> Path:
+    """从启动命令固定的 interpreter 取得真实环境 CA，不猜测安装目录。"""
+    interpreter = dict(generation.static_runtime_commands)["mcp:runtime_probe"][0]
+    result = subprocess.run(
+        [interpreter, "-I", "-B", "-c", "import certifi; print(certifi.where())"],
+        capture_output=True,
+        text=True,
+        check=True,
     )
+    return Path(result.stdout.strip())
 
 
 def _directory_digest(root: Path) -> str:

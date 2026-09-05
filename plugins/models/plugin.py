@@ -13,6 +13,7 @@ from agent.plugin_composition import (
 from .litellm_catalog import LiteLlmCapabilityCatalog
 from .state import ModelsState
 from .store import ModelsStore
+from .projection import MODEL_CALLS
 
 api_version = 3
 name = "models"
@@ -60,4 +61,5 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(EMBEDDINGS, state.embeddings)
     _ = await ctx.provide(MODEL_CATALOG, state.catalog)
     _ = await ctx.provide(MODEL_SETTINGS, state.settings)
+    _ = await ctx.provide(MODEL_CALLS, store.read_call)
     _ = await ctx.on(SNAPSHOT_SEALING, state.seal)

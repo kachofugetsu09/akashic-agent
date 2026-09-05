@@ -703,3 +703,18 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 | `sessions.db/message_bindings` | Message writer 在正文同一事务追加引用 | 引用不可原位替换；正常日志只追加 | 只能随明确的消息/会话管理减少，不级联删除归档或 binding descriptor |
 
 装配历史 Root 不调用正式启动事件，也不接入当前会话、调度或发送 owner。归档只有代码恢复权，不拥有迁移、删除或回滚正式 plugin-data 的权限。第 06 层使用新增文件目录和既有 SQL schema，没有新增 yoyo；本任务的正式 workspace 未被改写。
+
+
+## Message 插件栈第 07 层：固定 Python 环境
+
+这是新增恢复材料，不是插件数据快照；行为合同见设计第 18.4 节。Tool receipt 复用第 05 层 `owner_records`，不新增 SQL 表。
+
+| 对象 | 正常增加及 owner | 原位更新 / 逻辑失效 | 物理减少与恢复证据 |
+|---|---|---|---|
+| `runtime/plugin-python-environments/<uuid>/` | 安装 owner 在最终路径创建每个 runtime 的 `.venv`；有依赖时先复制固定代码到 `source/`，供本地构建或 editable 安装使用 | 发布后不改写；环境树 hash、代码、requirements 与宿主基础 Python 校验不符就拒绝打开 | 只清理本次尚未发布 descriptor 的新 UUID；发布后没有自动 GC。恢复须保留整个目录和原最终路径，不能只复制包或移动 venv |
+| 同目录 `<input-hash>.ref` | 安装 owner 以原子 hardlink 固定首次解析的环境 descriptor 引用并 fsync | 已发布引用不覆盖；并发重复准备读取胜出的引用 | 没有自动减少；并发已发布但未获引用的环境也保留，不能由 cache 卸载清理 |
+| `runtime/plugin-archives/<hash>.json` 环境 descriptor v1 | 安装 owner 在环境准备完成后增加，记录相对 UUID、代码、requirements、基础 Python 身份和树 hash | 不可变；与代码 descriptor 分别校验版本 | 无自动减少；与环境目录、代码归档一起备份。基础解释器不匹配时明确失败，不自动下载替代品 |
+| cache 内 `.akashic-python-environment` | 安装流程写入 runtime root 到环境引用的映射并 fsync；缺少引用的旧安装须显式重装，发布新 artifact 后切换安装指针 | 已发布 artifact 不原位补写或改写；该文件不属于插件代码 hash | 显式卸载可以删除代码 cache 中的映射，但不删除被引用环境。环境引用同时固定在 component descriptor 中，历史 binding 不依赖 cache |
+| component descriptor v2 的 `python_environments` | PluginManager 在固定组件时保存每个 runtime 的引用；空 requirements 的源码插件可由同一个环境 owner 准备 | 不可变；装配 Root 不打开环境，只有实际目标打开时才校验所需引用 | 无自动减少。第 06 层临时 v1 尚未上线，v2 直接拒绝它，无生产数据转换；正式旧安装按显式重装处理 |
+
+环境发布失败与材料丢失都必须能区分；读取路径不 mkdir、不 pip、不改写引用。环境协议依赖同一 POSIX 主机的基础 Python，不能替代操作系统、动态库与凭据的恢复合同。当前没有更换宿主后的自动迁移或 GC 协议。Workload 借用只保存内存 token；原 Workload owner 仍拥有控制面与持久状态，不复制容器数据或环境。调用 scope 清理失败只保留现有 host 的内存 owner/tombstone；公开查询与重试不另存业务或 reload 事务。监督进程的 boot 身份仍由 guardian 扫除残留子进程，历史资源不得触发正式插件指针恢复。所有验证使用一次性 workspace，正式数据未改写。

@@ -57,17 +57,22 @@ def encode_image_data_uri(file_path: Path) -> str:
 
     file_size = file_path.stat().st_size
     validate_image_attachment_budget([file_size])
-    raw = file_path.read_bytes()
+    return encode_image_bytes(file_path.read_bytes())
+
+
+def encode_image_bytes(raw: bytes) -> str:
+    """从 Artifact 的已核验只读 bytes 构造有界请求图，不重新打开来源路径。"""
+    validate_image_attachment_budget([len(raw)])
     mime = detect_supported_image_mime(raw[:4096])
     if mime is None:
         raise ValueError("不支持的图片格式。仅支持 PNG、JPEG、GIF、BMP、WebP。")
 
     try:
-        with Image.open(file_path) as image:
+        with Image.open(io.BytesIO(raw)) as image:
             _validate_image_pixels(image.width, image.height)
             image.verify()
 
-        with Image.open(file_path) as image:
+        with Image.open(io.BytesIO(raw)) as image:
             _validate_image_pixels(image.width, image.height)
             image = ImageOps.exif_transpose(image)
             if image.mode not in ("RGB", "L"):

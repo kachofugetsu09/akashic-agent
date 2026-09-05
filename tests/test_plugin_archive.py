@@ -69,21 +69,21 @@ def test_archive_rejects_nonportable_source_before_publication(tmp_path, kind):
 def test_failed_final_sync_retains_published_recovery_material(tmp_path, monkeypatch):
     original = source(tmp_path)
     archive = PluginArchive(tmp_path / "archive")
-    sync = archive_module._sync_directory
+    sync = archive_module.sync_directory
 
     def fail(path):
         if path == archive.path:
             raise OSError("disk sync failed")
         sync(path)
 
-    monkeypatch.setattr(archive_module, "_sync_directory", fail)
+    monkeypatch.setattr(archive_module, "sync_directory", fail)
     with pytest.raises(OSError, match="disk sync"):
         archive.save(original)
     (published,) = archive.path.iterdir()
     assert (archive.open(published.name) / "plugin.py").read_bytes() == (
         original / "plugin.py"
     ).read_bytes()
-    monkeypatch.setattr(archive_module, "_sync_directory", sync)
+    monkeypatch.setattr(archive_module, "sync_directory", sync)
     assert archive.save(original) == published.name
 
 

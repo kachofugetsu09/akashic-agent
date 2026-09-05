@@ -224,7 +224,7 @@ def materialize_static_command(
     if environment_root is None:
         raise RuntimeError("静态 Python command 缺少显式运行环境")
     interpreter = staged_python_interpreter(environment_root, runtime)
-    return (str(interpreter), *declaration.command[1:])
+    return (str(interpreter), "-E", "-s", "-B", *declaration.command[1:])
 
 
 def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginManifest:
