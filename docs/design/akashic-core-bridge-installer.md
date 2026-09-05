@@ -120,9 +120,10 @@ boot takeover / lease reaping / shutdown
 `ShellProcessManager` 的 execution ownership 约束。只有 boot takeover、lease reaping 和 shutdown
 关闭新 admission 并等待已进入的 manager operation；它们不会在新旧 boot 间并发复用 manager。
 
-协议 V1 准确描述为 versioned JSON envelope inside protobuf `BytesValue` over gRPC UDS。#353 不再宣称
-已经具有自定义 typed Protobuf schema。typed `.proto`、generated stub、metadata interceptor 和可重连
-streaming Exec 属于后续独立 Protocol V2，不塞入本次安装 PR。
+协议已按 [0055](../decisions/0055-host-bridge-uses-typed-protobuf.md) 升级为 typed Protobuf V2。
+Core 与 Bridge 在现有 release 事务中按同 commit 成对升级；旧 V1 route 不保留。预检、维护窗口、
+回收旧 boot 和真实恢复旧代的 owner 不变。字段与取消合同见
+[Host Bridge Protocol V2](host-bridge-protocol-v2.md)。
 
 ## 5. 安装与升级事务
 
