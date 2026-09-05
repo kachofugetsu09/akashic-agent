@@ -38,7 +38,7 @@ class ContentPart:
     value: object
 
     def __post_init__(self) -> None:
-        if not isinstance(self.kind, str) or not self.kind:
+        if not isinstance(self.kind, str) or not self.kind or self.kind == "tool_call":
             raise ValueError("内容类型不能为空")
         object.__setattr__(self, "value", freeze_json(self.value))
 

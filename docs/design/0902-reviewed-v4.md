@@ -128,7 +128,7 @@ Session 可拥有名称等独立元数据，但不拥有“当前 Turn”“当�
 
 ```text
 Input       { parts }
-Output      { parts, finish: continue | complete | quiet, model_facts? }
+Output      { parts, finish: continue | complete | quiet }
 ToolResult  { call_ref, outcome: success | denied | error | unknown, parts }
 Control     { action: pause | resume | abandon | failure, through_seq, reason? }
 
@@ -139,11 +139,11 @@ call_ref  = { message_id, part_index }
 
 Input/Output 表示消息用途，不替代 author：应用可以提交待处理输入，人类之外的来源也可以产生 Input。工具正文是否成功由 ToolResult 表达，不从自然语言猜测。`quiet` 是生产者明确选择无可见回复；空 provider 输出不是 quiet。`failure` 只记录已观察到的失败，不谎称 Agent 生成了一段错误正文。
 
-`binding_id` 指向能力 owner 保存的不可变工具绑定，包含工具、generation、参数 schema 与授权依据；它不等于可重新解析到最新版的工具名。调用提交前确定该绑定，提交事务同时保存它的耐久引用，避免 call 已落盘但 receipt 尚未 prepare 时热更丢失旧实现。执行前仍检查当前权限；旧授权记录不能绕过后来撤权。
+`binding_id` 指向能力 owner 保存的不可变工具绑定，包含工具、generation、参数 schema 与授权依据；它不等于可重新解析到最新版的工具名。调用提交前确定该绑定。各内容 owner 的纯 schema 校验函数也返回本块引用的 binding IDs，无引用则返回空 tuple；日志不识别具体内容 kind，将这些引用与 ToolCall.binding_id 在提交事务中一并保存，避免 call 已落盘但 receipt 尚未 prepare 时热更丢失旧实现。执行前仍检查当前权限；旧授权记录不能绕过后来撤权。
 
 Control 的目标由消息自身的 Session/source 与 `through_seq` 共同确定：仅影响该来源截至此序号的未完成输入及其已提交调用，不是“执行时碰巧存在的任务”。来源 owner 校验目标属于当前可控制的前缀；旧 scope handle 只作接纳时的并发条件，不落成持久运行身份。完整控制规则见 7.4。
 
-`model_facts` 仅在模型输出上保存实际模型归属、usage 和 provider 要求的 opaque replay 数据。它不是第二份 history。provider role、请求 envelope、缓存 key 由模型 adapter 从有效内容投影；外部 Input 不能仅凭作者或来源取得 system/developer 权限。
+`model.facts` 是普通 ContentPart，由 Model owner 定义 schema，用于保存实际模型归属、usage 和 provider 要求的 opaque replay 数据。组合只向模型 Output writer 授予此内容类型，Input、ToolResult 和普通命令回复没有该 grant；模型 replay 与预算读者只消费经此合同接纳的事实。Core 不为它新增字段或专属授权。它不是第二份 history。provider role、请求 envelope、缓存 key 由模型 adapter 从有效内容投影；外部 Input 不能仅凭作者或来源取得 system/developer 权限。
 
 ### 3.2 来源与作者独立
 
@@ -766,10 +766,10 @@ Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。�
 |---|---|---|
 | 01 合同 | 本设计、真实插件功能落点、验收和删除边界 | 无持久变化，不创建空迁移 |
 | 02 Message 类型与 Turn 能力 | 不可变 Message 合同、无状态投影普通插件；用独立调用证明分组无需执行对象 | 不改 schema，不接管旧 writer；Turn 不建表，不创建空迁移 |
-| 03 Message 日志 | 窄读取/追加/CAS、schema 与历史转换在隔离 fixture 验收 | yoyo 与新 schema 同层提交；保留旧事实并核对 ID/seq/正文、重复执行和 crash 恢复 |
+| 03 Message 日志 | 窄读取/追加/CAS、schema 与历史转换在隔离 fixture 验收 | yoyo 与新 schema 同层提交；转换已有 messages，核对 ID/seq/正文、重复执行和 crash 恢复；旧 turns 原样保留，由第 06 层接管 |
 | 04 内容与 Context | 移除共享可变 Prompt/AfterReasoning 编排；Citation/Meme 形态的普通能力样例 | 仅改变新消息内容无需重写旧消息；有配置归属迁移时随本 PR |
 | 05 Model、Tool 与资源 | 单次推理/工具独立调用、通用 Task、持久绑定、最终参数授权与 effect 恢复 | 所需 binding/receipt schema 与配置脚本随本 PR；执行前后 crash point，不盲重跑 |
-| 06 回复与消费接入 | ReAct/conversation、Akasha/compaction/记忆读者及实时协议使用新日志；接管命令、暂停/恢复 | 本层引入的 Akasha provenance/消费 ledger 与控制状态迁移同 PR；学习状态保全 |
+| 06 回复与消费接入 | ReAct/conversation、Akasha/compaction/记忆读者及实时协议使用新日志；接管命令、暂停/恢复 | 本层引入的旧 turns 尾部、Akasha provenance/消费 ledger 与控制状态迁移同 PR；学习状态保全 |
 | 07 Delivery 与来源 | 独立发送/重试；Scheduler/Subagent/Wake 组合公开能力；发布操作脱离父 Turn | Delivery/来源状态脚本随本 PR；已发送不重发、ACK 丢失与重启验收 |
 | 08 删除与累计验收 | 删除旧 Worker/Pipeline/Attempt 执行权与重复入口；同步长期规格、能力手册和删除账本 | 不 DROP 历史表或自动删除数据；剩余实际 schema 变化仍附本层脚本，不能补漏前层迁移 |
 
@@ -780,3 +780,29 @@ Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。�
 Yoyo 脚本只追加到 `migrations/yoyo/`，显式声明 `__depends__`，不修改已合入历史脚本。仅初始化新空库的 schema 不足以通过升级验收。脚本在 schema owner 所在层评审并覆盖正常升级、重复执行、执行中断和恢复；涉及多文件发布时有耐久备份及 receipt。回滚若无法无损表达新写入，应明确要求停写、保存新事实并成套恢复，不能写一个 DROP 新表的伪逆迁移。
 
 每层执行相关行为测试与 change-impact Gate，独立 Terra xhigh 概念审查相邻 diff；栈顶再做累计协议、持久化和公开场景 Gate。只创建 draft PR，等待用户逐个 review；不合并、不发布。当前恢复点为独立 worktree 基线和 `_backups/message-plugins-contract-20260904-232201`，原设计 worktree 的未提交修改保持不动。
+
+## 17. 旧日志迁移的具体保全合同
+
+第 03 层引入 Message schema 与同层 yoyo，仅转换已有 messages；旧 turns 和其引用原样保留。第 06 层在回复、控制和消费者接管时，附自己的 yoyo 处理下述旧 turns 尾部及消费边界。整栈一起 review、合并和发布，不要求中间 release 独立运行。以下转换只在隔离副本验收，本次不操作正式 workspace。
+
+旧 messages 的 `id/session_key/seq/ts/content/tool_chain/extra/role` 都是迁移输入。原 message ID、seq、接纳时间和正文文本保持；原始 `tool_chain`、`extra` JSON 文本作为已声明的历史内容保全，不通过 parse/re-encode 冒充字节相同。`role` 只是旧协议角色，不足以证明真实作者；作者标为 `legacy-attribution-unknown`，原 role 留在 provenance。没有来源证据的旧消息进入稳定 `legacy-unattributed` source；不从 proactive=true 猜 Wake、Scheduler 或具体 producer。该来源没有默认响应插件，不自动接纳新工作。
+
+原 assistant 的工具轨迹保留在其原消息的 `history.transcript` part：raw JSON、SHA-256、旧 schema 标识及 `complete/truncated/unknown` 完整性。当前数据不能证明完整时使用 unknown，不恢复已被截断的字节，也不把旧轨迹伪造成独立 ToolCall/ToolResult。这样同时保持旧 seq 与真实记录顺序；新的运行路径只追加原生 call/result Message，不再生成历史轨迹块。
+
+`history.provenance` 保存原 role、原始 extra 及 digest。已登记的附件仍使用原 artifact ID 和原 message binding；媒体、delivery、client ID、旧 interaction 等真实关联必须在新历史投影中可读取，不能只在备份中存在。Context 仍能读取旧聊天正文、附件及不可执行的历史工具轨迹；“不调度旧 source”不等于把用户过去的对话从上下文抹掉。
+
+旧可续接输入不能一律归档。第 06 层按最新未完成记录及明确的 `continuedFromTurnId/interactionId` 恢复旧链，再独立核对旧 channel/chat/inbound 身份；执行链本身不证明来源。缺少来源证据的记录只归档并列入迁移报告，不升级成可执行 conversation。已经有确切最终 Message 引用的尾部先核对提交事实，不能仅按 failed 状态判定尚待回复。
+
+对已证明属于 conversation 的 open 链，按整条链的 `USER_MESSAGE.ordinal` 枚举全部用户输入。每项通过明确的 item/message/client 引用映射已有 Message，或按旧 record/item 身份迁入 Input；不按正文或时间去重。旧时代缺少 ordinal 的记录保留原证据，不猜恢复顺序。每个已证明的 open conversation 链，无论是否新增 Input，都在同一 SQLite 事务提交 migration-author 的 `pause(through_seq)`、需要迁入的 Input 及全部旧 item→existing/new Message 映射 receipt。through_seq 固定为该链迁后 conversation 前缀的最高已接纳 seq，覆盖全已落消息与部分未落两种情况；commit 后才通知消费者。启动不为 `seq <= through_seq` 的输入创建任务；以后真实接纳的 Input 超过该边界便可唤醒，并在 Context 中带上这些旧输入。pause 是前缀截止，不是永久禁用来源。
+
+旧已结算工具仅供不可执行的历史 Context；可续接尾部存在 `in_progress/interrupted/cancelled` 工具项或缺少 terminal effect receipt 时，迁移评估及正式切换必须停止并报告实际记录，不能静默略过或盲重跑。无精确信息时不假称旧外部效果已回滚。上述输入映射与下述归档共享旧 record/item 引用，不把同一输入当作两条新聊天事实。
+
+旧 turns 中不能通过确切 record/item/message 引用证明已转入 Message 的事实，追加为迁移者产生的 `Output(quiet, history.record)`，不新增 Core body。该 part 包含原行所有 nullable 字段的原始标量/JSON 文本、表与 record 引用、来源快照及 digest；不是可执行 Input，也不包含可被 Tool 发现的原生 call。quiet 仅表示迁移者不生成新的用户回复，不重述原执行成功或失败。原时间和状态保存在记录内，Message 的 recorded_at 是实际迁移追加时间。导入顺序固定 `(created_at, id)`，身份由旧 table/record 确定，映射与提交结果保证中断后重跑不会再分配一组 seq。不能按相同正文猜测两条输入是同一事实。
+
+`history.record` 使用独立、无默认 producer 的 `history` source，author 为迁移者。默认 conversation Context 和 Akasha 不把这类迁移记录当新聊天或学习输入；历史检查通过明确标注的只读视图展开。它与前段仍可用于上下文的旧聊天 Message 不同。历史内容 schema 必须在受限 writer append 前校验；普通输出 writer 没有 `history.*` 内容授权，迁移 grant 仅允许指定 source、body 和历史 schema。
+
+Akasha 的旧样本、权重、向量、原 message IDs 与旧 provenance 原样保留。新投影消费 cursor 从切换边界开始，不能因迁入 quiet 记录或启用新分组而重学旧样本。旧样本的重建仍要求固定旧规则与来源；不得自动用新 Turn 插件替换。旧 turns 表作为只读恢复证据保留，不参与新工作准入、调度或工具恢复，也不自动 DROP。
+
+迁移先验证已知表结构和引用，再做原生 SQLite 一致备份，固定来源 logical digest 与行数；未知同版本异构 schema、缺失关联或 digest 不符均停止且不修改权威数据。转换在单库事务中完成，保留已有 FK/附件绑定与 Session 的不复用序号；提交后复核全部旧消息正文、身份、seq、raw provenance、附件绑定以及 integrity/foreign_key_check。Yoyo ledger 在实际转换完成后落账；若转换已提交但 ledger 尚未写入，重跑先核对提交 receipt，不再次导入。数据库之外的文件发布另有耐久 receipt，不假称能靠 SQLite rollback 撤回。
+
+第 03 层删除旧 messages.content FTS 派生表及其三个触发器，原消息 rowid 保持。第 04 层由历史读取/检索能力建立新内容索引；整栈顶验收必须证明搜索可用，中间层不宣称已经接管旧检索。迁移前识别其实际 schema，不因对象名字相同就视作可删除缓存。
