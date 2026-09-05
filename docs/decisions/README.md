@@ -60,6 +60,7 @@
 | [0052](0052-compaction-and-markdown-memory-are-ordinary-plugins.md) | accepted / implementing | Compaction 与 Markdown 记忆是普通插件 | CTX-007、MEM-001～MEM-011、PLG-001～PLG-014、SES-003～SES-005 |
 | [0053](0053-plugins-declare-managed-workloads.md) | accepted / implementing | 插件声明受管 Workload | RUN-016、PLG-017、WEBUI-008、WSP-006 |
 | [0054](0054-model-sync-refreshes-public-capabilities.md) | accepted / implementing | 模型同步刷新公共能力目录 | RUN-011、ONB-001、WSP-001 |
+| [0055](0055-host-bridge-uses-typed-protobuf.md) | accepted | Host Bridge 使用 typed Protobuf V2 | RUN-013～RUN-015、SH-001～SH-003 |
 
 ## 新增规则
 
