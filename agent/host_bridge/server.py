@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import hashlib
 import hmac
 import logging
@@ -15,16 +14,27 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
-from typing import Any, AsyncGenerator, Awaitable, Callable
+from typing import Any, AsyncGenerator, Awaitable, Callable, cast
+
+from google.protobuf.message import Message
 
 import grpc
 
-from agent.host_bridge.protocol import SERVICE_NAME
-from agent.host_bridge.protocol import decode_message
-from agent.host_bridge.protocol import deserialize_message
-from agent.host_bridge.protocol import encode_message
-from agent.host_bridge.protocol import serialize_message
+from agent.host_bridge import host_bridge_pb2 as pb
+from agent.host_bridge import host_bridge_pb2_grpc as rpc
+from agent.host_bridge.protocol import (
+    CHANNEL_OPTIONS,
+    encode_execution,
+    encode_cleanup,
+    encode_file_result,
+    require_fields,
+    require_text,
+    require_positive,
+    require_nonnegative,
+    require_names,
+)
 from agent.tools.unified_exec import ExecutionCleanupReport
 from agent.tools.unified_exec import ExecutionResult
 from agent.tools.unified_exec import ShellProcessManager
@@ -39,7 +49,6 @@ from core.common.diagnostic_log import configure_logging
 from core.common.diagnostic_log import diagnostic_context
 from core.common.diagnostic_log import log_event
 
-_RpcHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 logger = logging.getLogger(__name__)
@@ -58,7 +67,92 @@ class _ManagerLease:
         self.operations_drained.set()
 
 
-class HostBridgeService:
+def _rpc[Request: Message, Reply: Message](
+    handler: Callable[["HostBridgeService", Request], Awaitable[Reply]],
+) -> Callable[
+    ["HostBridgeService", Request, grpc.aio.ServicerContext], Awaitable[Reply]
+]:
+    """在唯一 RPC 边界校验身份并记录诊断，取消始终向上传播。"""
+
+    @wraps(handler)
+    async def run(
+        self: "HostBridgeService", request: Request, context: grpc.aio.ServicerContext
+    ) -> Reply:
+        started = time.perf_counter()
+        method = handler.__name__
+        identity = cast(pb.RequestContext, cast(Any, request).context)
+        try:
+            # 1. 先校验认证与结构；后续 manager 只检查实时 lease 状态。
+            self._authenticate(identity, context)
+            with diagnostic_context(
+                session=identity.session_ref or None,
+                turn=identity.turn_id or None,
+                request_id=identity.request_id,
+            ):
+                if method != "Heartbeat":
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "host_bridge.rpc_started",
+                        method=method,
+                        boot_id=identity.boot_id,
+                        manager_id=identity.manager_id,
+                    )
+                reply = await handler(self, request)
+                if method != "Heartbeat":
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "host_bridge.rpc_completed",
+                        method=method,
+                        boot_id=identity.boot_id,
+                        manager_id=identity.manager_id,
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        outcome="completed",
+                    )
+                return reply
+        except asyncio.CancelledError:
+            # 2. 取消只结束本次 RPC 等待，不承诺进程未执行或输入未写入。
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            self._log_rpc_failure(
+                method,
+                identity.request_id,
+                identity.boot_id,
+                identity.manager_id,
+                started,
+                exc,
+                "invalid_argument",
+            )
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        except PermissionError as exc:
+            self._log_rpc_failure(
+                method,
+                identity.request_id,
+                identity.boot_id,
+                identity.manager_id,
+                started,
+                exc,
+                "permission_denied",
+            )
+            await context.abort(grpc.StatusCode.PERMISSION_DENIED, str(exc))
+        except Exception as exc:
+            self._log_rpc_failure(
+                method,
+                identity.request_id,
+                identity.boot_id,
+                identity.manager_id,
+                started,
+                exc,
+                "internal",
+            )
+            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
+        raise AssertionError("gRPC abort returned")
+
+    return run
+
+
+class HostBridgeService(rpc.HostBridgeServicer):
     """Own host shell managers and reap them when their Core lease expires."""
 
     def __init__(
@@ -96,33 +190,6 @@ class HostBridgeService:
         self._lock = asyncio.Lock()
         self._claim_lock = asyncio.Lock()
         self._active_boot_id: str | None = None
-
-    def rpc_handlers(self) -> grpc.GenericRpcHandler:
-        methods: dict[str, _RpcHandler] = {
-            "Inspect": self.inspect,
-            "ClaimBoot": self.claim_boot,
-            "Probe": self.probe,
-            "Heartbeat": self.heartbeat,
-            "Exec": self.exec_command,
-            "WriteStdin": self.write_stdin,
-            "Stop": self.stop,
-            "TerminateOwner": self.terminate_owner,
-            "ShutdownManager": self.shutdown_manager,
-            "ActiveExecutions": self.active_executions,
-            "FileTool": self.file_tool,
-            "SkillRequirements": self.skill_requirements,
-        }
-        return grpc.method_handlers_generic_handler(
-            SERVICE_NAME,
-            {
-                name: grpc.unary_unary_rpc_method_handler(
-                    self._rpc(name, handler),
-                    request_deserializer=deserialize_message,
-                    response_serializer=serialize_message,
-                )
-                for name, handler in methods.items()
-            },
-        )
 
     async def reap_expired(self) -> None:
         while True:
@@ -180,16 +247,16 @@ class HostBridgeService:
         if failures:
             raise RuntimeError("Host Bridge shutdown 未能确认清理全部 execution")
 
-    async def inspect(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Report Bridge identity without acquiring Core boot ownership."""
-
-        _ = self._identity(payload)
+    @_rpc
+    async def Inspect(self, request: pb.ContextRequest) -> pb.IdentityReply:
+        """报告身份，不获取或续期 boot ownership。"""
         return self._probe_payload()
 
-    async def claim_boot(self, payload: dict[str, Any]) -> dict[str, Any]:
+    @_rpc
+    async def ClaimBoot(self, request: pb.ContextRequest) -> pb.ClaimBootReply:
         """Fence the previous Core generation before admitting one boot owner."""
 
-        boot_id, _ = self._identity(payload)
+        boot_id = request.context.boot_id
         async with self._claim_lock:
             # 1. Close admission before waiting for in-flight manager operations.
             async with self._lock:
@@ -200,12 +267,12 @@ class HostBridgeService:
                         raise RuntimeError(
                             "Host Bridge 当前 boot 下存在外代 manager，拒绝确认 ownership"
                         )
-                    return {
-                        "ownerBootId": boot_id,
-                        "previousBootId": previous_boot_id,
-                        "cleanedManagerCount": 0,
-                        "cleanedExecutionCount": 0,
-                    }
+                    return pb.ClaimBootReply(
+                        owner_boot_id=boot_id,
+                        previous_boot_id=previous_boot_id,
+                        cleaned_manager_count=0,
+                        cleaned_execution_count=0,
+                    )
                 self._active_boot_id = None
                 leases = list(self._managers.items())
                 for _, lease in leases:
@@ -246,24 +313,25 @@ class HostBridgeService:
                 outcome="completed",
                 counts=f"managers:{len(leases)},executions:{sum(len(report.cleaned_execution_ids) for report in reports)}",
             )
-            return {
-                "ownerBootId": boot_id,
-                "previousBootId": previous_boot_id,
-                "cleanedManagerCount": len(leases),
-                "cleanedExecutionCount": sum(
+            return pb.ClaimBootReply(
+                owner_boot_id=boot_id,
+                previous_boot_id=previous_boot_id,
+                cleaned_manager_count=len(leases),
+                cleaned_execution_count=sum(
                     len(report.cleaned_execution_ids) for report in reports
                 ),
-            }
+            )
 
-    async def probe(self, payload: dict[str, Any]) -> dict[str, Any]:
-        _ = await self._lease(payload)
+    @_rpc
+    async def Probe(self, request: pb.ContextRequest) -> pb.IdentityReply:
+        _ = await self._lease(request.context)
         return self._probe_payload()
 
-    def _probe_payload(self) -> dict[str, Any]:
-        return {
-            "releaseCommit": self._release_commit,
-            "toolchainDigest": self._toolchain_digest,
-            "capabilities": [
+    def _probe_payload(self) -> pb.IdentityReply:
+        return pb.IdentityReply(
+            release_commit=self._release_commit,
+            toolchain_digest=self._toolchain_digest,
+            capabilities=[
                 "boot-fencing",
                 "exec",
                 "pty",
@@ -274,52 +342,50 @@ class HostBridgeService:
                 "raw-bytes",
                 "skill-requirements",
             ],
-        }
+        )
 
-    async def heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
-        _ = await self._lease(payload)
-        return {"alive": True}
+    @_rpc
+    async def Heartbeat(self, request: pb.ContextRequest) -> pb.HeartbeatReply:
+        _ = await self._lease(request.context)
+        return pb.HeartbeatReply(alive=True)
 
-    async def exec_command(self, payload: dict[str, Any]) -> dict[str, Any]:
-        argv = payload.get("argv")
-        requested_env = payload.get("env")
-        if (
-            not isinstance(argv, list)
-            or not argv
-            or not all(isinstance(item, str) and item for item in argv)
-        ):
-            raise ValueError("Host Bridge argv 必须是非空 string array")
-        if not isinstance(requested_env, dict) or not all(
-            isinstance(key, str) and isinstance(value, str)
-            for key, value in requested_env.items()
-        ):
-            raise ValueError("Host Bridge env 必须是 string map")
-        cwd_text = payload.get("cwd")
-        command = _required_string(payload, "command")
-        async with self._manager_operation(payload) as manager:
+    @_rpc
+    async def Exec(self, request: pb.ExecRequest) -> pb.ExecutionReply:
+        """验证公开参数后交给唯一 manager，直接返回原始输出字节。"""
+        # 1. protobuf 保证字段类型，这里检查 presence 和公开值域。
+        require_fields(
+            request, "tty", "yield_time_ms", "max_output_tokens", "hard_timeout_s"
+        )
+        require_text(request.command, "command")
+        require_text(request.owner_session_key, "owner_session_key")
+        if not request.argv:
+            raise ValueError("Host Bridge argv 必须非空")
+        require_names(request.argv, "argv")
+        require_nonnegative(request.max_output_tokens, "max_output_tokens")
+        require_positive(request.hard_timeout_s, "hard_timeout_s")
+        # 2. 进程与输出消费仍由原 manager 拥有。
+        async with self._manager_operation(request.context) as manager:
             result = await manager.exec_command(
-                command=command,
-                argv=argv,
-                cwd=None if cwd_text is None else Path(str(cwd_text)),
+                command=request.command,
+                argv=list(request.argv),
+                cwd=Path(request.cwd) if request.HasField("cwd") else None,
                 env=_host_environment(
-                    requested_env,
-                    _required_string(payload, "bootId"),
-                    self._runtime_cli,
+                    dict(request.env), request.context.boot_id, self._runtime_cli
                 ),
-                tty=bool(payload["tty"]),
-                yield_time_ms=int(payload["yieldTimeMs"]),
-                max_output_tokens=int(payload["maxOutputTokens"]),
-                hard_timeout_s=int(payload["hardTimeoutS"]),
-                owner_session_key=_required_string(payload, "ownerSessionKey"),
+                tty=request.tty,
+                yield_time_ms=request.yield_time_ms,
+                max_output_tokens=request.max_output_tokens,
+                hard_timeout_s=request.hard_timeout_s,
+                owner_session_key=request.owner_session_key,
             )
         log_event(
             logger,
             logging.INFO,
             "host_bridge.execution_yielded",
-            command_fp=hashlib.sha256(command.encode("utf-8")).hexdigest()[:16],
-            command_bytes=len(command.encode("utf-8")),
-            cwd=str(cwd_text or ""),
-            tty=bool(payload["tty"]),
+            command_fp=hashlib.sha256(request.command.encode("utf-8")).hexdigest()[:16],
+            command_bytes=len(request.command.encode("utf-8")),
+            cwd=request.cwd,
+            tty=request.tty,
             execution_id=result.execution_id,
             exit_code=result.exit_code,
             finish_reason=result.finish_reason,
@@ -327,42 +393,54 @@ class HostBridgeService:
             duration_ms=result.wall_time_ms,
             outcome="completed" if result.exit_code is not None else "running",
         )
-        return _result_payload(result)
+        return encode_execution(result)
 
-    async def write_stdin(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self._manager_operation(payload) as manager:
+    @_rpc
+    async def WriteStdin(self, request: pb.WriteStdinRequest) -> pb.ExecutionReply:
+        require_fields(
+            request, "execution_id", "chars", "yield_time_ms", "max_output_tokens"
+        )
+        require_positive(request.execution_id, "execution_id")
+        require_text(request.owner_session_key, "owner_session_key")
+        require_nonnegative(request.max_output_tokens, "max_output_tokens")
+        async with self._manager_operation(request.context) as manager:
             result = await manager.write_stdin(
-                execution_id=int(payload["executionId"]),
-                chars=str(payload.get("chars", "")),
-                yield_time_ms=int(payload["yieldTimeMs"]),
-                max_output_tokens=int(payload["maxOutputTokens"]),
-                owner_session_key=_required_string(payload, "ownerSessionKey"),
+                execution_id=request.execution_id,
+                chars=request.chars,
+                yield_time_ms=request.yield_time_ms,
+                max_output_tokens=request.max_output_tokens,
+                owner_session_key=request.owner_session_key,
             )
-        return _result_payload(result)
+        return encode_execution(result)
 
-    async def stop(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self._manager_operation(payload) as manager:
+    @_rpc
+    async def Stop(self, request: pb.StopRequest) -> pb.StopReply:
+        require_fields(request, "execution_id")
+        require_positive(request.execution_id, "execution_id")
+        require_text(request.owner_session_key, "owner_session_key")
+        async with self._manager_operation(request.context) as manager:
             stopped = await manager.terminate_execution(
-                int(payload["executionId"]),
-                owner_session_key=_required_string(payload, "ownerSessionKey"),
+                request.execution_id, owner_session_key=request.owner_session_key
             )
-        return {"stopped": stopped}
+        return pb.StopReply(stopped=stopped)
 
-    async def terminate_owner(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self._manager_operation(payload) as manager:
-            report = await manager.terminate_owner(
-                _required_string(payload, "ownerSessionKey")
-            )
-        return _cleanup_payload(report)
+    @_rpc
+    async def TerminateOwner(self, request: pb.OwnerRequest) -> pb.CleanupReply:
+        require_text(request.owner_session_key, "owner_session_key")
+        async with self._manager_operation(request.context) as manager:
+            report = await manager.terminate_owner(request.owner_session_key)
+        return encode_cleanup(report)
 
-    async def shutdown_manager(self, payload: dict[str, Any]) -> dict[str, Any]:
-        key = self._identity(payload)
+    @_rpc
+    async def ShutdownManager(self, request: pb.ContextRequest) -> pb.CleanupReply:
+        """排空旧 manager 的操作并确认回收，失败时保留清理事实。"""
+        key = (request.context.boot_id, request.context.manager_id)
         async with self._claim_lock:
             async with self._lock:
                 self._assert_active_boot(key[0])
                 lease = self._managers.get(key)
                 if lease is None:
-                    return _cleanup_payload(ExecutionCleanupReport((), (), ()))
+                    return encode_cleanup(ExecutionCleanupReport((), (), ()))
                 lease.reaping = True
             await lease.operations_drained.wait()
             report = await lease.manager.shutdown()
@@ -374,148 +452,88 @@ class HostBridgeService:
                         lease.last_seen = time.monotonic()
                     else:
                         del self._managers[key]
-        return _cleanup_payload(report)
+        return encode_cleanup(report)
 
-    async def active_executions(self, payload: dict[str, Any]) -> dict[str, Any]:
-        async with self._manager_operation(payload) as manager:
-            return {"executionIds": await manager.active_execution_ids()}
+    @_rpc
+    async def ActiveExecutions(
+        self, request: pb.ContextRequest
+    ) -> pb.ActiveExecutionsReply:
+        async with self._manager_operation(request.context) as manager:
+            return pb.ActiveExecutionsReply(
+                execution_ids=await manager.active_execution_ids()
+            )
 
-    async def file_tool(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Execute one existing filesystem tool against the host namespace."""
+    @_rpc
+    async def FileTool(self, request: pb.FileRequest) -> pb.FileReply:
+        """校验文件操作后复用已有文件工具，不建立第二套文件实现。"""
+        allowed_dir = (
+            Path(request.allowed_dir) if request.HasField("allowed_dir") else None
+        )
+        # 1. 每支 oneof 只拥有对应工具的公开参数。
+        match request.WhichOneof("operation"):
+            case "read":
+                read = request.read
+                require_fields(read, "path")
+                if read.HasField("offset"):
+                    require_nonnegative(read.offset, "offset")
+                if read.HasField("limit"):
+                    require_positive(read.limit, "limit")
+                async with self._manager_operation(request.context):
+                    result = ReadFileTool(
+                        allowed_dir=allowed_dir, enable_bridge=False
+                    ).read_from_disk(
+                        read.path,
+                        offset=read.offset,
+                        limit=read.limit if read.HasField("limit") else None,
+                    )
+            case "write":
+                require_fields(request.write, "path", "content")
+                async with self._manager_operation(request.context):
+                    result = await WriteFileTool(
+                        allowed_dir=allowed_dir, enable_bridge=False
+                    ).execute(request.write.path, request.write.content)
+            case "edit":
+                require_fields(request.edit, "path", "old_text", "new_text")
+                async with self._manager_operation(request.context):
+                    result = await EditFileTool(
+                        allowed_dir=allowed_dir, enable_bridge=False
+                    ).execute(
+                        request.edit.path,
+                        request.edit.old_text,
+                        request.edit.new_text,
+                        replace_all=request.edit.replace_all,
+                    )
+            case "list":
+                require_fields(request.list, "path")
+                async with self._manager_operation(request.context):
+                    result = await ListDirTool(
+                        allowed_dir=allowed_dir, enable_bridge=False
+                    ).execute(request.list.path)
+            case _:
+                raise ValueError("Host Bridge 文件操作缺失")
+        # 2. 模型投影留在 Core；Bridge 只转换已有文件结果。
+        return encode_file_result(result)
 
-        # 1. Authenticate the Core generation and validate the operation envelope.
-        operation = _required_string(payload, "operation")
-        arguments = payload.get("arguments")
-        if not isinstance(arguments, dict):
-            raise ValueError("Host Bridge FileTool arguments 必须是 object")
-        allowed_text = payload.get("allowedDir")
-        allowed_dir = None if allowed_text is None else Path(str(allowed_text))
-
-        # 2. Reuse the canonical tool implementation without recursively bridging.
-        tool_types = {
-            "read_file": ReadFileTool,
-            "list_dir": ListDirTool,
-            "write_file": WriteFileTool,
-            "edit_file": EditFileTool,
-        }
-        tool_type = tool_types.get(operation)
-        if tool_type is None:
-            raise ValueError(f"Host Bridge 不支持文件操作: {operation}")
-        tool = tool_type(allowed_dir=allowed_dir, enable_bridge=False)
-        async with self._manager_operation(payload):
-            if isinstance(tool, ReadFileTool):
-                result = tool.read_from_disk(**arguments)
-            else:
-                result = await tool.execute(**arguments)
-
-        # 3. Preserve multimodal raw-byte results across the RPC boundary.
-        if isinstance(result, ToolResult):
-            return {
-                "resultType": "toolResult",
-                "text": result.text,
-                "contentBlocks": result.content_blocks,
-                "mobileAttention": result.mobile_attention,
-            }
-        return {"resultType": "text", "text": result}
-
-    async def skill_requirements(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Report host capability names without exposing environment values."""
-
-        # 1. Authenticate the Core generation and validate the narrow request.
-        key = self._identity(payload)
+    @_rpc
+    async def SkillRequirements(
+        self, request: pb.SkillRequirementsRequest
+    ) -> pb.SkillRequirementsReply:
+        """只报告宿主能力名称，不返回环境变量值。"""
         async with self._lock:
-            self._assert_active_boot(key[0])
-        bins = _required_string_array(payload, "bins")
-        env = _required_string_array(payload, "env")
-
-        # 2. Partition names using the Bridge process capability environment.
-        available_bins = [name for name in bins if shutil.which(name) is not None]
-        available_env = [name for name in env if bool(os.environ.get(name))]
-        return {
-            "available": {
-                "bins": available_bins,
-                "env": available_env,
-            },
-            "missing": {
-                "bins": [name for name in bins if name not in available_bins],
-                "env": [name for name in env if name not in available_env],
-            },
-        }
-
-    def _rpc(
-        self,
-        method: str,
-        handler: _RpcHandler,
-    ) -> Callable[[Any, grpc.aio.ServicerContext], Awaitable[Any]]:
-        async def run(message: Any, context: grpc.aio.ServicerContext) -> Any:
-            started = time.perf_counter()
-            request_id = "invalid"
-            boot_id = ""
-            manager_id = ""
-            try:
-                document = decode_message(message)
-                request_id = _required_string(document, "requestId")
-                boot_id = str(document.get("bootId") or "")
-                manager_id = str(document.get("managerId") or "")
-                session = _optional_string(document, "sessionRef")
-                turn = _optional_string(document, "turnId")
-                with diagnostic_context(
-                    session=session,
-                    turn=turn,
-                    request_id=request_id,
-                ):
-                    if method != "Heartbeat":
-                        log_event(
-                            logger,
-                            logging.INFO,
-                            "host_bridge.rpc_started",
-                            method=method,
-                            boot_id=boot_id,
-                            manager_id=manager_id,
-                        )
-                    payload = await handler(document)
-                    if method != "Heartbeat":
-                        log_event(
-                            logger,
-                            logging.INFO,
-                            "host_bridge.rpc_completed",
-                            method=method,
-                            boot_id=boot_id,
-                            manager_id=manager_id,
-                            duration_ms=int((time.perf_counter() - started) * 1000),
-                            outcome="completed",
-                        )
-                    return encode_message({"ok": True, **payload})
-            except (KeyError, TypeError, ValueError) as exc:
-                self._log_rpc_failure(
-                    method,
-                    request_id,
-                    boot_id,
-                    manager_id,
-                    started,
-                    exc,
-                    "invalid_argument",
-                )
-                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
-            except PermissionError as exc:
-                self._log_rpc_failure(
-                    method,
-                    request_id,
-                    boot_id,
-                    manager_id,
-                    started,
-                    exc,
-                    "permission_denied",
-                )
-                await context.abort(grpc.StatusCode.PERMISSION_DENIED, str(exc))
-            except Exception as exc:
-                self._log_rpc_failure(
-                    method, request_id, boot_id, manager_id, started, exc, "internal"
-                )
-                await context.abort(grpc.StatusCode.INTERNAL, str(exc))
-            raise AssertionError("gRPC abort returned")
-
-        return run
+            self._assert_active_boot(request.context.boot_id)
+        require_names(request.bins, "bins")
+        require_names(request.env, "env")
+        available_bins = [
+            name for name in request.bins if shutil.which(name) is not None
+        ]
+        available_env = [name for name in request.env if bool(os.environ.get(name))]
+        return pb.SkillRequirementsReply(
+            available=pb.RequirementNames(bins=available_bins, env=available_env),
+            missing=pb.RequirementNames(
+                bins=[name for name in request.bins if name not in available_bins],
+                env=[name for name in request.env if name not in available_env],
+            ),
+        )
 
     def _log_rpc_failure(
         self,
@@ -545,8 +563,8 @@ class HostBridgeService:
                 exc_info=True,
             )
 
-    async def _lease(self, payload: dict[str, Any]) -> _ManagerLease:
-        key = self._identity(payload)
+    async def _lease(self, context: pb.RequestContext) -> _ManagerLease:
+        key = (context.boot_id, context.manager_id)
         async with self._lock:
             self._assert_active_boot(key[0])
             lease = self._managers.get(key)
@@ -568,12 +586,12 @@ class HostBridgeService:
     @asynccontextmanager
     async def _manager_operation(
         self,
-        payload: dict[str, Any],
+        context: pb.RequestContext,
     ) -> AsyncGenerator[ShellProcessManager]:
         """Admit one concurrent operation while fencing takeover and lease reaping."""
 
-        lease = await self._lease(payload)
-        key = self._identity(payload)
+        lease = await self._lease(context)
+        key = (context.boot_id, context.manager_id)
         async with self._lock:
             self._assert_active_boot(key[0])
             if self._managers.get(key) is not lease or lease.reaping:
@@ -595,21 +613,38 @@ class HostBridgeService:
                 f"requested={boot_id} active={self._active_boot_id or 'none'}"
             )
 
-    def _identity(self, payload: dict[str, Any]) -> tuple[str, str]:
-        token = _required_string(payload, "token")
-        if not hmac.compare_digest(token, self._token):
-            raise PermissionError("Host Bridge token 无效")
-        if _required_string(payload, "expectedReleaseCommit") != self._release_commit:
-            raise PermissionError("Host Bridge release commit 与客户端不一致")
+    def _authenticate(
+        self, identity: pb.RequestContext, context: grpc.aio.ServicerContext
+    ) -> None:
+        """只在 RPC 入口认证 token 和固定身份，不获取 boot ownership。"""
+        metadata = context.invocation_metadata()
+        if metadata is None:
+            raise PermissionError("Host Bridge token 缺失")
+        tokens = [value for key, value in metadata if key == "authorization"]
         if (
-            _required_string(payload, "expectedToolchainDigest")
-            != self._toolchain_digest
+            len(tokens) != 1
+            or not isinstance(tokens[0], str)
+            or not hmac.compare_digest(
+                tokens[0].encode("utf-8"), f"Bearer {self._token}".encode("utf-8")
+            )
         ):
+            raise PermissionError("Host Bridge token 无效")
+        for name, value in (
+            ("boot_id", identity.boot_id),
+            ("manager_id", identity.manager_id),
+            ("request_id", identity.request_id),
+            ("expected_release_commit", identity.expected_release_commit),
+            ("expected_toolchain_digest", identity.expected_toolchain_digest),
+        ):
+            require_text(value, name)
+        if identity.HasField("session_ref"):
+            require_text(identity.session_ref, "session_ref")
+        if identity.HasField("turn_id"):
+            require_text(identity.turn_id, "turn_id")
+        if identity.expected_release_commit != self._release_commit:
+            raise PermissionError("Host Bridge release commit 与客户端不一致")
+        if identity.expected_toolchain_digest != self._toolchain_digest:
             raise PermissionError("Host Bridge toolchain digest 与客户端不一致")
-        return (
-            _required_string(payload, "bootId"),
-            _required_string(payload, "managerId"),
-        )
 
 
 async def serve(
@@ -641,13 +676,8 @@ async def serve(
         runtime_checkout=runtime_checkout,
         bridge_python=bridge_python,
     )
-    server = grpc.aio.server(
-        options=(
-            ("grpc.max_receive_message_length", 16 * 1024 * 1024),
-            ("grpc.max_send_message_length", 16 * 1024 * 1024),
-        )
-    )
-    server.add_generic_rpc_handlers((service.rpc_handlers(),))
+    server = grpc.aio.server(options=CHANNEL_OPTIONS)
+    rpc.add_HostBridgeServicer_to_server(service, server)
     if server.add_insecure_port(f"unix:{socket_path}") != 1:
         raise RuntimeError(f"无法监听 Host Bridge socket: {socket_path}")
     await server.start()
@@ -674,31 +704,6 @@ async def serve(
         await server.stop(grace=2)
         socket_path.unlink(missing_ok=True)
         log_event(logger, logging.INFO, "host_bridge.stopped", outcome="completed")
-
-
-def _required_string(payload: dict[str, Any], name: str) -> str:
-    value = payload.get(name)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"Host Bridge {name} 必须是非空 string")
-    return value
-
-
-def _optional_string(payload: dict[str, Any], name: str) -> str | None:
-    value = payload.get(name)
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"Host Bridge {name} 必须是非空 string")
-    return value
-
-
-def _required_string_array(payload: dict[str, Any], name: str) -> list[str]:
-    value = payload.get(name)
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) and item for item in value
-    ):
-        raise ValueError(f"Host Bridge {name} 必须是非空 string 组成的 array")
-    return [str(item) for item in value]
 
 
 def _host_environment(
@@ -768,34 +773,6 @@ def _materialize_runtime_cli(
         os.fchmod(stream.fileno(), 0o500)
     temporary.replace(launcher)
     return launcher
-
-
-def _result_payload(result: ExecutionResult) -> dict[str, Any]:
-    return {
-        "outputBase64": base64.b64encode(result.output).decode("ascii"),
-        "wallTimeMs": result.wall_time_ms,
-        "originalTokenCount": result.original_token_count,
-        "outputOmittedBytes": result.output_omitted_bytes,
-        "executionId": result.execution_id,
-        "exitCode": result.exit_code,
-        "outputPath": result.output_path,
-        "finishReason": result.finish_reason,
-    }
-
-
-def _cleanup_payload(report: ExecutionCleanupReport) -> dict[str, Any]:
-    return {
-        "attempted": list(report.attempted_execution_ids),
-        "cleaned": list(report.cleaned_execution_ids),
-        "failures": [
-            {
-                "executionId": item.execution_id,
-                "errorType": item.error_type,
-                "message": item.message,
-            }
-            for item in report.failures
-        ],
-    }
 
 
 def main() -> None:
