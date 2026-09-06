@@ -74,7 +74,7 @@ Turn 排除语义一次性投影为 `effects.post_commit=suppress`，并删除�
 ## 影响
 
 - Akasha 是唯一内置的 embedding memory 插件；经典记忆插件和私有 reconciliation 通道删除。
-- 历史选择为 Scheduler、Subagent 和 Wake 筛选 Turn 使用 `in_memory + suppress`；现已分别由 [0055](0055-scheduler-keeps-internal-messages.md) 和 [0057](0057-internal-source-messages.md) 的完整内部 Message 保存协议取代。
+- 历史选择为 Scheduler、Subagent 和 Wake 筛选 Turn 使用 `in_memory + suppress`；现已分别由 [0058](0058-scheduler-keeps-internal-messages.md) 和 [0057](0057-internal-source-messages.md) 的完整内部 Message 保存协议取代。
 - Wake 已送达投影、后台 programmatic Turn 和 continuation 使用 `durable + suppress`。
 - Session 删除只删除 Session 事实；某个 Memory 插件若需要撤销自己的投影，应通过自己的领域 Tool 或生命周期协议拥有该能力。
 

@@ -107,8 +107,8 @@ systemd unit：akashic-experiment-<run-id>-*.service
 
 ### E2 · 本机Bridge协议
 
-- 启动一次性 Python Bridge UDS，使用真实 gRPC client 和 V1 Protobuf `BytesValue` JSON envelope
-  执行 exec、PTY、stdin、resize 和 raw file。
+- 启动一次性 Python Bridge UDS，使用真实 gRPC client 和 V2 typed Protobuf message
+  执行 exec、PTY、stdin、增量输出、stop、四种文件工具及图片 bytes 返回；resize 不在 V2 范围。
 - 并行启动不同owner的命令，验证输出、execution ID和stop不串线。
 - 断开boot lease，证明该boot进程组TERM→KILL并成为空集；其他boot/用户进程不受影响。
 - 发送错误major、过期token、非法owner、超大frame和断流，全部fail-loud。
@@ -142,7 +142,7 @@ systemd unit：akashic-experiment-<run-id>-*.service
   删除该实验worktree，不push、不创建真实PR。
 - 运行一个canary插件：source test → host CLI install → attached programmatic child → turn后提交；验证
   PluginManager、MCP和managed service未经过Bridge。
-- 生成文本与图片文件，经raw bytes进入Core附件链并在实验客户端读取。
+- 生成文本与图片文件，通过 FileTool 读取文本与图片 bytes；附件导入和客户端展示按独立附件合同验收。
 
 通过：SessionDB保留真实tool trace和model binding，V4 Flash High完成工具链，实验写集只落run目录。
 

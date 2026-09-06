@@ -385,7 +385,9 @@ class CompositionGenerationHost:
                     McpServerRegistry(
                         {name: binding}, root_instance_token=root.instance_token
                     ),
-                    _materialized_mcp_commands(bound_generation, {name: binding}),
+                    _materialized_mcp_commands(
+                        bound_generation, {name: binding}, scope_id=scope_id
+                    ),
                     mode=mode,
                     endpoint_ports=(
                         {}
@@ -983,8 +985,11 @@ def _materialized_process_definitions(
 def _materialized_mcp_commands(
     generation: PluginGeneration,
     bindings: Mapping[str, McpServerBinding],
+    *,
+    scope_id: str | None = None,
 ) -> dict[str, McpMaterializedCommand]:
     commands = dict(generation.static_runtime_commands)
+    materialized_scope = generation.generation_id if scope_id is None else scope_id
     return {
         name: McpMaterializedCommand(
             command=_runtime_command(
@@ -1000,10 +1005,13 @@ def _materialized_mcp_commands(
                 )
             ),
             env=MappingProxyType(
-                _core_environment(
-                    binding.runtime_data_dir,
-                    binding.runtime_workspace,
-                )
+                {
+                    **_core_environment(
+                        binding.runtime_data_dir,
+                        binding.runtime_workspace,
+                    ),
+                    "AKASHIC_MCP_SCOPE_ID": materialized_scope,
+                }
             ),
         )
         for name, binding in bindings.items()

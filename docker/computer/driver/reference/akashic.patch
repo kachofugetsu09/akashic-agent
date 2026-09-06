@@ -1,0 +1,148 @@
+--- a/scripts/browser-client.mjs
++++ b/scripts/browser-client.mjs
+@@ -8124,7 +8124,7 @@
+     disabledMemberIds: new Set(s),
+     displayBridge: {
+       displayImage: (c) => e.emitImage(c),
+-      displayValue: (c) => console.log(c),
++      displayValue: (c) => e.write(c.value),
+     },
+     executeAgentCommand: a.execute,
+   });
+--- a/scripts/browser-service.mjs
++++ b/scripts/browser-service.mjs
+@@ -1,3 +1,4 @@
++import { createAccessibilityCore } from "../../../accessibility.mjs";
+ const listeners = new Map();
+
+ const processShim = {
+@@ -8731,6 +8732,7 @@
+   kr = ((n) => (
+     (n.Default = ""),
+     (n.DisabledForLocalTesting = "disabled-for-local-testing"),
++    (n.AkashicContainer = "akashic-container"),
+     (n.GaasBrowserEnvironment = "gaas-browser-environment"),
+     n
+   ))(kr || {}),
+@@ -22495,17 +22497,15 @@
+               (s, a) => s + +(a.getClientRects().length > 0),
+               0,
+             ),
+-            matches: i
+-              .slice(0, 5)
+-              .map((s) => ({
+-                tag: s.tagName.toLowerCase(),
+-                role: s.getAttribute("role"),
+-                type: s.getAttribute("type"),
+-                ariaLabel: s.getAttribute("aria-label"),
+-                text: s.textContent?.trim().slice(0, 120) ?? "",
+-                visible: s.getClientRects().length > 0,
+-                disabled: "disabled" in s && !!s.disabled,
+-              })),
++            matches: i.slice(0, 5).map((s) => ({
++              tag: s.tagName.toLowerCase(),
++              role: s.getAttribute("role"),
++              type: s.getAttribute("type"),
++              ariaLabel: s.getAttribute("aria-label"),
++              text: s.textContent?.trim().slice(0, 120) ?? "",
++              visible: s.getClientRects().length > 0,
++              disabled: "disabled" in s && !!s.disabled,
++            })),
+           }),
+           void 0,
+           { timeoutMs: 1e3 },
+@@ -23885,6 +23885,10 @@
+     "page-asset-download",
+   ]),
+   NA = {
++    "akashic-container": {
++      bypassedSecurityChecks: R5,
++      operationsWithoutUserConsent: I5,
++    },
+     "": { bypassedSecurityChecks: Jg, operationsWithoutUserConsent: Jg },
+     "disabled-for-local-testing": {
+       bypassedSecurityChecks: R5,
+@@ -28546,7 +28550,7 @@
+   } catch {
+     return await t.filesystem.readBytes(
+       new URL(
+-        "../../../node_modules/zxing-wasm/dist/reader/zxing_reader.wasm",
++        "../../../../../node_modules/zxing-wasm/dist/reader/zxing_reader.wasm",
+         import.meta.url,
+       ),
+     );
+@@ -33028,11 +33032,10 @@
+       return Zy.buildRevision(t, e, r);
+     },
+   };
+-function _1(t, e) {
+-  return (pG ??= Promise.resolve()
+-    .then(() => (y1(), b1))
+-    .then(async ({ loadBrowserAccessibilityWasm: r }) => mG(await r(t, e))));
+-}
++function _1() {
++  return (pG ??= Promise.resolve(mG(createAccessibilityCore())));
++}
++
+ function mG(t) {
+   Zy = t;
+ }
+@@ -45457,6 +45460,7 @@
+   return r != null ? Promise.resolve({ browser: r }) : EY(t, e, n, o);
+ }
+ async function TY(t) {
++  if (bt(t) === "akashic-container") return {error: null, pipes: [t.env.CDP_BROWSER_BACKEND_PIPE_PATH]};
+   try {
+     return { error: null, pipes: await kY(t) };
+   } catch (e) {
+@@ -45520,6 +45524,8 @@
+     : { ...e, capabilities: { ...e.capabilities, tab: [...n, ki.info] } };
+ }
+ function RY(t, e) {
++  if (t.env.BROWSER_USE_SECURITY_MODE === "akashic-container")
++    return { ...e, apiSupportOverrides: { ...e.apiSupportOverrides, "Tab.ax": true } };
+   let r = gt(t, _v),
+     n = "codex-browser-use-tinysky",
+     o = !1;
+@@ -46743,13 +46749,11 @@
+     e.reverse(),
+     dM.test(rf(e).function || "") &&
+       (e.pop(), dM.test(rf(e).function || "") && e.pop()),
+-    e
+-      .slice(0, 50)
+-      .map((r) => ({
+-        ...r,
+-        filename: r.filename || rf(e).filename,
+-        function: r.function || "?",
+-      }))
++    e.slice(0, 50).map((r) => ({
++      ...r,
++      filename: r.filename || rf(e).filename,
++      function: r.function || "?",
++    }))
+   );
+ }
+ function rf(t) {
+@@ -53296,15 +53300,13 @@
+             headers: r.headers,
+             keepalive: r.keepAlive,
+           };
+-          return t
+-            .fetch(r.url, o)
+-            .then((i) => ({
+-              statusCode: i.status,
+-              headers: {
+-                "x-sentry-rate-limits": i.headers.get("X-Sentry-Rate-Limits"),
+-                "retry-after": i.headers.get("Retry-After"),
+-              },
+-            }));
++          return t.fetch(r.url, o).then((i) => ({
++            statusCode: i.status,
++            headers: {
++              "x-sentry-rate-limits": i.headers.get("X-Sentry-Rate-Limits"),
++              "retry-after": i.headers.get("Retry-After"),
++            },
++          }));
+         }),
+     });
+     let e = Kl(t);

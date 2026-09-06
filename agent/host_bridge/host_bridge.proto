@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+package akashic.host.v2;
+
+// 单一 release 内的私有主机协议；认证 token 只通过 metadata 传输。
+service HostBridge {
+  rpc Inspect(ContextRequest) returns (IdentityReply);
+  rpc ClaimBoot(ContextRequest) returns (ClaimBootReply);
+  rpc Probe(ContextRequest) returns (IdentityReply);
+  rpc Heartbeat(ContextRequest) returns (HeartbeatReply);
+  rpc Exec(ExecRequest) returns (ExecutionReply);
+  rpc WriteStdin(WriteStdinRequest) returns (ExecutionReply);
+  rpc Stop(StopRequest) returns (StopReply);
+  rpc TerminateOwner(OwnerRequest) returns (CleanupReply);
+  rpc ShutdownManager(ContextRequest) returns (CleanupReply);
+  rpc ActiveExecutions(ContextRequest) returns (ActiveExecutionsReply);
+  rpc FileTool(FileRequest) returns (FileReply);
+  rpc SkillRequirements(SkillRequirementsRequest) returns (SkillRequirementsReply);
+}
+
+message RequestContext {
+  string boot_id = 1;
+  string manager_id = 2;
+  string request_id = 3;
+  string expected_release_commit = 4;
+  string expected_toolchain_digest = 5;
+  optional string session_ref = 6;
+  optional string turn_id = 7;
+}
+
+message ContextRequest { RequestContext context = 1; }
+message IdentityReply {
+  string release_commit = 1;
+  string toolchain_digest = 2;
+  repeated string capabilities = 3;
+}
+message ClaimBootReply {
+  string owner_boot_id = 1;
+  optional string previous_boot_id = 2;
+  optional uint64 cleaned_manager_count = 3;
+  optional uint64 cleaned_execution_count = 4;
+}
+message HeartbeatReply { optional bool alive = 1; }
+
+message ExecRequest {
+  RequestContext context = 1;
+  string command = 2;
+  repeated string argv = 3;
+  optional string cwd = 4;
+  map<string, string> env = 5;
+  optional bool tty = 6;
+  optional int64 yield_time_ms = 7;
+  optional int64 max_output_tokens = 8;
+  optional int64 hard_timeout_s = 9;
+  string owner_session_key = 10;
+}
+message WriteStdinRequest {
+  RequestContext context = 1;
+  optional int64 execution_id = 2;
+  optional string chars = 3;
+  optional int64 yield_time_ms = 4;
+  optional int64 max_output_tokens = 5;
+  string owner_session_key = 6;
+}
+message ExecutionReply {
+  optional bytes output = 1;
+  optional int64 wall_time_ms = 2;
+  optional int64 original_token_count = 3;
+  optional int64 output_omitted_bytes = 4;
+  oneof result {
+    int64 execution_id = 5;
+    sint32 exit_code = 6;
+  }
+  optional string output_path = 7;
+  string finish_reason = 8;
+}
+message StopRequest {
+  RequestContext context = 1;
+  optional int64 execution_id = 2;
+  string owner_session_key = 3;
+}
+message StopReply { optional bool stopped = 1; }
+message OwnerRequest {
+  RequestContext context = 1;
+  string owner_session_key = 2;
+}
+message CleanupFailure {
+  optional int64 execution_id = 1;
+  string error_type = 2;
+  string message = 3;
+}
+message CleanupReply {
+  repeated int64 attempted = 1;
+  repeated int64 cleaned = 2;
+  repeated CleanupFailure failures = 3;
+}
+message ActiveExecutionsReply { repeated int64 execution_ids = 1; }
+
+message FileRequest {
+  RequestContext context = 1;
+  optional string allowed_dir = 2;
+  oneof operation {
+    ReadFile read = 3;
+    WriteFile write = 4;
+    EditFile edit = 5;
+    ListDir list = 6;
+  }
+}
+message ReadFile {
+  optional string path = 1;
+  optional int64 offset = 2;
+  optional int64 limit = 3;
+}
+message WriteFile {
+  optional string path = 1;
+  optional string content = 2;
+}
+message EditFile {
+  optional string path = 1;
+  optional string old_text = 2;
+  optional string new_text = 3;
+  optional bool replace_all = 4;
+}
+message ListDir { optional string path = 1; }
+message FileReply {
+  oneof result {
+    string text = 1;
+    FileImage image = 2;
+    FileError error = 3;
+  }
+}
+message FileError {
+  optional string text = 1;
+  optional bool is_error = 2;
+}
+message FileImage {
+  optional string text = 1;
+  string mime_type = 2;
+  optional bytes data = 3;
+  string detail = 4;
+}
+
+message SkillRequirementsRequest {
+  RequestContext context = 1;
+  repeated string bins = 2;
+  repeated string env = 3;
+}
+message RequirementNames {
+  repeated string bins = 1;
+  repeated string env = 2;
+}
+message SkillRequirementsReply {
+  RequirementNames available = 1;
+  RequirementNames missing = 2;
+}

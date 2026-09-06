@@ -763,6 +763,7 @@ export function MobileNativeApp() {
   const [pluginLoadError, setPluginLoadError] = useState<string | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [searchIndex, setSearchIndex] = useState(new Map<string, MobileSearchIndexEntry>());
+  const shellRef = useRef<HTMLElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const drawerToggleRef = useRef<HTMLButtonElement>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
@@ -1461,6 +1462,23 @@ export function MobileNativeApp() {
     updateComposerDraft(composerInputRef.current, message);
   }, [updateComposerDraft]);
 
+  const hasSnapshot = snapshot !== null;
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const topbar = shell.querySelector<HTMLElement>(".mobile-topbar");
+    if (!topbar) throw new Error("移动界面缺少顶栏");
+    // 放大文字或状态换行后，正文按实际顶栏高度避让。
+    const updateInset = () => shell.style.setProperty("--mobile-topbar-height", `${topbar.offsetHeight}px`);
+    updateInset();
+    const observer = new ResizeObserver(updateInset);
+    observer.observe(topbar);
+    return () => {
+      observer.disconnect();
+      shell.style.removeProperty("--mobile-topbar-height");
+    };
+  }, [hasSnapshot, surface.kind]);
+
   if (!snapshot) {
     if (snapshotError) {
       return (
@@ -1616,7 +1634,7 @@ export function MobileNativeApp() {
 
   return (
     <TooltipProvider>
-      <main className={`mobile-shell surface-${surface.kind}`}>
+      <main ref={shellRef} className={`mobile-shell surface-${surface.kind}`}>
         {surface.kind === "chat" ? (
           <MobileTopBar
             status={snapshot.connection.status}
@@ -2034,10 +2052,10 @@ function MobileTopBar({
   return (
     <header className={`mobile-topbar ${drawerOpen ? "drawer-open" : ""}`}>
       <button ref={toggleRef} className="mobile-icon-button drawer-toggle" type="button" onClick={onToggleDrawer} aria-label={drawerOpen ? "收起会话" : "打开会话"} aria-expanded={drawerOpen}>
-        {drawerOpen ? <X size={25} /> : <Menu size={25} />}
+        {drawerOpen ? <X size={24} /> : <Menu size={24} />}
       </button>
       <div className={`connection-state ${status}`} aria-live="polite">
-        {online ? <Wifi size={19} /> : status === "disconnected" ? <WifiOff size={19} /> : <RefreshCw className="connection-spinner" size={18} />}
+        {online ? <Wifi size={20} /> : status === "disconnected" ? <WifiOff size={20} /> : <RefreshCw className="connection-spinner" size={20} />}
         <span>{label}</span>
       </div>
       {activeTaskCount > 0 ? (
@@ -2056,10 +2074,10 @@ function MobileTopBar({
         aria-label={`切换主题，当前为${theme.label}`}
         title={`当前主题：${theme.label}`}
       >
-        <Palette size={21} />
+        <Palette size={24} />
       </button>
       <button ref={searchButtonRef} className="mobile-icon-button" type="button" onClick={onOpenSearch} aria-label="搜索消息">
-        <Search size={22} />
+        <Search size={24} />
       </button>
     </header>
   );
@@ -2228,9 +2246,7 @@ function RuntimeInspectionDirectory({
   return (
     <main className="runtime-library">
       <header className="runtime-library__intro">
-        <span>当前电脑的只读投影</span>
-        <h1>知识与运行</h1>
-        <p>在一个地方查看人格、记忆、连接能力和正在等待的任务。</p>
+        <p>查看电脑上的文档、MCP 和定时任务。</p>
         <button type="button" onClick={onRefresh} disabled={inspection.refreshing}>
           <RefreshCw size={17} className={inspection.refreshing ? "is-spinning" : ""} />
           {inspection.refreshing ? "正在刷新" : "刷新"}
@@ -2247,7 +2263,6 @@ function RuntimeInspectionDirectory({
       <RuntimeSection
         className="documents"
         icon={<BookOpenText size={20} />}
-        eyebrow="Knowledge"
         title="文档"
         count={inspection.documents.length}
       >
@@ -2272,7 +2287,6 @@ function RuntimeInspectionDirectory({
       <RuntimeSection
         className="mcp"
         icon={<Server size={20} />}
-        eyebrow="Connections"
         title="MCP"
         count={inspection.mcpServers.length}
         meta={`${inspection.pluginCount} 插件 · ${inspection.skillCount} Skills`}
@@ -2296,7 +2310,6 @@ function RuntimeInspectionDirectory({
       <RuntimeSection
         className="schedules"
         icon={<Timer size={20} />}
-        eyebrow="Automation"
         title="定时任务"
         count={inspection.jobs.length}
       >
@@ -2325,7 +2338,6 @@ function RuntimeInspectionDirectory({
 function RuntimeSection({
   className,
   icon,
-  eyebrow,
   title,
   count,
   meta,
@@ -2333,7 +2345,6 @@ function RuntimeSection({
 }: {
   className: string;
   icon: ReactNode;
-  eyebrow: string;
   title: string;
   count: number;
   meta?: string;
@@ -2343,10 +2354,7 @@ function RuntimeSection({
     <section className={`runtime-section ${className}`}>
       <header>
         <span className="runtime-section__icon">{icon}</span>
-        <span>
-          <small>{eyebrow}</small>
-          <strong>{title}</strong>
-        </span>
+        <h2>{title}</h2>
         <span className="runtime-section__count">{count}</span>
       </header>
       {meta ? <p className="runtime-section__meta">{meta}</p> : null}
@@ -2516,16 +2524,20 @@ function MobileComposer({
 
   useEffect(() => {
     const textarea = textareaRef.current;
-    const widthOwner = textarea?.parentElement;
-    if (!textarea || !widthOwner) return;
-    let lastWidth = widthOwner.clientWidth;
+    const layoutOwner = textarea?.parentElement;
+    if (!textarea || !layoutOwner) return;
+    let lastWidth = layoutOwner.clientWidth;
+    let lastFont = getComputedStyle(textarea).font;
     const observer = new ResizeObserver(() => {
-      const nextWidth = widthOwner.clientWidth;
-      if (nextWidth === lastWidth) return;
+      const nextWidth = layoutOwner.clientWidth;
+      const nextFont = getComputedStyle(textarea).font;
+      // 字号变大也会改变换行；忽略单纯由自身高度引起的再次回调。
+      if (nextWidth === lastWidth && nextFont === lastFont) return;
       lastWidth = nextWidth;
+      lastFont = nextFont;
       resizeMobileComposerTextarea(textarea);
     });
-    observer.observe(widthOwner);
+    observer.observe(layoutOwner);
     return () => observer.disconnect();
   }, [textareaRef]);
 
@@ -2591,6 +2603,7 @@ function MobileComposer({
             value={input}
             disabled={!hasOwner}
             placeholder="输入消息"
+            aria-label="输入消息"
             onChange={(event) => onInput(event.target.value)}
             onFocus={() => commandsOpen && onCloseCommands(false)}
             onKeyDown={(event) => {
@@ -2766,7 +2779,7 @@ function MobileModelCapsule({
                 <span><strong>思考强度</strong></span>
               </button>
             ) : <div><strong>模型</strong></div>}
-            <small>{view === "models" ? `${runtimes.length} 个` : visibleModel.model}</small>
+            <small>{view === "models" ? `${runtimes.length} 个 · ${explicitModel ? "固定到此会话" : "跟随默认模型"}` : visibleModel.model}</small>
           </header>
           {view === "models" ? (
             <div className="mms-capsule__model-view">
@@ -2821,10 +2834,10 @@ function MobileModelCapsule({
           )}
         </div>
       </div>
-      <button ref={triggerRef} type="button" className="mms-capsule__trigger" aria-controls="mms-capsule-panel" aria-expanded={open} disabled={disabled} onClick={() => open ? closePicker(false) : setOpen(true)}>
-        <MobileModelMark runtime={visibleModel} size={13} />
-        <span className="mms-capsule__trigger-copy"><strong>{visibleModel.model}：{visibleModel.sourceName}</strong><small>{explicitModel ? "固定到此会话" : "跟随默认模型"}</small></span>
-        <ChevronDown size={13} aria-hidden="true" />
+      <button ref={triggerRef} type="button" className="mms-capsule__trigger" aria-label={`选择模型：${visibleModel.model}，${visibleModel.sourceName}，${explicitModel ? "固定到此会话" : "跟随默认模型"}`} aria-controls="mms-capsule-panel" aria-expanded={open} disabled={disabled} onClick={() => open ? closePicker(false) : setOpen(true)}>
+        <MobileModelMark runtime={visibleModel} size={20} />
+        <span className="mms-capsule__trigger-copy"><strong>{visibleModel.model}</strong></span>
+        <ChevronDown size={16} aria-hidden="true" />
       </button>
     </div>
   );

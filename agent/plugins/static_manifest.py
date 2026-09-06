@@ -25,6 +25,7 @@ _RESERVED_ENV = frozenset(
         "AKA_PLUGIN_DATA_DIR",
         "AKASHIC_PLUGIN_DATA_DIR",
         "AKASHIC_WORKSPACE",
+        "AKASHIC_MCP_SCOPE_ID",
     }
 )
 _TOP_LEVEL_KEYS = frozenset(

@@ -78,6 +78,7 @@ export const DesktopComposer = memo(function DesktopComposer({
           className="composer__textarea !min-h-0"
           value={input}
           onChange={onInputChange}
+          aria-label="消息"
           disabled={!chatReady}
           placeholder={chatReady ? "继续布置任务…" : "连接模型后即可开始对话"}
         />
