@@ -599,3 +599,47 @@ async def test_model_artifact_projection_reads_verified_bytes_without_changing_o
     report = await artifact_store.validate_filesystem_integrity()
     assert report.ready_count == 1
     assert report.verified_bytes == len(original)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sizes", "match"),
+    [
+        ([1] * 5, "每条消息最多可以添加 4 张图片"),
+        ([20 * 1024 * 1024 + 1], "单张图片不能超过 20MB"),
+        (
+            [10 * 1024 * 1024] * 3 + [10 * 1024 * 1024 + 1],
+            "每条消息的图片合计不能超过 40MB",
+        ),
+    ],
+)
+async def test_model_image_budget_rejects_before_acquiring_any_lease(
+    sizes: list[int],
+    match: str,
+) -> None:
+    from plugins.models.content import load_artifacts
+
+    refs = tuple(
+        AttachmentRef(
+            artifact_id=f"image-{index}",
+            kind=AttachmentKind.IMAGE,
+            filename=f"{index}.png",
+            media_type="image/png",
+            size_bytes=size,
+            sha256="a" * 64,
+        )
+        for index, size in enumerate(sizes)
+    )
+
+    class Reader:
+        def __init__(self) -> None:
+            self.acquire_calls = 0
+
+        async def acquire(self, _ref: AttachmentRef) -> object:
+            self.acquire_calls += 1
+            raise AssertionError("image budget must be checked before acquire")
+
+    reader = Reader()
+    with pytest.raises(ValueError, match=match):
+        await load_artifacts(reader, refs, accepts_images=True)
+    assert reader.acquire_calls == 0
