@@ -90,15 +90,15 @@ GitHub release
 
 ### 4.1 传输和身份
 
-- V1 使用版本化 JSON envelope，经 Protobuf `BytesValue` 编码并由 `grpc.aio` over Unix Socket
-  传输；只参考 Memoh 的能力边界和失败语义，不复制其 AGPL proto 或 Go 实现。字段级 typed
-  Protobuf message 属于后续协议 major 的独立演进，不得把 V1 描述成已实现 typed schema。
+- V2 使用字段级 Protobuf message，由 `grpc.aio` over Unix Socket 传输；Shell 输出和文件图片
+  使用 `bytes`，不经过 JSON envelope。接口、presence 和取消合同见
+  [Host Bridge Protocol V2](host-bridge-protocol-v2.md)。不复制 Memoh 的 AGPL proto 或 Go 实现。
 - Bridge 由 system-level systemd unit 以 `User=huashen` 运行，使用真实 UID、GID、补充组、HOME、
   SSH配置和宿主文件权限。
 - 连接同时受 Socket权限与每 boot 一次性 capability token/lease约束。请求带 boot、session、turn
   和 execution owner；旧 lease 断开后拒绝新任务并清理该 boot 的全部进程组。
-- 协议使用 `protocolMajor + capability set`。major 不兼容直接失败；新版 Bridge 必须先兼容当前
-  旧 Core，再允许部署新 Core。
+- 协议版本由 service package `akashic.host.v2` 确定；旧 V1 route 返回 UNIMPLEMENTED。
+  Core 与 Bridge 在维护窗口内按同 commit 成对切换，不支持混版运行或 V1 fallback。
 
 ### 4.2 执行能力
 
@@ -108,14 +108,14 @@ GitHub release
 Exec
 ├── argv / shell script / cwd / env profile
 ├── 非PTY stdout、stderr和真实exit code
-├── PTY、stdin、resize和signal
+├── PTY 输入、增量输出和显式 stop（V2 不含 resize）
 ├── execution_id、增量读取、timeout和task_stop
 └── owner/boot cleanup与进程组空集证明
 
 File
-├── stat / list / mkdir / rename / delete
+├── read_file / list_dir / write_file / edit_file
 ├── 分页text read / atomic write / exact edit
-└── raw byte stream，供图片、附件和表情包使用
+└── 图片原始结果 bytes；不提供通用附件流
 ```
 
 Bridge 不增加全局 Shell 互斥。不同 session/turn 可并发执行；每个 execution 保留独立 owner 和
@@ -126,7 +126,7 @@ Bridge 不增加全局 Shell 互斥。不同 session/turn 可并发执行；每�
 
 - 普通 argv 使用 mise 固定的确定性 capability environment。
 - 非交互脚本使用 `zsh -lc` 加载同一轻量环境，不依赖完整 `.zshrc`。
-- 交互命令使用真实 PTY 与 `zsh -lic`，支持输入和窗口大小变化。
+- 交互命令使用真实 PTY 与 `zsh -lic`，支持输入、增量输出和显式 stop；窗口大小变化尚未实现，不在 V2 范围。
 - mise拥有Python、Node、uv和OpenCLI等工具版本；应用凭据放在应用配置、Secret Service或权限受控
   的专用环境文件中，不把完整env写入Bridge审计。
 
@@ -142,7 +142,7 @@ token或私钥。
 
 - 主 Agent、programmatic turn、三类subagent和Drift的Shell/File/Process。
 - 由Skill经Shell调用的Git、gh、SSH、OpenCLI、yt-dlp、ffmpeg、drawio、测试和构建。
-- 工作区之外文件的raw bytes读取，以及宿主生成文件进入附件/图片链的物化。
+- 工作区之外的文本读取与图片 bytes 返回；通用附件导入由独立附件 owner 处理。
 
 ### 5.2 留在Core
 
@@ -287,7 +287,7 @@ mise run deploy <release>
 
 - LocalBackend保持开发机现有行为；正式镜像没有Local fallback。
 - 主Agent、programmatic、subagent和Drift真实使用Bridge完成Shell/File。
-- exec、PTY、stdin、resize、增量输出、timeout、task_stop和boot cleanup符合统一执行合同。
+- exec、PTY、stdin、增量输出、timeout、task_stop和boot cleanup符合现有统一执行合同；resize 尚未实现，不在 V2 验收范围。
 - Git/worktree/PR和本地插件install→programmatic child→turn后提交闭环成立。
 - MCP、managed services、SessionDB和插件业务状态仍由Core拥有。
 - runtime identity从build到readiness一致，当前运行commit源码可查看但不可原位修改。

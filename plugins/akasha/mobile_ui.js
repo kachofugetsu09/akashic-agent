@@ -48,7 +48,7 @@ function recallSection(title, items, lane, captureAvailable = true) {
     ? "本轮没有命中"
     : "这一轮没有保存模式补全读出";
   return `
-    <details class="akasha-mobile-recall akasha-mobile-recall--${escapeHtml(lane)}" ${items.length ? "open" : ""}>
+    <details class="akasha-mobile-recall akasha-mobile-recall--${escapeHtml(lane)}">
       <summary>
         <span>${escapeHtml(title)}</span>
         <b>${escapeHtml(count)}</b>
@@ -145,6 +145,11 @@ function mountRecall(host, context) {
       const toolRight = Array.isArray(result.tool_right) ? result.tool_right : [];
       const recallCaptured = result.recall_capture_available !== false;
       if (result.pending !== true || result.recall_capture_available === true) {
+        // 数据刷新保留用户已经展开的卡片，新卡片默认收起。
+        const expanded = new Set(Array.from(
+          host.querySelectorAll("details[open] summary > span"),
+          (title) => title.textContent,
+        ));
         host.innerHTML = `
           <div class="akasha-mobile-recall-group">
             ${recallSection("左脑 · 精确回忆", left, "precise")}
@@ -153,6 +158,9 @@ function mountRecall(host, context) {
             ${toolRight.length ? recallSection("工具回忆 · 模式补全", toolRight, "completion") : ""}
           </div>
         `;
+        host.querySelectorAll("details").forEach((card) => {
+          card.open = expanded.has(card.querySelector("summary > span")?.textContent);
+        });
       }
       if (result.pending === true) {
         await waitToRetry();

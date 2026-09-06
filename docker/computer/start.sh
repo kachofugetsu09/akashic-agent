@@ -25,7 +25,12 @@ rm -f \
 
 cleanup() {
   trap - TERM INT EXIT
-  kill -TERM "${refresh_pid:-}" "${gateway_pid:-}" "${browser_pid:-}" \
+  # Driver 先在仍存活的 X11/Chromium 上释放输入，再由 Workload 结束图形进程。
+  if [ -n "${gateway_pid:-}" ]; then
+    kill -TERM "$gateway_pid" 2>/dev/null || true
+    wait "$gateway_pid" 2>/dev/null || true
+  fi
+  kill -TERM "${refresh_pid:-}" "${browser_pid:-}" \
     "${desktop_pid:-}" "${display_pid:-}" "${daemon_pid:-}" \
     "${xvnc_pid:-}" 2>/dev/null || true
   wait 2>/dev/null || true
