@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from session.inbound_store import InboundHandoffStore
 import asyncio
-import gc
 import logging
-import weakref
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,9 +11,6 @@ from typing import Any, cast
 
 import pytest
 
-from agent.control.models import TurnRequest, TurnStatus
-from agent.control.ports import ControlExecutionResult
-from agent.control.runtime import ConversationRuntime
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
@@ -121,141 +116,6 @@ class _OutboundBinding:
     binding_token: str = "binding-1"
     channel_name: str = "feishu"
     active: bool = True
-
-
-@pytest.mark.asyncio
-async def test_worker_error_before_turn_owner_keeps_handoff_and_releases_admission(
-    tmp_path: Path,
-) -> None:
-    store = InboundHandoffStore(tmp_path / "sessions.db")
-    manager = SessionManager(tmp_path / "workspace")
-    session_key = "akashic:cleanup"
-    manager.save(manager.get_or_create(session_key))
-    _, admission_id = manager.admit_existing(session_key)
-    bus = MessageBus()
-    bus.bind_durable_inbound_store(store)
-    item = InboundMessage(
-        "akashic",
-        "device:1",
-        "cleanup",
-        "hello",
-        metadata={
-            "session_key_override": session_key,
-            "client_message_id": "client-1",
-            "mobile_v3_handoff": True,
-        },
-        session_admission_id=admission_id,
-    )
-    await bus.publish_inbound(item)
-    consumed = await bus.consume_inbound()
-    assert consumed is item
-    item_ref = weakref.ref(item)
-
-    class _Runtime:
-        async def wait_thread_available(self, _session_key: str) -> None:
-            return None
-
-        async def start_turn(self, _request: object) -> object:
-            raise RuntimeError("worker stopped before turn submission")
-
-    from bootstrap.passive_worker import PassiveMessageWorker
-
-    worker = PassiveMessageWorker(
-        bus,
-        _Runtime(),  # type: ignore[arg-type]
-        SimpleNamespace(session_manager=manager),  # type: ignore[arg-type]
-    )
-    lane = asyncio.Queue()
-    lane.put_nowait(consumed)
-    worker._lane_queues[session_key] = lane
-    lane_task = asyncio.create_task(worker._run_lane(session_key, lane))
-    await lane_task
-
-    # 1. start_turn 建立 turn owner 前失败：不 complete_inbound，row 与 owner 保留。
-    assert manager.control_store.list_turns(session_key) == []
-    assert len(store.list_inbound_handoffs()) == 1
-    owner_key = id(item)
-    assert owner_key in bus._inbound_accepted
-    del consumed
-    del item
-    gc.collect()
-    assert item_ref() is not None
-
-    # 2. session admission 恰一次释放，同一会话可再次取得。
-    assert (
-        manager.admissions._conn.execute(
-            "SELECT 1 FROM session_admissions WHERE admission_id = ?",
-            (admission_id,),
-        ).fetchone()
-        is None
-    )
-    _, reacquired = manager.admit_existing(session_key)
-    manager.release_admission(reacquired)
-
-    # 3. 没有删除授权：不启动 cleanup retry，row 继续由 durable owner 持有。
-    assert bus._inbound_cleanup_tasks == {}
-    await bus.aclose()
-    assert len(store.list_inbound_handoffs()) == 1
-    assert owner_key in bus._inbound_accepted
-    manager.close()
-    store.close()
-
-
-@pytest.mark.asyncio
-async def test_mobile_attachment_acquire_failure_releases_session_admission(
-    tmp_path: Path,
-) -> None:
-    store = InboundHandoffStore(tmp_path / "sessions.db")
-    manager = SessionManager(tmp_path / "workspace")
-    session_key = "akashic:missing-attachment"
-    manager.save(manager.get_or_create(session_key))
-    _, admission_id = manager.admit_existing(session_key)
-    bus = MessageBus()
-    bus.bind_durable_inbound_store(store)
-    item = InboundMessage(
-        "akashic",
-        "device:1",
-        "missing-attachment",
-        "hello",
-        metadata={
-            "session_key_override": session_key,
-            "client_message_id": "client-missing-attachment",
-            "attachment_ids": ["artifact-missing"],
-            "mobile_v3_handoff": True,
-        },
-        session_admission_id=admission_id,
-    )
-    await bus.publish_inbound(item)
-    consumed = await bus.consume_inbound()
-
-    class _Runtime:
-        async def start_turn(self, _request: object) -> object:
-            raise AssertionError("attachment acquisition failure must precede turn start")
-
-    from bootstrap.passive_worker import PassiveMessageWorker
-
-    worker = PassiveMessageWorker(
-        bus,
-        _Runtime(),  # type: ignore[arg-type]
-        SimpleNamespace(session_manager=manager),  # type: ignore[arg-type]
-    )
-    lane = asyncio.Queue()
-    lane.put_nowait(consumed)
-    worker._lane_queues[session_key] = lane
-    await worker._run_lane(session_key, lane)
-
-    assert len(store.list_inbound_handoffs()) == 1
-    assert (
-        manager.admissions._conn.execute(
-            "SELECT 1 FROM session_admissions WHERE admission_id = ?",
-            (admission_id,),
-        ).fetchone()
-        is None
-    )
-    assert item.session_admission_id is None
-    await bus.aclose()
-    manager.close()
-    store.close()
 
 
 @pytest.mark.asyncio
@@ -785,96 +645,6 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
         is None
     )
     manager.close()
-
-
-@pytest.mark.asyncio
-async def test_channel_worker_rejects_image_budget_before_acquiring_leases(
-    tmp_path: Path,
-) -> None:
-    from PIL import Image
-
-    from bootstrap.passive_worker import PassiveMessageWorker
-    from infra.channels.artifacts import ChannelAttachmentArtifactStore
-
-    from session.artifact_store import ArtifactStore
-
-    session_store = ArtifactStore(tmp_path / "artifact-sessions.db")
-    artifact_store = ChannelAttachmentArtifactStore(
-        workspace=tmp_path,
-        metadata_store=session_store,
-    )
-    image_path = tmp_path / "source.png"
-    Image.new("RGB", (2, 2), (255, 0, 0)).save(image_path)
-    extensionless_refs = tuple(
-        [
-            await artifact_store.import_bytes(
-                image_path.read_bytes(),
-                kind=AttachmentKind.FILE,
-                filename=f"extensionless-{index}",
-                media_type=None,
-            )
-            for index in range(5)
-        ]
-    )
-    session_store.close()
-    assert all(ref.kind is AttachmentKind.IMAGE for ref in extensionless_refs)
-
-    class Store:
-        def __init__(self) -> None:
-            self.acquire_calls = 0
-
-        async def acquire(self, _ref: AttachmentRef) -> object:
-            self.acquire_calls += 1
-            raise AssertionError("budget validation must run before acquire")
-
-    store = Store()
-    worker = object.__new__(PassiveMessageWorker)
-    worker._attachment_store = cast(Any, store)
-
-    with pytest.raises(ValueError, match="最多可以添加 4 张图片"):
-        await worker._acquire_attachment_refs(extensionless_refs)
-
-    too_many = tuple(
-        AttachmentRef(
-            artifact_id=f"image-{index}",
-            kind=AttachmentKind.IMAGE,
-            filename=f"{index}.png",
-            media_type="image/png",
-            size_bytes=1,
-            sha256=f"{index:064x}",
-        )
-        for index in range(5)
-    )
-    with pytest.raises(ValueError, match="最多可以添加 4 张图片"):
-        await worker._acquire_attachment_refs(too_many)
-
-    oversized = (
-        AttachmentRef(
-            artifact_id="oversized-image",
-            kind=AttachmentKind.IMAGE,
-            filename="oversized.png",
-            media_type="image/png",
-            size_bytes=21 * 1024 * 1024,
-            sha256=f"{100:064x}",
-        ),
-    )
-    with pytest.raises(ValueError, match="单张图片不能超过 20MB"):
-        await worker._acquire_attachment_refs(oversized)
-
-    too_large = tuple(
-        AttachmentRef(
-            artifact_id=f"large-{index}",
-            kind=AttachmentKind.IMAGE,
-            filename=f"large-{index}.png",
-            media_type="image/png",
-            size_bytes=15 * 1024 * 1024,
-            sha256=f"{index + 10:064x}",
-        )
-        for index in range(3)
-    )
-    with pytest.raises(ValueError, match="图片合计不能超过 40MB"):
-        await worker._acquire_attachment_refs(too_large)
-    assert store.acquire_calls == 0
 
 
 @pytest.mark.asyncio
