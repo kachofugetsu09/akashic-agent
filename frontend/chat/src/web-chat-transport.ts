@@ -1,3 +1,4 @@
+import { Cause, Effect, Exit } from "effect";
 import type { ChatMessage, ToolBlock } from "./chat-message";
 import type { ChatStatus } from "./web-chat-status";
 import { blocksWithFinalThinking, mediaToAttachments, mergeAttachments } from "./web-chat-message-data.ts";
@@ -331,76 +332,50 @@ export function applyChatFrame(frame: ChatFrame, context: WebChatFrameContext): 
   void context.loadSessions();
 }
 
-export function sendWhenOpen(
+/** 等待连接后发送一次；Effect 负责超时、取消和竞争结果。 */
+export async function sendWhenOpen(
   socket: WebSocket,
   payload: Record<string, unknown>,
   signal?: AbortSignal,
   timeoutMs = 10_000,
 ): Promise<void> {
-  if (signal?.aborted) return Promise.reject(new DOMException("请求已取消", "AbortError"));
-  if (socket.readyState === WebSocket.OPEN) {
-    try {
-      socket.send(JSON.stringify(payload));
-      return Promise.resolve();
-    } catch (error) {
-      return Promise.reject(error);
+  if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+  const wait = Effect.async<void, Error>((resume) => {
+    // timeout 的竞争任务开始前，浏览器可能已经发出了 open 或 close。
+    if (socket.readyState !== WebSocket.CONNECTING) {
+      resume(socket.readyState === WebSocket.OPEN ? Effect.void : Effect.fail(new Error("聊天连接尚未建立")));
+      return;
     }
-  }
-  if (socket.readyState !== WebSocket.CONNECTING) return Promise.reject(new Error("聊天连接尚未建立"));
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timeout = globalThis.setTimeout(() => {
-      fail(new Error("聊天连接超时"));
-      if (socket.readyState === WebSocket.CONNECTING) socket.close();
-    }, timeoutMs);
-
-    function cleanup(): void {
-      globalThis.clearTimeout(timeout);
+    const finish = (result: Effect.Effect<void, Error>) => { cleanup(); resume(result); };
+    const onOpen = () => finish(Effect.void);
+    const onError = () => finish(Effect.fail(new Error("聊天连接失败")));
+    const onClose = () => finish(Effect.fail(new Error("聊天连接在发送前关闭")));
+    const cleanup = () => {
       socket.removeEventListener("open", onOpen);
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);
-      signal?.removeEventListener("abort", onAbort);
-    }
-
-    function fail(error: Error): void {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    }
-
-    function onOpen(): void {
-      if (settled) return;
-      try {
-        if (socket.readyState !== WebSocket.OPEN) throw new Error("聊天连接未能打开");
-        socket.send(JSON.stringify(payload));
-        settled = true;
-        cleanup();
-        resolve();
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
-
-    function onError(): void {
-      fail(new Error("聊天连接失败"));
-    }
-
-    function onClose(): void {
-      fail(new Error("聊天连接在发送前关闭"));
-    }
-
-    function onAbort(): void {
-      fail(new DOMException("请求已取消", "AbortError"));
-    }
-
-    socket.addEventListener("open", onOpen, { once: true });
-    socket.addEventListener("error", onError, { once: true });
-    socket.addEventListener("close", onClose, { once: true });
-    signal?.addEventListener("abort", onAbort, { once: true });
-    if (signal?.aborted) onAbort();
-  });
+    };
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose);
+    return Effect.sync(cleanup);
+  }).pipe(Effect.timeoutFail({
+    duration: timeoutMs,
+    onTimeout: () => {
+      if (socket.readyState === WebSocket.CONNECTING) socket.close();
+      return new Error("聊天连接超时");
+    },
+  }));
+  const sent = await Effect.runPromiseExit((socket.readyState === WebSocket.OPEN ? Effect.void : wait).pipe(
+    Effect.andThen(Effect.try({ try: () => {
+      if (socket.readyState !== WebSocket.OPEN) throw new Error("聊天连接未能打开");
+      socket.send(JSON.stringify(payload));
+    }, catch: (error) => error })),
+  ), { signal });
+  if (Exit.isFailure(sent)) {
+    if (signal?.aborted && Cause.isInterruptedOnly(sent.cause)) throw new DOMException("请求已取消", "AbortError");
+    throw Cause.squash(sent.cause);
+  }
 }
 
 function updateAssistantById(

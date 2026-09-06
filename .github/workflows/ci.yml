@@ -36,6 +36,12 @@ jobs:
           .venv/bin/python -m pip install -r requirements-dev.txt
           .venv/bin/python -m pip install -e sdk/python
 
+      - name: Check Host Bridge generated protocol
+        run: |
+          python -m venv /tmp/akashic-protoc
+          /tmp/akashic-protoc/bin/pip install grpcio-tools==1.78.0
+          /tmp/akashic-protoc/bin/python scripts/generate_host_bridge_protocol.py --check
+
       - name: Check Python
         run: |
           .venv/bin/pyright --level error

@@ -1017,7 +1017,7 @@ Channel 接纳以 Input 原子提交为边界，Core 启动在全部渠道完成
 
 故障验收还覆盖实际 sender 已完成外部写入、随后本地 delivered 事务失败：原记录保留 started，数据库重开和当前源码移除后按原 binding 查询，外部效果仍只有一次。该场景与从 prepared 恢复共用真实插件归档链，不能由手工预置 started 状态替代。
 
-Scheduler 的内部持久化已由维护者批准，见 [0055](../decisions/0055-scheduler-keeps-internal-messages.md) 与 SCH-003：每次 fire 使用独立内部 Session，只向目标聊天追加最终通知，不读取同 job 的旧 fire，也不把内部消息纳入记忆学习。来源继续使用既有 job identity，不新增 Core Run 或来源特判。调度文件升级归属本层 yoyo，JobStore 和 Inspection 的读取不得隐式覆盖 schedules.json。
+Scheduler 的内部持久化已由维护者批准，见 [0058](../decisions/0058-scheduler-keeps-internal-messages.md) 与 SCH-003：每次 fire 使用独立内部 Session，只向目标聊天追加最终通知，不读取同 job 的旧 fire，也不把内部消息纳入记忆学习。来源继续使用既有 job identity，不新增 Core Run 或来源特判。调度文件升级归属本层 yoyo，JobStore 和 Inspection 的读取不得隐式覆盖 schedules.json。
 
 当前 Web/Mobile 的 Core native 定义只有固定 `core-native-v3` 标记和进程内 token，不能冒充可恢复 Binding。现行 Web 无远端幂等或 query；Mobile 每次 publish_event 新建 inbox event，没有按原发送 key 查询的公开合同。新链路不得包装 live Core 指针或回退当前渠道。旧 ledger 中的 body、provider receipt、投影引用和来源 ACK 保留；缺少可靠旧 adapter 恢复协议的转换继续列 TODO，不凭 Session 消息存在伪造已送达。
 
