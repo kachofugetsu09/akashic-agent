@@ -41,6 +41,13 @@ api_version = 3
 name = "akasha"
 version = "4.0.0"
 desc = "从消息学习并提供普通 Context 材料与记忆工具"
+dashboard_module = "dashboard.py"
+web_module = "web_module.js"
+web_requires = ("workbench.panels.v2",)
+web_provides = ()
+web_contract_digests = {
+    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+}
 inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
           BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, UI_SLOTS, COMMANDS)
 workspace_roots = ("memory",)
@@ -88,6 +95,7 @@ class RecallBinding(BaseModel):
 
 
 AKASHA_RECORDS = ServiceKey[Callable[[str], Recall | None]]("akasha.recalls.v1")
+AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecords]]("akasha.recall-records.v1")
 
 
 async def apply(ctx: Context, config: Config) -> None:
@@ -122,6 +130,7 @@ async def apply(ctx: Context, config: Config) -> None:
     def read_recall(identity: str) -> Recall | None:
         return records().read(identity)
     _ = await ctx.provide(AKASHA_RECORDS, read_recall)
+    _ = await ctx.provide(AKASHA_RECORDS_VIEW, records)
 
     inspector: RecallInspector | None = None
 

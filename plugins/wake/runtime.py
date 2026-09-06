@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -15,16 +16,104 @@ from agent.plugin_composition.timers import TIMERS
 from plugins.akasha.interest import SEMANTIC_INTEREST
 from plugins.delivery.api import Sink
 from plugins.delivery.history import DELIVERY_READ
+from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.tools.plugin import TOOLS
+from session.message import Message
+from session.message_codec import encode_body
 
 from .admission import Admission, Duties
 from .api import Config, DRIFT_WAKE, EVENTMAIL_WAKE
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
 from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
-from .source import Source
+from .source import Pointer, Source
 from .state import WakeState
+
+
+class DashboardView:
+    """Expose Wake's durable rows and original Message flow as a read-only view."""
+
+    def __init__(self, runtime: Runtime) -> None:
+        self._runtime = runtime
+
+    def list_attempts(self, limit: int, *, offset: int = 0) -> tuple[Mapping[str, object], ...]:
+        return self._runtime.state.list_attempts(limit, offset=offset)
+
+    def count_attempts(self) -> int:
+        return self._runtime.state.count_attempts()
+
+    def get_attempt(self, attempt_id: str) -> Mapping[str, object] | None:
+        row = self._runtime.state.get_attempt(attempt_id)
+        if row is None:
+            return None
+        return {**row, "flow": self.flow(attempt_id)}
+
+    def list_runs(self, limit: int, *, offset: int = 0) -> tuple[Mapping[str, object], ...]:
+        return self._runtime.state.list_runs(limit, offset=offset)
+
+    def count_runs(self) -> int:
+        return self._runtime.state.count_runs()
+
+    def get_run(self, run_id: str) -> Mapping[str, object] | None:
+        row = self._runtime.state.get_run(run_id)
+        if row is None:
+            return None
+        return {**row, "flow": self.flow(run_id)}
+
+    def flow(self, flow_id: str) -> Mapping[str, object] | None:
+        found = self._runtime.source.read(flow_id)
+        if found is None:
+            return None
+        pointer_row, request, reader = found
+        pointer = Pointer.model_validate(dict(pointer_row.value))
+        messages = tuple(self._message(message) for message in reader.snapshot())
+        notification = reader.get(request.notification_id)
+        delivery: dict[str, object] = {
+            "message_id": request.notification_id,
+            "channel": request.target.channel,
+            "recipient": request.target.recipient,
+            "status": "not_published",
+        }
+        if notification is not None:
+            deliveries = self._runtime.ctx.require(DELIVERY).open(self._runtime.ctx)
+            selection = deliveries.selection(notification.message_id)
+            if selection is not None:
+                receipt = deliveries.receipt(notification.message_id, request.target.channel)
+                delivery["status"] = "prepared_or_started" if receipt is None else receipt.status
+                delivery["receipt"] = None if receipt is None else receipt.model_dump(mode="json")
+        return {
+            "flow_id": flow_id,
+            "pointer": {"version": pointer_row.version, **pointer.model_dump(mode="json")},
+            "request": {
+                **request.model_dump(mode="json", exclude={"program_binding", "tools", "rules", "history", "events"}),
+                "session_id": request.session_id,
+                "input_id": request.input_id,
+                "notification_id": request.notification_id,
+            },
+            "messages": list(messages),
+            "delivery": delivery,
+        }
+
+    @staticmethod
+    def _message(message: Message) -> Mapping[str, object]:
+        body = json.loads(encode_body(message.body))
+        parts = body.get("parts", ()) if isinstance(body, dict) else ()
+        text = "\n".join(
+            str(part.get("value"))
+            for part in parts
+            if isinstance(part, dict) and part.get("kind") == "text" and isinstance(part.get("value"), str)
+        ) if isinstance(parts, list) else ""
+        return {
+            "message_id": message.message_id,
+            "session_id": message.session_id,
+            "seq": message.seq,
+            "recorded_at": message.recorded_at.isoformat(),
+            "author": message.author,
+            "source": message.source,
+            "body": body,
+            "text": text,
+        }
 
 
 class Runtime:
