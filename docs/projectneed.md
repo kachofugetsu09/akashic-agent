@@ -541,7 +541,7 @@ payload 必须满足当前模型硬输入边界。
 
 AgentLoop 唯一拥有活动 turn task 的取消和 cleanup。无论成功、失败或取消，都恢复临时 session context。terminal event、inbound complete 和 delivery ack 各自由一个层提交，保证恰好一次。
 
-Mobile durable inbound 由 ChannelGenerationHost 通过 `CHANNEL_INPUT` 提交 canonical Input，再由 MessageBus 完成 handoff custody；Reply 与 Delivery 独立结算后续 Output。任一 Input 或 handoff 提交失败都保留原 handoff 供重试或重启恢复；MessageBus 入队和内存 callback 返回不构成 handoff 完成证据。
+Mobile durable inbound 的释放顺序固定为：Control Runtime 先持久化权威 terminal，Mobile channel 再提交带同一 turn/client identity 的 durable terminal event，PassiveMessageWorker 最后 DELETE handoff。任一前置提交失败都保留 handoff 供同轮重试或重启恢复；MessageBus 入队和内存 callback 返回不构成 handoff 完成证据。
 
 ### RUN-004 Linux 正式入口由 Supervisor 托管
 

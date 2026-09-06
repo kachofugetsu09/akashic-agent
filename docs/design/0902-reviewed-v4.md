@@ -35,8 +35,6 @@
 
 ### 2.1 已核对的 Core 实现
 
-> 下面的图和职责表保留第 10 层清理前的实现基线，用于解释迁移范围；`PassiveMessageWorker` 已删除。当前 Channel ingress 由 `ChannelGenerationHost` 取得 exact binding 后调用 `CHANNEL_INPUT`，MessageBus 只承担 durable handoff custody。
-
 ```text
 ┌ Channel / Mobile / Web ingress ┐
 └──────────────┬─────────────────┘
@@ -68,7 +66,7 @@
 
 | 现有职责 | 源码证据 |
 |---|---|
-| 旧入站 lane、附件与 durable handoff 结果任务 | `PassiveMessageWorker`（第 10 层清理已删除；基线实现见 Git 历史） |
+| 入站 lane、附件、durable handoff、渠道结果任务 | [`PassiveMessageWorker`](../../bootstrap/passive_worker.py)，约 96、257、440 行 |
 | 恢复 attempt 前驱、用户正文和工具轨迹 | [`ConversationRuntime._open_interaction_attempts / _attempt_user_inputs / _attempt_tool_chain`](../../agent/control/runtime.py)，651、715、871 行 |
 | 精确中断、资源回收和实时 replay | 同文件 `interrupt_turn / _run / subscribe` |
 | 固定阶段、命令短路、模型绑定 | [`PassiveTurnPipeline.run_command / run`](../../agent/core/passive_turn.py)，440、524 行 |

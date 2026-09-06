@@ -545,6 +545,55 @@ docker/debug/scenarios/
 }
 ```
 
+## Runtime 竞态探针
+
+`runtime_race_probe.py` 用于在 Docker 沙盒里制造 passive / scheduler / proactive / drift 的可见发送竞态。它复用真实 `MessageBus`、`ChatLane`、`BusOutboundPort`、`PushToolOutboundPort` 和 `message_push`，但 channel sender 和 LLM 都是 fake，所以不需要调试 bot 或模型 key。
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ runtime_race_probe.py                                       │
+└──────────────┬──────────────────────────────────────────────┘
+               │ fake user inbound
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ MessageBus + ChatLane                                       │
+└──────┬──────────────────────────────────────────────┬───────┘
+       │ passive reply                                │ non-passive send
+       v                                              v
+┌──────────────────────┐                     ┌──────────────────────┐
+│ BusOutboundPort      │                     │ PushToolOutboundPort │
+└──────────┬───────────┘                     └──────────┬───────────┘
+           │                                            │
+           v                                            v
+┌─────────────────────────────────────────────────────────────┐
+│ fake sender records start/end order                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+运行全部场景：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/runtime_race_probe.py --scenario all
+```
+
+运行单个场景：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/runtime_race_probe.py --scenario a1-drift-before-push
+```
+
+可用控制开关：
+
+```text
+AKASHIC_RACE_SCENARIO  选择单个场景，默认 all
+AKASHIC_RACE_TIMEOUT   每个等待点的超时秒数，默认 2
+AKASHIC_RACE_TRACE     写出 JSON 结果的路径
+AKASHIC_RACE_CONFIG    指定 config.toml；不指定时生成无外部 channel 的最小配置
+AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
+```
+
 ## 真实 Runtime 时间回放基础
 
 `replay_controller.py` 只维护隔离 profile 下的模拟时钟、历史事件和捕获消息，不读取或挂载正式 workspace。`docker-compose.yml` 会让真实 `main.py` 加载调试插件目录；`replay_debug` 插件注册 `replay` 渠道，把 outbound 原样写入 profile。
@@ -606,6 +655,51 @@ python docker/debug/replay_controller.py \
 ```
 
 `events.jsonl` 只由 replay controller 保存为调试输入；当前 Core 没有隐式消费者，推进时钟不会自动触发 Turn。需要验证 Content/Wake 时使用上面的普通插件互操作 Gate。
+
+`agent-loop-runtime` 场景会启动真实 `AgentLoop.run()`，读取 `config.toml`，但不启动 Telegram / QQ / CLI server。它用 fake reasoner 卡住 passive turn，再并发触发 drift 发送和 scheduler soft 的 `process_direct`，验证 runtime lock 与 ChatLane 的联动。
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ config.toml without external channel                         │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ real AgentLoop.run                                          │
+│ real AgentLoop._react + passive pipeline                    │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ assert passive reply -> drift send -> scheduler send          │
+│ assert scheduler soft waits passive runtime lock              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+`config-runtime-llm` 场景会读取真实 `config.toml` 并调用其中配置的 LLM。它通过 `build_core_runtime()` 构建真实 runtime，加载真实 provider、memory、tool、plugin、scheduler 接线，但不启动 Telegram / QQ / CLI server；外部 channel sender 用 fake 记录发送顺序，Wake / Drift 输入也用 fake 直接提交到 `message_push(_commit_role="non_passive")`。
+
+```bash
+docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
+  python docker/debug/runtime_race_probe.py \
+    --scenario config-runtime-llm \
+    --config config.toml \
+    --timeout 120
+```
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ real config.toml + real LLM                                  │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ build_core_runtime                                           │
+│ provider + memory + tools + plugins + scheduler              │
+└──────────────┬──────────────────────────────────────────────┘
+               v
+┌─────────────────────────────────────────────────────────────┐
+│ real AgentLoop.run + real process_direct                     │
+│ fake proactive/drift generation -> real message_push          │
+│ fake channel sender records order                            │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## 完全清理
 

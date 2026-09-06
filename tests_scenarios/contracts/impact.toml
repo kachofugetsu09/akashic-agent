@@ -61,6 +61,7 @@ paths = [
   "bootstrap/channels.py",
   "bootstrap/chat_api.py",
   "bootstrap/control_execution.py",
+  "bootstrap/passive_worker.py",
   "bus/events.py",
   "bus/events_lifecycle.py",
   "plugins/akasha/**",
@@ -73,7 +74,6 @@ paths = [
 ]
 depends_on = ["channel", "plugin", "session_persistence"]
 scenarios = ["mobile_realtime_contract"]
-deleted_paths = ["bootstrap/passive_worker.py"]
 
 [groups.mobile_webui]
 priority = "p1"
@@ -419,8 +419,7 @@ scenarios = ["companion_schedule_capacity_contract"]
 [groups.companion_mobile]
 priority = "p0"
 requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001", "TST-003"]
-paths = ["infra/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/app.py", "session/store.py"]
-deleted_paths = ["bootstrap/passive_worker.py"]
+paths = ["infra/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/passive_worker.py", "bootstrap/app.py", "session/store.py"]
 depends_on = ["mobile_realtime", "plugin"]
 scenarios = ["companion_mobile_receipt_contract"]
 
