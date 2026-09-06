@@ -7,41 +7,8 @@ from typing import Any, cast
 
 import pytest
 
-from agent.control.client import ControlClient, RemoteControlError
-from agent.control.models import TurnRequest
-from agent.control.ports import ControlExecutionResult
-from agent.control.runtime import ConversationRuntime
-from agent.control.service import ControlService
 from bootstrap.workspace_token import ensure_workspace_token
 from infra.control.socket import SocketAppServer
-from session.manager import SessionManager
-
-
-async def _echo(request: TurnRequest) -> ControlExecutionResult:
-    return ControlExecutionResult(response=request.input)
-
-
-@pytest.mark.asyncio
-async def test_loopback_tcp_requires_workspace_token(tmp_path: Path) -> None:
-    sessions = SessionManager(tmp_path)
-    runtime = ConversationRuntime(sessions.control_store, _echo)
-    token = ensure_workspace_token(tmp_path)
-    service = ControlService(runtime, sessions, tmp_path, workspace_token=token)
-    server = SocketAppServer("127.0.0.1:0", service)
-    await server.start()
-    endpoint = str(server.endpoint)
-    try:
-        with pytest.raises(RemoteControlError) as captured:
-            _ = await ControlClient.connect(endpoint, workspace_token="wrong")
-        assert captured.value.code == -32004
-        async with await ControlClient.connect(endpoint, workspace_token=token) as client:
-            status = await client.request("server/status", {})
-            assert isinstance(status, dict)
-            assert status["ready"] is True
-    finally:
-        await server.stop()
-        await runtime.shutdown()
-        sessions.close()
 
 
 def test_tcp_rejects_non_loopback_and_token_is_private(tmp_path: Path) -> None:

@@ -52,7 +52,6 @@ from agent.plugin_composition import (
     MCP_SERVERS,
     SESSION_READ,
     SESSION_COMPACTION_STORAGE,
-    SCOPED_TURNS,
     CONTINUATIONS,
     DELIVERIES,
     DURABLE_DELIVERIES,
@@ -74,7 +73,6 @@ from agent.plugin_composition import (
     PluginRuntime,
     SessionReadService,
     SessionCompactionStorage,
-    PluginScopedTurns,
     PluginContinuations,
     PluginDeliveries,
     PluginDurableDeliveries,
@@ -344,9 +342,6 @@ class PluginManager:
             if session_manager is not None
             else None
         )
-        self._conversation_runtime: object | None = None
-        self._programmatic_session_creator: Callable[..., object] | None = None
-        self._programmatic_session_reader: Callable[[str], object] | None = None
         self._installed_cache_root = installed_cache_root
         self._disabled_builtin_plugins = disabled_builtin_plugins
         self._dashboard_preparer: Callable[[RuntimeSnapshot], None] | None = None
@@ -442,21 +437,6 @@ class PluginManager:
     @property
     def loaded_count(self) -> int:
         return len(self._loaded)
-
-    def bind_conversation_runtime(
-        self,
-        runtime: object,
-        *,
-        programmatic_session_creator: Callable[..., object],
-        programmatic_session_reader: Callable[[str], object] | None = None,
-    ) -> None:
-        """Bind formal scoped Turn admission before plugin topology is loaded."""
-
-        if self._conversation_runtime is not None:
-            raise RuntimeError("PluginManager ConversationRuntime 已绑定")
-        self._conversation_runtime = runtime
-        self._programmatic_session_creator = programmatic_session_creator
-        self._programmatic_session_reader = programmatic_session_reader
 
     def bind_continuation_publisher(
         self,
@@ -5822,25 +5802,6 @@ class PluginManager:
                 compaction_storage,
             )
         if any(
-            SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-
-            async def acquire_root_scope() -> RuntimeSnapshotLease:
-                return await root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
-
-            scoped_turns = (
-                PluginScopedTurns(
-                    self._conversation_runtime,
-                    self._programmatic_session_creator,
-                    self._programmatic_session_reader,
-                    acquire_root_scope,
-                )
-                if not candidate
-                else PluginScopedTurns.candidate_validation()
-            )
-            _ = await root.context.provide(SCOPED_TURNS, scoped_turns)
-        if any(
             CONTINUATIONS in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
         ):
@@ -5982,16 +5943,6 @@ class PluginManager:
         """冻结静态 v3 声明可读取的 Core service 输入。"""
 
         values: dict[Any, object] = {}
-        values[SCOPED_TURNS] = (
-            PluginScopedTurns(
-                self._conversation_runtime,
-                self._programmatic_session_creator,
-                self._programmatic_session_reader,
-            )
-            if self._conversation_runtime is not None
-            and self._programmatic_session_creator is not None
-            else PluginScopedTurns.candidate_validation()
-        )
         values[CONTINUATIONS] = (
             PluginContinuations(self._continuation_publisher)
             if self._continuation_publisher is not None

@@ -8,13 +8,10 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
 
 import pytest
 
 from agent.control.context import running_turn_id
-from agent.looping.core import AgentLoop
-from agent.model_runtime.session_selection import SessionModelSelection
 from agent.plugin_composition import LLMResponse
 from agent.tools.shell import ShellTaskStopTool
 from agent.tools.shell import ShellTool
@@ -31,10 +28,8 @@ from agent.tools.unified_exec import ShellProcessManager, UnknownExecutionError
 from agent.tools.unified_exec import clamp_initial_yield_time
 from agent.tools.unified_exec import clamp_write_stdin_yield_time
 from agent.tools.registry import ToolRegistry
-from bus.events import InboundMessage, OutboundMessage
 from core.error_context import current_session_key
 from session.manager import SessionManager
-from tests.model_plugin_fakes import bind_test_model_snapshot
 
 
 def _decode(value: str) -> dict[str, Any]:
@@ -430,130 +425,6 @@ async def test_same_conversation_can_resume_execution_after_context_reset() -> N
         assert resumed["process_status"] == "succeeded"
     finally:
         await manager.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_agent_loop_turn_end_terminates_owner_shell() -> None:
-    manager = ShellProcessManager()
-    shell = ShellTool(manager)
-    tools = ToolRegistry()
-    tools.register(shell)
-    loop = AgentLoop.__new__(AgentLoop)
-    loop.tools = tools
-    loop._processing_state = None
-    loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
-    loop._observe_turn_started = AsyncMock()
-    loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
-
-    async def process(
-        _message: InboundMessage,
-        _key: str,
-        *,
-        dispatch_outbound: bool,
-        command_admitted: bool,
-        **_models: object,
-    ) -> OutboundMessage:
-        assert dispatch_outbound is False
-        assert command_admitted is True
-        opened = _decode(
-            await shell.execute(
-                command="sleep 30",
-                description="验证 turn 回收",
-                yield_time_ms=250,
-            )
-        )
-        assert opened["process_status"] == "running"
-        return OutboundMessage(channel="cli", chat_id="owner", content="done")
-
-    loop._react = process
-    message = InboundMessage(
-        channel="cli",
-        sender="user",
-        chat_id="owner",
-        content="run",
-    )
-    try:
-        async with bind_test_model_snapshot(object()):
-            result = await loop._process(message, dispatch_outbound=False)
-
-        assert result.content == "done"
-        assert await manager.active_execution_ids() == []
-    finally:
-        await manager.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_agent_loop_preserves_turn_failure_when_shell_cleanup_fails(
-    monkeypatch,
-) -> None:
-    manager = ShellProcessManager()
-    shell = ShellTool(manager)
-    tools = ToolRegistry()
-    tools.register(shell)
-    loop = AgentLoop.__new__(AgentLoop)
-    loop.tools = tools
-    loop._processing_state = None
-    loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
-    loop._observe_turn_started = AsyncMock()
-    loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
-
-    async def fail_process(*_args, **_kwargs) -> OutboundMessage:
-        raise RuntimeError("turn failed")
-
-    async def fail_cleanup(_owner_session_key: str) -> None:
-        raise RuntimeError("cleanup failed")
-
-    loop._react = fail_process
-    monkeypatch.setattr(shell, "terminate_owner", fail_cleanup)
-    message = InboundMessage(
-        channel="cli",
-        sender="user",
-        chat_id="owner",
-        content="run",
-    )
-
-    async with bind_test_model_snapshot(object()):
-        with pytest.raises(RuntimeError, match="turn failed"):
-            await loop._process(message, dispatch_outbound=False)
-
-
-@pytest.mark.asyncio
-async def test_agent_loop_returns_completed_reply_when_shell_cleanup_fails(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    manager = ShellProcessManager()
-    shell = ShellTool(manager)
-    tools = ToolRegistry()
-    tools.register(shell)
-    loop = AgentLoop.__new__(AgentLoop)
-    loop.tools = tools
-    loop._processing_state = None
-    loop._passive_pipeline = SimpleNamespace(run_command=AsyncMock(return_value=None))
-    loop._observe_turn_started = AsyncMock()
-    loop._resolve_model_selection = AsyncMock(return_value=SessionModelSelection())
-    loop._react = AsyncMock(
-        return_value=OutboundMessage("mobile", "owner", "completed reply")
-    )
-
-    async def fail_cleanup(_owner_session_key: str) -> None:
-        raise PermissionError("cleanup denied")
-
-    monkeypatch.setattr(shell, "terminate_owner", fail_cleanup)
-    message = InboundMessage(
-        channel="mobile",
-        sender="user",
-        chat_id="owner",
-        content="run",
-    )
-
-    with caplog.at_level("ERROR", logger="agent.loop"):
-        async with bind_test_model_snapshot(object()):
-            result = await loop._process(message)
-
-    assert result.content == "completed reply"
-    assert "event=cleanup_degraded" in caplog.text
-    assert "session=mobile:owner" in caplog.text
 
 
 @pytest.mark.asyncio
