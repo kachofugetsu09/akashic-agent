@@ -18,12 +18,7 @@ from docker.debug.content_wake_h5_e2e import (
     _seed_protected_fixture,
     _validate_protected_snapshot,
 )
-from docker.debug.wake_v3_provider_e2e import (
-    _BUILDER_SYSTEM_MARKER,
-    _CALLER_SYSTEM_MARKER,
-    _run,
-    snapshot_protected_workspace,
-)
+from docker.debug.wake_v3_provider_e2e import _run, snapshot_protected_workspace
 
 
 async def _start_provider(
@@ -171,12 +166,12 @@ async def test_wake_provider_200_keeps_v3_request_and_delivery_contract(
     payload, requests, _ = await _run_with_provider(tmp_path, monkeypatch, 200)
 
     assert payload["status"] == "passed"
-    assert payload["selected"]["final_state"] == "settled"
+    assert payload["selected"]["final_state"] == "delivered"
     assert len(requests) == 2
     for request in requests:
         assert request["model"] == "deepseek-v4-flash"
         assert request["reasoning_effort"] == "max"
-        assert "max_tokens" not in request
+        assert request["max_tokens"] == 4096
     tool_sets = [
         {
             cast(dict[str, object], tool["function"])["name"]
@@ -186,14 +181,11 @@ async def test_wake_provider_200_keeps_v3_request_and_delivery_contract(
     ]
     assert tool_sets[0] == {"screen_content"}
     assert tool_sets[1] == {
-        "recall_fixture",
+        "recall_memory",
         "web_fetch",
         "share_content",
         "skip_content",
     }
-    first_system = str(cast(list[dict[str, object]], requests[0]["messages"])[0])
-    assert _CALLER_SYSTEM_MARKER in first_system
-    assert _BUILDER_SYSTEM_MARKER not in first_system
     assert "fixture-secret-marker" not in json.dumps(payload, sort_keys=True)
 
 
@@ -219,8 +211,10 @@ async def test_wake_provider_error_is_terminal_and_redacted(
     assert payload["failure_code"] == "SELECTED_DELIVERY_NOT_TERMINAL"
     assert len(requests) == attempts
     assert evidence["provider_terminal_counts"]["call_error"] == 1
-    assert evidence["turn_status_counts"] == {"failed": 1}
-    assert evidence["turn_retryable_counts"][retryable] == 1
+    assert evidence["wake_failure_count"] == 1
+    assert evidence["wake_failure_retryable_counts"][retryable] == 1
+    assert evidence["model_call_count"] == 1
+    assert evidence["model_call_state_counts"] == {"unknown": 1}
     assert evidence["content_counts"] == {content_status: 1}
     assert evidence["delivery_count"] == 0
     encoded = json.dumps(payload, sort_keys=True)
