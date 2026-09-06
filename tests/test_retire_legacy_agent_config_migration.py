@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import tomllib
 from pathlib import Path
@@ -62,6 +63,50 @@ def test_migrates_zero_budget_and_preserves_veda(tmp_path: Path) -> None:
         )
     ) == {"max_steps": 0}
     assert veda.read_bytes() == b"custom VEDA\n"
+
+
+def test_context_only_default_wiring_is_removed(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('[agent.wiring]\ncontext = "default"\n', encoding="utf-8")
+    workspace = tmp_path / "workspace"
+
+    _run(_module(tmp_path), config, workspace)
+
+    assert tomllib.loads(config.read_text(encoding="utf-8")) == {}
+    assert not (workspace / "plugin-data/reply-builtin/config.local.toml").exists()
+
+
+def test_old_budget_values_conflict_without_writing(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "max_iterations = 8\n[agent]\nmax_iterations = 7\n",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    before = config.read_bytes()
+
+    with pytest.raises(RuntimeError, match="max_iterations.*冲突"):
+        _run(_module(tmp_path), config, workspace)
+
+    assert config.read_bytes() == before
+    assert not (workspace / "backups").exists()
+
+
+def test_hardlinked_config_targets_are_rejected_without_writing(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[agent]\nmax_iterations = 3\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    reply = workspace / "plugin-data/reply-builtin/config.local.toml"
+    reply.parent.mkdir(parents=True)
+    os.link(config, reply)
+    before = config.read_bytes()
+
+    with pytest.raises(RuntimeError, match="同一 inode"):
+        _run(_module(tmp_path), config, workspace)
+
+    assert config.read_bytes() == before
+    assert reply.read_bytes() == before
+    assert not (workspace / "backups").exists()
 
 
 @pytest.mark.parametrize("value", [False, -1])
@@ -164,3 +209,95 @@ def test_publication_failure_restores_both_files(tmp_path: Path, monkeypatch: py
     assert config.read_bytes() == original_config
     assert not (workspace / "plugin-data/reply-builtin/config.local.toml").exists()
     assert len(list((workspace / "backups/retire-legacy-agent-config").iterdir())) == 1
+
+
+@pytest.mark.parametrize("drift", ["bytes", "mode", "type", "absence"])
+def test_source_drift_after_backup_is_preserved_and_fails_loudly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[agent]\nmax_iterations = 3\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    module = _module(tmp_path)
+    original_backup = module._backup
+
+    def backup_then_edit(snapshot, backup_root, name):
+        result = original_backup(snapshot, backup_root, name)
+        if name == "config.toml.before":
+            if drift == "bytes":
+                config.write_text("[agent]\nmax_iterations = 99\n", encoding="utf-8")
+            elif drift == "mode":
+                config.chmod(0o600)
+            elif drift == "type":
+                config.unlink()
+                replacement = tmp_path / "replacement.toml"
+                replacement.write_text("[agent]\nmax_iterations = 99\n", encoding="utf-8")
+                config.symlink_to(replacement.name)
+            else:
+                config.unlink()
+        return result
+
+    monkeypatch.setattr(module, "_backup", backup_then_edit)
+    with pytest.raises(RuntimeError, match="请从"):
+        _run(module, config, workspace)
+
+    if drift == "type":
+        assert config.is_symlink()
+    elif drift == "absence":
+        assert not config.exists()
+    else:
+        assert config.exists()
+    assert not (workspace / "plugin-data/reply-builtin/config.local.toml").exists()
+    assert list((workspace / "backups/retire-legacy-agent-config").iterdir())
+
+
+def test_operator_reply_creation_survives_failed_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[agent]\nmax_iterations = 3\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    reply = workspace / "plugin-data/reply-builtin/config.local.toml"
+    module = _module(tmp_path)
+    original_backup = module._backup
+
+    def backup_then_create(snapshot, backup_root, name):
+        result = original_backup(snapshot, backup_root, name)
+        if name == "config.toml.before":
+            reply.parent.mkdir(parents=True, exist_ok=True)
+            reply.write_text("max_steps = 88\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(module, "_backup", backup_then_create)
+    with pytest.raises(RuntimeError, match="恢复失败"):
+        _run(module, config, workspace)
+
+    assert reply.read_text(encoding="utf-8") == "max_steps = 88\n"
+
+
+def test_operator_reply_edit_survives_failed_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[agent]\nmax_iterations = 3\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    reply = workspace / "plugin-data/reply-builtin/config.local.toml"
+    module = _module(tmp_path)
+    original_publish = module._publish
+
+    def publish_then_edit(snapshot, payload, *, label):
+        original_publish(snapshot, payload, label=label)
+        if label == "reply 插件配置":
+            reply.write_text("max_steps = 88\n", encoding="utf-8")
+            raise OSError("模拟后续发布失败")
+
+    monkeypatch.setattr(module, "_publish", publish_then_edit)
+    with pytest.raises(RuntimeError, match="恢复失败"):
+        _run(module, config, workspace)
+
+    assert reply.read_text(encoding="utf-8") == "max_steps = 88\n"
+    assert "max_iterations = 3" in config.read_text(encoding="utf-8")

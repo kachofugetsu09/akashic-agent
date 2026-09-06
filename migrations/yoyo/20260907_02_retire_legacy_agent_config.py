@@ -84,19 +84,54 @@ def _snapshot(path: Path, *, label: str) -> _Snapshot:
     return _Snapshot(path, path, path.read_bytes(), stat.S_IMODE(metadata.st_mode), None)
 
 
-def _check_identity(snapshot: _Snapshot, *, label: str) -> None:
-    """确认发布边界仍指向迁移预检时的对象。"""
+def _same_snapshot(left: _Snapshot, right: _Snapshot) -> bool:
+    """比较文件存在性、类型、字节、权限和软链身份。"""
 
-    if snapshot.symlink_target is None:
-        if snapshot.path.is_symlink():
-            raise RuntimeError(f"{label} 迁移期间变成软链接: {snapshot.path}")
-        return
-    if (
-        not snapshot.path.is_symlink()
-        or os.readlink(snapshot.path) != snapshot.symlink_target
-        or snapshot.path.resolve(strict=False) != snapshot.target
-    ):
-        raise RuntimeError(f"{label} 软链接身份改变: {snapshot.path}")
+    return (
+        left.content == right.content
+        and left.mode == right.mode
+        and left.target == right.target
+        and left.symlink_target == right.symlink_target
+    )
+
+
+def _check_snapshot(snapshot: _Snapshot, *, label: str) -> None:
+    """确认发布边界仍等于迁移预检时的完整快照。"""
+
+    current = _snapshot(snapshot.path, label=label)
+    if not _same_snapshot(snapshot, current):
+        raise RuntimeError(f"{label} 迁移期间发生变化: {snapshot.path}")
+
+
+def _matches_published(
+    snapshot: _Snapshot,
+    current: _Snapshot,
+    payload: bytes,
+) -> bool:
+    """确认目标仍是本次迁移刚发布的字节和文件身份。"""
+
+    return (
+        current.content == payload
+        and current.mode == (snapshot.mode if snapshot.mode is not None else 0o600)
+        and current.target == snapshot.target
+        and current.symlink_target == snapshot.symlink_target
+    )
+
+
+def _same_existing_target(left: Path, right: Path) -> bool:
+    """拒绝两个既存配置目标共享同一 inode。"""
+
+    try:
+        left_stat = left.stat()
+        right_stat = right.stat()
+    except FileNotFoundError:
+        return False
+    if (left_stat.st_dev, left_stat.st_ino) == (right_stat.st_dev, right_stat.st_ino):
+        return True
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
 
 
 def _fsync_directory(path: Path) -> None:
@@ -245,6 +280,9 @@ def _check_safe_defaults(data: Mapping[str, object], agent: Mapping[str, object]
             and isinstance(toolsets, list)
             and tuple(toolsets) == _DEFAULT_TOOLSETS
         ) or (
+            set(wiring) == {"context"}
+            and wiring.get("context") == "default"
+        ) or (
             set(wiring) == {"context", "toolsets"}
             and wiring.get("context") == "default"
             and isinstance(toolsets, list)
@@ -359,6 +397,8 @@ def _plan(config_path: Path, workspace: Path) -> _Plan | None:
     reply, reply_bytes = _reply_config(reply_path, max_steps, workspace)
     if reply.content is not None and reply.target == config.target:
         raise RuntimeError("主配置与 reply 插件配置解析到同一文件；拒绝双重发布")
+    if reply.content is not None and _same_existing_target(reply.target, config.target):
+        raise RuntimeError("主配置与 reply 插件配置共享同一 inode；拒绝双重发布")
     if config_bytes is None and reply_bytes is None:
         return None
     return _Plan(config, reply, config_bytes, reply_bytes)
@@ -367,26 +407,31 @@ def _plan(config_path: Path, workspace: Path) -> _Plan | None:
 def _publish(snapshot: _Snapshot, payload: bytes | None, *, label: str) -> None:
     if payload is None:
         return
-    _check_identity(snapshot, label=label)
+    _check_snapshot(snapshot, label=label)
     target = snapshot.target
     mode = snapshot.mode if snapshot.mode is not None else 0o600
     _write_atomic(target, payload, mode)
-    _check_identity(snapshot, label=label)
-    if snapshot.path.read_bytes() != payload:
+    current = _snapshot(snapshot.path, label=label)
+    if not _matches_published(snapshot, current, payload):
         raise RuntimeError(f"{label} 发布校验失败: {snapshot.path}")
 
 
 def _restore(snapshot: _Snapshot, payload: bytes | None, *, label: str) -> None:
-    _check_identity(snapshot, label=label)
-    if snapshot.content is None:
-        if payload is None and snapshot.path.exists() and not snapshot.path.is_symlink():
-            snapshot.path.unlink()
-        return
     if payload is None:
-        raise RuntimeError(f"{label} 缺少恢复字节: {snapshot.path}")
-    _write_atomic(snapshot.target, payload, snapshot.mode or 0o600)
-    _check_identity(snapshot, label=label)
-    if snapshot.path.read_bytes() != snapshot.content:
+        return
+
+    current = _snapshot(snapshot.path, label=label)
+    if _same_snapshot(snapshot, current):
+        return
+    if not _matches_published(snapshot, current, payload):
+        raise RuntimeError(f"{label} 发布目标已漂移，拒绝恢复: {snapshot.path}")
+    if snapshot.content is None:
+        snapshot.path.unlink()
+        _fsync_directory(snapshot.path.parent)
+    else:
+        _write_atomic(snapshot.target, snapshot.content, snapshot.mode or 0o600)
+    _check_snapshot(snapshot, label=label)
+    if snapshot.content is not None and snapshot.path.read_bytes() != snapshot.content:
         raise RuntimeError(f"{label} 恢复校验失败: {snapshot.path}")
 
 
@@ -404,15 +449,22 @@ def retire_legacy_agent_config(_connection: object) -> None:
     config_backup = _backup(plan.config, backup_root, "config.toml.before")
     reply_backup = _backup(plan.reply, backup_root, "reply-config.local.toml.before")
     _write_manifest(backup_root, plan.config, plan.reply, config_backup, reply_backup)
+    attempted: list[tuple[_Snapshot, bytes | None, str]] = []
     try:
-        # 1. Every conflict was checked before the first external write.
+        # 1. 所有冲突都已在第一次外部写入前检查。
+        attempted.append((plan.reply, plan.reply_bytes, "reply 插件配置"))
         _publish(plan.reply, plan.reply_bytes, label="reply 插件配置")
+        attempted.append((plan.config, plan.config_bytes, "主配置"))
         _publish(plan.config, plan.config_bytes, label="主配置")
     except BaseException as migration_error:
-        try:
-            _restore(plan.config, plan.config.content, label="主配置")
-            _restore(plan.reply, plan.reply.content, label="reply 插件配置")
-        except BaseException as restore_error:
+        restore_error: BaseException | None = None
+        for snapshot, payload, label in reversed(attempted):
+            try:
+                _restore(snapshot, payload, label=label)
+            except BaseException as error:
+                if restore_error is None:
+                    restore_error = error
+        if restore_error is not None:
             raise RuntimeError(
                 f"旧 Agent 配置迁移失败且恢复失败: {migration_error}; "
                 f"请从 {backup_root} 恢复"
