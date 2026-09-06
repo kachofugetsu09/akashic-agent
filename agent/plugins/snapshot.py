@@ -18,7 +18,6 @@ from agent.skills import SkillIndex
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,
-    BACKGROUND_JOBS,
     TOOL_CATALOG,
     MANAGED_PROCESSES,
     WORKLOADS,
@@ -52,10 +51,6 @@ from agent.plugin_composition.process_slots import (
 from agent.plugin_composition.workload_slots import (
     WorkloadRegistry,
     _freeze_plugin_workloads,
-)
-from agent.plugin_composition.background_jobs import (
-    BackgroundJobCatalog,
-    _freeze_plugin_background_jobs,
 )
 from agent.plugin_composition.tool_catalog import (
     PluginToolCatalog,
@@ -92,8 +87,6 @@ class RuntimeSnapshot:
     managed_process_registry_identity: str | None = None
     workload_registry: WorkloadRegistry | None = None
     workload_registry_identity: str | None = None
-    background_job_catalog: BackgroundJobCatalog | None = None
-    background_job_catalog_identity: str | None = None
     plugin_tool_catalog: PluginToolCatalog | None = None
     plugin_tool_catalog_identity: str | None = None
     plugin_tool_facades: tuple[PluginTools, ...] = field(default=(), repr=False)
@@ -188,7 +181,6 @@ class RuntimeSnapshotCompiler:
         mcp_server_registry: McpServerRegistry | None = None
         managed_process_registry: ManagedProcessRegistry | None = None
         workload_registry: WorkloadRegistry | None = None
-        background_job_catalog: BackgroundJobCatalog | None = None
         plugin_tool_catalog: PluginToolCatalog | None = None
         plugin_tool_facades: tuple[PluginTools, ...] = ()
         web_ui_catalog: WebUiCatalog | None = None
@@ -332,21 +324,6 @@ class RuntimeSnapshotCompiler:
                             )
                 mcp_server_registry = frozen_mcp
                 identity += f"|mcp-v3:{frozen_mcp.identity}"
-            background_jobs = catalog_context.get(BACKGROUND_JOBS)
-            if background_jobs is not None:
-                background_job_catalog = _freeze_plugin_background_jobs(
-                    background_jobs,
-                    catalog_root_token,
-                    {
-                        generation.plugin_id: generation.generation_id
-                        for generation in ordered
-                    },
-                )
-                self._validate_background_job_catalog(
-                    background_job_catalog,
-                    generations,
-                )
-                identity += f"|background-jobs-v3:{background_job_catalog.identity}"
             plugin_tools = catalog_context.get(TOOL_CATALOG)
             if plugin_tools is not None:
                 plugin_tool_catalog = _freeze_plugin_tools(
@@ -416,17 +393,6 @@ class RuntimeSnapshotCompiler:
                         lambda item: getattr(item, "descriptor").owner,
                     ),
                 )
-                background_job_catalog = cast(
-                    BackgroundJobCatalog | None,
-                    _merge_root_mapping_registry(
-                        base_snapshot.background_job_catalog,
-                        background_job_catalog,
-                        replaced_plugin_ids,
-                        BackgroundJobCatalog,
-                        composition_root.instance_token,
-                        lambda item: getattr(item, "plugin_id"),
-                    ),
-                )
                 plugin_tool_catalog = cast(
                     PluginToolCatalog | None,
                     _merge_root_mapping_registry(
@@ -438,11 +404,6 @@ class RuntimeSnapshotCompiler:
                         lambda item: getattr(item, "plugin_id"),
                     ),
                 )
-                if background_job_catalog is not None:
-                    self._validate_background_job_catalog(
-                        background_job_catalog,
-                        generations,
-                    )
                 if plugin_tool_catalog is not None:
                     self._validate_plugin_tool_catalog(
                         plugin_tool_catalog,
@@ -475,11 +436,6 @@ class RuntimeSnapshotCompiler:
                             ""
                             if mcp_server_registry is None
                             else mcp_server_registry.identity
-                        ),
-                        (
-                            ""
-                            if background_job_catalog is None
-                            else background_job_catalog.identity
                         ),
                         (
                             ""
@@ -564,12 +520,6 @@ class RuntimeSnapshotCompiler:
                 + ("" if workload_registry is None else workload_registry.identity),
                 "mcp:"
                 + ("" if mcp_server_registry is None else mcp_server_registry.identity),
-                "jobs:"
-                + (
-                    ""
-                    if background_job_catalog is None
-                    else background_job_catalog.identity
-                ),
                 "tools:"
                 + ("" if plugin_tool_catalog is None else plugin_tool_catalog.identity),
                 "channel-catalog:"
@@ -611,12 +561,6 @@ class RuntimeSnapshotCompiler:
             workload_registry=workload_registry,
             workload_registry_identity=(
                 None if workload_registry is None else workload_registry.identity
-            ),
-            background_job_catalog=background_job_catalog,
-            background_job_catalog_identity=(
-                None
-                if background_job_catalog is None
-                else background_job_catalog.identity
             ),
             plugin_tool_catalog=plugin_tool_catalog,
             plugin_tool_catalog_identity=(
@@ -679,21 +623,6 @@ class RuntimeSnapshotCompiler:
                         "RuntimeSnapshot 静态 channel credential 没有对应 Root 声明: "
                         f"{generation.plugin_id}:{channel_name}"
                     )
-
-    @staticmethod
-    def _validate_background_job_catalog(
-        catalog: BackgroundJobCatalog,
-        generations: Mapping[str, PluginGeneration],
-    ) -> None:
-        """Validate every background job against its exact generation."""
-
-        for binding in catalog.values():
-            generation = generations.get(binding.plugin_id)
-            if generation is None or generation.generation_id != binding.generation_id:
-                raise RuntimeError(
-                    "RuntimeSnapshot background job 不属于 exact generation: "
-                    f"{binding.plugin_id}:{binding.generation_id}"
-                )
 
     @staticmethod
     def _validate_plugin_tool_catalog(
@@ -1759,8 +1688,6 @@ class RuntimeSnapshotStore:
                 or snapshot.managed_process_registry_identity is not None
                 or snapshot.workload_registry is not None
                 or snapshot.workload_registry_identity is not None
-                or snapshot.background_job_catalog is not None
-                or snapshot.background_job_catalog_identity is not None
                 or snapshot.plugin_tool_catalog is not None
                 or snapshot.plugin_tool_catalog_identity is not None
             ):
@@ -1854,22 +1781,6 @@ class RuntimeSnapshotStore:
             is not root.instance_token
         ):
             raise RuntimeError("RuntimeSnapshot Workload registry 不属于 exact Root")
-        if snapshot.background_job_catalog_identity != (
-            None
-            if snapshot.background_job_catalog is None
-            else snapshot.background_job_catalog.identity
-        ):
-            raise RuntimeError(
-                "RuntimeSnapshot background job catalog 在编译后发生变化"
-            )
-        if (
-            snapshot.background_job_catalog is not None
-            and snapshot.background_job_catalog.root_instance_token
-            is not root.instance_token
-        ):
-            raise RuntimeError(
-                "RuntimeSnapshot background job catalog 不属于 exact Root"
-            )
         if snapshot.plugin_tool_catalog_identity != (
             None
             if snapshot.plugin_tool_catalog is None
