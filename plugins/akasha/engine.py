@@ -51,7 +51,7 @@ from session.store import InteractionDeletion
 from .application.cycle import RetrievalTicket
 from .application.runtime import OnlineMemoryRuntime, StagedOnlineCommit
 from .config import AkashaConfig, resolve_memory_path
-from .domain.model import Turn
+from .domain.model import EmbeddingSpaceMismatchError, Turn
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -120,10 +120,6 @@ def _new_span(operation: Literal["query", "turn_commit"]) -> _SpanIdentity:
         span_id=secrets.token_hex(8),
         operation=operation,
     )
-
-
-class EmbeddingSpaceMismatchError(RuntimeError):
-    """Report derived vectors that belong to another embedding space."""
 
 
 def _check_embedding_space(index_path: Path, expected_identity: str) -> None:

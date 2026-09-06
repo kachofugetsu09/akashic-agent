@@ -100,10 +100,9 @@ async def test_summary_use_reopens_original_archive_after_head_advance_and_sourc
                         ignore=shutil.ignore_patterns("__pycache__"))
     (sources / "compaction/akashic.plugin.toml").write_text(
         'schema_version = 1\nname = "compaction"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
-    context = sources / "context/plugin.py"
-    context.write_text(context.read_text().replace(
-        'summary_source: tuple[str, str] | None = None',
-        'summary_source: tuple[str, str] | None = ("compaction", "compaction")'))
+    settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text('summary_source = ["compaction", "compaction"]\n')
     provider = sources / "fixture_models"
     provider.mkdir()
     (provider / "plugin.py").write_text('''

@@ -3,35 +3,61 @@ from typing import cast
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
-from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
+from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
 from agent.plugin_composition.tasks import TASKS, Task
-from session.log import MessageReader
+from session.log import MessageConflict, MessageReader
 from plugins.content.plugin import check_text
 from plugins.content.api import check_artifact
 from plugins.models.selection import check_selection
+from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
 from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
 
-from .source import Conversation
+from .source import Conversation, update_selection
 from .commands import CONVERSATION_COMMANDS, run_commands
 
 api_version = 3
 name = "conversation"
 version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
-inject = ()
+inject = (MESSAGE_WRITERS, SOURCES)
 
 CONVERSATION = ServiceKey[Callable[[str], Conversation]]("conversation.v1")
 
 
 async def apply(ctx: Context, config: object) -> None:
     """来源能力不依赖模型或自动回复，正式调用时才取得宿主读写权。"""
+    _ = await ctx.require(MESSAGE_WRITERS).register_metadata(
+        ctx, keys=frozenset({"model_selection", "model_runtime_override"}), update=update_selection,
+    )
+    def changed(reader: MessageReader, source: str) -> None:
+        listener = ctx.get(SOURCE_CHANGED)
+        if listener is not None:
+            listener(reader, source)
+
     def open(session_id: str) -> Conversation:
+        def check_model(part: ContentPart) -> ContentReferences:
+            references = check_selection(part)
+            value = cast(Mapping[str, str | None], part.value)
+            _ = ctx.require(MODEL_CATALOG).validate_chat_selection(
+                ChatModelSelection(value["model_id"], value["reasoning_effort"]),
+            )
+            return references
+
+        def check_reply_target(part: ContentPart) -> ContentReferences:
+            references = check_reply(part)
+            target = ctx.require(MESSAGE_CATALOG).reader(session_id).get(cast(str, part.value))
+            if target is None or not isinstance(target.body, (Input, Output)):
+                raise MessageConflict("引用目标不是当前 Session 的 Input 或 Output")
+            return references
+
         writers = ctx.require(MESSAGE_WRITERS)
         inputs = writers.bind(
             ctx, author="user", source="conversation", body_types=(Input,),
             content={"text": check_text, "artifact_ref": check_artifact, "channel.origin": check_origin,
-                     "reply_ref": check_reply, "model.selection": check_selection},
+                     "reply_ref": check_reply_target, "model.selection": check_model},
+            update_metadata=update_selection,
         )
         controls = writers.bind(
             ctx, author="app", source="conversation", body_types=(Control,), content={},
@@ -39,7 +65,7 @@ async def apply(ctx: Context, config: object) -> None:
         return Conversation(
             reader=ctx.require(MESSAGE_CATALOG).reader(session_id),
             inputs=inputs(session_id), controls=controls(session_id),
-            tasks=ctx.require(TASKS).open(ctx),
+            tasks=ctx.require(TASKS).open(ctx), changed=changed,
         )
 
     async def accept(session_id: str, message_id: str, message: ChannelInboundMessage) -> Message:
@@ -65,15 +91,9 @@ async def apply(ctx: Context, config: object) -> None:
             ContentPart("text", message.content),
             *(ContentPart("artifact_ref", ref.artifact_id) for ref in message.attachments),
         )
-        reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
         reply = message.metadata.get("reply_to_message_id")
         if reply is not None:
-            part = ContentPart("reply_ref", reply)
-            _ = check_reply(part)
-            target = reader.get(cast(str, reply))
-            if target is None or not isinstance(target.body, (Input, Output)):
-                raise ValueError("引用目标不是当前 Session 的可展示消息")
-            parts += (part,)
+            parts += (ContentPart("reply_ref", reply),)
         if "model_runtime_id" in message.metadata:
             model_id = message.metadata["model_runtime_id"]
             effort = message.metadata.get("model_reasoning_effort", "")
@@ -90,7 +110,7 @@ async def apply(ctx: Context, config: object) -> None:
 
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION, open)
-    _ = await ctx.provide(CHANNEL_INPUT, accept)
+    _ = await ctx.require(SOURCES).register(ctx, Source("conversation", open, accept, None))
 
 
 def check_origin(part: ContentPart) -> ContentReferences:

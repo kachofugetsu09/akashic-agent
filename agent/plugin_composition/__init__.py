@@ -1,3 +1,4 @@
+from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from agent.plugin_composition.context import (
     CompositionRoot,
     Context,
@@ -116,9 +117,11 @@ from agent.plugin_composition.durable_deliveries import (
 )
 from agent.plugin_composition.timers import TIMERS, PluginTimers
 from agent.plugin_composition.runtime_lifecycle import (
+    RUNTIME_STARTING,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     SNAPSHOT_SEALING,
+    RuntimeStarting,
     RuntimeStarted,
     RuntimeStopping,
     SnapshotSealing,
@@ -149,12 +152,17 @@ from agent.plugin_composition.models import (
     DriverUnavailableError,
     EMBEDDINGS,
     EmbeddingResult,
+    SavedEmbedding,
+    read_embedding_binding,
+    open_embedding,
     Embeddings,
     EmbeddingSpaceDescriptor,
     FinishConnectionAuth,
     LLMResponse,
     InvalidRequestError,
     MODEL_CATALOG,
+    MODEL_CALL_STATS,
+    ModelCallStats,
     MODEL_DRIVERS,
     MODEL_SETTINGS,
     ModelAvailability,
@@ -291,7 +299,12 @@ from agent.plugin_composition.ui_slots import (
     resolve_mobile_ui_asset,
 )
 
+from agent.plugin_composition.processes import PROCESSES, PluginProcesses, ProcessCleanupError
+
 __all__ = [
+    "PROCESSES",
+    "PluginProcesses",
+    "ProcessCleanupError",
     "BeforeTurnCtx",
     "AddConnection",
     "AddModel",
@@ -318,12 +331,17 @@ __all__ = [
     "DriverUnavailableError",
     "EMBEDDINGS",
     "EmbeddingResult",
+    "SavedEmbedding",
+    "read_embedding_binding",
+    "open_embedding",
     "Embeddings",
     "EmbeddingSpaceDescriptor",
     "FinishConnectionAuth",
     "LLMResponse",
     "InvalidRequestError",
     "MODEL_CATALOG",
+    "MODEL_CALL_STATS",
+    "ModelCallStats",
     "MODEL_DRIVERS",
     "MODEL_SETTINGS",
     "ModelAvailability",
@@ -396,6 +414,8 @@ __all__ = [
     "AttachmentReadLease",
     "AttachmentRef",
     "CredentialRef",
+    "CREDENTIALS",
+    "CredentialClients",
     "DeliveryStatus",
     "EmitEventKey",
     "Effect",
@@ -516,9 +536,11 @@ __all__ = [
     "TimerHandle",
     "TimerStatus",
     "PluginTimers",
+    "RUNTIME_STARTING",
     "RUNTIME_STARTED",
     "RUNTIME_STOPPING",
     "SNAPSHOT_SEALING",
+    "RuntimeStarting",
     "RuntimeStarted",
     "RuntimeStopping",
     "RuntimeScope",

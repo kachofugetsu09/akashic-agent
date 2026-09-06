@@ -66,6 +66,8 @@ RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
         --expected-commit "${AKASHIC_SOURCE_COMMIT}" \
         --expected-tree "${AKASHIC_SOURCE_TREE}" \
         --expected-archive-sha256 "${AKASHIC_SOURCE_ARCHIVE_SHA256}" \
+    && /opt/venv/bin/python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'akashic-sdk.pth').write_text('/opt/akashic/source/sdk/python/src\n')" \
+    && /opt/venv/bin/python -c "import akashic_sdk; assert akashic_sdk.__file__.startswith('/opt/akashic/source/sdk/python/src/')" \
     && npm ci --ignore-scripts --registry "${AKASHIC_NPM_REGISTRY}" \
     && npm run build \
     && rm -rf node_modules /root/.npm \

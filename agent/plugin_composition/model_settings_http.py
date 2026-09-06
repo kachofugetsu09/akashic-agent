@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import asdict
 from typing import Annotated, Literal, Protocol
 
 from fastapi import APIRouter, HTTPException, Request
@@ -25,6 +26,8 @@ from agent.plugin_composition.models import (
     DiscoveredModel,
     FinishConnectionAuth,
     MODEL_CATALOG,
+    MODEL_CALL_STATS,
+    ModelCallStats,
     MODEL_SETTINGS,
     ModelCapabilities,
     ModelCatalogSnapshot,
@@ -51,6 +54,8 @@ class ModelControlUnavailable(RuntimeError):
 
 
 class ModelControl(Protocol):
+    async def call_stats(self, call_id: str) -> ModelCallStats: ...
+
     async def catalog(self) -> ModelCatalogSnapshot: ...
 
     async def discover(
@@ -62,6 +67,12 @@ class ModelControl(Protocol):
 
 class BoundModelControl:
     """Resolve model services from the exact snapshot bound to this request."""
+
+    async def call_stats(self, call_id: str) -> ModelCallStats:
+        read = _bound_root().context.get(MODEL_CALL_STATS)
+        if read is None:
+            raise ModelControlUnavailable("models 插件未提供调用统计")
+        return read(call_id)
 
     async def catalog(self) -> ModelCatalogSnapshot:
         root = _bound_root()
@@ -234,6 +245,15 @@ def create_model_settings_router(
     """Expose provider-neutral model catalog and settings commands over HTTP."""
 
     router = APIRouter(prefix=prefix)
+
+    @router.get("/calls/{call_id}")
+    async def call_stats(call_id: str) -> dict[str, object]:
+        try:
+            return asdict(await control.call_stats(call_id))
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="模型调用不存在") from error
+        except ModelControlUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @router.get("/catalog")
     async def catalog() -> dict[str, object]:

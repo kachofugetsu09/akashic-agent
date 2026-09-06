@@ -117,10 +117,15 @@ class ContentWakeServices(Protocol):
 
     def alert_deadline(self, now: datetime) -> datetime | None: ...
 
-    def alert_status(self, source_id: str, event_id: str) -> str | None: ...
+    def alert_status(self, source_id: str, event_id: str, *, mail_id: str | None = None) -> str | None: ...
+
+    def change_alert(self, item_ref: Mapping[str, object], accepted_turn: Mapping[str, object],
+                     action: str, now: datetime, *, not_before: datetime | None = None) -> bool: ...
+
+    def peek_alert(self, now: datetime) -> Mapping[str, object] | None: ...
 
     def select_alert(
-        self, accepted_turn: Mapping[str, object], now: datetime
+        self, accepted_turn: Mapping[str, object], now: datetime, *, item_ref: Mapping[str, object] | None = None,
     ) -> Mapping[str, object] | None: ...
 
     def selected_alert(
@@ -367,13 +372,20 @@ class _WakeServices:
     def alert_deadline(self, now: datetime) -> datetime | None:
         return self._store.alert_deadline(now)
 
-    def alert_status(self, source_id: str, event_id: str) -> str | None:
-        return self._store.alert_status(source_id, event_id)
+    def alert_status(self, source_id: str, event_id: str, *, mail_id: str | None = None) -> str | None:
+        return self._store.alert_status(source_id, event_id, mail_id=mail_id)
+
+    def change_alert(self, item_ref: Mapping[str, object], accepted_turn: Mapping[str, object],
+                     action: str, now: datetime, *, not_before: datetime | None = None) -> bool:
+        return self._store.change_alert(item_ref, accepted_turn, action, now, not_before=not_before)
+
+    def peek_alert(self, now: datetime) -> Mapping[str, object] | None:
+        return self._store.peek_alert(now)
 
     def select_alert(
-        self, accepted_turn: Mapping[str, object], now: datetime
+        self, accepted_turn: Mapping[str, object], now: datetime, *, item_ref: Mapping[str, object] | None = None,
     ) -> Mapping[str, object] | None:
-        return self._store.select_alert(accepted_turn, now)
+        return self._store.select_alert(accepted_turn, now, item_ref=item_ref)
 
     def selected_alert(
         self, accepted_turn: Mapping[str, object]

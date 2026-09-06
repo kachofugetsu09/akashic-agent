@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import MutableMapping
+from collections.abc import Mapping, MutableMapping
+from typing import cast
 
 
 SESSION_MODEL_SELECTION_KEY = "model_selection"
@@ -17,18 +18,19 @@ class SessionModelSelection:
 
 
 def read_session_model_selection(
-    metadata: MutableMapping[str, object],
+    metadata: Mapping[str, object],
 ) -> SessionModelSelection:
     """Read the structured selection while accepting the legacy string field."""
 
     raw = metadata.get(SESSION_MODEL_SELECTION_KEY)
     if raw is not None:
-        if not isinstance(raw, dict):
+        if not isinstance(raw, Mapping):
             raise ValueError("session model_selection 必须是对象")
-        if raw.get("schema_version") != 1:
+        value = cast(Mapping[str, object], raw)
+        if value.get("schema_version") != 1:
             raise ValueError("session model_selection schema_version 无效")
-        model_ref = raw.get("model_ref", "")
-        effort = raw.get("reasoning_effort", "")
+        model_ref = value.get("model_ref", "")
+        effort = value.get("reasoning_effort", "")
         if not isinstance(model_ref, str) or not model_ref.strip():
             raise ValueError("session model_selection.model_ref 必须是非空字符串")
         if not isinstance(effort, str):
@@ -49,11 +51,11 @@ def write_session_model_selection(
 ) -> None:
     """Persist one explicit selection, or follow the global default when empty."""
 
-    metadata.pop(LEGACY_MODEL_OVERRIDE_KEY, None)
+    _ = metadata.pop(LEGACY_MODEL_OVERRIDE_KEY, None)
     if not selection.model_ref:
         if selection.reasoning_effort:
             raise ValueError("默认模型不能单独覆盖推理强度")
-        metadata.pop(SESSION_MODEL_SELECTION_KEY, None)
+        _ = metadata.pop(SESSION_MODEL_SELECTION_KEY, None)
         return
     metadata[SESSION_MODEL_SELECTION_KEY] = {
         "schema_version": 1,

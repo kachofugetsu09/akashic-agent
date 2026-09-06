@@ -15,6 +15,15 @@ BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 SkillSource = Literal["workspace", "builtin", "plugin"]
 
 
+def skill_body(content: str) -> str:
+    """去掉技能 frontmatter，保留原有正文读取规则。"""
+    if content.startswith("---"):
+        match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
+        if match:
+            return content[match.end():].strip()
+    return content
+
+
 class SkillCapabilityChecker(Protocol):
     def check_skill_requirements(
         self,
@@ -296,11 +305,7 @@ class SkillsLoader:
         return {str(key): value for key, value in data.items()}
 
     def _strip_frontmatter(self, content: str) -> str:
-        if content.startswith("---"):
-            match = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
-            if match:
-                return content[match.end() :].strip()
-        return content
+        return skill_body(content)
 
     def _parse_skill_config(
         self,

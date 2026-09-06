@@ -2,10 +2,10 @@ import "./mobile-lab.css";
 
 import { MOBILE_NATIVE_METHODS, type MobileNativeMethod } from "./mobile-bridge";
 import {
-  appendUserTurn,
+  appendLabInput,
   createLabSnapshot,
-  createStreamPatch,
-  createTerminalPatch,
+  createPreviewEvent,
+  completeLabReply,
   LAB_STREAM_TEXT,
   type LabScenarioId,
 } from "./mobile-lab-fixtures";
@@ -185,7 +185,7 @@ function handleBridgeCall(envelope: BridgeEnvelope): void {
         throw new Error("sendMessage 参数无效");
       }
       childWindow()?.AkashicMobile?.receiveSendResult(requestId, true);
-      snapshot = appendUserTurn(snapshot, text.trim() || "（附件消息）");
+      snapshot = appendLabInput(snapshot, text.trim() || "（附件消息）", requestId);
       deliverSnapshot();
       window.setTimeout(() => startStream("这条回复由 Browser Bridge 接住发送动作后生成。视觉和交互走的仍然是生产 Mobile WebUI。"), 160);
       return;
@@ -230,33 +230,31 @@ function resetScenario(): void {
 
 function startStream(text: string): void {
   stopTimer();
-  if (!snapshot.composer.isStreaming) {
-    const last = snapshot.messages.at(-1);
-    if (!last || last.role !== "assistant" || last.content !== "") {
-      snapshot = appendUserTurn(snapshot, "请演示一次流式回答");
-      deliverSnapshot();
-    }
+  if (!snapshot.replyStatus?.items.length) {
+    snapshot = appendLabInput(snapshot, "请演示一次流式回答");
+    deliverSnapshot();
   }
   const characters = Array.from(text);
   let index = 0;
   let content = "";
   streamButton.disabled = true;
   streamButton.textContent = "正在播放…";
-  setStatus("正在注入真实 stream patch");
+  setStatus("正在更新独立回复预览");
   streamTimer = window.setInterval(() => {
     const delta = characters[index];
     if (delta === undefined) {
       stopTimer();
-      const terminal = createTerminalPatch(snapshot, content);
-      childWindow()?.AkashicMobile?.receiveStreamPatch(terminal);
-      applyTerminalToLocalSnapshot(terminal);
+      snapshot = completeLabReply(snapshot, content);
+      deliverSnapshot();
       streamButton.disabled = false;
       streamButton.textContent = "再播放一次";
-      setStatus("流式回答已到达 terminal");
+      setStatus("草稿已按原消息 ID 提交");
       return;
     }
     content += delta;
-    childWindow()?.AkashicMobile?.receiveStreamPatch(createStreamPatch(snapshot, index + 1, delta));
+    const event = createPreviewEvent(snapshot, content);
+    snapshot = { ...snapshot, replyStatus: event.event };
+    childWindow()?.AkashicMobile?.receiveMessageEvent(event);
     index += 1;
   }, 38);
 }
@@ -264,32 +262,19 @@ function startStream(text: string): void {
 function stopStream(interrupted: boolean): void {
   if (streamTimer === null) return;
   stopTimer();
-  const currentMessage = snapshot.messages.at(-1);
-  if (!currentMessage) return;
-  const renderedText = childWindow()?.document.querySelector(`[data-message-id="${currentMessage.id}"]`)?.textContent ?? "";
-  const terminal = createTerminalPatch(snapshot, renderedText.trim(), interrupted);
-  childWindow()?.AkashicMobile?.receiveStreamPatch(terminal);
-  applyTerminalToLocalSnapshot(terminal);
+  snapshot = completeLabReply(snapshot, "", interrupted);
+  deliverSnapshot();
   streamButton.disabled = false;
   streamButton.textContent = "再播放一次";
   setStatus("已按 Bridge stopTurn 中止流式回答");
-}
-
-function applyTerminalToLocalSnapshot(terminal: ReturnType<typeof createTerminalPatch>): void {
-  const state = terminal.state;
-  snapshot = {
-    ...snapshot,
-    connection: state.connection,
-    sessions: state.sessions,
-    messages: [...snapshot.messages.slice(0, -1), terminal.message],
-    composer: state.composer,
-  };
 }
 
 function deliverSnapshot(): void {
   const mobile = childWindow()?.AkashicMobile;
   if (!mobile) return;
   mobile.receiveSnapshot(structuredClone(snapshot));
+  if (snapshot.replyStatus) mobile.receiveMessageEvent({ protocolVersion: 1,
+    projectionGeneration: snapshot.projectionGeneration, event: structuredClone(snapshot.replyStatus) });
 }
 
 function postNativeMessage(type: string, payload: unknown): void {

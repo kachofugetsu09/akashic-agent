@@ -238,7 +238,7 @@ def _serialize_entities(entities: list[MessageEntity]) -> list[dict] | None:
     return [entity.to_dict() for entity in entities] if entities else None
 
 
-def _strip_chunk(
+def strip_chunk(
     text: str,
     entities: list[MessageEntity],
 ) -> tuple[str, list[MessageEntity]]:
@@ -299,7 +299,7 @@ async def send_markdown(
             )
         return
     for chunk_text, chunk_entities in chunks:
-        chunk_text, chunk_entities = _strip_chunk(chunk_text, chunk_entities)
+        chunk_text, chunk_entities = strip_chunk(chunk_text, chunk_entities)
         if not chunk_text:
             continue
         await _run_outbound(

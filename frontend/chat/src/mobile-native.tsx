@@ -1,3 +1,6 @@
+import { TimelineMessageView, ReplyActivityView } from "./message-view";
+import { timelineReply, timelineText, type TimelineMessage, type TimelineAttachment } from "./message-timeline";
+import { applyMobileMessageEvent, mergeMobileMessageSnapshot, readMobileMessageLog, readMobileDownloads, readMobileStateSnapshot, type MobileMessageLog, type MobileDownload } from "./mobile-message-log";
 import React, {
   lazy,
   startTransition,
@@ -10,7 +13,6 @@ import React, {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { createUuid } from "./browser-uuid.ts";
@@ -44,7 +46,6 @@ import {
   TimerReset,
   Wifi,
   WifiOff,
-  Wrench,
   X,
 } from "lucide-react";
 import codexIcon from "./assets/provider-icons/codex.svg";
@@ -54,11 +55,10 @@ import openrouterIcon from "./assets/provider-icons/openrouter.svg";
 import { cycleTheme, setTheme, useTheme } from "../../theme/src/theme-runtime";
 import { ComposerActionButton } from "./composer-action";
 import { ComposerStatsLine } from "./composer-stats-line";
-import { ClientTurnMetricsTracker } from "./stream-turn-metrics";
+import { loadMobileModelCallStats, receiveMobileModelCallStats } from "./model-call-stats";
 import { ConversationNavigation } from "./conversation-navigation";
 import {
   ComposerReply,
-  MessageReplyReference,
   SharedMessageActions,
 } from "./message-actions";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -81,7 +81,6 @@ import {
   useMobilePluginDashboards,
 } from "./mobile-plugin-runtime";
 import {
-  applyMobileStreamPatch,
   advanceMobileProjectionBaseline,
   advanceMobileUnreadTracking,
   allMobileAttachmentsReady,
@@ -102,8 +101,6 @@ import {
   normalizeMobileComposerDraftText,
   normalizeMobileSearchText,
   reconcileMobileMessageSelection,
-  reconcileMobileSnapshotMessages,
-  reconcileMobileStreamItems,
   resolveMobileComposerDraft,
   resolveMobileReplyNavigationTarget,
   selectableMobileMessages,
@@ -115,17 +112,6 @@ import {
   type MobileComposerDraft,
   type MobileComposerDraftWrite,
 } from "./mobile-message-state";
-import type { AgentBlock, ChatMessage } from "./chat-message";
-import { messageNeedsMarkdown } from "./message-rendering-policy";
-import { StreamProjectionStore } from "./stream-projection";
-import {
-  MobileTurnTraceRegistry,
-  mobileTurnFirstVisibleKinds,
-  parseMobileTurnId,
-  type MobileTurnPatchProbe,
-  type MobileTurnSourceKind,
-  type MobileTurnSourceProbe,
-} from "./mobile-turn-trace";
 import {
   pushMobileSurface,
   readMobileSurfaceHistoryState,
@@ -134,18 +120,11 @@ import {
 } from "./mobile-surface-history";
 import "./message-view.css";
 
-const LazyChatMessageView = lazy(() =>
-  import("./message-view").then(({ ChatMessageView }) => ({ default: ChatMessageView })),
-);
 const LazyMessageResponse = lazy(() =>
   import("@/components/ai-elements/message-response").then(({ MessageResponse }) => ({ default: MessageResponse })),
 );
 
-/** 每 turn 一次的 WebView 观测注册表：有界淘汰，不参与任何业务状态。 */
-const mobileTurnTrace = new MobileTurnTraceRegistry();
-
 type ConnectionStatus = "connecting" | "ready" | "degraded" | "reconnecting" | "disconnected";
-type ProcessState = "completed" | "running" | "failed";
 
 interface MobileAttachment {
   id: string;
@@ -165,42 +144,7 @@ interface MobileTransferStatus {
   requiresMeteredApproval: boolean;
 }
 
-interface MobileProcessBlock {
-  id: string;
-  kind: "thinking" | "tool";
-  title: string;
-  detail: string;
-  state: ProcessState;
-  arguments?: SnapshotRecord;
-  resultPreview?: string;
-  durationMillis?: number;
-}
-
-interface MobileMessage {
-  id: string;
-  sessionId: string;
-  role: "user" | "assistant";
-  content: string;
-  createdAt: number;
-  searchRevision: number;
-  replyable: boolean;
-  reply?: MobileReply;
-  deliveryLabel?: string;
-  deliveryAction?: "retry" | "verify";
-  blocks: MobileProcessBlock[];
-  streaming: boolean;
-  interrupted: boolean;
-  terminalStatus?: "failed" | "cancelled" | "interrupted";
-  durationSeconds?: number;
-  attachments: MobileAttachment[];
-  controlTurnId?: string;
-}
-
-interface MobileReply {
-  messageId: string;
-  role: "user" | "assistant";
-  preview: string;
-}
+type MobileMessage = TimelineMessage;
 
 interface MobileUnreadState {
   firstMessageId?: string;
@@ -209,7 +153,7 @@ interface MobileUnreadState {
 }
 
 interface MobileConversationHandle {
-  jumpToMessage(messageId: string, focus?: boolean): void;
+  jumpToMessage(messageId: string, focus?: boolean, partIndex?: number): void;
 }
 
 interface MobileSession {
@@ -223,57 +167,8 @@ interface MobileSession {
   canRemove: boolean;
 }
 
-interface MobileStreamPatch {
-  protocolVersion: 3;
-  projectionGeneration: number;
-  selectedSessionId: string;
-  messageIndex: number;
-  messageId: string;
-  clientMessageId?: string;
-  searchRevision: number;
-  durationSeconds?: number;
-  contentAppend?: string;
-  thinkingAppend?: {
-    blockIndex: number;
-    blockId: string;
-    delta: string;
-  };
-  message?: MobileMessage;
-  state?: MobileStatePatch;
-}
-
-function observeMobileSnapshotMetrics(
-  tracker: ClientTurnMetricsTracker,
-  snapshot: MobileSnapshot,
-): void {
-  const streaming = [...snapshot.messages]
-    .reverse()
-    .find((message) => message.role === "assistant" && message.streaming);
-  if (streaming) {
-    tracker.ensureTurnStarted(streaming.id);
-    return;
-  }
-  if (!snapshot.composer.isStreaming) tracker.onInterrupted();
-}
-
-function observeMobileStreamMetrics(
-  tracker: ClientTurnMetricsTracker,
-  patch: MobileStreamPatch,
-  previousMessage: MobileMessage | undefined,
-): void {
-  const turnId = patch.messageId;
-  if (patch.message?.streaming && previousMessage?.streaming !== true) {
-    tracker.ensureTurnStarted(turnId);
-  }
-  if (patch.thinkingAppend?.delta) tracker.onDelta(turnId, patch.thinkingAppend.delta);
-  if (patch.contentAppend) tracker.onDelta(turnId, patch.contentAppend);
-  if (patch.message && !patch.message.streaming) {
-    tracker.onSettled(turnId, null);
-  }
-}
-
-type MobileStatePatch = Omit<MobileSnapshot, "protocolVersion" | "messages"> & {
-  protocolVersion: 1;
+type MobileStatePatch = Omit<MobileSnapshot, "protocolVersion" | "messages" | "throughSeq" | "replyStatus"> & {
+  protocolVersion: 2;
 };
 
 interface MobileReadingPosition {
@@ -290,10 +185,13 @@ interface MobilePendingMessage {
   messageId: string;
   preview: string;
   createdAt: number;
+  deliveryLabel: string;
+  deliveryAction?: "retry" | "verify";
 }
 
-export interface MobileSnapshot {
-  protocolVersion: 8;
+export interface MobileSnapshot extends MobileMessageLog {
+  protocolVersion: 9;
+  downloads: MobileDownload[];
   connection: {
     label: string;
     status: ConnectionStatus;
@@ -406,7 +304,7 @@ interface NativeBridge {
   continueMeteredTransfer(): void;
   retryFailedMessage(messageId: string): void;
   saveReadingPosition(sessionId: string, messageId: string, offsetPx: number): void;
-  markSessionReadThrough(sessionId: string, readAtMillis: number): void;
+  markSessionReadThrough(sessionId: string, throughSeq: number): void;
   navigationTargetHandled(messageId: string): void;
   retryDownloadedAttachment(attachmentId: string): void;
   touchDownloadedAttachment(attachmentId: string): void;
@@ -441,6 +339,7 @@ interface NativeBridge {
   openRuntimeJob(jobId: string): void;
   clearRuntimeInspectionDetail(): void;
   stopTurn(): void;
+  readModelCallStats(requestId: string, callId: string): void;
   queryPluginUi(
     requestId: string,
     ownerId: string,
@@ -507,10 +406,6 @@ function requireArray<T>(value: unknown, label: string, parse: (item: unknown, i
   return value.map(parse);
 }
 
-function optionalArray<T>(value: unknown, label: string, parse: (item: unknown, index: number) => T): T[] {
-  return value === undefined ? [] : requireArray(value, label, parse);
-}
-
 function parseAttachment(value: unknown, index: number): MobileAttachment {
   const raw = requireRecord(value, `attachments[${index}]`);
   return {
@@ -522,89 +417,6 @@ function parseAttachment(value: unknown, index: number): MobileAttachment {
     state: requireString(raw.state, `attachments[${index}].state`),
     canRemove: raw.canRemove === undefined ? false : requireBoolean(raw.canRemove, `attachments[${index}].canRemove`),
     contentUrl: optionalString(raw.contentUrl, `attachments[${index}].contentUrl`),
-  };
-}
-
-function parseProcessBlock(value: unknown, index: number): MobileProcessBlock {
-  const raw = requireRecord(value, `blocks[${index}]`);
-  const kind = requireString(raw.kind, `blocks[${index}].kind`);
-  const state = requireString(raw.state, `blocks[${index}].state`);
-  if (kind !== "thinking" && kind !== "tool") throw new Error(`blocks[${index}].kind 不受支持`);
-  if (state !== "completed" && state !== "running" && state !== "failed") {
-    throw new Error(`blocks[${index}].state 不受支持`);
-  }
-  const durationMillis = raw.durationMillis === undefined || raw.durationMillis === null
-    ? undefined
-    : requireNumber(raw.durationMillis, `blocks[${index}].durationMillis`);
-  if (durationMillis !== undefined && (!Number.isSafeInteger(durationMillis) || durationMillis < 0)) {
-    throw new Error(`blocks[${index}].durationMillis 必须是非负安全整数`);
-  }
-  return {
-    id: requireString(raw.id, `blocks[${index}].id`),
-    kind,
-    title: requireString(raw.title, `blocks[${index}].title`),
-    detail: requireString(raw.detail, `blocks[${index}].detail`),
-    state,
-    arguments: optionalRecord(raw.arguments, `blocks[${index}].arguments`),
-    resultPreview: optionalString(raw.resultPreview, `blocks[${index}].resultPreview`),
-    durationMillis,
-  };
-}
-
-function parseMessage(value: unknown, index: number): MobileMessage {
-  const raw = requireRecord(value, `messages[${index}]`);
-  const role = requireString(raw.role, `messages[${index}].role`);
-  if (role !== "user" && role !== "assistant") throw new Error(`messages[${index}].role 不受支持`);
-  const createdAt = requireNumber(raw.createdAt, `messages[${index}].createdAt`);
-  if (createdAt <= 0) throw new Error(`messages[${index}].createdAt 必须是正数`);
-  const reply = raw.reply === undefined || raw.reply === null
-    ? undefined
-    : parseReply(raw.reply, `messages[${index}].reply`);
-  const deliveryAction = optionalString(raw.deliveryAction, `messages[${index}].deliveryAction`);
-  if (deliveryAction !== undefined && deliveryAction !== "retry" && deliveryAction !== "verify") {
-    throw new Error(`messages[${index}].deliveryAction 不受支持`);
-  }
-  const terminalStatus = optionalString(
-    raw.terminalStatus,
-    `messages[${index}].terminalStatus`,
-  );
-  if (
-    terminalStatus !== undefined
-    && terminalStatus !== "failed"
-    && terminalStatus !== "cancelled"
-    && terminalStatus !== "interrupted"
-  ) {
-    throw new Error(`messages[${index}].terminalStatus 不受支持`);
-  }
-  return {
-    id: requireString(raw.id, `messages[${index}].id`),
-    sessionId: requireString(raw.sessionId, `messages[${index}].sessionId`),
-    role,
-    content: requireString(raw.content, `messages[${index}].content`),
-    createdAt,
-    searchRevision: requireNumber(raw.searchRevision, `messages[${index}].searchRevision`),
-    replyable: requireBoolean(raw.replyable, `messages[${index}].replyable`),
-    reply,
-    deliveryLabel: optionalString(raw.deliveryLabel, `messages[${index}].deliveryLabel`),
-    deliveryAction,
-    blocks: optionalArray(raw.blocks, `messages[${index}].blocks`, parseProcessBlock),
-    streaming: raw.streaming === undefined ? false : requireBoolean(raw.streaming, `messages[${index}].streaming`),
-    interrupted: raw.interrupted === undefined ? false : requireBoolean(raw.interrupted, `messages[${index}].interrupted`),
-    terminalStatus,
-    durationSeconds: raw.durationSeconds === undefined ? undefined : requireNumber(raw.durationSeconds, `messages[${index}].durationSeconds`),
-    attachments: optionalArray(raw.attachments, `messages[${index}].attachments`, parseAttachment),
-    controlTurnId: optionalString(raw.controlTurnId, `messages[${index}].controlTurnId`),
-  };
-}
-
-function parseReply(value: unknown, label: string): MobileReply {
-  const raw = requireRecord(value, label);
-  const role = requireString(raw.role, `${label}.role`);
-  if (role !== "user" && role !== "assistant") throw new Error(`${label}.role 不受支持`);
-  return {
-    messageId: requireString(raw.messageId, `${label}.messageId`),
-    role,
-    preview: requireString(raw.preview, `${label}.preview`),
   };
 }
 
@@ -623,157 +435,6 @@ function parseTransferStatus(value: unknown): MobileTransferStatus {
       "composer.transferStatus.requiresMeteredApproval",
     ),
   };
-}
-
-/** 校验 native 在完整快照之后发送的单消息 streaming patch。 */
-function parseMobileStreamPatch(value: unknown): MobileStreamPatch {
-  const raw = requireRecord(value, "streamPatch");
-  if (raw.protocolVersion !== 3) {
-    throw new Error(`不支持的 stream patch 版本: ${String(raw.protocolVersion)}`);
-  }
-  const projectionGeneration = requireNonNegativeInteger(
-    raw.projectionGeneration,
-    "streamPatch.projectionGeneration",
-  );
-  const messageIndex = requireNonNegativeInteger(raw.messageIndex, "streamPatch.messageIndex");
-  const messageId = requireString(raw.messageId, "streamPatch.messageId");
-  const selectedSessionId = requireString(raw.selectedSessionId, "streamPatch.selectedSessionId");
-  const message = raw.message === undefined ? undefined : parseMessage(raw.message, messageIndex);
-  const state = raw.state === undefined ? undefined : parseMobileStatePatch(raw.state);
-  if (message && (
-    message.role !== "assistant"
-    || message.sessionId !== selectedSessionId
-  )) {
-    throw new Error("stream patch 只能更新当前会话的助手消息");
-  }
-  if (message?.streaming && message.id !== messageId) {
-    throw new Error("streaming patch 不得迁移消息 ID");
-  }
-  if (message && !message.streaming && (
-    message.sessionId !== selectedSessionId
-    || state === undefined
-  )) {
-    throw new Error("terminal patch 必须携带同会话控制状态");
-  }
-  if (state && (
-    state.selectedSessionId !== selectedSessionId
-    || state.projectionGeneration !== projectionGeneration
-  )) {
-    throw new Error("stream patch 控制状态与消息投影不一致");
-  }
-  if (state && message?.streaming !== false) {
-    throw new Error("只有 terminal patch 可以携带控制状态");
-  }
-  const contentAppend = optionalString(raw.contentAppend, "streamPatch.contentAppend");
-  const thinkingAppend = raw.thinkingAppend === undefined
-    ? undefined
-    : (() => {
-        const append = requireRecord(raw.thinkingAppend, "streamPatch.thinkingAppend");
-        return {
-          blockIndex: requireNonNegativeInteger(append.blockIndex, "streamPatch.thinkingAppend.blockIndex"),
-          blockId: requireString(append.blockId, "streamPatch.thinkingAppend.blockId"),
-          delta: requireString(append.delta, "streamPatch.thinkingAppend.delta"),
-        };
-      })();
-  if (message && (contentAppend !== undefined || thinkingAppend !== undefined)) {
-    throw new Error("stream patch 不能同时携带完整消息和追加量");
-  }
-  if (!message && contentAppend === undefined && thinkingAppend === undefined) {
-    throw new Error("stream patch 缺少消息变化");
-  }
-  return {
-    protocolVersion: 3,
-    projectionGeneration,
-    selectedSessionId,
-    messageIndex,
-    messageId,
-    clientMessageId: optionalString(raw.clientMessageId, "streamPatch.clientMessageId"),
-    searchRevision: requireNonNegativeInteger(raw.searchRevision, "streamPatch.searchRevision"),
-    durationSeconds: raw.durationSeconds === undefined
-      ? undefined
-      : requireNonNegativeInteger(raw.durationSeconds, "streamPatch.durationSeconds"),
-    contentAppend,
-    thinkingAppend,
-    message,
-    state,
-  };
-}
-
-/** 复用流式消息内语义未变化的块，避免已完成工具链随每个 token 重绘。 */
-function reconcileMobileStreamMessage(previous: MobileMessage, next: MobileMessage): MobileMessage {
-  const blocks = reconcileMobileStreamItems(previous.blocks, next.blocks, mobileProcessBlocksMatch);
-  return blocks === next.blocks ? next : { ...next, blocks };
-}
-
-function mobileProcessBlocksMatch(previous: MobileProcessBlock, next: MobileProcessBlock) {
-  return previous.id === next.id
-    && previous.kind === next.kind
-    && previous.title === next.title
-    && previous.detail === next.detail
-    && previous.state === next.state
-    && previous.resultPreview === next.resultPreview
-    && previous.durationMillis === next.durationMillis
-    && JSON.stringify(previous.arguments) === JSON.stringify(next.arguments);
-}
-
-function mobileMessagePresentationMatches(previous: MobileMessage, next: MobileMessage) {
-  if (previous.attachments.length !== next.attachments.length) return false;
-  return previous.attachments.every((attachment, index) => {
-    const candidate = next.attachments[index];
-    return candidate !== undefined
-      && attachment.id === candidate.id
-      && attachment.filename === candidate.filename
-      && attachment.contentType === candidate.contentType
-      && attachment.sizeBytes === candidate.sizeBytes
-      && attachment.transferredBytes === candidate.transferredBytes
-      && attachment.state === candidate.state
-      && attachment.canRemove === candidate.canRemove
-      && attachment.contentUrl === candidate.contentUrl;
-  });
-}
-
-/** 观测探针：只提取可见性判定所需的正文与 thinking 块文本。 */
-function mobileTurnMessageProbe(message: MobileMessage): MobileTurnSourceProbe {
-  return {
-    content: message.content,
-    thinking: message.blocks
-      .filter((block) => block.kind === "thinking")
-      .map((block) => block.detail),
-  };
-}
-
-/** 观测探针：把 patch 的结构化字段投影为 pure helper 输入，不含正文以外内容。 */
-function mobileTurnPatchProbe(patch: MobileStreamPatch): MobileTurnPatchProbe {
-  if (patch.message) {
-    return {
-      message: {
-        content: patch.message.content,
-        thinking: patch.message.blocks
-          .filter((block) => block.kind === "thinking")
-          .map((block) => block.detail),
-        streaming: patch.message.streaming,
-      },
-      terminal: patch.state !== undefined,
-    };
-  }
-  return {
-    contentAppend: patch.contentAppend,
-    thinkingAppend: patch.thinkingAppend === undefined
-      ? undefined
-      : { blockIndex: patch.thinkingAppend.blockIndex, delta: patch.thinkingAppend.delta },
-    terminal: patch.state !== undefined,
-  };
-}
-
-/** DOM commit 后识别当前可见的 source kinds：thinking/answer 按可见性，终态兜底。 */
-function mobileTurnDomVisibleKinds(source: MobileMessage): MobileTurnSourceKind[] {
-  const kinds: MobileTurnSourceKind[] = [];
-  if (source.blocks.some((block) => block.kind === "thinking" && block.detail !== "")) {
-    kinds.push("thinking");
-  }
-  if (source.content !== "") kinds.push("answer");
-  if (!source.streaming) kinds.push("terminal");
-  return kinds;
 }
 
 function parseRuntimeInspection(value: unknown): MobileRuntimeInspection {
@@ -868,11 +529,11 @@ function parseModelCatalog(value: unknown): MobileModelCatalog {
   };
 }
 
-/** 在 native 协议边界校验完整快照，并只补齐 Kotlin 明确定义的默认字段。 */
+/** 校验原生 v9 完整快照；正式消息交给共享协议入口。 */
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 8) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 9) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -896,14 +557,10 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       canRemove: requireBoolean(session.canRemove, `sessions[${index}].canRemove`),
     };
   });
-  const messages = requireArray(raw.messages, "messages", parseMessage);
+  const log = readMobileMessageLog(raw);
 
   // 3. 校验输入区状态并构造内部类型
   const composer = requireRecord(raw.composer, "composer");
-  const projectionGeneration = requireNumber(raw.projectionGeneration, "projectionGeneration");
-  if (!Number.isSafeInteger(projectionGeneration) || projectionGeneration < 0) {
-    throw new Error("projectionGeneration 必须是非负安全整数");
-  }
   const readingPosition = raw.readingPosition === undefined || raw.readingPosition === null
     ? undefined
     : (() => {
@@ -923,7 +580,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       };
     })();
   return {
-    protocolVersion: 8,
+    protocolVersion: 9,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -934,8 +591,8 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
     selectedSessionId: optionalString(raw.selectedSessionId, "selectedSessionId"),
     readingPosition,
     navigationTarget,
-    projectionGeneration,
-    messages,
+    ...log,
+    downloads: readMobileDownloads(raw.downloads),
     composer: {
       draft: (() => {
         const draft = requireRecord(composer.draft, "composer.draft");
@@ -959,6 +616,12 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
         return {
           messageId: requireString(pending.messageId, `composer.pendingMessages[${index}].messageId`),
           preview: requireString(pending.preview, `composer.pendingMessages[${index}].preview`),
+          deliveryLabel: requireString(pending.deliveryLabel, `composer.pendingMessages[${index}].deliveryLabel`),
+          deliveryAction: (() => {
+            const action = optionalString(pending.deliveryAction, "pending.deliveryAction");
+            if (action !== undefined && action !== "retry" && action !== "verify") throw new Error("待发消息恢复动作无效");
+            return action;
+          })(),
           createdAt: requireNonNegativeInteger(pending.createdAt, `composer.pendingMessages[${index}].createdAt`),
         };
       }),
@@ -986,15 +649,10 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
 
 /** Validate a native control-state patch while reusing the full snapshot boundary schema. */
 function parseMobileStatePatch(value: unknown): MobileStatePatch {
-  const raw = requireRecord(value, "statePatch");
-  if (raw.protocolVersion !== 1) {
-    throw new Error(`不支持的 state patch 版本: ${String(raw.protocolVersion)}`);
-  }
-  const parsed = parseMobileSnapshot({ ...raw, protocolVersion: 8, messages: [] });
-  const { messages, protocolVersion, ...state } = parsed;
-  void messages;
-  void protocolVersion;
-  return { protocolVersion: 1, ...state };
+  const parsed = parseMobileSnapshot(readMobileStateSnapshot(value));
+  const { messages, throughSeq, replyStatus, protocolVersion, ...state } = parsed;
+  void messages; void throughSeq; void replyStatus; void protocolVersion;
+  return { protocolVersion: 2, ...state };
 }
 
 function parseMobilePluginCatalog(value: unknown): MobilePluginCatalog {
@@ -1065,10 +723,11 @@ declare global {
     AkashicNative?: NativeBridge;
     AkashicMobile?: {
       receiveSnapshot(snapshot: unknown): void;
-      receiveStreamPatch(patch: unknown): void;
+      receiveMessageEvent(event: unknown): void;
       receiveStatePatch(patch: unknown): void;
       receivePluginCatalog(catalog: unknown): void;
       receivePluginUiResult(result: unknown): void;
+      receiveModelCallStats(requestId: string, value: unknown): void;
       receiveSendResult(requestId: string, accepted: boolean): void;
       receiveShareResult(requestId: string, launched: boolean): void;
       receiveSharedText(draftId: string, sessionId: string, text: string): void;
@@ -1080,8 +739,6 @@ declare global {
 export function MobileNativeApp() {
   const pluginDashboards = useMobilePluginDashboards();
   const [snapshot, setSnapshot] = useState<MobileSnapshot | null>(null);
-  const [streamStore] = useState(() => new StreamProjectionStore<MobileMessage>());
-  const [turnMetrics] = useState(() => new ClientTurnMetricsTracker());
   const [surface, setSurface] = useState<MobileSurface>({ kind: "chat" });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [commandsOpen, setCommandsOpen] = useState(false);
@@ -1095,7 +752,6 @@ export function MobileNativeApp() {
   const [input, setInput] = useState("");
   const [replyTarget, setReplyTarget] = useState<MobileMessage | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [missingReplySourceId, setMissingReplySourceId] = useState<string | null>(null);
   const [replyNavigationAnnouncement, setReplyNavigationAnnouncement] = useState("");
   const [sharePending, setSharePending] = useState(false);
   const [shareStatus, setShareStatus] = useState<string | null>(null);
@@ -1116,7 +772,6 @@ export function MobileNativeApp() {
   const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
   const conversationRef = useRef<MobileConversationHandle>(null);
   const copiedTimerRef = useRef<number | null>(null);
-  const missingReplyTimerRef = useRef<number | null>(null);
   const replyAnnouncementTimerRef = useRef<number | null>(null);
   const searchHighlightTimerRef = useRef<number | null>(null);
   const previousSessionIdRef = useRef<string | undefined>(undefined);
@@ -1300,16 +955,17 @@ export function MobileNativeApp() {
           return;
         }
         const delivered = streamSnapshotRef.current;
-        if (delivered && delivered.selectedSessionId === nextSnapshot.selectedSessionId) {
-          nextSnapshot = {
-            ...nextSnapshot,
-            messages: reconcileMobileSnapshotMessages(
-              delivered.messages,
-              nextSnapshot.messages,
-              mobileMessagePresentationMatches,
-            ),
-          };
+        if (delivered) {
+          try {
+            const merged = mergeMobileMessageSnapshot(delivered, nextSnapshot);
+            if (!merged) return;
+            nextSnapshot = merged;
+          } catch (error) {
+            setSnapshotError(error instanceof Error ? error.message : "消息快照冲突");
+            return;
+          }
         }
+        if (nextSnapshot.connection.status !== "ready") nextSnapshot = { ...nextSnapshot, replyStatus: null };
         streamSnapshotRef.current = nextSnapshot;
         if (searchOpenRef.current && normalizedSearchQueryRef.current) {
           setSearchIndex((current) => updateMobileSearchIndex(
@@ -1320,78 +976,25 @@ export function MobileNativeApp() {
           ));
         }
         setSnapshot(nextSnapshot);
-        streamStore.clear();
-        observeMobileSnapshotMetrics(turnMetrics, nextSnapshot);
         snapshotAccepted = true;
         if (requestTimer !== null) window.clearTimeout(requestTimer);
       },
-      receiveStreamPatch(next) {
-        let parsed: MobileStreamPatch;
-        try {
-          parsed = parseMobileStreamPatch(next);
-          setSnapshotError(null);
-        } catch (error) {
-          console.error("[mobile] rejected native stream patch", error);
-          setSnapshotError(error instanceof Error ? error.message : "原生流式 patch 无效");
-          return;
-        }
+      receiveMessageEvent(next) {
         const current = streamSnapshotRef.current;
-        if (current === null) {
+        if (!current) { window.AkashicNative?.requestSnapshot(); return; }
+        try {
+          const applied = applyMobileMessageEvent(current, next);
+          if (!applied) return;
+          streamSnapshotRef.current = applied;
+          setSnapshot(applied);
+          setSnapshotError(null);
+          if (searchOpenRef.current && normalizedSearchQueryRef.current) {
+            setSearchIndex((index) => updateMobileSearchIndex(index, applied.messages, normalizedSearchQueryRef.current, false));
+          }
+        } catch (error) {
+          setSnapshotError(error instanceof Error ? error.message : "消息事件无效");
           window.AkashicNative?.requestSnapshot();
-          return;
         }
-        const previousMessage = current.messages[parsed.messageIndex];
-        observeMobileStreamMetrics(turnMetrics, parsed, previousMessage);
-        const traceIdentity = mobileTurnTrace.registerTurnIdentity(
-          parsed.selectedSessionId,
-          parseMobileTurnId(parsed.messageId),
-          parsed.clientMessageId,
-        );
-        // 观测：parse 成功后对本 patch 首次引入的每个 kind 分别记 received 里程碑
-        const traceKinds = mobileTurnFirstVisibleKinds(
-          previousMessage === undefined ? undefined : mobileTurnMessageProbe(previousMessage),
-          mobileTurnPatchProbe(parsed),
-        );
-        for (const kind of traceKinds) {
-          mobileTurnTrace.markFirst(traceIdentity, "webui.patch_received", kind, "receive-stream-patch");
-        }
-        const reconciledPatch = previousMessage && parsed.message
-          ? { ...parsed, message: reconcileMobileStreamMessage(previousMessage, parsed.message) }
-          : parsed;
-        const applied = applyMobileStreamPatch(current, reconciledPatch);
-        if (applied === null || previousMessage === undefined) {
-          window.AkashicNative?.requestSnapshot();
-          return;
-        }
-        let nextSnapshot = applied;
-        if (parsed.state) {
-          const { protocolVersion, ...state } = parsed.state;
-          void protocolVersion;
-          nextSnapshot = { ...nextSnapshot, ...state };
-        }
-        const nextMessage = nextSnapshot.messages[parsed.messageIndex];
-        if (nextMessage === undefined) throw new Error("stream patch 应产生目标消息");
-        // terminal 时把 canonical messageId 绑为同一 registry entry 的别名：
-        // 行从新 source.id 解析仍命中同一 turn 身份，milestones 共用不重复上报。
-        if (nextMessage.id !== parsed.messageId) {
-          mobileTurnTrace.bindMessageIdentity(parsed.selectedSessionId, nextMessage.id, traceIdentity);
-        }
-        streamSnapshotRef.current = nextSnapshot;
-        if (nextMessage.streaming) streamStore.publishFrame(parsed.messageId, nextMessage);
-        else streamStore.publishImmediate(parsed.messageId, nextMessage);
-        // 观测：snapshot ref 更新且 publish 成功后对相同 kinds 分别记 applied；无 kind 不写占位
-        for (const kind of traceKinds) {
-          mobileTurnTrace.markFirst(traceIdentity, "webui.patch_applied", kind, "receive-stream-patch");
-        }
-        if (searchOpenRef.current && normalizedSearchQueryRef.current) {
-          setSearchIndex((index) => updateMobileSearchIndex(
-            index,
-            nextSnapshot.messages,
-            normalizedSearchQueryRef.current,
-            false,
-          ));
-        }
-        if (parsed.state || !nextMessage.streaming) setSnapshot(nextSnapshot);
       },
       receiveStatePatch(next) {
         let patch: MobileStatePatch;
@@ -1414,7 +1017,7 @@ export function MobileNativeApp() {
         }
         const { protocolVersion, ...state } = patch;
         void protocolVersion;
-        streamSnapshotRef.current = { ...projected, ...state };
+        streamSnapshotRef.current = { ...projected, ...state, replyStatus: state.connection.status === "ready" ? projected.replyStatus : null };
         startTransition(() => {
           setSnapshot((current) => {
             if (
@@ -1425,7 +1028,7 @@ export function MobileNativeApp() {
               window.AkashicNative?.requestSnapshot();
               return current;
             }
-            return { ...current, ...state };
+            return { ...current, ...state, replyStatus: state.connection.status === "ready" ? current.replyStatus : null };
           });
         });
       },
@@ -1453,6 +1056,7 @@ export function MobileNativeApp() {
           console.error("[mobile] rejected plugin result", error);
         }
       },
+      receiveModelCallStats: receiveMobileModelCallStats,
       receiveSendResult(requestId, accepted) {
         const pendingSend = pendingSendRequestRef.current;
         if (pendingSend?.requestId !== requestId) return;
@@ -1519,8 +1123,8 @@ export function MobileNativeApp() {
           window.AkashicMobile?.receiveSnapshot(message.payload);
           return;
         }
-        if (type === "mobile.stream-patch") {
-          window.AkashicMobile?.receiveStreamPatch(message.payload);
+        if (type === "mobile.message-event") {
+          window.AkashicMobile?.receiveMessageEvent(message.payload);
           return;
         }
         if (type === "mobile.state-patch") {
@@ -1542,6 +1146,7 @@ export function MobileNativeApp() {
         throw new Error(`nativeMessage.type 无效: ${type}`);
       } catch (error) {
         console.error("[mobile] rejected native message", error);
+        setSnapshotError(error instanceof Error ? error.message : "原生消息无效");
       }
     };
     window.addEventListener("message", receiveNativeMessage);
@@ -1551,10 +1156,9 @@ export function MobileNativeApp() {
       window.removeEventListener("popstate", handlePopState);
       window.removeEventListener("message", receiveNativeMessage);
       window.history.scrollRestoration = previousScrollRestoration;
-      streamStore.clear();
       delete window.AkashicMobile;
     };
-  }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft, streamStore, turnMetrics]);
+  }, [applySharedText, clearAcceptedComposerDraft, flushComposerDraft]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -1665,13 +1269,13 @@ export function MobileNativeApp() {
   // 必要 effect：按外部 snapshot.messages 过滤失效的恢复项（投影 reconcile），不可改为渲染期计算
   useEffect(() => {
     const actionable = new Set(
-      snapshot?.messages.filter((message) => message.deliveryAction).map((message) => message.id) ?? [],
+      snapshot?.composer.pendingMessages.filter((message) => message.deliveryAction).map((message) => message.messageId) ?? [],
     );
     setRecoveringMessageIds((current) => {
       const next = new Set([...current].filter((messageId) => actionable.has(messageId)));
       return next.size === current.size ? current : next;
     });
-  }, [snapshot?.messages]);
+  }, [snapshot?.composer.pendingMessages]);
 
   // 必要 effect：按外部 snapshot.messages reconcile 选中集合（投影），不可改为渲染期计算
   useEffect(() => {
@@ -1694,7 +1298,6 @@ export function MobileNativeApp() {
 
   useEffect(() => () => {
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
-    if (missingReplyTimerRef.current !== null) window.clearTimeout(missingReplyTimerRef.current);
     if (replyAnnouncementTimerRef.current !== null) window.clearTimeout(replyAnnouncementTimerRef.current);
     if (searchHighlightTimerRef.current !== null) window.clearTimeout(searchHighlightTimerRef.current);
   }, []);
@@ -1705,7 +1308,7 @@ export function MobileNativeApp() {
     const results: MobileMessage[] = [];
     snapshot.messages.forEach((message) => {
       const cached = searchIndex.get(message.id);
-      if (cached?.revision === message.searchRevision && cached.matches) {
+      if (cached?.revision === message.seq && cached.matches) {
         results.push(message);
       }
     });
@@ -1715,9 +1318,9 @@ export function MobileNativeApp() {
     ? -1
     : searchResults.findIndex((message) => message.id === searchTargetId);
 
-  const jumpToMessage = useCallback((messageId: string, focus = false) => {
+  const jumpToMessage = useCallback((messageId: string, focus = false, partIndex?: number) => {
     // 1. 由虚拟列表先挂载目标行，再完成定位和焦点恢复
-    conversationRef.current?.jumpToMessage(messageId, focus);
+    conversationRef.current?.jumpToMessage(messageId, focus, partIndex);
 
     // 2. 点亮目标状态层并恢复无障碍焦点
     setHighlightedMessageId(messageId);
@@ -1789,19 +1392,13 @@ export function MobileNativeApp() {
     snapshotMessagesRef.current = snapshot?.messages ?? [];
   }, [snapshot?.messages]);
 
-  const baselineMessages = snapshot?.messages;
-  // 必要 effect：外部 StreamProjectionStore 基线 reconcile（命令式投影 store，非订阅式）
-  useEffect(() => {
-    if (baselineMessages) streamStore.reconcileBaseline(baselineMessages);
-  }, [baselineMessages, streamStore]);
-
   // 必要 effect：latest-ref 提交后同步
   useLayoutEffect(() => {
     composerInputRef.current = input;
   }, [input]);
 
   const copyMessage = useCallback((message: MobileMessage) => {
-    window.AkashicNative?.copyText(message.content);
+    window.AkashicNative?.copyText(formatMobileSelectionCopyText([message], formatMessageTime));
     setCopiedMessageId(message.id);
     if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
     copiedTimerRef.current = window.setTimeout(() => {
@@ -1840,10 +1437,9 @@ export function MobileNativeApp() {
       return next;
     });
   }, []);
-  const navigateToReply = useCallback((sourceMessageId: string, reply: MobileReply) => {
-    const target = resolveMobileReplyNavigationTarget(reply.messageId, snapshotMessagesRef.current);
+  const navigateToReply = useCallback((_sourceMessageId: string, replyMessageId: string, partIndex?: number) => {
+    const target = resolveMobileReplyNavigationTarget(replyMessageId, snapshotMessagesRef.current);
     if (target) {
-      setMissingReplySourceId(null);
       const announcement = formatMobileReplyNavigationAnnouncement(target, formatMessageTime);
       setReplyNavigationAnnouncement("");
       if (replyAnnouncementTimerRef.current !== null) window.clearTimeout(replyAnnouncementTimerRef.current);
@@ -1851,15 +1447,10 @@ export function MobileNativeApp() {
         setReplyNavigationAnnouncement(announcement);
         replyAnnouncementTimerRef.current = null;
       }, 40);
-      jumpToMessage(target.id, true);
+      jumpToMessage(target.id, true, partIndex);
       return;
     }
-    setMissingReplySourceId(sourceMessageId);
-    if (missingReplyTimerRef.current !== null) window.clearTimeout(missingReplyTimerRef.current);
-    missingReplyTimerRef.current = window.setTimeout(() => {
-      setMissingReplySourceId((current) => current === sourceMessageId ? null : current);
-      missingReplyTimerRef.current = null;
-    }, 1800);
+    setReplyNavigationAnnouncement("引用消息不在当前记录中");
   }, [jumpToMessage]);
   const retryMessageDelivery = useCallback((messageId: string) => {
     setRecoveringMessageIds((current) => new Set(current).add(messageId));
@@ -2095,8 +1686,13 @@ export function MobileNativeApp() {
         <span className="mobile-a11y-announcement" aria-live="polite" aria-atomic="true">
           {replyNavigationAnnouncement}
         </span>
-        {(snapshot.connection.error || pluginLoadError) ? (
+        {(snapshot.connection.error || pluginLoadError || snapshotError) ? (
           <div className="mobile-surface-errors" aria-live="assertive">
+            {snapshotError ? <div className="mobile-snackbar" role="alert">
+              <AlertCircle className="mobile-snackbar__mark" size={19} />
+              <span><strong>消息同步出现问题</strong><small>{snapshotError}</small></span>
+              <button type="button" onClick={() => window.AkashicNative?.requestSnapshot()}>重新同步</button>
+            </div> : null}
             {snapshot.connection.error ? (
               <div className="mobile-snackbar" role="alert">
                 <AlertCircle className="mobile-snackbar__mark" size={19} />
@@ -2150,21 +1746,18 @@ export function MobileNativeApp() {
           </section>
         ) : null}
         <div
-          className={`mobile-main-content ${surface.kind === "chat" ? "" : "surface-hidden"} ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 1 ? "queueing" : ""} ${selectedSessionUnavailable ? "session-unavailable" : ""}`}
+          className={`mobile-main-content ${surface.kind === "chat" ? "" : "surface-hidden"} ${replyTarget ? "replying" : ""} ${searchOpen ? "searching" : ""} ${selectionActive ? "selecting" : ""} ${queueOpen && snapshot.composer.pendingMessages.length > 0 ? "queueing" : ""} ${selectedSessionUnavailable ? "session-unavailable" : ""}`}
           aria-hidden={surface.kind === "chat" ? undefined : true}
           inert={drawerOpen || surface.kind !== "chat" ? true : undefined}
         >
           <MobileVirtualConversation
             ref={conversationRef}
             snapshot={snapshot}
-            streamStore={streamStore}
             selectedMessageIds={selectedMessageIds}
-            recoveringMessageIds={recoveringMessageIds}
             selectionActive={selectionActive}
             selectedSessionUnavailable={selectedSessionUnavailable}
             highlightedMessageId={highlightedMessageId}
             copiedMessageId={copiedMessageId}
-            missingReplySourceId={missingReplySourceId}
             suspended={searchOpen || selectionActive}
             forceScrollToken={sendScrollRequest}
             unread={unreadState}
@@ -2177,7 +1770,6 @@ export function MobileNativeApp() {
             onReplyToMessage={replyToMessage}
             onNavigateToReply={navigateToReply}
             onCopyMessage={copyMessage}
-            onRetryMessageDelivery={retryMessageDelivery}
           />
           <MobileSearchTextHighlight query={searchQuery} messageId={searchTargetId} />
 
@@ -2201,7 +1793,8 @@ export function MobileNativeApp() {
               stopRequested={stopRequested}
               sendPending={sendPending}
               replyTarget={replyTarget}
-              turnMetrics={turnMetrics}
+              recoveringMessageIds={recoveringMessageIds}
+              onRetryMessageDelivery={retryMessageDelivery}
               onInput={(value) => updateComposerDraft(value, replyTarget)}
               onToggleCommands={toggleCommands}
               onToggleQueue={() => setQueueOpen((current) => !current)}
@@ -2217,395 +1810,68 @@ export function MobileNativeApp() {
   );
 }
 
-/** 让单消息 patch 只重渲染引用发生变化的消息行。 */
+/** 正式消息保留原 body、作者与身份，下载状态不进入消息对象。 */
 const MobileMessageRow = React.memo(function MobileMessageRow({
-  source: baselineSource,
-  streamStore,
-  startsDay,
-  followsSameRole,
-  unreadCount,
-  highlighted,
-  selected,
-  selectionActive,
-  canReply,
-  copied,
-  deliveryActionBusy,
-  replySourceUnavailable,
-  selectedSessionUnavailable,
-  messageElementsRef,
-  onEnterSelection,
-  onToggleSelection,
-  onReplyToMessage,
-  onNavigateToReply,
-  onCopyMessage,
-  onRetryMessageDelivery,
+  source, startsDay, followsSameRole, unreadCount, highlighted, selected, selectionActive,
+  canReply, copied, selectedSessionUnavailable, messageElementsRef, onEnterSelection,
+  onToggleSelection, onReplyToMessage, onNavigateToReply, onCopyMessage, lookupMessage, downloads,
 }: {
   source: MobileMessage;
-  streamStore: StreamProjectionStore<MobileMessage>;
-  startsDay: boolean;
-  followsSameRole: boolean;
-  unreadCount: number;
-  highlighted: boolean;
-  selected: boolean;
-  selectionActive: boolean;
-  canReply: boolean;
-  copied: boolean;
-  deliveryActionBusy: boolean;
-  replySourceUnavailable: boolean;
+  startsDay: boolean; followsSameRole: boolean; unreadCount: number; highlighted: boolean;
+  selected: boolean; selectionActive: boolean; canReply: boolean; copied: boolean;
   selectedSessionUnavailable: boolean;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
-  onEnterSelection: (messageId: string) => void;
-  onToggleSelection: (messageId: string) => void;
+  onEnterSelection: (id: string) => void; onToggleSelection: (id: string) => void;
   onReplyToMessage: (message: MobileMessage) => void;
-  onNavigateToReply: (sourceMessageId: string, reply: MobileReply) => void;
+  onNavigateToReply: (sourceId: string, targetId: string, partIndex?: number) => void;
   onCopyMessage: (message: MobileMessage) => void;
-  onRetryMessageDelivery: (messageId: string) => void;
+  lookupMessage: (id: string) => MobileMessage | undefined;
+  downloads: ReadonlyMap<string, MobileDownload>;
 }) {
-  const subscribe = useCallback(
-    (listener: () => void) => streamStore.subscribe(baselineSource.id, listener),
-    [baselineSource.id, streamStore],
-  );
-  const getSnapshot = useCallback(
-    () => streamStore.read(baselineSource.id, baselineSource),
-    [baselineSource, streamStore],
-  );
-  const source = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  // 每次 render 读取当前 registry：先渲染后注册、missing 后补齐都不会缓存旧身份；
-  // 旧 rAF 闭包持有的 identity 快照也由 markFirst 按 entry 当前值发 id。
-  const traceIdentity = source.role === "assistant"
-    ? mobileTurnTrace.identityForMessage(source.sessionId, source.id)
-    : undefined;
-  const traceFrameRef = useRef<{ key: string; kinds: MobileTurnSourceKind[]; handle: number } | null>(null);
-
-  useLayoutEffect(() => {
-    if (!traceIdentity) return;
-    // 1. turn 切换时取消上一 turn 的挂起帧，避免跨 turn 误报
-    if (traceFrameRef.current !== null && traceFrameRef.current.key !== traceIdentity.key) {
-      window.cancelAnimationFrame(traceFrameRef.current.handle);
-      traceFrameRef.current = null;
-    }
-    // 2. 按当前 source 可见性对每个新 kind 分别 mark react_committed
-    const committedKinds: MobileTurnSourceKind[] = [];
-    for (const kind of mobileTurnDomVisibleKinds(source)) {
-      if (mobileTurnTrace.markFirst(traceIdentity, "webui.react_committed", kind, "message-row")) {
-        committedKinds.push(kind);
-      }
-    }
-    if (committedKinds.length === 0) return;
-    // 3. 同一次 commit 至多安排一个 rAF；已有同 turn 挂起帧则并入其挂起集合
-    if (traceFrameRef.current !== null) {
-      traceFrameRef.current.kinds.push(...committedKinds);
-      return;
-    }
-    const key = traceIdentity.key;
-    traceFrameRef.current = {
-      key,
-      kinds: committedKinds,
-      handle: window.requestAnimationFrame(() => {
-        if (traceFrameRef.current?.key !== key) return;
-        const readyKinds = traceFrameRef.current.kinds;
-        traceFrameRef.current = null;
-        // 4. 帧就绪后对挂起集合的每个 kind 分别 mark next_frame_ready（不宣称 paint）
-        for (const kind of readyKinds) {
-          mobileTurnTrace.markFirst(traceIdentity, "webui.next_frame_ready", kind, "message-row-frame");
-        }
-      }),
-    };
-  }, [source, traceIdentity]);
-
-  useEffect(() => () => {
-    // 5. unmount/reconcile 后有界清理：取消挂起帧；注册表由有界淘汰回收
-    if (traceFrameRef.current !== null) {
-      window.cancelAnimationFrame(traceFrameRef.current.handle);
-      traceFrameRef.current = null;
-    }
-  }, []);
-  const message = toCachedChatMessage(source);
-  const pluginTurn = !selectedSessionUnavailable && isPluginTurnMessage(message);
-  const turnId = pluginTurnId(message);
-  const leadingContent = useMemo(() => {
-    const reply = source.reply;
-    return reply ? (
-      <MessageReplyReference
-        role={reply.role}
-        preview={reply.preview}
-        unavailable={replySourceUnavailable}
-        onNavigate={() => onNavigateToReply(source.id, reply)}
-      />
-    ) : undefined;
-  }, [onNavigateToReply, replySourceUnavailable, source.id, source.reply]);
-  const attachmentContent = useMemo(
-    () => <MobileMessageAttachments attachments={source.attachments} />,
-    [source.attachments],
-  );
-  const processStartContent = useMemo(() => pluginTurn ? (
-    <MobilePluginSlot
-      name="turn.before_reasoning"
-      sessionId={source.sessionId}
-      messageId={message.id}
-      turnId={turnId}
-    />
-  ) : undefined, [message.id, pluginTurn, source.sessionId, turnId]);
-  const beforeProcessBlock = useCallback((block: AgentBlock) => pluginTurn && block.kind === "tool" ? (
-    <MobilePluginSlot
-      name="turn.before_tool"
-      sessionId={source.sessionId}
-      messageId={message.id}
-      turnId={turnId}
-      block={block}
-    />
-  ) : null, [message.id, pluginTurn, source.sessionId, turnId]);
-  const answerEndContent = useMemo(() => pluginTurn ? (
-    <MobilePluginSlot
-      name="turn.after_answer"
-      sessionId={source.sessionId}
-      messageId={message.id}
-      turnId={turnId}
-    />
-  ) : undefined, [message.id, pluginTurn, source.sessionId, turnId]);
-  const copyCurrentMessage = useCallback(
-    () => onCopyMessage(getSnapshot()),
-    [getSnapshot, onCopyMessage],
-  );
-  const replyToCurrentMessage = useCallback(
-    () => onReplyToMessage(getSnapshot()),
-    [getSnapshot, onReplyToMessage],
-  );
-  const retryCurrentMessage = useCallback(
-    () => onRetryMessageDelivery(getSnapshot().id),
-    [getSnapshot, onRetryMessageDelivery],
-  );
-  const requiresFullRenderer = source.reply !== undefined
-    || source.blocks.length > 0
-    || source.attachments.length > 0
-    || messageNeedsMarkdown(source.content);
-  return (
-    <>
-      {startsDay ? <MessageDateDivider createdAt={source.createdAt} /> : null}
-      {unreadCount > 0 ? <MessageUnreadDivider count={unreadCount} /> : null}
-      {!startsDay && followsSameRole ? (
-        <div className={`mobile-role-divider ${source.role}`} />
-      ) : null}
-      <MessageSelectionTarget
-        ref={(element) => {
-          if (element) messageElementsRef.current.set(source.id, element);
-          else messageElementsRef.current.delete(source.id);
-        }}
-        className={`mobile-message-anchor ${source.role} ${source.streaming ? "streaming" : ""} ${highlighted ? "search-target" : ""} ${selected ? "selected" : ""}`}
-        data-message-id={source.id}
-        tabIndex={-1}
-        selectable={!source.streaming}
-        selectionActive={selectionActive}
-        selected={selected}
-        onEnterSelection={() => onEnterSelection(source.id)}
-        onToggleSelection={() => onToggleSelection(source.id)}
-      >
-        <div className="message-interaction-surface">
-          {source.streaming && source.role === "assistant" ? (
-            <MobileStreamingMessageView
-              source={source}
-              leadingContent={leadingContent}
-              attachmentContent={attachmentContent}
-              processStartContent={processStartContent}
-              beforeProcessBlock={beforeProcessBlock}
-              answerEndContent={answerEndContent}
-            />
-          ) : requiresFullRenderer ? (
-            <Suspense fallback={<MobilePlainMessageView role={source.role} content={source.content} />}>
-              <LazyChatMessageView
-                message={message}
-                onCopyToolDetail={copyToolDetail}
-                leadingContent={leadingContent}
-                attachmentContent={attachmentContent}
-                processStartContent={processStartContent}
-                beforeProcessBlock={beforeProcessBlock}
-                answerEndContent={answerEndContent}
-              />
-            </Suspense>
-          ) : (
-            <>
-              <MobilePlainMessageView role={source.role} content={source.content} />
-              {pluginTurn ? (
-                <MobilePluginSlot
-                  name="turn.after_answer"
-                  sessionId={source.sessionId}
-                  messageId={message.id}
-                  turnId={pluginTurnId(message)}
-                />
-              ) : null}
-            </>
-          )}
-          <MessageMeta
-            role={source.role}
-            createdAt={source.createdAt}
-            deliveryLabel={source.deliveryLabel}
-            deliveryAction={source.deliveryAction}
-            interrupted={source.interrupted}
-            terminalStatus={source.terminalStatus}
-            hasContent={Boolean(source.content)}
-            copied={copied}
-            canReply={canReply}
-            onCopy={copyCurrentMessage}
-            onReply={replyToCurrentMessage}
-            deliveryActionBusy={deliveryActionBusy}
-            onDeliveryAction={retryCurrentMessage}
-          />
-        </div>
-      </MessageSelectionTarget>
-    </>
-  );
-});
-
-const mobileStreamMarkdownBatchCharacters = 4;
-
-/** 流式纯文本保持零解析路径；Markdown 交给 Markstream 增量渲染。 */
-const MobileStreamingMessageView = React.memo(function MobileStreamingMessageView({
-  source,
-  leadingContent,
-  attachmentContent,
-  processStartContent,
-  beforeProcessBlock,
-  answerEndContent,
-}: {
-  source: MobileMessage;
-  leadingContent?: ReactNode;
-  attachmentContent?: ReactNode;
-  processStartContent?: ReactNode;
-  beforeProcessBlock?: (block: AgentBlock, index: number) => ReactNode;
-  answerEndContent?: ReactNode;
-}) {
-  return (
-    <div className="message-row agent-row">
-      <div className="agent-content">
-        {leadingContent}
-        {source.blocks.length > 0 ? (
-          <MobileStreamingProcessTrace
-            blocks={source.blocks}
-            startContent={processStartContent}
-            beforeBlock={beforeProcessBlock}
-          />
-        ) : null}
-        {attachmentContent}
-        {source.content ? messageNeedsMarkdown(source.content) ? (
-          <Suspense fallback={<p className="plain-message-response mobile-streaming-answer">{source.content}</p>}>
-            <LazyMessageResponse
-              isAnimating
-              streamBatchCharacters={mobileStreamMarkdownBatchCharacters}
-            >
-              {source.content}
-            </LazyMessageResponse>
-          </Suspense>
-        ) : (
-          <p className="plain-message-response mobile-streaming-answer">{source.content}</p>
-        ) : null}
-        {answerEndContent}
-      </div>
-    </div>
-  );
-});
-
-/** 保留流式 thinking/tool 顺序；只有含 Markdown 的 thinking 启动解析器。 */
-const MobileStreamingProcessTrace = React.memo(function MobileStreamingProcessTrace({
-  blocks,
-  startContent,
-  beforeBlock,
-}: {
-  blocks: MobileProcessBlock[];
-  startContent?: ReactNode;
-  beforeBlock?: (block: AgentBlock, index: number) => ReactNode;
-}) {
-  let activeIndex = -1;
-  blocks.forEach((block, index) => {
-    if (block.state === "running") activeIndex = index;
-  });
-  return (
-    <div className="process-trace mobile-streaming-process" aria-label="正在思考">
-      <div className="process-trigger mobile-streaming-process__trigger">
-        <span>正在思考</span>
-      </div>
-      <div className="process-content">
-        <div className="process-panel">
-          <div className="process-panel-body">
-            <div className="process-items">
-              <div className="process-line" aria-hidden="true" />
-              {startContent}
-              {blocks.map((block, index) => (
-                <React.Fragment key={block.id}>
-                  {beforeBlock?.(toCachedAgentBlock(block), index)}
-                  {block.kind === "thinking" ? (
-                    <div className={`process-item thinking-step ${index === activeIndex ? "active" : ""}`}>
-                      <span className="process-node circle" />
-                      <div className="process-text process-markdown">
-                        {messageNeedsMarkdown(block.detail || block.title) ? (
-                          <Suspense fallback={<span className="process-markdown-fallback">{block.detail || block.title}</span>}>
-                            <LazyMessageResponse
-                              isAnimating={index === activeIndex}
-                              streamBatchCharacters={mobileStreamMarkdownBatchCharacters}
-                            >
-                              {block.detail || block.title}
-                            </LazyMessageResponse>
-                          </Suspense>
-                        ) : (
-                          <span className="process-markdown-fallback">{block.detail || block.title}</span>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <MobileStreamingToolStep block={block} active={index === activeIndex} />
-                  )}
-                </React.Fragment>
-              ))}
-            </div>
+  const body = source.body;
+  const renderAttachment = useCallback((attachment: TimelineAttachment) => {
+    const download = downloads.get(attachment.artifact_id);
+    return <MobileMessageAttachment attachment={{
+      id: attachment.artifact_id, filename: attachment.filename ?? "附件",
+      contentType: attachment.media_type ?? "application/octet-stream", sizeBytes: attachment.size_bytes,
+      transferredBytes: download?.transferredBytes ?? 0, state: download?.state ?? "remote",
+      contentUrl: download?.contentUrl,
+    }} />;
+  }, [downloads]);
+  return <>
+    {startsDay ? <MessageDateDivider createdAt={Date.parse(source.timestamp)} /> : null}
+    {unreadCount > 0 ? <MessageUnreadDivider count={unreadCount} /> : null}
+    {!startsDay && followsSameRole ? <div className={`mobile-role-divider timeline-${body.kind}`} /> : null}
+    <MessageSelectionTarget ref={(element) => {
+      if (element) messageElementsRef.current.set(source.id, element);
+      else messageElementsRef.current.delete(source.id);
+    }} className={`mobile-message-anchor timeline-${body.kind} ${highlighted ? "search-target" : ""} ${selected ? "selected" : ""}`}
+      data-message-id={source.id} data-message-kind={body.kind} data-message-seq={source.seq} tabIndex={-1}
+      selectable selectionActive={selectionActive} selected={selected}
+      onEnterSelection={() => onEnterSelection(source.id)} onToggleSelection={() => onToggleSelection(source.id)}>
+      <div className="message-interaction-surface">
+        <TimelineMessageView message={source} lookupMessage={lookupMessage}
+          onNavigate={(id, index) => onNavigateToReply(source.id, id, index)} renderAttachment={renderAttachment}
+          leadingContent={!selectedSessionUnavailable && body.kind === "output" ? <MobilePluginSlot
+            name="turn.before_reasoning" sessionId={source.session_id} messageId={source.id} /> : undefined}
+          beforePart={(part, index) => !selectedSessionUnavailable && part.kind === "tool_call" && !("display" in part)
+            ? <MobilePluginSlot name="turn.before_tool" sessionId={source.session_id} messageId={source.id}
+              block={{ ...part, message_id: source.id, part_index: index }} /> : null}
+          afterBody={!selectedSessionUnavailable && body.kind === "output" && body.finish === "complete" ? <MobilePluginSlot
+            name="turn.after_answer" sessionId={source.session_id} messageId={source.id} /> : undefined} />
+        <div className="mobile-message-meta timeline-meta">
+          <div className="mobile-message-meta__text">
+            <span>{source.author}</span><span>来源 · {source.source}</span>
+            <time dateTime={source.timestamp}>{formatMessageTime(Date.parse(source.timestamp))}</time>
+            <details><summary>消息详情</summary><pre>{source.id}{"\n"}序号 {source.seq}</pre></details>
           </div>
+          <SharedMessageActions canReply={canReply} canCopy={mobileMessageHasCopyContent(source)} copied={copied}
+            onReply={() => onReplyToMessage(source)} onCopy={() => onCopyMessage(source)} />
         </div>
       </div>
-    </div>
-  );
+    </MessageSelectionTarget>
+  </>;
 });
-
-const MobileStreamingToolStep = React.memo(function MobileStreamingToolStep({
-  block,
-  active,
-}: {
-  block: MobileProcessBlock;
-  active: boolean;
-}) {
-  const description = typeof block.arguments?.description === "string"
-    ? block.arguments.description.trim()
-    : "";
-  const stateLabel = block.state === "running" ? "运行中" : block.state === "failed" ? "失败" : "完成";
-  return (
-    <div className={`process-item tool-step ${active ? "active" : ""} ${block.state === "failed" ? "error" : ""}`}>
-      <span className="process-node diamond" />
-      <div className="tool-step-body">
-        <div className="tool-step-summary tool-step-summary-static">
-          <span className="tool-step-heading">
-            <span className="tool-step-title">
-              <Wrench className="tool-step-icon" size={14} aria-hidden="true" />
-              <span>{block.title}</span>
-            </span>
-            <span className="tool-step-state">{stateLabel}</span>
-          </span>
-          {description ? <span className="tool-step-description">{description}</span> : null}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const MobilePlainMessageView = React.memo(function MobilePlainMessageView({ role, content }: { role: MobileMessage["role"]; content: string }) {
-  return (
-    <div className={`mobile-plain-message-view ${role}`}>
-      <div className="mobile-plain-message-view__content">
-        <p>{content}</p>
-      </div>
-    </div>
-  );
-});
-
-function copyToolDetail(text: string) {
-  window.AkashicNative?.copyText(text);
-}
 
 function MobilePluginTopBar({ title, onBack }: { title: string; onBack: () => void }) {
   return (
@@ -3202,7 +2468,8 @@ function MobileComposer({
   stopRequested,
   sendPending,
   replyTarget,
-  turnMetrics,
+  recoveringMessageIds,
+  onRetryMessageDelivery,
   onInput,
   onToggleCommands,
   onToggleQueue,
@@ -3219,7 +2486,8 @@ function MobileComposer({
   stopRequested: boolean;
   sendPending: boolean;
   replyTarget: MobileMessage | null;
-  turnMetrics: ClientTurnMetricsTracker;
+  recoveringMessageIds: ReadonlySet<string>;
+  onRetryMessageDelivery: (id: string) => void;
   onInput: (value: string) => void;
   onToggleCommands: () => void;
   onToggleQueue: () => void;
@@ -3296,16 +2564,18 @@ function MobileComposer({
       ) : null}
       <div className="mobile-composer-dock">
         <div className={`mobile-composer-frame ${replyTarget ? "has-reply" : ""}`}>
-          {snapshot.composer.pendingMessages.length > 1 ? (
+          {snapshot.composer.pendingMessages.length > 0 ? (
             <PendingQueue
               open={queueOpen}
               messages={snapshot.composer.pendingMessages}
+              recoveringMessageIds={recoveringMessageIds}
+              onRetry={onRetryMessageDelivery}
               onToggle={onToggleQueue}
             />
           ) : null}
           {replyTarget ? (
             <ComposerReply
-              role={replyTarget.role}
+              author={replyTarget.author}
               preview={replyPreview(replyTarget)}
               onCancel={onCancelReply}
             />
@@ -3345,7 +2615,7 @@ function MobileComposer({
           )}
           </div>
         </div>
-        <ComposerStatsLine tracker={turnMetrics} />
+        <ComposerStatsLine messages={snapshot.messages} activities={snapshot.replyStatus?.items ?? []} connected={snapshot.connection.status === "ready"} load={loadMobileModelCallStats} />
       </div>
     </div>
   );
@@ -3570,25 +2840,34 @@ function resizeMobileComposerTextarea(textarea: HTMLTextAreaElement) {
 function PendingQueue({
   open,
   messages,
+  recoveringMessageIds,
+  onRetry,
   onToggle,
 }: {
   open: boolean;
   messages: MobilePendingMessage[];
+  recoveringMessageIds: ReadonlySet<string>;
+  onRetry: (id: string) => void;
   onToggle: () => void;
 }) {
   return (
     <section className={`composer-queue ${open ? "open" : ""}`} aria-label="待发送消息">
       <button type="button" onClick={onToggle} aria-expanded={open}>
         <TimerReset size={18} />
-        <span>{messages.length} 条消息等待连接</span>
+        <span>{messages.length} 条待发送消息</span>
         <ChevronDown className={open ? "open" : ""} size={18} />
       </button>
-      <div className="composer-queue__disclosure">
-        <div>
+      <div className="composer-queue__disclosure" inert={!open} aria-hidden={!open}>
+        <div tabIndex={open ? 0 : -1}>
           {messages.map((message) => (
             <div className="composer-queue__item" key={message.messageId}>
               <span>{message.preview}</span>
               <time>{formatMessageTime(message.createdAt)}</time>
+              <span>{message.deliveryLabel}</span>
+              {message.deliveryAction ? <button type="button" disabled={recoveringMessageIds.has(message.messageId)}
+                onClick={() => onRetry(message.messageId)}>
+                {recoveringMessageIds.has(message.messageId) ? "处理中" : message.deliveryAction === "retry" ? "重试发送" : "核对状态"}
+              </button> : null}
             </div>
           ))}
         </div>
@@ -3711,17 +2990,6 @@ function DraftAttachments({ attachments, disabled }: { attachments: MobileAttach
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function MobileMessageAttachments({ attachments }: { attachments: MobileAttachment[] }) {
-  if (attachments.length === 0) return null;
-  return (
-    <div className="mobile-message-attachments">
-      {attachments.map((attachment) => (
-        <MobileMessageAttachment attachment={attachment} key={attachment.id} />
-      ))}
     </div>
   );
 }
@@ -3971,83 +3239,6 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-const MessageMeta = React.memo(function MessageMeta({
-  role,
-  createdAt,
-  deliveryLabel,
-  deliveryAction,
-  interrupted,
-  terminalStatus,
-  hasContent,
-  copied,
-  canReply,
-  deliveryActionBusy,
-  onCopy,
-  onReply,
-  onDeliveryAction,
-}: {
-  role: MobileMessage["role"];
-  createdAt: number;
-  deliveryLabel?: string;
-  deliveryAction?: MobileMessage["deliveryAction"];
-  interrupted: boolean;
-  terminalStatus?: MobileMessage["terminalStatus"];
-  hasContent: boolean;
-  copied: boolean;
-  canReply: boolean;
-  deliveryActionBusy: boolean;
-  onCopy: () => void;
-  onReply: () => void;
-  onDeliveryAction: () => void;
-}) {
-  const deliveryActionLabel = deliveryActionBusy
-    ? "处理中"
-    : deliveryAction === "retry" ? "重试" : "核对";
-  const deliveryActionAria = deliveryAction === "retry"
-    ? "发送失败，重试消息"
-    : "结果待确认，核对消息状态";
-  const terminalLabel = terminalStatus === "failed"
-    ? "本轮生成失败，请重试"
-    : terminalStatus === "cancelled"
-      ? "本轮已取消"
-      : terminalStatus === "interrupted" || interrupted
-        ? "本轮已中止"
-        : undefined;
-  return (
-    <div className={`mobile-message-meta ${role}`}>
-      <div className="mobile-message-meta__text">
-        <time dateTime={new Date(createdAt).toISOString()}>{formatMessageTime(createdAt)}</time>
-        {role === "user" && deliveryLabel ? (
-          <span className={deliveryAction ? `delivery-state ${deliveryAction}` : undefined}>
-            {deliveryLabel}
-          </span>
-        ) : null}
-        {role === "user" && deliveryAction ? (
-          <button
-            className={`mobile-delivery-action ${deliveryAction}`}
-            type="button"
-            onClick={onDeliveryAction}
-            aria-label={deliveryActionAria}
-            aria-busy={deliveryActionBusy}
-            disabled={deliveryActionBusy}
-          >
-            <RotateCcw size={14} aria-hidden="true" />
-            <span>{deliveryActionLabel}</span>
-          </button>
-        ) : null}
-        {terminalLabel ? <span className="interrupted-label">{terminalLabel}</span> : null}
-      </div>
-      <SharedMessageActions
-        canReply={canReply}
-        canCopy={hasContent}
-        copied={copied}
-        onReply={onReply}
-        onCopy={onCopy}
-      />
-    </div>
-  );
-});
-
 const MessageSelectionTarget = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement> & {
@@ -4190,7 +3381,7 @@ const MessageSelectionTarget = React.forwardRef<
 });
 
 function isMessageInteractiveTarget(target: EventTarget | null) {
-  return target instanceof Element && target.closest("button, a, input, textarea, [role='button']") !== null;
+  return target instanceof Element && target.closest("button, a, input, textarea, select, summary, [role='button']") !== null;
 }
 
 function MessageDateDivider({ createdAt }: { createdAt: number }) {
@@ -4253,19 +3444,16 @@ function sameLocalDay(left: number, right: number) {
 }
 
 function replyPreview(message: MobileMessage) {
-  return message.content.trim().replace(/\s+/g, " ").slice(0, 512) || "[无文字消息]";
+  return timelineReply(message).preview;
 }
 
 interface MobileVirtualConversationProps {
   snapshot: MobileSnapshot;
-  streamStore: StreamProjectionStore<MobileMessage>;
   selectedMessageIds: Set<string>;
-  recoveringMessageIds: Set<string>;
   selectionActive: boolean;
   selectedSessionUnavailable: boolean;
   highlightedMessageId: string | null;
   copiedMessageId: string | null;
-  missingReplySourceId: string | null;
   suspended: boolean;
   forceScrollToken: number;
   unread: MobileUnreadState;
@@ -4276,23 +3464,19 @@ interface MobileVirtualConversationProps {
   onEnterSelection: (messageId: string) => void;
   onToggleSelection: (messageId: string) => void;
   onReplyToMessage: (message: MobileMessage) => void;
-  onNavigateToReply: (sourceMessageId: string, reply: MobileReply) => void;
+  onNavigateToReply: (sourceMessageId: string, replyMessageId: string, partIndex?: number) => void;
   onCopyMessage: (message: MobileMessage) => void;
-  onRetryMessageDelivery: (messageId: string) => void;
 }
 
 /** Render only the measured chat window and keep the latest edge stable during streaming. */
 const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, MobileVirtualConversationProps>(
   function MobileVirtualConversation({
     snapshot,
-    streamStore,
     selectedMessageIds,
-    recoveringMessageIds,
     selectionActive,
     selectedSessionUnavailable,
     highlightedMessageId,
     copiedMessageId,
-    missingReplySourceId,
     suspended,
     forceScrollToken,
     unread,
@@ -4305,11 +3489,18 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     onReplyToMessage,
     onNavigateToReply,
     onCopyMessage,
-    onRetryMessageDelivery,
   }, ref) {
     const scrollRef = useRef<HTMLDivElement>(null);
+    const byId = useMemo(() => new Map(snapshot.messages.map((message) => [message.id, message])), [snapshot.messages]);
+    const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
+    const downloads = useMemo(() => new Map(snapshot.downloads.map((download) => [download.artifactId, download])), [snapshot.downloads]);
     const sourceMessagesRef = useRef(snapshot.messages);
     sourceMessagesRef.current = snapshot.messages;
+    const activities = snapshot.replyStatus?.items ?? [];
+    const activitiesRef = useRef(activities);
+    activitiesRef.current = activities;
+    const committed = useMemo(() => new Set(snapshot.messages.map((message) => message.id)), [snapshot.messages]);
+    const rowCount = snapshot.messages.length + activities.length + (snapshot.replyStatus?.available === false ? 1 : 0);
     const [isAtEnd, setIsAtEnd] = useState(true);
     const isAtEndRef = useRef(true);
     const restoredProjectionRef = useRef<string | undefined>(undefined);
@@ -4329,28 +3520,24 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
       // eslint-disable-next-line react-hooks/exhaustive-deps
       [messageIdentityKey],
     );
-    const latestAssistantAt = useMemo(
-      () => snapshot.messages.reduce(
-        (latest, message) => message.role === "assistant" ? Math.max(latest, message.createdAt) : latest,
-        0,
-      ),
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      [messageIdentityKey],
-    );
-
     const getScrollElement = useCallback(() => scrollRef.current, []);
     const estimateSize = useCallback(
       (index: number) => estimateMobileMessageHeight(sourceMessagesRef.current[index]),
       [],
     );
     const getItemKey = useCallback(
-      (index: number) => sourceMessagesRef.current[index]?.id ?? index,
+      (index: number) => {
+        const message = sourceMessagesRef.current[index];
+        if (message) return `message:${message.id}`;
+        const activity = activitiesRef.current[index - sourceMessagesRef.current.length];
+        return activity ? `activity:${activity.handle}` : "reply-unavailable";
+      },
       [],
     );
     // TanStack Virtual 的有状态实例由组件持有，不能交给 React Compiler 自动记忆化。
     // eslint-disable-next-line react-hooks/incompatible-library
     const virtualizer = useVirtualizer({
-      count: snapshot.messages.length,
+      count: rowCount,
       getScrollElement,
       estimateSize,
       getItemKey,
@@ -4370,7 +3557,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
       },
     });
 
-    const jumpToMessage = useCallback((messageId: string, focus = false) => {
+    const jumpToMessage = useCallback((messageId: string, focus = false, partIndex?: number) => {
       const index = messageIndexById.get(messageId);
       if (index === undefined) return;
       virtualizer.scrollToIndex(index, { align: "center", behavior: "auto" });
@@ -4379,7 +3566,9 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
       const focusWhenMounted = () => {
         const element = messageElementsRef.current.get(messageId);
         if (element) {
-          element.focus({ preventScroll: true });
+          const target = partIndex === undefined ? element : element.querySelector<HTMLElement>(`[data-part-index="${partIndex}"]`);
+          target?.focus({ preventScroll: true });
+          if (partIndex !== undefined) target?.scrollIntoView({ block: "center", behavior: "instant" });
           return;
         }
         attempts += 1;
@@ -4431,10 +3620,10 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
           0,
         );
         if (distanceFromEnd <= 2) {
-          const key = `${sessionId}\u001ftail\u001f${latestAssistantAt}`;
+          const key = `${sessionId}\u001ftail\u001f${snapshot.throughSeq}`;
           if (key !== lastSavedRef.current) {
             lastSavedRef.current = key;
-            window.AkashicNative?.markSessionReadThrough(sessionId, latestAssistantAt);
+            window.AkashicNative?.markSessionReadThrough(sessionId, snapshot.throughSeq);
           }
           return;
         }
@@ -4458,7 +3647,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
         scrollElement.removeEventListener("scroll", schedulePersist);
         if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
       };
-    }, [latestAssistantAt, snapshot.composer.isResyncing, snapshot.projectionGeneration, snapshot.selectedSessionId, suspended, virtualizer]);
+    }, [snapshot.throughSeq, snapshot.composer.isResyncing, snapshot.projectionGeneration, snapshot.selectedSessionId, suspended, virtualizer]);
 
     useEffect(() => {
       if (forceScrollToken === 0) return;
@@ -4481,7 +3670,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     return (
       <div className="mobile-conversation-frame">
         <div ref={scrollRef} className="mobile-conversation mobile-virtual-conversation" role="log">
-          {snapshot.messages.length === 0 ? (
+          {rowCount === 0 ? (
             <div className="mobile-empty">
               <h1>开始一段新对话</h1>
               <p>消息会通过电脑上的 Akashic 实时处理。</p>
@@ -4495,6 +3684,14 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
                 const index = virtualItem.index;
                 const source = snapshot.messages[index];
                 const previous = snapshot.messages[index - 1];
+                if (!source) {
+                  const activity = activities[index - snapshot.messages.length];
+                  return <div className="mobile-virtual-row" data-index={index} key={virtualItem.key}
+                    ref={virtualizer.measureElement} style={{ transform: `translateY(${virtualItem.start}px)` }}>
+                    {activity ? <ReplyActivityView activity={activity} committed={committed} />
+                      : <p className="reply-unavailable" role="status">当前未加载回复插件</p>}
+                  </div>;
+                }
                 return (
                   <div
                     className="mobile-virtual-row"
@@ -4505,17 +3702,16 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
                   >
                     <MobileMessageRow
                       source={source}
-                      streamStore={streamStore}
-                      startsDay={!previous || !sameLocalDay(previous.createdAt, source.createdAt)}
-                      followsSameRole={previous?.role === source.role}
+                      lookupMessage={lookupMessage}
+                      downloads={downloads}
+                                startsDay={!previous || !sameLocalDay(Date.parse(previous.timestamp), Date.parse(source.timestamp))}
+                      followsSameRole={previous?.author === source.author}
                       unreadCount={source.id === unread.firstMessageId ? unread.count : 0}
                       highlighted={highlightedMessageId === source.id}
                       selected={selectedMessageIds.has(source.id)}
                       selectionActive={selectionActive}
                       canReply={mobileMessageCanReply(source, snapshot.selectedSessionId)}
                       copied={copiedMessageId === source.id}
-                      deliveryActionBusy={recoveringMessageIds.has(source.id)}
-                      replySourceUnavailable={missingReplySourceId === source.id}
                       selectedSessionUnavailable={selectedSessionUnavailable}
                       messageElementsRef={messageElementsRef}
                       onEnterSelection={onEnterSelection}
@@ -4523,7 +3719,6 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
                       onReplyToMessage={onReplyToMessage}
                       onNavigateToReply={onNavigateToReply}
                       onCopyMessage={onCopyMessage}
-                      onRetryMessageDelivery={onRetryMessageDelivery}
                     />
                   </div>
                 );
@@ -4548,13 +3743,13 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
 
 function estimateMobileMessageHeight(message: MobileMessage | undefined) {
   if (!message) return 180;
-  const textLines = Math.ceil(Math.min(message.content.length, 2_400) / 34);
-  const blockHeight = Math.min(message.blocks.length, 4) * 72;
+  const textLines = Math.ceil(Math.min(timelineText(message).length, 2_400) / 34);
+  const blockHeight = Math.min(message.body.kind === "control" ? 1 : message.body.parts.length, 4) * 72;
   const attachmentHeight = Math.min(message.attachments.length, 2) * 112;
   return Math.min(720, 76 + textLines * 20 + blockHeight + attachmentHeight);
 }
 
-/** 按顶层助手消息追踪当前阅读位置之后的未读集合。 */
+/** 按新增正式消息追踪当前阅读位置之后的未读集合。 */
 function useMobileUnreadTracking(
   sessionId: string | undefined,
   sourceMessages: MobileMessage[],
@@ -4583,7 +3778,7 @@ function useMobileUnreadTracking(
   // 必要 effect：未读基线 reconcile 后回调父组件发布（外部投影，仅在集合变化时发布）
   useEffect(() => {
     const currentMessages = sourceMessagesRef.current;
-    const publishUnread = (ids: string[], migrations: ReadonlyMap<string, string>) => {
+    const publishUnread = (ids: string[]) => {
       const key = ids.join("\u001f");
       if (key === publishedUnreadKeyRef.current) return;
       publishedUnreadKeyRef.current = key;
@@ -4592,13 +3787,8 @@ function useMobileUnreadTracking(
         anchorMessageIdRef.current = undefined;
         anchorKeyRef.current = undefined;
       } else if (firstMessageId !== anchorMessageIdRef.current) {
-        const migrated = anchorMessageIdRef.current
-          ? migrations.get(anchorMessageIdRef.current)
-          : undefined;
-        if (migrated !== firstMessageId) {
-          anchorOrdinalRef.current += 1;
-          anchorKeyRef.current = `${sessionId}\u001f${anchorOrdinalRef.current}`;
-        }
+        anchorOrdinalRef.current += 1;
+        anchorKeyRef.current = `${sessionId}\u001f${anchorOrdinalRef.current}`;
         anchorMessageIdRef.current = firstMessageId;
       }
       onUnreadChange({
@@ -4615,7 +3805,7 @@ function useMobileUnreadTracking(
       projectionBaselineRef.current = { generation: projectionGeneration, rebuilding: false };
       anchorMessageIdRef.current = undefined;
       anchorKeyRef.current = undefined;
-      publishUnread([], new Map());
+      publishUnread([]);
       return;
     }
     if (trackedSessionRef.current !== sessionId) {
@@ -4626,7 +3816,7 @@ function useMobileUnreadTracking(
       anchorMessageIdRef.current = undefined;
       anchorKeyRef.current = undefined;
       publishedUnreadKeyRef.current = "";
-      publishUnread([], new Map());
+      publishUnread([]);
       return;
     }
 
@@ -4648,7 +3838,7 @@ function useMobileUnreadTracking(
     unseenMessageIdsRef.current = advanced.unseenMessageIds;
 
     // 3. 仅在集合变化时发布，避免快照流触发无意义重绘
-    publishUnread(unseenMessageIdsRef.current, advanced.messageIdMigrations);
+    publishUnread(unseenMessageIdsRef.current);
   }, [
     escapedFromLock,
     isAtBottom,
@@ -4748,73 +3938,4 @@ function MobileSearchTextHighlight({ query, messageId }: { query: string; messag
     };
   }, [messageId, query]);
   return null;
-}
-
-function toChatMessage(message: MobileMessage): ChatMessage {
-  return {
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    attachments: [],
-    blocks: toCachedAgentBlocks(message.blocks),
-    streaming: message.streaming,
-    interrupted: message.interrupted,
-    durationMs: message.durationSeconds !== undefined ? message.durationSeconds * 1000 : undefined,
-    controlTurnId: message.controlTurnId,
-  };
-}
-
-const chatMessageProjectionCache = new WeakMap<MobileMessage, ChatMessage>();
-const agentBlockProjectionCache = new WeakMap<MobileProcessBlock, AgentBlock>();
-const agentBlockListProjectionCache = new WeakMap<MobileProcessBlock[], AgentBlock[]>();
-
-function toCachedChatMessage(message: MobileMessage): ChatMessage {
-  const cached = chatMessageProjectionCache.get(message);
-  if (cached !== undefined) return cached;
-  const projected = toChatMessage(message);
-  chatMessageProjectionCache.set(message, projected);
-  return projected;
-}
-
-function toCachedAgentBlock(block: MobileProcessBlock): AgentBlock {
-  const cached = agentBlockProjectionCache.get(block);
-  if (cached !== undefined) return cached;
-  const projected = toAgentBlock(block);
-  agentBlockProjectionCache.set(block, projected);
-  return projected;
-}
-
-function toCachedAgentBlocks(blocks: MobileProcessBlock[]): AgentBlock[] {
-  const cached = agentBlockListProjectionCache.get(blocks);
-  if (cached !== undefined) return cached;
-  const projected = blocks.map(toCachedAgentBlock);
-  agentBlockListProjectionCache.set(blocks, projected);
-  return projected;
-}
-
-function isPluginTurnMessage(message: ChatMessage): boolean {
-  return message.role === "assistant";
-}
-
-function pluginTurnId(message: ChatMessage): string | undefined {
-  return message.controlTurnId;
-}
-
-function toAgentBlock(block: MobileProcessBlock): AgentBlock {
-  if (block.kind === "thinking") return { kind: "thinking", content: block.detail || block.title };
-  const input = block.arguments === undefined
-    ? (block.detail ? { description: block.detail } : {})
-    : (block.detail && typeof block.arguments.description !== "string"
-        ? { description: block.detail, ...block.arguments }
-        : block.arguments);
-  return {
-    kind: "tool",
-    callId: block.id,
-    name: block.title,
-    status: block.state === "running" ? "input-available" : block.state === "failed" ? "output-error" : "output-available",
-    input,
-    output: block.resultPreview ?? null,
-    errorText: block.state === "failed" ? block.resultPreview ?? block.detail : undefined,
-    durationMs: block.durationMillis,
-  };
 }

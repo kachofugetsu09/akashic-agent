@@ -146,15 +146,17 @@ class ContextMaterials:
         return await ctx.effect(setup, label=f"materials:{name}")
 
     @asynccontextmanager
-    async def bind(self) -> AsyncIterator[MaterialView]:
-        """持有原 Root 到请求提交结束；空闲 watcher 不打开材料 view。"""
+    async def bind(self, *, exclude: frozenset[str] = frozenset()) -> AsyncIterator[MaterialView]:
+        """调用程序明确选择材料；持有原 Root 到请求提交，排除者不会执行。"""
         async with self._ctx.runtime_scope():
-            sources = dict(self._sources)
+            sources = {name: source for name, source in self._sources.items() if name not in exclude}
             for name, plugin_id in self._prompt_sources.items():
+                if name in exclude:
+                    continue
                 source = sources.get(name)
                 if source is None or not source.prompt or source.plugin_id != plugin_id:
                     raise ValueError(f"获授的 Prompt 材料未就绪: {name}")
-            if self._summary_source is not None:
+            if self._summary_source is not None and self._summary_source[0] not in exclude:
                 name, plugin_id = self._summary_source
                 source = sources.get(name)
                 if source is None or not source.summary or source.plugin_id != plugin_id:

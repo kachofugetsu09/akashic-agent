@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Protocol
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context, EmitEventKey, ServiceKey
 from .store import DriftStore
 
 api_version = 3
@@ -54,6 +54,7 @@ class DriftProposalServices(Protocol):
 
 
 DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
+DRIFT_CHANGED = EmitEventKey[None]("drift.changed")
 
 
 class DriftDeliveryServices(Protocol):
@@ -99,8 +100,9 @@ class _WakeServices:
 
 
 class _ProposalServices:
-    def __init__(self, store: DriftStore) -> None:
+    def __init__(self, store: DriftStore, changed: Callable[[], None]) -> None:
         self._store = store
+        self._changed = changed
 
     def propose(
         self,
@@ -111,13 +113,16 @@ class _ProposalServices:
         *,
         next_due: datetime | None = None,
     ) -> Mapping[str, object]:
-        return self._store.propose(
+        result = self._store.propose(
             proposal_id,
             revision,
             payload,
             due_at,
             next_due=next_due,
         )
+        if result["inserted"]:
+            self._changed()
+        return result
 
 
 class _DeliveryServices:
@@ -142,6 +147,6 @@ async def apply(ctx: Context, config: object) -> None:
     _ = config
     store = DriftStore(ctx.data_root / "drift.sqlite3")
     store.initialize()
-    _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store))
+    _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store, lambda: ctx.emit(DRIFT_CHANGED, None)))
     _ = await ctx.provide(DRIFT_WAKE, _WakeServices(store))
     _ = await ctx.provide(DRIFT_DELIVERY, _DeliveryServices(store))

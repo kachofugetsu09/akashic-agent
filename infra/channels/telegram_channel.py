@@ -54,7 +54,7 @@ from agent.plugin_composition.channels import (
     StopReceipt,
     JsonValue,
 )
-from infra.channels.base import MessageDeduper, SessionIdentityIndex
+from infra.channels.base import MessageDeduper
 from infra.channels.contract import ChannelContext
 from infra.channels.delivery import deliver_message_parts
 from infra.channels.native_delivery import NativeChannelDeliveryAdapter
@@ -68,7 +68,7 @@ from infra.channels.telegram_utils import (
     send_stream_markdown,
     send_thinking_block,
 )
-from session.manager import SessionManager
+from session.identities import ChannelIdentities
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,7 @@ class TelegramChannel:
         self,
         token: str,
         bus: MessageBus,
-        session_manager: SessionManager,
+        identities: ChannelIdentities,
         allow_from: list[str] | None = None,
         command_catalog_provider: Callable[
             [], tuple[tuple[str, str], ...]
@@ -213,18 +213,12 @@ class TelegramChannel:
         channel_name: str = _CHANNEL,
     ) -> None:
         self._bus = bus
-        self._session_manager = session_manager
         self._interrupt_controller = interrupt_controller
         self._channel = channel_name
         self.name = channel_name
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._message_deduper = MessageDeduper(_SEEN_MSG_MAXSIZE)
-        self._identity_index = SessionIdentityIndex(
-            session_manager,
-            channel=channel_name,
-            metadata_key="username",
-            normalizer=lambda value: value.lower(),
-        )
+        self._identities = identities
         self._app = Application.builder().token(token).build()
         self._command_catalog_provider = command_catalog_provider
         self._app.add_handler(CommandHandler("stop", self._on_stop_command))
@@ -242,7 +236,6 @@ class TelegramChannel:
         )
         self._event_bus = event_bus
         self._events_bound = False
-        self.user_map = self._identity_index.mapping
         self._conflict_count = 0
         self._last_conflict_log_at: float | None = None
         self._telegram_outbound_limiter = TelegramOutboundLimiter()
@@ -301,7 +294,6 @@ class TelegramChannel:
             self._event_bus = ctx.event_bus
             self._interrupt_controller = ctx.interrupt_controller
         self._bind_runtime()
-        self._rebuild_user_map()
         await self._app.initialize()
         await self._app.start()
         await self._register_bot_commands()
@@ -312,7 +304,7 @@ class TelegramChannel:
             allowed_updates=Update.ALL_TYPES,
             error_callback=self._on_polling_error,
         )
-        logger.info(f"TelegramChannel 已启动  已知用户: {len(self.user_map)}")
+        logger.info(f"TelegramChannel 已启动  已知用户: {len(self._identities.load(self._channel))}")
 
     def _bind_runtime(self) -> None:
         if self._event_bus is not None and not self._events_bound:
@@ -335,11 +327,6 @@ class TelegramChannel:
         logger.info("TelegramChannel 已停止")
 
     # ── 私有方法 ──────────────────────────────────────────────────
-
-    def _rebuild_user_map(self) -> None:
-        """扫描已有 session 文件，从 metadata 重建 username → chat_id 索引。"""
-        self._identity_index.rebuild()
-        logger.debug(f"[telegram] user_map 重建完成: {self.user_map}")
 
     def _is_allowed(self, user) -> bool:
         """检查用户是否在白名单中，白名单为空则允许所有人"""
@@ -376,10 +363,6 @@ class TelegramChannel:
             for command, description in (*commands, ("stop", "中断当前回复"))
         ]
         await self._app.bot.set_my_commands(published)
-
-    async def _remember_username(self, chat_id: str, username: str | None) -> None:
-        if username:
-            await self._identity_index.remember(username, chat_id)
 
     async def _on_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -642,38 +625,8 @@ class TelegramChannel:
     async def _on_stop_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        msg = update.effective_message
-        chat = update.effective_chat
-        user = update.effective_user
-
-        if not msg or not chat or not user:
-            return
-        if not self._is_allowed(user):
-            logger.warning(
-                f"[telegram] 拒绝未授权 /stop  id={user.id}  username=@{user.username}"
-            )
-            return
-        if self._interrupt_controller is None:
-            await send_markdown(
-                self._app.bot,
-                str(chat.id),
-                "当前未启用中断功能。",
-                self._telegram_outbound_limiter,
-            )
-            return
-
-        session_key = f"{self._channel}:{chat.id}"
-        result = self._interrupt_controller.request_interrupt(
-            session_key=session_key,
-            sender=str(user.id),
-            command="/stop",
-        )
-        await send_markdown(
-            self._app.bot,
-            str(chat.id),
-            result.message,
-            self._telegram_outbound_limiter,
-        )
+        # /stop 复用已认证的同一入站路径，由来源追加 Control 并排空任务。
+        await self._on_command(update, context)
 
     async def _on_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -729,13 +682,13 @@ class TelegramChannel:
         await self._v3_inbound_runtime.run(self._on_document_v3(update, context))
 
     def _resolve_chat_id(self, chat_id: str) -> str:
-        resolved = chat_id.lstrip("@").lower()
+        resolved = chat_id.strip().lstrip("@").lower()
         if not resolved.lstrip("-").isdigit():
-            resolved = self._identity_index.resolve(resolved)
+            resolved = self._identities.resolve(self._channel, resolved)
             if not resolved:
                 raise ValueError(
                     f"找不到用户 {chat_id!r} 的 chat_id，该用户需先给 bot 发一条消息。"
-                    f"已知用户：{list(self.user_map.keys()) or '（无）'}"
+                    f"已知用户：{list(self._identities.load(self._channel)) or '（无）'}"
                 )
         return resolved
 

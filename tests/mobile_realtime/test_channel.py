@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from session.artifact_store import ArtifactStore
+
 import asyncio
 import hashlib
 import json
@@ -1205,62 +1207,61 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
     _register_device(storage, device_id)
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    session = manager.get_or_create(session_id)
-    session.metadata["model_selection"] = {
-        "schema_version": 1,
-        "model_ref": "model-a",
-        "reasoning_effort": "high",
-    }
-    manager.save(session)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
-    channel.bind_model_catalog(_ModelCatalogReader())
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
+    from contextlib import closing
+    from session.log import MessageLog, SessionAttributes
+    (tmp_path / "workspace").mkdir()
+    log = MessageLog(tmp_path / "workspace/sessions.db")
+    try:
+        session_id = f"akashic:{uuid4()}"
+        log.ensure_session(session_id, SessionAttributes())
+        with closing(sqlite3.connect(tmp_path / "workspace/sessions.db")) as connection, connection:
+            connection.execute("UPDATE sessions SET metadata=?", (json.dumps({"model_selection": {
+                "schema_version": 1, "model_ref": "model-a", "reasoning_effort": "high",
+            }}),))
+        channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+        channel.bind_model_catalog(_ModelCatalogReader())
+        channel.bind_messages(log.catalog())
+
+        reply = await channel.handle_command(
+            device_id=device_id,
+            frame=_generic_frame(
+                frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                command_type="model.catalog.get",
+                session_id=session_id,
             ),
         )
-    )
 
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            command_type="model.catalog.get",
-            session_id=session_id,
-        ),
-    )
+        assert reply.type == "model.catalog.get.ok"
+        assert reply.session_id == session_id
+        assert reply.payload["generation_id"] == 3
+        assert reply.payload["default_runtime"] == "model-a"
+        assert reply.payload["selected_runtime_id"] == "model-a"
+        assert reply.payload["selected_reasoning_effort"] == "high"
+        assert reply.payload["runtimes"] == [
+            {
+                "id": "model-a",
+                "provider": "openai",
+                "model": "gpt-test",
+                "sourceId": "source-a",
+                "sourceName": "OpenAI",
+                "reasoningEffort": "medium",
+                "supportedReasoningEfforts": ["low", "medium", "high"],
+                "roles": ["agent", "default"],
+                "contextWindow": 128_000,
+                "inputModalities": ["text", "image"],
+            }
+        ]
+        before = log.catalog().snapshot_heads()
+        unknown = await channel._model_catalog(_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAW", command_type="model.catalog.get",
+            session_id=f"akashic:{uuid4()}",
+        ))
+        assert unknown.payload["selected_runtime_id"] == ""
+        assert log.catalog().snapshot_heads() == before
 
-    assert reply.type == "model.catalog.get.ok"
-    assert reply.session_id == session_id
-    assert reply.payload["generation_id"] == 3
-    assert reply.payload["default_runtime"] == "model-a"
-    assert reply.payload["selected_runtime_id"] == "model-a"
-    assert reply.payload["selected_reasoning_effort"] == "high"
-    assert reply.payload["runtimes"] == [
-        {
-            "id": "model-a",
-            "provider": "openai",
-            "model": "gpt-test",
-            "sourceId": "source-a",
-            "sourceName": "OpenAI",
-            "reasoningEffort": "medium",
-            "supportedReasoningEfforts": ["low", "medium", "high"],
-            "roles": ["agent", "default"],
-            "contextWindow": 128_000,
-            "inputModalities": ["text", "image"],
-        }
-    ]
-    manager.close()
-    storage.close()
+    finally:
+        log.close()
+        storage.close()
 
 
 @pytest.mark.asyncio
@@ -1792,9 +1793,10 @@ async def test_mobile_message_adopts_finalized_upload_before_bus_admission(
             updated_at=datetime.now(timezone.utc),
         )
     )
+    metadata_store = ArtifactStore(manager.db_path)
     artifact_store = ChannelAttachmentArtifactStore(
         workspace=workspace,
-        session_store=manager.control_store,
+        metadata_store=metadata_store,
     )
     original_adopt = artifact_store.adopt_file_with_artifact_id
 
@@ -1884,6 +1886,7 @@ async def test_mobile_message_adopts_finalized_upload_before_bus_admission(
     )
 
     await restarted.stop()
+    metadata_store.close()
     manager.close()
     storage.close()
 
@@ -1930,9 +1933,10 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
         client_message_id=client_message_id,
         attachment_ids=("upload-after-crash",),
     )[0]
+    metadata_store = ArtifactStore(manager.db_path)
     artifact_store = ChannelAttachmentArtifactStore(
         workspace=workspace,
-        session_store=manager.control_store,
+        metadata_store=metadata_store,
     )
     expected = await artifact_store.inspect_file_with_artifact_id(
         source,
@@ -1960,7 +1964,7 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
     failed.bind_channel_attachment_store(artifact_store)
     with pytest.raises(ValueError, match="durable ref 不一致"):
         await failed.start(context)
-    assert manager.control_store.get_attachment(mapping.artifact_id) is None
+    assert metadata_store.get_attachment(mapping.artifact_id) is None
     assert artifact_store.audit_orphan_artifact_ids() == ()
     assert storage.list_attachment_imports(
         session_id=session_id,
@@ -1979,6 +1983,7 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
     )[0].phase == "artifact_committed"
 
     await restarted.stop()
+    metadata_store.close()
     manager.close()
     storage.close()
 

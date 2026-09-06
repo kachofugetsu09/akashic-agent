@@ -1,16 +1,7 @@
-export interface MobileMessageIdentity {
-  id: string;
-  sessionId: string;
-  role: "user" | "assistant";
-  createdAt: number;
-}
+import { timelineText, type TimelineMessage } from "./message-timeline.ts";
 
-export interface MobileSearchMessage {
-  id: string;
-  content: string;
-  searchRevision: number;
-  attachments: { filename: string }[];
-}
+export type MobileMessageIdentity = Pick<TimelineMessage, "id" | "seq">;
+export type MobileSearchMessage = TimelineMessage;
 
 export interface MobileSearchIndexEntry {
   revision: number;
@@ -18,16 +9,7 @@ export interface MobileSearchIndexEntry {
   matches: boolean;
 }
 
-export interface MobileSelectableMessage {
-  id: string;
-  sessionId: string;
-  role: "user" | "assistant";
-  content: string;
-  createdAt: number;
-  streaming: boolean;
-  replyable: boolean;
-  attachments: { filename: string }[];
-}
+export type MobileSelectableMessage = TimelineMessage;
 
 export interface MobileUnreadViewportState {
   isAtBottom: boolean;
@@ -38,7 +20,6 @@ export interface MobileUnreadViewportState {
 export interface MobileUnreadTrackingResult<T extends MobileMessageIdentity> {
   knownMessages: Map<string, T>;
   unseenMessageIds: string[];
-  messageIdMigrations: Map<string, string>;
 }
 
 export interface MobileProjectionBaselineState {
@@ -220,10 +201,7 @@ export interface MobileComposerTextareaMetrics {
 
 export type MobileComposerActionMode = "send" | "stop";
 
-export interface MobileReplyNavigationMessage {
-  role: "user" | "assistant";
-  createdAt: number;
-}
+export type MobileReplyNavigationMessage = Pick<TimelineMessage, "author" | "timestamp">;
 
 export interface MobileSelectionActionAvailability {
   exit: boolean;
@@ -287,7 +265,7 @@ export function selectableMobileMessages<T extends MobileSelectableMessage>(
   messages: readonly T[],
   selectedIds: ReadonlySet<string>,
 ) {
-  return messages.filter((message) => selectedIds.has(message.id) && !message.streaming);
+  return messages.filter((message) => selectedIds.has(message.id));
 }
 
 export function reconcileMobileMessageSelection<T extends MobileSelectableMessage>(
@@ -295,20 +273,20 @@ export function reconcileMobileMessageSelection<T extends MobileSelectableMessag
   messages: readonly T[],
 ) {
   const visibleIds = new Set(
-    messages.filter((message) => !message.streaming).map((message) => message.id),
+    messages.map((message) => message.id),
   );
   return new Set([...selectedIds].filter((messageId) => visibleIds.has(messageId)));
 }
 
 export function mobileMessageHasCopyContent(message: MobileSelectableMessage) {
-  return Boolean(message.content.trim()) || message.attachments.length > 0;
+  return Boolean(timelineText(message).trim()) || message.attachments.length > 0;
 }
 
 export function mobileMessageCanReply(
   message: MobileSelectableMessage,
   selectedSessionId: string | null | undefined,
 ) {
-  return message.replyable && message.sessionId === selectedSessionId;
+  return (message.body.kind === "input" || message.body.kind === "output") && message.session_id === selectedSessionId;
 }
 
 /** 只在当前投影中解析引用目标，避免跳到别的会话或过期历史。 */
@@ -323,7 +301,7 @@ export function formatMobileReplyNavigationAnnouncement(
   message: MobileReplyNavigationMessage,
   formatTime: (createdAt: number) => string,
 ) {
-  return `已跳到${message.role === "assistant" ? "Akashic" : "你"} ${formatTime(message.createdAt)} 的消息`;
+  return `已跳到${message.author} ${formatTime(Date.parse(message.timestamp))} 的消息`;
 }
 
 /** 把原生草稿解析为当前会话可展示的文字与引用。 */
@@ -438,19 +416,19 @@ export function formatMobileSelectionCopyText(
   const copyable = messages.filter(mobileMessageHasCopyContent);
   if (copyable.length === 1) return mobileMessageCopyBody(copyable[0]);
   return copyable.map((message) => [
-    `${message.role === "assistant" ? "Akashic" : "你"} · ${formatTimestamp(message.createdAt)}`,
+    `${message.author} · ${formatTimestamp(Date.parse(message.timestamp))}`,
     mobileMessageCopyBody(message),
   ].join("\n")).join("\n\n");
 }
 
 function mobileMessageCopyBody(message: MobileSelectableMessage) {
   return [
-    message.content.trim(),
-    ...message.attachments.map((attachment) => `[附件] ${attachment.filename}`),
+    timelineText(message).trim(),
+    ...message.attachments.map((attachment) => `[附件] ${attachment.filename ?? "附件"}`),
   ].filter(Boolean).join("\n");
 }
 
-/** 只重算查询变化或原生修订号发生变化的消息搜索项。 */
+/** 只重算查询变化或消息身份发生变化的消息搜索项。 */
 export function updateMobileSearchIndex(
   current: ReadonlyMap<string, MobileSearchIndexEntry>,
   messages: readonly MobileSearchMessage[],
@@ -463,29 +441,29 @@ export function updateMobileSearchIndex(
   const next = new Map<string, MobileSearchIndexEntry>();
   messages.forEach((message) => {
     const cached = current.get(message.id);
-    const changed = cached?.revision !== message.searchRevision;
+    const changed = cached?.revision !== message.seq;
     if (!queryChanged && !changed && cached) {
       next.set(message.id, cached);
       return;
     }
     const searchable = changed || !cached
       ? normalizeMobileSearchText(
-        [message.content, ...message.attachments.map((attachment) => attachment.filename)].join("\n"),
+        [message.author, message.source, JSON.stringify(message.body), ...message.attachments.map((attachment) => attachment.filename ?? "附件")].join("\n"),
       )
       : cached.searchable;
     next.set(message.id, {
-      revision: message.searchRevision,
+      revision: message.seq,
       searchable,
       matches: searchable.includes(query),
     });
   });
 
-  // 2. 以当前消息顺序重建 Map，canonical 迁移和切会话不会留下旧身份
+  // 2. 以当前消息顺序重建 Map，切换会话不会留下旧身份
   return next;
 }
 
 /** 把实时助手 turn 的临时 ID 对齐到最终 canonical ID。 */
-export function reconcileAssistantMessageIds<T extends MobileMessageIdentity>(
+export function reconcileAssistantMessageIds<T extends { id: string; sessionId: string; role: "user" | "assistant"; createdAt: number }>(
   knownMessages: ReadonlyMap<string, T>,
   unseenMessageIds: readonly string[],
   currentMessages: readonly T[],
@@ -539,7 +517,7 @@ export function updateMobileUnreadMessageIds(
   return [...new Set([...current, ...newlySeen])];
 }
 
-/** 在同步代际边界建立基线，否则推进当前会话的未读集合。 */
+/** 快照回填只建立基线；新增消息按 seq 计数，不猜测作者或替换身份。 */
 export function advanceMobileUnreadTracking<T extends MobileMessageIdentity>(
   knownMessages: ReadonlyMap<string, T>,
   unseenMessageIds: readonly string[],
@@ -547,26 +525,13 @@ export function advanceMobileUnreadTracking<T extends MobileMessageIdentity>(
   viewport: MobileUnreadViewportState,
   resetBaseline: boolean,
 ): MobileUnreadTrackingResult<T> {
-  // 1. 全量同步中的空投影和首次回填都只建立已读基线
-  if (resetBaseline) {
-    return {
-      knownMessages: new Map(currentMessages.map((message) => [message.id, message])),
-      unseenMessageIds: [],
-      messageIdMigrations: new Map(),
-    };
-  }
-
-  // 2. 普通快照先对齐 canonical 身份，再按视口状态累计新 turn
-  const reconciled = reconcileAssistantMessageIds(knownMessages, unseenMessageIds, currentMessages);
-  return {
-    knownMessages: reconciled.knownMessages,
-    unseenMessageIds: updateMobileUnreadMessageIds(
-      reconciled.unseenMessageIds,
-      reconciled.newlySeenAssistants.map((message) => message.id),
-      viewport,
-    ),
-    messageIdMigrations: reconciled.messageIdMigrations,
-  };
+  const known = new Map(currentMessages.map((message) => [message.id, message]));
+  if (resetBaseline) return { knownMessages: known, unseenMessageIds: [] };
+  const lastSeq = Math.max(-1, ...[...knownMessages.values()].map((message) => message.seq));
+  const added = currentMessages.filter((message) => message.seq > lastSeq && !knownMessages.has(message.id));
+  return { knownMessages: known, unseenMessageIds: updateMobileUnreadMessageIds(
+    unseenMessageIds.filter((id) => known.has(id)), added.map((message) => message.id), viewport,
+  ) };
 }
 
 /** 只在原生明确开启的破坏性投影代际内重建已读基线。 */

@@ -1,5 +1,5 @@
 schema_version = 1
 name = "akasha"
-version = "3.0.0"
+version = "4.0.0"
 api_version = 3
-entrypoint = "plugin.py"
+entrypoint = "message_plugin.py"

@@ -53,7 +53,11 @@ def _decode_veda(payload: bytes, *, path: Path) -> str:
 
 
 def read_veda(workspace: Path) -> str:
-    path = veda_path(workspace)
+    return read_veda_file(veda_path(workspace))
+
+
+def read_veda_file(path: Path) -> str:
+    """读取已获授的人格文件；缺失和损坏必须由显式恢复命令处理。"""
     try:
         payload = path.read_bytes()
     except FileNotFoundError as exc:

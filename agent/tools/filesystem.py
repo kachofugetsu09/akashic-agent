@@ -1,5 +1,7 @@
 """文件系统工具：读取、写入、编辑文件，以及列举目录。"""
 
+from __future__ import annotations
+
 import asyncio
 import builtins
 import difflib
@@ -8,13 +10,16 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from agent.plugin_composition import CHAT_MODELS, ModelRole
 from agent.media import detect_supported_image_mime, encode_image_data_uri
 from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.tools.base import Tool, ToolResult
 from infra.persistence.json_store import atomic_write_text
+
+if TYPE_CHECKING:
+    from agent.host_bridge.client import HostBridgeShellProcessManager
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -226,12 +231,31 @@ def _truncate_numbered_lines(
     return "".join(parts), truncated_by is not None, truncated_by, False, output_lines, used_bytes
 
 
-class ReadFileTool(Tool):
-    """读取文件内容，支持按行分页，超大文件自动截断。"""
+class _FileTool(Tool):
+    """同一个文件工具 scope 拥有其实际 Bridge 连接与关闭责任。"""
 
     def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
         self._allowed_dir = allowed_dir
-        self._bridge = _build_file_bridge(enable_bridge)
+        self._enable_bridge = enable_bridge
+        self._bridge: HostBridgeShellProcessManager | None = None
+
+    def _get_bridge(self) -> HostBridgeShellProcessManager | None:
+        if self._bridge is None:
+            self._bridge = _build_file_bridge(self._enable_bridge)
+        return self._bridge
+
+    async def aclose(self) -> None:
+        if self._bridge is not None:
+            from agent.plugin_composition.processes import ProcessCleanupError
+
+            report = await self._bridge.shutdown()
+            if report.failures:
+                raise ProcessCleanupError(report)
+            self._bridge = None
+
+
+class ReadFileTool(_FileTool):
+    """读取文件内容，支持按行分页，超大文件自动截断。"""
 
     @property
     def name(self) -> str:
@@ -274,25 +298,21 @@ class ReadFileTool(Tool):
         }
 
     async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
-        if self._bridge is not None:
-            result = await self._bridge.execute_file_tool(
-                self.name,
-                allowed_dir=self._allowed_dir,
-                arguments={"path": path, **kwargs},
-            )
-            if not isinstance(result, ToolResult) or not any(
-                block.get("type") == "image_url" for block in result.content_blocks
-            ):
-                return result
-            if await _current_agent_accepts_images():
-                return result
-            return _vision_tool_hint(path, Path(path).name, "image")
-        result = self.read_from_disk(path, **kwargs)
-        if not isinstance(result, ToolResult):
+        result = await self.read_raw(path, **kwargs)
+        if not isinstance(result, ToolResult) or not result.content_blocks:
             return result
         if await _current_agent_accepts_images():
             return result
         return _vision_tool_hint(path, Path(path).name, "image")
+
+    async def read_raw(self, path: str, **kwargs: Any) -> str | ToolResult:
+        """读取原始文件结果；实际模型投影由调用者决定。"""
+        bridge = self._get_bridge()
+        if bridge is not None:
+            return await bridge.execute_file_tool(
+                self.name, allowed_dir=self._allowed_dir, arguments={"path": path, **kwargs},
+            )
+        return self.read_from_disk(path, **kwargs)
 
     def read_from_disk(self, path: str, **kwargs: Any) -> str | ToolResult:
         """Read host bytes without applying the current Turn model projection."""
@@ -304,9 +324,9 @@ class ReadFileTool(Tool):
         try:
             file_path = _resolve_read_path(path, self._allowed_dir)
             if not file_path.exists():
-                return f"错误：文件不存在：{path}"
+                return ToolResult(text=f"错误：文件不存在：{path}", is_error=True)
             if not file_path.is_file():
-                return f"错误：路径不是文件：{path}"
+                return ToolResult(text=f"错误：路径不是文件：{path}", is_error=True)
 
             with builtins.open(file_path, "rb") as fh:
                 head = fh.read(_READ_PROBE_BYTES)
@@ -315,11 +335,12 @@ class ReadFileTool(Tool):
                 try:
                     return _read_image(file_path)
                 except ValueError as error:
-                    return f"图片处理失败：{error}"
+                    return ToolResult(text=f"图片处理失败：{error}", is_error=True)
             if _looks_binary(head):
-                return (
-                    f"错误：{path} 看起来是二进制文件，read_file 仅适合文本和图片。"
-                    "建议改用 shell 搭配 file/xxd/strings 查看。"
+                return ToolResult(
+                    text=f"错误：{path} 看起来是二进制文件，read_file 仅适合文本和图片。"
+                    "建议改用 shell 搭配 file/xxd/strings 查看。",
+                    is_error=True,
                 )
 
             sliced, total_lines, total_bytes, had_decode_errors = _scan_text_file(
@@ -370,9 +391,9 @@ class ReadFileTool(Tool):
 
             return text + suffix_note
         except PermissionError as e:
-            return f"错误：{e}"
+            return ToolResult(text=f"错误：{e}", is_error=True)
         except OSError as e:
-            return f"读取文件失败：{e}"
+            return ToolResult(text=f"读取文件失败：{e}", is_error=True)
 
 
 async def _current_agent_accepts_images() -> bool:
@@ -396,12 +417,8 @@ def _vision_tool_hint(path: str, name: str, image_mime: str) -> str:
     )
 
 
-class WriteFileTool(Tool):
+class WriteFileTool(_FileTool):
     """将内容写入文件，自动创建所需的父目录。"""
-
-    def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
-        self._allowed_dir = allowed_dir
-        self._bridge = _build_file_bridge(enable_bridge)
 
     @property
     def name(self) -> str:
@@ -429,38 +446,33 @@ class WriteFileTool(Tool):
             "required": ["path", "content"],
         }
 
-    async def execute(self, path: str, content: str, **kwargs: Any) -> str:
-        if self._bridge is not None:
-            result = await self._bridge.execute_file_tool(
+    async def execute(self, path: str, content: str, **kwargs: Any) -> str | ToolResult:
+        bridge = self._get_bridge()
+        if bridge is not None:
+            result = await bridge.execute_file_tool(
                 self.name,
                 allowed_dir=self._allowed_dir,
                 arguments={"path": path, "content": content, **kwargs},
             )
-            if not isinstance(result, str):
-                raise TypeError("write_file bridge 必须返回文本")
             return result
         try:
             file_path = _resolve_path(path, self._allowed_dir)
 
-            async def _write() -> str:
+            async def _write() -> str | ToolResult:
                 if file_path.exists() and file_path.is_dir():
-                    return f"写入文件失败：目标路径是目录：{path}"
+                    return ToolResult(text=f"写入文件失败：目标路径是目录：{path}", is_error=True)
                 atomic_write_text(file_path, content, domain="filesystem")
                 return f"已写入 {len(content)} 字节到 {path}"
 
             return await _run_with_file_mutation_lock(file_path, _write)
         except PermissionError as e:
-            return f"错误：{e}"
+            return ToolResult(text=f"错误：{e}", is_error=True)
         except OSError as e:
-            return f"写入文件失败：{e}"
+            return ToolResult(text=f"写入文件失败：{e}", is_error=True)
 
 
-class EditFileTool(Tool):
+class EditFileTool(_FileTool):
     """精确替换文件中的指定文本片段。"""
-
-    def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
-        self._allowed_dir = allowed_dir
-        self._bridge = _build_file_bridge(enable_bridge)
 
     @property
     def name(self) -> str:
@@ -501,10 +513,11 @@ class EditFileTool(Tool):
 
     async def execute(
         self, path: str, old_text: str, new_text: str, **kwargs: Any
-    ) -> str:
+    ) -> str | ToolResult:
         replace_all: bool = bool(kwargs.get("replace_all", False))
-        if self._bridge is not None:
-            result = await self._bridge.execute_file_tool(
+        bridge = self._get_bridge()
+        if bridge is not None:
+            result = await bridge.execute_file_tool(
                 self.name,
                 allowed_dir=self._allowed_dir,
                 arguments={
@@ -514,17 +527,15 @@ class EditFileTool(Tool):
                     **kwargs,
                 },
             )
-            if not isinstance(result, str):
-                raise TypeError("edit_file bridge 必须返回文本")
             return result
         try:
             file_path = _resolve_path(path, self._allowed_dir)
 
-            async def _edit() -> str:
+            async def _edit() -> str | ToolResult:
                 if not file_path.exists():
-                    return f"错误：文件不存在：{path}"
+                    return ToolResult(text=f"错误：文件不存在：{path}", is_error=True)
                 if not file_path.is_file():
-                    return f"错误：路径不是文件：{path}"
+                    return ToolResult(text=f"错误：路径不是文件：{path}", is_error=True)
 
                 raw_content = file_path.read_bytes().decode("utf-8")
                 content, has_bom = _strip_utf8_bom(raw_content)
@@ -538,11 +549,11 @@ class EditFileTool(Tool):
                         replacement_text = new_text.replace("\n", "\r\n")
 
                 if matched_old_text not in content:
-                    return "错误：未找到 old_text，请确保与文件内容完全一致。"
+                    return ToolResult(text="错误：未找到 old_text，请确保与文件内容完全一致。", is_error=True)
 
                 count = content.count(matched_old_text)
                 if count > 1 and not replace_all:
-                    return f"警告：old_text 在文件中出现了 {count} 次。如需全部替换，设 replace_all=true；如需精确定位，请在 old_text 中包含更多上下文。"
+                    return ToolResult(text=f"警告：old_text 在文件中出现了 {count} 次。如需全部替换，设 replace_all=true；如需精确定位，请在 old_text 中包含更多上下文。", is_error=True)
 
                 new_content = (
                     content.replace(matched_old_text, replacement_text)
@@ -562,17 +573,13 @@ class EditFileTool(Tool):
 
             return await _run_with_file_mutation_lock(file_path, _edit)
         except PermissionError as e:
-            return f"错误：{e}"
-        except OSError as e:
-            return f"编辑文件失败：{e}"
+            return ToolResult(text=f"错误：{e}", is_error=True)
+        except (OSError, UnicodeDecodeError) as e:
+            return ToolResult(text=f"编辑文件失败：{e}", is_error=True)
 
 
-class ListDirTool(Tool):
+class ListDirTool(_FileTool):
     """列举目录内容。"""
-
-    def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
-        self._allowed_dir = allowed_dir
-        self._bridge = _build_file_bridge(enable_bridge)
 
     @property
     def name(self) -> str:
@@ -592,22 +599,21 @@ class ListDirTool(Tool):
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
-        if self._bridge is not None:
-            result = await self._bridge.execute_file_tool(
+    async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
+        bridge = self._get_bridge()
+        if bridge is not None:
+            result = await bridge.execute_file_tool(
                 self.name,
                 allowed_dir=self._allowed_dir,
                 arguments={"path": path, **kwargs},
             )
-            if not isinstance(result, str):
-                raise TypeError("list_dir bridge 必须返回文本")
             return result
         try:
             dir_path = _resolve_path(path, self._allowed_dir)
             if not dir_path.exists():
-                return f"错误：目录不存在：{path}"
+                return ToolResult(text=f"错误：目录不存在：{path}", is_error=True)
             if not dir_path.is_dir():
-                return f"错误：路径不是目录：{path}"
+                return ToolResult(text=f"错误：路径不是目录：{path}", is_error=True)
 
             items: list[str] = []
             for item in sorted(dir_path.iterdir()):
@@ -619,12 +625,12 @@ class ListDirTool(Tool):
 
             return "\n".join(items)
         except PermissionError as e:
-            return f"错误：{e}"
+            return ToolResult(text=f"错误：{e}", is_error=True)
         except OSError as e:
-            return f"列举目录失败：{e}"
+            return ToolResult(text=f"列举目录失败：{e}", is_error=True)
 
 
-def _build_file_bridge(enable_bridge: bool) -> Any:
+def _build_file_bridge(enable_bridge: bool) -> HostBridgeShellProcessManager | None:
     if not enable_bridge:
         return None
     from agent.host_bridge.factory import build_file_bridge

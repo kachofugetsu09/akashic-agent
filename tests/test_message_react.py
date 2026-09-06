@@ -1,5 +1,5 @@
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,7 +26,7 @@ from session.message import Input, Output, ContentPart, ToolResult, CallRef, Con
 
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
-                  reducer=None, material_source=None, estimate=None):
+                  reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset()):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
@@ -76,6 +76,9 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         def bind(self, name):
             assert name == "example"
             return "tool"
+        def name(self, binding):
+            assert binding == "tool"
+            return "example"
         async def execute(self, ref):
             return await execution.execute_call(MessageReply(
                 "result:" + ref.message_id + ":" + str(ref.part_index), ref,
@@ -96,9 +99,10 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         output = writer(Output)
         assert output.source == source
         task.on_close(output.expire)
-        return await react(reader, output, model=model, context=ContextBuilder(),
-                           projection=projection, materials=materials, content=Content(), tools=Menu(task),
-                           max_output_tokens=100, max_steps=max_steps, reduce=reducer)
+        with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
+            return await react(reader, output, model=model, context=ContextBuilder(),
+                               projection=projection, materials=materials, content=Content(), tools=Menu(task),
+                               max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools)
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
     try:
@@ -390,3 +394,66 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
         assert prepared_count == 1
         assert len(requests) == (2 if case in {"provider", "second_overflow"} else 1)
         assert reductions == ([True] if case == "local" else [False] if case == "soft" else [False, True])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "denied", "error", "unknown"])
+async def test_terminal_tool_closes_only_after_real_success_and_before_step_limit(tmp_path, outcome):
+    calls = 0
+    effects = []
+    async def complete(request):
+        nonlocal calls
+        calls += 1
+        return LLMResponse(None, [ModelToolCall("first", "example", {"index": 1}),
+                                  ModelToolCall("second", "example", {"index": 2})])
+    async def invoke(key, arguments):
+        effects.append(arguments["index"])
+        return Result(outcome, (ContentPart("text", outcome),))
+    async with runtime(tmp_path, complete, invoke, max_steps=1,
+                       terminal_tools=frozenset({"example"})) as (conversation, log, store, run):
+        await conversation.accept("u1", Input(()))
+        task = await conversation.start(run)
+        if outcome == "success":
+            result = await task.join()
+            assert result.body == Output((), "quiet")
+            assert effects == [1, 2]
+            # 旧段的终结回执不能替新的 Input 关闭工作。
+            await conversation.accept("u2", Input(()))
+            await (await conversation.start(run)).join()
+            assert calls == 2 and effects == [1, 2, 1, 2]
+        else:
+            with pytest.raises(UnknownToolEffect if outcome == "unknown" else StepLimit):
+                await task.join()
+            assert not any(isinstance(m.body, Output) and m.body.finish == "quiet" for m in log.reader("s").snapshot())
+            assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_tool_recovery_adds_only_missing_quiet_message(tmp_path, monkeypatch):
+    from session.log import MessageWriter
+    calls = 0
+    effects = 0
+    async def complete(request):
+        nonlocal calls
+        calls += 1
+        return LLMResponse(None, [ModelToolCall("final", "example", {})])
+    async def invoke(key, arguments):
+        nonlocal effects
+        effects += 1
+        return Result("success", ())
+    append = MessageWriter.append
+    def fail_quiet(writer, identity, body, **kwargs):
+        if isinstance(body, Output) and body.finish == "quiet":
+            raise OSError("crash before quiet")
+        return append(writer, identity, body, **kwargs)
+    async with runtime(tmp_path, complete, invoke, max_steps=1,
+                       terminal_tools=frozenset({"example"})) as (conversation, log, store, run):
+        await conversation.accept("u1", Input(()))
+        with monkeypatch.context() as patch:
+            patch.setattr(MessageWriter, "append", fail_quiet)
+            with pytest.raises(OSError, match="before quiet"):
+                await (await conversation.start(run)).join()
+        await conversation.resume("retry", "u1")
+        result = await (await conversation.start(run)).join()
+        assert result.body == Output((), "quiet")
+        assert calls == effects == 1

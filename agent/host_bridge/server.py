@@ -404,7 +404,7 @@ class HostBridgeService:
         tool = tool_type(allowed_dir=allowed_dir, enable_bridge=False)
         async with self._manager_operation(payload):
             if isinstance(tool, ReadFileTool):
-                result = tool.read_from_disk(**arguments)
+                result = await tool.read_raw(**arguments)
             else:
                 result = await tool.execute(**arguments)
 
@@ -413,6 +413,7 @@ class HostBridgeService:
             return {
                 "resultType": "toolResult",
                 "text": result.text,
+                "isError": result.is_error,
                 "contentBlocks": result.content_blocks,
                 "mobileAttention": result.mobile_attention,
             }

@@ -1,32 +1,5 @@
-import type { AgentBlock, ChatMessage, MessageAttachment, ThinkingBlock, ToolBlock } from "./chat-message";
-import type { MessageRow, SessionRow, UploadedFile } from "./web-chat-data";
-
-export function rowToMessage(row: MessageRow): ChatMessage {
-  return {
-    id: String(row.id),
-    role: row.role,
-    content: row.content,
-    attachments: mergeAttachments(mediaToAttachments(row.media), mediaToAttachments(row.attachments)),
-    blocks: row.role === "assistant" ? rowBlocks(row) : [],
-    durationMs: numberValue(row.turn_duration_ms),
-    createdAt: row.timestamp,
-    canonical: true,
-    controlTurnId: typeof row.extra?.control_turn_id === "string"
-      ? row.extra.control_turn_id
-      : undefined,
-    reply: row.reply_to_message_id && row.reply_role && row.reply_preview !== undefined
-      ? {
-        messageId: row.reply_to_message_id,
-        role: row.reply_role,
-        preview: row.reply_preview,
-      }
-      : undefined,
-  };
-}
-
-export function isVisibleChatRow(row: MessageRow): boolean {
-  return !(row.role === "user" && row.content.startsWith("[后台任务完成]"));
-}
+import type { AgentBlock, MessageAttachment, ThinkingBlock } from "./chat-message";
+import type { SessionRow, UploadedFile } from "./web-chat-data";
 
 export function uploadedFileToAttachment(file: UploadedFile): MessageAttachment {
   const filename = file.filename || "附件";
@@ -103,67 +76,6 @@ export function formatNavigationTime(value: string | undefined): string | undefi
   if (!value) return undefined;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : navigationTimeFormatter.format(date);
-}
-
-function rowBlocks(row: MessageRow): AgentBlock[] {
-  const blocks = toolChainToBlocks(row.tool_chain);
-  const finalThinking = stringValue(row.reasoning_content);
-  if (finalThinking) blocks.push({ kind: "thinking", content: finalThinking });
-  return blocks;
-}
-
-function toolChainToBlocks(toolChain: unknown): AgentBlock[] {
-  if (!Array.isArray(toolChain)) return [];
-  const blocks: AgentBlock[] = [];
-  toolChain.forEach((item, groupIndex) => {
-    const group = recordValue(item);
-    if (!group) return;
-    const thinking = stringValue(group.reasoning_content) || stringValue(group.text);
-    if (thinking) blocks.push({ kind: "thinking", content: thinking });
-    const calls = Array.isArray(group.calls) ? group.calls : [];
-    calls.forEach((call, callIndex) => {
-      const block = toolCallToBlock(call, groupIndex, callIndex);
-      if (block) blocks.push(block);
-    });
-  });
-  return blocks;
-}
-
-function toolCallToBlock(call: unknown, groupIndex: number, callIndex: number): ToolBlock | null {
-  const item = recordValue(call);
-  if (!item) return null;
-  const name = stringValue(item.name);
-  if (!name) return null;
-  const rawStatus = stringValue(item.status);
-  const status = !rawStatus || rawStatus === "success" ? "output-available" : "output-error";
-  return {
-    kind: "tool",
-    callId: stringValue(item.call_id) || `${groupIndex}-${callIndex}-${name}`,
-    name,
-    status,
-    input: item.final_arguments ?? item.arguments,
-    output: item.result,
-    errorText: status === "output-error" ? stringValue(item.result) : undefined,
-  };
-}
-
-function recordValue(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function numberValue(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
 }
 
 function mediaUrl(path: string): string {

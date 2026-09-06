@@ -44,8 +44,8 @@ keyset_manifest = "data/mobile/keys/current.json"
 # toolsets = ["meta_common"]
 
 # =============================================================================
-# 必填：至少配置一个频道（Telegram 或 QQ 选其一）
-# token / bot_uin 为空时该频道自动跳过，不会报错。
+# 可选原生收件；默认 Web 已可使用。
+# token / bot_uin 为空时跳过；启用后须配置下面的同名 Sender。
 # =============================================================================
 
 [channels.telegram]
@@ -78,3 +78,15 @@ ingress_queue_size = 128
 outbound_queue_size = 512
 
 # 插件配置位于 <workspace>/plugin-data/<插件名>-<市场>/config.local.toml。
+
+# Telegram 出站另在 <workspace>/plugin-data/telegram_sender-builtin/config.local.toml 配置：
+# enabled = true
+# channel = "telegram"  # 必须与上面的 channel_name 一致
+# token = "BotFather token"
+# token 由凭据 owner 读取，代码归档只保存引用；修改后旧待发记录不会借用新凭据。
+#
+# QQ 出站另在 <workspace>/plugin-data/qq_sender-builtin/config.local.toml 配置：
+# enabled = true
+# channel = "qq"
+# endpoint = "ws://127.0.0.1:3001/api"  # OneBot 实际 API 地址
+# token = "OneBot access token"  # 无认证时省略

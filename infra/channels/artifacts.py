@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from agent.media import detect_supported_image_mime
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
-from session.store import AttachmentArtifactRecord, SessionStore
+from session.artifact_store import AttachmentArtifactRecord, ArtifactStore
 
 
 T = TypeVar("T")
@@ -118,7 +118,7 @@ class ChannelAttachmentArtifactStore:
         self,
         *,
         workspace: Path,
-        session_store: SessionStore,
+        metadata_store: ArtifactStore,
         max_import_bytes: int = 50 * 1024 * 1024,
     ) -> None:
         if isinstance(max_import_bytes, bool) or not isinstance(max_import_bytes, int):
@@ -126,7 +126,7 @@ class ChannelAttachmentArtifactStore:
         if max_import_bytes < 1:
             raise ValueError("max_import_bytes 必须是正整数")
         self._workspace = workspace
-        self._session_store = session_store
+        self._metadata_store = metadata_store
         self._max_import_bytes = max_import_bytes
         self._publish_locks = tuple(threading.Lock() for _ in range(64))
 
@@ -254,10 +254,10 @@ class ChannelAttachmentArtifactStore:
 
         if not isinstance(ref, AttachmentRef):
             raise TypeError("ref 必须是 AttachmentRef")
-        record = self._session_store.get_attachment(ref.artifact_id)
-        if record is None or record.state != "ready":
+        record = self._metadata_store.get_attachment(ref.artifact_id)
+        if record is None:
             raise ValueError(f"attachment 尚未发布: {ref.artifact_id}")
-        canonical = self._ref_from_record(record)
+        canonical = record.ref
         if canonical != ref:
             raise ValueError(f"attachment ref 与权威 metadata 不一致: {ref.artifact_id}")
         fd, cancelled = await _complete_critical(
@@ -279,10 +279,10 @@ class ChannelAttachmentArtifactStore:
 
         refs: list[AttachmentRef] = []
         for artifact_id in artifact_ids:
-            record = self._session_store.get_attachment(artifact_id)
-            if record is None or record.state != "ready":
+            record = self._metadata_store.get_attachment(artifact_id)
+            if record is None:
                 raise ValueError(f"attachment 尚未发布: {artifact_id}")
-            refs.append(self._ref_from_record(record))
+            refs.append(record.ref)
         return tuple(refs)
 
     def audit_orphan_artifact_ids(self) -> tuple[str, ...]:
@@ -296,7 +296,7 @@ class ChannelAttachmentArtifactStore:
             if path.name.startswith(".") or path.suffix != ".bin":
                 continue
             artifact_id = path.stem
-            if self._session_store.get_attachment(artifact_id) is None:
+            if self._metadata_store.get_attachment(artifact_id) is None:
                 orphans.append(artifact_id)
         return tuple(orphans)
 
@@ -305,15 +305,15 @@ class ChannelAttachmentArtifactStore:
     ) -> AttachmentFilesystemIntegrityReport:
         """逐个 nofollow/read/hash 所有 ready artifact，并报告非终态 owner。"""
 
-        database_report = self._session_store.validate_attachment_metadata_integrity()
-        records = self._session_store.list_attachments()
+        database_report = self._metadata_store.validate_attachment_metadata_integrity()
+        records = self._metadata_store.list_attachments()
         verified_bytes = 0
         for record in records:
             fd, cancelled = await _complete_critical(
                 asyncio.to_thread(self._open_verified, record)
             )
             try:
-                verified_bytes += record.size_bytes
+                verified_bytes += record.ref.size_bytes
             finally:
                 os.close(fd)
             if cancelled:
@@ -468,7 +468,7 @@ class ChannelAttachmentArtifactStore:
         intent_started = False
         published = False
         try:
-            intent = self._session_store.begin_attachment_import(
+            intent = self._metadata_store.begin_attachment_import(
                 artifact_id=ref.artifact_id,
                 storage_key=storage_key,
                 expected_size_bytes=ref.size_bytes,
@@ -487,7 +487,7 @@ class ChannelAttachmentArtifactStore:
                 )
             if final.exists() or final.is_symlink():
                 self._verify_unregistered_file(final, ref)
-                self._session_store.mark_attachment_import_file_published(
+                self._metadata_store.mark_attachment_import_file_published(
                     ref.artifact_id,
                     updated_at=datetime.now(UTC).isoformat(),
                 )
@@ -518,7 +518,7 @@ class ChannelAttachmentArtifactStore:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-            self._session_store.mark_attachment_import_file_published(
+            self._metadata_store.mark_attachment_import_file_published(
                 ref.artifact_id,
                 updated_at=datetime.now(UTC).isoformat(),
             )
@@ -529,7 +529,7 @@ class ChannelAttachmentArtifactStore:
             failures: list[BaseException] = [exc]
             if intent_started:
                 try:
-                    self._session_store.record_attachment_import_error(
+                    self._metadata_store.record_attachment_import_error(
                         ref.artifact_id,
                         error=f"{type(exc).__name__}: {exc}",
                         updated_at=datetime.now(UTC).isoformat(),
@@ -557,27 +557,22 @@ class ChannelAttachmentArtifactStore:
     def _register_ready(self, ref: AttachmentRef, storage_key: str) -> AttachmentRef:
         """把已验证的 published bytes 提交为唯一 ready artifact。"""
 
-        record = self._session_store.register_ready_attachment(
-            artifact_id=ref.artifact_id,
+        record = self._metadata_store.register_ready_attachment(
+            ref=ref,
             storage_key=storage_key,
-            kind=ref.kind.value,
-            filename=ref.filename,
-            media_type=ref.media_type,
-            size_bytes=ref.size_bytes,
-            sha256=ref.sha256,
             created_at=datetime.now(UTC).isoformat(),
         )
-        return self._ref_from_record(record)
+        return record.ref
 
     def _require_existing_ready(self, ref: AttachmentRef) -> AttachmentRef:
         """验证幂等重试命中的 ready row、metadata 与物理 bytes。"""
 
-        record = self._session_store.get_attachment(ref.artifact_id)
-        if record is None or record.state != "ready":
+        record = self._metadata_store.get_attachment(ref.artifact_id)
+        if record is None:
             raise RuntimeError(
                 f"attachment committed intent 缺少 ready row: {ref.artifact_id}"
             )
-        canonical = self._ref_from_record(record)
+        canonical = record.ref
         if canonical != ref:
             raise RuntimeError(f"attachment ready identity 已漂移: {ref.artifact_id}")
         fd = self._open_verified(record)
@@ -704,23 +699,23 @@ class ChannelAttachmentArtifactStore:
         path = self._workspace.resolve() / Path(record.storage_key)
         resolved_parent = path.parent.resolve(strict=True)
         if resolved_parent != root:
-            raise ValueError(f"attachment storage path 越过 artifact root: {record.artifact_id}")
+            raise ValueError(f"attachment storage path 越过 artifact root: {record.ref.artifact_id}")
         flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
         fd = os.open(path, flags)
         try:
             file_stat = os.fstat(fd)
             if not stat.S_ISREG(file_stat.st_mode):
-                raise ValueError(f"attachment 不是 regular file: {record.artifact_id}")
-            if file_stat.st_size != record.size_bytes:
-                raise ValueError(f"attachment size 已漂移: {record.artifact_id}")
+                raise ValueError(f"attachment 不是 regular file: {record.ref.artifact_id}")
+            if file_stat.st_size != record.ref.size_bytes:
+                raise ValueError(f"attachment size 已漂移: {record.ref.artifact_id}")
             digest = hashlib.sha256()
             while True:
                 chunk = os.read(fd, 1024 * 1024)
                 if not chunk:
                     break
                 digest.update(chunk)
-            if digest.hexdigest() != record.sha256:
-                raise ValueError(f"attachment hash 已漂移: {record.artifact_id}")
+            if digest.hexdigest() != record.ref.sha256:
+                raise ValueError(f"attachment hash 已漂移: {record.ref.artifact_id}")
             os.lseek(fd, 0, os.SEEK_SET)
             return fd
         except BaseException:
@@ -751,16 +746,6 @@ class ChannelAttachmentArtifactStore:
             raise ValueError("attachment root 越过 workspace")
         return root
 
-    @staticmethod
-    def _ref_from_record(record: AttachmentArtifactRecord) -> AttachmentRef:
-        return AttachmentRef(
-            artifact_id=record.artifact_id,
-            kind=AttachmentKind(record.kind),
-            filename=record.filename,
-            media_type=record.media_type,
-            size_bytes=record.size_bytes,
-            sha256=record.sha256,
-        )
 
 
 __all__ = [

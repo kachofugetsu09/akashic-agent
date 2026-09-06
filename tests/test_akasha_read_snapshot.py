@@ -55,3 +55,26 @@ async def test_read_snapshot_missing_graph_never_creates_formal_storage(tmp_path
                 pytest.fail("missing graph was presented as a valid snapshot")
         assert not missing.exists()
         assert not missing.with_suffix(".db.lock").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_initial_material_snapshot_uses_original_cutover_and_rejects_lost_graph(tmp_path, legacy):
+    async with memory_runtime(tmp_path) as (runtime, consumer, log, records, calls, write):
+        write("existing", "already admitted before initialization")
+        missing, index = tmp_path / "initial.db", tmp_path / "old-index.db"
+        if legacy:
+            index.write_bytes(b"existing legacy evidence")
+            with pytest.raises(ValueError, match="旧索引仍存在"):
+                async with read_memory(missing, legacy_index=index, catalog=log.catalog(),
+                    embeddings=runtime._embeddings, bindings=runtime._bindings, config=MemoryConfig(),
+                    allow_initial=True):
+                    pytest.fail("missing legacy graph was accepted")
+        else:
+            async with read_memory(missing, legacy_index=index, catalog=log.catalog(),
+                embeddings=runtime._embeddings, bindings=runtime._bindings, config=MemoryConfig(),
+                allow_initial=True) as (cycle, state):
+                assert cycle.state_version == 0
+                assert state.cutover_heads == tuple(sorted(log.catalog().snapshot_heads().items()))
+        assert not missing.exists()
+        assert not missing.with_suffix(".db.lock").exists()

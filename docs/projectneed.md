@@ -715,7 +715,7 @@ Core 只负责通用传输、认证、revision、generation lease、调度、取
 
 普通请求只租用已验证的 stable；latest 仍是 Core 内部候选，但只由发起 install 的 parent turn 所创建的 attached programmatic child 因果继承。父 turn 保持旧 stable；detached child、其他 turn 和没有匹配 generation/source identity 的请求不得取得候选。Agent 不手工选择 latest 或调用 promote/discard。
 
-install 成功只表示候选可验证。至少一个匹配当前候选的 attached child 正常完成、没有 revert 且 parent 正常结束时，Core 才在 lease 释放后自动提交；无验证、child/parent 非正常终结或身份漂移必须丢弃。Core 只检查 child 的因果归属、generation/source identity 和正常终态，不要求某类插件、Tool 或 Skill 提供特制证明；parent 负责判断本次检查是否满足业务目标，检查失败必须在 parent terminal 前执行 `plugin-revert`。独占 managed service 使用 Core 分配的隔离端口和 plugin-data 副本；插件必须声明并读取 `validation_port_env`，否则 fail-loud。Channel 正式 ownership 只在 turn 后切换。cache artifact 按 source revision/tree digest 不可变保存，旧代码保留到提交、readiness、恢复检查和 lease 排空完成。
+install 成功只表示候选可验证。至少一个匹配当前候选的 attached child 正常完成、没有 revert 且 parent 正常结束时，Core 才在 lease 释放后自动提交；无验证、child/parent 非正常终结或身份漂移必须丢弃。Core 只检查 child 的因果归属、generation/source identity 和正常终态，不要求某类插件、Tool 或 Skill 提供特制证明；parent 负责判断本次检查是否满足业务目标，检查失败必须在 parent terminal 前执行 `plugin-revert`。独占 managed service 使用 Core 分配的隔离端口和 plugin-data 副本；插件必须声明并读取 `validation_port_env`，否则 fail-loud。Channel 正式 ownership 只在 turn 后切换。cache artifact 按 source revision/tree digest 不可变保存，旧代码保留到提交、readiness、恢复检查和 lease 排空完成。 更新中进程死亡时，下次启动先恢复更新前的指针与受影响插件的启用状态，再按旧版启动；已明确提交成功则保留新版。不自动续跑安装、重建候选或继续验证，详见 [0056](decisions/0056-plugin-update-crashes-return-to-stable.md)。
 
 外部 operator 已经独立承担信任判断时，可以在 Supervisor 与 Runtime 均停止后使用名称明确的 trusted batch 入口，把完整 commit SHA 指向的 pure-v3 artifact 直接发布为 stable/latest。Runtime 消费 plugin-home 的整个生命周期都必须独占该 home 的 publication lock；trusted batch 必须先取得 supervisor/runtime 两把 workspace 生命周期锁，再取得同一 publication lock，拒绝 active turn、分支 ref、未知 batch 字段和非 v3 static manifest。回执必须写明 `programmaticValidation=bypassed_by_operator_trust`，不得伪造行为验证成功。在线安装、Agent 自改进和普通 `plugin-install` 继续无例外地走 candidate + attached programmatic child。
 
@@ -833,7 +833,9 @@ add、cancel 和 reschedule 先构造 candidate，持久化成功后才替换内
 
 ### SCH-003 Soft 调度任务是无状态原子执行
 
-每次 soft job 只使用当前 prompt、系统能力和工具完成一次独立推理，不读取同一 job 的历史窗口，不把内部 user 或 assistant attempt 写入会话历史，也不把内部 attempt 事件发布到目标 channel。每次 schedule fire 拥有一个独立 outbound Turn；目标 channel 只负责调度时的 busy admission 与最终发送，assistant 明确送达即关闭该 Turn。推理成功且结果非空时只产生一次外部推送，失败或空结果不得伪装成已送达。
+每次 soft job 只使用当前 prompt、系统能力和工具完成一次独立 ReAct，不读取同一 job 的旧触发历史。每次触发使用独立的内部 Session，追加恢复所需的 Input、Output、ToolCall 和 ToolResult；这些消息不进入目标聊天的历史、自动投递或记忆学习。完整执行事实遵守消息只追加与工具效果恢复合同，不按任务结束自动删除。
+
+目标 channel 负责忙碌时的准入与最终发送；推理成功且结果非空时，来源只向目标聊天追加一条最终通知并独立投递。回复完成、实际送达和 job 结算分别依据各自事实，失败、空结果或未知效果不得伪装成已送达。重启先恢复同一次触发的原消息、工具与发送回执，不能重新执行已完成的工作。
 
 ### PRO-001 主动流程的空、跳过和失败可区分
 
@@ -976,6 +978,10 @@ Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。
 ### SEC-007 Shell 与 Subagent 准入有界
 
 Shell 的 retained log、同步 subagent 和后台 subagent 共享真实 admission owner。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。单人本地 Companion 的 MessageBus 不设置独立全局容量拒绝；它只保持 lane 顺序，Mobile 的崩溃恢复由持久 handoff owner 保证。
+
+### SEC-011 Subagent 与 Wake 的内部消息可恢复
+
+Subagent 与 Wake 每次独立工作保留完整输入、输出、工具调用、工具结果和恢复回执。内部 Session 默认不列入聊天目录，不自动投递内部正文，不进入记忆学习；最终回传或通知仍按来源原有业务路径处理。消息和业务恢复材料没有自动删除协议，代码升级不得回填猜测的历史消息或自动重跑旧执行记录。用户取消只撤销新决策，已开始的工具和发送必须如实结算。 Subagent 是主 Agent 调用的工具：同步调用返回结果，异步调用先返回接纳回执，完成后由主 Agent 读取结果并回复用户。内部结果不冒充新的用户输入，异步回执不冒充任务结果。
 
 ### SEC-008 Control replay 是临时投影
 

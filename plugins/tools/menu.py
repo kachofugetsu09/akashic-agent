@@ -18,7 +18,10 @@ def check_menu(catalog: ToolCatalog, names: Sequence[str]) -> None:
     descriptions = {cast(str, item["name"]): item for item in catalog.descriptions()}
     if set(names) - descriptions.keys():
         raise ValueError("回复配置包含未安装的工具")
-    selected = [descriptions[name] for name in names]
+    _check_discovery([descriptions[name] for name in names])
+
+
+def _check_discovery(selected: Sequence[Mapping[str, object]]) -> None:
     if any(item["requires_search"] for item in selected) and not any(item["discovery"] for item in selected):
         raise ValueError("要求搜索解锁的工具缺少发现能力")
 
@@ -30,11 +33,26 @@ class ToolMenu:
         self, catalog: ToolCatalog, bindings: Bindings, execution: ToolExecution,
         reply: Callable[[CallRef], MessageReply], *, names: Sequence[str],
         reader: MessageReader, source: str, limit: int = 8,
+        fixed_bindings: Mapping[str, str] | None = None,
     ):
         if limit < 1:
             raise ValueError("工具菜单容量必须为正数")
-        check_menu(catalog, names)
-        descriptions = {cast(str, item["name"]): item for item in catalog.descriptions()}
+        fixed: dict[str, str] = {} if fixed_bindings is None else dict(fixed_bindings)
+        if fixed_bindings is None:
+            check_menu(catalog, names)
+            descriptions = {cast(str, item["name"]): item for item in catalog.descriptions()}
+        else:
+            if set(fixed) != set(names):
+                raise ValueError("固定工具集合必须完整对应允许目录")
+            descriptions: dict[str, Mapping[str, object]] = {}
+            for name, identity in fixed.items():
+                if not isinstance(identity, str) or not identity:
+                    raise ValueError("固定工具缺少 binding ID")
+                description = cast(Mapping[str, object], bindings.describe(identity, TOOLS)["tool"])
+                if description["name"] != name:
+                    raise ValueError("固定工具名称与 binding 不一致")
+                descriptions[name] = description
+            _check_discovery(tuple(descriptions.values()))
         self._allowed: dict[str, Mapping[str, object]] = {name: descriptions[name] for name in names}
         self._catalog = catalog
         self._bindings = bindings
@@ -43,13 +61,14 @@ class ToolMenu:
         self._reader = reader
         self._source = source
         self._limit = limit
-        self._bound: dict[str, str] = {}
+        self._fixed = fixed_bindings is not None
+        self._bound: dict[str, str] = fixed
         self._selected: dict[str, str] = {}
         discovery = [name for name, item in self._allowed.items() if item["discovery"]]
         self._discovery = bool(discovery)
 
         # 1. 发现工具只捕获普通候选，候选不复制目录也不递归绑定发现工具。
-        if discovery:
+        if discovery and not self._fixed:
             rows: dict[str, Mapping[str, object]] = {
                 name: {"binding_id": self._bind_current(name), "tool": item}
                 for name, item in self._allowed.items() if not item["discovery"]
@@ -57,9 +76,17 @@ class ToolMenu:
             candidates = cast(Mapping[str, Mapping[str, object]], freeze_json(rows))
             for name in discovery:
                 self._bound[name] = catalog.bind(name, bindings, candidates=candidates)
+        elif discovery:
+            expected: dict[str, Mapping[str, object]] = {name: {"binding_id": fixed[name], "tool": item}
+                        for name, item in self._allowed.items() if not item["discovery"]}
+            for name in discovery:
+                if bindings.describe(fixed[name], TOOLS)["candidates"] != expected:
+                    raise ValueError("固定发现工具的候选与允许目录不一致")
 
     def _bind_current(self, name: str) -> str:
         if name not in self._bound:
+            if self._fixed:
+                raise PermissionError("工具不属于固定目录")
             self._bound[name] = self._catalog.bind(name, self._bindings)
         return self._bound[name]
 
@@ -67,7 +94,7 @@ class ToolMenu:
         return cast(Mapping[str, object], self._bindings.describe(binding_id, TOOLS)["tool"])
 
     def _refresh(self) -> None:
-        """预载使用当前目录；未闭合工作中的显式选择保留原 binding。"""
+        """预载使用已选目录；未闭合工作中的显式选择保留原 binding。"""
         messages = [m for m in self._reader.snapshot() if m.source == self._source]
         recent: dict[str, str] = {}
         boundary = -1
@@ -86,6 +113,8 @@ class ToolMenu:
                     if not isinstance(part, ToolCall):
                         continue
                     name = self.name(part.binding_id)
+                    if self._fixed and message.seq > boundary and self._bound.get(name) != part.binding_id:
+                        raise PermissionError("未闭合调用不属于固定工具集合")
                     item = self._allowed.get(name)
                     if item is None or item["discovery"]:
                         continue

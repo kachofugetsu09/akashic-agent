@@ -56,15 +56,20 @@ from bus.event_bus import EventBus
 from bus.events import (
     ChannelMessage,
 )
-from bootstrap.channel_attachment_import import (
+from infra.channels.attachment_import import (
     ChannelOutboundAttachmentImporter,
     import_channel_attachments,
 )
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.net.http import SharedHttpResources
+from session.artifact_store import ArtifactStore
 from session.activity import PresenceStore
 from session.manager import SessionManager
+from session.log import MessageLog
+from session.admissions import SessionAdmissions
+from session.identities import ChannelIdentities
+from session.inbound_store import InboundHandoffStore
 
 
 async def _noop_async() -> None:
@@ -352,231 +357,80 @@ async def _dispatch_v3_durable_delivery(
 
 @dataclass
 class CoreRuntime:
+    """只装配消息、资源与插件；回复和来源由普通插件运行。"""
+
     config: Config
+    workspace: Path
     http_resources: SharedHttpResources
-    loop: AgentLoop
     bus: MessageBus
     event_bus: EventBus
-    tools: ToolRegistry
-    push_tool: MessagePushTool
-    session_manager: SessionManager
-    presence: PresenceStore
-    channel_attachment_store: "ChannelAttachmentArtifactStore | None" = None
-    plugin_manager: "PluginManager | None" = None
-    workspace: Path | None = None
-    background_job_host: object | None = None
-    plugin_publication_lock: PluginPublicationLock | None = None
+    message_log: MessageLog
+    admissions: SessionAdmissions
+    identities: ChannelIdentities
+    inbound_store: InboundHandoffStore
+    artifact_metadata: ArtifactStore
+    channel_attachment_store: ChannelAttachmentArtifactStore
+    plugin_manager: PluginManager
+    plugin_publication_lock: PluginPublicationLock
     _plugin_publication_locked: bool = False
 
     def _lock_plugin_publication(self) -> None:
-        """在首次消费 plugin-home 前取得整个 Core 生命周期的独占权。"""
-
-        if self._plugin_publication_locked or self.plugin_publication_lock is None:
-            return
-        self.plugin_publication_lock.acquire()
-        self._plugin_publication_locked = True
-
-    def bind_conversation_runtime(self, runtime: object) -> None:
-        """Bind the unique ConversationRuntime before plugin job admission."""
-
-        session_creator = getattr(
-            self.session_manager.control_store,
-            "create_session",
-            None,
-        )
-        if not callable(session_creator):
-            raise RuntimeError("Core SessionManager 缺少 programmatic session creator")
-        session_reader = getattr(
-            self.session_manager.control_store,
-            "get_session_meta",
-            None,
-        )
-        if not callable(session_reader):
-            raise RuntimeError("Core SessionManager 缺少 programmatic session reader")
-        manager = self.plugin_manager
-        if manager is not None:
-            manager.bind_conversation_runtime(
-                runtime,
-                programmatic_session_creator=session_creator,
-                programmatic_session_reader=session_reader,
-            )
-        host = self.background_job_host
-        if host is not None:
-            bind = getattr(host, "bind_conversation_runtime", None)
-            if not callable(bind):
-                raise RuntimeError(
-                    "BackgroundJob Host 缺少 ConversationRuntime binding"
-                )
-            bind(
-                runtime,
-                programmatic_session_creator=session_creator,
-                programmatic_session_reader=session_reader,
-            )
+        if not self._plugin_publication_locked:
+            self.plugin_publication_lock.acquire()
+            self._plugin_publication_locked = True
 
     async def start(self) -> None:
-        """启动外部连接和插件扩展。"""
+        """取得插件目录独占权，再发布插件及其 Skill 投影。"""
+        from agent.plugins.skill_links import PluginSkillLinker
 
-        # 1. 加载插件后同步 skill，再绑定工具 hook。
-        if self.plugin_manager is not None:
-            self._lock_plugin_publication()
-            await self.plugin_manager.load_all()
-            if self.workspace is not None:
-                from agent.plugins.skill_links import PluginSkillLinker
-
-                link_result = PluginSkillLinker(
-                    workspace=self.workspace,
-                    plugin_roots=self.plugin_manager.skill_projection_roots,
-                ).sync(self.plugin_manager.active_plugins())
-                logger.info(
-                    "插件 skill 同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
-                    link_result.expected,
-                    link_result.created,
-                    link_result.repaired,
-                    link_result.removed,
-                    link_result.skipped,
-                )
-            sync_manifest = getattr(self.plugin_manager, "sync_manifest", None)
-            if callable(sync_manifest):
-                manifest_path = sync_manifest()
-                logger.info("插件清单已同步: %s", manifest_path)
-            logger.info("插件加载完成: %d 个", self.plugin_manager.loaded_count)
+        # 1. 正式插件加载只建立 Root；后台消费者由 runtime lifecycle 启动。
+        self._lock_plugin_publication()
+        await self.plugin_manager.load_all()
+        # 2. 既有安装 owner 同步投影，不由消息消费者管理文件。
+        result = PluginSkillLinker(
+            workspace=self.workspace,
+            plugin_roots=self.plugin_manager.skill_projection_roots,
+        ).sync(self.plugin_manager.active_plugins())
+        logger.info("插件 skill 同步完成: %s", result)
+        self.plugin_manager.sync_manifest()
 
     async def inspect_modules(self) -> str:
-        """按实际运行时依赖生成各阶段模块图。"""
-
-        # 1. 先加载插件，确保展示的是当前快照。
-        if self.plugin_manager is not None:
-            self._lock_plugin_publication()
-            await self.plugin_manager.load_all()
-
-        from agent.lifecycle.phase import inspect_phase
-        from agent.lifecycle.phases.after_reasoning import (
-            default_after_reasoning_modules,
-        )
-        from agent.lifecycle.phases.after_step import default_after_step_modules
-        from agent.lifecycle.phases.after_turn import default_after_turn_modules
-        from agent.lifecycle.phases.before_reasoning import (
-            default_before_reasoning_modules,
-        )
-        from agent.lifecycle.phases.before_step import default_before_step_modules
-        from agent.lifecycle.phases.before_turn import default_before_turn_modules
-        from agent.lifecycle.phases.prompt_render import default_prompt_render_modules
-
-        # 2. 从 AgentLoop 的构造不变量取得固定 Core 阶段依赖。
-        pipeline = self.loop._passive_pipeline
-        context = self.loop.context
-
-        phases = [
-            (
-                "before_turn",
-                default_before_turn_modules(
-                    self.event_bus,
-                    self.session_manager,
-                    pipeline._context_store,
-                ),
-            ),
-            (
-                "before_reasoning",
-                default_before_reasoning_modules(
-                    self.event_bus,
-                    self.tools,
-                    self.session_manager,
-                    context,
-                ),
-            ),
-            (
-                "prompt_render",
-                default_prompt_render_modules(
-                    self.event_bus,
-                    context,
-                ),
-            ),
-            (
-                "before_step",
-                default_before_step_modules(self.event_bus),
-            ),
-            (
-                "after_step",
-                default_after_step_modules(self.event_bus),
-            ),
-            (
-                "after_reasoning",
-                default_after_reasoning_modules(
-                    self.event_bus,
-                    pipeline._session,
-                ),
-            ),
-            (
-                "after_turn",
-                default_after_turn_modules(
-                    self.event_bus,
-                    pipeline._outbound_port,
-                    context,
-                ),
-            ),
-        ]
-
-        # 3. 分开渲染 Core phase DAG 与 committed v3 Root 拓扑。
-        parts: list[str] = []
-        for phase_name, modules in phases:
-            parts.append("=" * 60)
-            parts.append(phase_name)
-            parts.append("=" * 60)
-            parts.append(inspect_phase(modules))
-        snapshot = (
-            self.plugin_manager.current_snapshot
-            if self.plugin_manager is not None
-            else None
-        )
-        topology = None if snapshot is None else snapshot.composition_topology
-        if topology is not None:
-            parts.extend(("=" * 60, "composition", "=" * 60))
-            parts.append(f"identity: {topology.identity}")
-            parts.append(f"revision: {topology.composition_revision}")
-            for fiber in topology.fibers:
-                parent = fiber.parent or "<root>"
-                parts.append(f"fiber: {parent} -> {fiber.name}")
-            for listener in topology.listeners:
-                parts.append(f"listener: {listener}")
+        """展示实际发布的组合图，不再构造旧回复 Pipeline。"""
+        self._lock_plugin_publication()
+        await self.plugin_manager.load_all()
+        snapshot = self.plugin_manager.current_snapshot
+        assert snapshot is not None and snapshot.composition_topology is not None
+        topology = snapshot.composition_topology
+        parts = [f"identity: {topology.identity}", f"revision: {topology.composition_revision}"]
+        parts.extend(f"fiber: {fiber.parent or '<root>'} -> {fiber.name}" for fiber in topology.fibers)
+        parts.extend(f"listener: {listener}" for listener in topology.listeners)
         return "\n".join(parts)
 
     async def stop(self) -> None:
-        """按所有权逆序关闭核心运行时资源。"""
+        """先排空插件资源，再关闭各自拥有的数据库连接。"""
+        async def close_storage() -> None:
+            # 每个连接都尝试关闭；前一项失败不能泄漏后续 owner。
+            errors: list[Exception] = []
+            for store in (self.inbound_store, self.identities, self.admissions,
+                          self.artifact_metadata, self.message_log):
+                try:
+                    store.close()
+                except Exception as error:
+                    errors.append(error)
+            if errors:
+                raise ExceptionGroup("Core storage close 失败", errors)
 
-        # 1. 将同步 session close 和 shell cleanup 适配为异步清理步骤。
-        async def _stop_shell() -> None:
-            shell_tool = self.tools.get_tool("shell")
-            shutdown = getattr(shell_tool, "shutdown", None)
-            if callable(shutdown):
-                result = shutdown()
-                if inspect.isawaitable(result):
-                    await cast(Awaitable[object], result)
-
-        async def _close_session_manager() -> None:
-            self.session_manager.close()
-
-        # 2. 由统一 cleanup runner 完成全部步骤并保留失败。
         await run_cleanup_steps(
-            ("shell.shutdown", _stop_shell),
-            (
-                "plugin_manager.terminate_all",
-                (
-                    self.plugin_manager.terminate_all
-                    if self.plugin_manager is not None
-                    else _noop_async
-                ),
-            ),
+            ("plugin_manager.terminate_all", self.plugin_manager.terminate_all),
             ("event_bus.aclose", self.event_bus.aclose),
             ("plugin_publication_lock.release", self._release_plugin_publication),
-            ("session_manager.close", _close_session_manager),
+            ("storage.close", close_storage),
         )
 
     async def _release_plugin_publication(self) -> None:
-        lock = self.plugin_publication_lock
-        was_locked = self._plugin_publication_locked
-        self._plugin_publication_locked = False
-        if was_locked and lock is not None:
-            lock.release()
+        if self._plugin_publication_locked:
+            self.plugin_publication_lock.release()
+            self._plugin_publication_locked = False
 
 
 def build_registered_tools(
@@ -692,131 +546,51 @@ def build_core_runtime(
     *,
     clear_stale_session_admissions: bool = False,
 ) -> CoreRuntime:
-    """构造核心运行时及其插件快照依赖。"""
-
-    # 1. 创建总线、Session 和共享工具 registry。
-    bus = MessageBus()
-    event_bus = EventBus()
-    session_manager = SessionManager(workspace)
-    if clear_stale_session_admissions:
-        session_manager.clear_stale_admissions()
-    bus.bind_mobile_session_admission_owner(session_manager)
-    tools = ToolRegistry()
-
-    from agent.plugins.manager import PluginManager as _PluginManager
+    """从已迁移消息库装配窄 owner；构造失败关闭此前取得的连接。"""
+    from contextlib import ExitStack
+    from agent.plugins.manager import PluginManager
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
 
-    channel_attachment_store = ChannelAttachmentArtifactStore(
-        workspace=workspace,
-        session_store=session_manager.control_store,
-    )
-    plugin_manager = _PluginManager(
-        plugin_dirs=_resolve_plugin_dirs(workspace),
-        event_bus=event_bus,
-        tool_registry=tools,
-        workspace=workspace,
-        session_manager=session_manager,
-        installed_cache_root=plugins_root() / "cache",
-        channel_attachment_store=channel_attachment_store,
-        disabled_builtin_plugins=_disabled_builtin_plugins_for_runtime(config),
-    )
-    # 2. 记忆与其他 Core 工具只持有通用 runtime snapshot store。
-    tools, push_tool = build_registered_tools(
-        config,
-        workspace,
-        http_resources,
-        bus=bus,
-        runtime_snapshot_store=plugin_manager.snapshot_store,
-        tools=tools,
-        session_store=session_manager._store,
-        event_publisher=event_bus,
-        restart_coordinator=restart_coordinator,
-    )
-    presence = PresenceStore(session_manager._store)
-    processing_state = ProcessingState()
-    loop_deps = _build_loop_deps(
-        config=config,
-        workspace=workspace,
-        bus=bus,
-        tools=tools,
-        session_manager=session_manager,
-        presence=presence,
-        processing_state=processing_state,
-        event_bus=event_bus,
-        outbound_port=PushToolOutboundPort(push_tool, commit_role="passive"),
-    )
-    loop = AgentLoop(
-        loop_deps,
-        AgentLoopConfig(
-            llm=LLMConfig(
-                max_iterations=config.max_iterations,
-                max_tokens=0,
-                tool_search_enabled=config.tool_search_enabled,
-            ),
-        ),
-    )
-    wire_turn_lifecycle(
-        lifecycle=TurnLifecycle(event_bus),
-        active_turn_states=loop.active_turn_states,
-    )
-
-    # 3. 把已构造的 plugin snapshot store 绑定到 loop 和后台宿主。
-    session_services = loop_deps.session_services
-    if session_services is None:
-        raise RuntimeError("AgentLoop 缺少 SessionServices")
-    session_services.outbound_attachment_importer = ChannelOutboundAttachmentImporter(
-        channel_attachment_store
-    )
-    plugin_manager.bind_continuation_publisher(bus.publish_inbound)
-    plugin_manager.bind_delivery_sender(push_tool.dispatch)
-    plugin_manager.bind_durable_delivery_sender(
-        lambda request, provider_started: _dispatch_v3_durable_delivery(
-            plugin_manager,
-            bus,
-            request,
-            provider_started,
-            session_manager=session_manager,
+    # 1. MessageLog 先核对 schema，旧库不能借普通启动绕过 yoyo。
+    bus = MessageBus()
+    event_bus = EventBus()
+    with ExitStack() as cleanup:
+        message_log = MessageLog(workspace / "sessions.db")
+        _ = cleanup.callback(message_log.close)
+        artifact_metadata = ArtifactStore(workspace / "sessions.db")
+        _ = cleanup.callback(artifact_metadata.close)
+        admissions = SessionAdmissions(workspace / "sessions.db")
+        _ = cleanup.callback(admissions.close)
+        identities = ChannelIdentities(workspace / "sessions.db")
+        _ = cleanup.callback(identities.close)
+        inbound_store = InboundHandoffStore(workspace / "sessions.db")
+        _ = cleanup.callback(inbound_store.close)
+        if clear_stale_session_admissions:
+            admissions.clear_stale()
+        bus.bind_mobile_session_admission_owner(admissions)
+        bus.bind_durable_inbound_store(inbound_store)
+        attachments = ChannelAttachmentArtifactStore(
+            workspace=workspace, metadata_store=artifact_metadata,
         )
-    )
-    from agent.plugins.generation_activity_host import ActivityHost
-    from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
-
-    background_jobs = BackgroundJobActivityAdapter(
-        plugin_manager.snapshot_store,
-        workspace=str(workspace),
-    )
-    plugin_manager.bind_activity_host(ActivityHost((background_jobs,)))
-    bus.bind_channel_outbound_dispatcher(
-        plugin_manager.channel_generation_host.dispatch_outbound
-    )
-    push_tool.bind_v3_channel_dispatcher(
-        lambda message, passive: _dispatch_v3_channel_push(
-            plugin_manager,
-            bus,
-            message,
-            passive,
-            channel_attachment_store,
-            session_manager=session_manager,
+        # 2. PluginManager 分配日志、归档和资源能力，不持有旧 SessionManager。
+        manager = PluginManager(
+            plugin_dirs=_resolve_plugin_dirs(workspace), event_bus=event_bus,
+            workspace=workspace, message_log=message_log, channel_identities=identities,
+            installed_cache_root=plugins_root() / "cache",
+            channel_attachment_store=attachments,
+            disabled_builtin_plugins=_disabled_builtin_plugins_for_runtime(config),
         )
-    )
-    plugin_manager.channel_generation_host.bind_input_custody(bus)
-    loop.bind_runtime_snapshot_store(plugin_manager.snapshot_store)
-    return CoreRuntime(
-        config=config,
-        workspace=workspace,
-        http_resources=http_resources,
-        loop=loop,
-        bus=bus,
-        event_bus=event_bus,
-        tools=tools,
-        push_tool=push_tool,
-        session_manager=session_manager,
-        presence=presence,
-        channel_attachment_store=channel_attachment_store,
-        plugin_manager=plugin_manager,
-        background_job_host=background_jobs,
-        plugin_publication_lock=PluginPublicationLock(plugins_root()),
-    )
+        manager.channel_generation_host.bind_input_custody(bus)
+        bus.bind_channel_outbound_dispatcher(manager.channel_generation_host.dispatch_outbound)
+        runtime = CoreRuntime(
+            config=config, workspace=workspace, http_resources=http_resources,
+            bus=bus, event_bus=event_bus, message_log=message_log,
+            admissions=admissions, identities=identities, inbound_store=inbound_store,
+            artifact_metadata=artifact_metadata, channel_attachment_store=attachments,
+            plugin_manager=manager, plugin_publication_lock=PluginPublicationLock(plugins_root()),
+        )
+        _ = cleanup.pop_all()
+        return runtime
 
 
 def _resolve_plugin_dirs(workspace: Path) -> list[Path]:

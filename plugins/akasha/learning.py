@@ -55,7 +55,7 @@ class Learning:
     ) -> tuple[Sample, ...]:
         samples = project_samples(
             catalog, self.projection, heads=heads,
-            include=lambda session, source: source in config.sources,
+            include=lambda session, source: catalog.attributes(session).learning == "eligible" and source in config.sources,
         )
         return tuple(sample for sample in samples if self.accepts(sample))
 
@@ -120,6 +120,8 @@ class Learning:
         state: Consumption, bindings: Bindings,
     ) -> Turn:
         """只还原已学习材料，不打开模型、写图或重放学习事件。"""
+        if catalog.attributes(entry.session_id).learning != "eligible":
+            raise ValueError("已学习样本属于禁止学习的 Session")
         sample = restore_sample(catalog, self.projection, entry)
         if not self.accepts(sample):
             raise ValueError("已学习样本包含禁止沉淀的历史成员")

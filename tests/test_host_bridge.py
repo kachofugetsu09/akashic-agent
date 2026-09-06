@@ -293,6 +293,16 @@ async def test_host_bridge_file_tools_preserve_host_bytes(tmp_path: Path) -> Non
         )
         assert isinstance(edited, str) and "已成功编辑" in edited
         assert target.read_bytes() == b"beta\n"
+        failed = await manager.execute_file_tool(
+            "read_file", allowed_dir=tmp_path, arguments={"path": "missing.txt"},
+        )
+        assert isinstance(failed, ToolResult) and failed.is_error
+        denied = await manager.execute_file_tool(
+            "write_file", allowed_dir=tmp_path,
+            arguments={"path": "../outside.txt", "content": "bad"},
+        )
+        assert isinstance(denied, ToolResult) and denied.is_error
+        assert not (tmp_path.parent / "outside.txt").exists()
         await manager.shutdown()
 
 
@@ -317,6 +327,7 @@ async def test_host_bridge_returns_image_before_core_model_projection(
         )
 
         assert isinstance(result, ToolResult)
+        assert not result.is_error
         assert result.content_blocks[0]["type"] == "image_url"
         assert result.content_blocks[0]["image_url"]["url"].startswith(
             "data:image/png;base64,"
@@ -551,3 +562,195 @@ async def test_new_boot_claim_cleans_old_boot_long_job_before_admission(
         assert completed.exit_code == 0
         await old_manager.close_transport()
         assert not (await new_manager.shutdown()).failures
+
+
+@pytest.mark.asyncio
+async def test_shutdown_failure_keeps_bridge_owner_for_confirmed_retry(tmp_path, monkeypatch):
+    import grpc
+    from agent.tools.unified_exec import ExecutionCleanupFailure, ExecutionCleanupReport
+
+    service = HostBridgeService(
+        "test-token", 30.0, tmp_path / "artifacts", release_commit="a" * 40,
+        toolchain_digest="b" * 64, runtime_checkout=_test_runtime_checkout(tmp_path),
+        bridge_python=Path(sys.executable),
+    )
+    server = grpc.aio.server()
+    server.add_generic_rpc_handlers((service.rpc_handlers(),))
+    socket = tmp_path / "retry.sock"
+    assert server.add_insecure_port(f"unix:{socket}") > 0
+    await server.start()
+    manager = HostBridgeShellProcessManager(socket, "boot-retry", "test-token", "a" * 40, "b" * 64)
+    backend = None
+    try:
+        await manager.claim_boot()
+        running = await manager.exec_command(
+            command="wait for a signal", argv=[sys.executable, "-c",
+                "import os, signal; print(os.getpid(), flush=True); signal.pause()"],
+            cwd=tmp_path, env=os.environ.copy(), tty=False, yield_time_ms=250,
+            max_output_tokens=100, hard_timeout_s=30, owner_session_key="job",
+        )
+        assert running.execution_id is not None
+        pid = int(running.output)
+        lease = service._managers[("boot-retry", manager._manager_id)]
+        backend = lease.manager
+        shutdown = backend.shutdown
+        calls = 0
+
+        async def fail_once():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ExecutionCleanupReport((running.execution_id,), (), (
+                    ExecutionCleanupFailure(running.execution_id, "OSError", "controlled cleanup failure"),))
+            return await shutdown()
+
+        monkeypatch.setattr(backend, "shutdown", fail_once)
+        # 心跳失败不证明进程已停止；清理 RPC 仍须核对原 boot/manager。
+        manager._lease_error = RuntimeError("controlled heartbeat failure")
+        report = await manager.shutdown()
+        assert report.failed_execution_ids == (running.execution_id,)
+        assert not manager._closed
+        assert service._managers[("boot-retry", manager._manager_id)] is lease
+        os.kill(pid, 0)
+        report = await manager.shutdown()
+        assert not report.failures
+        assert manager._closed
+        assert calls == 2
+        assert ("boot-retry", manager._manager_id) not in service._managers
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if backend is not None:
+            await backend.shutdown()
+        await manager.close_transport()
+        await server.stop(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", [None, "false", 0])
+async def test_file_rpc_rejects_missing_or_untyped_outcome(tmp_path, monkeypatch, flag):
+    manager = HostBridgeShellProcessManager(
+        tmp_path / "unused.sock", "boot-file", "test-token", "a" * 40, "b" * 64,
+    )
+
+    async def response(method, payload):
+        result = {"resultType": "toolResult", "text": "result", "contentBlocks": [], "mobileAttention": None}
+        if flag is not None:
+            result["isError"] = flag
+        return result
+
+    monkeypatch.setattr(manager, "_call", response)
+    try:
+        with pytest.raises((KeyError, TypeError)):
+            await manager.execute_file_tool("read_file", allowed_dir=None, arguments={"path": "unused"})
+    finally:
+        await manager.close_transport()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", ["before", "after", "malformed", "cancel"])
+async def test_unconfirmed_owner_cleanup_blocks_spawn_until_real_rpc_retry(tmp_path, monkeypatch, cut):
+    import grpc
+
+    service = HostBridgeService(
+        "test-token", 30.0, tmp_path / "artifacts", release_commit="a" * 40,
+        toolchain_digest="b" * 64, runtime_checkout=_test_runtime_checkout(tmp_path),
+        bridge_python=Path(sys.executable),
+    )
+    terminate = service.terminate_owner
+    execute = service.exec_command
+    calls = []
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+    first = True
+
+    async def counted(payload):
+        calls.append(payload["ownerSessionKey"])
+        return await execute(payload)
+
+    async def interrupted(payload):
+        nonlocal first
+        if first:
+            first = False
+            if cut == "after":
+                await terminate(payload)
+            elif cut == "malformed":
+                return {"attempted": []}
+            elif cut == "cancel":
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            raise RuntimeError("controlled cleanup RPC cut")
+        return await terminate(payload)
+
+    monkeypatch.setattr(service, "terminate_owner", interrupted)
+    monkeypatch.setattr(service, "exec_command", counted)
+    server = grpc.aio.server()
+    server.add_generic_rpc_handlers((service.rpc_handlers(),))
+    socket = tmp_path / "uncertain.sock"
+    assert server.add_insecure_port(f"unix:{socket}") > 0
+    await server.start()
+    manager = HostBridgeShellProcessManager(socket, "boot-uncertain", "test-token", "a" * 40, "b" * 64)
+    try:
+        await manager.claim_boot()
+        running = await manager.exec_command(
+            command="wait for cleanup", argv=[sys.executable, "-c",
+                "import os, signal; print(os.getpid(), flush=True); signal.pause()"],
+            cwd=tmp_path, env=os.environ.copy(), tty=False, yield_time_ms=250,
+            max_output_tokens=100, hard_timeout_s=30, owner_session_key="same",
+        )
+        pid = int(running.output)
+        if cut == "cancel":
+            cleanup = asyncio.create_task(manager.terminate_owner("same"))
+            await asyncio.wait_for(entered.wait(), 5)
+            cleanup.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await cleanup
+            await asyncio.wait_for(cancelled.wait(), 5)
+        else:
+            with pytest.raises((RuntimeError, KeyError)):
+                await manager.terminate_owner("same")
+        if cut == "after":
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
+        else:
+            os.kill(pid, 0)
+
+        async def short(owner):
+            return await manager.exec_command(
+                command="print confirmed", argv=[sys.executable, "-c", "print('confirmed')"],
+                cwd=tmp_path, env=os.environ.copy(), tty=False, yield_time_ms=1000,
+                max_output_tokens=100, hard_timeout_s=10, owner_session_key=owner,
+            )
+
+        with pytest.raises(RuntimeError, match="cleanup 未确认"):
+            await short("same")
+        assert calls == ["same"]
+        assert (await short("other")).exit_code == 0
+        report = await manager.terminate_owner("same")
+        assert not report.failures
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+        assert (await short("same")).exit_code == 0
+        assert calls == ["same", "other", "same"]
+    finally:
+        await manager.shutdown()
+        await server.stop(0)
+
+
+@pytest.mark.asyncio
+async def test_file_rpc_rejects_error_disguised_as_text(tmp_path, monkeypatch):
+    manager = HostBridgeShellProcessManager(
+        tmp_path / "unused.sock", "boot-file", "test-token", "a" * 40, "b" * 64,
+    )
+
+    async def response(method, payload):
+        return {"resultType": "text", "text": "failed", "isError": True}
+
+    monkeypatch.setattr(manager, "_call", response)
+    try:
+        with pytest.raises(ValueError, match="text 结果不能包含 toolResult 字段"):
+            await manager.execute_file_tool("read_file", allowed_dir=None, arguments={"path": "unused"})
+    finally:
+        await manager.close_transport()

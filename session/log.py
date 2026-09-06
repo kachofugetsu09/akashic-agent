@@ -9,14 +9,16 @@ import inspect
 import re
 import sqlite3
 import threading
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Generator, Mapping
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from dataclasses import dataclass
-from typing import TypeVar, cast
+from typing import Literal, TypeVar, cast
 from pathlib import Path
 from types import MappingProxyType
 
 from session.artifacts import AttachmentKind, AttachmentRef
+from session.artifact_store import ARTIFACT_SCHEMA
 from session.message import (
     Body,
     CallRef,
@@ -34,15 +36,83 @@ from session.message_codec import decode_body, encode_body, json_value
 
 _T = TypeVar("_T")
 
+
+@dataclass(frozen=True, slots=True)
+class SessionAttributes:
+    """会话接纳时固定的独立事实；存储不替展示或学习消费者作决定。"""
+
+    visibility: Literal["listed", "internal"] = "listed"
+    learning: Literal["eligible", "excluded"] = "eligible"
+
+    def __post_init__(self) -> None:
+        if self.visibility not in ("listed", "internal") or self.learning not in ("eligible", "excluded"):
+            raise ValueError("Session 属性无效")
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEntry:
+    """目录中的只读事实；不持有执行状态，也不替 UI 生成标题。"""
+
+    session_id: str
+    created_at: datetime
+    updated_at: datetime
+    attributes: SessionAttributes
+    metadata: Mapping[str, object] | None
+    head_seq: int
+    message_count: int
+    first_message: Message | None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionPage:
+    items: tuple[SessionEntry, ...]
+    total: int
+    next_cursor: tuple[str, str] | None
+
+
+@dataclass(frozen=True, slots=True)
+class MessagePage:
+    """同一读取快照中的有序消息、引用和固定上界，不保存副本或消费进度。"""
+
+    messages: tuple[Message, ...]
+    attachments: Mapping[str, tuple[AttachmentRef, ...]]
+    bindings: Mapping[str, Mapping[str, object]]
+    through_seq: int
+    has_more: bool
+
+
+class InvalidPage(ValueError):
+    """调用者的分页范围或游标无效；与持久记录损坏区分。"""
+
+
+def encode_attributes(attributes: SessionAttributes) -> str:
+    return json.dumps({"visibility": attributes.visibility, "learning": attributes.learning}, sort_keys=True)
+
+
+def decode_attributes(raw: str) -> SessionAttributes:
+    """属性只有一份固定 schema，不从会话名称或任意 metadata 猜测。"""
+    def fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        if len(pairs) != 2 or {key for key, _ in pairs} != {"visibility", "learning"}:
+            raise ValueError("Session 属性字段无效")
+        return dict(pairs)
+    value: object = json.loads(raw, object_pairs_hook=fields)
+    if not isinstance(value, dict):
+        raise ValueError("Session 属性必须是对象")
+    data = cast(dict[str, object], value)
+    return SessionAttributes(cast(Literal["listed", "internal"], data["visibility"]),
+                             cast(Literal["eligible", "excluded"], data["learning"]))
+
+
+_OLD_SESSION_SCHEMA = """CREATE TABLE sessions (
+    key TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    metadata TEXT, next_seq INTEGER NOT NULL DEFAULT 0
+);"""
+_SESSION_ATTRIBUTES_COLUMN = (
+    "attributes TEXT NOT NULL DEFAULT '{\"learning\": \"eligible\", \"visibility\": \"listed\"}'"
+)
+
 _SCHEMA = {
-    "attachments": """CREATE TABLE IF NOT EXISTS attachments (
-        artifact_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL UNIQUE,
-        kind TEXT NOT NULL CHECK (kind IN ('image', 'file')),
-        filename TEXT, media_type TEXT,
-        size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
-        sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
-        state TEXT NOT NULL CHECK (state = 'ready'), created_at TEXT NOT NULL
-    );""",
+    "attachments": ARTIFACT_SCHEMA["attachments"],
     "message_attachments": """CREATE TABLE IF NOT EXISTS message_attachments (
         message_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
         artifact_id TEXT NOT NULL, PRIMARY KEY (message_id, ordinal),
@@ -63,12 +133,13 @@ _SCHEMA = {
         owner TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL,
         value TEXT NOT NULL, PRIMARY KEY(owner, key)
     );""",
-    "sessions": """CREATE TABLE IF NOT EXISTS sessions (
+    "sessions": f"""CREATE TABLE IF NOT EXISTS sessions (
                         key TEXT PRIMARY KEY,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         metadata TEXT,
-                        next_seq INTEGER NOT NULL DEFAULT 0
+                        next_seq INTEGER NOT NULL DEFAULT 0,
+                        {_SESSION_ATTRIBUTES_COLUMN}
                     );""",
     "messages": """CREATE TABLE IF NOT EXISTS messages (
                         id TEXT PRIMARY KEY,
@@ -126,6 +197,16 @@ def _sql(value: str) -> str:
     return "".join(words).rstrip(";")
 
 
+def _session_schemas() -> Mapping[str, bool]:
+    """保留两条已知旧表 lineage，属性列的身份只有存储 owner 定义。"""
+    values = {_sql(_SCHEMA["sessions"]): True}
+    for old in (_LEGACY_SESSION_SCHEMA, _OLD_SESSION_SCHEMA):
+        values[_sql(old)] = False
+        base = old.rstrip().rstrip(";").rstrip()
+        values[_sql(base[:-1] + ", " + _SESSION_ATTRIBUTES_COLUMN + ")")] = True
+    return values
+
+
 def _check_schema(connection: sqlite3.Connection) -> None:
     """启动前核对表与约束，不能把同列名的异构库当作已经迁移。"""
     for name, statement in _SCHEMA.items():
@@ -137,7 +218,7 @@ def _check_schema(connection: sqlite3.Connection) -> None:
             continue
         allowed = {_sql(statement)}
         if name == "sessions":
-            allowed.add(_sql(_LEGACY_SESSION_SCHEMA))
+            allowed.update(_session_schemas())
         if name == "message_attachments":
             allowed.add(_sql(_LEGACY_ATTACHMENT_SCHEMA))
         if _sql(row["sql"]) not in allowed:
@@ -145,7 +226,7 @@ def _check_schema(connection: sqlite3.Connection) -> None:
 
 
 class MessageConflict(ValueError):
-    """消息身份重用或来源前缀已经变化。"""
+    """消息身份、引用或来源前缀发生冲突。"""
 
 
 class WriterExpired(RuntimeError):
@@ -181,6 +262,44 @@ class MessageLog:
             self._connection.close()
             raise
 
+    def backup(self, destination: Path) -> None:
+        """向新文件保存已提交的完整数据库，供隔离宿主独立打开。"""
+        with self._lock:
+            # 备份未提交连接会等待自身事务；调用者必须先完成原消息事务。
+            if self._connection.in_transaction:
+                raise RuntimeError("消息事务未结束，不能建立副本")
+            with destination.open("xb"):
+                pass
+            with closing(sqlite3.connect(destination)) as snapshot:
+                self._connection.backup(snapshot)
+
+    def read_bindings(self) -> tuple[Mapping[str, object], ...]:
+        """列出不可变绑定，供宿主保存数据库副本所需的归档闭包。"""
+        with self._lock:
+            identities = self._connection.execute("SELECT binding_id FROM bindings ORDER BY binding_id").fetchall()
+            return tuple(self.read_binding(row[0]) for row in identities)
+
+    def validate_attachment_bindings(self) -> None:
+        """只读核对消息附件外键与连续顺序，不解释插件内容或推断缺少的引用。"""
+        with self._lock, self._connection:
+            # 1. 同一读快照检查外键，避免跨连接提交造成假漂移。
+            _ = self._connection.execute("BEGIN")
+            errors = self._connection.execute("PRAGMA foreign_key_check(message_attachments)").fetchall()
+            if errors:
+                raise ValueError(f"message attachment foreign key check 失败: {len(errors)}")
+            # 2. writer 的 enumerate 顺序不能被外部写入变成带孔的 ordinal。
+            rows = self._connection.execute(
+                "SELECT message_id, ordinal FROM message_attachments ORDER BY message_id, ordinal"
+            )
+            previous = None
+            expected = 0
+            for row in rows:
+                if row["message_id"] != previous:
+                    previous, expected = row["message_id"], 0
+                if row["ordinal"] != expected:
+                    raise ValueError(f"message attachment ordinal 不连续: {previous}")
+                expected += 1
+
     def owner(self, name: str) -> OwnerStore:
         """组合只向 owner 授予自身的记录空间，不授予 SQL 或其他空间。"""
         if not isinstance(name, str) or not name:
@@ -194,6 +313,23 @@ class MessageLog:
             ):
                 raise RuntimeError("owner_records 缺失，请先运行对应 yoyo 迁移")
         return OwnerStore(self, name)
+
+    def ensure_session(self, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
+        """原子接纳固定属性；同 ID 重试不能修改已有会话的事实。"""
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("Session ID 不能为空")
+        payload = encode_attributes(attributes)
+        def create() -> SessionAttributes:
+            stamp = datetime.now(UTC).isoformat()
+            _ = self._connection.execute(
+                "INSERT OR IGNORE INTO sessions (key,created_at,updated_at,attributes) VALUES (?,?,?,?)",
+                (session_id, stamp, stamp, payload),
+            )
+            current = self.catalog().attributes(session_id)
+            if current != attributes:
+                raise MessageConflict("同一 Session 的固定属性不能改变")
+            return current
+        return self._write(create)
 
     def _write(self, callback: Callable[[], _T]) -> _T:
         """同步事务不跨 await；全部权威写成功后才通知日志读者。"""
@@ -210,6 +346,17 @@ class MessageLog:
             for event, loop in self._listeners.items():
                 _ = loop.call_soon_threadsafe(event.set)
             return result
+
+    @contextmanager
+    def _read(self) -> Generator[sqlite3.Connection]:
+        """多条只读查询共用快照；事务内的读取沿用调用方已有事务。"""
+        with self._lock:
+            if self._connection.in_transaction:
+                yield self._connection
+            else:
+                with self._connection:
+                    _ = self._connection.execute("BEGIN")
+                    yield self._connection
 
     def catalog(self) -> MessageCatalog:
         return MessageCatalog(self)
@@ -229,8 +376,10 @@ class MessageLog:
         content: Mapping[str, Callable[[ContentPart], ContentReferences]],
         call_ref: CallRef | None = None,
         check_call: Callable[[ToolCall], None] | None = None,
+        metadata_keys: frozenset[str] = frozenset(),
+        update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
     ) -> MessageWriter:
-        """组合签发纯校验函数；内容校验返回耐久 binding 引用，不得产生写入或外部效果。"""
+        """绑定纯检查与元数据投影；投影只改获授键，None 移除键，不执行外部效果。"""
         if ToolResult in body_types and call_ref is None:
             raise ValueError("工具结果 writer 必须绑定具体 call_ref")
         return MessageWriter(
@@ -242,6 +391,8 @@ class MessageLog:
             dict(content),
             call_ref,
             check_call,
+            metadata_keys,
+            update_metadata,
         )
 
     def save_binding(self, binding_id: str, descriptor: Mapping[str, object]) -> None:
@@ -276,10 +427,7 @@ class MessageLog:
             ).fetchone()
         if row is None:
             raise KeyError(binding_id)
-        value = json.loads(row[0])
-        if not isinstance(value, dict):
-            raise ValueError("binding descriptor 必须是对象")
-        return cast(Mapping[str, object], freeze_json(cast(dict[str, object], value)))
+        return _json_object(row[0], f"binding {binding_id}")
 
     def close(self) -> None:
         """释放数据库并唤醒所有追赶者，让它们正常退出。"""
@@ -317,6 +465,66 @@ class MessageCatalog:
     def reader(self, session_id: str) -> MessageReader:
         return self._log.reader(session_id)
 
+    def attributes(self, session_id: str) -> SessionAttributes:
+        return self.reader(session_id).attributes
+
+    def sessions(
+        self, *, prefix: str = "", visibility: Literal["listed", "internal"] | None = None,
+        after: tuple[str, str] | None = None, limit: int = 50,
+    ) -> SessionPage:
+        """按最近活跃时间读取 live 目录；续页期间更新的会话须刷新首页重新取得。"""
+        if not 1 <= limit <= 200:
+            raise InvalidPage("目录 limit 必须在 1 到 200 之间")
+        if visibility not in (None, "listed", "internal"):
+            raise InvalidPage("目录 visibility 无效")
+        where = ["substr(s.key,1,?)=?"]
+        values: list[object] = [len(prefix), prefix]
+        if visibility is not None:
+            where.append("json_extract(s.attributes,'$.visibility')=?")
+            values.append(visibility)
+        base_where = " AND ".join(where)
+        page_values = list(values)
+        if after is not None:
+            try:
+                _ = _timestamp(after[0], "Session 目录 cursor")
+            except ValueError as error:
+                raise InvalidPage(str(error)) from error
+            where.append("(julianday(s.updated_at)<julianday(?) OR "
+                         "(julianday(s.updated_at)=julianday(?) AND s.key>?))")
+            page_values.extend((after[0], after[0], after[1]))
+        # 1. CROSS JOIN 固定 page 为外层，避免 SQLite 为 GROUP BY 扫描全部消息。
+        sql = """
+            WITH page AS MATERIALIZED (
+                SELECT s.* FROM sessions s WHERE %s
+                ORDER BY julianday(s.updated_at) DESC, s.key ASC LIMIT ?
+            ), stats AS (
+                SELECT m.session_key, COUNT(*) AS message_count,
+                       MAX(m.seq) AS head_seq, MIN(m.seq) AS first_seq
+                FROM page p CROSS JOIN messages m
+                WHERE m.session_key=p.key
+                GROUP BY p.key
+            )
+            SELECT p.*, COALESCE(t.message_count,0) AS message_count,
+                   COALESCE(t.head_seq,-1) AS head_seq,
+                   m.id AS first_id, m.seq AS first_seq, m.ts AS first_ts,
+                   m.author AS first_author, m.source AS first_source, m.body AS first_body
+            FROM page p LEFT JOIN stats t ON t.session_key=p.key
+            LEFT JOIN messages m ON m.session_key=p.key AND m.seq=t.first_seq
+            ORDER BY julianday(p.updated_at) DESC, p.key ASC
+        """ % " AND ".join(where)
+        with self._log._read() as connection:
+            total = connection.execute("SELECT COUNT(*) FROM sessions s WHERE " + base_where, values).fetchone()[0]
+            rows = connection.execute(sql, [*page_values, limit + 1]).fetchall()
+        # 2. 只返回事实；标题、空会话呈现和历史标签由 adapter 决定。
+        entries = tuple(_session_entry(row) for row in rows[:limit])
+        cursor = (entries[-1].updated_at.isoformat(), entries[-1].session_id) if len(rows) > limit else None
+        return SessionPage(entries, total, cursor)
+
+    def snapshot_attributes(self) -> Mapping[str, SessionAttributes]:
+        with self._log._lock:
+            rows = self._log._connection.execute("SELECT key, attributes FROM sessions ORDER BY key").fetchall()
+        return MappingProxyType({row["key"]: decode_attributes(row["attributes"]) for row in rows})
+
     async def follow(self) -> AsyncIterator[Mapping[str, int]]:
         """先订阅再取 heads；通知可合并，消费者始终按快照重读事实。"""
         event = asyncio.Event()
@@ -350,6 +558,24 @@ class MessageReader:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    def metadata(self) -> Mapping[str, object] | None:
+        """读取不可变元数据副本；未知 Session 返回 None，不创建会话。"""
+        with self._log._lock:
+            row = self._log._connection.execute(
+                "SELECT metadata FROM sessions WHERE key=?", (self._session_id,),
+            ).fetchone()
+        if row is None or row["metadata"] is None:
+            return None
+        return _json_object(row["metadata"], f"Session {self._session_id} metadata")
+
+    @property
+    def attributes(self) -> SessionAttributes:
+        with self._log._lock:
+            row = self._log._connection.execute("SELECT attributes FROM sessions WHERE key=?", (self._session_id,)).fetchone()
+        if row is None:
+            raise ValueError("Session 尚未接纳")
+        return decode_attributes(row["attributes"])
 
     def read(
         self,
@@ -389,6 +615,52 @@ class MessageReader:
             cursor = page[-1].seq
         return tuple(messages)
 
+    def read_page(
+        self, *, after_seq: int = -1, through_seq: int | None = None, limit: int = 50,
+    ) -> MessagePage:
+        """从固定上界内向前追赶；多读一条判断是否续页，不遍历历史计数。"""
+        return self._page(after_seq=after_seq, before_seq=None, through_seq=through_seq, limit=limit, tail=False)
+
+    def read_tail(
+        self, *, before_seq: int | None = None, through_seq: int | None = None, limit: int = 50,
+    ) -> MessagePage:
+        """取结尾或更早的一页，始终按原始 seq 升序返回。"""
+        return self._page(after_seq=-1, before_seq=before_seq, through_seq=through_seq, limit=limit, tail=True)
+
+    def _page(
+        self, *, after_seq: int, before_seq: int | None, through_seq: int | None, limit: int, tail: bool,
+    ) -> MessagePage:
+        """消息与其附件、binding 在一个短读取事务内批量取得。"""
+        if not 1 <= limit <= 200 or after_seq < -1 or before_seq is not None and before_seq < 0:
+            raise InvalidPage("消息页范围或 limit 无效")
+        with self._log._read() as connection:
+            # 1. 区分未知与空 Session；首次读取把当前 head 固定为页面上界。
+            row = connection.execute(
+                "SELECT (SELECT COALESCE(MAX(seq),-1) FROM messages WHERE session_key=s.key) AS head "
+                "FROM sessions s WHERE s.key=?", (self._session_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(self._session_id)
+            head = row["head"]
+            through = head if through_seq is None else through_seq
+            if not -1 <= through <= head or after_seq > through:
+                raise InvalidPage("消息页上界或 cursor 超过已接纳前缀")
+            before = through + 1 if before_seq is None else before_seq
+            if before > through + 1:
+                raise InvalidPage("消息页 before_seq 超过快照上界")
+            rows = connection.execute(
+                "SELECT * FROM messages WHERE session_key=? AND seq>? AND seq<=? AND seq<? "
+                + ("ORDER BY seq DESC LIMIT ?" if tail else "ORDER BY seq ASC LIMIT ?"),
+                (self._session_id, after_seq, through, before, limit + 1),
+            ).fetchall()
+            selected = rows[:limit]
+            if tail:
+                selected.reverse()
+            messages = tuple(_message(row) for row in selected)
+            # 2. 只取该页引用，不逐消息查询，也不启动归档目标或执行任何能力。
+            attachments, bindings = _page_references(connection, messages)
+        return MessagePage(messages, attachments, bindings, through, len(rows) > limit)
+
     def get(self, message_id: str) -> Message | None:
         """按不可变身份读取消息，不能跨 reader 获授的 Session。"""
         with self._log._lock:
@@ -418,7 +690,7 @@ class MessageReader:
         with self._log._lock:
             return self._log._connection.execute(sql, values).fetchone()[0]
 
-    async def follow(self, *, after_seq: int = -1) -> AsyncIterator[Message]:
+    async def follow(self, *, after_seq: int = -1) -> AsyncGenerator[Message, None]:
         """先订阅再从日志追赶；通知只唤醒，正文和进度始终来自 seq。"""
         event = asyncio.Event()
         with self._log._lock:
@@ -454,6 +726,8 @@ class MessageWriter:
         content: Mapping[str, Callable[[ContentPart], ContentReferences]],
         call_ref: CallRef | None,
         check_call: Callable[[ToolCall], None] | None,
+        metadata_keys: frozenset[str],
+        update_metadata: Callable[[Body], Mapping[str, object | None]] | None,
     ):
         self._log: MessageLog = log
         self._session_id: str = session_id
@@ -463,6 +737,8 @@ class MessageWriter:
         self._content = content
         self._call_ref = call_ref
         self._check_call = check_call
+        self._metadata_keys = frozenset(metadata_keys)
+        self._update_metadata = update_metadata
         self._active = True
 
     @property
@@ -494,17 +770,17 @@ class MessageWriter:
             self._active = False
 
     def append(
-        self, message_id: str, body: Body, *, expected_source_head: int | None = None
+        self, message_id: str, body: Body, *, expected_source_head: int | None = None,
     ) -> Message:
-        """先处理同 ID 重放，再条件提交一条消息与其耐久资源引用。"""
+        """原子追加消息及其绑定 owner 计算的元数据变化，重放不重复更新。"""
         return self._log._write(
             lambda: self._append(
-                message_id, body, expected_source_head=expected_source_head
+                message_id, body, expected_source_head=expected_source_head,
             )
         )
 
     def _append(
-        self, message_id: str, body: Body, *, expected_source_head: int | None = None
+        self, message_id: str, body: Body, *, expected_source_head: int | None = None,
     ) -> Message:
         # 1. 固定 writer 的能力范围；内容 schema 由其注册 owner 验证。
         self._check_grant(body)
@@ -533,6 +809,10 @@ class MessageWriter:
         binding_ids, artifacts = self._check_parts(body)
         if isinstance(body, ToolResult):
             self._check_call_result(body)
+
+        metadata: Mapping[str, object | None] = {} if self._update_metadata is None else self._update_metadata(body)
+        if not set(metadata) <= self._metadata_keys:
+            raise PermissionError("writer 未获授这些 Session metadata 键")
 
         # 2. Session 自己分配不复用的序号；Control 不得指向尚未接纳的前缀。
         now = datetime.now(UTC)
@@ -573,6 +853,21 @@ class MessageWriter:
             "UPDATE sessions SET next_seq=?, updated_at=? WHERE key=?",
             (seq + 1, stamp, self._session_id),
         )
+
+        # 3. 只合并获授键；失败回滚消息、序号与元数据，不覆盖其他 owner 的键。
+        if metadata:
+            current = self._log.reader(self._session_id).metadata()
+            updated = dict(current) if current is not None else {}
+            for key, value in metadata.items():
+                if value is None:
+                    _ = updated.pop(key, None)
+                else:
+                    updated[key] = value
+            if updated != (current if current is not None else {}):
+                payload = json.dumps(json_value(freeze_json(updated)), ensure_ascii=False, allow_nan=False)
+                _ = connection.execute(
+                    "UPDATE sessions SET metadata=? WHERE key=?", (payload, self._session_id),
+                )
 
         return message
 
@@ -675,6 +970,30 @@ class OwnerStore:
             ).fetchall()
         return tuple((row["key"], _owner_record(row)) for row in rows)
 
+    def scan(self, *, start: str, stop: str, limit: int = 100) -> tuple[tuple[str, OwnerRecord], ...]:
+        """按 key 倒序读取有界区间 [start, stop)，供 owner 分页读取自身索引。"""
+        if not isinstance(start, str) or not isinstance(stop, str) or start >= stop:
+            raise ValueError("状态扫描需要递增的 key 区间")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("状态扫描 limit 必须介于 1 和 1000")
+        with self._log._lock:
+            rows = self._log._connection.execute(
+                "SELECT key,version,value FROM owner_records "
+                "WHERE owner=? AND key>=? AND key<? ORDER BY key DESC LIMIT ?",
+                (self._owner, start, stop, limit),
+            ).fetchall()
+        return tuple((row["key"], _owner_record(row)) for row in rows)
+
+    def snapshot(self, callback: Callable[[], _T]) -> _T:
+        """在同一只读快照内完成同步分页，不授予 SQL 或新的写入权限。"""
+        with self._log._read():
+            result = callback()
+            if inspect.isawaitable(result):
+                if inspect.iscoroutine(result):
+                    result.close()
+                raise TypeError("存储快照回调必须同步，不能跨 await")
+            return result
+
     def transact(self, callback: Callable[[OwnerTransaction], _T]) -> _T:
         """把自身状态与已获授的 Message 写入放在一个同步事务内。"""
         transaction = OwnerTransaction(self)
@@ -768,6 +1087,78 @@ class OwnerTransaction:
                 message_id, body, expected_source_head=expected_source_head
             )
         )
+
+
+def _json_object(raw: str, label: str) -> Mapping[str, object]:
+    """持久 JSON 对象在读取边界校验并深冻结，错误带所属记录。"""
+    def fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        values = dict(pairs)
+        if len(values) != len(pairs):
+            raise ValueError("包含重复键")
+        return values
+    try:
+        if not isinstance(raw, str):
+            raise ValueError("JSON 原文必须是文本")
+        value = freeze_json(json.loads(raw, object_pairs_hook=fields))
+        if not isinstance(value, Mapping):
+            raise ValueError("必须是 JSON 对象")
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"{label} 损坏: {error}") from error
+    return cast(Mapping[str, object], value)
+
+
+def _timestamp(raw: str, label: str) -> datetime:
+    try:
+        value = datetime.fromisoformat(raw)
+        if value.utcoffset() is None:
+            raise ValueError("时间缺少时区")
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"{label} 时间无效: {raw!r}") from error
+    return value
+
+
+def _session_entry(row: sqlite3.Row) -> SessionEntry:
+    """目录列与首条 Message 共用数据库快照，标题留给表示边界生成。"""
+    key = row["key"]
+    first = None if row["first_id"] is None else Message(
+        row["first_id"], key, row["first_seq"], _timestamp(row["first_ts"], key),
+        row["first_author"], row["first_source"], decode_body(row["first_body"]),
+    )
+    return SessionEntry(
+        key, _timestamp(row["created_at"], key), _timestamp(row["updated_at"], key),
+        decode_attributes(row["attributes"]),
+        None if row["metadata"] is None else _json_object(row["metadata"], f"Session {key} metadata"),
+        row["head_seq"], row["message_count"], first,
+    )
+
+
+def _page_references(
+    connection: sqlite3.Connection, messages: tuple[Message, ...],
+) -> tuple[Mapping[str, tuple[AttachmentRef, ...]], Mapping[str, Mapping[str, object]]]:
+    """批量加载本页已保存的资源关系；损坏引用不能降级为缺少附件或工具名。"""
+    attachments: dict[str, list[AttachmentRef]] = {message.message_id: [] for message in messages}
+    bindings: dict[str, Mapping[str, object]] = {}
+    if messages:
+        ids = tuple(message.message_id for message in messages)
+        placeholders = ",".join("?" for _ in ids)
+        rows = connection.execute(
+            "SELECT ma.message_id,ma.ordinal,a.* FROM message_attachments ma "
+            "LEFT JOIN attachments a ON a.artifact_id=ma.artifact_id "
+            f"WHERE ma.message_id IN ({placeholders}) ORDER BY ma.message_id,ma.ordinal", ids,
+        ).fetchall()
+        for row in rows:
+            refs = attachments[row["message_id"]]
+            if row["ordinal"] != len(refs) or row["artifact_id"] is None:
+                raise ValueError(f"Message {row['message_id']} 附件引用损坏")
+            refs.append(_artifact_ref(row))
+        rows = connection.execute(
+            "SELECT DISTINCT mb.binding_id,b.descriptor FROM message_bindings mb "
+            "LEFT JOIN bindings b ON b.binding_id=mb.binding_id "
+            f"WHERE mb.message_id IN ({placeholders}) ORDER BY mb.binding_id", ids,
+        ).fetchall()
+        for row in rows:
+            bindings[row["binding_id"]] = _json_object(row["descriptor"], f"binding {row['binding_id']}")
+    return MappingProxyType({key: tuple(refs) for key, refs in attachments.items()}), MappingProxyType(bindings)
 
 
 def _owner_record(row: sqlite3.Row) -> OwnerRecord:

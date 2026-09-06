@@ -16,11 +16,18 @@ class ChannelHost:
     ) -> None:
         self._ctx_factory = ctx_factory
         self._channels: list[Channel] = []
+        self._required_senders: set[str] = set()
         self._resources: dict[int, _ChannelResources] = {}
         self._started: set[int] = set()
 
-    def add(self, channel: Channel) -> None:
+    def add(self, channel: Channel, *, requires_sender: bool = False) -> None:
         self._channels.append(channel)
+        if requires_sender:
+            self._required_senders.add(channel.name)
+
+    @property
+    def required_delivery_senders(self) -> tuple[str, ...]:
+        return tuple(sorted(self._required_senders))
 
     async def start_all(self) -> None:
         failures: list[str] = []
@@ -144,9 +151,7 @@ class _ChannelResources:
         self._closeables: list[object] = []
         self.context = ChannelContext(
             bus=context.bus,
-            session_manager=context.session_manager,
             event_bus=_ScopedEventBus(context.event_bus, self._closeables),  # type: ignore[arg-type]
-            push_tool=context.push_tool,
             attachment_store=context.attachment_store,
             http_resources=context.http_resources,
             interrupt_controller=context.interrupt_controller,

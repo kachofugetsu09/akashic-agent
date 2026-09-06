@@ -29,8 +29,8 @@ from agent.plugin_composition import (
     TurnExecutionScope,
 )
 from agent.prompting.section_names import RETRIEVED_MEMORY_SECTION
-from agent.scheduler import (
-    JobStore,
+from .store import JobStore
+from .schedule import (
     LatencyTracker,
     SCHEDULE_MAX_ACTIVE_JOBS,
     ScheduleCapacityError,

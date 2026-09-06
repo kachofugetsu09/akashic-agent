@@ -1055,9 +1055,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
     monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram)
     monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq)
 
-    class _PushTool:
-        pass
-
     config = Config(
         system_prompt="s",
         channels=ChannelsConfig(
@@ -1075,8 +1072,8 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
     host = await start_channels(
         config,
         bus=cast(Any, object()),
-        session_manager=cast(Any, types.SimpleNamespace(workspace=tmp_path)),
-        push_tool=cast(Any, _PushTool()),
+        workspace=tmp_path,
+        identities=cast(Any, object()),
         http_resources=resources,
         event_bus=event_bus,
         command_catalog_provider=lambda: (("shared", "统一目录"),),
@@ -1113,8 +1110,8 @@ async def test_start_channels_skips_unfilled_optional_channels(tmp_path: Path) -
         host = await start_channels(
             config,
             bus=cast(Any, object()),
-            session_manager=cast(Any, types.SimpleNamespace(workspace=tmp_path)),
-            push_tool=cast(Any, object()),
+            workspace=tmp_path,
+            identities=cast(Any, object()),
             http_resources=resources,
             event_bus=EventBus(),
         )

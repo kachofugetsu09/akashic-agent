@@ -16,7 +16,7 @@ from plugins.context.api import check_summary
 from plugins.context.materials import MATERIALS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.markdown_memory.store import MarkdownProfileStore
-from session.log import MessageLog
+from session.log import MessageLog, SessionAttributes
 from session.message import ContentPart, Input, Output
 
 
@@ -30,11 +30,9 @@ async def application(tmp_path, *, start=False):
         for name in ("compaction", "markdown_memory"):
             (sources / name / "akashic.plugin.toml").write_text(
                 f'schema_version = 1\nname = "{name}"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
-        module = sources / "context/plugin.py"
-        module.write_text(module.read_text().replace('summary_source: tuple[str, str] | None = None',
-            'summary_source: tuple[str, str] | None = ("compaction", "compaction")').replace(
-            'prompt_sources: dict[str, str] = {}',
-            'prompt_sources: dict[str, str] = {"markdown_memory": "markdown_memory"}'))
+        settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text('summary_source = ["compaction", "compaction"]\nprompt_sources = {markdown_memory = "markdown_memory"}\n')
         provider = sources / "fixture_models"
         provider.mkdir()
         (provider / "plugin.py").write_text('''
@@ -93,7 +91,7 @@ async def apply(ctx, config):
     try:
         await host.load_all()
         if start:
-            await host._start_current_runtime_snapshot()
+            await host.start_runtime()
         yield log, host
     finally:
         await host.terminate_all()
@@ -111,6 +109,28 @@ def legacy_part(raw, *, digest=None):
         "schema": "sessions.messages.v0", "role": "user", "content_was_null": False,
         "extra": raw, "extra_sha256": digest or hashlib.sha256(raw.encode()).hexdigest(),
     })
+
+
+@pytest.mark.asyncio
+async def test_excluded_session_never_reaches_markdown_even_when_source_is_allowed(tmp_path):
+    from plugins.markdown_memory.message_plugin import project
+    async with application(tmp_path) as (log, host):
+        log.ensure_session("s", SessionAttributes("internal", "excluded"))
+        writer = log.writer("s", author="app", source="conversation", body_types=(Input, Output),
+                            content={"text": check_text})
+        writer.append("input", Input((ContentPart("text", "fact-one"),)))
+        writer.append("answer", Output((ContentPart("text", "fact-two"),), "complete"))
+        summary = publish(log, "internal-summary")
+        used = await record_use(log, host, summary, "used-summary")
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            store = profile_store(tmp_path)
+            await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
+                models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
+                sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+            assert not (tmp_path / "requests.jsonl").exists()
+            assert not store.is_applied(summary.reference)
+            assert log.reader("s").get("input").body.parts[0].value == "fact-one"
 
 
 @pytest.mark.asyncio
@@ -204,11 +224,11 @@ def publish(log, reference, parent=None):
     return SummaryRecords(log.owner("plugin:compaction")).publish(record, log.reader("s"), parent=parent)
 
 
-async def record_use(log, host, record, identity, finish="continue"):
+async def record_use(log, host, record, identity, finish="continue", source="conversation"):
     async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
         binding = snapshot.composition_root.context.require(BINDINGS).bind(COMPACTION_SUMMARIES,
             {"record_ref": record.reference, "session_id": record.session_id})
-    return log.writer("s", author="assistant", source="conversation", body_types=(Output,),
+    return log.writer("s", author="assistant", source=source, body_types=(Output,),
         content={"text": check_text, "context.summary": check_summary}).append(identity,
             Output((ContentPart("text", "successful response"), ContentPart("context.summary", {"reference": binding})), finish))
 
@@ -393,3 +413,43 @@ async def test_profile_lock_cancellation_closes_its_handle_and_allows_next_write
         blocker.close()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", ["MEMORY.md", "markdown-profile-writes.db", "PENDING.md"])
+async def test_unstarted_markdown_does_not_treat_partial_state_as_initial(tmp_path, existing):
+    async with application(tmp_path) as (log, host):
+        memory = tmp_path / "workspace/memory"
+        memory.mkdir()
+        path = memory / existing
+        path.write_bytes(b"preserved state")
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            async with snapshot.composition_root.context.require(MATERIALS).bind() as view:
+                with pytest.raises(FileNotFoundError):
+                    await asyncio.wait_for(view.prepare((), "conversation"), 5)
+        assert tuple(memory.iterdir()) == (path,)
+        assert path.read_bytes() == b"preserved state"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("learning", ["excluded", "eligible"])
+async def test_default_markdown_uses_programmatic_admission_for_real_summary_projection(tmp_path, learning):
+    from plugins.markdown_memory.message_plugin import Config, project
+
+    async with application(tmp_path) as (log, host):
+        log.ensure_session("s", SessionAttributes("internal", learning))
+        writer = log.writer("s", author="fixture", source="programmatic", body_types=(Input, Output),
+                            content={"text": check_text})
+        writer.append("input", Input((ContentPart("text", "fact-one"),)))
+        writer.append("answer", Output((ContentPart("text", "fact-two"),), "complete"))
+        summary = publish(log, "programmatic-summary")
+        used = await record_use(log, host, summary, "use", source="programmatic")
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            store = profile_store(tmp_path)
+            await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
+                models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
+                sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
+            assert store.is_applied(summary.reference) is (learning == "eligible")
+            assert (tmp_path / "requests.jsonl").exists() is (learning == "eligible")
+        assert log.reader("s").get("input").body.parts[0].value == "fact-one"

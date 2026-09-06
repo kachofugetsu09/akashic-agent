@@ -11,34 +11,25 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agent.control.protocol.models import METHOD_PARAMS
+from plugins.programmatic.control import PARAMS as PROGRAMMATIC_PARAMS
 
 
-OUTPUT = ROOT / "schema" / "app-server-v1.json"
+OUTPUT = ROOT / "schema" / "app-server-v2.json"
 
 
 def build_schema() -> dict[str, object]:
     """从服务端 typed params 生成确定性的协议 schema。"""
     methods = {
         method: TypeAdapter(model).json_schema()
-        for method, model in sorted(METHOD_PARAMS.items())
+        for method, model in sorted({**METHOD_PARAMS, **PROGRAMMATIC_PARAMS}.items())
     }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "Akashic App Server Protocol v1",
-        "protocolVersion": "1.0",
+        "title": "Akashic App Server Protocol v2",
+        "protocolVersion": "2.0",
         "transport": "JSON-RPC 2.0 NDJSON",
         "methods": methods,
-        "notifications": [
-            "thread/started",
-            "thread/deleted",
-            "turn/queued",
-            "turn/started",
-            "turn/completed",
-            "item/started",
-            "item/assistantMessage/delta",
-            "item/completed",
-            "operation/completed",
-        ],
+        "notifications": ["session/event", "session/error"],
     }
 
 

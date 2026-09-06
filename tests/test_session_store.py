@@ -1,3 +1,5 @@
+from session.admissions import SessionAdmissions
+from session.inbound_store import InboundHandoffStore
 from datetime import UTC, datetime, timedelta
 import asyncio
 import logging
@@ -388,7 +390,7 @@ async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(
     tmp_path,
 ) -> None:
     db_path = tmp_path / "sessions.db"
-    store = SessionStore(db_path)
+    store = InboundHandoffStore(db_path)
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     message = InboundMessage(
@@ -404,7 +406,7 @@ async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(
     assert len(store.list_inbound_handoffs()) == 1
 
     restarted = MessageBus()
-    recovered_store = SessionStore(db_path)
+    recovered_store = InboundHandoffStore(db_path)
     restarted.bind_durable_inbound_store(recovered_store)
     await restarted.recover_durable_inbounds()
     recovered = await restarted.consume_inbound()
@@ -434,7 +436,7 @@ async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(
     tmp_path,
 ) -> None:
     db_path = tmp_path / "sessions.db"
-    store = SessionStore(db_path)
+    store = InboundHandoffStore(db_path)
     seed = MessageBus()
     seed.bind_durable_inbound_store(store)
     for index in range(3):
@@ -449,7 +451,7 @@ async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(
             )
         )
 
-    recovered_store = SessionStore(db_path)
+    recovered_store = InboundHandoffStore(db_path)
     restarted = MessageBus()
     restarted.bind_durable_inbound_store(recovered_store)
     await restarted.recover_durable_inbounds()
@@ -467,7 +469,7 @@ async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(
 
 
 def test_mobile_handoff_recovery_rejects_corrupt_json(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = InboundHandoffStore(tmp_path / "sessions.db")
     store._conn.execute(
         """
         INSERT INTO inbound_handoffs(
@@ -498,7 +500,7 @@ def test_mobile_handoff_recovery_rejects_corrupt_json(tmp_path) -> None:
 
 
 def test_mobile_handoff_conflicting_reuse_fails_loud(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = InboundHandoffStore(tmp_path / "sessions.db")
     base = {
         "handoff_id": "handoff-1",
         "dedupe_key": "mobile:session:client-1",
@@ -535,7 +537,7 @@ async def test_mobile_handoff_delete_failure_retains_owner_until_retry(
     tmp_path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = InboundHandoffStore(tmp_path / "sessions.db")
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     message = InboundMessage(
@@ -889,7 +891,8 @@ def test_session_admission_blocks_delete_from_another_connection(tmp_path) -> No
     dashboard_store = SessionStore(db_path)
     runtime_store.create_session(key="mobile:one")
 
-    assert runtime_store.acquire_session_admission("mobile:one", "admission:one")
+    admissions = SessionAdmissions(tmp_path / "sessions.db")
+    admission_id = admissions.acquire("mobile:one")
     with pytest.raises(SessionAdmissionConflictError, match="正在处理消息") as exc_info:
         dashboard_store.delete_session("mobile:one", cascade=True)
 
@@ -900,7 +903,8 @@ def test_session_admission_blocks_delete_from_another_connection(tmp_path) -> No
     assert audit.result == "rejected"
     assert audit.backup_path is None
 
-    runtime_store.release_session_admission("admission:one")
+    admissions.release_admission(admission_id)
+    admissions.close()
     assert dashboard_store.delete_session("mobile:one", cascade=True)
     runtime_store.close()
     dashboard_store.close()
@@ -918,13 +922,15 @@ def test_update_message_rejects_active_admission_atomically(tmp_path) -> None:
         ts=NOW.isoformat(),
         seq=0,
     )
-    assert runtime_store.acquire_session_admission("mobile:edit", "admission:edit")
+    admissions = SessionAdmissions(tmp_path / "sessions.db")
+    admission_id = admissions.acquire("mobile:edit")
 
     with pytest.raises(SessionAdmissionConflictError, match="正在处理消息"):
         dashboard_store.update_message(str(message["id"]), content="after")
     assert dashboard_store.get_message(str(message["id"]))["content"] == "before"
 
-    runtime_store.release_session_admission("admission:edit")
+    admissions.release_admission(admission_id)
+    admissions.close()
     assert (
         dashboard_store.update_message(str(message["id"]), content="after")["content"]
         == "after"
@@ -1012,14 +1018,16 @@ def test_source_mutation_audit_rejects_failed_and_direct_sql_changes(tmp_path) -
         seq=0,
     )
     message_id = str(message["id"])
-    assert store.acquire_session_admission("legacy:guard", "admission:guard")
+    admissions = SessionAdmissions(tmp_path / "sessions.db")
+    admission_id = admissions.acquire("legacy:guard")
     with pytest.raises(SessionAdmissionConflictError):
         store.update_message(
             message_id,
             content="blocked",
             action_source="test.blocked_edit",
         )
-    store.release_session_admission("admission:guard")
+    admissions.release_admission(admission_id)
+    admissions.close()
     assert (
         store.find_authorized_source_mutations(
             session_key="legacy:guard",
@@ -1081,7 +1089,8 @@ def test_interaction_delete_conflict_is_atomic_until_admission_release(
     runtime_store = SessionStore(db_path)
     dashboard_store = SessionStore(db_path)
     rows, control_turn_id = _seed_interaction_with_compactions(dashboard_store)
-    assert runtime_store.acquire_session_admission("mobile:cache", "admission:cache")
+    admissions = SessionAdmissions(tmp_path / "sessions.db")
+    admission_id = admissions.acquire("mobile:cache")
 
     with pytest.raises(SessionAdmissionConflictError, match="正在处理消息"):
         dashboard_store.delete_interaction(control_turn_id)
@@ -1094,7 +1103,8 @@ def test_interaction_delete_conflict_is_atomic_until_admission_release(
     blocked_compactions = dashboard_store.list_compactions("mobile:cache")
     assert [item.invalidated_at for item in blocked_compactions] == [None, None, None]
 
-    runtime_store.release_session_admission("admission:cache")
+    admissions.release_admission(admission_id)
+    admissions.close()
     deletion = dashboard_store.delete_interaction(control_turn_id)
     assert deletion is not None
     assert deletion.old_last_consolidated == 3
@@ -1116,7 +1126,7 @@ def test_session_manager_only_clears_admissions_when_runtime_owns_workspace(
 ) -> None:
     runtime = SessionManager(tmp_path)
     runtime._store.create_session(key="mobile:one")
-    assert runtime._store.acquire_session_admission("mobile:one", "admission:one")
+    assert runtime.admissions.acquire("mobile:one")
 
     inspector = SessionManager(tmp_path)
     with pytest.raises(ValueError, match="正在处理消息"):
@@ -1124,8 +1134,8 @@ def test_session_manager_only_clears_admissions_when_runtime_owns_workspace(
 
     inspector.clear_stale_admissions()
     assert inspector._store.delete_session("mobile:one", cascade=True)
-    runtime._store.close()
-    inspector._store.close()
+    runtime.close()
+    inspector.close()
 
 
 @pytest.mark.parametrize("batch", [False, True])
@@ -1138,6 +1148,7 @@ def test_session_delete_serializes_admission_check_with_delete(
     runtime_store = SessionStore(db_path)
     dashboard_store = SessionStore(db_path)
     runtime_store.create_session(key="mobile:one")
+    admissions = SessionAdmissions(db_path)
     checked = threading.Event()
     continue_delete = threading.Event()
     original_check = dashboard_store._require_sessions_not_admitted_locked
@@ -1162,10 +1173,12 @@ def test_session_delete_serializes_admission_check_with_delete(
         )
 
     def admit_session() -> None:
-        result["admitted"] = runtime_store.acquire_session_admission(
-            "mobile:one",
-            "admission:one",
-        )
+        try:
+            admissions.acquire("mobile:one")
+        except KeyError:
+            result["admitted"] = False
+        else:
+            result["admitted"] = True
 
     delete_thread = threading.Thread(target=delete_session)
     admit_thread = threading.Thread(target=admit_session)
@@ -1178,6 +1191,7 @@ def test_session_delete_serializes_admission_check_with_delete(
     admit_thread.join(timeout=2)
 
     assert result == {"deleted": True, "admitted": False}
+    admissions.close()
     runtime_store.close()
     dashboard_store.close()
 
@@ -1187,9 +1201,12 @@ def test_session_admission_requires_existing_session_and_known_release(
 ) -> None:
     store = SessionStore(tmp_path / "sessions.db")
 
-    assert not store.acquire_session_admission("mobile:missing", "admission:missing")
+    admissions = SessionAdmissions(tmp_path / "sessions.db")
+    with pytest.raises(KeyError, match="不存在"):
+        admissions.acquire("mobile:missing")
     with pytest.raises(RuntimeError, match="admission 不存在"):
-        store.release_session_admission("admission:missing")
+        admissions.release_admission("admission:missing")
+    admissions.close()
     store.close()
 
 

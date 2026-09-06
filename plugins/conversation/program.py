@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING, Any
 from collections.abc import Mapping
 
 from agent.plugin_composition import Context
+from agent.model_runtime.session_selection import read_session_model_selection
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_WRITERS
-from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest, ModelRole
+from agent.plugin_composition.models import BoundChatModel, ChatModels, ChatModelSelection, ModelRequest, ModelRole
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import Task
 from plugins.context.api import ContextModel, Materials, Summary, check_summary, summary_range
@@ -18,6 +19,7 @@ from plugins.models.content import load_artifacts, render_content as render_mode
 from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts
 from plugins.tools.api import Authorize, MessageReply
 from plugins.tools.menu import ToolMenu
+from plugins.standard_tools.shell import shell_cleanup
 from session.log import MessageReader
 from session.message import CallRef, ContentPart, Input, Message, Output, ToolResult
 
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from plugins.context.materials import ContextMaterials
     from plugins.tools.plugin import ToolCatalog
     from plugins.turn_projection.plugin import TurnProjection
+    from plugins.react.plugin import Preview
 
 
 def check_source(task: Task, reader: MessageReader, source: str, through_seq: int) -> None:
@@ -49,21 +52,35 @@ async def run_reply(
     turn_projection: TurnProjection,
     render_content: ContentRenderer | None = None, read_call: CallReader, authorize: Authorize,
     tool_names: Sequence[str], max_output_tokens: int, max_steps: int,
+    exclude_materials: frozenset[str] = frozenset(), prompt_hints: Sequence[str] = (),
+    fixed_bindings: Mapping[str, str] | None = None,
+    preview: Preview | None = None,
+    extra_context: Sequence[ContentPart] = (),
+    terminal_tools: frozenset[str] = frozenset(),
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     # 1. 内容检查器与模型绑定覆盖整个程序，取消时先排空已开始的工具。
-    chosen = selection(reader.snapshot())
+    if terminal_tools - set(tool_names):
+        raise ValueError("终结工具必须属于本次允许目录")
+    prompt_hints = tuple(prompt_hints)
+    source_head = reader.head(source=source)
+    snapshot = reader.snapshot()
+    turns = turn_projection.project(snapshot, source)
+    open_ids: set[str] = set(turns[-1].message_ids) if turns and turns[-1].status == "open" else set()
+    chosen = selection(tuple(message for message in snapshot if message.message_id in open_ids))
+    if chosen is None:
+        metadata = reader.metadata()
+        saved = read_session_model_selection(metadata if metadata is not None else {})
+        chosen = ChatModelSelection(saved.model_ref or None, saved.reasoning_effort or None)
+    from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
     async with (
+        shell_cleanup(ctx, reader, source, from_seq),
         content.bind() as view,
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
-        materials.bind() as material_view,
+        materials.bind(exclude=exclude_materials) as material_view,
     ):
         bindings = ctx.require(BINDINGS)
         writers = ctx.require(MESSAGE_WRITERS)
-        source_head = reader.head(source=source)
-        snapshot = reader.snapshot()
-        turns = turn_projection.project(snapshot, source)
-        open_ids: set[str] = set(turns[-1].message_ids) if turns and turns[-1].status == "open" else set()
         keep_input_ids = tuple(
             item.message_id for item in snapshot
             if item.message_id in open_ids and isinstance(item.body, Input)
@@ -79,7 +96,7 @@ async def run_reply(
             )
 
         menu = ToolMenu(tools, bindings, tools.execution(authorize), reply,
-                        names=tool_names, reader=reader, source=source)
+                        names=tool_names, reader=reader, source=source, fixed_bindings=fixed_bindings)
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
             content={**view.checks, "model.facts": check_facts, "context.summary": check_summary}, check_call=menu.check_call,
@@ -111,8 +128,8 @@ async def run_reply(
                         accepts_images="image" in model.descriptor.capabilities.input_modalities,
                     )
             check_source(task, reader, source, source_head)
-            return replace(result, system_prompt="\n\n".join(
-                part for part in (result.system_prompt, *view.prompts) if part
+            return replace(result, context=(*result.context, *extra_context), system_prompt="\n\n".join(
+                part for part in (result.system_prompt, *view.prompts, *prompt_hints) if part
             ))
 
         async def reduce(
@@ -129,7 +146,7 @@ async def run_reply(
                 reader, output, model=model, context=context, projection=projection,
                 materials=build_materials, content=view, tools=menu,
                 max_output_tokens=max_output_tokens, max_steps=max_steps,
-                reduce=reduce,
+                reduce=reduce, preview=preview, terminal_tools=terminal_tools,
             )
         finally:
             output.expire()

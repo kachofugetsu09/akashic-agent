@@ -86,3 +86,8 @@ Wake listener 使用 scoped Turn 已有的 `channel="wake"` 分流。`channel` �
 
 - [Content / Wake 现有原子能力盘点与第一阶段设计](../design/content-wake-existing-atoms-first-stage.md)
 - [React Core、Scheduler 与 Subagent](../design/react-core-scheduler-subagent.md)
+
+
+## 2026-09-07 Message 来源勘误
+
+[0057](0057-internal-source-messages.md) 以独立内部 Session 取代上述临时 scoped Turn 存储，并记录未配置目标时的方案选择：暂停新职责准入，只继续 Content 池维护。已经接纳的请求仍按原目标恢复；新请求必须有明确目的地，不再保留无目标的模型执行模式。

@@ -15,6 +15,7 @@ from bootstrap.dashboard_api import (
     create_dashboard_app as _create_dashboard_app,
 )
 from session.embedding_store import MessageEmbeddingStore
+from session.admissions import SessionAdmissions
 from session.store import SessionStore
 from plugins.compaction.engine import source_plan_digest
 from plugins.workbench_ui.dashboard import register as register_workbench_dashboard
@@ -362,10 +363,8 @@ def test_dashboard_update_message_returns_409_when_session_is_active(tmp_path) -
     runtime_store = SessionStore(tmp_path / "sessions.db")
     message = runtime_store.get_message("telegram:100:1")
     assert message is not None
-    assert runtime_store.acquire_session_admission(
-        "telegram:100",
-        "admission:dashboard-edit",
-    )
+    admissions = SessionAdmissions(tmp_path / "sessions.db")
+    admission_id = admissions.acquire("telegram:100")
     runtime_store.close()
 
     with TestClient(create_dashboard_app(tmp_path)) as client:
@@ -381,7 +380,8 @@ def test_dashboard_update_message_returns_409_when_session_is_active(tmp_path) -
     }
     inspector = SessionStore(tmp_path / "sessions.db")
     assert inspector.get_message(str(message["id"]))["content"] == "还没睡呢"
-    inspector.release_session_admission("admission:dashboard-edit")
+    admissions.release_admission(admission_id)
+    admissions.close()
     inspector.close()
 
 

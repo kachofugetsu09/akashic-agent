@@ -87,6 +87,83 @@ async def _bound_root(root: CompositionRoot) -> AsyncIterator[None]:
         await root.dispose()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prepare_failure", [False, True])
+async def test_stable_root_rebuild_prepares_before_resume_and_cleans_partial_failure(tmp_path, prepare_failure):
+    """真实重新编译路径在关闭的当前快照中恢复活动，失败不开放接纳。"""
+    from agent.plugin_composition import ServiceKey
+    from session.log import MessageLog
+
+    source = tmp_path / "plugins" / "probe"
+    source.mkdir(parents=True)
+    (source / "plugin.py").write_text('''
+from agent.plugin_composition import RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
+from agent.plugin_composition.tasks import TASKS
+from agent.plugins.snapshot import get_current_runtime_snapshot
+api_version = 3
+name = "probe"
+version = "1.0.0"
+workspace_files = ("fail-prepare",)
+async def apply(ctx, config):
+    events, held = [], []
+    def prepare(_):
+        snapshot = get_current_runtime_snapshot()
+        assert snapshot.composition_root.instance_token is ctx.root_instance_token
+        assert not snapshot.accepting_leases
+        hold = ctx.require(TASKS).open(ctx).activity("resource")
+        hold.__enter__()
+        held.append(hold)
+        events.append("prepare")
+        if ctx.workspace_file("fail-prepare").exists():
+            raise ValueError("rebuild prepare failed")
+    def stop(_):
+        events.append("stop")
+        for hold in held:
+            hold.__exit__(None, None, None)
+        held.clear()
+    await ctx.provide(ServiceKey("probe.events"), events)
+    await ctx.on(RUNTIME_STARTING, prepare)
+    await ctx.on(RUNTIME_STARTED, lambda _: events.append("start"))
+    await ctx.on(RUNTIME_STOPPING, stop)
+''')
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    log = MessageLog(workspace / "sessions.db")
+    manager = PluginManager([source.parent], event_bus=EventBus(), workspace=workspace,
+                            installed_cache_root=tmp_path / "home", message_log=log)
+    try:
+        await manager.load_all()
+        await manager.start_runtime()
+        snapshot = manager.snapshot_store.pause_admission()
+        await manager.snapshot_store.wait_for_no_leases(snapshot)
+        old_root = snapshot.composition_root
+        await manager._stop_runtime_snapshot(snapshot)
+        stable = next(iter(manager._active_generations.values()))
+        if prepare_failure:
+            (workspace / "fail-prepare").touch()
+            with pytest.raises(ValueError, match="rebuild prepare failed"):
+                await manager._rebuild_stable_root(stable, snapshot)
+        else:
+            await manager._rebuild_stable_root(stable, snapshot)
+        assert snapshot.composition_root is not old_root
+        assert not snapshot.accepting_leases and snapshot.lease_count == 0
+        events = snapshot.composition_root.context.require(ServiceKey("probe.events"))
+        if prepare_failure:
+            assert events == ["prepare", "stop"]
+            assert snapshot.composition_root.instance_token not in manager._runtime_starting_roots
+            (workspace / "fail-prepare").unlink()
+            await manager._rebuild_stable_root(stable, snapshot)
+            events = snapshot.composition_root.context.require(ServiceKey("probe.events"))
+        assert events == ["prepare"]
+        await manager.snapshot_store.resume(snapshot)
+        await manager.start_runtime()
+        assert events == ["prepare", "start"]
+    finally:
+        async with asyncio.timeout(3):
+            await manager.terminate_all()
+        log.close()
+
+
 def _prompt_ctx() -> PromptRenderCtx:
     return PromptRenderCtx(
         session_key="session",
@@ -303,7 +380,7 @@ async def test_runtime_lifecycle_bail_fails_loud(tmp_path) -> None:
     await root.mount(second, name="later-plugin")
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    manager.snapshot_store.install(snapshot)
+    await manager._publish_committed_snapshot(snapshot)
 
     with pytest.raises(CompositionError) as caught:
         await cast(Any, manager)._start_runtime_snapshot(snapshot)
@@ -330,7 +407,7 @@ async def test_runtime_stop_failure_remains_retryable(tmp_path) -> None:
     await root.mount(plugin, name="retrying-plugin")
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    manager.snapshot_store.install(snapshot)
+    await manager._publish_committed_snapshot(snapshot)
     await cast(Any, manager)._start_runtime_snapshot(snapshot)
 
     with pytest.raises(RuntimeError, match="fixture stop failure"):
@@ -369,9 +446,8 @@ async def test_runtime_start_ignores_snapshot_replaced_before_start(
     old_snapshot = compiler.compile({}, composition_root=old_root)
     new_snapshot = compiler.compile({}, composition_root=new_root)
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
-    manager.snapshot_store.install(old_snapshot)
-    transaction = manager.snapshot_store.begin_publish(new_snapshot)
-    await manager.snapshot_store.commit(transaction)
+    await manager._publish_committed_snapshot(old_snapshot)
+    await manager._publish_committed_snapshot(new_snapshot)
 
     await cast(Any, manager)._start_runtime_snapshot(old_snapshot)
     await cast(Any, manager)._start_runtime_snapshot(new_snapshot)
@@ -675,3 +751,86 @@ def _memory_written_event() -> MemoryWritten:
         source_ref="session@post_response",
         superseded_ids=["memory-1"],
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, "prepare", "start"])
+async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start_failure(tmp_path, failure):
+    from agent.plugin_composition import RUNTIME_STARTING
+    from agent.plugin_composition.tasks import Tasks
+    from agent.plugins.snapshot import get_current_runtime_snapshot
+
+    root = CompositionRoot("startup-resources")
+    tasks = Tasks()
+    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path)
+    held = []
+    events = []
+
+    async def plugin(ctx):
+        def prepare(_):
+            snapshot = get_current_runtime_snapshot()
+            assert snapshot is not None and snapshot.composition_root is root
+            assert not snapshot.accepting_leases
+            with pytest.raises(RuntimeError, match="不可租用|暂停"):
+                manager.snapshot_store.lease(snapshot.snapshot_id)
+            hold = tasks.activity("resource")
+            hold.__enter__()
+            held.append(hold)
+            events.append("prepare")
+            if failure == "prepare":
+                raise ValueError("prepare failed")
+
+        async def start(_):
+            events.append("start")
+            if failure == "start":
+                raise ValueError("start failed")
+
+        def stop(_):
+            events.append("stop")
+            for hold in held:
+                hold.__exit__(None, None, None)
+            held.clear()
+
+        await ctx.on(RUNTIME_STARTING, prepare)
+        await ctx.on(RUNTIME_STARTED, start)
+        await ctx.on(RUNTIME_STOPPING, stop)
+
+    await root.mount(plugin, name="resource-owner")
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    try:
+        if failure == "prepare":
+            with pytest.raises(ValueError, match="prepare failed"):
+                await manager._publish_committed_snapshot(snapshot)
+            assert manager.current_snapshot is None
+            assert snapshot.lease_count == 0
+            assert events == ["prepare", "stop"]
+            assert root.instance_token not in manager._runtime_starting_roots
+            await manager.snapshot_store.abort(manager.snapshot_store.pending_transaction)
+        else:
+            await manager._publish_committed_snapshot(snapshot)
+            assert events == ["prepare"]
+            if failure == "start":
+                with pytest.raises(ValueError, match="start failed"):
+                    await manager.start_runtime()
+                assert events == ["prepare", "start", "stop"]
+                assert not held
+                assert root.instance_token not in manager._runtime_starting_roots
+                assert root.instance_token not in manager._runtime_started_roots
+                # 已清理的 Root 不能跳过发布前准备直接重试。
+                with pytest.raises(RuntimeError, match="发布前准备"):
+                    await manager.start_runtime()
+            else:
+                await manager.start_runtime()
+                # 同 Root 的快照替换不重复恢复活动或重复启动消费者。
+                replacement = RuntimeSnapshotCompiler().compile({}, composition_root=root, snapshot_revision="replacement")
+                await manager._publish_committed_snapshot(replacement)
+                await manager.start_runtime()
+                assert events == ["prepare", "start"]
+                await manager._stop_runtime_snapshot(manager.current_snapshot)
+                assert events == ["prepare", "start", "stop"]
+        async with asyncio.timeout(2):
+            await tasks.close()
+        assert not held
+    finally:
+        await manager.terminate_all()
+        await root.dispose()

@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable, Hashable
+import logging
+from collections.abc import AsyncGenerator, Generator, Awaitable, Callable, Hashable
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, asynccontextmanager, contextmanager
+from dataclasses import dataclass, field
 from typing import TypeVar, Protocol
 
 from agent.plugin_composition.context import Context, RuntimeScope
@@ -14,6 +17,7 @@ from uuid import uuid4
 from agent.plugin_composition.model import ServiceKey
 
 _T = TypeVar("_T")
+logger = logging.getLogger(__name__)
 
 
 class TaskBusy(RuntimeError):
@@ -142,16 +146,38 @@ class TaskSlot:
         return task
 
 
+@dataclass
+class _Group:
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
+    references: int = 0
+    activity: int = 0
+    exclusive: bool = False
+    waiting: list[tuple[object, bool]] = field(default_factory=lambda: list[tuple[object, bool]]())
+
+    def notify(self) -> None:
+        previous = self.changed
+        self.changed = asyncio.Event()
+        previous.set()
+
+
 class Tasks:
     """按通用 key 串行准入，保护启动、控制接纳和 effect start 的同一顺序。"""
 
     def __init__(self):
         self._tasks: dict[Hashable, Task] = {}
+        self._groups: dict[Hashable, _Group] = {}
+        self._groups_drained = asyncio.Event()
+        self._groups_drained.set()
         self._closed = False
 
     def _release(self, key: Hashable, task: Task) -> None:
         if self._tasks.get(key) is task:
             del self._tasks[key]
+        # 独立启动的工作也必须报告失败；join 仍会收到原异常。
+        if not task._task.cancelled():
+            error = task._task.exception()
+            if error is not None:
+                logger.error("Task 失败 handle=%s", task.handle, exc_info=error)
 
     async def admit(self, key: Hashable, callback: Callable[[TaskSlot], _T]) -> _T:
         """回调只做同步准入；长操作在 Task 中运行，不能持锁跨 I/O。"""
@@ -199,9 +225,82 @@ class Tasks:
         finally:
             slot._active = False
 
+    def _group(self, key: Hashable) -> _Group:
+        if self._closed:
+            raise RuntimeError("Task 服务已关闭")
+        group = self._groups.setdefault(key, _Group())
+        group.references += 1
+        self._groups_drained.clear()
+        return group
+
+    def _release_group(self, key: Hashable, group: _Group) -> None:
+        group.references -= 1
+        if not group.references:
+            del self._groups[key]
+            if not self._groups:
+                self._groups_drained.set()
+
+    @contextmanager
+    def activity(self, key: Hashable) -> Generator[None]:
+        """标记一段活动；接纳与撤销不跨 await，新活动不等待已开始的排他工作。"""
+        group = self._group(key)
+        group.activity += 1
+        group.notify()
+        try:
+            yield
+        finally:
+            group.activity -= 1
+            group.notify()
+            self._release_group(key, group)
+
+    async def wait_idle(self, key: Hashable) -> None:
+        """等待当前活动结束，不占用排他权，也不预留稍后的开始时机。"""
+        group = self._group(key)
+        try:
+            while True:
+                changed = group.changed
+                if self._closed:
+                    raise RuntimeError("Task 服务已关闭")
+                if not group.activity:
+                    return
+                _ = await changed.wait()
+        finally:
+            self._release_group(key, group)
+
+    @asynccontextmanager
+    async def exclusive(self, key: Hashable, *, idle: bool = False) -> AsyncGenerator[None]:
+        """按 FIFO 接纳排他工作；空闲检查与取得排他权共用同一同步准入段。"""
+        group = self._group(key)
+        request = (object(), idle)
+        group.waiting.append(request)
+        entered = False
+        try:
+            while True:
+                changed = group.changed
+                if self._closed:
+                    raise RuntimeError("Task 服务已关闭")
+                eligible = next((item for item in group.waiting if not item[1] or not group.activity), None)
+                # 与 admit 相同：状态检查、变更和撤权都不跨 await。
+                if not group.exclusive and eligible is request:
+                    group.waiting.remove(request)
+                    group.exclusive = True
+                    entered = True
+                    break
+                _ = await changed.wait()
+            yield
+        finally:
+            if entered:
+                group.exclusive = False
+            else:
+                group.waiting.remove(request)
+            group.notify()
+            self._release_group(key, group)
+
     async def close(self) -> None:
         """停止准入，撤销并等待全部任务，保持真实失败可见。"""
         self._closed = True
+        for group in self._groups.values():
+            group.notify()
         tasks = tuple(self._tasks.values())
         failures: list[Exception] = []
         for task in tasks:
@@ -214,12 +313,19 @@ class Tasks:
         )
         failures.extend(result for result in results if isinstance(result, Exception))
         self._tasks.clear()
+        _ = await self._groups_drained.wait()
         if failures:
             raise ExceptionGroup("Task 关闭失败", failures)
 
 
 class TaskAdmission(Protocol):
     async def admit(self, key: Hashable, callback: Callable[[TaskSlot], _T]) -> _T: ...
+
+    def activity(self, key: Hashable) -> AbstractContextManager[None]: ...
+
+    async def wait_idle(self, key: Hashable) -> None: ...
+
+    def exclusive(self, key: Hashable, *, idle: bool = False) -> AbstractAsyncContextManager[None]: ...
 
 
 class PluginTasks:

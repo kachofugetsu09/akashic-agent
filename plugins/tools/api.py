@@ -97,6 +97,17 @@ class MessageReply:
         return Result(body.outcome, body.parts)
 
 
+def display_name(metadata: Mapping[str, object]) -> str:
+    """从原 binding 读取工具名称，不打开工具或暴露其恢复配置。"""
+    tool = metadata.get("tool")
+    if not isinstance(tool, Mapping):
+        raise ValueError("工具 binding 描述无效")
+    name = cast(Mapping[str, object], tool).get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("工具 binding 缺少工具名")
+    return name
+
+
 class InvalidArguments(ValueError):
     """工具明确拒绝请求参数；可以返回错误结果供调用者修正。"""
 

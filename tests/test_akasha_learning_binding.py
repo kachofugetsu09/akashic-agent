@@ -19,7 +19,7 @@ from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
 from plugins.akasha.projection import applied_source
 from plugins.tools.plugin import TOOLS
 from session.embedding_store import MessageEmbeddings
-from session.log import MessageLog
+from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 
 
@@ -66,7 +66,8 @@ def manager(tmp_path, roots, log):
 
 
 @pytest.mark.asyncio
-async def test_legacy_suppressed_turn_never_reaches_embeddings_or_graph(tmp_path):
+@pytest.mark.parametrize("exclusion", ["legacy", "session"])
+async def test_excluded_learning_materials_never_reach_embeddings_or_graph(tmp_path, exclusion):
     import hashlib
     root = tmp_path / "plugins"
     sources(root)
@@ -84,9 +85,12 @@ async def test_legacy_suppressed_turn_never_reaches_embeddings_or_graph(tmp_path
             "schema": "sessions.messages.v0", "role": "user", "content_was_null": False,
             "extra": raw, "extra_sha256": hashlib.sha256(raw.encode()).hexdigest(),
         })
+        if exclusion == "session":
+            log.ensure_session("s", SessionAttributes("internal", "excluded"))
         writer = log.writer("s", author="migration", source="legacy-unattributed", body_types=(Input, Output),
             content={"text": lambda part: ContentReferences(), "history.provenance": lambda part: ContentReferences()})
-        writer.append("old-input", Input((ContentPart("text", "excluded input"), provenance)))
+        writer.append("old-input", Input((ContentPart("text", "excluded input"),) + (
+            (provenance,) if exclusion == "legacy" else ())))
         writer.append("old-answer", Output((ContentPart("text", "excluded answer"),), "complete"))
         rule = LearningConfig(embedding_model="fixture-space", dimension=2, sources=("legacy-unattributed",))
         async with lease_runtime_snapshot(host.snapshot_store):
@@ -98,6 +102,9 @@ async def test_legacy_suppressed_turn_never_reaches_embeddings_or_graph(tmp_path
         assert await consumer.consume(catalog=log.catalog(), learning_binding=identity,
             embeddings=embeddings, bindings=bindings, embed_batch=embed) == 0
         assert embedded == [] and consumer.state.applied == ()
+        if exclusion == "session":
+            writer = log.writer("allowed", author="user", source="legacy-unattributed", body_types=(Input, Output),
+                                content={"text": lambda part: ContentReferences()})
         writer.append("new-input", Input((ContentPart("text", "allowed input"),)))
         writer.append("new-answer", Output((ContentPart("text", "allowed answer"),), "complete"))
         assert await consumer.consume(catalog=log.catalog(), learning_binding=identity,

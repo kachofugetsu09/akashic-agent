@@ -11,6 +11,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.conversation.plugin import CONVERSATION
 from plugins.reply.follow import follow
+from plugins.sources.plugin import SOURCES
 from session.log import MessageLog
 from session.message import ContentPart, Input, Output
 
@@ -19,6 +20,8 @@ from session.message import ContentPart, Input, Output
 async def running(tmp_path, program, *, lifecycle=False):
     sources = tmp_path / "plugins"
     shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", sources / "conversation",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(Path(__file__).parents[1] / "plugins/sources", sources / "sources",
                     ignore=shutil.ignore_patterns("__pycache__"))
     probe = sources / "probe"
     probe.mkdir()
@@ -39,8 +42,8 @@ async def apply(ctx, config):
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context.require(ServiceKey("probe"))
-            open_conversation = snapshot.composition_root.context.require(CONVERSATION)
-            watcher = await ctx.spawn(follow(ctx, log.catalog(), open_conversation,
+            registered = snapshot.composition_root.context.require(SOURCES)
+            watcher = await ctx.spawn(follow(ctx, log.catalog(), registered,
                                              lambda task, reader, source: program(ctx, task, reader, source)), name="follow")
         if lifecycle:
             from agent.plugin_composition import RUNTIME_STOPPING
@@ -51,7 +54,7 @@ async def apply(ctx, config):
                 except asyncio.CancelledError:
                     pass
             await ctx.on(RUNTIME_STOPPING, stop)
-            await host._start_current_runtime_snapshot()
+            await host.start_runtime()
         yield log, host, watcher
     finally:
         if watcher is not None:

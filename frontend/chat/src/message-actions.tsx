@@ -33,11 +33,13 @@ export function SharedMessageActions({
 
 export function MessageReplyReference({
   role,
+  author,
   preview,
   unavailable,
   onNavigate,
 }: {
-  role: ReplyRole;
+  role?: ReplyRole;
+  author?: string;
   preview: string;
   unavailable: boolean;
   onNavigate: () => void;
@@ -47,9 +49,10 @@ export function MessageReplyReference({
       className={`message-reply-reference ${unavailable ? "unavailable" : ""}`}
       type="button"
       onClick={onNavigate}
-      aria-label={role === "assistant" ? "查看引用的 Akashic 消息" : "查看引用的你的消息"}
+      disabled={unavailable}
+      aria-label={`查看引用的 ${author ?? (role === "assistant" ? "Akashic" : "你")} 消息`}
     >
-      <span>{role === "assistant" ? "Akashic" : "你"}</span>
+      <span>{author ?? (role === "assistant" ? "Akashic" : "你")}</span>
       <p aria-live="polite">{unavailable ? "原消息不在当前记录中" : preview}</p>
     </button>
   );
@@ -57,18 +60,20 @@ export function MessageReplyReference({
 
 export function ComposerReply({
   role,
+  author,
   preview,
   onCancel,
 }: {
-  role: ReplyRole;
+  role?: ReplyRole;
+  author?: string;
   preview: string;
   onCancel: () => void;
 }) {
   return (
-    <div className="composer-reply" aria-label={`正在回复${role === "assistant" ? " Akashic" : "你的消息"}`}>
+    <div className="composer-reply" aria-label={`正在回复 ${author ?? (role === "assistant" ? "Akashic" : "你")}`}>
       <Reply size={18} aria-hidden="true" />
       <div>
-        <strong>回复 {role === "assistant" ? "Akashic" : "你"}</strong>
+        <strong>回复 {author ?? (role === "assistant" ? "Akashic" : "你")}</strong>
         <span>{preview}</span>
       </div>
       <button type="button" onClick={onCancel} aria-label="取消引用"><X size={19} /></button>

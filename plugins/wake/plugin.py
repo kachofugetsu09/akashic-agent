@@ -8,11 +8,9 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, cast
-from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import Literal, cast
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.plugin_composition import (
     BeforeTurnCtx,
@@ -27,7 +25,6 @@ from agent.plugin_composition import (
     DurableDeliveryRequest,
     DurableDeliveryView,
     DurableTurnView,
-    EmitEventKey,
     PluginScopedTurns,
     PluginDurableDeliveries,
     PluginTimers,
@@ -48,6 +45,27 @@ from agent.plugin_composition import (
     ToolGrant,
     CONVERSATION_SEMANTIC_INTEREST,
     ConversationSemanticInterest,
+)
+from .api import (Config, DeliveryTarget, ContentWakeServices, DriftWakeServices, DeliveryServices,
+                  EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, EVENTMAIL_ALERT_DELIVERY, DRIFT_WAKE,
+                  DRIFT_DELIVERY, EVENTMAIL_CHANGED)
+from .content import (
+    _content_candidates,
+    _candidate_payloads,
+    _selected_content_refs,
+    _candidate_id,
+    _delivery_metadata,
+    _message_with_source_links,
+    _sequence,
+    _mapping,
+    _integer,
+    _string,
+    _datetime,
+    _content_text,
+    _preprocess_interest,
+    _semantic_score,
+    _pool_detail,
+    _proposal_next_due,
 )
 from .pool import PoolResult, build_initial_score
 from .legacy_rules import read_archived_rules
@@ -118,147 +136,20 @@ class _ContentPool:
         )
 
 
-class DeliveryTarget(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    channel: str
-    recipient: str
-    session_id: str
-
-    @field_validator("channel", "recipient", "session_id")
-    @classmethod
-    def validate_identity(cls, value: str) -> str:
-        if not value or value.strip() != value:
-            raise ValueError("Wake delivery target 必须非空且无首尾空白")
-        return value
 
 
-class Config(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    delivery: DeliveryTarget | None = None
-    timezone: str = "Asia/Shanghai"
-
-    @field_validator("timezone")
-    @classmethod
-    def validate_timezone(cls, value: str) -> str:
-        if not value or value.strip() != value:
-            raise ValueError("Wake timezone 必须非空且无首尾空白")
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as error:
-            raise ValueError(f"Wake timezone 无效: {value}") from error
-        return value
 
 
 ConfigModel = Config
 
 
-class ContentWakeServices(Protocol):
-    def snapshot(self, now: datetime) -> Mapping[str, object]: ...
-
-    def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
-
-    def expire(
-        self,
-        item_refs: Sequence[Mapping[str, object]],
-        now: datetime,
-    ) -> Mapping[str, object]: ...
-
-    def selection(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None: ...
-
-    def select(
-        self,
-        item_ref: Mapping[str, object],
-        snapshot_seq: int,
-        accepted_turn: Mapping[str, object],
-        now: datetime,
-    ) -> Mapping[str, object]: ...
-
-    def select_batch(
-        self,
-        item_refs: Sequence[Mapping[str, object]],
-        snapshot_seq: int,
-        accepted_turn: Mapping[str, object],
-        now: datetime,
-    ) -> Mapping[str, object]: ...
-
-    def transition(
-        self,
-        selection_token: str,
-        action: str,
-        *,
-        not_before: datetime | None = None,
-        selected_refs: Sequence[Mapping[str, object]] | None = None,
-    ) -> Mapping[str, object]: ...
-
-    def mail_watermark(self) -> int: ...
-
-    def alert_deadline(self, now: datetime) -> datetime | None: ...
-
-    def alert_status(self, source_id: str, event_id: str) -> str | None: ...
-
-    def select_alert(
-        self, accepted_turn: Mapping[str, object], now: datetime
-    ) -> Mapping[str, object] | None: ...
-
-    def selected_alert(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None: ...
-
-    def selected_alerts(self) -> tuple[Mapping[str, object], ...]: ...
-
-    def expire_alert(self, source_id: str, event_id: str, now: datetime) -> bool: ...
-
-    def defer_alert(
-        self, source_id: str, event_id: str, not_before: datetime
-    ) -> None: ...
-
-    def close_alert(self, source_id: str, event_id: str, status: str) -> None: ...
-
-    def active_context(self, now: datetime) -> tuple[Mapping[str, object], ...]: ...
 
 
-class DriftWakeServices(Protocol):
-    def snapshot(self, now: datetime) -> Mapping[str, object]: ...
-
-    def select(
-        self,
-        ref: Mapping[str, object],
-        accepted_turn: Mapping[str, object],
-        now: datetime,
-    ) -> Mapping[str, object]: ...
-
-    def transition(self, token: str, action: str) -> Mapping[str, object]: ...
-
-    def selected(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
-
-    def selection(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None: ...
 
 
-class DeliveryServices(Protocol):
-    def pending(self, limit: int = 100) -> tuple[Mapping[str, object], ...]: ...
-
-    def lookup(
-        self, accepted_turn: Mapping[str, object]
-    ) -> Mapping[str, object] | None: ...
-
-    def settle(
-        self, selection_token: str, settlement_ref: str
-    ) -> Mapping[str, object]: ...
 
 
-EVENTMAIL_WAKE = ServiceKey[ContentWakeServices]("eventmail.wake.v1")
-EVENTMAIL_DELIVERY = ServiceKey[DeliveryServices]("eventmail.delivery.v1")
-EVENTMAIL_ALERT_DELIVERY = ServiceKey[object]("eventmail.alert_delivery.v1")
-DRIFT_WAKE = ServiceKey[DriftWakeServices]("drift.wake.v1")
-DRIFT_DELIVERY = ServiceKey[DeliveryServices]("drift.delivery.v1")
 MEMORY_RECALL = ServiceKey[object]("memory.recall.v1")
-EVENTMAIL_CHANGED = EmitEventKey[None]("eventmail.changed")
 inject = (
     TIMERS,
     SCOPED_TURNS,
@@ -919,6 +810,8 @@ class WakeRuntime:
                 max_iterations=max_iterations,
                 tool_source="wake",
                 tool_grant=ToolGrant.only(tools),
+                # TODO(message-plugins): 保留旧 Turn 输入/结果/工具摘要；完整内部 Message 保存范围待确认。
+                # 见 docs/design/0902-reviewed-v4.md 的 Subagent/Wake 内部消息保存记录。
                 storage=TurnStorage.IN_MEMORY,
                 post_commit_effect=PostCommitEffect.SUPPRESS,
                 session_history_read=self._target is not None,
@@ -1851,19 +1744,8 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.on(RUNTIME_STOPPING, lambda _: runtime.close())
 
 
-def _content_candidates(
-    proposal: DutyProposal,
-) -> tuple[Mapping[str, object], ...]:
-    return proposal.candidates or ({"ref": proposal.ref, "payload": proposal.payload},)
 
 
-def _candidate_payloads(proposal: DutyProposal) -> list[dict[str, object]]:
-    candidates: list[dict[str, object]] = []
-    for candidate in _content_candidates(proposal):
-        ref = _mapping(candidate.get("ref"), "Content candidate ref")
-        payload = _mapping(candidate.get("payload"), "Content candidate payload")
-        candidates.append({"candidate_id": _candidate_id(ref), **dict(payload)})
-    return candidates
 
 
 def _hint(owner: str, proposal: DutyProposal) -> str:
@@ -2132,85 +2014,12 @@ def _accepted_receipt(receipt: Mapping[str, object]) -> TurnAcceptedReceipt:
     )
 
 
-def _selected_content_refs(
-    receipt: Mapping[str, object],
-    item_ids: Sequence[str],
-    *,
-    allow_legacy_single: bool = False,
-) -> tuple[Mapping[str, object], ...]:
-    """Resolve the model's candidate ids only against the frozen Content batch."""
-
-    raw_items = receipt.get("items")
-    items = _sequence(raw_items, "Content selection items")
-    if not item_ids and allow_legacy_single:
-        if len(items) != 1:
-            raise RuntimeError("legacy Content selection 必须恰好包含一个 member")
-        return (_mapping(items[0].get("ref"), "Content selection ref"),)
-    if not item_ids:
-        raise ValueError("Content share_content 必须引用至少一个 candidate_id")
-    candidates: dict[str, Mapping[str, object]] = {}
-    for item in items:
-        ref = _mapping(item.get("ref"), "Content selection ref")
-        candidates[_candidate_id(ref)] = ref
-    unknown = set(item_ids) - set(candidates)
-    if unknown:
-        raise ValueError(
-            f"Content share_content 引用了批次外 candidate_id: {sorted(unknown)}"
-        )
-    return tuple(candidates[item_id] for item_id in item_ids)
 
 
-def _candidate_id(ref: Mapping[str, object]) -> str:
-    fields = (
-        _string(ref.get("source_id"), "source_id"),
-        _string(ref.get("item_id"), "item_id"),
-        _string(ref.get("revision"), "revision"),
-    )
-    payload = "\x00".join(fields).encode("utf-8")
-    return "candidate_" + hashlib.sha256(payload).hexdigest()[:16]
 
 
-def _delivery_metadata(receipt: Mapping[str, object]) -> dict[str, object]:
-    raw = receipt.get("message_metadata")
-    if raw is None:
-        return {}
-    if not isinstance(raw, Mapping):
-        raise TypeError("Wake delivery message_metadata 必须是 Mapping")
-    return dict(cast(Mapping[str, object], raw))
 
 
-def _message_with_source_links(message: str, metadata: Mapping[str, object]) -> str:
-    """Append selected source links so the user and later Turns retain provenance."""
-
-    raw_refs = metadata.get("source_refs")
-    if not isinstance(raw_refs, (list, tuple)):
-        return message
-    links: list[str] = []
-    seen: set[str] = set()
-    for raw_ref in cast(Sequence[object], raw_refs):
-        if not isinstance(raw_ref, Mapping):
-            continue
-        source_ref = cast(Mapping[str, object], raw_ref)
-        raw_url = source_ref.get("url")
-        if not isinstance(raw_url, str):
-            continue
-        url = raw_url.strip()
-        parsed = urlsplit(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            continue
-        if url in seen or url in message:
-            continue
-        seen.add(url)
-        raw_title = source_ref.get("title")
-        title = (
-            " ".join(raw_title.split())
-            if isinstance(raw_title, str) and raw_title.strip()
-            else f"来源 {len(links) + 1}"
-        )
-        links.append(f"- {title}：<{url}>")
-    if not links:
-        return message
-    return f"{message.rstrip()}\n\n来源：\n" + "\n".join(links)
 
 
 def _logical_delivery_id(accepted: TurnAcceptedReceipt) -> str:
@@ -2247,19 +2056,6 @@ def _attempt_detail(outcome: _AttemptOutcome) -> str:
     }[outcome]
 
 
-def _pool_detail(
-    pool: str,
-    new_count: int,
-    result: PoolResult,
-) -> str:
-    """Persist the values needed to reconstruct one fixed-score pool check."""
-
-    return (
-        f"{pool}, new={new_count}, new_mass={result.new_mass:.6f}, "
-        f"pool_mass={result.pool_mass:.6f}, threshold={result.threshold:.6f}, "
-        f"below_floor={result.below_floor}, "
-        f"driver={result.driver_item_id or '-'}"
-    )
 
 
 def _view_from_result(result: object) -> DurableTurnView:
@@ -2282,87 +2078,3 @@ def _view_from_result(result: object) -> DurableTurnView:
         error_retryable=getattr(error, "retryable", None),
         items=tuple(raw_items),
     )
-
-
-def _proposal_next_due(
-    proposals: Sequence[Mapping[str, object]], proposal: DutyProposal
-) -> bool:
-    return any(
-        item.get("ref") == proposal.ref and item.get("next_due") is not None
-        for item in proposals
-    )
-
-
-def _sequence(value: object, field: str) -> Sequence[Mapping[str, object]]:
-    if not isinstance(value, (tuple, list)) or any(
-        not isinstance(item, Mapping) for item in value
-    ):
-        raise ValueError(f"{field} 必须是 Mapping sequence")
-    return cast(Sequence[Mapping[str, object]], value)
-
-
-def _mapping(value: object, field: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{field} 必须是 Mapping")
-    return cast(Mapping[str, object], value)
-
-
-def _integer(value: object, field: str) -> int:
-    if type(value) is not int:
-        raise ValueError(f"{field} 必须是整数")
-    return value
-
-
-def _string(value: object, field: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field} 必须是非空字符串")
-    return value
-
-
-def _datetime(value: object) -> datetime:
-    if isinstance(value, datetime):
-        result = value
-    elif isinstance(value, str):
-        result = datetime.fromisoformat(value)
-    else:
-        raise ValueError("Wake deadline 必须是 datetime 或 ISO 字符串")
-    if result.tzinfo is None:
-        raise ValueError("Wake deadline 必须带时区")
-    return result.astimezone(UTC)
-
-
-def _content_text(item: Mapping[str, object]) -> str:
-    payload = _mapping(item.get("payload"), "Content item payload")
-    text = "\n".join(
-        part
-        for part in (
-            str(payload.get("title") or "").strip(),
-            str(payload.get("content") or payload.get("body") or "").strip(),
-        )
-        if part
-    )
-    return text
-
-
-def _preprocess_interest(payload: Mapping[str, object]) -> float:
-    features = payload.get("preprocess_features")
-    raw = (
-        features.get("interest")
-        if isinstance(features, Mapping)
-        else payload.get("preprocess_score")
-    )
-    if not isinstance(raw, (int, float, str)):
-        return 0.0
-    try:
-        return min(0.999, max(0.0, float(raw or 0.0)))
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _semantic_score(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise RuntimeError("semantic interest 必须是数字")
-    score = float(value)
-    if not 0.0 <= score <= 0.999:
-        raise RuntimeError("semantic interest 必须在 0..0.999")
-    return score

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
@@ -24,14 +25,6 @@ async def application(tmp_path):
     for name in ("akasha", "turn_projection", "content", "context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
                        ignore=shutil.ignore_patterns("__pycache__"))
-    # 候选使用真正的新入口；正式 manifest 留到完整插件功能验收后一次切换。
-    (root / "akasha/akashic.plugin.toml").write_text('''
-schema_version = 1
-name = "akasha"
-version = "4.0.0"
-api_version = 3
-entrypoint = "message_plugin.py"
-''')
     provider = root / "fixture_embeddings"
     provider.mkdir()
     (provider / "plugin.py").write_text('''
@@ -61,12 +54,19 @@ async def apply(ctx, config):
     model = Model()
     model.descriptor = descriptor
     class Embeddings:
+        def save_binding(self, bindings, *, model_id=None):
+            from agent.plugin_composition.models import SavedEmbedding
+            return bindings.bind(EMBEDDINGS, SavedEmbedding(model_id=descriptor.model_id,
+                space_identity=descriptor.identity, dimensions=descriptor.dimensions).model_dump())
         def describe(self, *, model_id=None):
             return descriptor
         @asynccontextmanager
         async def bind(self, *, model_id=None):
+            from agent.plugins.snapshot import get_current_runtime_snapshot
+            assert get_current_runtime_snapshot().composition_root.context.require(EMBEDDINGS) is embeddings
             yield model
-    await ctx.provide(EMBEDDINGS, Embeddings())
+    embeddings = Embeddings()
+    await ctx.provide(EMBEDDINGS, embeddings)
     await ctx.provide(ServiceKey("fixture.embedded"), embedded)
 '''.replace("LOG_PATH", repr(str(tmp_path / "embedding-calls.txt"))))
     log = MessageLog(tmp_path / "sessions.db")
@@ -74,7 +74,7 @@ async def apply(ctx, config):
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
         await host.load_all()
-        await host._start_current_runtime_snapshot()
+        await host.start_runtime()
         yield log, host
     finally:
         await host.terminate_all()
@@ -100,9 +100,26 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 async with ctx.require(MATERIALS).bind() as materials:
                     material = await materials.prepare(log.reader("s").snapshot(), "conversation")
                 assert [ref.ref for ref in material.references] == ["u", "a"]
+                # 普通兴趣服务只嵌入候选，复用真实已完成问答的固定向量。
+                before_interest = (tmp_path / "embedding-calls.txt").read_text()
+                interest = ctx.require(ServiceKey("akasha.semantic-interest.v1"))
+                assert await interest.score(["candidate interest", ""], cutoff=datetime.now(timezone.utc).isoformat()) == (0.999, 0.0)
+                assert (tmp_path / "embedding-calls.txt").read_text()[len(before_interest):] == "['candidate interest']\n"
                 read_recall = ctx.require(ServiceKey("akasha.recalls.v1"))
                 observed = read_recall(material.references[0].retrieval_ref)
                 assert observed.graph_version == 1
+                # 显式归档材料查询不争抢仍在运行的正式学习 writer。
+                from plugins.akasha.infrastructure.lease import WriterLease
+                from plugins.akasha.infrastructure.persistence import logical_state_sha256
+                graph = tmp_path / "workspace/memory/akasha.db"
+                before_graph = logical_state_sha256(graph)
+                async with host.open_binding(tuple(item.archive_ref for item in snapshot.generations.values())) as archived:
+                    async with archived.require(MATERIALS).bind() as view:
+                        copied = await view.prepare(log.reader("s").snapshot(), "conversation")
+                    assert [ref.ref for ref in copied.references] == ["u", "a"]
+                assert logical_state_sha256(graph) == before_graph
+                with pytest.raises(RuntimeError, match="already has a writer"):
+                    WriterLease(graph)
                 outputs.append("request", Output((ToolCall(identity, {"query": "original memory"}),), "continue"))
                 ref = CallRef("request", 0)
                 reply = MessageReply("result", ref, log.reader("s"), log.writer(
@@ -249,3 +266,26 @@ async def test_mobile_inspector_bounds_long_messages_without_dropping_hit_member
             assert len(log.reader("s").get("long").body.parts[0].value) == 193 * 1024
         finally:
             provider._executor.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_default_akasha_learns_only_explicitly_eligible_programmatic_session(tmp_path):
+    from plugins.content.plugin import check_text
+    from session.log import SessionAttributes
+
+    async with application(tmp_path) as (log, host):
+        for identity, learning in (("excluded", "excluded"), ("eligible", "eligible")):
+            session = "programmatic:" + identity
+            log.ensure_session(session, SessionAttributes("internal", learning))
+            writer = log.writer(session, author="fixture", source="programmatic", body_types=(Input, Output),
+                                content={"text": check_text})
+            writer.append(identity + "-input", Input((ContentPart("text", identity + " fact"),)))
+            writer.append(identity + "-answer", Output((ContentPart("text",
+                "learned answer" if learning == "eligible" else "private excluded answer"),), "complete"))
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            done = snapshot.composition_root.context.require(ServiceKey("fixture.embedded"))
+            await asyncio.wait_for(done.wait(), 5)
+        embedded = (tmp_path / "embedding-calls.txt").read_text()
+        assert "eligible fact" in embedded and "learned answer" in embedded
+        assert "excluded" not in embedded
+        assert len(log.reader("programmatic:excluded").snapshot()) == 2

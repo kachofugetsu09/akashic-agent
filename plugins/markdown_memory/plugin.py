@@ -523,10 +523,11 @@ def _validate_self(content: str) -> None:
 
 
 @asynccontextmanager
-async def profile_lock(path: Path) -> AsyncGenerator[None]:
+async def profile_lock(path: Path, *, create: bool = True) -> AsyncGenerator[None]:
     """跨 Session 和 generation 串行写档案；取消等待不会遗留持锁线程。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b" if create else "rb") as handle:
         while True:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

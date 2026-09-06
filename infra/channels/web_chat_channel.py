@@ -6,7 +6,8 @@ import mimetypes
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import AsyncIterable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, Callable, Mapping
+from contextlib import aclosing, suppress
 from typing import Any, cast
 from uuid import uuid4
 
@@ -45,7 +46,8 @@ from bus.events_lifecycle import (
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.contract import ChannelContext
-from infra.channels.reply_context import build_reply_inbound_text
+from infra.channels.message_view import follow_messages
+from session.log import MessageCatalog, MessageConflict
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +210,20 @@ class WebChatChannel:
         self._connection_lock = asyncio.Lock()
         self._events_bound = False
         self._v3_adapters: dict[str, WebNativeChannelAdapter] = {}
+        self._messages: MessageCatalog | None = None
+        self._reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
+        self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
+        self._stopping = False
+
+    def bind_message_readers(
+        self, messages: MessageCatalog,
+        reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+    ) -> None:
+        """绑定只读日志与当前回复订阅；接口不含消息写入或取消权限。"""
+        if self._messages is not None and self._messages is not messages:
+            raise RuntimeError("Web 消息读取已绑定")
+        self._messages = messages
+        self._reply_status = reply_status
 
     @staticmethod
     def _socket_id(websocket: WebSocket) -> str:
@@ -288,6 +304,7 @@ class WebChatChannel:
         raise RuntimeError("Web v3 ingress admission 已关闭")
 
     async def stop(self) -> None:
+        self._stopping = True
         async with self._connection_lock:
             sockets = [
                 socket
@@ -295,6 +312,8 @@ class WebChatChannel:
                 for socket in sockets
             ]
             self._connections.clear()
+        for socket in tuple(self._followers):
+            await self._cancel_follow(socket)
         for socket in sockets:
             if socket.application_state == WebSocketState.CONNECTED:
                 await socket.close()
@@ -304,22 +323,19 @@ class WebChatChannel:
         logger.info("[web_chat] websocket opened id=%s", socket_id)
         await websocket.accept()
         try:
-            while True:
-                payload = await websocket.receive_json()
-                if not isinstance(payload, dict):
-                    await self._send_error(websocket, "", "消息格式必须是 JSON object")
-                    continue
-                await self._handle_client_frame(
-                    websocket,
-                    cast(dict[str, Any], payload),
-                )
-        except WebSocketDisconnect as error:
-            logger.info(
-                "[web_chat] websocket disconnect id=%s code=%s reason=%s",
-                socket_id,
-                error.code,
-                error.reason,
-            )
+            async with asyncio.TaskGroup() as tasks:
+                try:
+                    while True:
+                        payload = await websocket.receive_json()
+                        if not isinstance(payload, dict):
+                            await self._send_error(websocket, "", "消息格式必须是 JSON object")
+                            continue
+                        _ = await self._handle_client_frame(websocket, cast(dict[str, Any], payload), tasks)
+                except WebSocketDisconnect as error:
+                    logger.info("[web_chat] websocket disconnect id=%s code=%s reason=%s",
+                                socket_id, error.code, error.reason)
+                finally:
+                    await self._cancel_follow(websocket)
         finally:
             await self._remove_connection(websocket)
             logger.info("[web_chat] websocket closed id=%s", socket_id)
@@ -743,6 +759,7 @@ class WebChatChannel:
         self,
         websocket: WebSocket,
         payload: dict[str, Any],
+        tasks: asyncio.TaskGroup | None = None,
     ) -> str:
         frame_type = str(payload.get("type") or "")
         try:
@@ -754,6 +771,10 @@ class WebChatChannel:
             return await self._create_session(websocket, request_id)
         if frame_type == "session.attach":
             return await self._attach_session(websocket, request_id, payload)
+        if frame_type == "session.follow":
+            if tasks is None:
+                raise RuntimeError("消息订阅需要 WebSocket 任务 scope")
+            return await self._follow_session(websocket, request_id, payload, tasks)
         if frame_type == "message.send":
             return await self._send_user_message(websocket, request_id, payload)
         if frame_type == "turn.stop":
@@ -763,6 +784,68 @@ class WebChatChannel:
             return ""
         await self._send_error(websocket, request_id, f"未知消息类型: {frame_type}")
         return ""
+
+    async def _follow_session(
+        self, websocket: WebSocket, request_id: str, payload: dict[str, Any], tasks: asyncio.TaskGroup,
+    ) -> str:
+        """按客户端最后提交的 seq 续读；切页先排空上一会话的订阅。"""
+        try:
+            if type(payload.get("version")) is not int or payload["version"] != 2:
+                raise ValueError("消息订阅需要 version=2，请升级客户端")
+            session_id = self._normalize_session_id(payload.get("session_id"))
+            if not session_id:
+                raise ValueError("session_id 缺失或无效")
+            after_seq = payload.get("after_seq")
+            if type(after_seq) is not int or after_seq < -1:
+                raise ValueError("after_seq 必须是大于等于 -1 的整数")
+            if self._messages is None:
+                raise RuntimeError("Web 消息日志不可用")
+            head = self._messages.reader(session_id).head()
+            if after_seq > head:
+                raise ValueError("after_seq 超过当前消息 head")
+        except ValueError as error:
+            await self._send_error(websocket, request_id, str(error))
+            return ""
+        await self._cancel_follow(websocket)
+        _ = await self._add_connection(session_id, websocket)
+        await websocket.send_json({"type": "session.following", "version": 2,
+                                   "request_id": request_id, "session_id": session_id, "through_seq": head})
+        if self._stopping:
+            return ""
+        task = tasks.create_task(self._follow(websocket, session_id, after_seq))
+        self._followers[websocket] = (session_id, task)
+        return session_id
+
+    async def _follow(self, websocket: WebSocket, session_id: str, after_seq: int) -> None:
+        """日志与回复状态独立订阅，失败交回连接 owner，断线共同排空。"""
+        if self._messages is None:
+            raise RuntimeError("Web 消息日志不可用")
+
+        async def send(kind: str, frames: AsyncGenerator[dict[str, object], None]) -> None:
+            async with aclosing(frames):
+                async for frame in frames:
+                    await websocket.send_json({"type": kind, **frame})
+
+        async with asyncio.TaskGroup() as tasks:
+            _ = tasks.create_task(send("messages.appended", follow_messages(
+                self._messages.reader(session_id), after_seq=after_seq)))
+            if self._reply_status is None:
+                await websocket.send_json({"type": "reply.status", "version": 2,
+                    "session_id": session_id, "snapshot_id": None, "available": False, "items": []})
+            else:
+                _ = tasks.create_task(send("reply.status", self._reply_status(session_id)))
+
+    async def _cancel_follow(self, websocket: WebSocket) -> None:
+        current = self._followers.get(websocket)
+        if current is not None:
+            if not current[1].cancelling():
+                _ = current[1].cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await current[1]
+            finally:
+                if self._followers.get(websocket) is current:
+                    del self._followers[websocket]
 
     async def _create_session(self, websocket: WebSocket, request_id: str) -> str:
         chat_id = uuid4().hex
@@ -800,11 +883,11 @@ class WebChatChannel:
         request_id: str,
         payload: dict[str, Any],
     ) -> str:
-        return await self._send_user_message_in_binding(
-            websocket,
-            request_id,
-            payload,
-        )
+        try:
+            return await self._send_user_message_in_binding(websocket, request_id, payload)
+        except MessageConflict as error:
+            await self._send_error(websocket, request_id, str(error))
+            return ""
 
     async def _send_user_message_in_binding(
         self,
@@ -814,7 +897,6 @@ class WebChatChannel:
     ) -> str:
         """验证并构造 Web exact inbound，再在首个 await 前捕获 binding。"""
 
-        ctx = self._require_ctx()
         try:
             session_key = self._normalize_session_id(payload.get("session_id"))
         except ValueError as error:
@@ -880,7 +962,6 @@ class WebChatChannel:
                 )
                 return session_key
             metadata["model_reasoning_effort"] = model_reasoning_effort.strip()
-        inbound_content = text
         if reply_to_message_id is not None:
             if not isinstance(reply_to_message_id, str) or not reply_to_message_id.strip():
                 await self._send_error(
@@ -889,33 +970,7 @@ class WebChatChannel:
                     "reply_to_message_id 必须是非空字符串",
                 )
                 return session_key
-            target = ctx.session_manager.control_store.get_message(
-                reply_to_message_id.strip()
-            )
-            if target is None:
-                await self._send_error(websocket, request_id, "被引用的消息不存在")
-                return session_key
-            if target["session_key"] != session_key:
-                await self._send_error(websocket, request_id, "不能引用其他会话的消息")
-                return session_key
-            reply_role = str(target["role"])
-            if reply_role not in {"user", "assistant"}:
-                raise RuntimeError(
-                    f"被引用消息角色无效: {target['id']} {reply_role}"
-                )
-            reply_content = _reply_source_text(target)
-            reply_preview = " ".join(reply_content.split())[:512]
-            metadata.update({
-                "display_content": text,
-                "reply_to_message_id": str(target["id"]),
-                "reply_role": reply_role,
-                "reply_preview": reply_preview,
-            })
-            inbound_content = build_reply_inbound_text(
-                text,
-                reply_content,
-                sender_label="你" if reply_role == "user" else "Akashic",
-            )
+            metadata["reply_to_message_id"] = reply_to_message_id.strip()
         chat_id = self._chat_id(session_key)
         raw = RawInbound(
             message_id=request_id or uuid4().hex,
@@ -925,7 +980,7 @@ class WebChatChannel:
                 channel=self.name,
                 sender="web",
                 chat_id=chat_id,
-                content=_normalize_v3_content(inbound_content),
+                content=_normalize_v3_content(text),
                 timestamp=datetime.now(timezone.utc),
                 metadata=cast(Any, metadata),
                 attachments=attachments,
@@ -1064,7 +1119,12 @@ class WebChatChannel:
     async def _add_connection(self, session_key: str, websocket: WebSocket) -> bool:
         """把一个 Web socket 投影到唯一的当前 Session。"""
 
+        follower = self._followers.get(websocket)
+        if follower is not None and follower[0] != session_key:
+            await self._cancel_follow(websocket)
         async with self._connection_lock:
+            if self._stopping:
+                raise RuntimeError("Web channel 正在停止")
             added = websocket not in self._connections.get(session_key, set())
             for bound_session_key, bound_sockets in tuple(self._connections.items()):
                 if bound_session_key == session_key:

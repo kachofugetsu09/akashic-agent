@@ -138,6 +138,7 @@ class HostBridgeShellProcessManager:
         )
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._lease_error: Exception | None = None
+        self._unconfirmed_owners: dict[str, str] = {}
         self._closed = False
 
     async def probe(self) -> dict[str, Any]:
@@ -174,6 +175,11 @@ class HostBridgeShellProcessManager:
         hard_timeout_s: int,
         owner_session_key: str,
     ) -> ExecutionResult:
+        if owner_session_key in self._unconfirmed_owners:
+            raise RuntimeError(
+                f"Host Bridge owner={owner_session_key} 的 cleanup 未确认，拒绝创建新 execution: "
+                f"{self._unconfirmed_owners[owner_session_key]}"
+            )
         payload = await self._call(
             "Exec",
             {
@@ -230,29 +236,43 @@ class HostBridgeShellProcessManager:
         self,
         owner_session_key: str,
     ) -> ExecutionCleanupReport:
-        payload = await self._call(
-            "TerminateOwner",
-            {"ownerSessionKey": owner_session_key},
-        )
-        return _cleanup_report(payload)
+        """缺少远端清理确认时阻止同 owner 新命令，成功重试才解除。"""
+        try:
+            payload = await self._call(
+                "TerminateOwner",
+                {"ownerSessionKey": owner_session_key},
+            )
+            report = _cleanup_report(payload)
+        except (Exception, asyncio.CancelledError) as error:
+            # RPC、损坏响应与取消都不能证明远端进程已清理；明确 report 的隔离归服务端。
+            self._unconfirmed_owners[owner_session_key] = f"{type(error).__name__}: {error}"
+            raise
+        if not report.failures:
+            _ = self._unconfirmed_owners.pop(owner_session_key, None)
+        return report
 
     async def shutdown(self) -> ExecutionCleanupReport:
         if self._closed:
             return ExecutionCleanupReport((), (), ())
-        payload = await self._call("ShutdownManager", {})
-        self._closed = True
-        await self.close_transport()
-        return _cleanup_report(payload)
+        await self._stop_heartbeat()
+        report = _cleanup_report(await self._call("ShutdownManager", {}))
+        if not report.failures:
+            await self.close_transport()
+        return report
 
     async def close_transport(self) -> None:
         """Close only the client transport after an RPC admission failure."""
 
         self._closed = True
+        await self._stop_heartbeat()
+        await self._channel.close()
+
+    async def _stop_heartbeat(self) -> None:
         if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
+            _ = self._heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-        await self._channel.close()
+            self._heartbeat_task = None
 
     async def active_execution_ids(self) -> list[int]:
         payload = await self._call("ActiveExecutions", {})
@@ -273,22 +293,32 @@ class HostBridgeShellProcessManager:
                 "arguments": arguments,
             },
         )
+        text = payload["text"]
+        if not isinstance(text, str):
+            raise TypeError("Host Bridge 文件结果 text 必须是字符串")
         if payload["resultType"] == "text":
-            return str(payload["text"])
+            if {"isError", "contentBlocks", "mobileAttention"} & payload.keys():
+                raise ValueError("Host Bridge text 结果不能包含 toolResult 字段")
+            return text
         if payload["resultType"] != "toolResult":
             raise RuntimeError("Host Bridge 返回未知文件工具结果")
+        blocks = payload["contentBlocks"]
+        if not isinstance(blocks, list) or any(not isinstance(block, dict) for block in cast(list[object], blocks)):
+            raise TypeError("Host Bridge 文件结果 contentBlocks 必须是对象数组")
+        attention = payload["mobileAttention"]
+        if attention not in (None, "confirmation"):
+            raise ValueError("Host Bridge 文件结果 mobileAttention 无效")
         return ToolResult(
-            text=str(payload["text"]),
-            content_blocks=list(payload["contentBlocks"]),
-            mobile_attention=payload.get("mobileAttention"),
+            text=text, is_error=payload["isError"], content_blocks=cast(list[dict[str, Any]], blocks),
+            mobile_attention=attention,
         )
 
     async def _call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         if self._closed:
             raise RuntimeError("Host Bridge manager 已关闭")
-        if method != "Heartbeat" and self._lease_error is not None:
+        if method not in {"Heartbeat", "ShutdownManager"} and self._lease_error is not None:
             raise RuntimeError(f"Host Bridge lease 已失效: {self._lease_error}")
-        if method not in {"Inspect", "ClaimBoot"}:
+        if method not in {"Inspect", "ClaimBoot", "ShutdownManager"}:
             self._ensure_heartbeat()
         correlation = current_diagnostic_context()
         envelope: dict[str, Any] = {

@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ModelRequest
@@ -27,8 +27,22 @@ inject = ()
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    prompt_sources: dict[str, str] = {}
-    summary_source: tuple[str, str] | None = None
+    prompt_sources: dict[str, str] = Field(default_factory=dict)
+    summary_source: tuple[str, str] | tuple[()] = ()
+
+    @field_validator("prompt_sources")
+    @classmethod
+    def check_prompts(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not key.strip() or not owner.strip() for key, owner in value.items()):
+            raise ValueError("Prompt 材料和插件名称不能为空")
+        return value
+
+    @field_validator("summary_source")
+    @classmethod
+    def check_summary_source(cls, value: tuple[str, str] | tuple[()]) -> tuple[str, str] | tuple[()]:
+        if any(not item.strip() for item in value):
+            raise ValueError("摘要材料和插件名称不能为空")
+        return value
 
 
 def _summary_cutoff(snapshot: tuple[Message, ...], summary: Summary | None) -> int:
@@ -150,4 +164,4 @@ CONTEXT = ServiceKey[ContextBuilder]("context.v1")
 async def apply(ctx: Context, config: Config | None) -> None:
     config = Config() if config is None else config
     _ = await ctx.provide(CONTEXT, ContextBuilder())
-    _ = await ctx.provide(MATERIALS, ContextMaterials(ctx, prompt_sources=config.prompt_sources, summary_source=config.summary_source))
+    _ = await ctx.provide(MATERIALS, ContextMaterials(ctx, prompt_sources=config.prompt_sources, summary_source=config.summary_source or None))

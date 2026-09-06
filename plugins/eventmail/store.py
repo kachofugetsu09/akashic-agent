@@ -815,16 +815,19 @@ class EventMailStore:
             "mail_id": mail_id,
         }
 
-    def alert_status(self, source_id: str, event_id: str) -> str | None:
+    def alert_status(self, source_id: str, event_id: str, *, mail_id: str | None = None) -> str | None:
         """Read the current Alert projection without changing its envelope."""
 
         source = _identity("source_id", source_id)
         event = _identity("event_id", event_id)
+        expected = None if mail_id is None else _identity("mail_id", mail_id)
         with self._transaction(write=False) as connection:
             row = connection.execute(
-                "SELECT status FROM alert_projection WHERE source_id=? AND event_id=?",
+                "SELECT status,mail_id FROM alert_projection WHERE source_id=? AND event_id=?",
                 (source, event),
             ).fetchone()
+        if row is not None and expected is not None and row["mail_id"] != expected:
+            return "superseded"
         return None if row is None else str(row["status"])
 
     def alert_deadline(self, now: datetime) -> datetime | None:
@@ -843,37 +846,75 @@ class EventMailStore:
             else _parse_datetime(str(row["deadline"]))
         )
 
+    def peek_alert(self, now: datetime) -> Mapping[str, object] | None:
+        """只读最早到期候选的身份，让来源先保存准确请求再领取。"""
+        instant = _aware_utc(now)
+        with self._transaction(write=False) as connection:
+            row = connection.execute(
+                "SELECT projection.source_id, projection.event_id, projection.mail_id FROM alert_projection AS projection "
+                "JOIN mail_envelopes AS envelope ON envelope.mail_id=projection.mail_id "
+                "WHERE projection.status='pending' AND projection.not_before<=? "
+                "AND (projection.expires_at IS NULL OR projection.expires_at>?) "
+                "ORDER BY projection.not_before,envelope.seq LIMIT 1", (instant, instant),
+            ).fetchone()
+        return None if row is None else {"source_id": str(row["source_id"]), "event_id": str(row["event_id"]), "mail_id": str(row["mail_id"])}
+
     def select_alert(
-        self, accepted_turn: Mapping[str, object], now: datetime
+        self, accepted_turn: Mapping[str, object], now: datetime, *,
+        item_ref: Mapping[str, object] | None = None,
     ) -> Mapping[str, object] | None:
-        """Claim the oldest due Alert for one accepted Turn."""
+        """领取到期 Alert；精确身份模式只恢复原请求，绝不改选或重领已结束的领取。"""
 
         accepted = _normalize_accepted_turn(accepted_turn)
         instant = _aware_utc(now)
         with self._transaction(write=True) as connection:
             self._expire_alerts(connection, instant)
-            row = connection.execute(
-                """
-                SELECT projection.source_id, projection.event_id, projection.mail_id,
-                       envelope.payload_json, envelope.observed_at,
-                       projection.not_before, projection.expires_at
-                FROM alert_projection AS projection
-                JOIN mail_envelopes AS envelope ON envelope.mail_id=projection.mail_id
-                WHERE projection.status='pending' AND projection.not_before <= ?
-                ORDER BY projection.not_before, envelope.seq LIMIT 1
-                """,
-                (instant,),
-            ).fetchone()
+            if item_ref is not None:
+                if set(item_ref) != {"source_id", "event_id", "mail_id"}:
+                    raise ValueError("Alert ref 必须包含 source_id/event_id/mail_id")
+                source = _identity("source_id", item_ref["source_id"])
+                event = _identity("event_id", item_ref["event_id"])
+                chosen = connection.execute(
+                    "SELECT projection.*, envelope.payload_json, envelope.observed_at "
+                    "FROM alert_projection AS projection JOIN mail_envelopes AS envelope "
+                    "ON envelope.mail_id=projection.mail_id WHERE projection.source_id=? AND projection.event_id=?",
+                    (source, event),
+                ).fetchone()
+                if chosen is None or chosen["mail_id"] != _identity("mail_id", item_ref["mail_id"]):
+                    return None
+                if chosen["status"] == "selected" and (chosen["accepted_session"], chosen["accepted_turn"]) == (
+                    accepted["session_id"], accepted["turn_id"]
+                ):
+                    return _alert_view(chosen, accepted)
+                previous = connection.execute(
+                    "SELECT 1 FROM mail_transitions WHERE mail_id=? AND kind='alert' AND action='selected' "
+                    "AND json_extract(detail_json,'$.accepted_turn.session_id')=? "
+                    "AND json_extract(detail_json,'$.accepted_turn.turn_id')=? LIMIT 1",
+                    (chosen["mail_id"], accepted["session_id"], accepted["turn_id"]),
+                ).fetchone()
+                if previous is not None or chosen["status"] != "pending" or chosen["not_before"] > instant:
+                    return None
+                row = chosen
+            else:
+                row = connection.execute(
+                    "SELECT projection.source_id, projection.event_id, projection.mail_id, "
+                    "envelope.payload_json, envelope.observed_at, projection.not_before, projection.expires_at "
+                    "FROM alert_projection AS projection JOIN mail_envelopes AS envelope "
+                    "ON envelope.mail_id=projection.mail_id "
+                    "WHERE projection.status='pending' AND projection.not_before<=? "
+                    "ORDER BY projection.not_before,envelope.seq LIMIT 1", (instant,),
+                ).fetchone()
             if row is None:
                 return None
             cursor = connection.execute(
                 "UPDATE alert_projection SET status='selected', accepted_session=?, "
-                "accepted_turn=? WHERE source_id=? AND event_id=? AND status='pending'",
+                "accepted_turn=? WHERE source_id=? AND event_id=? AND mail_id=? AND status='pending'",
                 (
                     accepted["session_id"],
                     accepted["turn_id"],
                     row["source_id"],
                     row["event_id"],
+                    row["mail_id"],
                 ),
             )
             if cursor.rowcount != 1:
@@ -971,6 +1012,21 @@ class EventMailStore:
             raise ValueError("Alert close status 必须是 delivered 或 skipped")
         self._transition_alert(source_id, event_id, status)
 
+    def change_alert(self, item_ref: Mapping[str, object], accepted_turn: Mapping[str, object],
+                     action: str, now: datetime, *, not_before: datetime | None = None) -> bool:
+        """只结算原 envelope 的实际领取；来源换版或领取已结束时不改写新状态。"""
+        if action not in {"defer", "expire", "deliver", "skip"} or set(item_ref) != {"source_id", "event_id", "mail_id"}:
+            raise ValueError("Alert 原领取的结算参数无效")
+        if (action == "defer") != (not_before is not None):
+            raise ValueError("只有 Alert defer 必须指定 not_before")
+        ref = {key: _identity(key, value) for key, value in item_ref.items()}
+        accepted = _normalize_accepted_turn(accepted_turn)
+        instant = _aware_utc(now)
+        status = {"defer": "pending", "expire": "expired", "deliver": "delivered", "skip": "skipped"}[action]
+        return self._transition_alert(ref["source_id"], ref["event_id"], status,
+            not_before=None if not_before is None else _aware_utc(not_before),
+            expected_mail_id=ref["mail_id"], accepted=accepted, expires_before=instant if action == "expire" else None)
+
     def _transition_alert(
         self,
         source_id: str,
@@ -978,17 +1034,30 @@ class EventMailStore:
         status: str,
         *,
         not_before: str | None = None,
-    ) -> None:
+        expected_mail_id: str | None = None,
+        accepted: AcceptedTurn | None = None,
+        expires_before: str | None = None,
+    ) -> bool:
         source = _identity("source_id", source_id)
         event = _identity("event_id", event_id)
         with self._transaction(write=True) as connection:
             row = connection.execute(
-                "SELECT mail_id FROM alert_projection WHERE source_id=? AND event_id=? "
+                "SELECT mail_id,accepted_session,accepted_turn,expires_at FROM alert_projection WHERE source_id=? AND event_id=? "
                 "AND status='selected'",
                 (source, event),
             ).fetchone()
             if row is None:
+                if expected_mail_id is not None:
+                    return False
                 raise RuntimeError("EventMail Alert transition 未命中 selected row")
+            if expected_mail_id is not None:
+                assert accepted is not None
+                if (row["mail_id"], row["accepted_session"], row["accepted_turn"]) != (
+                    expected_mail_id, accepted["session_id"], accepted["turn_id"]
+                ):
+                    return False
+            if expires_before is not None and (row["expires_at"] is None or row["expires_at"] > expires_before):
+                return False
             connection.execute(
                 "UPDATE alert_projection SET status=?, not_before=COALESCE(?, not_before), "
                 "accepted_session=NULL, accepted_turn=NULL WHERE source_id=? AND event_id=?",
@@ -1001,6 +1070,7 @@ class EventMailStore:
                 status if status != "pending" else "deferred",
                 {} if not_before is None else {"not_before": not_before},
             )
+            return True
 
     def report_context(
         self,
@@ -1447,7 +1517,7 @@ class EventMailStore:
     def _expire_alerts(cls, connection: sqlite3.Connection, now: str) -> int:
         rows = connection.execute(
             "SELECT mail_id, source_id, event_id FROM alert_projection "
-            "WHERE status IN ('pending', 'selected') AND expires_at IS NOT NULL "
+            "WHERE status='pending' AND expires_at IS NOT NULL "
             "AND expires_at <= ? ORDER BY source_id, event_id",
             (now,),
         ).fetchall()
@@ -1458,7 +1528,7 @@ class EventMailStore:
         if rows:
             connection.execute(
                 "UPDATE alert_projection SET status='expired', accepted_session=NULL, "
-                "accepted_turn=NULL WHERE status IN ('pending', 'selected') "
+                "accepted_turn=NULL WHERE status='pending' "
                 "AND expires_at IS NOT NULL AND expires_at <= ?",
                 (now,),
             )

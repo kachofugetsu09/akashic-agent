@@ -26,6 +26,13 @@ class ChannelOutboundAttachmentImporter:
     def __init__(self, store: ChannelAttachmentArtifactStore) -> None:
         self._store = store
 
+    async def import_source(self, source: str, kind: AttachmentKind) -> AttachmentRef:
+        """将已授权路径或公网 URL 固定为一个已发布附件引用。"""
+        refs = await import_channel_attachments(self._store, (
+            ChannelAttachment(kind=LegacyAttachmentKind(kind.value), source=source),
+        ))
+        return refs[0]
+
     async def import_media(
         self,
         media: tuple[str, ...],

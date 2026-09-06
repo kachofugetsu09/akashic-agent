@@ -136,3 +136,45 @@ async def test_ordinary_tool_binding_restores_code_and_preparer_without_current_
         await tasks.close()
         await host.terminate_all()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_configuration_is_owned_frozen_and_restored_without_recapture(tmp_path):
+    sources = tmp_path / "plugins"
+    write_plugins(sources)
+    path = sources / "target/plugin.py"
+    source = path.read_text().replace('"A:" + arguments["value"]', 'state["prefix"] + arguments["value"]')
+    source = source.replace('    class Target:', '''    def capture(configuration):
+        if set(configuration) != {"prefix"} or not isinstance(configuration["prefix"], str):
+            raise ValueError("prefix configuration required")
+        return {"prefix": configuration["prefix"].strip()}
+    class Target:
+        def __init__(self, captured):
+            self.state = captured''').replace('state["prefix"] + arguments', 'self.state["prefix"] + arguments')
+    source = source.replace('yield Target()', 'yield Target(state)').replace('open=open_target,', 'open=open_target, capture=capture,')
+    path.write_text(source)
+    log = MessageLog(tmp_path / "sessions.db")
+    host = manager(tmp_path, [sources])
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            with pytest.raises(ValueError, match="prefix configuration"):
+                catalog.bind("example", bindings)
+            with pytest.raises(ValueError, match="prefix configuration"):
+                catalog.bind("example", bindings, configuration={"unexpected": True})
+            options = {"prefix": " job-a: "}
+            identity = catalog.bind("example", bindings, configuration=options)
+            options["prefix"] = "job-b:"
+            assert bindings.describe(identity, TOOLS)["state"] == {"prefix": "job-a:"}
+        await host.terminate_all()
+        shutil.rmtree(sources)
+        host = manager(tmp_path, [])
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with open_tool(bindings, identity) as target:
+            result = await target.invoke("fixed", await target.prepare({"value": "input"}))
+            assert result.parts[0].value == "job-a:restore:input"
+    finally:
+        await host.terminate_all()
+        log.close()

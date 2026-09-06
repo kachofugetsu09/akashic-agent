@@ -187,7 +187,7 @@ def run_migration(migration, workspace):
 
 
 def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
-    store, descriptor, migration
+    store, descriptor, migration, timing_migration
 ):
     with closing(sqlite3.connect(store.path)) as connection, connection:
         connection.execute("DROP TABLE model_calls")
@@ -198,6 +198,10 @@ def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
     )
     assert len(backups) == 1
     assert dump(backups[0]) == before
+    old_schema = dump(store.path)
+    run_migration(migration, store.path.parent)
+    assert dump(store.path) == old_schema
+    run_timing_migration(timing_migration, store.path.parent)
     call_id = store.start_call(descriptor, ModelRequest(()))
     # 模拟 provider 已接到请求，进程在收到响应前崩溃；不会重放或把费用补成零。
     reopened = ModelsStore(store.path, store.backup_dir)
@@ -205,7 +209,7 @@ def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
     assert reopened.read_call(call_id)["state"] == "started"
     assert reopened.read_call(call_id)["usage"] is None
     after = dump(store.path)
-    run_migration(migration, store.path.parent)
+    run_timing_migration(timing_migration, store.path.parent)
     assert dump(store.path) == after
     assert store.read_snapshot().revision == 0
 
@@ -578,3 +582,157 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
                                    model=projection, max_output_tokens=100)
     assert fresh.continuation is None
     assert response.continuation is not None and before[1].body.parts[-1].value["continuation"] is not None
+
+
+@pytest.fixture
+def timing_migration(monkeypatch):
+    import runpy
+    import yoyo
+    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
+    return runpy.run_path(str(Path(__file__).parents[1] / "migrations/yoyo/20260906_06_model_call_timing.py"))
+
+
+def run_timing_migration(migration, workspace):
+    with bind_migration_context(workspace=workspace, config_path=workspace / "config.toml"):
+        migration["migrate_model_call_timing"](None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_call_timing_survives_reopen_and_preserves_delta_and_usage(store, descriptor, monkeypatch, cancel):
+    from dataclasses import asdict
+    now = [0]
+    monkeypatch.setattr("plugins.models.state.monotonic_ns", lambda: now[0])
+    seen = []
+    usage = ModelUsage(output_tokens=12, covered_request_count=1, coverage=UsageCoverage.EXACT)
+
+    async def receive(value):
+        seen.append(value)
+        if "call_record_id" in value:
+            now[0] = 5_000_000_000
+
+    class Driver:
+        async def complete(self, request):
+            (call_id,) = call_ids(store)
+            assert seen == [{"call_record_id": call_id}]
+            now[0] = 5_000_000_000 + 200_000_000
+            await request.on_delta({"content_delta": ""})
+            assert store.read_call_stats(call_id).first_token_ms is None
+            now[0] = 5_000_000_000 + 400_000_000
+            await request.on_delta({"thinking_delta": "thinking"})
+            assert store.read_call_stats(call_id).first_token_ms == 400
+            now[0] = 5_000_000_000 + 800_000_000
+            await request.on_delta({"content_delta": "text"})
+            assert store.read_call_stats(call_id).first_token_ms == 400
+            now[0] = 5_000_000_000 + 1_400_000_000
+            if cancel:
+                raise asyncio.CancelledError
+            return LLMResponse("text", usage=usage)
+
+    model = _BoundChat(descriptor, Driver(), store)
+    if cancel:
+        with pytest.raises(asyncio.CancelledError):
+            await model.complete(ModelRequest((), on_delta=receive))
+    else:
+        await model.complete(ModelRequest((), on_delta=receive))
+    (call_id,) = call_ids(store)
+    reopened = ModelsStore(store.path, store.backup_dir, writable=False)
+    stats = reopened.read_call_stats(call_id)
+    assert stats.first_token_ms == 400 and stats.duration_ms == 1400
+    assert stats.state == ("unknown" if cancel else "success")
+    assert stats.usage == (None if cancel else usage)
+    assert seen[1:] == [{"content_delta": ""}, {"thinking_delta": "thinking"}, {"content_delta": "text"}]
+    assert set(asdict(stats)) == {"call_record_id", "model", "state", "first_token_ms", "duration_ms", "usage"}
+    assert descriptor.auth_identity not in str(asdict(stats))
+    with pytest.raises(RuntimeError):
+        store.record_first_token(call_id, 2000)
+    with pytest.raises(KeyError):
+        reopened.read_call_stats("missing")
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_call_does_not_enable_stream_or_invent_first_token(store, descriptor, monkeypatch):
+    now = [0]
+    monkeypatch.setattr("plugins.models.state.monotonic_ns", lambda: now[0])
+
+    class Driver:
+        async def complete(self, request):
+            assert request.on_delta is None
+            now[0] = 2_000_000_000
+            return LLMResponse("complete")
+
+    response = await _BoundChat(descriptor, Driver(), store).complete(ModelRequest(()))
+    stats = store.read_call_stats(response.call_record_id)
+    assert stats.first_token_ms is None
+    assert stats.duration_ms == 2000
+    assert stats.usage is None
+
+
+def test_timing_migration_keeps_all_old_calls_unknown_and_backup_exact(store, descriptor, migration, timing_migration):
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.execute("DROP TABLE model_calls")
+    run_migration(migration, store.path.parent)
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.executemany(
+            "INSERT INTO model_calls(id,binding_json,request_digest,state,usage_json,failure,started_at,finished_at) VALUES (?,?,?,?,?,?,?,?)",
+            [(state, '{"model":"old"}', "digest", state, None, None, "2026-01-01", None) for state in ("started", "success", "unknown")],
+        )
+    before = dump(store.path)
+    with pytest.raises(RuntimeError, match="schema"):
+        store.start_call(descriptor, ModelRequest(()))
+    with pytest.raises(RuntimeError, match="yoyo"):
+        store.read_call_stats("success")
+    assert dump(store.path) == before
+    run_timing_migration(timing_migration, store.path.parent)
+    backups = list((store.path.parent / "backups/model-call-timing").glob("*/model-registry.sqlite3"))
+    assert len(backups) == 1 and dump(backups[0]) == before
+    for state in ("started", "success", "unknown"):
+        stats = store.read_call_stats(state)
+        assert stats.state == state and stats.first_token_ms is None and stats.duration_ms is None
+    after = dump(store.path)
+    run_timing_migration(timing_migration, store.path.parent)
+    assert dump(store.path) == after
+    assert len(list((store.path.parent / "backups/model-call-timing").glob("*"))) == 1
+    assert store.read_snapshot().revision == 0
+
+
+@pytest.mark.parametrize("mutation", ["ALTER TABLE model_calls ADD COLUMN extra TEXT", "CREATE TRIGGER extra AFTER INSERT ON model_calls BEGIN SELECT 1; END"])
+def test_timing_migration_rejects_unknown_schema_without_mutation(store, migration, timing_migration, mutation):
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.execute("DROP TABLE model_calls")
+    run_migration(migration, store.path.parent)
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.execute(mutation)
+    before = dump(store.path)
+    with pytest.raises(RuntimeError):
+        run_timing_migration(timing_migration, store.path.parent)
+    assert dump(store.path) == before
+    assert not (store.path.parent / "backups/model-call-timing").exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_call_id_announcement_does_not_invent_provider_duration(store, descriptor):
+    class Driver:
+        async def complete(self, request):
+            pytest.fail('provider must not start after a rejected preview')
+
+    async def receive(value):
+        raise OSError('preview closed')
+
+    with pytest.raises(OSError, match='preview closed'):
+        await _BoundChat(descriptor, Driver(), store).complete(ModelRequest((), on_delta=receive))
+    (call_id,) = call_ids(store)
+    stats = store.read_call_stats(call_id)
+    assert stats.state == 'unknown' and stats.first_token_ms is None and stats.duration_ms is None
+    assert stats.usage is None
+
+
+def test_timing_migration_keeps_its_target_when_runtime_schema_evolves(store, migration, timing_migration, monkeypatch):
+    with closing(sqlite3.connect(store.path)) as connection, connection:
+        connection.execute('DROP TABLE model_calls')
+    run_migration(migration, store.path.parent)
+    monkeypatch.setattr('plugins.models.store.MODEL_CALLS_SCHEMA', 'CREATE TABLE model_calls (future TEXT)')
+    run_timing_migration(timing_migration, store.path.parent)
+    with closing(sqlite3.connect(store.path)) as connection:
+        columns = [row[1] for row in connection.execute('PRAGMA table_info(model_calls)')]
+    assert columns[-2:] == ['first_token_ms', 'duration_ms']

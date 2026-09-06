@@ -14,7 +14,7 @@ from session.log import MessageCatalog
 from session.embedding_store import MessageEmbeddings
 
 from ..domain.features import BurstAwareFeaturePool
-from ..domain.model import ContextState, MemoryConfig, Turn
+from ..domain.model import ContextState, EmbeddingSpaceMismatchError, MemoryConfig, Turn
 from ..infrastructure.consumption import Applied, Consumption, LegacyPrefix, turns_digest, load_legacy_prefix, legacy_embedding_model
 from ..infrastructure.lease import WriterLease
 from ..infrastructure.persistence import load_consumption, load_memory_state, write_memory_database
@@ -94,7 +94,10 @@ class MessageConsumer:
         for identity, entries in groupby(state.applied, key=lambda entry: entry.learning_binding):
             async with bindings.open(identity, AKASHA_LEARNING) as (learning, metadata):
                 rule = LearningConfig.model_validate(dict(metadata))
-                _check_embedding_space(rule.embedding_model, rule.dimension, space, turns)
+                try:
+                    _check_embedding_space(rule.embedding_model, rule.dimension, space, turns)
+                except EmbeddingSpaceMismatchError as error:
+                    raise ValueError("已发布 Akasha 学习图的 embedding 空间不一致") from error
                 space = rule.embedding_model
                 for entry in entries:
                     turns.append(learning.restore(
@@ -229,10 +232,10 @@ class MessageConsumer:
 def _check_embedding_space(model: str, dimension: int, previous_model: str | None, turns: list[Turn]) -> None:
     """图不能混合向量空间；身份来自原学习出处，维度来自实际恢复的材料。"""
     if previous_model is not None and previous_model != model:
-        raise ValueError("学习图不能混用不同 embedding 空间")
+        raise EmbeddingSpaceMismatchError("学习图不能混用不同 embedding 空间，需显式重建")
     if any(len(vector) != dimension for turn in turns
            for vector in (turn.user_dense, turn.assistant_dense) if vector is not None):
-        raise ValueError("新学习 binding 的维度不匹配已有图")
+        raise EmbeddingSpaceMismatchError("新学习 binding 的维度不匹配已有图，需显式重建")
 
 
 async def run_memory_job[T](work: Callable[[], T]) -> T:

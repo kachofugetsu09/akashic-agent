@@ -32,7 +32,8 @@ COPY requirements.txt requirements-dev.txt /tmp/
 RUN python -m venv /opt/venv \
     && python -m pip install pip==26.1.2 \
     && python -m pip install -r /tmp/requirements-dev.txt \
-    && python -m pip install mcp==1.28.1
+    && python -m pip install mcp==1.28.1 \
+    && python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'akashic-sdk.pth').write_text('/app/sdk/python/src\n')"
 
 COPY docker/debug/plugins /opt/akashic-debug-plugins
 RUN python -m venv /opt/akashic-debug-plugins/replay_debug/.venv \

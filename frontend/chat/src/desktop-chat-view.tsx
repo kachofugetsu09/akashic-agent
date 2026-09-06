@@ -12,7 +12,8 @@ import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
 import { DesktopComposer } from "./desktop-composer";
-import { DesktopConversationMessages } from "./desktop-conversation";
+import { DesktopConversationMessages, DesktopTimelineMessages } from "./desktop-conversation";
+import { ReplyActivityView } from "./message-view";
 import { DesktopMobileNavigation } from "./desktop-mobile-navigation";
 import { DesktopSidebar } from "./desktop-sidebar";
 import type { DesktopChatController } from "./use-desktop-chat-controller";
@@ -33,8 +34,8 @@ interface DesktopChatViewProps {
 export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: DesktopChatViewProps) {
   const theme = useTheme();
   const {
-    surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, status,
-    streamStore, turnMetrics, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
+    surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
+    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
     historyHasMore, historyLoadingOlder, loadOlderMessages,
     activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
@@ -42,6 +43,8 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
     setMobilePairingOpen,
   } = controller;
   const openPairing = () => setMobilePairingOpen(true);
+  const committed = new Set(timelineMessages.map((message) => message.id));
+  const hasMessages = messages.length + timelineMessages.length + replyActivities.length > 0;
 
   const shellClass = [
     "chat-shell",
@@ -83,36 +86,43 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
           </Suspense>
         ) : <section className="chat-main">
         <Conversation className="conversation" resize="instant">
-          <ConversationContent className={messages.length ? "conversation-content" : "conversation-content empty"}>
-            {messages.length === 0 ? <DesktopEmptyState shellStatus={shellState?.status ?? null} /> : (
+          <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
+            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
-                  firstMessageId={messages[0]?.id}
+                  firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
                   hasMore={historyHasMore}
                   loading={historyLoadingOlder}
-                  onLoadOlder={loadOlderMessages}
+                  onLoadOlder={() => loadOlderMessages().catch(reportError)}
                 />
+                <DesktopTimelineMessages messages={timelineMessages} status={status}
+                  messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
+                  onReply={handleReplyMessage} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages
-                  messages={messages} activeSessionId={activeSessionId} status={status}
+                  messages={messages} status={status}
                   copiedMessageId={copiedMessageId} streamStore={streamStore}
-                  messageElementsRef={messageElementsRef} onReply={handleReplyMessage}
+                  messageElementsRef={messageElementsRef}
                   onCopied={handleCopiedMessage} onError={reportError}
                 />
+                {replyActivities.map((activity) => <ReplyActivityView key={activity.handle}
+                  activity={activity} committed={committed} onError={reportError} />)}
               </MessageRendererErrorBoundary>
             )}
           </ConversationContent>
-          <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore} />
+          <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore}
+            timelineMessages={timelineMessages} replyActivities={replyActivities} />
           <ConversationScrollButton className="desktop-scroll-return" />
         </Conversation>
 
-        <div className={`composer-wrap ${messages.length === 0 ? "home" : ""}`}>
+        <div className={`composer-wrap ${!hasMessages ? "home" : ""}`}>
           <DesktopComposer
             chatReady={chatReady} status={status} stopPending={stopPending} modelState={modelState}
             selectedRuntimeId={selectedRuntimeId} selectedEffort={selectedReasoningEffort}
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}
           />
-          <ComposerStatsLine tracker={turnMetrics} />
+          <ComposerStatsLine messages={timelineMessages} activities={replyActivities} connected={replyAvailable !== null} />
+          {replyAvailable === false ? <p className="reply-unavailable" role="status">当前未加载回复插件</p> : null}
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton>
           </div> : null}

@@ -2692,3 +2692,14 @@ button {
     transition-duration: 1ms !important;
   }
 }
+
+/* 消息作者和来源可以是程序名；窄屏按真实文字换行。 */
+.mobile-message-meta.timeline-meta .mobile-message-meta__text {
+  min-width: 0;
+  flex-wrap: wrap;
+  white-space: normal;
+}
+.mobile-message-anchor.timeline-input .mobile-message-meta {
+  margin-inline-start: auto;
+  justify-content: flex-end;
+}
