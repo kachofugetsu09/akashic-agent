@@ -1,0 +1,1295 @@
+{
+  "reference": {
+    "browser": "0.1.1",
+    "sky": "0.6.26",
+    "api_sha256": "a7c8d53096ea2563cf939d5f7a37dfc2ae0701e891510566930868d04ce0f5df"
+  },
+  "state": "source implementation with per-member evidence; unverified members do not imply equivalence",
+  "members": [
+    {
+      "api": "Agent.browsers",
+      "declarations": [
+        "browsers: Browsers; // API for finding and selecting browsers."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Agent.documentation",
+      "declarations": [
+        "documentation: Documentation; // API for reading packaged browser-use documentation by name."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Browsers.get",
+      "declarations": [
+        "get(id: string): Promise<Browser>; // Get a browser by id or client type."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Browsers.getDefault",
+      "declarations": [
+        "getDefault(): Promise<Browser>; // Get the default browser from those currently available."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Browsers.getForUrl",
+      "declarations": [
+        "getForUrl(url: string): Promise<Browser>; // Get the browser best suited to interact with the provided URL."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Browsers.list",
+      "declarations": [
+        "list(): Promise<Array<{ family?: string; id: string; metadata?: { codexSessionId?: string; extensionInstanceId?: string }; name: string; profileName?: string; type: \"iab\" | \"extension\" | \"cdp\" }>>; // List available browsers."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Browser.browserId",
+      "declarations": [
+        "browserId: string; // Browser id selected by `agent.browsers.get()`."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Browser.capabilities",
+      "declarations": [
+        "capabilities: BrowserCapabilityCollection; // Browser-scoped optional capabilities advertised by the connected backend; discover IDs with `await browser.capabilities.list()`, then call `await (await browser.capabilities.get(id)).documentation()` for method details."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Browser.tabs",
+      "declarations": [
+        "tabs: Tabs; // API for interacting with browser tabs."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Browser.user",
+      "declarations": [
+        "user: BrowserUser; // Context for user-owned browser tabs."
+      ],
+      "plan": "container-source-implementation",
+      "verified": true,
+      "difference": "Original backend capability restriction is retained",
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Browser.documentation",
+      "declarations": [
+        "documentation(): Promise<string>; // Read browser guidance and the core API reference."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Browser.history",
+      "declarations": [
+        "history(options: BrowserHistoryOptions): Promise<Array<BrowserHistoryEntry>>; // List recent browsing history ordered by `dateVisited` descending."
+      ],
+      "plan": "upstream-unavailable-on-cdp",
+      "verified": false,
+      "difference": "Original backend capability restriction is retained"
+    },
+    {
+      "api": "Browser.nameSession",
+      "declarations": [
+        "nameSession(name: string): Promise<void>; // Name the current browser automation session."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "BrowserUser.claimTab",
+      "declarations": [
+        "claimTab(tab: string | BrowserUserTabInfo): Promise<Tab>; // Claim a user tab returned by `openTabs()` and return it as a controllable agent tab."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "BrowserUser.openTabs",
+      "declarations": [
+        "openTabs(): Promise<Array<BrowserUserTabInfo>>; // List open top-level tabs across the user's browser windows ordered by `lastOpened` descending."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tabs.content",
+      "declarations": [
+        "content(options: TabsContentOptions): Promise<Array<TabsContentResult>>; // Load one or more URLs in temporary background tabs and extract their content without changing the selected tab."
+      ],
+      "plan": "upstream-unavailable-on-cdp",
+      "verified": false,
+      "difference": "Original backend capability restriction is retained"
+    },
+    {
+      "api": "Tabs.get",
+      "declarations": [
+        "get(id: string): Promise<Tab>; // Get a tab by id."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tabs.list",
+      "declarations": [
+        "list(): Promise<Array<TabInfo>>; // List open tabs in the browser."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tabs.new",
+      "declarations": [
+        "new(): Promise<Tab>; // Create and return a new tab in the browser."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tabs.selected",
+      "declarations": [
+        "selected(): Promise<undefined | Tab>; // Return the currently selected tab, if any."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.ax",
+      "declarations": [
+        "ax: AXAPI; // API for interacting with accessibility state and accessibility elements."
+      ],
+      "plan": "container-source-implementation",
+      "verified": true,
+      "difference": "Full AX text, source renderer; enabled alongside DOM CUA; no original WASM pruning/diff equivalence claim",
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tab.capabilities",
+      "declarations": [
+        "capabilities: TabCapabilityCollection; // Tab-scoped optional capabilities advertised by the connected backend; discover IDs with `await tab.capabilities.list()`, then call `await (await tab.capabilities.get(id)).documentation()` for method details."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.clipboard",
+      "declarations": [
+        "clipboard: TabClipboardAPI; // API for interacting with the browser session's clipboard."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tab.content",
+      "declarations": [
+        "content: ContentAPI; // API for exporting tab content."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.cua",
+      "declarations": [
+        "cua: CUAAPI; // API for interacting with the tab via the cua api"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.dev",
+      "declarations": [
+        "dev: TabDevAPI; // API for developer-oriented tab inspection."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.dom_cua",
+      "declarations": [
+        "dom_cua: DomCUAAPI; // API for interacting with the tab via the dom based cua api"
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tab.id",
+      "declarations": [
+        "id: string; // A tab's unique identifier"
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tab.playwright",
+      "declarations": [
+        "playwright: PlaywrightAPI; // API for interacting with the tab via the playwright api"
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tab.back",
+      "declarations": [
+        "back(): Promise<void>; // Navigate this tab back in history."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.close",
+      "declarations": [
+        "close(): Promise<void>; // Close this tab."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tab.forward",
+      "declarations": [
+        "forward(): Promise<void>; // Navigate this tab forward in history."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.getJsDialog",
+      "declarations": [
+        "getJsDialog(): Promise<undefined | Dialog>; // Get the active JavaScript dialog for this tab, if one is currently open."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.goto",
+      "declarations": [
+        "goto(url: string): Promise<void>; // Open a URL in this tab."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tab.markDeliverable",
+      "declarations": [
+        "markDeliverable(): Promise<void>; // Keep this tab as a deliverable after the turn completes."
+      ],
+      "plan": "container-source-implementation",
+      "verified": true,
+      "difference": "Original backend capability restriction is retained",
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Tab.markHandoff",
+      "declarations": [
+        "markHandoff(): Promise<void>; // Keep this tab available for a later turn after the current turn completes."
+      ],
+      "plan": "container-source-implementation",
+      "verified": false,
+      "difference": "Original backend capability restriction is retained"
+    },
+    {
+      "api": "Tab.reload",
+      "declarations": [
+        "reload(): Promise<void>; // Reload this tab."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.requestManualHandoff",
+      "declarations": [
+        "requestManualHandoff(): Promise<void>; // Request manual user control of this Cloud Browser tab."
+      ],
+      "plan": "upstream-unavailable-on-cdp",
+      "verified": false,
+      "difference": "Original backend capability restriction is retained"
+    },
+    {
+      "api": "Tab.screenshot",
+      "declarations": [
+        "screenshot(options: ScreenshotOptions): Promise<Uint8Array>; // Capture a screenshot of this tab."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.title",
+      "declarations": [
+        "title(): Promise<undefined | string>; // Get the current title for this tab."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Tab.url",
+      "declarations": [
+        "url(): Promise<undefined | string>; // Get the current URL for this tab."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "AXAPI.click",
+      "declarations": [
+        "click(target: number | AXPoint, options?: AXClickOptions): Promise<void>; // Click an accessibility element or viewport coordinate."
+      ],
+      "plan": "preserve",
+      "verified": false,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical"
+    },
+    {
+      "api": "AXAPI.drag",
+      "declarations": [
+        "drag(from: AXPoint, to: AXPoint): Promise<void>; // Drag between two viewport coordinates."
+      ],
+      "plan": "preserve",
+      "verified": false,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical"
+    },
+    {
+      "api": "AXAPI.get",
+      "declarations": [
+        "get(mode?: \"state\", options?: AXStateOptions): Promise<string>; // Return accessibility state without displaying it; prefer write() for model-visible observation.",
+        "get(mode: \"screenshot\"): Promise<Uint8Array>; // Return screenshot bytes without displaying an image or advancing accessibility state.",
+        "get(mode: \"both\", options?: AXStateOptions): Promise<{ screenshot?: Uint8Array; state: string }>; // Return accessibility state and screenshot bytes when available."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical",
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "AXAPI.performSecondaryAction",
+      "declarations": [
+        "performSecondaryAction(elementIndex: number, action: string): Promise<void>; // Invoke an additional action exposed by an accessibility element."
+      ],
+      "plan": "preserve",
+      "verified": false,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical"
+    },
+    {
+      "api": "AXAPI.pressKey",
+      "declarations": [
+        "pressKey(key: string): Promise<void>; // Press a key or key combination in the current tab."
+      ],
+      "plan": "preserve",
+      "verified": false,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical"
+    },
+    {
+      "api": "AXAPI.scroll",
+      "declarations": [
+        "scroll(target: number | AXPoint, direction: AXDirection, pages?: number): Promise<void>; // Scroll an accessibility element or a viewport coordinate."
+      ],
+      "plan": "preserve",
+      "verified": false,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical"
+    },
+    {
+      "api": "AXAPI.selectText",
+      "declarations": [
+        "selectText(elementIndex: number, text: string, options?: AXSelectTextOptions): Promise<void>; // Select text or position the cursor within an editable element."
+      ],
+      "plan": "preserve",
+      "verified": false,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical"
+    },
+    {
+      "api": "AXAPI.setValue",
+      "declarations": [
+        "setValue(elementIndex: number, value: string): Promise<void>; // Set the value of an accessibility element."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical",
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "AXAPI.typeText",
+      "declarations": [
+        "typeText(text: string): Promise<void>; // Type text into the currently focused element."
+      ],
+      "plan": "preserve",
+      "verified": false,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical"
+    },
+    {
+      "api": "AXAPI.write",
+      "declarations": [
+        "write(mode?: \"state\", options?: AXStateOptions): Promise<void>; // Prefer this method to display current accessibility state to the model.",
+        "write(mode: \"screenshot\"): Promise<void>; // Display a screenshot without advancing accessibility state.",
+        "write(mode: \"both\", options?: AXStateOptions): Promise<void>; // Display accessibility state followed by its corresponding screenshot."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "difference": "Source AX renderer emits full text; binary rendering and diff compression are not claimed identical",
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "ContentAPI.export",
+      "declarations": [
+        "export(): Promise<string>; // Export the tab's content to a file on disk using the default asset-loader path."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "ContentAPI.exportGsuite",
+      "declarations": [
+        "exportGsuite(type: \"pdf\" | \"md\" | \"xlsx\" | \"csv\" | \"docx\" | \"pptx\"): Promise<string>; // Export a Google Workspace tab using an explicit GSuite export type."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "ContentAPI.exportYouTubeTranscript",
+      "declarations": [
+        "exportYouTubeTranscript(): Promise<string>; // Export an HTTPS youtube.com or www.youtube.com /watch transcript to a UTF-8 .txt file."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "CUAAPI.click",
+      "declarations": [
+        "click(options: ClickOptions): Promise<void>; // Click at a coordinate in the current viewport."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "CUAAPI.double_click",
+      "declarations": [
+        "double_click(options: DoubleClickOptions): Promise<void>; // Double click at a coordinate in the current viewport."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "CUAAPI.downloadMedia",
+      "declarations": [
+        "downloadMedia(options: CuaDownloadMediaOptions): Promise<void>; // Trigger a media download at a viewport coordinate."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "CUAAPI.drag",
+      "declarations": [
+        "drag(options: DragOptions): Promise<void>; // Drag from a point to a point by the provided path."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "CUAAPI.keypress",
+      "declarations": [
+        "keypress(options: KeypressOptions): Promise<void>; // Press control characters at the current focused element (focus it first via click/dblclick)."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "CUAAPI.move",
+      "declarations": [
+        "move(options: MoveOptions): Promise<void>; // Move the mouse to a point by the provided x and y coordinates."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "CUAAPI.scroll",
+      "declarations": [
+        "scroll(options: ScrollOptions): Promise<void>; // Scroll by a delta from a specific viewport coordinate."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "CUAAPI.type",
+      "declarations": [
+        "type(options: TypeOptions): Promise<void>; // Type text at the current focus."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "DomCUAAPI.click",
+      "declarations": [
+        "click(options: DomClickOptions): Promise<void>; // Click a DOM node by its id from the visible DOM snapshot."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "DomCUAAPI.double_click",
+      "declarations": [
+        "double_click(options: DomClickOptions): Promise<void>; // Double-click a DOM node by its id."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "DomCUAAPI.downloadMedia",
+      "declarations": [
+        "downloadMedia(options: DomDownloadMediaOptions): Promise<void>; // Trigger a media download for a DOM node."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "DomCUAAPI.get_visible_dom",
+      "declarations": [
+        "get_visible_dom(): Promise<unknown>; // Return a filtered DOM with node ids for interactable elements."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "DomCUAAPI.keypress",
+      "declarations": [
+        "keypress(options: DomKeypressOptions): Promise<void>; // Press control characters at the currently focused element (focus it first via click/dblclick)."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "DomCUAAPI.scroll",
+      "declarations": [
+        "scroll(options: DomScrollOptions): Promise<void>; // Scroll either the page or a specific node (if node_id provided) by deltas."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "DomCUAAPI.type",
+      "declarations": [
+        "type(options: DomTypeOptions): Promise<void>; // Type text into the currently focused element (focus via click first)."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.domSnapshot",
+      "declarations": [
+        "domSnapshot(): Promise<string>; // Return a snapshot of the current DOM as a string, including expanded iframe body content when available."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "PlaywrightAPI.elementInfo",
+      "declarations": [
+        "elementInfo(options: ElementInfoOptions): Promise<Array<ElementInfo>>; // Return locator-oriented metadata for elements at a screenshot coordinate."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.elementScreenshot",
+      "declarations": [
+        "elementScreenshot(options: ElementScreenshotOptions): Promise<Uint8Array>; // Capture a screenshot of the current viewport annotated with matching element bounds and the probed point."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.evaluate",
+      "declarations": [
+        "evaluate<TResult, TArg>(pageFunction: PlaywrightEvaluateFunction<TArg, TResult>, arg?: TArg, options?: PlaywrightEvaluateOptions): Promise<TResult>; // Evaluate JavaScript in a read-only page scope."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.expectNavigation",
+      "declarations": [
+        "expectNavigation<T>(action: () => Promise<T>, options: { timeoutMs?: number; url?: string; waitUntil?: LoadState }): Promise<T>; // Expect a navigation triggered by an action."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.frameLocator",
+      "declarations": [
+        "frameLocator(frameSelector: string): PlaywrightFrameLocator; // Create a frame-scoped locator builder."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.getByLabel",
+      "declarations": [
+        "getByLabel(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by label text within the page."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.getByPlaceholder",
+      "declarations": [
+        "getByPlaceholder(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by placeholder text within the page."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.getByRole",
+      "declarations": [
+        "getByRole(role: string, options: { exact?: boolean; name?: TextMatcher }): PlaywrightLocator; // Find elements by ARIA role within the page."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "PlaywrightAPI.getByTestId",
+      "declarations": [
+        "getByTestId(testId: string): PlaywrightLocator; // Find elements by test id within the page."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.getByText",
+      "declarations": [
+        "getByText(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by text within the page."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.locator",
+      "declarations": [
+        "locator(selector: string): PlaywrightLocator; // Create a locator scoped to this tab."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "PlaywrightAPI.waitForEvent",
+      "declarations": [
+        "waitForEvent(event: \"download\", options?: WaitForEventOptions): Promise<PlaywrightDownload>; // Wait for the next event on the page.",
+        "waitForEvent(event: \"filechooser\", options?: WaitForEventOptions): Promise<PlaywrightFileChooser>;"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.waitForLoadState",
+      "declarations": [
+        "waitForLoadState(options: PageWaitForLoadStateOptions): Promise<void>; // Wait for the page to reach a specific load state."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.waitForTimeout",
+      "declarations": [
+        "waitForTimeout(timeoutMs: number): Promise<void>; // Wait for a fixed duration."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightAPI.waitForURL",
+      "declarations": [
+        "waitForURL(url: string, options: PageWaitForURLOptions): Promise<void>; // Wait for the page URL to match the provided value."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFrameLocator.frameLocator",
+      "declarations": [
+        "frameLocator(frameSelector: string): PlaywrightFrameLocator; // Create a locator scoped to a nested frame."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFrameLocator.getByLabel",
+      "declarations": [
+        "getByLabel(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by label within this frame."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFrameLocator.getByPlaceholder",
+      "declarations": [
+        "getByPlaceholder(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by placeholder within this frame."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFrameLocator.getByRole",
+      "declarations": [
+        "getByRole(role: string, options: { exact?: boolean; name?: TextMatcher }): PlaywrightLocator; // Find elements by ARIA role within this frame."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFrameLocator.getByTestId",
+      "declarations": [
+        "getByTestId(testId: string): PlaywrightLocator; // Find elements by test id within this frame."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFrameLocator.getByText",
+      "declarations": [
+        "getByText(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by text within this frame."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFrameLocator.locator",
+      "declarations": [
+        "locator(selector: string): PlaywrightLocator; // Create a locator scoped to this frame."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.all",
+      "declarations": [
+        "all(): Promise<Array<PlaywrightLocator>>; // Resolve to a list of locators for each matched element."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.allTextContents",
+      "declarations": [
+        "allTextContents(options: { timeoutMs?: number }): Promise<Array<string>>; // Return `textContent` for *all* elements matched by this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.and",
+      "declarations": [
+        "and(locator: PlaywrightLocator): PlaywrightLocator; // Return a locator matching elements that satisfy both this locator and `locator`."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.check",
+      "declarations": [
+        "check(options: LocatorCheckOptions): Promise<void>; // Check a checkbox or switch-like control."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.click",
+      "declarations": [
+        "click(options: LocatorClickOptions): Promise<void>; // Click the element matched by this locator."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "PlaywrightLocator.count",
+      "declarations": [
+        "count(): Promise<number>; // Number of elements matching this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.dblclick",
+      "declarations": [
+        "dblclick(options: LocatorClickOptions): Promise<void>; // Double-click the element matched by this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.downloadMedia",
+      "declarations": [
+        "downloadMedia(options: LocatorDownloadMediaOptions): Promise<void>; // Trigger a download for the media or file link in the first matched element."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.evaluate",
+      "declarations": [
+        "evaluate<TResult, TArg>(pageFunction: LocatorEvaluateFunction<TArg, TResult>, arg?: TArg, options?: PlaywrightEvaluateOptions): Promise<TResult>; // Evaluate JavaScript in a read-only scope; the locator must resolve unambiguously to one element."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.evaluateAll",
+      "declarations": [
+        "evaluateAll<TResult, TArg>(pageFunction: LocatorEvaluateAllFunction<TArg, TResult>, arg?: TArg, options?: PlaywrightEvaluateOptions): Promise<TResult>; // Evaluate read-only JavaScript against all elements matched by this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.fill",
+      "declarations": [
+        "fill(value: string, options: { timeoutMs?: number }): Promise<void>; // Replace the element's value with the provided text."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "PlaywrightLocator.filter",
+      "declarations": [
+        "filter(options: LocatorFilterOptions): PlaywrightLocator; // Narrow this locator by additional constraints."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.first",
+      "declarations": [
+        "first(): PlaywrightLocator; // Return a locator pointing at the first matched element."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.getAttribute",
+      "declarations": [
+        "getAttribute(name: string, options: { timeoutMs?: number }): Promise<null | string>; // Return an attribute value from the first matched element."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.getByLabel",
+      "declarations": [
+        "getByLabel(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by label text, scoped to this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.getByPlaceholder",
+      "declarations": [
+        "getByPlaceholder(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by placeholder text, scoped to this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.getByRole",
+      "declarations": [
+        "getByRole(role: string, options: { exact?: boolean; name?: TextMatcher }): PlaywrightLocator; // Find elements by ARIA role, scoped to this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.getByTestId",
+      "declarations": [
+        "getByTestId(testId: string): PlaywrightLocator; // Find elements by test id, scoped to this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.getByText",
+      "declarations": [
+        "getByText(text: TextMatcher, options: { exact?: boolean }): PlaywrightLocator; // Find elements by text content, scoped to this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.innerText",
+      "declarations": [
+        "innerText(options: { timeoutMs?: number }): Promise<string>; // Return the rendered (visible) text of the first matched element."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.isEnabled",
+      "declarations": [
+        "isEnabled(): Promise<boolean>; // Whether the first matched element is currently enabled."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.isVisible",
+      "declarations": [
+        "isVisible(): Promise<boolean>; // Whether the first matched element is currently visible."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.last",
+      "declarations": [
+        "last(): PlaywrightLocator; // Return a locator pointing at the last matched element."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.locator",
+      "declarations": [
+        "locator(selector: string, options: LocatorLocatorOptions): PlaywrightLocator; // Create a descendant locator scoped to this locator."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.nth",
+      "declarations": [
+        "nth(index: number): PlaywrightLocator; // Return a locator pointing at the Nth matched element."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.or",
+      "declarations": [
+        "or(locator: PlaywrightLocator): PlaywrightLocator; // Return a locator matching elements that satisfy either this locator or `locator`."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.press",
+      "declarations": [
+        "press(value: string, options: { timeoutMs?: number }): Promise<void>; // Press a keyboard key while this locator is focused."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.pressSequentially",
+      "declarations": [
+        "pressSequentially(value: string, options: LocatorPressSequentiallyOptions): Promise<void>; // Focus the element and press each character in the text sequentially without clearing its existing value."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.selectOption",
+      "declarations": [
+        "selectOption(value: SelectOptionInput | Array<SelectOptionInput>, options: { timeoutMs?: number }): Promise<void>; // Select one or more options on a native `<select>` element."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "PlaywrightLocator.setChecked",
+      "declarations": [
+        "setChecked(checked: boolean, options: LocatorCheckOptions): Promise<void>; // Set a checkbox or switch-like control to a checked/unchecked state."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.textContent",
+      "declarations": [
+        "textContent(options: { timeoutMs?: number }): Promise<null | string>; // Return the raw textContent of the first matched element (or null if missing)."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.type",
+      "declarations": [
+        "type(value: string, options: { timeoutMs?: number }): Promise<void>; // Type text into the element without clearing existing content."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.uncheck",
+      "declarations": [
+        "uncheck(options: LocatorCheckOptions): Promise<void>; // Uncheck a checkbox or switch-like control."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightLocator.waitFor",
+      "declarations": [
+        "waitFor(options: LocatorWaitForOptions): Promise<void>; // Wait for the element to reach a specific state."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightDownload.path",
+      "declarations": [
+        "path(options: { timeoutMs?: number }): Promise<null | string>; // Return the local path to the downloaded file, if available."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFileChooser.isMultiple",
+      "declarations": [
+        "isMultiple(): boolean; // Whether the input allows selecting multiple files."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PlaywrightFileChooser.setFiles",
+      "declarations": [
+        "setFiles(files: FileChooserFiles, options: { timeoutMs?: number }): Promise<void>; // Set the files for this chooser."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "TabClipboardAPI.read",
+      "declarations": [
+        "read(): Promise<Array<TabClipboardItem>>; // Read clipboard items, including text and binary payloads."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "TabClipboardAPI.readText",
+      "declarations": [
+        "readText(): Promise<string>; // Read plain text from the browser clipboard."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "TabClipboardAPI.write",
+      "declarations": [
+        "write(items: Array<TabClipboardItem>): Promise<void>; // Write clipboard items."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "TabClipboardAPI.writeText",
+      "declarations": [
+        "writeText(text: string): Promise<void>; // Write plain text to the browser clipboard."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "TabDevAPI.logs",
+      "declarations": [
+        "logs(options: TabDevLogsOptions): Promise<Array<TabDevLogEntry>>; // Read console log messages captured for this tab."
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "AlertDialog.type",
+      "declarations": [
+        "type: \"alert\";"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "AlertDialog.dismiss",
+      "declarations": [
+        "dismiss(): Promise<void>;"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "BeforeUnloadDialog.type",
+      "declarations": [
+        "type: \"beforeunload\";"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "BeforeUnloadDialog.dismiss",
+      "declarations": [
+        "dismiss(): Promise<void>;"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "ConfirmDialog.type",
+      "declarations": [
+        "type: \"confirm\";"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "ConfirmDialog.accept",
+      "declarations": [
+        "accept(): Promise<void>;"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "ConfirmDialog.dismiss",
+      "declarations": [
+        "dismiss(): Promise<void>;"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Documentation.get",
+      "declarations": [
+        "get(name: string): Promise<string>; // Read packaged documentation by its extensionless relative path."
+      ],
+      "plan": "preserve",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "PromptDialog.type",
+      "declarations": [
+        "type: \"prompt\";"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PromptDialog.accept",
+      "declarations": [
+        "accept(text: string): Promise<void>;"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "PromptDialog.dismiss",
+      "declarations": [
+        "dismiss(): Promise<void>;"
+      ],
+      "plan": "preserve",
+      "verified": false
+    },
+    {
+      "api": "Desktop.click",
+      "plan": "linux-source-reconstruction",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Desktop.drag",
+      "plan": "linux-source-reconstruction",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Desktop.drag_handle",
+      "plan": "linux-source-reconstruction",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Desktop.get_screenshot",
+      "plan": "linux-source-reconstruction",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload",
+      "difference": "XFixes cursor and image bytes/data URL; no extra filepath"
+    },
+    {
+      "api": "Desktop.move",
+      "plan": "linux-source-reconstruction",
+      "verified": false
+    },
+    {
+      "api": "Desktop.press_key",
+      "plan": "linux-source-reconstruction",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Desktop.scroll",
+      "plan": "linux-source-reconstruction",
+      "verified": false
+    },
+    {
+      "api": "Desktop.type_text",
+      "plan": "linux-source-reconstruction",
+      "verified": true,
+      "evidence": "Cua Basic 68 cases and test/lifecycle.test.mjs; bounded behavior coverage, not every overload"
+    },
+    {
+      "api": "Desktop.getApp",
+      "plan": "explicit-unavailable",
+      "verified": false,
+      "difference": "macOS app AX or optional audio is outside the current X11 container contract"
+    },
+    {
+      "api": "Desktop.listApps",
+      "plan": "explicit-unavailable",
+      "verified": false,
+      "difference": "macOS app AX or optional audio is outside the current X11 container contract"
+    },
+    {
+      "api": "Desktop.start_audio_recording",
+      "plan": "explicit-unavailable",
+      "verified": false,
+      "difference": "macOS app AX or optional audio is outside the current X11 container contract"
+    },
+    {
+      "api": "Desktop.stop_audio_recording",
+      "plan": "explicit-unavailable",
+      "verified": false,
+      "difference": "macOS app AX or optional audio is outside the current X11 container contract"
+    }
+  ]
+}

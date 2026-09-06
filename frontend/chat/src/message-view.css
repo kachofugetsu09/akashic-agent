@@ -938,3 +938,32 @@ button.tool-step-summary:active {
   padding: 8px 10px 0;
   background: var(--ak-color-bg-canvas);
 }
+
+/* 首段内容到达前保持轻量反馈，不把网络等待伪装成推理内容。 */
+.thinking-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-block-size: 24px;
+  color: var(--ak-ink-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+.thinking-placeholder__dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.thinking-placeholder__dots i {
+  inline-size: 3px;
+  block-size: 3px;
+  border-radius: 50%;
+  background: currentColor;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .thinking-placeholder__dots { animation: thinking-breathe 1.6s ease-in-out infinite; }
+}
+@keyframes thinking-breathe {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}

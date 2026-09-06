@@ -1,45 +1,20 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS desktop-build
+WORKDIR /build
+COPY docker/computer/native/Cargo.toml docker/computer/native/Cargo.lock ./
+COPY docker/computer/native/src ./src
+RUN cargo build --locked --release
 
-LABEL org.opencontainers.image.source="https://github.com/kachofugetsu09/akashic-agent"
-
-ARG OPENCLI_VERSION=1.8.7
-ARG OPENCLI_EXTENSION_VERSION=1.0.23
-ARG OPENCLI_EXTENSION_SHA256=e3399db1e9dd626519a8719d638d3c3813494d1f030c1e96799e05ebe7ba5340
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    DISPLAY=:99 \
-    HOME=/data/home \
-    OPENCLI_AUTH_REFRESH_SITES=bilibili,gemini,github,jd,notebooklm,taobao,xianyu,youtube \
-    OPENCLI_DAEMON_PORT=19825 \
-    XDG_CACHE_HOME=/data/cache \
-    XDG_CONFIG_HOME=/data/config
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates chromium dbus-x11 fonts-noto-cjk imagemagick procps \
-        thunar tigervnc-standalone-server tini unzip websockify wget \
-        x11-xserver-utils xclip xdotool xfce4-panel xfce4-session \
-        xfce4-settings xfce4-terminal xfdesktop4 xfwm4 \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install --global "@jackwener/opencli@${OPENCLI_VERSION}" \
-    && wget -q -O /tmp/opencli-extension.zip \
-        "https://github.com/jackwener/OpenCLI/releases/download/v${OPENCLI_VERSION}/opencli-extension-v${OPENCLI_EXTENSION_VERSION}.zip" \
-    && echo "${OPENCLI_EXTENSION_SHA256}  /tmp/opencli-extension.zip" | sha256sum -c - \
-    && mkdir -p /opt/opencli-extension \
-    && unzip -q /tmp/opencli-extension.zip -d /opt/opencli-extension \
-    && rm /tmp/opencli-extension.zip \
-    && mkdir -p /data /opt/computer /tmp/.ICE-unix /tmp/.X11-unix \
-    && chmod 1777 /tmp/.ICE-unix /tmp/.X11-unix \
-    && chown -R 1000:1000 /data /opt/computer
-
+# 固定现有桌面环境；本次只升级 driver，不重新安装 Chromium、XFCE 或 OpenCLI。
+FROM ghcr.io/kachofugetsu09/akashic-computer@sha256:6fd3c605380a3daef5ddebb34f2905ee992d2b4e1490fbfb78dcce9f06a3dadb
+USER root
+COPY --from=desktop-build /build/target/release/akashic-desktop /opt/computer/bin/akashic-desktop
+COPY --chown=1000:1000 docker/computer/package.json docker/computer/package-lock.json /opt/computer/
+RUN cd /opt/computer && npm ci --omit=dev --no-audit --no-fund
+COPY --chown=1000:1000 docker/computer/driver /opt/computer/driver
 COPY --chown=1000:1000 docker/computer/gateway.mjs /opt/computer/gateway.mjs
 COPY --chown=1000:1000 docker/computer/start.sh /opt/computer/start.sh
 RUN chmod 0755 /opt/computer/start.sh
-
 USER 1000:1000
 WORKDIR /data
-EXPOSE 6080 8080 19826
-ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
-CMD ["/opt/computer/start.sh"]

@@ -441,3 +441,8 @@ dialog.settings-scrim::backdrop { background: transparent; }
   .settings-connection-card { transition-duration: 0.01ms; }
   .is-spinning { animation-duration: 1.8s; }
 }
+
+.settings-saved-models { padding: 1rem 1.25rem; border-block-start: 1px solid var(--md-sys-color-outline-variant); }
+.settings-saved-models summary { cursor: pointer; }
+.settings-saved-models ul { padding-inline-start: 1.25rem; max-height: 16rem; overflow: auto; overflow-wrap: anywhere; }
+.settings-role-grid [role="status"] { white-space: normal; overflow-wrap: anywhere; }

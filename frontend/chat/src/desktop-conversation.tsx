@@ -76,6 +76,7 @@ export function DesktopConversationMessages({
           canReply={Boolean(message.canonical) && status === "idle"}
           copied={copiedMessageId === message.id}
           enhancementSuspended={status !== "idle"}
+          waitingForResponse={status === "streaming" && index === messages.length - 1}
           streamStore={streamStore}
           messageElementsRef={messageElementsRef}
           onReply={onReply}
@@ -97,6 +98,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   canReply,
   copied,
   enhancementSuspended,
+  waitingForResponse,
   streamStore,
   messageElementsRef,
   onReply,
@@ -112,6 +114,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   canReply: boolean;
   copied: boolean;
   enhancementSuspended: boolean;
+  waitingForResponse: boolean;
   streamStore: StreamProjectionStore<ChatMessage>;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   onReply: (message: ChatMessage) => void;
@@ -163,6 +166,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
               message={message}
               streamStore={streamStore}
               deferRichContent
+              waitingForResponse={waitingForResponse}
               leadingContent={message.reply ? (
                 <MessageReplyReference
                   role={message.reply.role}

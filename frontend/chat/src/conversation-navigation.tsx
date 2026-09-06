@@ -84,13 +84,10 @@ export function ConversationNavigation({
       ) : null}
 
       {featuredDestinations.length > 0 ? (
-        <>
-          <DestinationList destinations={featuredDestinations} featured />
-          <div className="conversation-navigation__heading conversation-navigation__heading--section">会话</div>
-        </>
+        <DestinationList destinations={featuredDestinations} featured />
       ) : null}
       <DestinationList destinations={standardDestinations} />
-      {sessionHeading ? <div className="conversation-navigation__heading conversation-navigation__heading--section">{sessionHeading}</div> : null}
+      {sessionHeading || featuredDestinations.length > 0 ? <div className="conversation-navigation__heading conversation-navigation__heading--section">{sessionHeading || "会话"}</div> : null}
 
       <section className="conversation-navigation__sessions">
         <nav className="conversation-session-list" aria-label="最近会话">
