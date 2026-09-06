@@ -263,7 +263,7 @@ Tool/Skill 可见性严格来自绑定 snapshot：T 继续看到 S0；V 看到 S
 
 ### 8.1 Owner 审计结果
 
-审计覆盖生产 `PassiveMessageWorker → AgentLoop → DefaultReasoner → ToolRegistry` 路径，不把 legacy 串行入口误当成生产并发模型。结果如下：
+历史审计覆盖 `PassiveMessageWorker → AgentLoop → DefaultReasoner → ToolRegistry` 路径；第 10 层已删除该 Worker，当前 Channel ingress 由 `ChannelGenerationHost` 接管，不把 legacy 串行入口误当成生产并发模型。结果如下：
 
 | 对象 | 实际 owner | 审计结论 |
 |---|---|---|
@@ -477,7 +477,7 @@ cache/<marketplace>/<plugin>/
 |---|---|
 | latest/stable、install 完成定义、candidate 单 owner | `tests/test_plugin_runtime_control.py`、`tests/test_plugin_hot_reload.py` 的 selector、promotion、KV write 与 crash recovery 用例 |
 | 跨 session 并发、同 session 排他 | `tests/control/test_conversation_runtime.py::test_runtime_executes_different_threads_concurrently`、`test_runtime_rejects_same_thread_input_and_interrupts_exact_turn` |
-| programmatic runtime 与长 terminal | `tests/control/test_protocol.py`、`tests/control/test_control_execution.py` 的 selector、attached interrupt、metadata 与 terminal 边界 |
+| programmatic runtime 与长 terminal | `tests/control/test_protocol.py`、`tests/control/test_d8_control_admission_replay.py` 的 selector、attached interrupt、metadata 与 terminal 边界 |
 | `message_push` 和 channel finality | `tests/test_message_bus_admission.py` 的 passive turn、same-chat lane、provider receipt、取消与关闭用例 |
 | 真实 lifecycle 边界 | `tests/test_plugin_runtime_control.py`、`tests/test_plugin_hot_reload.py`、`tests/control/test_conversation_runtime.py` 和 `tests/test_message_bus_admission.py` 组合观察 pointer、lease、session lane、terminal 与 crash recovery |
 | 聚合合同 oracle 与已知错误 | `tests/semantic/test_recursive_plugin_self_validation_contract.py` 对 global lock、parent terminal overflow、semantic write、blocking push、crash promotion、假 tool item 和假领域结果 mutant 做稳定性自测 |
@@ -519,7 +519,7 @@ parent stable T
 
 - control thread owner 与容量短临界区：`agent/control/runtime.py::ConversationRuntime._control_admission_lock`
 - session 整轮 owner：`agent/looping/session_lane.py::SessionLaneRegistry`
-- channel 入站分发：`bootstrap/passive_worker.py::PassiveMessageWorker`
+- channel 入站分发：`agent/plugins/channel_generation_host.py::ChannelGenerationHost._admit_inbound`
 - passive/direct 统一准入：`agent/looping/core.py::AgentLoop._process_with_runtime_admission`
 - programmatic CLI：`main.py::run_exec`
 - control 执行桥：`bootstrap/control_execution.py::execute_control_turn`

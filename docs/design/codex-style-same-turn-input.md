@@ -10,7 +10,7 @@
 
 采用 Codex 的 durable history continuity，但把 user-visible turn 明确定义为 logical interaction：每条普通输入只在没有 active attempt 时创建 execution attempt；最新 interaction 尚无最终 A 时，新 attempt 自动续接。active 时只允许 interrupt，系统不提供 user steer。
 
-当前 `ConversationRuntime` 继续拥有 session lane、attempt identity、interrupt 和 terminal CAS，并用 `interactionId`、`attemptOrdinal`、`continuedFromTurnId` 连接 attempt。`DefaultReasoner` 把前驱 attempt 的有序 U 和已闭合工具调用/结果投影进下一次 prompt。`PassiveMessageWorker` 只负责 durable handoff 和最终 outbound；中止 attempt 不产生 outbound A。
+当前 `ConversationRuntime` 继续拥有 session lane、attempt identity、interrupt 和 terminal CAS，并用 `interactionId`、`attemptOrdinal`、`continuedFromTurnId` 连接 attempt。`DefaultReasoner` 把前驱 attempt 的有序 U 和已闭合工具调用/结果投影进下一次 prompt。`ChannelGenerationHost` 负责 exact binding 下的 durable handoff 接纳；Reply/Delivery 独立结算最终 Output；中止 attempt 不产生 outbound A。
 
 ## 2. 状态与调用合同
 
@@ -149,7 +149,6 @@ allowed_paths:
   - agent/control/**
   - agent/core/**
   - agent/lifecycle/**
-  - bootstrap/passive_worker.py
   - bootstrap/control_execution.py
   - bus/**
   - session/**
