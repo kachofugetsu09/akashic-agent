@@ -6,13 +6,15 @@ import json
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
+from typing import cast
 
 import httpx
 from PIL import Image
 import pytest
 
 from agent.media import encode_image_data_uri
-from agent.plugin_composition import ServiceKey
+from agent.plugin_composition import ChatModels, ServiceKey
+from agent.plugin_composition.models import BoundChatModel
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.tasks import Tasks
@@ -25,6 +27,7 @@ from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply
+from plugins.models.projection import CallReader
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.api import MessageReply
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
@@ -80,7 +83,7 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
         shutil.rmtree(source)
         execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize, task_key="effects")
         missing = await execution.execute("missing", read, {"path": str(tmp_path / "missing")})
-        assert missing.outcome == "error" and "不存在" in missing.parts[0].value
+        assert missing.outcome == "error" and "不存在" in cast(str, missing.parts[0].value)
         assert await execution.execute("missing", read, {"path": str(tmp_path / "missing")}) == missing
         escaped = await execution.execute("escape", write, {"path": "../outside", "content": "bad"})
         assert escaped.outcome == "error" and not (tmp_path / "outside").exists()
@@ -94,7 +97,7 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
         expected = base64.b64decode(encode_image_data_uri(picture).partition(",")[2])
         result = await execution.execute("image", read, {"path": str(picture)})
         assert result.outcome == "success"
-        reference = next(part.value for part in result.parts if part.kind == "artifact_ref")
+        reference = cast(str, next(part.value for part in result.parts if part.kind == "artifact_ref"))
         assert store.get_attachment(reference) is not None
         ref = artifacts.resolve_refs((reference,))[0]
         lease = await artifacts.acquire(ref)
@@ -139,13 +142,13 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
             "shell": "/usr/bin/bash", "login": False, "tty": True, "yield_time_ms": 250,
         })
         assert started.outcome == "success"
-        identity = json.loads(started.parts[0].value)["execution_id"]
+        identity = cast(str, json.loads(cast(str, started.parts[0].value))["execution_id"])
         wrong = await execution.execute("wrong-owner", foreign, {"execution_id": identity, "chars": "PING\n", "yield_time_ms": 1000})
         assert wrong.outcome == "error"
         completed = await execution.execute("stdin", stdin, {"execution_id": identity, "chars": "PING\n", "yield_time_ms": 1000})
-        assert completed.outcome == "success" and "GOT:PING" in json.loads(completed.parts[0].value)["output"]
+        assert completed.outcome == "success" and "GOT:PING" in json.loads(cast(str, completed.parts[0].value))["output"]
         waiting = await execution.execute("wait", command, {"command": "sleep 30", "description": "wait", "yield_time_ms": 250})
-        identity = json.loads(waiting.parts[0].value)["execution_id"]
+        identity = cast(str, json.loads(cast(str, waiting.parts[0].value))["execution_id"])
         async with bindings.open(cleanup, SHELL_OWNERS) as (owners, _):
             report = await owners.release("job-a")
         assert report.cleaned_execution_ids == (identity,) and not report.failures
@@ -176,7 +179,7 @@ async def test_web_search_only_reports_empty_success_from_confirmed_response(mon
     result = await tool.invoke("request", await tool.prepare({"query": "test"}))
     assert result.outcome == ("error" if error else "success")
     if not error:
-        assert json.loads(result.parts[0].value)["result"] == ""
+        assert json.loads(cast(str, result.parts[0].value))["result"] == ""
 
 
 async def start_shell_call(log, bindings, tasks, binding, source, identity):
@@ -200,7 +203,7 @@ async def start_shell_call(log, bindings, tasks, binding, source, identity):
     execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), allow, task_key="effects")
     result = await execution.execute_call(reply)
     assert result.outcome == "success"
-    return json.loads(result.parts[0].value)["execution_id"]
+    return cast(str, json.loads(cast(str, result.parts[0].value))["execution_id"])
 
 
 @pytest.mark.asyncio
@@ -261,7 +264,7 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
                 @asynccontextmanager
                 async def execution(self, **kwargs):
                     # 此测试控制 ReAct 阶段，只验证 run_reply 的真实资源与消息边界。
-                    yield SimpleNamespace(chat=lambda role: object())
+                    yield SimpleNamespace(chat=lambda role: cast(BoundChatModel, object()))
 
             async def controlled_react(reader, output, *, tools, **kwargs):
                 nonlocal execution_id
@@ -293,10 +296,10 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
 
             async def program(task):
                 return await run_reply(
-                    ctx, task, reader, "conversation", models=Models(), content=root.require(CONTENT),
+                    ctx, task, reader, "conversation", models=cast(ChatModels, Models()), content=root.require(CONTENT),
                     context=root.require(CONTEXT), tools=catalog, react=controlled_react,
                     materials=root.require(MATERIALS), turn_projection=root.require(TURN_PROJECTION),
-                    read_call=lambda identity: None, authorize=allow, tool_names=("shell",),
+                    read_call=cast(CallReader, lambda identity: None), authorize=allow, tool_names=("shell",),
                     fixed_bindings={"shell": binding}, max_output_tokens=100, max_steps=4,
                 )
 

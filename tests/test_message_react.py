@@ -1,17 +1,20 @@
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from agent.plugin_composition.models import (
-    BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
+    BoundChatModel, BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
+    ModelRequest,
     ModelRole, ToolCall as ModelToolCall,
 )
 from agent.plugin_composition.tasks import Tasks
 from plugins.content.plugin import _decode_text, check_text
-from plugins.context.api import Materials, check_summary
+from plugins.context.api import ContextModel, Materials, Summary, check_summary
 from plugins.context.plugin import ContextBuilder
 from plugins.conversation.source import Conversation, needs_reply
 from plugins.models.content import render_content
@@ -20,8 +23,9 @@ from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.react.plugin import react, UnknownToolEffect, StepLimit
 from plugins.tools.execution import ToolExecution, MessageReply, Result
+from plugins.tools.menu import ToolMenu
 from session.log import MessageConflict, MessageLog
-from session.message import Input, Output, ContentPart, ToolResult, CallRef, Control
+from session.message import Input, Message, Output, ContentPart, ToolResult, CallRef, Control
 
 
 @asynccontextmanager
@@ -41,8 +45,10 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
     class Driver:
         async def complete(self, request):
             return await complete(request)
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(self, messages, tools=()):
             return 100 if estimate is None else estimate(messages, tools)
+        def estimate_appended_message_tokens(self, messages):
+            return 0
         max_tool_schemas = None
     model = _BoundChat(descriptor, Driver(), store)
     log.save_binding("tool", {"target": "test-file-effect"})
@@ -88,6 +94,8 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             if not self.task.active:
                 raise asyncio.CancelledError
     class Content:
+        prompts = ()
+        checks = {}
         async def decode(self, text, references=()):
             return await _decode_text(text, (), references)
     projection = MessageProjection(model, source="conversation",
@@ -101,7 +109,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         task.on_close(output.expire)
         with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
             return await react(reader, output, model=model, context=ContextBuilder(),
-                               projection=projection, materials=materials, content=Content(), tools=Menu(task),
+                               projection=projection, materials=materials, content=Content(), tools=cast(ToolMenu, Menu(task)),
                                max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools)
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
@@ -133,8 +141,10 @@ async def test_react_commits_each_real_model_call_tool_request_and_result(tmp_pa
         assert result == messages[-1]
         assert (tmp_path / "effect.txt").read_text() == "written"
         for message in (messages[1], messages[-1]):
-            facts = message.body.parts[-1].value
-            assert store.read_call(facts["call_record_id"])["state"] == "success"
+            facts = cast(Mapping[str, object], message.body.parts[-1].value)
+            call_id = facts["call_record_id"]
+            assert isinstance(call_id, str)
+            assert store.read_call(call_id)["state"] == "success"
         assert await conversation.start(run) is None
 
 
@@ -361,7 +371,10 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
         prepared_count += 1
         return Materials("fixed prompt", (ContentPart("retrieval", "actual query result"),))
 
-    async def reduce(snapshot, materials, request, model, projection, *, source, force):
+    async def reduce(
+        snapshot: tuple[Message, ...], materials: Materials, request: ModelRequest,
+        model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
+    ) -> Summary | None:
         assert source == "conversation"
         assert model.descriptor.binding_id == "model"
         assert request.tools and request.max_output_tokens == 100

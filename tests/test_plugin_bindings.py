@@ -4,6 +4,8 @@ import importlib
 import shutil
 import sys
 from pathlib import Path
+from collections.abc import Mapping
+from typing import cast
 
 import pytest
 
@@ -106,7 +108,7 @@ async def test_binding_restarts_without_source_and_keeps_exact_config_and_lifecy
             }
             assert metadata == {"choice": "fixed"}
             with pytest.raises(TypeError):
-                metadata["choice"] = "changed"
+                cast(dict[str, object], metadata)["choice"] = "changed"
             current = get_current_runtime_snapshot()
             assert current is not None
             assert current is not original_snapshot
@@ -135,20 +137,24 @@ async def test_missing_provider_and_runtime_mismatch_do_not_use_current_root(
     try:
         await host.load_all()
         current = host.current_snapshot
+        assert current is not None
         provider = host.generation("provider")
         consumer = host.generation("consumer")
+        provider_ref = provider.archive_ref
+        consumer_ref = consumer.archive_ref
+        assert provider_ref is not None and consumer_ref is not None
         with pytest.raises(RuntimeError, match="闭包不完整"):
-            async with host.open_binding((consumer.archive_ref,)):
+            async with host.open_binding((consumer_ref,)):
                 pytest.fail("current provider must not fill the archive")
-        descriptor = dict(host._archive.read_descriptor(provider.archive_ref))
+        descriptor = dict(host._archive.read_descriptor(provider_ref))
         descriptor["runtime"] = {"python_tag": "other", "binding_api": 1}
         incompatible = host._archive.save_descriptor(descriptor)
         with pytest.raises(RuntimeError, match="不兼容"):
-            async with host.open_binding((incompatible, consumer.archive_ref)):
+            async with host.open_binding((incompatible, consumer_ref)):
                 pytest.fail("incompatible archive must not load")
         assert host.current_snapshot is current
         async with host.open_binding(
-            (provider.archive_ref, consumer.archive_ref)
+            (provider_ref, consumer_ref)
         ) as scope:
             assert scope.require(RESULT)["text"] == "old:A"
         with pytest.raises(RuntimeError, match="关闭"):
@@ -173,12 +179,13 @@ async def test_loaded_generation_keeps_assets_and_late_imports_after_source_chan
         (plugins / "provider" / "late.py").write_text("VALUE = 'late B'\n")
         alias = host._stable_aliases[generation.module_path]
         assert importlib.import_module(alias + ".late").VALUE == "late A"
-        root, ready = await host._resolve_composition_root(
-            host.current_snapshot.generations, force_fresh=True
-        )
+        current = host.current_snapshot
+        assert current is not None
+        root, ready = await host._resolve_composition_root(dict(current.generations), force_fresh=True)
         assert ready
         try:
-            assert root.service_value(RESULT)["asset"] == "asset A"
+            value = cast(Mapping[str, object], root.service_value(RESULT))
+            assert value["asset"] == "asset A"
         finally:
             await root.dispose()
     finally:
@@ -190,16 +197,20 @@ async def test_loaded_generation_keeps_assets_and_late_imports_after_source_chan
 async def test_archive_close_drains_retained_scope_even_when_cancelled(
     tmp_path, monkeypatch, cancel
 ):
-    from agent.plugins.snapshot import get_current_runtime_lease, RuntimeSnapshotStore
+    from agent.plugins.snapshot import get_current_runtime_lease, RuntimeSnapshotLease, RuntimeSnapshotStore
 
     monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
     plugins = tmp_path / "plugins"
     write_plugins(plugins)
     host = manager(tmp_path, [plugins])
     await host.load_all()
-    refs = tuple(g.archive_ref for g in host.current_snapshot.generations.values())
-    retained = None
-    state = None
+    current = host.current_snapshot
+    assert current is not None
+    raw_refs = tuple(g.archive_ref for g in current.generations.values())
+    assert all(ref is not None for ref in raw_refs)
+    refs = tuple(cast(str, ref) for ref in raw_refs)
+    retained: RuntimeSnapshotLease | None = None
+    state: Mapping[str, object] | None = None
     waiting = asyncio.Event()
     original_wait = RuntimeSnapshotStore.wait_for_no_leases
 
@@ -212,13 +223,16 @@ async def test_archive_close_drains_retained_scope_even_when_cancelled(
     async def use_binding():
         nonlocal retained, state
         async with host.open_binding(refs) as scope:
-            state = scope.require(RESULT)
-            retained = get_current_runtime_lease().fork()
+            state = cast(Mapping[str, object], scope.require(RESULT))
+            lease = get_current_runtime_lease()
+            assert lease is not None
+            retained = lease.fork()
 
-    task = asyncio.create_task(use_binding())
+    task: asyncio.Task[None] = asyncio.create_task(use_binding())
     try:
         await asyncio.wait_for(waiting.wait(), timeout=5)
         assert not task.done()
+        assert state is not None and retained is not None
         assert not state["closed"]
         if cancel:
             task.cancel()
@@ -252,7 +266,11 @@ async def test_archive_apply_cannot_resolve_formal_delivery_port(tmp_path, monke
     host = manager(tmp_path, [plugins])
     try:
         await host.load_all()
-        refs = tuple(g.archive_ref for g in host.current_snapshot.generations.values())
+        current = host.current_snapshot
+        assert current is not None
+        raw_refs = tuple(g.archive_ref for g in current.generations.values())
+        assert all(ref is not None for ref in raw_refs)
+        refs = tuple(cast(str, ref) for ref in raw_refs)
         with pytest.raises(RuntimeError, match="闭包不完整"):
             async with host.open_binding(refs):
                 pytest.fail("archive must not borrow the live delivery owner")

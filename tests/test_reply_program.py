@@ -3,6 +3,7 @@ import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -10,7 +11,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
-    ModelRole, ToolCall as ModelToolCall,
+    ChatModels, ModelRole, ToolCall as ModelToolCall,
 )
 from agent.plugin_composition.tasks import TASKS
 from agent.plugins.manager import PluginManager
@@ -112,8 +113,10 @@ async def apply(ctx, config):
     server = await asyncio.start_unix_server(serve, path=tmp_path / "tool.sock")
     class Driver:
         max_tool_schemas = None
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(self, messages, tools=()):
             return 50
+        def estimate_appended_message_tokens(self, messages):
+            return 0
         async def complete(self, request):
             requests.append(request)
             if len(requests) == 1:
@@ -156,7 +159,7 @@ async def apply(ctx, config):
                 )("s")
             async def run(task, reader, source):
                 return await run_reply(
-                    ctx, task, reader, source, models=Models(), content=root.require(CONTENT),
+                    ctx, task, reader, source, models=cast(ChatModels, Models()), content=root.require(CONTENT),
                     context=root.require(CONTEXT), tools=root.require(TOOLS), react=react,
                     materials=root.require(MATERIALS), render_content=lambda part: render_content(part, artifacts={}),
                     turn_projection=root.require(TURN_PROJECTION),

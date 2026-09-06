@@ -1,15 +1,31 @@
 from pathlib import Path
 import shutil
+from collections.abc import Callable, Mapping
+from typing import cast
 
 import pytest
 
 from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.context import Context
 from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.tools.menu import ToolMenu
+from plugins.tools.api import MessageReply
+from plugins.tools.execution import ToolExecution
 from plugins.tools.plugin import TOOLS, open_tool
 from session.log import MessageLog
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from tests.test_tool_bindings import manager, write_plugins
+
+
+def _candidate(metadata: Mapping[str, object], name: str) -> str:
+    candidates = cast(Mapping[str, Mapping[str, object]], metadata["candidates"])
+    binding_id = candidates[name]["binding_id"]
+    assert isinstance(binding_id, str)
+    return binding_id
+
+
+_NO_EXECUTION = cast(ToolExecution, None)
+_NO_REPLY = cast(Callable[[CallRef], MessageReply], None)
 
 
 @pytest.mark.asyncio
@@ -25,12 +41,12 @@ async def test_discovery_archive_and_log_restore_keep_exact_candidates_without_f
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             catalog = snapshot.composition_root.context.require(TOOLS)
-            menu = ToolMenu(catalog, bindings, None, None, names=("example", "tool_search"),
+            menu = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=("example", "tool_search"),
                             reader=log.reader("s"), source="chat")
             assert [item["function"]["name"] for item in menu.schemas] == ["tool_search"]
             search_id = menu.bind("tool_search")
-            original_id = bindings.describe(search_id, TOOLS)["candidates"]["example"]["binding_id"]
-            restricted = ToolMenu(catalog, bindings, None, None, names=("tool_search",),
+            original_id = _candidate(bindings.describe(search_id, TOOLS), "example")
+            restricted = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=("tool_search",),
                                   reader=log.reader("s"), source="chat")
             _ = restricted.schemas
             assert bindings.describe(restricted.bind("tool_search"), TOOLS)["candidates"] == {}
@@ -59,11 +75,11 @@ async def test_discovery_archive_and_log_restore_keep_exact_candidates_without_f
             catalog = snapshot.composition_root.context.require(TOOLS)
             current = catalog.bind("example", bindings)
             assert current != original_id
-            restored = ToolMenu(catalog, bindings, None, None, names=("example", "tool_search"),
+            restored = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=("example", "tool_search"),
                                 reader=log.reader("s"), source="chat")
             assert {item["function"]["name"] for item in restored.schemas} == {"example", "tool_search"}
             assert restored.bind("example") == original_id
-            closed = ToolMenu(catalog, bindings, None, None, names=("tool_search",),
+            closed = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=("tool_search",),
                               reader=log.reader("s"), source="chat")
             assert [item["function"]["name"] for item in closed.schemas] == ["tool_search"]
         async with open_tool(bindings, original_id) as tool:
@@ -92,11 +108,11 @@ async def test_late_discovery_result_is_saved_but_does_not_unlock_next_segment(t
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             catalog = snapshot.composition_root.context.require(TOOLS)
-            menu = ToolMenu(catalog, bindings, None, None, names=("example", "tool_search"),
+            menu = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=("example", "tool_search"),
                             reader=log.reader("s"), source="chat")
             _ = menu.schemas
             search_id = menu.bind("tool_search")
-            candidate = bindings.describe(search_id, TOOLS)["candidates"]["example"]["binding_id"]
+            candidate = _candidate(bindings.describe(search_id, TOOLS), "example")
             def writer(kind, **kwargs):
                 return log.writer("s", author="test", source="chat", body_types=(kind,), **kwargs)
             writer(Input, content={}).append("u1", Input(()))
@@ -139,7 +155,7 @@ async def test_search_requirement_cannot_be_bypassed_by_configuration(tmp_path):
                 raise AssertionError("invalid registration must not open a tool")
                 yield
             with pytest.raises(ValueError, match="同时常驻"):
-                await catalog.register(snapshot.composition_root.context, name="contradiction",
+                await catalog.register(cast(Context, snapshot.composition_root.context), name="contradiction",
                                        description="invalid", parameters={"type": "object"},
                                        open=unused, always_on=True, requires_search=True)
     finally:
@@ -159,16 +175,16 @@ async def test_fixed_menu_uses_original_directory_after_targets_are_uninstalled(
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             catalog = snapshot.composition_root.context.require(TOOLS)
-            original = ToolMenu(catalog, bindings, None, None, names=("example", "tool_search"),
+            original = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=("example", "tool_search"),
                                 reader=log.reader("s"), source="chat")
             _ = original.schemas
             search = original.bind("tool_search")
-            candidate = bindings.describe(search, TOOLS)["candidates"]["example"]["binding_id"]
+            candidate = _candidate(bindings.describe(search, TOOLS), "example")
             identities = {"example": candidate, "tool_search": search}
             with pytest.raises(ValueError, match="配置入口"):
                 catalog.bind("example", bindings, configuration={})
             assert catalog.bind("example", bindings, configuration=None) == candidate
-            restricted = ToolMenu(catalog, bindings, None, None, names=("tool_search",),
+            restricted = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=("tool_search",),
                                   reader=log.reader("s"), source="chat")
             _ = restricted.schemas
             empty_search = restricted.bind("tool_search")
@@ -182,18 +198,18 @@ async def test_fixed_menu_uses_original_directory_after_targets_are_uninstalled(
             catalog = snapshot.composition_root.context.require(TOOLS)
             assert catalog.descriptions() == ()
             with pytest.raises(ValueError, match="完整对应"):
-                ToolMenu(catalog, bindings, None, None, names=tuple(identities), reader=log.reader("s"),
+                ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=tuple(identities), reader=log.reader("s"),
                          source="chat", fixed_bindings={"example": candidate})
             with pytest.raises(ValueError, match="候选与允许目录"):
-                ToolMenu(catalog, bindings, None, None, names=tuple(identities), reader=log.reader("s"),
+                ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=tuple(identities), reader=log.reader("s"),
                          source="chat", fixed_bindings={**identities, "tool_search": empty_search})
             log.writer("conflict", author="assistant", source="chat", body_types=(Output,), content={},
                        check_call=lambda call: None).append("foreign-search", Output((ToolCall(empty_search, {}),), "continue"))
-            conflict = ToolMenu(catalog, bindings, None, None, names=tuple(identities),
+            conflict = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=tuple(identities),
                                 reader=log.reader("conflict"), source="chat", fixed_bindings=identities)
             with pytest.raises(PermissionError, match="未闭合调用"):
                 _ = conflict.schemas
-            fixed = ToolMenu(catalog, bindings, None, None, names=tuple(identities),
+            fixed = ToolMenu(catalog, bindings, _NO_EXECUTION, _NO_REPLY, names=tuple(identities),
                              reader=log.reader("s"), source="chat", fixed_bindings=identities)
             identities.clear()  # 调用者后改目录不改变已建立的程序。
             assert [row["function"]["name"] for row in fixed.schemas] == ["tool_search"]

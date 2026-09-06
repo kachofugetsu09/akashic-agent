@@ -1,6 +1,8 @@
 from contextlib import closing
+from collections.abc import Mapping
 import json
 import sqlite3
+from typing import cast
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +14,11 @@ from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 from tests.test_message_artifacts import storage
 from tests.test_message_log_migration import migration, old_workspace, run, snapshot
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    assert isinstance(value, Mapping)
+    return cast(Mapping[str, object], value)
 
 
 def test_view_keeps_independent_facts_and_hides_private_configuration(storage):
@@ -32,16 +39,17 @@ def test_view_keeps_independent_facts_and_hides_private_configuration(storage):
     append("result", ToolResult(CallRef("output", 1), "unknown", (ContentPart("text", "效果待确认"),)), CallRef("output", 1))
     append("quiet", Output((ContentPart("history.future", {"private": "content-secret"}),), "quiet"))
     before = snapshot(path)
-    rows = message_rows(log.reader("s").read_tail())
+    rows = [_mapping(row) for row in message_rows(log.reader("s").read_tail())]
     assert [row["id"] for row in rows] == ["input", "output", "pause", "result", "quiet"]
-    assert [row["body"]["kind"] for row in rows] == ["input", "output", "control", "tool_result", "output"]
+    body = [_mapping(row["body"]) for row in rows]
+    assert [item["kind"] for item in body] == ["input", "output", "control", "tool_result", "output"]
     assert all(row["author"] == "真实作者" and row["source"] == "来源" for row in rows)
-    assert rows[0]["attachments"][0]["artifact_id"] == ref.artifact_id
-    assert rows[1]["body"]["parts"][0]["value"] == {"call_record_id": "call-record", "thinking": "可读思考"}
-    assert rows[1]["body"]["parts"][1]["name"] == "original-name"
-    assert rows[3]["body"]["call_ref"] == {"message_id": "output", "part_index": 1}
-    assert rows[3]["body"]["outcome"] == "unknown"
-    assert rows[4]["body"]["parts"] == [{"kind": "history.future", "display": "unavailable"}]
+    assert _mapping(cast(list[object], rows[0]["attachments"])[0])["artifact_id"] == ref.artifact_id
+    assert _mapping(cast(list[object], body[1]["parts"])[0])["value"] == {"call_record_id": "call-record", "thinking": "可读思考"}
+    assert _mapping(cast(list[object], body[1]["parts"])[1])["name"] == "original-name"
+    assert body[3]["call_ref"] == {"message_id": "output", "part_index": 1}
+    assert body[3]["outcome"] == "unknown"
+    assert body[4]["parts"] == [{"kind": "history.future", "display": "unavailable"}]
     encoded = json.dumps(rows, ensure_ascii=False)
     assert "secret" not in encoded and "artifact.bin" not in encoded and "provider-call" not in encoded
     assert snapshot(path) == before
@@ -52,13 +60,15 @@ def test_migrated_history_stays_inside_original_message(migration, old_workspace
     path = old_workspace / "sessions.db"
     before = snapshot(path)
     with closing(MessageLog(path)) as log:
-        rows = message_rows(log.reader("s").read_tail())
+        rows = [_mapping(row) for row in message_rows(log.reader("s").read_tail())]
     assert [(row["id"], row["seq"]) for row in rows] == [("user", 4), ("reply", 8), ("nullable", 9)]
-    transcript = rows[1]["body"]["parts"][2]
+    transcript = _mapping(cast(list[object], _mapping(rows[1]["body"])["parts"])[2])
     assert transcript["kind"] == "history.transcript"
-    assert '"result": "old result"' in transcript["archive"]["raw"]
-    assert transcript["archive"]["completeness"] == "unknown"
-    assert rows[2]["body"]["parts"][0]["archive"]["content_was_null"] is True
+    archive = _mapping(transcript["archive"])
+    assert '"result": "old result"' in cast(str, archive["raw"])
+    assert archive["completeness"] == "unknown"
+    assert _mapping(cast(list[object], _mapping(rows[2]["body"])["parts"])[0])["archive"] is not None
+    assert _mapping(_mapping(cast(list[object], _mapping(rows[2]["body"])["parts"])[0])["archive"])["content_was_null"] is True
     assert all(row["source"] == "legacy-unattributed" for row in rows)
     assert snapshot(path) == before
 

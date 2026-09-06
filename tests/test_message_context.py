@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 
@@ -37,7 +38,7 @@ class Projection:
         self.seen = None
         self.continuation = ModelContinuation("model-binding", {"opaque": "kept"})
 
-    def render(self, messages, *, after_seq, summary_reference=None):
+    def render(self, messages, *, after_seq, summary_reference=None, fresh=False):
         self.seen = messages
         self.after_seq = after_seq
         return ModelRequest(
@@ -85,7 +86,7 @@ def test_context_preserves_interrupted_inputs_other_sources_and_replay_facts():
     tools[0]["function"]["name"] = "changed"
     assert request.tools[0]["function"]["name"] == "example"
     with pytest.raises(TypeError):
-        request.messages[0]["content"] = "changed"
+        cast(dict[str, object], request.messages[0])["content"] = "changed"
 
 
 def test_summary_replaces_only_its_exact_closed_prefix():
@@ -143,7 +144,7 @@ def test_overflow_never_truncates_or_retries_and_source_cannot_promote_role():
     assert model.seen == snapshot
 
     class BadProjection(Projection):
-        def render(self, messages, *, after_seq, summary_reference=None):
+        def render(self, messages, *, after_seq, summary_reference=None, fresh=False):
             return ModelRequest(messages=({"role": "system", "content": "from input"},))
 
     with pytest.raises(ValueError, match="权限"):

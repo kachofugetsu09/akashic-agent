@@ -3,10 +3,12 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 import shutil
+from typing import cast
 
 import pytest
 
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.context import Context
 from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.tasks import Tasks
 from plugins.delivery.api import Sink
@@ -97,7 +99,7 @@ async def test_failed_sink_does_not_cancel_other_sink_and_restart_keeps_original
         Sink(name="bad", binding_id="bad-A", address="bad-original"),
         Sink(name="good", binding_id="good-A", address="good-original"),
     )
-    watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, lambda *_: selected))
+    watcher = asyncio.create_task(follow(cast(Context, Scope()), log.catalog(), execution, lambda *_: selected))
     try:
         async with asyncio.timeout(3):
             await good.started.wait()
@@ -123,7 +125,7 @@ async def test_failed_sink_does_not_cancel_other_sink_and_restart_keeps_original
         def changed_policy(*_):
             pytest.fail("restart must not reselect the original message")
 
-        watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, changed_policy))
+        watcher = asyncio.create_task(follow(cast(Context, Scope()), log.catalog(), execution, changed_policy))
         async with asyncio.timeout(3):
             await queried.wait()
         assert len(good.sent) == len(bad.sent) == 1
@@ -203,7 +205,7 @@ async def test_restart_policy_cannot_send_a_scheduler_notification_cancelled_on_
     def changed_policy(*_):
         pytest.fail("another owner already fixed this selection")
 
-    watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, changed_policy))
+    watcher = asyncio.create_task(follow(cast(Context, Scope()), log.catalog(), execution, changed_policy))
     try:
         async with asyncio.timeout(3):
             await consumed.wait()
