@@ -409,7 +409,7 @@ class AgentLoop:
                         InboundOwner.LANE,
                     )
                     raise RuntimeError(
-                        "v3 Channel inbound 必须由 PassiveMessageWorker 消费"
+                        "AgentLoop 不再消费 v3 Channel inbound"
                     )
                 await self._run_inbound_turn(item)
         finally:
