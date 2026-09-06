@@ -102,6 +102,7 @@ export function ModelCapsulePicker({
       if (!trigger) return;
       const rect = trigger.getBoundingClientRect();
       const width = Math.min(
+        window.innerWidth - COMPACT_PANEL_MARGIN * 2,
         COMPACT_PANEL_MAX_WIDTH,
         Math.max(COMPACT_PANEL_MIN_WIDTH, Math.min(window.innerWidth * 0.72, COMPACT_PANEL_MAX_WIDTH)),
       );
@@ -111,7 +112,7 @@ export function ModelCapsulePicker({
       const height = Math.min(COMPACT_PANEL_MAX_HEIGHT, openUp ? spaceAbove : spaceBelow, Math.max(spaceAbove, spaceBelow));
       const left = Math.max(
         COMPACT_PANEL_MARGIN,
-        Math.min(rect.right - width, window.innerWidth - width - COMPACT_PANEL_MARGIN),
+        Math.min(rect.left, window.innerWidth - width - COMPACT_PANEL_MARGIN),
       );
       setCompactPanelStyle(
         openUp

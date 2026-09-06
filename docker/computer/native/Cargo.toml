@@ -1,0 +1,15 @@
+[package]
+name = "akashic-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[dependencies]
+base64 = "0.22.1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+signal-hook = "0.3.18"
+x11rb = { version = "0.13.2", features = ["xtest", "xfixes"] }
+x11-clipboard = "0.9.3"
+x11-dl = "2.21.0"

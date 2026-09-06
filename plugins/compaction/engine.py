@@ -39,7 +39,6 @@ SUMMARY_HEADINGS = (
     "## Next Steps",
     "## Critical Context",
 )
-SUMMARY_MAX_TOKENS = 8192
 KEEP_RECENT_TOKENS = 20_000
 SOFT_LIMIT_RATIO = 0.74
 _SUMMARY_PROMPT = """更新当前长任务的上下文压缩摘要。
@@ -503,6 +502,25 @@ class ContextCompactor:
                 ),
             ]
             self._persistent_summary = summary
+
+        # 3. 先放回当前任务原文；旧临时摘要仍需沿既有路径刷新。
+        if selected_committed and selected_active and not previous_temp:
+            restored_active = [*selected_active, *retained_active]
+            restored = _flatten_projection(
+                prefix=current_prefix,
+                committed=retained_committed,
+                current_anchor=current_anchor,
+                temporary_summary=temporary_summary,
+                active=restored_active,
+                pending=pending,
+            )
+            restored_tokens = self._provider.estimate_context_tokens(restored, tools)
+            if restored_tokens < min(soft_limit, hard_limit):
+                selected_active = []
+                retained_active = restored_active
+                selected_all = selected_committed
+                retained_all = [*retained_committed, *retained_active]
+
         rebuilt = _flatten_projection(
             prefix=current_prefix,
             committed=retained_committed,
@@ -513,7 +531,7 @@ class ContextCompactor:
         )
         after = self._provider.estimate_context_tokens(rebuilt, tools)
 
-        # 3. If the committed checkpoint is not enough, compact only closed active batches.
+        # 4. 原文仍超限或已有临时摘要时，摘要已闭合的当前任务批次。
         temporary_checkpoint: ContextCompaction | None = None
         refresh_temporary = bool(selected_active) or (
             bool(previous_temp) and bool(selected_committed)
@@ -586,7 +604,7 @@ class ContextCompactor:
                 f"estimated={after} soft_limit={soft_limit} hard_limit={hard_limit}"
             )
 
-        # 4. Commit only the source-backed row; the active projection remains ephemeral.
+        # 5. Commit only the source-backed row; the active projection remains ephemeral.
         if committed_checkpoint is not None:
             committed_checkpoint = _replace_checkpoint_after_projection(
                 committed_checkpoint,
@@ -836,20 +854,20 @@ class ContextCompactor:
     ) -> tuple[str, ModelUsage | None]:
         """Send one bounded summary request and validate its result."""
 
-        max_tokens = _summary_output_limit(provider, summary_input)
+        _check_summary_input(provider, summary_input)
         if self._chat_call is not None:
             response = await self._chat_call(
                 provider=provider,
                 messages=summary_input,
                 tools=[],
-                max_tokens=max_tokens,
+                max_tokens=0,
                 disable_thinking=True,
             )
         else:
             response = await provider.complete(
                 ModelRequest(
                     messages=summary_input,
-                    max_output_tokens=max_tokens,
+                    max_output_tokens=0,
                     disable_reasoning=True,
                 )
             )
@@ -880,7 +898,7 @@ class ContextCompactor:
                 previous_summary=previous_summary,
             )
             try:
-                _ = _summary_output_limit(provider, summary_input)
+                _check_summary_input(provider, summary_input)
             except ContextCompactionError:
                 high = middle - 1
             else:
@@ -899,7 +917,7 @@ class ContextCompactor:
             previous_summary=previous_summary,
         )
         try:
-            _ = _summary_output_limit(provider, single_input)
+            _check_summary_input(provider, single_input)
         except ContextCompactionError:
             pass
         else:
@@ -1012,10 +1030,12 @@ def _validate_keep_recent_tokens(value: int) -> int:
     return value
 
 
-def _summary_output_limit(
+def _check_summary_input(
     provider: BoundChatModel,
     summary_input: list[dict[str, Any]],
-) -> int:
+) -> None:
+    """校验摘要输入容量，输出长度由 provider 默认策略决定。"""
+
     estimated_input = provider.estimate_context_tokens(summary_input, [])
     context_window = _context_window(provider)
     if estimated_input > context_window:
@@ -1023,11 +1043,6 @@ def _summary_output_limit(
             "context_compaction_summary_input_exceeds_window "
             f"estimated={estimated_input} window={context_window}"
         )
-    configured_max_output = _provider_max_output_tokens(provider)
-    limits = [SUMMARY_MAX_TOKENS]
-    if configured_max_output > 0:
-        limits.append(configured_max_output)
-    return max(1, min(limits))
 
 
 def _copy_segments(segments: ContextPayloadSegments) -> ContextPayloadSegments:
@@ -1405,10 +1420,6 @@ def _aggregate_usage(items: Sequence[ModelUsage]) -> ModelUsage:
 
 def _provider_runtime_id(provider: BoundChatModel) -> str:
     return provider.descriptor.model_id
-
-
-def _provider_max_output_tokens(provider: BoundChatModel) -> int:
-    return provider.descriptor.capabilities.max_output_tokens or 0
 
 
 def _context_window(provider: BoundChatModel) -> int:
