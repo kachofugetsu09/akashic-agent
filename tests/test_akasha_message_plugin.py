@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+from collections.abc import Callable
 from pathlib import Path
 import shutil
 
@@ -16,11 +17,12 @@ from plugins.tools.api import MessageReply
 from plugins.tools.plugin import TOOLS
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageLog
-from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
+from session.message import CallRef, ContentPart, ContentReferences, Input, Output, ToolCall, ToolResult
 
 
 @asynccontextmanager
-async def application(tmp_path):
+async def application(tmp_path, *, embedding_available: bool = True,
+                      before_start: Callable[[MessageLog, PluginManager], None] | None = None):
     root = tmp_path / "plugins"
     for name in ("akasha", "turn_projection", "content", "context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
@@ -59,6 +61,9 @@ async def apply(ctx, config):
             return bindings.bind(EMBEDDINGS, SavedEmbedding(model_id=descriptor.model_id,
                 space_identity=descriptor.identity, dimensions=descriptor.dimensions).model_dump())
         def describe(self, *, model_id=None):
+            if not EMBEDDING_AVAILABLE:
+                from agent.plugin_composition.models import ModelUnavailableError
+                raise ModelUnavailableError("fixture embedding unavailable")
             return descriptor
         @asynccontextmanager
         async def bind(self, *, model_id=None):
@@ -68,12 +73,15 @@ async def apply(ctx, config):
     embeddings = Embeddings()
     await ctx.provide(EMBEDDINGS, embeddings)
     await ctx.provide(ServiceKey("fixture.embedded"), embedded)
-'''.replace("LOG_PATH", repr(str(tmp_path / "embedding-calls.txt"))))
+'''.replace("LOG_PATH", repr(str(tmp_path / "embedding-calls.txt")))
+      .replace("EMBEDDING_AVAILABLE", repr(embedding_available)))
     log = MessageLog(tmp_path / "sessions.db")
     host = PluginManager([root], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
         await host.load_all()
+        if before_start is not None:
+            before_start(log, host)
         await host.start_runtime()
         yield log, host
     finally:
@@ -230,6 +238,55 @@ async def test_inspector_reads_actual_queries_through_the_mobile_provider(tmp_pa
             assert detail["presented_count"] == 0
             assert detail["source"] == {"kind": "context", "session_id": "s", "source": "conversation", "through_seq": 0}
             assert (tmp_path / "embedding-calls.txt").read_text() == before
+        finally:
+            provider._executor.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_inspector_reads_saved_queries_when_embedding_is_unavailable(tmp_path):
+    from agent.plugins.mobile_ui import PluginMobileUiProvider
+    from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
+
+    def seed(log, _host):
+        checks = {"text": lambda _part: ContentReferences()}
+        inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content=checks)
+        outputs = log.writer("s", author="assistant", source="conversation", body_types=(Output,), content=checks)
+        inputs.append("old-user", Input((ContentPart("text", "saved query"),)))
+        outputs.append("old-assistant", Output((ContentPart("text", "saved answer"),), "complete"))
+        RecallRecords(log.owner("plugin:akasha")).save(
+            "old-query",
+            Recall(
+                learning_binding="saved-binding",
+                graph_version=1,
+                source=ContextSource(session_id="s", source="conversation", through_seq=0),
+                timestamp=datetime(2026, 9, 7, tzinfo=timezone.utc),
+                limit=5,
+                hits=(Hit(node_id=0, session_id="s", message_ids=("old-user", "old-assistant"),
+                          score=0.9, lane="dense", sources=("direct_dense",)),),
+                presented_message_ids=("old-user", "old-assistant"),
+                active_basin_count=0,
+                pushes=0,
+                residual_l1=0.0,
+            ),
+        )
+
+    async with application(tmp_path, embedding_available=False, before_start=seed) as (log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            revision = snapshot.generations["akasha"].source_revision
+        provider = PluginMobileUiProvider(host)
+        try:
+            listing = await provider.query("akasha", revision, "inspector.recent", {},
+                                           session_id=None, turn_id=None)
+            assert listing["total"] == 1
+            assert listing["items"][0]["query_id"] == "old-query"
+            detail = await provider.query("akasha", revision, "inspector.detail", {"query_id": "old-query"},
+                                          session_id=None, turn_id=None)
+            assert [message["message_id"] for message in detail["hits"][0]["messages"]] == [
+                "old-user", "old-assistant",
+            ]
+            assert [message["preview"] for message in detail["hits"][0]["messages"]] == [
+                "saved query", "saved answer",
+            ]
         finally:
             provider._executor.shutdown(wait=True)
 
