@@ -10,7 +10,7 @@ import re
 import shutil
 import sqlite3
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,9 +22,7 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 import agent.plugins.manager as plugin_manager_module
-import plugins.wake.plugin as wake_plugin_module
-from agent.control.models import TurnRequest, TurnStatus
-from agent.control.runtime import ConversationRuntime
+import plugins.wake.message_plugin as wake_plugin_module
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition import (
     AddConnection,
@@ -38,20 +36,13 @@ from agent.plugin_composition import (
     SetDefaultModel,
     ToolCall,
 )
-from agent.looping.core import AgentLoop
-from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig
-from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.manager import PluginManager
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import lease_runtime_snapshot
-from agent.tools.base import Tool
-from agent.tools.registry import ToolRegistry
-from bootstrap.control_execution import execute_control_turn
-from bootstrap.tools import _dispatch_v3_durable_delivery
 from bus.event_bus import EventBus
-from bus.queue import MessageBus
-from plugins.eventmail.store import EventMailStore
-from session.manager import SessionManager
+from session.log import MessageLog
+from plugins.wake.request import Request, read_request
+from plugins.wake.source import Pointer
 from tests.fixtures.content_clock_source.plugin import FixtureSourceStore
 from tests.model_plugin_fakes import (
     register_test_model_provider,
@@ -61,8 +52,6 @@ from tests.model_plugin_fakes import (
 MODEL = os.environ.get("PR_G_DEEPSEEK_MODEL", "deepseek-v4-flash").strip()
 _SELECTED_CONTEXT_WINDOW = 1_000_000
 _SELECTED_REASONING_EFFORT = "max"
-_BUILDER_SYSTEM_MARKER = "Wake provider E2E control turn."
-_CALLER_SYSTEM_MARKER = "wake-v3-e2e-caller-system"
 _OLD_ISLAND_NAMES = frozenset(
     {
         "proactive.db",
@@ -108,6 +97,10 @@ class SafeRuntimeFailure(RuntimeError):
         self.code = code
         self.stage = stage
         super().__init__(code)
+
+
+class _FixtureSettlementInterruption(RuntimeError):
+    """Mark only the deliberate recovery interruption in the isolated fixture."""
 
 
 class ControlledTimerHandle:
@@ -195,19 +188,21 @@ class ScriptedProvider:
 
     def __init__(self, response: str = "E2E wake response") -> None:
         self.response = response
+        self.tool_batches: list[tuple[str, ...]] = []
 
     async def chat(self, **kwargs: object) -> LLMResponse:
         tools = kwargs.get("tools")
-        if isinstance(tools, list) and tools:
-            prompt = json.dumps(kwargs.get("messages"), ensure_ascii=False)
+        if isinstance(tools, (list, tuple)) and tools:
+            prompt = str(kwargs.get("messages"))
             candidate = re.search(r"candidate_[0-9a-f]{16}", prompt)
             if candidate is None:
                 raise RuntimeError("Wake E2E prompt 缺少 candidate_id")
             names = {
                 str(item.get("function", {}).get("name"))
                 for item in tools
-                if isinstance(item, dict) and isinstance(item.get("function"), dict)
+                if isinstance(item, Mapping) and isinstance(item.get("function"), Mapping)
             }
+            self.tool_batches.append(tuple(sorted(names)))
             if "screen_content" in names:
                 return LLMResponse(
                     content=None,
@@ -248,23 +243,6 @@ class ScriptedProvider:
         return max(1, len(json.dumps([messages, tools], ensure_ascii=False)) // 4)
 
 
-class FixtureWebFetch(Tool):
-    """Expose the production Tool shape with deterministic isolated evidence."""
-
-    name = "web_fetch"
-    description = "Fetch a candidate URL for evidence."
-    parameters = {
-        "type": "object",
-        "properties": {"url": {"type": "string"}},
-        "required": ["url"],
-        "additionalProperties": False,
-    }
-
-    async def execute(self, **kwargs: object) -> str:
-        _ = kwargs
-        return "The update reports benchmark gains but no new model capability."
-
-
 class ProviderMilestones(logging.Handler):
     """Collect provider attempt identities without retaining prompts or bodies."""
 
@@ -301,37 +279,6 @@ class ProviderMilestones(logging.Handler):
             event["event"] == "tl:provider.nonstream.start" for event in self.events
         )
         return nonstream_starts + self.nonstream_retries
-
-    def logical_identity(
-        self,
-        expected_calls: int = 1,
-        expected_turns: int = 1,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Return exact provider call identities bound to one control Turn."""
-
-        # 1. Every logical/transport/HTTP start must retain one provider call id.
-        starts = [
-            event
-            for event in self.events
-            if event["event"]
-            in {
-                "tl:provider.call.start",
-                "tl:provider.transport.start",
-                "tl:provider.http.start",
-            }
-        ]
-        call_ids = {
-            _field(str(event.get("counts") or ""), "provider_call_id")
-            for event in starts
-        }
-        turn_ids = tuple(
-            dict.fromkeys(str(event.get("turn_id") or "") for event in starts)
-        )
-        if len(call_ids) != expected_calls or "" in call_ids:
-            raise GateFailure("PROVIDER_CALL_IDENTITY_MISMATCH")
-        if len(turn_ids) != expected_turns or "" in turn_ids:
-            raise GateFailure("PROVIDER_CONTROL_IDENTITY_MISMATCH")
-        return tuple(sorted(call_ids)), turn_ids
 
     def safe_evidence(self) -> dict[str, object]:
         """Summarize provider identities as counts and optional single digests."""
@@ -390,38 +337,30 @@ class RuntimeStack:
     workspace: Path
     timer: ControlledTimer
     provider: CountingProvider
-    bus: MessageBus
     event_bus: EventBus
-    sessions: SessionManager
-    loop: AgentLoop
-    conversation: ConversationRuntime
+    message_log: MessageLog
     manager: PluginManager
-    dispatch_task: asyncio.Task[None]
     after_load: Callable[[], Awaitable[None]] | None = None
     uses_test_model: bool = True
-    lifecycle_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self.manager.load_all()
         if self.after_load is not None:
             await self.after_load()
-        self.lifecycle_task = asyncio.create_task(self.manager.run_runtime_services())
+        await self.manager.start_runtime()
 
     async def close(self) -> None:
         """Close every isolated runtime owner while preserving its durable workspace."""
 
-        if self.lifecycle_task is not None:
-            _ = self.lifecycle_task.cancel()
-            _ = await asyncio.gather(self.lifecycle_task, return_exceptions=True)
-        await self.manager.terminate_all()
-        await self.conversation.shutdown()
-        self.bus.stop()
-        _ = self.dispatch_task.cancel()
-        _ = await asyncio.gather(self.dispatch_task, return_exceptions=True)
-        await self.event_bus.aclose()
-        self.sessions.close()
-        if self.uses_test_model:
-            unregister_test_model_provider(self.workspace)
+        try:
+            await self.manager.terminate_all()
+        finally:
+            try:
+                await self.event_bus.aclose()
+            finally:
+                self.message_log.close()
+                if self.uses_test_model:
+                    unregister_test_model_provider(self.workspace)
 
 
 async def run_suite(
@@ -429,7 +368,6 @@ async def run_suite(
     *,
     provider: object,
     request_counter: CountingProvider | None = None,
-    llm_config: LLMConfig | None = None,
     model_plugin_dirs: tuple[Path, ...] = (),
     inject_settlement_failure: bool = False,
     ack_failures: int = 0,
@@ -467,14 +405,42 @@ async def run_suite(
     restarted: RuntimeStack | None = None
     try:
         # 2. Install through the formal manager and run the ordinary source Timer.
-        first = _build_stack(
-            workspace,
-            root,
-            timer,
-            counted,
-            llm_config=llm_config,
-            model_plugin_dirs=model_plugin_dirs,
-        )
+        if model_plugin_dirs:
+            # Model settings are durable, while a running Root keeps the exact
+            # plugin generation that was loaded before the settings write.  Seed
+            # the registry in a short bootstrap Root, then run the chain against
+            # a fresh Root that loads the committed binding and its driver
+            # together.
+            bootstrap = _build_stack(
+                workspace,
+                root,
+                timer,
+                counted,
+                model_plugin_dirs=model_plugin_dirs,
+            )
+            try:
+                await bootstrap.manager.load_all()
+                if bootstrap.after_load is None:
+                    raise GateFailure("MODEL_BOOTSTRAP_CONFIG_MISSING")
+                await bootstrap.after_load()
+            finally:
+                await bootstrap.close()
+            first = _build_stack(
+                workspace,
+                root,
+                timer,
+                counted,
+                model_plugin_dirs=model_plugin_dirs,
+                configure_selected_model=False,
+            )
+        else:
+            first = _build_stack(
+                workspace,
+                root,
+                timer,
+                counted,
+                model_plugin_dirs=model_plugin_dirs,
+            )
         await first.start()
         if inject_settlement_failure:
             snapshot = first.manager.current_snapshot
@@ -494,7 +460,7 @@ async def run_suite(
                 nonlocal settlement_failures
                 del selection_token, settlement_ref
                 settlement_failures += 1
-                raise RuntimeError("fixture settlement interruption")
+                raise _FixtureSettlementInterruption()
 
             delivery_service.settle = fail_before_restart
         await _eventually(lambda: timer.pending_count() >= 1, "SOURCE_TIMER_NOT_ARMED")
@@ -505,12 +471,9 @@ async def run_suite(
         )
         await _eventually(lambda: timer.pending_count() >= 1, "WAKE_TIMER_NOT_ARMED")
         timer.fire_earliest()
-        ledger = DurableDeliveryStore(
-            workspace / "runtime" / "deliveries" / "settlements.sqlite"
-        )
-        terminal = "projected" if inject_settlement_failure else "settled"
+        terminal = "delivered"
         await _eventually(
-            lambda: _delivery_state(ledger) == terminal,
+            lambda: _delivery_state(workspace) == terminal,
             (
                 "DELIVERY_PRE_RESTART_NOT_TERMINAL"
                 if inject_settlement_failure
@@ -520,19 +483,24 @@ async def run_suite(
 
         # 3. A projected interruption restarts the formal stack and only moves forward.
         if inject_settlement_failure:
-            await first.close()
+            try:
+                await first.close()
+            except BaseException as error:
+                # The injected domain failure is surfaced by the Wake watcher during stop;
+                # its durable owner records remain the recovery evidence.
+                if not _is_fixture_settlement_failure(error):
+                    raise
             first = None
             restarted = _build_stack(
                 workspace,
                 root,
                 timer,
                 counted,
-                llm_config=llm_config,
                 model_plugin_dirs=model_plugin_dirs,
             )
             await restarted.start()
             await _eventually(
-                lambda: _delivery_state(ledger) == "settled",
+                lambda: _delivery_state(workspace) == "delivered",
                 "DELIVERY_RESTART_NOT_SETTLED",
             )
 
@@ -549,46 +517,29 @@ async def run_suite(
             "SOURCE_ACK_NOT_COMMITTED",
         )
         await _eventually(
-            lambda: EventMailStore(
-                workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
-            ).state_counts()
-            == {"settled": 1},
+            lambda: _content_state_counts(workspace) == {"settled": 1},
             "CONTENT_NOT_SETTLED",
         )
 
         # 5. Read every oracle from its durable owner, never from callback counters alone.
-        delivery = _single_delivery(ledger)
-        channel_rows = _rows(receipt_db, "deliveries")
         active = first if first is not None else restarted
         if active is None:
             raise GateFailure("RUNTIME_STACK_MISSING")
-        session_rows = active.sessions.control_store.fetch_session_messages(
-            "wake-provider-e2e"
-        )
-        turns = active.sessions.control_store.list_turns("wake-provider-e2e")
-        if len(channel_rows) != 1 or len(session_rows) != 1 or len(turns) != 2:
+        request, pointer = _wake_request(active.message_log)
+        channel_rows = _rows(receipt_db, "deliveries")
+        target_messages = active.message_log.reader(request.target.session_id).snapshot()
+        delivery = _single_delivery(workspace)
+        if len(channel_rows) != 1 or len(target_messages) != 1:
             raise GateFailure("DURABLE_ORACLE_MULTIPLICITY_MISMATCH")
-        if any(turn.status is not TurnStatus.COMPLETED for turn in turns):
-            raise GateFailure("CONTROL_TURN_NOT_COMPLETED")
-        accepted_turn_id = str(delivery["accepted_turn_id"])
-        turn = next((item for item in turns if item.id == accepted_turn_id), None)
-        if turn is None:
-            raise GateFailure("DELIVERY_CONTROL_TURN_MISSING")
-        identities = {
-            str(delivery["logical_delivery_id"]),
-            str(channel_rows[0]["delivery_id"]),
-            str(session_rows[0]["delivery_id"]),
-        }
+        if target_messages[0].message_id != request.notification_id:
+            raise GateFailure("DELIVERY_NOTIFICATION_MISMATCH")
+        if pointer.settled is not True:
+            raise GateFailure("WAKE_POINTER_NOT_SETTLED")
+        identities = {str(delivery["message_id"]), str(channel_rows[0]["delivery_id"]), request.notification_id}
         if len(identities) != 1:
             raise GateFailure("DELIVERY_IDENTITY_MISMATCH")
-        control_ids = {
-            str(delivery["accepted_turn_id"]),
-            str(channel_rows[0]["control_turn_id"]),
-            str(session_rows[0]["control_turn_id"]),
-            str(turn.id),
-        }
-        if len(control_ids) != 1:
-            raise GateFailure("CONTROL_IDENTITY_MISMATCH")
+        if channel_rows[0]["recipient"] != request.target.recipient:
+            raise GateFailure("DELIVERY_RECIPIENT_MISMATCH")
         model_evidence: dict[str, object] = {}
         if model_plugin_dirs:
             catalog = await RuntimeModelControl(active.manager.snapshot_store).catalog()
@@ -609,7 +560,7 @@ async def run_suite(
             "model": MODEL,
             "logical_provider_requests": counted.logical_requests,
             "delivery_count": len(channel_rows),
-            "session_projection_count": len(session_rows),
+            "session_projection_count": len(target_messages),
             "content_counts": {"settled": 1},
             "source_ack_count": len(source_store.acknowledgements()),
             "source_ack_attempts": _source_count(source_store, "ack_attempts"),
@@ -623,7 +574,8 @@ async def run_suite(
                 )
             ),
             "delivery_id_digest": _digest_text(next(iter(identities))),
-            "control_id_digest": _digest_text(next(iter(control_ids))),
+            "wake_session_id_digest": _digest_text(request.session_id),
+            "notification_id_digest": _digest_text(request.notification_id),
             "settlement_failure_count": settlement_failures,
             "final_state": str(delivery["state"]),
             "restart_count": int(inject_settlement_failure),
@@ -643,98 +595,242 @@ def _build_stack(
     timer: ControlledTimer,
     provider: CountingProvider,
     *,
-    llm_config: LLMConfig | None = None,
     model_plugin_dirs: tuple[Path, ...] = (),
+    configure_selected_model: bool = True,
 ) -> RuntimeStack:
-    """Assemble the formal plugin, control, react, and Channel runtime chain."""
+    """Assemble the formal MessageLog, Wake, Models, and Delivery chain."""
 
-    bus = MessageBus()
     event_bus = EventBus()
-    sessions = SessionManager(workspace)
-    tools = ToolRegistry()
-    tools.register(FixtureWebFetch(), always_on=True, risk="read-only")
+    message_log = MessageLog(workspace / "sessions.db")
 
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
-        for name in ("eventmail", "drift", "wake")
+        for name in (
+            "content",
+            "context",
+            "delivery",
+            "drift",
+            "eventmail",
+            "react",
+            "tools",
+            "turn_projection",
+            "wake",
+        )
     ] + [
         Path(__file__).resolve().parents[2] / "tests" / "fixtures" / name
         for name in (
             "content_clock_source",
             "memory_recall",
-            "recording_channel",
             "semantic_interest",
         )
     ]
-    if not model_plugin_dirs:
-        plugin_dirs.append(
-            Path(__file__).resolve().parents[2] / "tests/fixtures/model_services"
-        )
+    fixture_plugin = _write_e2e_fixture_plugin(root, include_models=not model_plugin_dirs)
+    plugin_dirs.append(fixture_plugin)
     plugin_dirs.extend(model_plugin_dirs)
     manager = PluginManager(
         plugin_dirs=plugin_dirs,
         event_bus=event_bus,
-        tool_registry=tools,
         workspace=workspace,
-        session_manager=sessions,
+        message_log=message_log,
         installed_cache_root=root / "plugin-home" / "cache",
-    )
-
-    loop = AgentLoop(
-        AgentLoopDeps(
-            bus=bus,
-            tools=tools,
-            session_manager=sessions,
-            workspace=workspace,
-            event_bus=event_bus,
-        ),
-        AgentLoopConfig(
-            llm=llm_config
-            or LLMConfig(
-                max_iterations=1,
-                tool_search_enabled=False,
-            )
-        ),
     )
     if not model_plugin_dirs:
         provider.model = MODEL
         register_test_model_provider(workspace, provider)
-    loop.bind_runtime_snapshot_store(manager.snapshot_store)
-
-    async def execute(request: TurnRequest):
-        return await execute_control_turn(loop, event_bus, request)
-
-    conversation = ConversationRuntime(sessions.control_store, execute)
-    manager.bind_conversation_runtime(
-        conversation,
-        programmatic_session_creator=sessions.control_store.create_session,
-        programmatic_session_reader=sessions.control_store.get_session_meta,
-    )
-    manager.bind_durable_delivery_sender(
-        lambda request, started: _dispatch_v3_durable_delivery(
-            manager, bus, request, started
-        )
-    )
-    bus.bind_channel_outbound_dispatcher(
-        manager.channel_generation_host.dispatch_outbound
-    )
-    dispatch_task = asyncio.create_task(bus.dispatch_outbound())
     return RuntimeStack(
         workspace,
         timer,
         provider,
-        bus,
         event_bus,
-        sessions,
-        loop,
-        conversation,
+        message_log,
         manager,
-        dispatch_task,
         after_load=(
-            (lambda: _configure_selected_model(manager)) if model_plugin_dirs else None
+            (
+                (lambda: _configure_selected_model(manager))
+                if configure_selected_model
+                else None
+            )
+            if model_plugin_dirs
+            else None
         ),
         uses_test_model=not model_plugin_dirs,
     )
+
+
+def _write_e2e_fixture_plugin(root: Path, *, include_models: bool) -> Path:
+    """Create the isolated provider/tool boundary required by the formal chain."""
+
+    directory = root / ("wake_e2e_models" if include_models else "wake_e2e_support")
+    directory.mkdir(parents=True, exist_ok=True)
+    models = """
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from agent.plugin_composition import CHAT_MODELS
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelRole
+from plugins.models.projection import MODEL_CALLS
+from plugins.models.state import _BoundChat
+from plugins.models.store import ModelsStore
+from tests.model_plugin_fakes import _MODEL_PROVIDERS
+""" if include_models else ""
+    model_apply = """
+    provider = _MODEL_PROVIDERS.get(Path(ctx.runtime.workspace).resolve())
+    if provider is None:
+        raise RuntimeError(f"E2E model provider 未注册: {ctx.runtime.workspace}")
+    store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
+    store.initialize()
+    class Driver:
+        max_tool_schemas = None
+        def estimate_context_tokens(self, messages, tools):
+            return max(1, len(str((messages, tools))) // 4)
+        def estimate_appended_message_tokens(self, messages):
+            return max(1, len(str(messages)) // 4)
+        async def complete(self, request):
+            return await provider.chat(
+                messages=request.messages,
+                tools=request.tools,
+                model=descriptor.model,
+                max_tokens=request.max_output_tokens,
+                tool_choice=request.tool_choice,
+                disable_thinking=request.disable_reasoning,
+                on_content_delta=request.on_delta,
+                cache_namespace=request.prompt_cache_key,
+                **({"model_state": request.continuation.payload}
+                   if request.continuation is not None else {}),
+            )
+    descriptor = BoundModelDescriptor(
+        binding_id="wake-e2e-fixture-model", plugin_snapshot_id="wake-e2e-fixture",
+        model_revision=1, model_id="wake-e2e-fixture", connection_id="fixture",
+        driver_id="fixture", driver_contract_version="1", auth_identity="fixture",
+        model=getattr(provider, "model", "wake-e2e-fixture"), role=ModelRole.AGENT,
+        reasoning_effort=None, capabilities=ModelCapabilities(context_window=64_000),
+        capability_sources=CapabilitySources(), capability_digest="wake-e2e-fixture",
+    )
+    model = _BoundChat(descriptor, Driver(), store)
+    class Models:
+        @asynccontextmanager
+        async def execution(self, *, model_id=None, reasoning_effort=None):
+            del model_id, reasoning_effort
+            yield SimpleNamespace(chat=lambda role: model)
+    await ctx.provide(CHAT_MODELS, Models())
+    await ctx.provide(MODEL_CALLS, store.read_call)
+""" if include_models else ""
+    text = f'''from contextlib import asynccontextmanager, closing
+from agent.plugin_composition import Context
+from plugins.akasha.interest import SEMANTIC_INTEREST
+from plugins.delivery.api import Receipt
+from plugins.delivery.senders import DELIVERY_SENDERS
+from plugins.tools.api import Result
+from plugins.tools.plugin import TOOLS
+from session.message import ContentPart
+from session.message_codec import encode_body
+{models}
+api_version = 3
+name = "wake_e2e_{"models" if include_models else "support"}"
+version = "1.0.0"
+inject = (TOOLS, DELIVERY_SENDERS)
+
+class ZeroSemanticInterest:
+    async def score(self, texts, *, cutoff):
+        del cutoff
+        return tuple(0.0 for _ in texts)
+
+class NoopTool:
+    idempotent = True
+    async def prepare(self, arguments, source=None):
+        del source
+        return dict(arguments)
+    async def invoke(self, key, arguments):
+        del key, arguments
+        return Result("success", (ContentPart("text", "fixture tool result"),))
+    async def query(self, key):
+        del key
+        return None
+
+async def apply(ctx: Context, config: object):
+    del config
+    await ctx.provide(SEMANTIC_INTEREST, ZeroSemanticInterest())
+    @asynccontextmanager
+    async def open_tool(state):
+        del state
+        yield NoopTool()
+    for name in ("recall_memory", "web_fetch"):
+        await ctx.require(TOOLS).register(
+            ctx, name=name, description="isolated Wake E2E fixture tool",
+            parameters={{"type": "object", "additionalProperties": True}},
+            open=open_tool, idempotent=True, public=False,
+        )
+    class RecordingSender:
+        idempotent = True
+        def __init__(self):
+            self.path = ctx.runtime.workspace / "recording-receipts.sqlite3"
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            import sqlite3
+            with closing(sqlite3.connect(self.path)) as connection:
+                with connection:
+                    connection.execute("CREATE TABLE IF NOT EXISTS deliveries("
+                        "seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "delivery_id TEXT NOT NULL UNIQUE, recipient TEXT NOT NULL, "
+                        "message_json TEXT NOT NULL, receipt_json TEXT NOT NULL)")
+        async def send(self, key, address, message):
+            import sqlite3
+            import json
+            receipt = Receipt(status="delivered", provider_ids=(key,))
+            with closing(sqlite3.connect(self.path)) as connection:
+                with connection:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO deliveries(delivery_id, recipient, message_json, receipt_json) VALUES (?, ?, ?, ?)",
+                        (message.message_id, address, encode_body(message.body), receipt.model_dump_json()),
+                    )
+            return receipt
+        async def query(self, key, address):
+            del key, address
+            return None
+    @asynccontextmanager
+    async def open_sender():
+        yield RecordingSender()
+    await ctx.require(DELIVERY_SENDERS).register(
+        ctx, name="recording", idempotent=True, open=open_sender,
+    )
+{model_apply}'''
+    path = directory / "plugin.py"
+    path.write_text(text, encoding="utf-8")
+    return directory
+
+
+def _copy_selected_model_plugins(root: Path) -> tuple[Path, Path]:
+    """Copy the real model store and HTTP driver with an archive-visible edge."""
+
+    external = root / "external-model-plugins"
+    models = external / "models"
+    provider = external / "openai_compatible"
+    shutil.copytree(_SOURCE_ROOT / "plugins" / "models", models)
+    shutil.copytree(_SOURCE_ROOT / "plugins" / "openai_compatible", provider)
+    marker = 'ServiceKey("wake-e2e.openai-provider.v1")'
+    plugin = models / "plugin.py"
+    text = plugin.read_text(encoding="utf-8")
+    text = text.replace(
+        "from agent.plugin_composition import (\n",
+        "from agent.plugin_composition import (\n    ServiceKey,\n",
+    )
+    text = text.replace("inject = ()", f"inject = ({marker},)")
+    plugin.write_text(text, encoding="utf-8")
+    plugin = provider / "plugin.py"
+    text = plugin.read_text(encoding="utf-8")
+    text = text.replace(
+        "from agent.plugin_composition import MODEL_DRIVERS, Context\n",
+        "from agent.plugin_composition import MODEL_DRIVERS, SNAPSHOT_SEALING, Context, ServiceKey\n",
+    )
+    text = text.replace("inject = (MODEL_DRIVERS,)", "inject = ()")
+    text = text.replace(
+        "    _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())\n",
+        "    await ctx.provide(ServiceKey(\"wake-e2e.openai-provider.v1\"), object())\n"
+        "    async def register(_event: object) -> None:\n"
+        "        _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())\n"
+        "    _ = await ctx.on(SNAPSHOT_SEALING, register)\n",
+    )
+    plugin.write_text(text, encoding="utf-8")
+    return models, provider
 
 
 async def _configure_selected_model(manager: PluginManager) -> None:
@@ -784,18 +880,8 @@ def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
 
     wake = workspace / "plugin-data" / "wake-builtin"
     recording = workspace / "plugin-data" / "recording_channel-builtin"
-    memory = workspace / "memory"
     wake.mkdir(parents=True)
     recording.mkdir(parents=True)
-    memory.mkdir(parents=True)
-    template = Path(__file__).resolve().parents[2] / "prompts" / "VEDA.md"
-    caller_veda = (
-        template.read_text(encoding="utf-8").rstrip()
-        + "\n\n"
-        + _CALLER_SYSTEM_MARKER
-        + "\n"
-    )
-    _ = (memory / "VEDA.md").write_text(caller_veda, encoding="utf-8")
     _ = (wake / "config.local.toml").write_text(
         '[delivery]\nchannel = "recording"\n'
         'recipient = "fixture-recipient"\n'
@@ -863,7 +949,10 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
         )
         timer.fire_earliest()
         await _eventually(
-            lambda: bool(stack.sessions.control_store.list_turns("wake-provider-e2e")),
+            lambda: any(
+                session_id.startswith("wake:")
+                for session_id in stack.message_log.catalog().snapshot_heads()
+            ),
             "QUIET_CONTROL_TURN_MISSING",
         )
 
@@ -885,24 +974,23 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
             lambda: _source_count(source_store, "poll_count") >= 2,
             "QUIET_EMPTY_POLL_NOT_COMMITTED",
         )
-        turns = stack.sessions.control_store.list_turns("wake-provider-e2e")
         content_db = (
             workspace / "plugin-data" / "eventmail-builtin" / "eventmail.sqlite3"
         )
-        messages = stack.sessions.control_store.fetch_session_messages(
-            "wake-provider-e2e"
-        )
-        ledger = DurableDeliveryStore(
-            workspace / "runtime" / "deliveries" / "settlements.sqlite"
-        )
-        ledger.initialize()
+        wake_sessions = [
+            session_id
+            for session_id in stack.message_log.catalog().snapshot_heads()
+            if session_id.startswith("wake:")
+        ]
+        wake_messages = stack.message_log.reader(wake_sessions[0]).snapshot()
+        messages = stack.message_log.reader("wake-provider-e2e").snapshot()
         if (
-            len(turns) != 1
-            or turns[0].status is not TurnStatus.COMPLETED
-            or turns[0].final_response != ""
+            len(wake_sessions) != 1
+            or len(wake_messages) != 2
+            or getattr(wake_messages[-1].body, "finish", None) != "quiet"
             or counted.logical_requests != 0
             or messages
-            or ledger.recoverable()
+            or _delivery_rows(workspace)
         ):
             raise GateFailure("QUIET_CONTRACT_MISMATCH")
         return {
@@ -919,14 +1007,48 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
             await stack.close()
 
 
-def _delivery_state(store: DurableDeliveryStore) -> str:
-    store.initialize()
-    connection = sqlite3.connect(store.path)
-    try:
-        rows = connection.execute("SELECT state FROM deliveries").fetchall()
-        return "" if not rows else str(rows[0][0])
-    finally:
-        connection.close()
+def _delivery_rows(workspace: Path) -> list[dict[str, object]]:
+    """Read the Delivery plugin's owner records without recreating old ledger state."""
+
+    rows = _read_failure_rows(
+        workspace / "sessions.db",
+        "owner_records",
+        "SELECT key, value FROM owner_records WHERE owner = ? AND key LIKE 'delivery:%'",
+        ("plugin:delivery",),
+    )
+    result: list[dict[str, object]] = []
+    for key, raw in rows:
+        if not isinstance(key, str) or not isinstance(raw, str):
+            raise GateFailure("DELIVERY_OWNER_RECORD_INVALID")
+        try:
+            identity = json.loads(key.removeprefix("delivery:"))
+            value = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise GateFailure("DELIVERY_OWNER_RECORD_INVALID") from error
+        if (
+            not isinstance(identity, list)
+            or len(identity) != 2
+            or not all(isinstance(item, str) and item for item in identity)
+            or not isinstance(value, dict)
+        ):
+            raise GateFailure("DELIVERY_OWNER_RECORD_INVALID")
+        sink = value.get("sink")
+        if not isinstance(sink, dict) or not isinstance(sink.get("name"), str):
+            raise GateFailure("DELIVERY_OWNER_RECORD_INVALID")
+        result.append(
+            {
+                "message_id": identity[0],
+                "sink": sink,
+                "state": value.get("phase"),
+                "receipt": value.get("receipt"),
+            }
+        )
+    return result
+
+
+def _delivery_state(workspace: Path) -> str:
+    rows = _delivery_rows(workspace)
+    return "" if not rows else str(rows[0]["state"])
 
 
 def _source_count(store: FixtureSourceStore, name: str) -> int:
@@ -936,16 +1058,45 @@ def _source_count(store: FixtureSourceStore, name: str) -> int:
     return value
 
 
-def _single_delivery(store: DurableDeliveryStore) -> dict[str, object]:
-    connection = sqlite3.connect(store.path)
-    connection.row_factory = sqlite3.Row
-    try:
-        rows = connection.execute("SELECT * FROM deliveries").fetchall()
-        if len(rows) != 1:
-            raise GateFailure("DURABLE_DELIVERY_MULTIPLICITY_MISMATCH")
-        return dict(rows[0])
-    finally:
-        connection.close()
+def _content_state_counts(workspace: Path) -> dict[str, int]:
+    """Read Content item states through a short-lived read-only SQLite handle."""
+
+    rows = _read_failure_rows(
+        workspace / "plugin-data/eventmail-builtin/eventmail.sqlite3",
+        "items",
+        "SELECT status, COUNT(*) FROM items GROUP BY status ORDER BY status",
+    )
+    return {str(row[0]): _evidence_int(row[1]) for row in rows}
+
+
+def _is_fixture_settlement_failure(error: BaseException) -> bool:
+    """Accept only the exact injected interruption during the recovery exercise."""
+
+    if isinstance(error, BaseExceptionGroup):
+        return bool(error.exceptions) and all(
+            _is_fixture_settlement_failure(item) for item in error.exceptions
+        )
+    return type(error) is _FixtureSettlementInterruption
+
+
+def _wake_request(log: MessageLog) -> tuple[Request, Pointer]:
+    rows = log.owner("plugin:wake").list()
+    flows = [(key, row) for key, row in rows if key.startswith("flow:")]
+    if len(flows) != 1:
+        raise GateFailure("WAKE_POINTER_MULTIPLICITY_MISMATCH")
+    _, row = flows[0]
+    pointer = Pointer.model_validate(dict(row.value))
+    request = read_request(log.reader(pointer.session_id).snapshot())
+    if request.input_id != pointer.input_id:
+        raise GateFailure("WAKE_POINTER_REQUEST_MISMATCH")
+    return request, pointer
+
+
+def _single_delivery(workspace: Path) -> dict[str, object]:
+    rows = _delivery_rows(workspace)
+    if len(rows) != 1:
+        raise GateFailure("DURABLE_DELIVERY_MULTIPLICITY_MISMATCH")
+    return rows[0]
 
 
 def _rows(path: Path, table: str) -> list[dict[str, object]]:
@@ -991,31 +1142,21 @@ def _selected_failure_evidence(
 
     # 1. Read only identity/state columns from each isolated durable owner.
     workspace = root / "workspace"
-    ledger_rows = _read_failure_rows(
-        workspace / "runtime/deliveries/settlements.sqlite",
-        "deliveries",
-        "SELECT logical_delivery_id, accepted_turn_id, state FROM deliveries",
-    )
+    delivery_rows = _delivery_rows(workspace) if workspace.is_dir() else []
     channel_rows = _read_failure_rows(
         workspace / "recording-receipts.sqlite3",
         "deliveries",
-        "SELECT delivery_id, control_turn_id FROM deliveries",
+        "SELECT delivery_id, recipient FROM deliveries",
     )
     session_rows = _read_failure_rows(
         workspace / "sessions.db",
         "messages",
-        "SELECT json_extract(extra, '$.delivery_id'), "
-        "json_extract(extra, '$.control_turn_id') "
-        "FROM messages WHERE session_key = ?",
-        ("wake-provider-e2e",),
+        "SELECT id, session_key, body FROM messages",
     )
-    turn_rows = _read_failure_rows(
-        workspace / "sessions.db",
-        "turns",
-        "SELECT id, status, json_extract(error_json, '$.type'), "
-        "json_extract(error_json, '$.retryable'), final_response IS NOT NULL "
-        "FROM turns WHERE session_key = ?",
-        ("wake-provider-e2e",),
+    model_call_rows = _read_failure_rows(
+        workspace / "model-registry.sqlite3",
+        "model_calls",
+        "SELECT id, state, failure FROM model_calls",
     )
     content_rows = _read_failure_rows(
         workspace / "plugin-data/eventmail-builtin/eventmail.sqlite3",
@@ -1033,61 +1174,102 @@ def _selected_failure_evidence(
         "SELECT ack_attempts FROM source_state WHERE singleton = 1",
     )
 
-    # 2. Cross-owner identities leave the process only as cardinality and digest.
+    # 2. Decode only the fixed Wake failure envelope; never return provider text.
+    wake_failure_retryable: list[bool] = []
+    wake_message_count = 0
+    target_message_count = 0
+    for message_id, session_key, raw_body in session_rows:
+        if not isinstance(session_key, str) or not isinstance(raw_body, str):
+            raise GateFailure("SESSION_MESSAGE_ROW_INVALID")
+        if session_key.startswith("wake:"):
+            wake_message_count += 1
+        if session_key == "wake-provider-e2e":
+            target_message_count += 1
+        try:
+            body = json.loads(raw_body)
+        except json.JSONDecodeError as error:
+            raise GateFailure("SESSION_MESSAGE_BODY_INVALID") from error
+        if not isinstance(body, dict) or body.get("kind") != "control":
+            continue
+        if body.get("action") != "failure":
+            continue
+        reason = body.get("reason")
+        if not isinstance(reason, str):
+            raise GateFailure("WAKE_FAILURE_REASON_INVALID")
+        try:
+            envelope = json.loads(reason)
+        except json.JSONDecodeError as error:
+            raise GateFailure("WAKE_FAILURE_REASON_INVALID") from error
+        if not isinstance(envelope, dict) or envelope.get("kind") != "wake.failure.v1":
+            raise GateFailure("WAKE_FAILURE_REASON_INVALID")
+        retryable = envelope.get("retryable")
+        if not isinstance(retryable, bool):
+            raise GateFailure("WAKE_FAILURE_REASON_INVALID")
+        wake_failure_retryable.append(retryable)
+
+    # 3. Cross-owner delivery identities leave the process only as cardinality and digest.
     delivery_ids = {
-        str(value)
-        for value in (
-            *(row[0] for row in ledger_rows),
+        str(value) for value in (
+            *(row["message_id"] for row in delivery_rows),
             *(row[0] for row in channel_rows),
-            *(row[0] for row in session_rows),
         )
         if value is not None
     }
-    control_ids = {
-        str(value)
-        for value in (
-            *(row[1] for row in ledger_rows),
-            *(row[1] for row in channel_rows),
-            *(row[1] for row in session_rows),
+    model_call_ids = {str(row[0]) for row in model_call_rows}
+    model_call_states = {str(row[1]) for row in model_call_rows}
+    model_call_failures = {str(row[2]) for row in model_call_rows if row[2] is not None}
+    provider_evidence = milestones.safe_evidence()
+    # The selected external driver records calls in the models owner but does
+    # not emit the legacy passive-turn provider log events.  Use that durable
+    # call ledger as the provider identity source for this path.
+    if not provider_evidence["provider_call_identity_count"] and model_call_ids:
+        provider_evidence["provider_call_identity_count"] = len(model_call_ids)
+        provider_evidence["provider_call_id_digest"] = _digest_text(
+            "\x00".join(sorted(model_call_ids))
         )
-        if value is not None
-    }
-    turn_ids = {str(row[0]) for row in turn_rows}
-    error_types = {str(row[2]) for row in turn_rows if row[2] is not None}
-    retryable_labels: dict[int | None, str] = {
-        None: "none",
-        0: "false",
-        1: "true",
-    }
+        terminal_counts = provider_evidence["provider_terminal_counts"]
+        if not isinstance(terminal_counts, dict):
+            raise GateFailure("PROVIDER_TERMINAL_EVIDENCE_INVALID")
+        provider_evidence["provider_terminal_counts"] = {
+            **terminal_counts,
+            "call_done": sum(state == "success" for state in model_call_states),
+            "call_error": sum(state == "unknown" for state in model_call_states),
+        }
     return {
-        **milestones.safe_evidence(),
+        **provider_evidence,
         "logical_provider_requests": sum(
             item.get("event") == "tl:provider.call.start" for item in milestones.events
         ),
-        "delivery_count": len(ledger_rows),
+        "delivery_count": len(delivery_rows),
         "delivery_state_counts": {
-            state: sum(str(row[2]) == state for row in ledger_rows)
-            for state in sorted({str(row[2]) for row in ledger_rows})
+            state: sum(str(row["state"]) == state for row in delivery_rows)
+            for state in sorted({str(row["state"]) for row in delivery_rows})
         },
         "channel_receipt_count": len(channel_rows),
-        "session_projection_count": len(session_rows),
-        "turn_count": len(turn_rows),
-        "turn_status_counts": {
-            status: sum(str(row[1]) == status for row in turn_rows)
-            for status in sorted({str(row[1]) for row in turn_rows})
+        "message_count": len(session_rows),
+        "wake_message_count": wake_message_count,
+        "session_projection_count": target_message_count,
+        "wake_failure_count": len(wake_failure_retryable),
+        "wake_failure_retryable_counts": {
+            label: sum(value is expected for value in wake_failure_retryable)
+            for expected, label in ((False, "false"), (True, "true"))
         },
-        "turn_error_type_count": len(error_types),
-        "turn_error_type_digest": (
-            _digest_text(next(iter(error_types))) if len(error_types) == 1 else None
+        "model_call_count": len(model_call_rows),
+        "model_call_identity_count": len(model_call_ids),
+        "model_call_id_digest": (
+            _digest_text("\x00".join(sorted(model_call_ids)))
+            if model_call_ids
+            else None
         ),
-        "turn_retryable_counts": {
-            label: sum(row[3] == value for row in turn_rows)
-            for value, label in retryable_labels.items()
+        "model_call_state_counts": {
+            state: sum(str(row[1]) == state for row in model_call_rows)
+            for state in sorted(model_call_states)
         },
-        "turn_final_response_present_count": sum(bool(row[4]) for row in turn_rows),
-        "turn_identity_count": len(turn_ids),
-        "turn_id_digest": (
-            _digest_text(next(iter(turn_ids))) if len(turn_ids) == 1 else None
+        "model_call_failure_type_count": len(model_call_failures),
+        "model_call_failure_type_digest": (
+            _digest_text(next(iter(model_call_failures)))
+            if len(model_call_failures) == 1
+            else None
         ),
         "content_counts": {str(row[0]): _evidence_int(row[1]) for row in content_rows},
         "source_ack_count": len(ack_rows),
@@ -1095,10 +1277,6 @@ def _selected_failure_evidence(
         "delivery_identity_count": len(delivery_ids),
         "delivery_id_digest": (
             _digest_text(next(iter(delivery_ids))) if len(delivery_ids) == 1 else None
-        ),
-        "control_identity_count": len(control_ids),
-        "control_id_digest": (
-            _digest_text(next(iter(control_ids))) if len(control_ids) == 1 else None
         ),
     }
 
@@ -1289,12 +1467,7 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                     raise GateFailure("MISSING_DEEPSEEK_CREDENTIAL")
                 if not os.environ.get("PR_G_DEEPSEEK_BASE_URL", "").strip():
                     raise GateFailure("MISSING_DEEPSEEK_ENDPOINT")
-                external_plugins = selected_root / "external-model-plugins"
-                model_plugin_dirs: list[Path] = []
-                for name in ("models", "openai_compatible"):
-                    target = external_plugins / name
-                    shutil.copytree(_SOURCE_ROOT / "plugins" / name, target)
-                    model_plugin_dirs.append(target)
+                model_plugin_dirs = _copy_selected_model_plugins(selected_root)
                 # 2. Provider evidence starts after every deterministic gate is green.
                 for logger in provider_loggers:
                     logger.addHandler(milestones)
@@ -1304,16 +1477,20 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                 selected = await run_suite(
                     selected_root,
                     provider=ScriptedProvider(),
-                    llm_config=LLMConfig(
-                        max_iterations=1,
-                        max_tokens=0,
-                        tool_search_enabled=False,
-                    ),
                     model_plugin_dirs=tuple(model_plugin_dirs),
                 )
                 stage = "selected_oracles"
-                provider_call_ids, provider_turn_ids = milestones.logical_identity(2, 2)
-                selected["logical_provider_requests"] = len(provider_call_ids)
+                selected_evidence = _selected_failure_evidence(
+                    selected_root, milestones
+                )
+                model_call_states = selected_evidence["model_call_state_counts"]
+                if selected_evidence["model_call_count"] != 2 or model_call_states != {
+                    "success": 2
+                }:
+                    raise GateFailure("SELECTED_MODEL_CALL_LEDGER_MISMATCH")
+                selected["logical_provider_requests"] = selected_evidence[
+                    "model_call_count"
+                ]
                 binding = selected.get("model_binding")
                 if not isinstance(binding, dict) or (
                     binding.get("model_id") != "wake-e2e-model"
@@ -1322,17 +1499,16 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
                     or not str(binding.get("snapshot_id", ""))
                 ):
                     raise GateFailure("SELECTED_PLUGIN_BINDING_MISMATCH")
-                if _digest_text(provider_turn_ids[-1]) != selected["control_id_digest"]:
-                    raise GateFailure("SELECTED_PROVIDER_CONTROL_IDENTITY_MISMATCH")
+                selected["provider_control_id_digest"] = None
                 report.update(
                     {
                         "selected": selected,
                         "deterministic_recovery": deterministic,
                         "deterministic_quiet": quiet,
                         "http_attempts": milestones.http_attempts(),
-                        "provider_call_id_digest": _digest_text(
-                            "\x00".join(provider_call_ids)
-                        ),
+                        "provider_call_id_digest": selected_evidence[
+                            "model_call_id_digest"
+                        ],
                         "process_isolation": isolation,
                     }
                 )
