@@ -35,6 +35,8 @@
 
 ### 2.1 已核对的 Core 实现
 
+> 下面的图和职责表保留第 10 层清理前的实现基线，用于解释迁移范围；`PassiveMessageWorker` 已删除。当前 Channel ingress 由 `ChannelGenerationHost` 取得 exact binding 后调用 `CHANNEL_INPUT`，MessageBus 只承担 durable handoff custody。
+
 ```text
 ┌ Channel / Mobile / Web ingress ┐
 └──────────────┬─────────────────┘
