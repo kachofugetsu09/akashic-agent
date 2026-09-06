@@ -60,9 +60,10 @@
 | [0052](0052-compaction-and-markdown-memory-are-ordinary-plugins.md) | accepted / implementing | Compaction 与 Markdown 记忆是普通插件 | CTX-007、MEM-001～MEM-011、PLG-001～PLG-014、SES-003～SES-005 |
 | [0053](0053-plugins-declare-managed-workloads.md) | accepted / implementing | 插件声明受管 Workload | RUN-016、PLG-017、WEBUI-008、WSP-006 |
 | [0054](0054-model-sync-refreshes-public-capabilities.md) | accepted / implementing | 模型同步刷新公共能力目录 | RUN-011、ONB-001、WSP-001 |
-| [0055](0055-scheduler-keeps-internal-messages.md) | accepted | Scheduler 保留可恢复的内部消息 | SCH-001～SCH-003、SES-003～SES-005、MEM-001～MEM-002 |
-
+| [0055](0055-host-bridge-uses-typed-protobuf.md) | accepted | Host Bridge 使用 typed Protobuf V2 | RUN-013～RUN-015、SH-001～SH-003 |
 | [0056](0056-plugin-update-crashes-return-to-stable.md) | accepted / implementing | 插件更新中进程死亡时恢复旧指针，不续跑候选 | PLG-010、PLG-013、RUN-007 |
+| [0057](0057-internal-source-messages.md) | accepted | Subagent 与 Wake 保留完整内部消息 | SES-003～SES-005、MEM-001～MEM-002 |
+| [0058](0058-scheduler-keeps-internal-messages.md) | accepted | Scheduler 保留可恢复的内部消息 | SCH-001～SCH-003、SES-003～SES-005、MEM-001～MEM-002 |
 
 ## 新增规则
 

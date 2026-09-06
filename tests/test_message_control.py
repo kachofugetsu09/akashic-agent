@@ -27,7 +27,7 @@ async def runtime(tmp_path, monkeypatch, *, programmatic=False):
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
     monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(system_prompt=""), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http)
     service = None
     try:
         await core.start()

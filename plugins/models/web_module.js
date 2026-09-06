@@ -15,7 +15,9 @@ export async function readJsonResponse(response) {
     const code = body && typeof body.code === "string" ? body.code : null;
     const message = code === "forbidden_contract"
       ? "服务已更新，请刷新页面后重试。"
-      : body && typeof body.detail === "string" ? body.detail : `请求失败：${response.status}`;
+      : body && typeof body.detail === "string" ? body.detail
+      : Array.isArray(body?.detail) ? "填写的信息格式不正确，请检查必填字段和地址后重新保存。"
+      : `保存未完成（${response.status}），请稍后重试；持续失败时刷新页面重新加载配置。`;
     const error = new Error(message);
     error.status = response.status;
     error.code = code;
@@ -105,7 +107,11 @@ export function activate(ctx) {
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify(payload),
         });
-        await load();
+        try {
+          await load();
+        } catch (error) {
+          showError(new Error(`设置已保存，但刷新失败。请刷新页面查看最新配置。${error instanceof Error ? error.message : String(error)}`));
+        }
         return receipt;
       };
       const report = (work) => work.catch(showError);
@@ -132,8 +138,7 @@ export function activate(ctx) {
 
       function renderCatalog() {
         const chatModels = catalog.models.filter((model) => model.kind === "chat");
-        const chatConnectionIds = new Set(chatModels.map((model) => model.connectionId));
-        const chatConnections = catalog.connections.filter((connection) => chatConnectionIds.has(connection.id));
+        const chatConnections = catalog.connections;
         const hasConnections = chatConnections.length > 0;
         shell.classList.toggle("settings-shell--first-run", !hasConnections);
         title.textContent = hasConnections ? "模型连接" : "连接你的第一个模型";
@@ -158,7 +163,7 @@ export function activate(ctx) {
         const filtered = allConnections.filter((connection) => {
           if (!normalizedQuery) return true;
           const modelNames = catalog.models
-            .filter((model) => model.connectionId === connection.id && model.kind === "chat")
+            .filter((model) => model.connectionId === connection.id)
             .map((model) => model.model)
             .join(" ");
           return `${connection.name} ${connection.driverId} ${modelNames}`.toLocaleLowerCase().includes(normalizedQuery);
@@ -166,7 +171,7 @@ export function activate(ctx) {
         connectionCount.textContent = `${filtered.length} 个`;
         connections.replaceChildren();
         for (const connection of filtered) {
-          const models = catalog.models.filter((model) => model.connectionId === connection.id && model.kind === "chat");
+          const models = catalog.models.filter((model) => model.connectionId === connection.id);
           const entry = providerEntries.find((candidate) => candidate.id === connection.driverId);
           const item = document.createElement(entry ? "button" : "article");
           if (entry) item.type = "button";
@@ -232,13 +237,35 @@ export function activate(ctx) {
         title.textContent = label;
         description.textContent = detail;
         copy.append(title, description);
-        select.append(new Option("尚未配置", ""));
+        const unconfigured = new Option("尚未配置", "");
+        unconfigured.disabled = true;
+        select.append(unconfigured);
         for (const model of models) {
           const connection = catalog.connections.find((item) => item.id === model.connectionId);
           select.append(new Option(`${model.model}：${connection?.name ?? model.connectionId}`, model.id));
         }
         select.value = value;
-        select.addEventListener("change", () => report(change(select.value)));
+        const feedback = document.createElement("small");
+        feedback.setAttribute("role", "status");
+        feedback.setAttribute("aria-live", "polite");
+        select.addEventListener("change", async () => {
+          const selected = select.value;
+          const controls = [...bindings.querySelectorAll("select")];
+          controls.forEach((control) => { control.disabled = true; });
+          feedback.textContent = "正在保存…";
+          try {
+            await change(selected);
+            value = selected;
+            feedback.textContent = "已保存";
+            showNotice(`${label}已保存，下次使用系统绑定时生效；会话固定模型不受影响。`);
+          } catch (error) {
+            select.value = value;
+            feedback.textContent = `未保存，已恢复原选择。${error instanceof Error ? error.message : String(error)} 请重新选择后重试。`;
+          } finally {
+            controls.forEach((control) => { control.disabled = false; });
+          }
+        });
+        copy.append(feedback);
         row.append(copy, select);
         return row;
       }
@@ -368,6 +395,21 @@ export function activate(ctx) {
           scrim.remove();
           showError(error);
           return;
+        }
+        if (connection) {
+          const list = document.createElement("details");
+          list.className = "settings-saved-models";
+          const savedModels = catalog.models.filter((model) => model.connectionId === connectionId);
+          const summary = document.createElement("summary");
+          summary.textContent = `查看已保存模型（${savedModels.length}）`;
+          const items = document.createElement("ul");
+          for (const model of savedModels) {
+            const item = document.createElement("li");
+            item.textContent = `${model.model}${model.kind === "embedding" ? " · 向量模型" : ""}`;
+            items.append(item);
+          }
+          list.append(summary, items);
+          dialogHost.querySelector(".settings-dialog-body").append(list);
         }
         const close = () => disposeDialog();
         scrim.addEventListener("close", close, {once: true});

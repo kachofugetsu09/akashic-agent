@@ -27,7 +27,7 @@ async def test_core_opens_message_schema_and_real_source_without_legacy_executio
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
     monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(system_prompt=""), workspace, http,
+    core = bootstrap.build_core_runtime(Config(), workspace, http,
                                         clear_stale_session_admissions=True)
     try:
         await core.start()
@@ -60,7 +60,7 @@ def test_core_rejects_legacy_schema_before_admission_cleanup(tmp_path):
     with closing(sqlite3.connect(workspace / "sessions.db")) as connection:
         before = tuple(connection.iterdump())
     with pytest.raises(RuntimeError, match="schema|迁移"):
-        bootstrap.build_core_runtime(Config(system_prompt=""), workspace, SharedHttpResources(),
+        bootstrap.build_core_runtime(Config(), workspace, SharedHttpResources(),
                                      clear_stale_session_admissions=True)
     with closing(sqlite3.connect(workspace / "sessions.db")) as connection:
         assert tuple(connection.iterdump()) == before
@@ -79,7 +79,7 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
     monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(system_prompt=""), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http)
     try:
         await core.start()
         snapshot = core.plugin_manager.current_snapshot
@@ -120,7 +120,7 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
     _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(system_prompt=""), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http)
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
@@ -184,7 +184,7 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                     ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(system_prompt=""), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http)
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
@@ -290,7 +290,7 @@ async def test_app_checks_sender_before_starting_native_receiver(tmp_path, monke
         if not sender_enabled:
             raise AssertionError("receiver must not start")
     monkeypatch.setattr(TelegramChannel, "start", start)
-    config = Config(system_prompt="")
+    config = Config()
     config.channels.chat.enabled = False
     config.channels.telegram = TelegramChannelConfig(token="fixture:token", channel_name="private_bot")
     if sender_enabled:
@@ -357,7 +357,7 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             super().mark_ready()
             ready.set()
     readiness = Readiness(workspace, "fixture-app")
-    config = Config(system_prompt="")
+    config = Config()
     app = AppRuntime(config, workspace, readiness=readiness)
     task = asyncio.create_task(app.run())
     try:

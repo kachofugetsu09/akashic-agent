@@ -144,3 +144,39 @@ body {
 @media (prefers-contrast: more) {
   .web-host-stale { border-color: var(--ak-rule-strong); }
 }
+
+/* 桌面宿主统一标题带和工具区几何，插件继续拥有工具内容与生命周期。 */
+.unified-shell .conversation-page.has-tools .conversation-tools-toggle {
+  inset-block-start: 8px;
+  inset-inline-end: 16px;
+  min-block-size: 36px;
+  padding-inline: 12px;
+  border-color: var(--ak-rule-default);
+  background: var(--ak-paper-editing);
+  box-shadow: none;
+  backdrop-filter: none;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.unified-shell .conversation-tools {
+  box-sizing: border-box;
+  border-inline-start: 1px solid var(--ak-rule-subtle);
+  background: var(--ak-paper-quiet);
+}
+
+.unified-shell .conversation-tools-bar {
+  block-size: 52px;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 12px 8px;
+}
+
+.unified-shell .conversation-tools-content {
+  block-size: calc(100% - 52px);
+}
+
+.unified-shell .conversation-tool-panel {
+  /* 内容容器已经扣掉工具栏，面板本身不应再扣一次。 */
+  block-size: 100%;
+}

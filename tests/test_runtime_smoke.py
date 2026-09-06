@@ -148,8 +148,6 @@ def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
 def _write_config(path: Path, socket_path: Path) -> None:
     payload = {
         "agent": {
-            "system_prompt": "test system prompt",
-            "max_iterations": 2,
             "plugins": {"disabled_builtin": ["akasha", "wake"]},
         },
         "app_server": {
@@ -159,19 +157,40 @@ def _write_config(path: Path, socket_path: Path) -> None:
     path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
 
 
-def test_load_config_keeps_internal_max_iterations_default(tmp_path: Path):
+def test_load_config_has_no_legacy_agent_fields(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
 [agent]
-system_prompt = "test"
 """.strip() + "\n",
         encoding="utf-8",
     )
 
     cfg = load_config(config_path, workspace=tmp_path)
 
-    assert cfg.max_iterations == 10
+    assert not hasattr(cfg, "max_iterations")
+
+
+@pytest.mark.parametrize(
+    ("snippet", "owner"),
+    [
+        ('[agent]\nsystem_prompt = "old"', "prompt plugin"),
+        ("[agent]\nmax_iterations = 1", "reply max_steps"),
+        ("[agent.tools]\nsearch_enabled = true", "tool discovery"),
+        ("[agent]\ndev_mode = false", "no runtime owner"),
+        ('[agent.wiring]\ntoolsets = ["meta_common"]', "no runtime owner"),
+    ],
+)
+def test_load_config_rejects_retired_agent_fields(
+    tmp_path: Path,
+    snippet: str,
+    owner: str,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(snippet + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=owner):
+        load_config(config_path, workspace=tmp_path)
 
 
 def test_load_config_has_no_pending_optimizer_config(tmp_path: Path):
@@ -179,7 +198,6 @@ def test_load_config_has_no_pending_optimizer_config(tmp_path: Path):
     config_path.write_text(
         """
 [agent]
-system_prompt = "test"
 """.strip() + "\n",
         encoding="utf-8",
     )
@@ -195,7 +213,6 @@ system_prompt = "test"
 def test_load_config_rejects_retired_pending_optimizer_keys(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        '[agent]\nsystem_prompt = "test"\n\n'
         "[agent.maintenance]\nmemory_optimizer_enabled = false\n",
         encoding="utf-8",
     )
@@ -208,9 +225,6 @@ def test_load_config_projects_generic_disabled_builtin_plugins(tmp_path: Path) -
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-[agent]
-system_prompt = "test"
-
 [agent.plugins]
 disabled_builtin = ["subagent", "scheduler"]
 """.strip() + "\n",
@@ -275,9 +289,6 @@ def test_config_load_resolves_channel_secret_from_explicit_workspace(
         (memory / "TG_TOKEN").write_text(token, encoding="utf-8")
     config_path.write_text(
         """
-[agent]
-system_prompt = "test"
-
 [channels.telegram]
 token = "${TG_TOKEN}"
 """.strip() + "\n",
@@ -461,24 +472,17 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         runtime = original_build_core_runtime(
             config, workspace, http_resources, **kwargs
         )
-        agent_loop = runtime.loop
         bus = runtime.bus
 
-        async def _agent_loop_run():
+        async def _runtime_task():
             return None
 
-        agent_loop.run = _agent_loop_run  # type: ignore[assignment]
-        monkeypatch.setattr(
-            bootstrap_app,
-            "PassiveMessageWorker",
-            lambda *args, **kwargs: types.SimpleNamespace(run=_agent_loop_run),
-        )
-        monkeypatch.setattr(bus, "dispatch_outbound", _agent_loop_run)
+        monkeypatch.setattr(bus, "dispatch_outbound", _runtime_task)
         assert runtime.plugin_manager is not None
         monkeypatch.setattr(
             runtime.plugin_manager,
             "run_runtime_services",
-            _agent_loop_run,
+            _runtime_task,
         )
         observed["bus"] = bus
         observed["http_resources"] = http_resources
@@ -556,10 +560,6 @@ async def test_shutdown_stops_mobile_channel_before_closing_gateway_storage(tmp_
 
     gateway = Gateway()
 
-    class ConversationRuntime:
-        async def shutdown(self) -> None:
-            events.append("conversation.shutdown")
-
     class ChannelHost:
         async def stop_all(self) -> None:
             assert gateway.closed is False
@@ -567,12 +567,11 @@ async def test_shutdown_stops_mobile_channel_before_closing_gateway_storage(tmp_
 
     runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
     runtime.mobile_gateway_runtime = gateway
-    runtime.conversation_runtime = cast(Any, ConversationRuntime())
     runtime.channel_host = cast(Any, ChannelHost())
 
     await runtime.shutdown()
 
-    assert events == ["conversation.shutdown", "channels.stop", "gateway.close"]
+    assert events == ["channels.stop", "gateway.close"]
 
 
 @pytest.mark.asyncio
@@ -1056,7 +1055,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
     monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq)
 
     config = Config(
-        system_prompt="s",
         channels=ChannelsConfig(
             telegram=TelegramChannelConfig(token="tg-token", allow_from=["1"]),
             qq=QQChannelConfig(
@@ -1102,7 +1100,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
 @pytest.mark.asyncio
 async def test_start_channels_skips_unfilled_optional_channels(tmp_path: Path) -> None:
     config = Config(
-        system_prompt="s",
         channels=ChannelsConfig(telegram=None, qq=None),
     )
     resources = SharedHttpResources()

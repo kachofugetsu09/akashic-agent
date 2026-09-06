@@ -64,7 +64,7 @@ export const DesktopSidebar = memo(function DesktopSidebar({
 
       <ConversationNavigation
         destinationHeading={false}
-        sessionHeading={undefined}
+        sessionHeading="最近会话"
         destinations={[]}
         sessions={filteredSessions.map((session) => ({
           ...session,

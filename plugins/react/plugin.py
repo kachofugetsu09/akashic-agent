@@ -224,8 +224,8 @@ async def react(
     terminal_tools: frozenset[str] = frozenset(),
 ) -> Message:
     """先结算已提交调用，再读日志推理并逐条提交；没有 Turn、Attempt 或历史副本。"""
-    if type(max_steps) is not int or max_steps < 1:
-        raise ValueError("模型请求上限必须是正整数")
+    if type(max_steps) is not int or max_steps < 0:
+        raise ValueError("模型请求上限必须是非负整数")
     if reader.session_id != writer.session_id:
         raise ValueError("ReAct reader 与 writer 必须属于同一 Session")
     while True:
@@ -236,7 +236,7 @@ async def react(
         if terminal_tools and _terminal_result(snapshot, writer.source, tools, terminal_tools):
             return writer.append(uuid4().hex, Output((), "quiet"),
                                  expected_source_head=reader.head(source=writer.source))
-        if _steps(snapshot, writer.source) >= max_steps:
+        if max_steps > 0 and _steps(snapshot, writer.source) >= max_steps:
             raise StepLimit(f"本来源未完成工作已达到 {max_steps} 个模型输出")
         head = max((m.seq for m in snapshot if m.source == writer.source), default=-1)
         # 2. 取得材料与组装请求分开，Context 不获得模型调用或检索权。

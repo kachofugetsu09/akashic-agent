@@ -41,7 +41,7 @@ inject = (SOURCES, CONVERSATION_COMMANDS, CHAT_MODELS, CONTENT, CONTEXT, MATERIA
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    max_steps: int = Field(default=40, gt=0)
+    max_steps: int = Field(default=40, strict=True, ge=0)
     max_output_tokens: int = Field(default=4096, gt=0)
     tools: tuple[str, ...] | None = None
 
