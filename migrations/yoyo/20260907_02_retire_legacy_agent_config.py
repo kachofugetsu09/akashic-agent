@@ -453,6 +453,7 @@ def retire_legacy_agent_config(_connection: object) -> None:
     try:
         # 1. 所有冲突都已在第一次外部写入前检查。
         attempted.append((plan.reply, plan.reply_bytes, "reply 插件配置"))
+        validate_workspace_plugin_data_path(plan.reply.path, current.workspace)
         _publish(plan.reply, plan.reply_bytes, label="reply 插件配置")
         attempted.append((plan.config, plan.config_bytes, "主配置"))
         _publish(plan.config, plan.config_bytes, label="主配置")
@@ -460,6 +461,8 @@ def retire_legacy_agent_config(_connection: object) -> None:
         restore_error: BaseException | None = None
         for snapshot, payload, label in reversed(attempted):
             try:
+                if label == "reply 插件配置":
+                    validate_workspace_plugin_data_path(snapshot.path, current.workspace)
                 _restore(snapshot, payload, label=label)
             except BaseException as error:
                 if restore_error is None:

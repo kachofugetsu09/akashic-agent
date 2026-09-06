@@ -278,6 +278,65 @@ def test_operator_reply_creation_survives_failed_publish(
     assert reply.read_text(encoding="utf-8") == "max_steps = 88\n"
 
 
+def test_reply_parent_symlink_drift_blocks_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[agent]\nmax_iterations = 3\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    reply = workspace / "plugin-data/reply-builtin/config.local.toml"
+    outside = tmp_path / "outside"
+    module = _module(tmp_path)
+    original_backup = module._backup
+
+    def backup_then_swap_parent(snapshot, backup_root, name):
+        result = original_backup(snapshot, backup_root, name)
+        if name == "config.toml.before":
+            outside.mkdir()
+            reply.parent.parent.mkdir(parents=True, exist_ok=True)
+            reply.parent.symlink_to(outside, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(module, "_backup", backup_then_swap_parent)
+    with pytest.raises(RuntimeError, match="恢复失败"):
+        _run(module, config, workspace)
+
+    assert not (outside / "config.local.toml").exists()
+
+
+def test_reply_parent_symlink_drift_blocks_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("[agent]\nmax_iterations = 3\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    reply = workspace / "plugin-data/reply-builtin/config.local.toml"
+    outside = tmp_path / "outside"
+    module = _module(tmp_path)
+    original_publish = module._publish
+
+    def publish_then_swap_parent(snapshot, payload, *, label):
+        original_publish(snapshot, payload, label=label)
+        if label == "reply 插件配置":
+            outside.mkdir()
+            real_parent = reply.parent.with_name("reply-builtin-real")
+            reply.parent.rename(real_parent)
+            reply.parent.symlink_to(outside, target_is_directory=True)
+            raise OSError("模拟后续发布失败")
+
+    monkeypatch.setattr(module, "_publish", publish_then_swap_parent)
+    with pytest.raises(RuntimeError, match="恢复失败"):
+        _run(module, config, workspace)
+
+    assert (reply.parent / "config.local.toml").exists() is False
+    assert (
+        workspace / "plugin-data/reply-builtin-real/config.local.toml"
+    ).read_text(encoding="utf-8") == "max_steps = 3\n"
+    assert not (outside / "config.local.toml").exists()
+
+
 def test_operator_reply_edit_survives_failed_rollback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
