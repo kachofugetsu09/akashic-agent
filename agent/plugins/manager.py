@@ -242,6 +242,22 @@ async def _complete_critical(awaitable: Awaitable[U]) -> tuple[U, bool]:
     return result, cancelled
 
 
+def _reject_retired_activity_recovery(action: ReloadRecoveryAction) -> None:
+    """拒绝依赖已删除 Activity owner 的旧恢复记录。"""
+
+    resource = action.failure_resource or ""
+    if "activity-publication" not in {
+        item.strip() for item in resource.split(",") if item.strip()
+    }:
+        return
+    raise RuntimeError(
+        "runtime recovery blocked: durable action retains retired "
+        "activity-publication owner; migrate or resolve it manually before "
+        f"recovery (tx={action.tx_id}, plugin={action.plugin_id}, "
+        f"resource={resource!r}); journal remains pending"
+    )
+
+
 @dataclass(frozen=True)
 class ActivePluginInfo:
     plugin_id: str
@@ -1319,6 +1335,8 @@ class PluginManager:
 
         if not actions:
             return {}
+        for action in actions:
+            _reject_retired_activity_recovery(action)
         current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
         if os.environ.get("AKASHIC_SUPERVISED") != "1" or not current_boot_id:
             raise RuntimeError("v3 runtime recovery 需要 supervised boot identity")
@@ -1413,6 +1431,8 @@ class PluginManager:
     ) -> None:
         """Seal boot reconciliation only after the authoritative stable Root is live."""
 
+        for action in actions:
+            _reject_retired_activity_recovery(action)
         snapshot = self.current_snapshot
         for action in actions:
             generation = self._active_generations.get(action.plugin_id)
@@ -3230,6 +3250,7 @@ class PluginManager:
             if len(actions) != 1:
                 raise RuntimeError("插件没有待执行的 runtime recovery")
             action = actions[0]
+            _reject_retired_activity_recovery(action)
             ready = self._ready_candidate
             if ready is not None and (
                 ready.plugin_id != plugin_id
