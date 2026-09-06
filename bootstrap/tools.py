@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import logging
-import inspect
 import os
-from collections.abc import Awaitable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -32,24 +31,6 @@ from agent.plugin_composition.durable_deliveries import (
 )
 from agent.plugins.manifest import plugins_root
 from agent.plugins.snapshot import lease_current_runtime_snapshot
-from agent.looping.core import AgentLoop
-from agent.looping.ports import (
-    AgentLoopConfig,
-    AgentLoopDeps,
-    LLMConfig,
-    SessionServices,
-)
-from agent.tools.message_push import MessagePushTool
-from agent.tools.registry import ToolRegistry
-from agent.turns.outbound import OutboundPort, PushToolOutboundPort
-from bootstrap.toolsets.meta import build_readonly_tools
-from bootstrap.toolsets.protocol import ToolsetDeps
-from bootstrap.wiring import (
-    wire_turn_lifecycle,
-    resolve_context_factory,
-    resolve_toolset_provider,
-)
-from agent.lifecycle.facade import TurnLifecycle
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.workspace_lock import PluginPublicationLock
 from bus.event_bus import EventBus
@@ -57,14 +38,11 @@ from bus.events import (
     ChannelMessage,
 )
 from infra.channels.attachment_import import (
-    ChannelOutboundAttachmentImporter,
     import_channel_attachments,
 )
-from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.net.http import SharedHttpResources
 from session.artifact_store import ArtifactStore
-from session.activity import PresenceStore
 from session.manager import SessionManager
 from session.log import MessageLog
 from session.admissions import SessionAdmissions
@@ -431,111 +409,6 @@ class CoreRuntime:
         if self._plugin_publication_locked:
             self.plugin_publication_lock.release()
             self._plugin_publication_locked = False
-
-
-def build_registered_tools(
-    config: Config,
-    workspace: Path,
-    http_resources: SharedHttpResources,
-    *,
-    bus: MessageBus,
-    runtime_snapshot_store,
-    session_store=None,
-    tools: ToolRegistry | None = None,
-    event_publisher=None,
-    restart_coordinator: "RestartCoordinator | None" = None,
-) -> tuple[ToolRegistry, MessagePushTool]:
-    """按配置顺序构造并注册核心工具资源。"""
-
-    from session.store import SessionStore
-
-    # 1. 构造共享服务；外部传入的 session_store 和 http_resources 不转移 ownership。
-    wiring = config.wiring
-    tools = tools if tools is not None else ToolRegistry()
-    readonly_tools = build_readonly_tools(
-        http_resources,
-        workspace=workspace,
-    )
-    store = (
-        session_store
-        if session_store is not None
-        else SessionStore(workspace / "sessions.db")
-    )
-    push_tool = MessagePushTool(chat_lane=bus.chat_lane)
-    # 2. 保持 wiring.toolsets 顺序注册。
-    for name in wiring.toolsets:
-        provider_obj = resolve_toolset_provider(
-            name,
-            readonly_tools=readonly_tools if name == "meta_common" else None,
-        )
-        result = provider_obj.register(
-            tools,
-            ToolsetDeps(
-                config=config,
-                workspace=workspace,
-                session_store=store,
-                push_tool=push_tool,
-                http_resources=http_resources,
-                runtime_snapshot_store=runtime_snapshot_store,
-                bus=bus,
-                event_publisher=event_publisher,
-            ),
-        )
-
-    # 3. 自重启只在 supervisor 与 tool_search 两个边界都成立时注册。
-    if (
-        restart_coordinator is not None
-        and restart_coordinator.supervised
-        and config.tool_search_enabled
-    ):
-        from agent.tools.agent_restart import AgentRestartTool
-
-        tools.register(
-            AgentRestartTool(restart_coordinator),
-            risk="external-side-effect",
-            always_on=False,
-            preloadable=False,
-            requires_turn_search=True,
-            search_hint="重启 akashic agent 服务 重新加载核心配置",
-        )
-
-    return tools, push_tool
-
-
-def _build_loop_deps(
-    *,
-    config: Config,
-    workspace: Path,
-    bus: MessageBus,
-    tools: ToolRegistry,
-    session_manager: SessionManager,
-    presence: PresenceStore,
-    processing_state: ProcessingState,
-    event_bus: EventBus,
-    outbound_port: OutboundPort | None = None,
-) -> AgentLoopDeps:
-    """将已构造的 runtime 资源装配成 AgentLoop 依赖。"""
-
-    # 1. 按 typed wiring 解析 context。媒体能力由每个 Turn 的模型绑定提供。
-    wiring = config.wiring
-    context = resolve_context_factory(wiring.context)(workspace)
-    # 2. 绑定 session；模型由 exact plugin snapshot 在 Turn admission 时取得。
-    session_services = SessionServices(
-        session_manager=session_manager, presence=presence
-    )
-
-    return AgentLoopDeps(
-        bus=bus,
-        event_bus=event_bus,
-        tools=tools,
-        session_manager=session_manager,
-        workspace=workspace,
-        presence=presence,
-        processing_state=processing_state,
-        context=context,
-        session_services=session_services,
-        outbound_port=outbound_port,
-    )
 
 
 def build_core_runtime(

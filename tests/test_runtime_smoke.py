@@ -461,24 +461,17 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         runtime = original_build_core_runtime(
             config, workspace, http_resources, **kwargs
         )
-        agent_loop = runtime.loop
         bus = runtime.bus
 
-        async def _agent_loop_run():
+        async def _runtime_task():
             return None
 
-        agent_loop.run = _agent_loop_run  # type: ignore[assignment]
-        monkeypatch.setattr(
-            bootstrap_app,
-            "PassiveMessageWorker",
-            lambda *args, **kwargs: types.SimpleNamespace(run=_agent_loop_run),
-        )
-        monkeypatch.setattr(bus, "dispatch_outbound", _agent_loop_run)
+        monkeypatch.setattr(bus, "dispatch_outbound", _runtime_task)
         assert runtime.plugin_manager is not None
         monkeypatch.setattr(
             runtime.plugin_manager,
             "run_runtime_services",
-            _agent_loop_run,
+            _runtime_task,
         )
         observed["bus"] = bus
         observed["http_resources"] = http_resources
@@ -556,10 +549,6 @@ async def test_shutdown_stops_mobile_channel_before_closing_gateway_storage(tmp_
 
     gateway = Gateway()
 
-    class ConversationRuntime:
-        async def shutdown(self) -> None:
-            events.append("conversation.shutdown")
-
     class ChannelHost:
         async def stop_all(self) -> None:
             assert gateway.closed is False
@@ -567,12 +556,11 @@ async def test_shutdown_stops_mobile_channel_before_closing_gateway_storage(tmp_
 
     runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
     runtime.mobile_gateway_runtime = gateway
-    runtime.conversation_runtime = cast(Any, ConversationRuntime())
     runtime.channel_host = cast(Any, ChannelHost())
 
     await runtime.shutdown()
 
-    assert events == ["conversation.shutdown", "channels.stop", "gateway.close"]
+    assert events == ["channels.stop", "gateway.close"]
 
 
 @pytest.mark.asyncio

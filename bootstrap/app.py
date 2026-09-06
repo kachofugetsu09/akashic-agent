@@ -9,19 +9,15 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from agent.config import resolve_app_server_endpoint
-from agent.control.models import TurnRequest
-from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
 from agent.host_bridge.monitor import build_host_bridge_monitor
 from agent.host_bridge.monitor import claim_host_bridge_boot
 from agent.restart import RestartCoordinator
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
-from bootstrap.channel_presentation import ChannelTurnPresentationBridge
 from bootstrap.channels import start_channels
 from bootstrap.chat_api import build_chat_server
 from bootstrap.cleanup import run_cleanup_steps
-from bootstrap.control_execution import execute_control_turn
 from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.web_runtime import (
     chat_socket_path,
@@ -29,7 +25,6 @@ from bootstrap.web_runtime import (
     prepare_runtime_socket,
 )
 from bootstrap.runtime_readiness import RuntimeReadiness
-from bootstrap.passive_worker import PassiveMessageWorker
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
@@ -185,20 +180,12 @@ class AppRuntime:
         self.readiness = readiness
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
-        self.conversation_runtime: ConversationRuntime | None = None
         self.control_service: ControlService | None = None
         self.plugin_turn_rollout: TurnPluginRollout | None = None
-        self.passive_worker: PassiveMessageWorker | None = None
         self.channel_host: ChannelHost | None = None
-        self.channel_presentation: ChannelTurnPresentationBridge | None = None
         self.core: CoreRuntime | None = None
-        self.agent_loop = None
         self.bus = None
         self.event_bus: EventBus | None = None
-        self.tools = None
-        self.push_tool = None
-        self.session_manager = None
-        self.presence = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
         self.chat_server = None
@@ -664,22 +651,6 @@ class AppRuntime:
                     (
                         self.control_service.shutdown
                         if self.control_service
-                        else _noop_async
-                    ),
-                ),
-                (
-                    "conversation_runtime.shutdown",
-                    (
-                        self.conversation_runtime.shutdown
-                        if self.conversation_runtime
-                        else _noop_async
-                    ),
-                ),
-                (
-                    "channel_presentation.aclose",
-                    (
-                        self.channel_presentation.aclose
-                        if self.channel_presentation
                         else _noop_async
                     ),
                 ),
