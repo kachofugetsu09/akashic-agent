@@ -1,6 +1,6 @@
 schema_version = 1
 name = "computer"
-version = "1.0.0"
+version = "2.0.0"
 api_version = 3
 entrypoint = "plugin.py"
 
@@ -16,7 +16,7 @@ exclude_data_paths = [
 
 [[workload]]
 name = "computer"
-image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:6fd3c605380a3daef5ddebb34f2905ee992d2b4e1490fbfb78dcce9f06a3dadb"
+image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:9bd4f6e215b4848e91f0dbfea75a7b227faeba96268c422d62e81a9b64d5ac92"
 command = ["/opt/computer/start.sh"]
 user_namespaces = true
 
@@ -51,8 +51,6 @@ pids = 0
 [[mcp]]
 name = "computer"
 command = ["mcp_server.py"]
-required_tools = ["browser_observe", "browser_action", "computer_observe", "computer_action"]
-candidate_read_only_tools = ["browser_observe", "computer_observe"]
 
 [[mcp.workload_env]]
 env = "COMPUTER_URL"
