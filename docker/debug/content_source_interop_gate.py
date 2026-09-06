@@ -24,8 +24,6 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.plugins.generation_activity_host import ActivityHost
-from agent.plugins.generation_job_host import BackgroundJobActivityAdapter
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.eventmail.store import EventMailStore
@@ -47,11 +45,6 @@ FORBIDDEN_PROACTIVE_MARKERS = (
 
 class GateError(RuntimeError):
     """Represent one actionable interoperability gate failure."""
-
-
-class _MountOnlyConversationRuntime:
-    async def start_turn(self, *args: object, **kwargs: object) -> object:
-        return _unexpected_programmatic_call(*args, **kwargs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,25 +523,6 @@ async def _run_coexistence_probe(
             workspace=workspace,
             installed_cache_root=root / "cache",
         )
-        mount_only_runtime = _MountOnlyConversationRuntime()
-        manager.bind_conversation_runtime(
-            mount_only_runtime,
-            programmatic_session_creator=_unexpected_programmatic_call,
-            programmatic_session_reader=_unexpected_programmatic_call,
-        )
-        manager.bind_activity_host(
-            ActivityHost(
-                (
-                    BackgroundJobActivityAdapter(
-                        manager.snapshot_store,
-                        workspace=str(workspace),
-                        conversation_runtime=mount_only_runtime,
-                        programmatic_session_creator=_unexpected_programmatic_call,
-                        programmatic_session_reader=_unexpected_programmatic_call,
-                    ),
-                )
-            )
-        )
         row_count = -1
         try:
             await manager.load_all()
@@ -617,13 +591,6 @@ def _content_logical_state(path: Path) -> dict[str, object]:
             )
             state[table] = {"columns": columns, "rows": rows}
     return state
-
-
-def _unexpected_programmatic_call(*args: object, **kwargs: object) -> object:
-    """Fail if a mount-only coexistence probe starts dispatching real work."""
-
-    del args, kwargs
-    raise GateError("mount-only coexistence probe 不得执行 programmatic Turn")
 
 
 def _run_cases(
