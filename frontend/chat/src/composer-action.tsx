@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes } from "react";
-import { CircleStop, SendHorizontal } from "lucide-react";
+import { Square, SendHorizontal } from "lucide-react";
 
 import "./composer-action.css";
 
@@ -23,7 +23,7 @@ export function ComposerActionButton({
       data-mode={mode}
       aria-label={label}
     >
-      {mode === "send" ? <SendHorizontal aria-hidden="true" /> : <CircleStop aria-hidden="true" />}
+      {mode === "send" ? <SendHorizontal aria-hidden="true" /> : <Square aria-hidden="true" fill="currentColor" />}
     </button>
   );
 }

@@ -11,6 +11,7 @@ import {
 import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
+import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer } from "./desktop-composer";
 import { DesktopConversationMessages } from "./desktop-conversation";
 import { DesktopMobileNavigation } from "./desktop-mobile-navigation";
@@ -82,6 +83,9 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
             <LazyRuntimeDashboard />
           </Suspense>
         ) : <section className="chat-main">
+        <header className="conversation-heading">
+          <h1 title={sidebarSessions.find((s) => s.active)?.title || "新会话"}>{sidebarSessions.find((session) => session.active)?.title || "新会话"}</h1>
+        </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={messages.length ? "conversation-content" : "conversation-content empty"}>
             {messages.length === 0 ? <DesktopEmptyState shellStatus={shellState?.status ?? null} /> : (
@@ -100,6 +104,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
                 />
               </MessageRendererErrorBoundary>
             )}
+            {status === "submitted" ? <ThinkingPlaceholder /> : null}
           </ConversationContent>
           <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore} />
           <ConversationScrollButton className="desktop-scroll-return" />
@@ -112,7 +117,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
             replyTarget={replyTarget} onModelChange={handleModelChange} onCancelReply={cancelReply}
             onSend={sendMessage} onStop={stopTurn}
           />
-          <ComposerStatsLine tracker={turnMetrics} />
+          <ComposerStatsLine tracker={turnMetrics} hideWaiting />
           {error ? <div className="error-line" role="alert"><span>{error}</span>
             <MaterialButton variant="danger" onClick={retry}>重试</MaterialButton>
           </div> : null}

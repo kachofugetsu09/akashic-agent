@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { Duration, Effect, Fiber, Schedule } from "effect";
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
 import { desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
@@ -122,9 +123,12 @@ export function useDesktopChatController() {
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
   const [modelSelectionDirty, setModelSelectionDirty] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
-  const reconnectAttemptRef = useRef(0);
-  const connectRef = useRef<(() => WebSocket) | null>(null);
+  const connectionTaskRef = useRef<Fiber.RuntimeFiber<void> | null>(null);
+  const [reconnect] = useState(() => Effect.runSync(Schedule.driver(Schedule.exponential("1 second").pipe(
+    Schedule.modifyDelay((_, delay) => Math.min(Duration.toMillis(delay), 30_000)),
+    Schedule.jitteredWith({ min: 0, max: 1 }),
+    Schedule.intersect(Schedule.recurs(12)),
+  ))));
   const messageElementsRef = useRef(new Map<string, HTMLDivElement>());
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
@@ -265,118 +269,102 @@ export function useDesktopChatController() {
     return () => window.removeEventListener("message", handleModelsChanged);
   }, [loadModels, reportError]);
 
-  const scheduleReconnect = useCallback(() => {
-    if (reconnectTimerRef.current !== null) return;
-    const attempt = reconnectAttemptRef.current;
-    if (attempt >= 12) {
-      reportError(new Error("聊天连接已断开，请刷新页面重试"), "error");
-      return;
+  /** 校验网络帧，再更新当前会话的消息投影。 */
+  const receiveFrame = useCallback((event: MessageEvent) => {
+    console.debug("[chat-ui] ws message", typeof event.data);
+    try {
+      const frame = parseChatFrame(JSON.parse(String(event.data)));
+      if ("session_id" in frame && frame.session_id === activeSessionRef.current) {
+        liveProjectionRevisionRef.current += 1;
+      }
+      const traceKind = traceKindForChatFrame(frame);
+      if (traceKind !== undefined && "session_id" in frame && "turn_id" in frame) {
+        webTurnTrace.observeFrame(frame.session_id, frame.turn_id, traceKind);
+      }
+      observeTurnMetrics(turnMetrics, frame);
+      applyChatFrame(frame, {
+        activeSessionId: () => activeSessionRef.current,
+        activateSession: (sessionId) => {
+          activeSessionRef.current = sessionId;
+          setActiveSessionId(sessionId);
+        },
+        setError,
+        setMessages,
+        getStatus: () => statusLiveRef.current,
+        setStatus: setStatusLive,
+        getActiveTurnId: () => activeTurnIdRef.current,
+        setActiveTurnId: (turnId) => { activeTurnIdRef.current = turnId; },
+        loadSessions: loadSessionsSafely,
+        loadMessages: loadMessagesSafely,
+      });
+    } catch (error) {
+      reportError(error, "error");
     }
-    const ceiling = Math.min(1000 * 2 ** attempt, 30000);
-    const delay = Math.floor(Math.random() * ceiling);
-    reconnectAttemptRef.current += 1;
-    reconnectTimerRef.current = window.setTimeout(() => {
-      reconnectTimerRef.current = null;
-      if (!socketRef.current) connectRef.current?.();
-    }, delay);
-  }, [reportError]);
+  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages, setStatusLive, turnMetrics]);
 
+  const closeConnection = useCallback(() => {
+    // React 可立即重新挂载；先撤销旧连接，不能等异步 finalizer 才清引用。
+    socketRef.current = null;
+    if (connectionTaskRef.current) Effect.runFork(Fiber.interrupt(connectionTaskRef.current));
+    connectionTaskRef.current = null;
+  }, []);
+
+  /** 复用当前连接，或启动一个可整体中断的重连任务。 */
   const connect = useCallback(() => {
-    const current = socketRef.current;
-    if (current && current.readyState <= WebSocket.OPEN) {
-      return current;
-    }
+    if (socketRef.current && socketRef.current.readyState <= WebSocket.OPEN) return socketRef.current;
+    closeConnection();
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${window.location.host}/ws`);
-    console.info("[chat-ui] ws open", socket.url);
-    socketRef.current = socket;
-    socket.onmessage = (event) => {
-      if (socketRef.current !== socket) return;
-      console.debug("[chat-ui] ws message", typeof event.data);
-      try {
-        const frame = parseChatFrame(JSON.parse(String(event.data)));
-        if ("session_id" in frame && frame.session_id === activeSessionRef.current) {
-          liveProjectionRevisionRef.current += 1;
-        }
-        const traceKind = traceKindForChatFrame(frame);
-        if (traceKind !== undefined && "session_id" in frame && "turn_id" in frame) {
-          webTurnTrace.observeFrame(frame.session_id, frame.turn_id, traceKind);
-        }
-        observeTurnMetrics(turnMetrics, frame);
-        applyChatFrame(frame, {
-          activeSessionId: () => activeSessionRef.current,
-          activateSession: (sessionId) => {
-            activeSessionRef.current = sessionId;
-            setActiveSessionId(sessionId);
-          },
-          setError,
-          setMessages,
-          getStatus: () => statusLiveRef.current,
-          setStatus: setStatusLive,
-          getActiveTurnId: () => activeTurnIdRef.current,
-          setActiveTurnId: (turnId) => { activeTurnIdRef.current = turnId; },
-          loadSessions: loadSessionsSafely,
-          loadMessages: loadMessagesSafely,
-        });
-      } catch (error) {
-        reportError(error, "error");
+    const url = `${protocol}://${window.location.host}/ws`;
+    const first = new WebSocket(url);
+    socketRef.current = first;
+    // 任务拥有整个重连循环；每次连接结束都先释放 socket 和监听器。
+    connectionTaskRef.current = Effect.runFork(Effect.gen(function*() {
+      let socket = first;
+      while (true) {
+        const current = socket;
+        const event = yield* Effect.async<CloseEvent>((resume) => {
+          current.onmessage = (event) => { if (socketRef.current === current) receiveFrame(event); };
+          current.onopen = () => {
+            if (socketRef.current !== current) return;
+            Effect.runSync(reconnect.reset);
+            const sessionId = activeSessionRef.current;
+            attachSession(current, sessionId);
+            if (sessionId) loadMessagesSafely(sessionId);
+          };
+          current.onerror = () => current.close();
+          current.onclose = (event) => resume(Effect.succeed(event));
+        }).pipe(Effect.ensuring(Effect.sync(() => {
+          current.onmessage = current.onopen = current.onerror = current.onclose = null;
+          if (socketRef.current === current) socketRef.current = null;
+          current.close(1000, "connection released");
+        })));
+        console.warn("[chat-ui] ws close", { code: event.code, reason: event.reason });
+        if (event.code !== 1000 && event.code !== 1013) reportError(new Error("聊天连接已关闭"), "error");
+        yield* reconnect.next(undefined);
+        socket = yield* Effect.sync(() => new WebSocket(url));
+        socketRef.current = socket;
       }
-    };
-    socket.onopen = () => {
-      console.info("[chat-ui] ws connected", socket.url);
-      reconnectAttemptRef.current = 0;
-      const sessionId = activeSessionRef.current;
-      attachSession(socket, sessionId);
-      if (sessionId) loadMessagesSafely(sessionId);
-    };
-    socket.onerror = () => {
-      if (socketRef.current === socket) socket.close();
-    };
-    socket.onclose = (event) => {
-      if (socketRef.current !== socket) return;
-      console.warn("[chat-ui] ws close", { code: event.code, reason: event.reason });
-      socketRef.current = null;
-      if (event.code !== 1000 && event.code !== 1013) {
-        reportError(new Error("聊天连接已关闭"), "error");
-      }
-      scheduleReconnect();
-    };
-    return socket;
-  }, [loadMessagesSafely, loadSessionsSafely, reportError, scheduleReconnect, setMessages, setStatusLive, turnMetrics]);
+    }).pipe(Effect.catchAll(() => Effect.sync(() => reportError(new Error("聊天连接已断开，请刷新页面重试"), "error")))));
+    return first;
+  }, [closeConnection, loadMessagesSafely, receiveFrame, reconnect, reportError]);
 
   useEffect(() => {
-    connectRef.current = connect;
-  }, [connect]);
+    connect();
+    return closeConnection;
+  }, [closeConnection, connect]);
 
   useEffect(() => {
-    let active = true;
-    const refresh = async () => {
-      try {
-        const next = webShellState(await fetchChatJson<unknown>("/api/shell/state"));
-        if (active) setShellState(next);
-      } catch (stateError) {
-        if (active) reportError(stateError);
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 1200);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
+    // 请求结束后再等待下一次轮询；中断任务会把 AbortSignal 传给 fetch。
+    const task = Effect.runFork(Effect.tryPromise({
+      try: async (signal) => webShellState(await fetchChatJson<unknown>("/api/shell/state", { signal })),
+      catch: (error) => error,
+    }).pipe(
+      Effect.tap((next) => Effect.sync(() => setShellState(next))),
+      Effect.catchAll((error) => Effect.sync(() => reportError(error))),
+      Effect.repeat(Schedule.spaced("1200 millis")),
+    ));
+    return () => { Effect.runFork(Fiber.interrupt(task)); };
   }, [reportError]);
-
-  useEffect(() => {
-    const socket = connect();
-    return () => {
-      if (reconnectTimerRef.current !== null) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      if (socketRef.current === socket) socketRef.current = null;
-      socket.close(1000, "component unmounted");
-    };
-  }, [connect]);
 
   useEffect(() => {
     if (!chatReady) return;
@@ -477,11 +465,9 @@ export function useDesktopChatController() {
   const stopTurn = useCallback(() => {
     if (sendRequestRef.current) {
       sendRequestRef.current.abort();
-      const socket = socketRef.current;
-      if (socket?.readyState === WebSocket.CONNECTING) {
-        socketRef.current = null;
+      if (socketRef.current?.readyState === WebSocket.CONNECTING) {
+        closeConnection();
         statusRef.current = "idle";
-        socket.close(1000, "pending send cancelled");
       }
       setStatus("idle");
       return;
@@ -504,7 +490,7 @@ export function useDesktopChatController() {
         if (stopRequestRef.current === controller) stopRequestRef.current = null;
         setStopPending(false);
       });
-  }, [activeSessionId, connect, reportError]);
+  }, [activeSessionId, closeConnection, connect, reportError]);
 
   const startNewChat = useCallback(() => {
     setSurface("chat");

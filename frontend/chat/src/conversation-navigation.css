@@ -6,8 +6,8 @@
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  color: var(--ak-color-text-primary);
-  background: var(--ak-color-bg-canvas);
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-canvas);
   outline: none;
 }
 
@@ -32,7 +32,7 @@
 }
 
 .conversation-destinations.featured {
-  padding: 0 12px 18px;
+  padding: 0 10px 0;
 }
 
 .conversation-destination {
@@ -43,7 +43,7 @@
   align-items: center;
   gap: 10px;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-medium);
+  border-radius: 6px;
   padding-block: 6px;
   padding-inline: 14px 12px;
   color: inherit;
@@ -56,12 +56,12 @@
 
 .conversation-destination:hover,
 .conversation-destination:focus-visible {
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+  background: var(--ak-paper-sheet);
 }
 
 .conversation-destination.active {
-  color: var(--md-sys-color-on-secondary-container);
-  background: var(--md-sys-color-secondary-container);
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
 }
 
 .conversation-destination.active .conversation-destination__icon,
@@ -86,31 +86,7 @@
 }
 
 .conversation-destination.featured {
-  min-height: 68px;
-  grid-template-columns: 26px minmax(0, 1fr) auto;
-  gap: 11px;
-  border-radius: 22px;
-  /* 尾侧略紧：补偿行尾 Chevron 视觉重心。 */
-  padding: 10px 12px 10px 14px;
-  color: var(--ak-color-on-action-primary);
-  background: var(--ak-color-action-primary);
-  box-shadow: none;
-}
-
-.conversation-destination.featured .conversation-destination__icon,
-.conversation-destination.featured small,
-.conversation-destination.featured .conversation-destination__badge,
-.conversation-destination.featured .conversation-destination__trail > svg {
-  color: inherit;
-}
-
-.conversation-destination.featured .conversation-destination__icon {
-  width: 26px;
-  height: 26px;
-}
-
-.conversation-destination.featured small {
-  opacity: 0.78;
+  min-height: 64px;
 }
 
 .conversation-destination__icon {
@@ -118,7 +94,7 @@
   width: 24px;
   height: 24px;
   place-items: center;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
   background: transparent;
 }
 
@@ -179,7 +155,7 @@
 }
 
 .conversation-navigation__heading--section {
-  padding: 0 14px 12px;
+  padding: 18px 24px 10px;
 }
 
 .conversation-session-list {
@@ -209,7 +185,7 @@
   align-items: center;
   gap: 10px;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-medium);
+  border-radius: 6px;
   padding-block: 8px;
   padding-inline: 14px 12px;
   color: inherit;
@@ -221,7 +197,7 @@
 
 .conversation-session:hover,
 .conversation-session:focus-visible {
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+  background: var(--ak-paper-sheet);
 }
 
 .conversation-session:active {
@@ -229,7 +205,7 @@
 }
 
 .conversation-session.active {
-  background: var(--md-sys-color-secondary-container);
+  background: var(--ak-paper-sheet);
 }
 
 .conversation-session.unavailable {
@@ -285,7 +261,7 @@
 
 .conversation-session.active .conversation-session__title time,
 .conversation-session.active .conversation-session__copy small {
-  color: color-mix(in srgb, var(--md-sys-color-on-secondary-container) 72%, transparent);
+  color: var(--ak-ink-secondary);
   opacity: 1;
 }
 
@@ -295,11 +271,11 @@
   min-width: 22px;
   justify-self: end;
   place-items: center;
-  color: var(--md-sys-color-primary);
+  color: var(--ak-ink-primary);
 }
 
 .conversation-session.active .conversation-session__state {
-  color: var(--md-sys-color-on-secondary-container);
+  color: var(--ak-ink-primary);
 }
 
 .conversation-navigation__actions {
@@ -314,13 +290,13 @@
   align-items: center;
   gap: 12px;
   border: 0;
-  border-radius: var(--md-sys-shape-corner-medium);
+  border-radius: 6px;
   padding-block: 8px;
   padding-inline: 14px;
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--ak-ink-secondary);
   background: transparent;
   font: inherit;
-  font-size: var(--md-sys-typescale-body-medium-size);
+  font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.35;
   text-align: start;
@@ -329,8 +305,8 @@
 
 .conversation-navigation__action:hover,
 .conversation-navigation__action:focus-visible {
-  color: var(--md-sys-color-on-surface);
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+  color: var(--ak-ink-primary);
+  background: var(--ak-paper-sheet);
 }
 
 .conversation-navigation__action:active {
@@ -340,17 +316,16 @@
 .conversation-navigation__action.primary {
   width: fit-content;
   margin-top: 8px;
-  border-radius: var(--md-sys-shape-corner-full);
-  padding-inline: 18px 20px;
-  color: var(--md-sys-color-on-primary);
-  background: var(--md-sys-color-primary);
-  font-weight: var(--md-sys-typescale-label-large-weight);
+  padding-inline: 14px 18px;
+  color: var(--ak-color-on-action-primary);
+  background: var(--ak-color-action-primary);
+  font-weight: 600;
 }
 
 .conversation-navigation__action.primary:hover,
 .conversation-navigation__action.primary:focus-visible {
-  color: var(--md-sys-color-on-primary);
-  background: color-mix(in srgb, var(--md-sys-color-primary) 92%, var(--md-sys-color-on-primary) 8%);
+  color: var(--ak-color-on-action-primary);
+  background: color-mix(in srgb, var(--ak-color-action-primary) 92%, var(--ak-color-on-action-primary) 8%);
 }
 
 .conversation-navigation__action:disabled {

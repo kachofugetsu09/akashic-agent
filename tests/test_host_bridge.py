@@ -8,11 +8,15 @@ from pathlib import Path
 from typing import AsyncIterator, Mapping
 
 import pytest
+import grpc
+
+from agent.host_bridge import host_bridge_pb2 as pb
+from agent.host_bridge import host_bridge_pb2_grpc as rpc
 
 from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
 from agent.host_bridge.factory import build_shell_process_manager
-from agent.host_bridge.server import HostBridgeService, _host_environment
+from agent.host_bridge.server import _host_environment
 from agent.skills import SkillsLoader
 from agent.tools.base import ToolResult
 
@@ -448,45 +452,31 @@ async def test_skill_capability_response_never_exposes_environment_values(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("HOST_CAPABILITY_SECRET", "never-return-this-value")
-    service = HostBridgeService(
-        "test-token",
-        4.0,
-        tmp_path / "artifacts",
-        release_commit="a" * 40,
-        toolchain_digest="b" * 64,
-        runtime_checkout=_test_runtime_checkout(tmp_path),
-        bridge_python=Path(sys.executable),
-    )
-    await service.claim_boot(
-        {
-            "token": "test-token",
-            "bootId": "boot-skills",
-            "managerId": "claim-skills",
-            "expectedReleaseCommit": "a" * 40,
-            "expectedToolchainDigest": "b" * 64,
-        }
-    )
-
-    response = await service.skill_requirements(
-        {
-            "token": "test-token",
-            "bootId": "boot-skills",
-            "managerId": "manager-skills",
-            "expectedReleaseCommit": "a" * 40,
-            "expectedToolchainDigest": "b" * 64,
-            "bins": ["definitely-missing-cli"],
-            "env": ["HOST_CAPABILITY_SECRET", "MISSING_TOKEN"],
-        }
-    )
-
-    assert response == {
-        "available": {"bins": [], "env": ["HOST_CAPABILITY_SECRET"]},
-        "missing": {
-            "bins": ["definitely-missing-cli"],
-            "env": ["MISSING_TOKEN"],
-        },
-    }
-    assert "never-return-this-value" not in repr(response)
+    async with _running_bridge(tmp_path) as socket_path:
+        async with grpc.aio.insecure_channel(f"unix:{socket_path}") as channel:
+            stub = rpc.HostBridgeStub(channel)
+            context = pb.RequestContext(
+                boot_id="boot-skills",
+                manager_id="manager-skills",
+                request_id="skills-test",
+                expected_release_commit="a" * 40,
+                expected_toolchain_digest="b" * 64,
+            )
+            metadata = (("authorization", "Bearer test-token"),)
+            await stub.ClaimBoot(pb.ContextRequest(context=context), metadata=metadata)
+            response = await stub.SkillRequirements(
+                pb.SkillRequirementsRequest(
+                    context=context,
+                    bins=["definitely-missing-cli"],
+                    env=["HOST_CAPABILITY_SECRET", "MISSING_TOKEN"],
+                ),
+                metadata=metadata,
+            )
+    assert list(response.available.bins) == []
+    assert list(response.available.env) == ["HOST_CAPABILITY_SECRET"]
+    assert list(response.missing.bins) == ["definitely-missing-cli"]
+    assert list(response.missing.env) == ["MISSING_TOKEN"]
+    assert b"never-return-this-value" not in response.SerializeToString()
 
 
 @pytest.mark.asyncio
@@ -524,8 +514,6 @@ async def test_new_boot_claim_cleans_old_boot_long_job_before_admission(
         claim = await new_manager.claim_boot()
 
         assert claim == {
-            "protocolMajor": 1,
-            "ok": True,
             "ownerBootId": "boot-new",
             "previousBootId": "boot-old",
             "cleanedManagerCount": 1,
