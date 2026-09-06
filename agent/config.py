@@ -10,7 +10,6 @@ import re
 import tomllib
 import zlib
 from pathlib import Path
-from typing import cast
 from urllib.parse import urlsplit
 
 from agent.config_models import (
@@ -23,10 +22,7 @@ from agent.config_models import (
     QQGroupConfig,
     TelegramChannelConfig,
     WebChatConfig,
-    WiringConfig,
 )
-
-_DEFAULT_TOOLSETS = ("meta_common",)
 
 # 空值表示由 workspace 派生 app-server 端点，避免多个实例争用全局路径。
 DEFAULT_SOCKET = ""
@@ -75,6 +71,7 @@ def load_config(
     _reject_removed_peer_configuration(data)
     _reject_retired_model_configuration(data)
     agent_cfg = _as_dict(data.get("agent"), field="agent")
+    _reject_retired_agent_configuration(data, agent_cfg)
     agent_context = _as_dict(agent_cfg.get("context"), field="agent.context")
     _reject_removed_context_configuration(data, agent_context)
     agent_tools = _as_dict(agent_cfg.get("tools"), field="agent.tools")
@@ -89,7 +86,6 @@ def load_config(
     mobile_realtime = _load_mobile_realtime_config(data)
     if mobile_realtime.enabled and not channels.chat.enabled:
         raise ValueError("mobile_realtime 启用时必须启用 channels.chat 配对入口")
-    wiring = _load_wiring_config(data)
     retired_optimizer_keys = {
         "memory_optimizer_enabled",
         "memory_optimizer_interval_seconds",
@@ -104,32 +100,10 @@ def load_config(
         )
 
     return Config(
-        system_prompt=str(
-            agent_cfg.get("system_prompt")
-            or data.get("system_prompt", "You are a helpful assistant.")
-        ),
-        max_iterations=int(
-            agent_cfg.get("max_iterations", data.get("max_iterations", 10))
-        ),
         channels=channels,
         app_server=app_server,
         mobile_realtime=mobile_realtime,
-        tool_search_enabled=_as_bool(
-            agent_tools.get("search_enabled", data.get("tool_search_enabled", False)),
-            field="agent.tools.search_enabled",
-        ),
         disabled_builtin_plugins=_disabled_builtin_plugins(agent_plugins),
-        dev_mode=_as_bool(
-            agent_cfg.get(
-                "dev_mode",
-                agent_cfg.get(
-                    "dev_model",
-                    data.get("dev_mode", data.get("dev_model", False)),
-                ),
-            ),
-            field="agent.dev_mode",
-        ),
-        wiring=wiring,
         config_path=config_path.expanduser().resolve(),
         workspace_path=workspace_path.expanduser().resolve(),
     )
@@ -367,38 +341,77 @@ def _reject_removed_context_configuration(
         )
 
 
-def _load_wiring_config(data: dict) -> WiringConfig:
-    """加载运行时装配配置，并拒绝会改变工具集语义的错误结构。"""
+def _reject_retired_agent_configuration(data: dict, agent_cfg: dict) -> None:
+    """Reject legacy global fields and point each one at its real owner."""
 
-    # 1. 选择新版 agent.wiring；空表继续兼容旧版顶层 wiring。
-    agent_cfg = _as_dict(data.get("agent"), field="agent")
-    agent_wiring = agent_cfg.get("wiring")
-    if agent_wiring is not None and not isinstance(agent_wiring, dict):
-        raise ValueError("agent.wiring 必须是 TOML table")
-    raw = agent_wiring or data.get("wiring", {}) or {}
-    if not isinstance(raw, dict):
-        raise ValueError("wiring 必须是 TOML table")
-    retired = sorted(set(raw).intersection({"memory", "memory_engine"}))
-    if retired:
+    # 1. Prompt content belongs to the prompt plugin and memory/VEDA.md.
+    prompt_fields = []
+    if "system_prompt" in data:
+        prompt_fields.append("system_prompt")
+    if "system_prompt" in agent_cfg:
+        prompt_fields.append("agent.system_prompt")
+    if prompt_fields:
         raise ValueError(
-            f"removed configuration: agent.wiring.{retired[0]}; "
-            "Markdown memory is an ordinary plugin"
+            "removed configuration: "
+            + ", ".join(prompt_fields)
+            + "; prompt plugin reads workspace memory/VEDA.md"
         )
 
-    # 2. 缺失时使用默认工具集；显式数组中的名称必须非空。
-    raw_toolsets = raw.get("toolsets")
-    if raw_toolsets is None:
-        toolsets = list(_DEFAULT_TOOLSETS)
-    elif not isinstance(raw_toolsets, list) or any(
-        not isinstance(name, str) or not name.strip() for name in raw_toolsets
-    ):
-        raise ValueError("agent.wiring.toolsets 必须是字符串数组")
-    else:
-        toolsets = cast(list[str], raw_toolsets)
-    return WiringConfig(
-        context=str(raw.get("context", "default") or "default"),
-        toolsets=list(toolsets),
-    )
+    # 2. Reply budget is plugin-owned; migration must run before this loader.
+    iteration_fields = []
+    if "max_iterations" in data:
+        iteration_fields.append("max_iterations")
+    if "max_iterations" in agent_cfg:
+        iteration_fields.append("agent.max_iterations")
+    if iteration_fields:
+        raise ValueError(
+            "removed configuration: "
+            + ", ".join(iteration_fields)
+            + "; run the reply max_steps migration"
+        )
+
+    # 3. Tool discovery has no lossless global boolean mapping.
+    search_fields = []
+    if "tool_search_enabled" in data:
+        search_fields.append("tool_search_enabled")
+    tools = agent_cfg.get("tools")
+    if isinstance(tools, dict) and "search_enabled" in tools:
+        search_fields.append("agent.tools.search_enabled")
+    if search_fields:
+        raise ValueError(
+            "removed configuration: "
+            + ", ".join(search_fields)
+            + "; tool discovery is owned by tools/menu and has no lossless global mapping"
+        )
+
+    # 4. Dev and wiring switches have no current owner.
+    dev_fields = [
+        field
+        for field, present in (
+            ("dev_mode", "dev_mode" in data),
+            ("dev_model", "dev_model" in data),
+            ("agent.dev_mode", "dev_mode" in agent_cfg),
+            ("agent.dev_model", "dev_model" in agent_cfg),
+        )
+        if present
+    ]
+    if dev_fields:
+        raise ValueError(
+            "removed configuration: "
+            + ", ".join(dev_fields)
+            + "; no runtime owner remains"
+        )
+    wiring_fields = []
+    if "wiring" in data:
+        wiring_fields.append("wiring")
+    if "wiring" in agent_cfg:
+        wiring_fields.append("agent.wiring")
+    if wiring_fields:
+        raise ValueError(
+            "removed configuration: "
+            + ", ".join(wiring_fields)
+            + "; no runtime owner remains"
+        )
 
 
 def _as_dict(value: object, *, field: str) -> dict:

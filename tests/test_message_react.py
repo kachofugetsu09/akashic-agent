@@ -247,6 +247,28 @@ async def test_request_limit_settles_last_committed_tool_then_pauses(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_zero_request_limit_is_unlimited_until_completion(tmp_path):
+    calls = 0
+
+    async def complete(_request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return LLMResponse(None, [ModelToolCall("call", "example", {})])
+        return LLMResponse("finished")
+
+    async def invoke(_key, _arguments):
+        return Result("success", ())
+
+    async with runtime(tmp_path, complete, invoke, max_steps=0) as (conversation, log, _store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "input"),)))
+        await (await conversation.start(run)).join()
+        messages = log.reader("s").snapshot()
+        assert calls == 2
+        assert [type(message.body) for message in messages] == [Input, Output, ToolResult, Output]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("wake", ["resume", "input"])
 async def test_pause_during_authorization_does_not_start_effect_resume_uses_original_call(tmp_path, wake):
     authorizing = asyncio.Event()

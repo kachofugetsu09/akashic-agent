@@ -77,26 +77,11 @@ class MobileRealtimeConfig:
 
 
 @dataclass
-class WiringConfig:
-    context: str = "default"
-    toolsets: list[str] = field(
-        default_factory=lambda: [
-            "meta_common",
-        ]
-    )
-
-
-@dataclass
 class Config:
-    system_prompt: str
-    max_iterations: int = 10
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
     mobile_realtime: MobileRealtimeConfig = field(default_factory=MobileRealtimeConfig)
-    tool_search_enabled: bool = False
     disabled_builtin_plugins: frozenset[str] = frozenset()
-    dev_mode: bool = False
-    wiring: WiringConfig = field(default_factory=WiringConfig)
     config_path: Path = Path("config.toml")
     workspace_path: Path = Path(".")
 
@@ -122,5 +107,4 @@ __all__ = [
     "QQGroupConfig",
     "TelegramChannelConfig",
     "WebChatConfig",
-    "WiringConfig",
 ]
