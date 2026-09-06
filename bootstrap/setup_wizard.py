@@ -463,25 +463,12 @@ def _validate_config(config_path: Path, workspace: Path) -> None:
 
 
 def _render_config(a: WizardAnswers) -> str:
-    return "\n".join(
-        [
-            _render_agent(a),
-            _render_channels(a),
-        ]
-    )
+    return "\n".join(part for part in (_render_agent(a), _render_channels(a)) if part)
 
 
 def _render_agent(a: WizardAnswers) -> str:
-    return f"""\
-[agent]
-system_prompt = "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses."
-# 设为 0 表示不限制迭代轮数；长任务仍可用 /stop 中断。
-max_iterations = 40
-dev_mode = false
-
-[agent.tools]
-search_enabled = true
-"""
+    _ = a
+    return ""
 
 
 def _atomic_write_with_backup(

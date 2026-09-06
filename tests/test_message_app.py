@@ -20,7 +20,7 @@ async def test_app_starts_web_and_control_with_message_owners(tmp_path, monkeypa
     shutil.copytree(Path(__file__).parents[1] / "plugins/sources", source / "sources")
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
     monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
-    app = AppRuntime(Config(system_prompt=""), workspace)
+    app = AppRuntime(Config(), workspace)
     try:
         await app.start()
         async with await AsyncAkashic.connect(str(app.app_server.endpoint)) as client:

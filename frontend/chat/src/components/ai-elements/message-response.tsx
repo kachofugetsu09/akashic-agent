@@ -12,6 +12,7 @@ import MarkdownRender, {
   type NodeComponentProps,
 } from "markstream-react";
 import "markstream-react/index.px.css";
+import { useReducedMotion } from "motion/react";
 
 export interface MessageResponseProps {
   children: string;
@@ -74,6 +75,7 @@ export const MessageResponse = memo(function MessageResponse({
   className,
   isAnimating = false,
 }: MessageResponseProps) {
+  const reducedMotion = useReducedMotion();
   return (
     <div className={cn("message-response-markstream size-full", isAnimating && "is-streaming", className)}>
       <MarkdownRender
@@ -81,7 +83,17 @@ export const MessageResponse = memo(function MessageResponse({
         final={!isAnimating}
         fade={false}
         typewriter={false}
-        smoothStreaming={false}
+        smoothStreaming={isAnimating && !reducedMotion}
+        smoothStreamingOptions={{
+          minCharsPerSecond: 24,
+          maxCharsPerSecond: 140,
+          targetLatencyMs: 260,
+          catchUpLatencyMs: 120,
+          catchUpThreshold: 64,
+          maxCommitFps: 30,
+          startDelayMs: 80,
+          maxCharsPerCommit: 6,
+        }}
         batchRendering={false}
         maxLiveNodes={0}
         viewportPriority

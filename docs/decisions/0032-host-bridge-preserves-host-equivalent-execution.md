@@ -1,6 +1,6 @@
 # 0032 · Host Bridge 保留宿主等价执行能力
 
-- 状态：accepted
+- 状态：accepted；第 3 项协议选择由 [0055](0055-host-bridge-uses-typed-protobuf.md) 取代
 - 日期：2026-08-10
 - 关联条款：RUN-013、RUN-014、WSP-005、SH-001～SH-003
 - 设计：[Akashic 容器与 Linux 主机运行适配设计](../design/akashic-container-cloud-runtime-adaptation.md)

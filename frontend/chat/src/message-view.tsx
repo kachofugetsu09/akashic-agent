@@ -1,3 +1,4 @@
+import { ThinkingPlaceholder } from "./thinking-placeholder";
 import {
   Attachment,
   AttachmentHoverCard,
@@ -65,10 +66,10 @@ const MessageBody = memo(function MessageBody({
   deferRichContent: boolean;
   onError?: (error: unknown) => void;
 }) {
-  if (!messageNeedsMarkdown(content)) {
+  if (!streaming && !messageNeedsMarkdown(content)) {
     return <p className="plain-message-response">{content}</p>;
   }
-  if (deferRichContent) {
+  if (!streaming && deferRichContent) {
     const features = detectMessageRenderingFeatures(content);
     if (features.math || features.mermaid || features.code) {
       return (
@@ -117,8 +118,10 @@ export function ChatMessageView({
   onCopyToolDetail,
   onError,
   deferRichContent = false,
+  waitingForResponse = false,
 }: {
   message: ChatMessage;
+  waitingForResponse?: boolean;
   leadingContent?: ReactNode;
   attachmentContent?: ReactNode;
   processStartContent?: ReactNode;
@@ -167,6 +170,7 @@ export function ChatMessageView({
             onCopyToolDetail={onCopyToolDetail}
           />
         ) : null}
+        {waitingForResponse && message.streaming && !message.content && message.blocks.length === 0 ? <ThinkingPlaceholder /> : null}
         {attachments}
         {message.content ? (
           <MessageBody

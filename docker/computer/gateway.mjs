@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
+import { ComputerDriver } from "./driver/runtime.mjs";
 import { execFile } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -5,11 +8,16 @@ import { connect as tcpConnect } from "node:net";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+const driver = new ComputerDriver();
+let driverReady;
+function readyDriver() {
+  return (driverReady ??= driver.start());
+}
 const activityPath = "/data/state/activity.json";
 const maxBodyBytes = 256 * 1024;
 let activity = { revision: 0, noticeId: 0, active: false, action: "", updatedAt: "" };
 let activeTargetId = "";
-let cdpRequestId = 0;
+const legacyCall = new AsyncLocalStorage();
 const browserSnapshots = new Map();
 
 class InputError extends Error {}
@@ -226,39 +234,14 @@ async function pageTarget(requestedId, select = false) {
 }
 
 async function cdp(target, method, params = {}) {
-  const id = ++cdpRequestId;
-  return await new Promise((resolve, reject) => {
-    const socket = new WebSocket(target.webSocketDebuggerUrl);
-    const timer = setTimeout(() => {
-      socket.close();
-      reject(new Error(`CDP ${method} timed out`));
-    }, 15_000);
-    const finish = (callback) => {
-      clearTimeout(timer);
-      socket.close();
-      callback();
-    };
-    socket.addEventListener("open", () => {
-      socket.send(JSON.stringify({ id, method, params }));
-    });
-    socket.addEventListener("message", (event) => {
-      let message;
-      try {
-        message = JSON.parse(String(event.data));
-      } catch {
-        return;
-      }
-      if (message.id !== id) return;
-      if (message.error) {
-        finish(() => reject(new Error(`CDP ${method}: ${message.error.message}`)));
-        return;
-      }
-      finish(() => resolve(message.result ?? {}));
-    });
-    socket.addEventListener("error", () => {
-      finish(() => reject(new Error(`CDP ${method} connection failed`)));
-    });
-  });
+  await readyDriver();
+  const call = legacyCall.getStore();
+  call?.signal.throwIfAborted();
+  let tab = driver.browser.tabs.get(target.id);
+  if (!tab) { await driver.browser.listTabs(); tab = driver.browser.tabs.get(target.id); }
+  if (!tab) throw new InputError("Browser target closed; observe again");
+  call?.signal.throwIfAborted();
+  return driver.browser.execute({target: {tabId: tab.id}, method, commandParams: params}, call?.context);
 }
 
 async function evaluate(target, expression) {
@@ -421,12 +404,12 @@ async function clickNode(target, backendNodeId) {
 }
 
 async function openTarget(url) {
-  const response = await fetch(`http://127.0.0.1:9222/json/new?${encodeURIComponent(url)}`, {
-    method: "PUT",
-    signal: AbortSignal.timeout(3000),
-  });
-  if (!response.ok) throw new Error(`Chromium could not open tab: ${response.status}`);
-  const target = await response.json();
+  const call = legacyCall.getStore();
+  call.signal.throwIfAborted();
+  const tab = await driver.browser.call("createTab", {}, call.context);
+  const target = { id: driver.browser.tab(tab.id).targetId, url };
+  await cdp(target, "Page.navigate", {url});
+  await driver.browser.call("markTab", {tabId: tab.id, status: "deliverable"}, call.context);
   activeTargetId = target.id;
   return target;
 }
@@ -438,7 +421,7 @@ async function browserAction(value) {
     if (!Number.isInteger(timeout) || timeout < 0 || timeout > 30_000) {
       throw new InputError("timeout must be an integer between 0 and 30000");
     }
-    await tracked("browser wait", () => new Promise((resolve) => setTimeout(resolve, timeout)));
+    await tracked("browser wait", () => sleep(timeout, undefined, {signal: legacyCall.getStore().signal}));
     return { ok: true, waited_ms: timeout };
   }
   if (action === "tab_new") {
@@ -451,19 +434,17 @@ async function browserAction(value) {
     : await pageTarget(value.target_id);
   if (action === "tab_select") {
     requiredString(value.target_id, "target_id", 128);
-    const response = await fetch(`http://127.0.0.1:9222/json/activate/${target.id}`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!response.ok) throw new Error(`Chromium could not activate tab: ${response.status}`);
+    await cdp(target, "Page.bringToFront");
     activeTargetId = target.id;
     return { ok: true, target_id: target.id };
   }
   if (action === "tab_close") {
     requiredString(value.target_id, "target_id", 128);
-    const response = await fetch(`http://127.0.0.1:9222/json/close/${target.id}`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!response.ok) throw new Error(`Chromium could not close tab: ${response.status}`);
+    const call = legacyCall.getStore();
+    await driver.browser.listTabs();
+    const tab = driver.browser.tabs.get(target.id);
+    await driver.browser.call("claimUserTab", {tabId: tab.id}, call.context);
+    await cdp(target, "Page.close");
     if (activeTargetId === target.id) activeTargetId = "";
     return { ok: true, target_id: target.id };
   }
@@ -554,78 +535,81 @@ function checkedUrl(value) {
   return parsed.href;
 }
 
-async function runInput(value) {
+async function runInput(value, signal) {
   const action = value.action;
-  const args = [];
-  if (action === "click" || action === "double_click" || action === "move" || action === "drag") {
-    if (!Number.isInteger(value.x) || value.x < 0 || value.x > 1279 ||
-        !Number.isInteger(value.y) || value.y < 0 || value.y > 799) {
-      throw new InputError("x and y must be integers inside the 1280 by 800 screen");
+  let method, input;
+  if (["click", "double_click", "move", "drag"].includes(action)) {
+    if (
+      !Number.isInteger(value.x) ||
+      value.x < 0 ||
+      value.x > 1279 ||
+      !Number.isInteger(value.y) ||
+      value.y < 0 ||
+      value.y > 799
+    ) {
+      throw new InputError(
+        "x and y must be integers inside the 1280 by 800 screen",
+      );
     }
-    args.push("mousemove", String(value.x), String(value.y));
-    if (action === "click") args.push("click", "1");
-    if (action === "double_click") args.push("click", "--repeat", "2", "--delay", "120", "1");
+    method = action === "double_click" ? "click" : action;
+    input = { x: value.x, y: value.y };
+    if (action === "double_click") input.click_count = 2;
+    if (action === "click" && value.mouse_button != null)
+      input.mouse_button = value.mouse_button;
     if (action === "drag") {
-      if (!Number.isInteger(value.to_x) || value.to_x < 0 || value.to_x > 1279 ||
-          !Number.isInteger(value.to_y) || value.to_y < 0 || value.to_y > 799) {
-        throw new InputError("to_x and to_y must be integers inside the 1280 by 800 screen");
-      }
-      const dragSteps = 8;
-      args.push("mousedown", "1", "sleep", "0.10");
-      for (let step = 1; step <= dragSteps; step += 1) {
-        const x = Math.round(value.x + ((value.to_x - value.x) * step) / dragSteps);
-        const y = Math.round(value.y + ((value.to_y - value.y) * step) / dragSteps);
-        args.push(
-          "mousemove", "--sync", String(x), String(y), "sleep",
-          step === dragSteps ? "0.15" : "0.04",
+      if (
+        !Number.isInteger(value.to_x) ||
+        value.to_x < 0 ||
+        value.to_x > 1279 ||
+        !Number.isInteger(value.to_y) ||
+        value.to_y < 0 ||
+        value.to_y > 799
+      ) {
+        throw new InputError(
+          "to_x and to_y must be integers inside the 1280 by 800 screen",
         );
       }
-      args.push("mouseup", "1");
+      input = { path: [input, { x: value.to_x, y: value.to_y }] };
     }
   } else if (action === "type") {
-    if (typeof value.text !== "string" || value.text.length > 16_384) {
-      throw new InputError("text must be a string of at most 16384 characters");
-    }
-    args.push("type", "--clearmodifiers", "--delay", "1", value.text);
+    method = "type_text";
+    input = { text: boundedString(value.text, "text", 16384) };
   } else if (action === "key") {
-    if (typeof value.key !== "string" || !/^[A-Za-z0-9_+ -]{1,80}$/.test(value.key)) {
-      throw new InputError("key is invalid");
-    }
-    args.push("key", value.key.replaceAll(" ", ""));
+    method = "press_key";
+    input = { key: requiredString(value.key, "key", 80) };
   } else if (action === "scroll") {
-    if (!Number.isInteger(value.amount) || Math.abs(value.amount) > 100) {
+    if (!Number.isInteger(value.amount) || Math.abs(value.amount) > 100)
       throw new InputError("amount must be an integer between -100 and 100");
-    }
-    args.push("click", "--repeat", String(Math.abs(value.amount)), value.amount < 0 ? "4" : "5");
+    method = "scroll";
+    input = {
+      direction: value.amount < 0 ? "up" : "down",
+      pixels: Math.abs(value.amount) * 100,
+    };
   } else if (action === "wait") {
-    if (!Number.isInteger(value.ms) || value.ms < 0 || value.ms > 30_000) {
-      throw new InputError("ms must be an integer between 0 and 30000");
-    }
-    await tracked("wait", () => new Promise((resolve) => setTimeout(resolve, value.ms)));
+    if (!Number.isInteger(value.ms) || value.ms < 0 || value.ms > 30000)
+      throw new InputError("ms must be 0..30000");
+    await tracked(
+      "wait",
+      () => sleep(value.ms, undefined, {signal}),
+    );
     return { ok: true };
-  } else {
-    throw new InputError("unsupported input action");
-  }
-  await tracked(String(action), () => exec("xdotool", args, { timeout: 30_000 }));
+  } else throw new InputError("unsupported input action");
+  await readyDriver();
+  await tracked(String(action), () => driver.input(method, input, signal));
   return { ok: true };
 }
 
 async function screenshot(response, quiet) {
-  const capture = async () => {
-    const result = await exec(
-      "import",
-      ["-display", ":99", "-window", "root", "png:-"],
-      { timeout: 30_000, maxBuffer: 16 * 1024 * 1024, encoding: "buffer" },
-    );
-    return Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout);
-  };
-  const image = quiet ? await capture() : await tracked("screenshot", capture);
+  await readyDriver();
+  const capture = () => driver.desktop.call("get_screenshot");
+  const result = quiet ? await capture() : await tracked("screenshot", capture);
+  const bytes = Buffer.from(result.data, "base64");
   response.writeHead(200, {
-    "content-type": "image/png",
-    "content-length": String(image.length),
+    "content-type": result.mimeType,
+    "content-length": String(bytes.length),
     "cache-control": "no-store",
   });
-  response.end(image);
+  response.end(bytes);
 }
 
 function proxyOpenCli(request, response) {
@@ -665,28 +649,99 @@ try {
 }
 if (activity.active) await saveActivity(activity.action, false);
 
-createServer(async (request, response) => {
+const server = createServer(async (request, response) => {
+  if (stopping) { json(response, 503, {error:"Computer is stopping"}); return; }
   try {
     const url = new URL(request.url ?? "/", "http://computer.local");
-    if (request.method === "GET" && url.pathname === "/health") {
+    if (request.method === "POST" && url.pathname === "/driver/run") {
+      const payload = await body(request);
+      await readyDriver();
+      const controller = new AbortController();
+      response.once("close", () => {
+        if (!response.writableFinished)
+          controller.abort(new Error("Computer caller disconnected"));
+      });
+      json(
+        response,
+        200,
+        await tracked("computer", () => driver.run({context: payload.context, code: payload.code, endTurn: payload.endTurn, timeoutMs: payload.timeoutMs}, controller.signal)),
+      );
+    } else if (request.method === "POST" && url.pathname === "/driver/cancel") {
+      const payload = await body(request);
+      await driver.cancel(payload.call_id);
+      json(response, 200, { released: true });
+    } else if (request.method === "POST" && url.pathname === "/driver/reset") {
+      const payload = await body(request);
+      await driver.reset(payload.session_id);
+      json(response, 200, { reset: true });
+    } else if (request.method === "GET" && url.pathname === "/driver/status") {
+      await readyDriver();
+      json(response, 200, { version: 2, source: true, ready: !driver.closed });
+    } else if (request.method === "GET" && url.pathname === "/health") {
       json(response, 200, await health());
     } else if (request.method === "GET" && url.pathname === "/activity") {
       json(response, 200, activity);
     } else if (request.method === "GET" && url.pathname === "/screenshot") {
       await screenshot(response, url.searchParams.get("quiet") === "1");
     } else if (request.method === "POST" && url.pathname === "/input") {
-      json(response, 200, await runInput(await body(request)));
-    } else if (request.method === "POST" && url.pathname === "/browser/observe") {
+      const payload = await body(request);
+      const controller = new AbortController();
+      response.once("close", () => {
+        if (!response.writableFinished)
+          controller.abort(new Error("Computer caller disconnected"));
+      });
+      json(response, 200, await runInput(payload, controller.signal));
+    } else if (
+      request.method === "POST" &&
+      url.pathname === "/browser/observe"
+    ) {
       json(response, 200, await browserObserve(await body(request)));
-    } else if (request.method === "POST" && url.pathname === "/browser/action") {
-      json(response, 200, await browserAction(await body(request)));
+    } else if (
+      request.method === "POST" &&
+      url.pathname === "/browser/action"
+    ) {
+      const payload = await body(request);
+      await readyDriver();
+      const controller = new AbortController();
+      response.once("close", () => {
+        if (!response.writableFinished) controller.abort(new Error("Computer caller disconnected"));
+      });
+      const result = await driver.perform(signal => legacyCall.run(
+        {signal, context: driver.active.context}, async () => {
+          try { return await browserAction(payload); }
+          finally { await driver.browser.endTurn(driver.active.context); }
+        }), controller.signal);
+      json(response, 200, result);
     } else {
       json(response, 404, { error: "not found" });
     }
   } catch (error) {
-    const status = error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
-    json(response, status, { error: error instanceof Error ? error.message : String(error) });
+    const status =
+      error instanceof InputError || error instanceof SyntaxError ? 400 : 500;
+    json(response, status, {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }).listen(8080, "0.0.0.0");
 
-createServer(proxyOpenCli).listen(19826, "0.0.0.0");
+const openCliServer = createServer(proxyOpenCli).listen(19826, "0.0.0.0");
+let stopping = false;
+async function stop() {
+  if (stopping) return;
+  stopping = true;
+  server.close();
+  openCliServer.close();
+  const timer = setTimeout(() => { console.error("Computer shutdown timed out"); process.exit(1); }, 30000);
+  try {
+    if (driverReady) { await driverReady; await driver.close(); }
+    console.error("Computer driver input release confirmed");
+    clearTimeout(timer);
+    process.exit(0);
+  } catch (error) {
+    console.error(error);
+    clearTimeout(timer);
+    process.exit(1);
+  }
+}
+process.on("SIGTERM", stop);
+process.on("SIGINT", stop);

@@ -5,19 +5,6 @@ workspace = "~/.akashic/workspace"
 # 模型连接、凭据、能力与角色默认值由普通 models 插件保存。
 # 首次启动后打开 http://127.0.0.1:2236 的“模型”页完成配置。
 
-# =============================================================================
-# Agent 行为
-# =============================================================================
-
-[agent]
-system_prompt = "You are Akashic, a helpful AI assistant with access to tools. Always respond in the same language the user uses."
-# 设为 0 表示不限制迭代轮数；长任务仍可用 /stop 中断。
-max_iterations = 40
-dev_mode = false
-
-[agent.tools]
-search_enabled = true
-
 # Web Chat 由 Supervisor 在唯一入口 http://127.0.0.1:2236 提供。
 [channels.chat]
 enabled = true
@@ -38,10 +25,6 @@ inbox_retention_days = 7
 provider = "secret_service"
 master_key_namespace = "akasic/mobile-realtime"
 keyset_manifest = "data/mobile/keys/current.json"
-
-# 可选：控制加载哪些工具集（默认值适合大多数场景）
-# [agent.wiring]
-# toolsets = ["meta_common"]
 
 # =============================================================================
 # 可选原生收件；默认 Web 已可使用。

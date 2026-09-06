@@ -5,7 +5,7 @@ description: Use OpenCLI from the ordinary shell for site adapters, structured w
 
 # OpenCLI
 
-OpenCLI is a command-line program, not the Browser Use tool. Run it with the ordinary `shell` tool; the Computer plugin connects OpenCLI's standard local port to its persistent browser. Use `browser_observe` and `browser_action` when the task needs direct page interaction.
+OpenCLI is a command-line program, not the Browser Use tool. Run it with the ordinary `shell` tool; the Computer plugin connects OpenCLI's standard local port to its persistent browser. For direct page or desktop interaction, load the computer skill and use `computer`.
 
 ## Rules
 
@@ -41,6 +41,5 @@ The Computer plugin refreshes known login sessions every 12 hours and retries a 
 
 ```text
 Site adapter or structured data → OpenCLI through shell
-Direct page navigation or element interaction → browser_observe / browser_action
-Login dialog or whole-desktop fallback → computer_observe / computer_action
+Page or desktop interaction → computer skill + computer
 ```

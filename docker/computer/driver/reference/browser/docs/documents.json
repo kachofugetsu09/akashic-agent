@@ -1,0 +1,198 @@
+[
+  {
+    "mode": "model",
+    "name": "bootstrap-troubleshooting"
+  },
+  {
+    "mode": "model",
+    "name": "chrome-troubleshooting"
+  },
+  {
+    "mode": "included",
+    "name": "browser-safety"
+  },
+  {
+    "mode": "included",
+    "name": "confirmations",
+    "requiredFor": [
+      "tab_cdp_call",
+      "tab_cdp_events",
+      "webmcp_list_tools",
+      "webmcp_invoke_tool"
+    ]
+  },
+  {
+    "mode": "included",
+    "name": "visibility",
+    "when": {
+      "requiredBrowserCapabilities": [
+        "visibility"
+      ]
+    }
+  },
+  {
+    "mode": "included",
+    "name": "session-naming",
+    "when": {
+      "browserTypes": [
+        "extension"
+      ],
+      "requiredApiMembers": [
+        "Browser.nameSession"
+      ]
+    }
+  },
+  {
+    "mode": "included",
+    "name": "tab-claiming-chrome",
+    "when": {
+      "browserTypes": [
+        "extension"
+      ],
+      "requiredApiMembers": [
+        "BrowserUser.openTabs",
+        "BrowserUser.claimTab"
+      ]
+    }
+  },
+  {
+    "mode": "included",
+    "name": "tab-mentions-iab",
+    "when": {
+      "browserTypes": [
+        "iab"
+      ],
+      "requiredApiMembers": [
+        "Tabs.list",
+        "Tabs.get"
+      ]
+    }
+  },
+  {
+    "mode": "included",
+    "name": "tab-cleanup-chrome",
+    "when": {
+      "browserTypes": [
+        "extension"
+      ],
+      "requiredApiMembers": [
+        "Tab.markDeliverable",
+        "Tab.markHandoff"
+      ]
+    }
+  },
+  {
+    "mode": "included",
+    "name": "tab-cleanup-iab",
+    "when": {
+      "browserTypes": [
+        "iab"
+      ],
+      "requiredApiMembers": [
+        "Tab.markDeliverable",
+        "Tab.markHandoff"
+      ]
+    }
+  },
+  {
+    "mode": "included",
+    "name": "browser-control-interruption"
+  },
+  {
+    "mode": "included",
+    "name": "api-use-behavior"
+  },
+  {
+    "mode": "included",
+    "name": "accessibility",
+    "when": {
+      "requiredApiMembers": [
+        "Tab.ax"
+      ]
+    }
+  },
+  {
+    "mode": "included",
+    "name": "webmcp",
+    "requiredFor": [
+      "webmcp_list_tools",
+      "webmcp_invoke_tool"
+    ],
+    "when": {
+      "requiredTabCapabilities": [
+        "webmcp"
+      ]
+    }
+  },
+  {
+    "description": "read when a selected browser fails while interacting with a page",
+    "mode": "lookup",
+    "name": "browser-troubleshooting"
+  },
+  {
+    "description": "read when building or testing a local web app",
+    "mode": "lookup",
+    "name": "local-web-development"
+  },
+  {
+    "description": "read before uploading files through a webpage",
+    "mode": "lookup",
+    "name": "file-uploads",
+    "when": {
+      "requiredApiMembers": [
+        "PlaywrightAPI.waitForEvent",
+        "PlaywrightFileChooser.setFiles"
+      ]
+    }
+  },
+  {
+    "description": "read when a Chromium browser file upload fails",
+    "mode": "lookup",
+    "name": "chrome-file-upload-troubleshooting",
+    "when": {
+      "browserTypes": [
+        "extension"
+      ]
+    }
+  },
+  {
+    "description": "read when the user asks for screenshots",
+    "mode": "lookup",
+    "name": "screenshots"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/browser/management"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/browser/visibility"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/browser/viewport"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/tab/cdp",
+    "requiredFor": [
+      "tab_cdp_call",
+      "tab_cdp_events"
+    ]
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/tab/botDetection"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/tab/browserAuth",
+    "requiredFor": [
+      "tab_browser_auth_handoff"
+    ]
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/tab/pageAssets"
+  }
+]
