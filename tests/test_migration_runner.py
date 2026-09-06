@@ -60,6 +60,7 @@ _CHANNEL_IDENTITIES_ID = "20260906_04_channel_identities"
 _MOBILE_INPUT_REJECTIONS_ID = "20260906_05_mobile_input_rejections"
 _MODEL_CALL_TIMING_ID = "20260906_06_model_call_timing"
 _CONTEXT_MATERIAL_GRANTS_ID = "20260907_01_context_material_grants"
+_LEGACY_AGENT_CONFIG_ID = "20260907_02_retire_legacy_agent_config"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -103,6 +104,7 @@ _CURRENT_IDS = (
     _MOBILE_INPUT_REJECTIONS_ID,
     _MODEL_CALL_TIMING_ID,
     _CONTEXT_MATERIAL_GRANTS_ID,
+    _LEGACY_AGENT_CONFIG_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -459,9 +461,10 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     _MOBILE_INPUT_REJECTIONS_ID,
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
+        _LEGACY_AGENT_CONFIG_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
+    assert "agent" not in migrated
     assert migrated["custom"] == {"value": "protected"}
     assert stat.S_IMODE(config.stat().st_mode) == 0o640
     backups = sorted(
@@ -479,11 +482,8 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     assert len(list(backups[0].parent.iterdir())) == 1
 
 
-@pytest.mark.parametrize(
-    "toolsets",
-    (["meta_common"], ["meta_common", "spawn"], ["schedule"]),
-)
-def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
+@pytest.mark.parametrize("toolsets", (["meta_common", "spawn"], ["schedule"]))
+def test_legacy_agent_migration_rejects_custom_wiring_without_writing(
     tmp_path: Path,
     toolsets: list[str],
 ) -> None:
@@ -495,47 +495,14 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         encoding="utf-8",
     )
 
-    legacy_repo = _catalog(
-        tmp_path / "legacy-repo", _CURRENT_IDS[: _CURRENT_IDS.index(_TOOLSET_WIRING_ID)]
-    )
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-1])
     _ = _runner(root, repo_root=legacy_repo).run()
     before = config.read_bytes()
 
-    outcome = _runner(root).run()
+    with pytest.raises(RuntimeError, match=r"agent\.wiring"):
+        _runner(root).run()
 
-    assert outcome.migrations == (
-        _TOOLSET_WIRING_ID,
-        _PROACTIVE_DELIVERY_TARGET_ID,
-        _TURN_EFFECTS_ID,
-        _AKASHA_PLUGIN_SELECTION_ID,
-        _AKASHA_EMBEDDING_BACKFILL_ID,
-        _AKASHIC_CHANNEL_IDENTITY_ID,
-        _SESSION_TIMESTAMP_ID,
-        _MOBILE_CLIENT_ID_ID,
-        _EVENTMAIL_STATE_ID,
-        _WAKE_CONTENT_SCORES_ID,
-        _PROGRAMMATIC_EFFECTS_ID,
-        _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
-        _RETIRE_CORE_MODEL_CONFIG_ID,
-        _COMPACTION_PLUGIN_CONFIG_ID,
-        _MESSAGE_LOG_ID,
-        _OWNER_RECORDS_ID,
-        _MODEL_CALLS_ID,
-        _AKASHA_CONSUMPTION_ID,
-        _MESSAGE_EMBEDDINGS_ID,
-        _MESSAGE_ARTIFACTS_ID,
-        _TURN_MESSAGES_ID,
-        _SCHEDULER_MESSAGES_ID,
-        _SESSION_ATTRIBUTES_ID,
-        _PLUGIN_UPDATE_ROLLBACK_ID,
-        _CHANNEL_IDENTITIES_ID,
-    _MOBILE_INPUT_REJECTIONS_ID,
-    _MODEL_CALL_TIMING_ID,
-        _CONTEXT_MATERIAL_GRANTS_ID,
-    )
-    migrated = tomllib.loads(config.read_text())
-    assert migrated["agent"]["wiring"]["toolsets"] == toolsets
-    assert "context" not in migrated["agent"]
+    assert config.read_bytes() == before
     assert tomllib.loads(
         (
             root / "workspace/plugin-data/compaction-builtin/config.local.toml"
@@ -557,48 +524,18 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     config = root / "config.toml"
     config.symlink_to(source.name)
 
-    legacy_repo = _catalog(
-        tmp_path / "legacy-repo", _CURRENT_IDS[: _CURRENT_IDS.index(_TOOLSET_WIRING_ID)]
-    )
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-1])
     _ = _runner(root, repo_root=legacy_repo).run()
+    before = source.read_bytes()
 
     outcome = _runner(root).run()
 
-    assert outcome.migrations == (
-        _TOOLSET_WIRING_ID,
-        _PROACTIVE_DELIVERY_TARGET_ID,
-        _TURN_EFFECTS_ID,
-        _AKASHA_PLUGIN_SELECTION_ID,
-        _AKASHA_EMBEDDING_BACKFILL_ID,
-        _AKASHIC_CHANNEL_IDENTITY_ID,
-        _SESSION_TIMESTAMP_ID,
-        _MOBILE_CLIENT_ID_ID,
-        _EVENTMAIL_STATE_ID,
-        _WAKE_CONTENT_SCORES_ID,
-        _PROGRAMMATIC_EFFECTS_ID,
-        _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
-        _RETIRE_CORE_MODEL_CONFIG_ID,
-        _COMPACTION_PLUGIN_CONFIG_ID,
-        _MESSAGE_LOG_ID,
-        _OWNER_RECORDS_ID,
-        _MODEL_CALLS_ID,
-        _AKASHA_CONSUMPTION_ID,
-        _MESSAGE_EMBEDDINGS_ID,
-        _MESSAGE_ARTIFACTS_ID,
-        _TURN_MESSAGES_ID,
-        _SCHEDULER_MESSAGES_ID,
-        _SESSION_ATTRIBUTES_ID,
-        _PLUGIN_UPDATE_ROLLBACK_ID,
-        _CHANNEL_IDENTITIES_ID,
-    _MOBILE_INPUT_REJECTIONS_ID,
-    _MODEL_CALL_TIMING_ID,
-        _CONTEXT_MATERIAL_GRANTS_ID,
-    )
+    assert outcome.migrations == (_LEGACY_AGENT_CONFIG_ID,)
+
     assert config.is_symlink()
     assert os.readlink(config) == source.name
-    assert tomllib.loads(source.read_text(encoding="utf-8"))["agent"]["wiring"][
-        "toolsets"
-    ] == ["meta_common"]
+    assert source.read_bytes() != before
+    assert "agent" not in tomllib.loads(source.read_text(encoding="utf-8"))
 
 
 def test_new_branch_migration_is_applied_even_after_sibling_ran(
@@ -683,6 +620,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
     _MOBILE_INPUT_REJECTIONS_ID,
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
+        _LEGACY_AGENT_CONFIG_ID,
     )
 
 
@@ -866,7 +804,6 @@ def test_model_registry_migration_accepts_toml_rewritten_nested_tables(
                         }
                     },
                 },
-                "agent": {"system_prompt": "plugin gate"},
                 "app_server": {"listen": "/sandbox/akashic.sock"},
             }
         ),
@@ -878,7 +815,7 @@ def test_model_registry_migration_accepts_toml_rewritten_nested_tables(
     assert outcome.migrations == _CURRENT_IDS
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert "llm" not in migrated
-    assert migrated["agent"] == {"system_prompt": "plugin gate"}
+    assert "agent" not in migrated
     assert tomllib.loads(
         (
             root / "workspace/plugin-data/compaction-builtin/config.local.toml"
@@ -909,8 +846,6 @@ base_url = "https://api.deepseek.com/v1"
 api_key = "secret-value"
 input_modalities = ["text"]
 
-[agent]
-system_prompt = "test"
 """,
         encoding="utf-8",
     )
@@ -1045,6 +980,7 @@ api_key = "secret"
     _MOBILE_INPUT_REJECTIONS_ID,
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
+        _LEGACY_AGENT_CONFIG_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
