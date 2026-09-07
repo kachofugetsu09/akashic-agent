@@ -109,26 +109,45 @@ programmatic/message/result
 Input、Control 和模型原始 Output 都进入同一 append-only Message 日志；投影只计算状态，不保存第二份正文或完成标记。
 Session 的准入属性创建后不自动改写或减少；显式 `persist_memory=true` 取得 `learning=eligible`，省略或传 `false` 取得 `learning=excluded`。调试 API 不绕过普通来源的读取、回复和学习边界。
 
-## Akasha memory engine 在线与重放等价 Gate
+## Akasha Message 在线学习与重启恢复 Gate
 
-这个名字保留历史脚本路径，但验证对象是 Core memory-engine factory，不是已经删除的
-v2 Plugin ABI。Gate 复用同一个只读 runtime 容器，并开启 `memory.engine = "akasha"`。
-scripted model-gate 只控制模型回复和 `recall_memory` 工具选择；embedding 使用显式
-`--source-config` 中的真实 provider。配置及凭据只进入权限为 `0600` 的唯一 `/tmp`
-sandbox，运行结束后删除，不写日志和报告。
+Gate 通过公开 programmatic Message API 在隔离 workspace 中验证普通 Akasha 插件的在线学习与重启恢复。
+模型回复由 scripted model-gate 控制，embedding 由本地 HTTP fixture 或显式配置的外部 provider 提供。
+第一轮写入 Message 与 embedding，第二轮先验证自动 Akasha 上下文和只读 `recall_memory`，再提交新的学习图；
+随后重启同一个 Gateway，读取已发布的 Akasha 学习图并核对运行代际变化。该重启检查不宣称新 Message
+offline rebuild；源 `messages` 和 `message_embeddings` 行必须保持不变。local fixture 还会核对重启后没有新的
+embedding 调用；本次外部 provider 未实测，也不记录其请求计数。
+
+本地可观察的 embedding 边界使用：
 
 ```bash
+python docker/debug/akasha_v2_runtime_probe.py --local-fixture
+```
+
+正式 provider 模式要求在启动前提供以下三个环境变量：
+
+```text
+AKASHIC_E2E_EMBEDDING_API_KEY
+AKASHIC_E2E_EMBEDDING_BASE_URL
+AKASHIC_E2E_EMBEDDING_MODEL
+```
+
+```bash
+AKASHIC_E2E_EMBEDDING_API_KEY=... \
+AKASHIC_E2E_EMBEDDING_BASE_URL=https://provider.example/v1 \
+AKASHIC_E2E_EMBEDDING_MODEL=text-embedding-v4 \
 python docker/debug/akasha_v2_runtime_probe.py \
-  --source-config /path/to/debug-config.toml \
   --formal-workspace /path/to/formal-workspace
 ```
 
-Gate 完成两个真实 turn，检查第二轮 provider payload 已收到自动 Akasha 上下文，
-在 final response barrier 处证明 `recall_memory` 前后逻辑状态不变，再证明第二轮提交
-会改变状态。停止在线 gateway 后，它从同一隔离 `sessions.db` 严格重放，要求 online
-与 replay canonical logical hash 相同。最后核对正式 `sessions.db`、正式 `akasha.db`
-和仓库摘要未改变，Compose 无残留。证据位于
+`--formal-workspace` 是可选保护检查；local Gate 不需要正式 workspace。`config.toml` 按
+`0600` 写入 sandbox；凭据由 `add_openai_models` 通过 HTTP 写入普通模型插件的 credential
+storage，不写入 `config.toml`。配置与凭据只写入一次性 sandbox，报告不输出 API key，清理失败会使
+Gate 失败。证据位于
 `docker/debug/reports/akasha-v2-runtime/<run-id>/`。
+
+`scripts/build_akasha_db.py` 仍是旧 schema 的离线 builder，只能用于它已有的 legacy
+重建合同；本 Gate 不把它当作新 Message 链路的 offline rebuild 验证。
 
 ## Yoyo 迁移检查
 
@@ -569,55 +588,6 @@ docker/debug/scenarios/
 }
 ```
 
-## Runtime 竞态探针
-
-`runtime_race_probe.py` 用于在 Docker 沙盒里制造 passive / scheduler / proactive / drift 的可见发送竞态。它复用真实 `MessageBus`、`ChatLane`、`BusOutboundPort`、`PushToolOutboundPort` 和 `message_push`，但 channel sender 和 LLM 都是 fake，所以不需要调试 bot 或模型 key。
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│ runtime_race_probe.py                                       │
-└──────────────┬──────────────────────────────────────────────┘
-               │ fake user inbound
-               v
-┌─────────────────────────────────────────────────────────────┐
-│ MessageBus + ChatLane                                       │
-└──────┬──────────────────────────────────────────────┬───────┘
-       │ passive reply                                │ non-passive send
-       v                                              v
-┌──────────────────────┐                     ┌──────────────────────┐
-│ BusOutboundPort      │                     │ PushToolOutboundPort │
-└──────────┬───────────┘                     └──────────┬───────────┘
-           │                                            │
-           v                                            v
-┌─────────────────────────────────────────────────────────────┐
-│ fake sender records start/end order                         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-运行全部场景：
-
-```bash
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/runtime_race_probe.py --scenario all
-```
-
-运行单个场景：
-
-```bash
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/runtime_race_probe.py --scenario a1-drift-before-push
-```
-
-可用控制开关：
-
-```text
-AKASHIC_RACE_SCENARIO  选择单个场景，默认 all
-AKASHIC_RACE_TIMEOUT   每个等待点的超时秒数，默认 2
-AKASHIC_RACE_TRACE     写出 JSON 结果的路径
-AKASHIC_RACE_CONFIG    指定 config.toml；不指定时生成无外部 channel 的最小配置
-AKASHIC_RACE_WORKSPACE 指定临时 workspace；不指定时使用临时目录
-```
-
 ## 真实 Runtime 时间回放基础
 
 `replay_controller.py` 只维护隔离 profile 下的模拟时钟、历史事件和捕获消息，不读取或挂载正式 workspace。`docker-compose.yml` 会让真实 `main.py` 加载调试插件目录；`replay_debug` 插件注册 `replay` 渠道，把 outbound 原样写入 profile。
@@ -679,51 +649,6 @@ python docker/debug/replay_controller.py \
 ```
 
 `events.jsonl` 只由 replay controller 保存为调试输入；当前 Core 没有隐式消费者，推进时钟不会自动触发 Turn。需要验证 Content/Wake 时使用上面的普通插件互操作 Gate。
-
-`agent-loop-runtime` 场景会启动真实 `AgentLoop.run()`，读取 `config.toml`，但不启动 Telegram / QQ / CLI server。它用 fake reasoner 卡住 passive turn，再并发触发 drift 发送和 scheduler soft 的 `process_direct`，验证 runtime lock 与 ChatLane 的联动。
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│ config.toml without external channel                         │
-└──────────────┬──────────────────────────────────────────────┘
-               v
-┌─────────────────────────────────────────────────────────────┐
-│ real AgentLoop.run                                          │
-│ real AgentLoop._react + passive pipeline                    │
-└──────────────┬──────────────────────────────────────────────┘
-               v
-┌─────────────────────────────────────────────────────────────┐
-│ assert passive reply -> drift send -> scheduler send          │
-│ assert scheduler soft waits passive runtime lock              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-`config-runtime-llm` 场景会读取真实 `config.toml` 并调用其中配置的 LLM。它通过 `build_core_runtime()` 构建真实 runtime，加载真实 provider、memory、tool、plugin、scheduler 接线，但不启动 Telegram / QQ / CLI server；外部 channel sender 用 fake 记录发送顺序，Wake / Drift 输入也用 fake 直接提交到 `message_push(_commit_role="non_passive")`。
-
-```bash
-docker compose -f docker/debug/docker-compose.yml run --rm akashic-debug \
-  python docker/debug/runtime_race_probe.py \
-    --scenario config-runtime-llm \
-    --config config.toml \
-    --timeout 120
-```
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│ real config.toml + real LLM                                  │
-└──────────────┬──────────────────────────────────────────────┘
-               v
-┌─────────────────────────────────────────────────────────────┐
-│ build_core_runtime                                           │
-│ provider + memory + tools + plugins + scheduler              │
-└──────────────┬──────────────────────────────────────────────┘
-               v
-┌─────────────────────────────────────────────────────────────┐
-│ real AgentLoop.run + real process_direct                     │
-│ fake proactive/drift generation -> real message_push          │
-│ fake channel sender records order                            │
-└─────────────────────────────────────────────────────────────┘
-```
 
 ## 完全清理
 
