@@ -67,11 +67,7 @@ interface RecallRow {
 }
 
 interface RecallDetail extends RecallRow {
-  learning_binding: string;
   limit: number;
-  max_chars: number;
-  strong: boolean;
-  presented_message_ids: string[];
 }
 
 interface InspectorOverview {
@@ -171,7 +167,7 @@ function renderDetail(item: RecallDetail, closePane?: () => void): string {
     <article class="akasha-inspector">
       <header class="akasha-query"><div><h2>${escapeHtml(item.query_text)}</h2><p class="akasha-query-meta">${escapeHtml(shortTime(item.ts))} · seq ${escapeHtml(item.seq)} · ${escapeHtml(item.session_key || "程序查询")}</p><p class="akasha-query-meta">${escapeHtml(sourceLabel(item.source))}</p></div>${closePane ? '<md-icon-button class="akasha-close" data-akasha-close aria-label="关闭详情"><span aria-hidden="true">×</span></md-icon-button>' : ""}</header>
       <section class="akasha-overview" aria-labelledby="akasha-overview-title"><div class="akasha-overview-heading"><div><h3 id="akasha-overview-title">${item.presented_count} 条消息实际呈现</h3></div><p>图版本 ${item.graph_version} · 查询上限 ${item.limit}</p></div><dl class="akasha-metrics">
-        ${metric("命中消息", item.hit_count, "Recall 记录中的原始 Message 引用")}
+        ${metric("命中回忆", item.hit_count, "Recall 记录中选中的回忆条目")}
         ${metric("活跃情景簇", item.active_basin_count, "Recall 记录的真实 completion 指标")}
         ${metric("扩散次数", item.pushes, "查询完成时记录的 pushes")}
         ${metric("残余质量", fixed(item.residual_l1), "查询完成时记录的 residual_l1")}

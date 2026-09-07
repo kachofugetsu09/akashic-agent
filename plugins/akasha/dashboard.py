@@ -109,6 +109,7 @@ def _row(identity: str, recall: Recall, *, full_text: bool) -> dict[str, object]
         "query_text": query_text,
         "source": source,
         "graph_version": recall.graph_version,
+        "limit": recall.limit,
         "hit_count": len(recall.hits),
         "presented_count": len(recall.presented_message_ids),
         "dense_count": sum(1 for hit in recall.hits if hit.lane == "dense"),

@@ -665,7 +665,7 @@ class WakeState:
 
     @contextmanager
     def _read_connection(self) -> Iterator[sqlite3.Connection | None]:
-        """Open the existing state read-only without creating a database or WAL."""
+        """Open an existing state database read-only without creating its schema."""
         if not self.path.exists():
             yield None
             return

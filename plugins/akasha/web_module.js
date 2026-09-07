@@ -28,7 +28,7 @@ let r=null;async function d(e,t){if(!r)throw new Error("Akasha \u5DE5\u4F5C\u53F
     <article class="akasha-inspector">
       <header class="akasha-query"><div><h2>${i(e.query_text)}</h2><p class="akasha-query-meta">${i(p(e.ts))} \xB7 seq ${i(e.seq)} \xB7 ${i(e.session_key||"\u7A0B\u5E8F\u67E5\u8BE2")}</p><p class="akasha-query-meta">${i(y(e.source))}</p></div>${t?'<md-icon-button class="akasha-close" data-akasha-close aria-label="\u5173\u95ED\u8BE6\u60C5"><span aria-hidden="true">\xD7</span></md-icon-button>':""}</header>
       <section class="akasha-overview" aria-labelledby="akasha-overview-title"><div class="akasha-overview-heading"><div><h3 id="akasha-overview-title">${e.presented_count} \u6761\u6D88\u606F\u5B9E\u9645\u5448\u73B0</h3></div><p>\u56FE\u7248\u672C ${e.graph_version} \xB7 \u67E5\u8BE2\u4E0A\u9650 ${e.limit}</p></div><dl class="akasha-metrics">
-        ${c("\u547D\u4E2D\u6D88\u606F",e.hit_count,"Recall \u8BB0\u5F55\u4E2D\u7684\u539F\u59CB Message \u5F15\u7528")}
+        ${c("\u547D\u4E2D\u56DE\u5FC6",e.hit_count,"Recall \u8BB0\u5F55\u4E2D\u9009\u4E2D\u7684\u56DE\u5FC6\u6761\u76EE")}
         ${c("\u6D3B\u8DC3\u60C5\u666F\u7C07",e.active_basin_count,"Recall \u8BB0\u5F55\u7684\u771F\u5B9E completion \u6307\u6807")}
         ${c("\u6269\u6563\u6B21\u6570",e.pushes,"\u67E5\u8BE2\u5B8C\u6210\u65F6\u8BB0\u5F55\u7684 pushes")}
         ${c("\u6B8B\u4F59\u8D28\u91CF",g(e.residual_l1),"\u67E5\u8BE2\u5B8C\u6210\u65F6\u8BB0\u5F55\u7684 residual_l1")}
