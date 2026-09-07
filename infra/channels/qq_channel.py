@@ -452,7 +452,6 @@ class QQChannel:
         allowed_users = [str(user_id) for user_id in (allow_from or [])]
         self._allow_from: set[str] = set(allowed_users)
         self._websocket_open_timeout_seconds = float(websocket_open_timeout_seconds)
-        self._interrupt_controller = interrupt_controller
         self._workspace = workspace
         self._trace_actor_name_cache: str | None = None
         # group_id → QQGroupConfig
@@ -500,7 +499,6 @@ class QQChannel:
         if ctx is not None:
             self._bus = ctx.bus
             self._event_bus = ctx.event_bus
-            self._interrupt_controller = ctx.interrupt_controller
         self._main_loop = asyncio.get_running_loop()
         self._bind_events()
 
@@ -812,17 +810,6 @@ class QQChannel:
             ports=ports,
         )
 
-    async def _handle_stop_private(self, user_id: str) -> None:
-        if self._interrupt_controller is None:
-            await self.send(user_id, "当前未启用中断功能。")
-            return
-        result = self._interrupt_controller.request_interrupt(
-            session_key=f"{_CHANNEL}:{user_id}",
-            sender=user_id,
-            command="/stop",
-        )
-        await self.send(user_id, result.message)
-
     async def _handle_group(
         self,
         group_id: str,
@@ -842,18 +829,6 @@ class QQChannel:
             message_id=message_id,
             event=event,
         )
-
-    async def _handle_stop_group(self, group_id: str, user_id: str) -> None:
-        chat_id = f"{_GROUP_PREFIX}{group_id}"
-        if self._interrupt_controller is None:
-            await self.send(chat_id, "当前未启用中断功能。")
-            return
-        result = self._interrupt_controller.request_interrupt(
-            session_key=f"{_CHANNEL}:{chat_id}",
-            sender=user_id,
-            command="/stop",
-        )
-        await self.send(chat_id, result.message)
 
     async def _send_private_trace(
         self,

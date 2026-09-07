@@ -333,12 +333,12 @@ interface NativeBridge {
   copyText(text: string): void;
   performActionHaptic(): void;
   sendCommand(command: string): void;
+  sendSessionCommand(sessionId: string, command: string): void;
   refreshRuntimeInspection(): void;
   openRuntimeDocument(documentId: string): void;
   openRuntimeMcp(ownerId: string, serverName: string): void;
   openRuntimeJob(jobId: string): void;
   clearRuntimeInspectionDetail(): void;
-  stopTurn(): void;
   readModelCallStats(requestId: string, callId: string): void;
   queryPluginUi(
     requestId: string,
@@ -1534,8 +1534,10 @@ export function MobileNativeApp() {
   };
   const stop = () => {
     if (!snapshot.composer.canStop || stopRequested) return;
+    const sessionId = snapshot.selectedSessionId;
+    if (!sessionId) throw new Error("停止生成缺少当前会话 owner");
     setStopRequested(true);
-    window.AkashicNative?.stopTurn();
+    window.AkashicNative?.sendSessionCommand(sessionId, "/stop");
   };
   const closeDrawer = () => {
     setDrawerOpen(false);
