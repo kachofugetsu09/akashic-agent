@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Mapping
+from typing import Mapping, cast
 
 import pytest
 
 from agent.control.protocol.router import ConnectionRouter
+from agent.control.service import ControlService
 
 
 @pytest.mark.asyncio
@@ -22,12 +23,13 @@ async def test_only_message_read_uses_explicit_page_sender() -> None:
         "next_after_seq": -1,
         "has_more": False,
     }
-    service = SimpleNamespace(
+    # Router only consumes this narrow service surface in the page-routing fixture.
+    service = cast(ControlService, SimpleNamespace(
         methods={},
         initialize=lambda _params: {"ok": True},
         status=lambda: {"ready": True},
         read_messages=lambda *_args: page,
-    )
+    ))
 
     async def send(frame: dict[str, object]) -> None:
         regular.append(frame)

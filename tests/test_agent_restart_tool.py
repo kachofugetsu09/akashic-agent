@@ -4,7 +4,7 @@ import asyncio
 import json
 import shutil
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +24,7 @@ from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
 from bus.event_bus import EventBus
 from agent.control.frame_book import FrameBook
 from bootstrap.app_server import build_control_service
+from bootstrap.tools import CoreRuntime
 from infra.control.connection import NdjsonConnection
 from plugins.agent_restart.plugin import PendingRestart, RestartTool
 from plugins.tools.api import CallSource, ContentPart, Denied, MessageReply, durable_call_key
@@ -31,12 +32,19 @@ from plugins.content.plugin import check_text
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
-from session.log import MessageLog
+from session.log import MessageLog, MessageReader
 from session.message import (
     CallRef, ContentReferences, Input, Message, Output, ToolCall, ToolResult, freeze_json,
 )
 
 import agent.plugins.manager as plugin_manager_module
+
+
+class _FixtureTransport:
+    """Only the connection identity is consumed by programmatic control."""
+
+    def __init__(self, connection_id: str) -> None:
+        self.connection_id = connection_id
 
 
 def _copy_plugin_sources(root: Path, names: tuple[str, ...]) -> None:
@@ -927,6 +935,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             await asyncio.wait_for(_wait_for_watcher_count(watcher_history, 2), 2)
             assert stop_watcher_monitor is not None
             stop_watcher_monitor.set()
+            assert watcher_monitor is not None
             await watcher_monitor
             new_watchers = [task for task in watcher_history if task is not old_watcher]
             assert new_watchers
@@ -943,10 +952,10 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             promotion_task.cancel()
         if old_task is not None and not old_task.done():
             old_task.cancel()
-        await asyncio.gather(
-            *(task for task in (promotion_task, old_task) if task is not None),
-            return_exceptions=True,
-        )
+        if promotion_task is not None:
+            await asyncio.gather(promotion_task, return_exceptions=True)
+        if old_task is not None:
+            await asyncio.gather(old_task, return_exceptions=True)
         if "runtime_runner" in locals():
             runtime_runner.cancel()
             await asyncio.gather(runtime_runner, return_exceptions=True)
@@ -973,13 +982,14 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:restart"
         frames = host._control_frames  # type: ignore[attr-defined]
-        core = SimpleNamespace(
+        # build_control_service only reads these CoreRuntime fields in this fixture.
+        core = cast(CoreRuntime, SimpleNamespace(
             plugin_manager=host,
             workspace=tmp_path / "workspace",
             message_log=log,
             control_frames=frames,
             channel_attachment_store=SimpleNamespace(resolve_refs=lambda _ids: ()),
-        )
+        ))
         service = build_control_service(core)
         endpoint = tmp_path / "control.sock"
         connection_done = asyncio.Event()
@@ -1104,7 +1114,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
 async def test_programmatic_restart_watcher_aborts_preclaim_after_disconnect(
     tmp_path: Path,
 ) -> None:
-    """真实 programmatic ToolResult 的 pre-claim 在连接断开后由 watcher 消费失败。"""
+    """真实 watcher 必须消费断线异常并结束精确 pre-claim。"""
     commits: list[str] = []
     gate = RestartGate(
         boot_id="fixture-boot", supervised=True,
@@ -1113,6 +1123,29 @@ async def test_programmatic_restart_watcher_aborts_preclaim_after_disconnect(
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:disconnect"
         frames = host._control_frames  # type: ignore[attr-defined]
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        watcher = _loaded_restart_watcher(snapshot.composition_root)
+        original_wait = cast(
+            Callable[..., Awaitable[None]],
+            getattr(watcher, "_wait_for_request"),
+        )
+        watcher_entered = asyncio.Event()
+        watcher_released = asyncio.Event()
+        watcher_caught = asyncio.Event()
+        caught_errors: list[ConnectionError] = []
+
+        async def hold_before_wait(*args: object) -> None:
+            watcher_entered.set()
+            await watcher_released.wait()
+            try:
+                await original_wait(*args)
+            except ConnectionError as error:
+                caught_errors.append(error)
+                watcher_caught.set()
+                raise
+
+        setattr(watcher, "_wait_for_request", hold_before_wait)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             context = snapshot.composition_root.context
             api = context.require(PROGRAMMATIC)
@@ -1120,46 +1153,65 @@ async def test_programmatic_restart_watcher_aborts_preclaim_after_disconnect(
             await api.call(
                 "programmatic/message/send",
                 SendParams(session_id=session, message_id="input", text="restart now"),
-                SimpleNamespace(connection_id="fixture-connection"),
+                _FixtureTransport("fixture-connection"),
             )
+        try:
+            await asyncio.wait_for(watcher_entered.wait(), 5)
+            rows = log.reader(session).snapshot()
+            result = next(
+                row.body
+                for row in rows
+                if isinstance(row.body, ToolResult)
+                and row.body.outcome == "success"
+                and _is_restart_fixture_result(log.reader(session), row.body)
+            )
+            claim = frames.claim_for(session, result.call_ref)
+            assert claim is not None
+            error = ConnectionError("client disconnected")
+            frames.fail_connection("fixture-connection", error)
+            assert frames.claim_for(session, result.call_ref) is claim
+            watcher_released.set()
+            await asyncio.wait_for(watcher_caught.wait(), 2)
+            assert caught_errors == [error]
+            assert frames.claim_for(session, result.call_ref) is None
+            assert gate.accepting
+            assert commits == []
+        finally:
+            setattr(watcher, "_wait_for_request", original_wait)
 
-        call_ref: CallRef | None = None
-        async def wait_for_preclaim() -> None:
-            nonlocal call_ref
-            while call_ref is None or frames.claim_for(session, call_ref) is None:
-                for row in log.reader(session).snapshot():
-                    if not isinstance(row.body, ToolResult) or row.body.outcome != "success":
-                        continue
-                    call_message = log.reader(session).get(row.body.call_ref.message_id)
-                    if (
-                        call_message is not None
-                        and isinstance(call_message.body, Output)
-                        and row.body.call_ref.part_index < len(call_message.body.parts)
-                        and isinstance(
-                            call_message.body.parts[row.body.call_ref.part_index], ToolCall,
-                        )
-                        and call_message.body.parts[row.body.call_ref.part_index].arguments.get(
-                            "reason"
-                        ) == "fixture"
-                    ):
-                        call_ref = row.body.call_ref
-                        break
-                await asyncio.sleep(0)
 
-        await asyncio.wait_for(wait_for_preclaim(), 5)
-        assert call_ref is not None
-        frames.fail_connection(
-            "fixture-connection", ConnectionError("client disconnected"),
-        )
-        resolved_call_ref = call_ref
+def _loaded_restart_watcher(root: object) -> object:
+    """从正式 Root 的 runtime.started listener 取得动态加载的 watcher。"""
+    events = getattr(root, "_events")
+    listeners = cast(
+        Mapping[object, Iterable[object]],
+        getattr(events, "_listeners"),
+    )
+    for key, entries in listeners.items():
+        if getattr(key, "name", None) != "runtime.started":
+            continue
+        for entry in entries:
+            callback = getattr(entry, "callback", None)
+            owner = getattr(callback, "__self__", None)
+            runtime = getattr(getattr(entry, "owner", None), "runtime", None)
+            if (
+                getattr(runtime, "plugin_id", None) == "agent_restart"
+                and owner is not None
+                and callable(getattr(owner, "_wait_for_request", None))
+            ):
+                return owner
+    raise AssertionError("正式 Root 没有动态 agent_restart watcher")
 
-        async def wait_for_claim_abort() -> None:
-            while frames.claim_for(session, resolved_call_ref) is not None:
-                await asyncio.sleep(0)
 
-        await asyncio.wait_for(wait_for_claim_abort(), 2)
-        assert gate.accepting
-        assert commits == []
+def _is_restart_fixture_result(reader: MessageReader, result: ToolResult) -> bool:
+    """确认 ToolResult 真正引用 fixture 的 agent_restart ToolCall。"""
+    call_message = reader.get(result.call_ref.message_id)
+    if call_message is None or not isinstance(call_message.body, Output):
+        return False
+    if result.call_ref.part_index >= len(call_message.body.parts):
+        return False
+    call = call_message.body.parts[result.call_ref.part_index]
+    return isinstance(call, ToolCall) and call.arguments.get("reason") == "fixture"
 
 
 @pytest.mark.asyncio
@@ -1189,7 +1241,7 @@ async def test_programmatic_restart_rejection_keeps_other_gate_request_and_abort
             await api.call(
                 "programmatic/message/send",
                 SendParams(session_id=session, message_id="input", text="restart now"),
-                SimpleNamespace(connection_id="fixture-connection"),
+                _FixtureTransport("fixture-connection"),
             )
 
         call_ref: CallRef | None = None
