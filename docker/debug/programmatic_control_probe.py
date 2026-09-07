@@ -1921,6 +1921,26 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         pc07 = "programmatic:pc07-control"
         first.admit_programmatic(pc07)
         pc07_pause_barrier = "pc07-pause-provider"
+        pc07_identity_command = (
+            "pid=$(cat /sandbox/workspace/pc07-shell.pid) || "
+            "{ printf 'PC07 identity: cannot read pid\\n' >&2; exit 43; }; "
+            "expected=$(cat /sandbox/workspace/pc07-shell.starttime) || "
+            "{ printf 'PC07 identity: cannot read expected starttime\\n' >&2; exit 43; }; "
+            "stat_path=/proc/$pid/stat; alive=false; status=42; actual=null; "
+            "if [ -e \"$stat_path\" ]; then "
+            "actual=$(awk '{print $22}' \"$stat_path\") || "
+            "{ printf 'PC07 identity: cannot read %s\\n' \"$stat_path\" >&2; exit 43; }; "
+            "if [ -z \"$actual\" ]; then "
+            "printf 'PC07 identity: empty starttime from %s\\n' \"$stat_path\" >&2; exit 43; fi; "
+            "if [ \"$actual\" = \"$expected\" ]; then "
+            "if kill -0 \"$pid\" 2>/dev/null; then alive=true; status=0; "
+            "elif [ ! -e \"$stat_path\" ]; then actual=null; "
+            "else printf 'PC07 identity: cannot verify pid %s\\n' \"$pid\" >&2; exit 43; fi; "
+            "fi; fi; "
+            "printf '{\"alive\":%s,\"pid\":%s,' \"$alive\" \"$pid\"; "
+            "printf '\"expected_starttime\":%s,\"actual_starttime\":%s}\\n' "
+            "\"$expected\" \"$actual\"; exit \"$status\""
+        )
         _http_json("PUT", f"{model_url}/control/barriers/{pc07_pause_barrier}")
         _http_json(
             "PUT",
@@ -1956,19 +1976,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                             "id": "call_pc07_shell_identity_before_pause",
                             "name": "shell",
                             "arguments": {
-                                "command": (
-                                    "pid=$(cat /sandbox/workspace/pc07-shell.pid); "
-                                    "expected=$(cat /sandbox/workspace/pc07-shell.starttime); "
-                                    "actual=$(awk '{print $22}' /proc/$pid/stat 2>/dev/null || true); "
-                                    "alive=false; status=42; "
-                                    "if kill -0 \"$pid\" 2>/dev/null && "
-                                    "[ -n \"$actual\" ] && [ \"$actual\" = \"$expected\" ]; then "
-                                    "alive=true; status=0; fi; "
-                                    "printf '{\"alive\":%s,\"pid\":%s,"
-                                    "\"expected_starttime\":%s,\"actual_starttime\":%s}\\n' "
-                                    "\"$alive\" \"$pid\" \"$expected\" "
-                                    "\"${actual:-null}\"; exit \"$status\""
-                                ),
+                                "command": pc07_identity_command,
                                 "description": "PC07 verify shell PID identity before pause",
                                 "yield_time_ms": 250,
                                 "timeout": 30,
@@ -2106,19 +2114,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                             "id": "call_pc07_shell_identity_after_pause",
                             "name": "shell",
                             "arguments": {
-                                "command": (
-                                    "pid=$(cat /sandbox/workspace/pc07-shell.pid); "
-                                    "expected=$(cat /sandbox/workspace/pc07-shell.starttime); "
-                                    "actual=$(awk '{print $22}' /proc/$pid/stat 2>/dev/null || true); "
-                                    "alive=false; status=42; "
-                                    "if kill -0 \"$pid\" 2>/dev/null && "
-                                    "[ -n \"$actual\" ] && [ \"$actual\" = \"$expected\" ]; then "
-                                    "alive=true; status=0; fi; "
-                                    "printf '{\"alive\":%s,\"pid\":%s,"
-                                    "\"expected_starttime\":%s,\"actual_starttime\":%s}\\n' "
-                                    "\"$alive\" \"$pid\" \"$expected\" "
-                                    "\"${actual:-null}\"; exit \"$status\""
-                                ),
+                                "command": pc07_identity_command,
                                 "description": "PC07 verify shell PID identity after pause",
                                 "yield_time_ms": 250,
                                 "timeout": 30,
