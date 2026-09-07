@@ -12,7 +12,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import open_tool
+from plugins.tools.plugin import TOOL_DISPLAY_NAME, open_tool
 from session.log import MessageLog
 
 TOOLS = ServiceKey("tools.v1")
@@ -104,6 +104,38 @@ def manager(tmp_path, sources, log=None):
         installed_cache_root=tmp_path / "home" / "cache",
         message_log=log,
     )
+
+
+@pytest.mark.asyncio
+async def test_display_name_reads_old_binding_without_opening_removed_tool(tmp_path):
+    sources = tmp_path / "plugins"
+    write_plugins(sources)
+    log = MessageLog(tmp_path / "sessions.db")
+    host = manager(tmp_path, [sources], log)
+    try:
+        await host.load_all()
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            from agent.plugin_composition.bindings import BINDINGS
+            ctx = snapshot.composition_root.context
+            binding_id = ctx.require(TOOLS).bind("example", ctx.require(BINDINGS))
+        await host.terminate_all()
+        shutil.rmtree(sources / "target")
+        shutil.rmtree(sources / "prepare")
+        shutil.rmtree(sources / "authorize")
+        restored = manager(tmp_path, [sources], log)
+        try:
+            await restored.load_all()
+            async with lease_runtime_snapshot(restored.snapshot_store) as snapshot:
+                lookup = snapshot.composition_root.context.require(TOOL_DISPLAY_NAME)
+                assert lookup(binding_id) == "example"
+                with pytest.raises(KeyError):
+                    lookup("missing")
+            assert not list((tmp_path / "workspace").rglob("effects.txt"))
+        finally:
+            await restored.terminate_all()
+    finally:
+        await host.terminate_all()
+        log.close()
 
 
 @pytest.mark.asyncio

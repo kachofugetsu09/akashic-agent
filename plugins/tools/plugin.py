@@ -14,7 +14,7 @@ from session.log import MessageReader
 from agent.restart import ExternalRootPermit
 from plugins.content.plugin import check_text
 
-from plugins.tools.api import Authorize, BoundTool, CallSource, MessageReply, Result, result_message_id
+from plugins.tools.api import Authorize, BoundTool, CallSource, MessageReply, Result, display_name, result_message_id
 from plugins.tools.abandon import follow_abandon, reject_start
 from plugins.tools.execution import ToolExecution
 from agent.plugin_composition.bindings import BINDINGS
@@ -390,6 +390,7 @@ def check_candidates(value: object) -> Candidates:
 
 
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
+TOOL_DISPLAY_NAME = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
 
 
 @asynccontextmanager
@@ -402,6 +403,12 @@ async def open_tool(bindings: Bindings, binding_id: str) -> AsyncIterator[BoundT
 
 async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(TOOLS, ToolCatalog(ctx))
+
+    def read_name(binding_id: str) -> str:
+        """只读原 binding 的名称；诊断消费者不能打开或执行工具。"""
+        return display_name(ctx.require(BINDINGS).describe(binding_id, TOOLS))
+
+    _ = await ctx.provide(TOOL_DISPLAY_NAME, read_name)
     watcher: asyncio.Task[None] | None = None
 
     async def start(_event: object) -> None:
