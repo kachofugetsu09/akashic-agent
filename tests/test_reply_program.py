@@ -1,9 +1,8 @@
 import asyncio
+from collections.abc import AsyncIterator
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -11,7 +10,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
-    ChatModels, ModelRole, ToolCall as ModelToolCall,
+    ModelExecution, ModelRole, ToolCall as ModelToolCall,
 )
 from agent.plugin_composition.tasks import TASKS
 from agent.plugins.manager import PluginManager
@@ -138,10 +137,18 @@ async def apply(ctx, config):
         capability_sources=CapabilitySources(), capability_digest="test",
     )
     model = _BoundChat(descriptor, Driver(), store)
+    class Execution:
+        def chat(self, role: ModelRole) -> _BoundChat:
+            assert role in ModelRole
+            return model
+
     class Models:
         @asynccontextmanager
-        async def execution(self, *, model_id=None, reasoning_effort=None):
-            yield SimpleNamespace(chat=lambda role: model)
+        async def execution(self, *, model_id=None, reasoning_effort=None) -> AsyncIterator[ModelExecution]:
+            del model_id, reasoning_effort
+            yield Execution()
+
+        independent_execution = execution
     async def authorize(binding, arguments):
         if case == "input_before_effect":
             authorizing.set()
@@ -159,7 +166,7 @@ async def apply(ctx, config):
                 )("s")
             async def run(task, reader, source):
                 return await run_reply(
-                    ctx, task, reader, source, models=cast(ChatModels, Models()), content=root.require(CONTENT),
+                    ctx, task, reader, source, models=Models(), content=root.require(CONTENT),
                     context=root.require(CONTEXT), tools=root.require(TOOLS), react=react,
                     materials=root.require(MATERIALS), render_content=lambda part: render_content(part, artifacts={}),
                     turn_projection=root.require(TURN_PROJECTION),

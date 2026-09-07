@@ -60,7 +60,11 @@ async def test_real_input_reply_and_archived_delivery_are_independent_consumers(
         assert records.cursor("test:room") == final[0].seq
 
 
-class Scope:
+class Scope(Context):
+    def __init__(self) -> None:
+        # follow only needs the scope boundary; any other Context operation is unavailable here.
+        pass
+
     @asynccontextmanager
     async def runtime_scope(self):
         yield
@@ -99,7 +103,7 @@ async def test_failed_sink_does_not_cancel_other_sink_and_restart_keeps_original
         Sink(name="bad", binding_id="bad-A", address="bad-original"),
         Sink(name="good", binding_id="good-A", address="good-original"),
     )
-    watcher = asyncio.create_task(follow(cast(Context, Scope()), log.catalog(), execution, lambda *_: selected))
+    watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, lambda *_: selected))
     try:
         async with asyncio.timeout(3):
             await good.started.wait()
@@ -125,7 +129,7 @@ async def test_failed_sink_does_not_cancel_other_sink_and_restart_keeps_original
         def changed_policy(*_):
             pytest.fail("restart must not reselect the original message")
 
-        watcher = asyncio.create_task(follow(cast(Context, Scope()), log.catalog(), execution, changed_policy))
+        watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, changed_policy))
         async with asyncio.timeout(3):
             await queried.wait()
         assert len(good.sent) == len(bad.sent) == 1
@@ -205,7 +209,7 @@ async def test_restart_policy_cannot_send_a_scheduler_notification_cancelled_on_
     def changed_policy(*_):
         pytest.fail("another owner already fixed this selection")
 
-    watcher = asyncio.create_task(follow(cast(Context, Scope()), log.catalog(), execution, changed_policy))
+    watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, changed_policy))
     try:
         async with asyncio.timeout(3):
             await consumed.wait()

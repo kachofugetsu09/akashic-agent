@@ -3,7 +3,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -12,7 +12,7 @@ from agent.plugin_composition.models import (
     ModelRequest,
     ModelRole, ToolCall as ModelToolCall,
 )
-from agent.plugin_composition.tasks import Tasks
+from agent.plugin_composition.tasks import Task, Tasks
 from plugins.content.plugin import _decode_text, check_text
 from plugins.context.api import ContextModel, Materials, Summary, check_summary
 from plugins.context.plugin import ContextBuilder
@@ -25,7 +25,10 @@ from plugins.react.plugin import react, UnknownToolEffect, StepLimit
 from plugins.tools.execution import ToolExecution, MessageReply, Result
 from plugins.tools.menu import ToolMenu
 from session.log import MessageConflict, MessageLog
-from session.message import Input, Message, Output, ContentPart, ToolResult, CallRef, Control
+from session.message import (
+    CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall,
+    ToolResult,
+)
 
 
 @asynccontextmanager
@@ -75,24 +78,40 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             await authorize_hook()
         return {"decision": "allowed"}
     execution = ToolExecution(log.owner("tools"), tasks, open_tool, authorize, task_key="tools")
-    class Menu:
-        def __init__(self, task):
+    class Menu(ToolMenu):
+        def __init__(self, task: Task) -> None:
             self.task = task
-        schemas = ({"type": "function", "function": {"name": "example", "parameters": {"type": "object"}}},)
-        def bind(self, name):
+
+        @property
+        def schemas(self) -> tuple[Mapping[str, Any], ...]:
+            return ({"type": "function", "function": {
+                "name": "example", "parameters": {"type": "object"},
+            }},)
+
+        def bind(self, name: str) -> str:
             assert name == "example"
             return "tool"
-        def name(self, binding):
+
+        def name(self, binding: str) -> str:
             assert binding == "tool"
             return "example"
-        async def execute(self, ref):
+
+        async def execute(self, ref: CallRef) -> Result:
             return await execution.execute_call(MessageReply(
                 "result:" + ref.message_id + ":" + str(ref.part_index), ref,
                 log.reader("s"), writer(ToolResult, ref), self.check_start,
             ))
-        def check_start(self):
+
+        def check_start(self) -> None:
             if not self.task.active:
                 raise asyncio.CancelledError
+
+        def check_call(self, call: ToolCall) -> None:
+            raise AssertionError(f"controlled menu unexpectedly checked {call}")
+
+        def check_selection(self, ref: CallRef, part: ContentPart) -> ContentReferences:
+            raise AssertionError(f"controlled menu unexpectedly checked selection {ref}: {part}")
+
     class Content:
         prompts = ()
         checks = {}
@@ -109,7 +128,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         task.on_close(output.expire)
         with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
             return await react(reader, output, model=model, context=ContextBuilder(),
-                               projection=projection, materials=materials, content=Content(), tools=cast(ToolMenu, Menu(task)),
+                               projection=projection, materials=materials, content=Content(), tools=Menu(task),
                                max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools)
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)

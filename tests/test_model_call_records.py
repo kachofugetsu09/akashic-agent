@@ -32,12 +32,12 @@ class _DriverContract:
         self, messages: Sequence[Mapping[str, object]],
         tools: Sequence[Mapping[str, object]] = (),
     ) -> int:
-        return 100
+        raise AssertionError("model call record tests must not estimate context")
 
     def estimate_appended_message_tokens(
         self, messages: Sequence[Mapping[str, object]],
     ) -> int:
-        return 0
+        raise AssertionError("model call record tests must not estimate appended messages")
 
 
 @pytest.fixture

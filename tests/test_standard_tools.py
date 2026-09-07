@@ -1,11 +1,11 @@
 import asyncio
 import base64
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 import json
 from pathlib import Path
 import shutil
-from types import SimpleNamespace
 from typing import cast
 
 import httpx
@@ -13,8 +13,7 @@ from PIL import Image
 import pytest
 
 from agent.media import encode_image_data_uri
-from agent.plugin_composition import ChatModels, ServiceKey
-from agent.plugin_composition.models import BoundChatModel
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.tasks import Tasks
@@ -27,7 +26,6 @@ from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply
-from plugins.models.projection import CallReader
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.api import MessageReply
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
@@ -36,6 +34,26 @@ from plugins.tools.execution import ToolExecution
 from plugins.tools.plugin import TOOLS, open_tool
 from agent.tools.web_search import WebSearchTool
 from tests.test_message_push_plugin import storage
+from tests.model_plugin_fakes import build_test_chat_models
+
+
+class _UnusedModelProvider:
+    model = "unused-test-model"
+    context_window = 1024
+    max_tool_schemas = None
+
+    def estimate_context_tokens(self, messages, tools=()):
+        raise AssertionError("controlled reply must not estimate model context")
+
+    def estimate_appended_message_tokens(self, messages):
+        raise AssertionError("controlled reply must not estimate appended messages")
+
+    async def chat(self, **kwargs):
+        raise AssertionError("controlled reply must not call the model")
+
+
+def _unexpected_call_read(identity: str) -> Mapping[str, object]:
+    raise AssertionError(f"controlled reply unexpectedly read model call {identity}")
 
 
 def environment(tmp_path, *, reply=False):
@@ -260,11 +278,8 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
             if case == "recover":
                 execution_id = await start_shell_call(log, bindings, tasks, binding, "conversation", "old-call")
 
-            class Models:
-                @asynccontextmanager
-                async def execution(self, **kwargs):
-                    # 此测试控制 ReAct 阶段，只验证 run_reply 的真实资源与消息边界。
-                    yield SimpleNamespace(chat=lambda role: cast(BoundChatModel, object()))
+            # 此测试控制 ReAct 阶段，只验证 run_reply 的真实资源与消息边界。
+            models = build_test_chat_models(_UnusedModelProvider())
 
             async def controlled_react(reader, output, *, tools, **kwargs):
                 nonlocal execution_id
@@ -296,10 +311,10 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
 
             async def program(task):
                 return await run_reply(
-                    ctx, task, reader, "conversation", models=cast(ChatModels, Models()), content=root.require(CONTENT),
+                    ctx, task, reader, "conversation", models=models, content=root.require(CONTENT),
                     context=root.require(CONTEXT), tools=catalog, react=controlled_react,
                     materials=root.require(MATERIALS), turn_projection=root.require(TURN_PROJECTION),
-                    read_call=cast(CallReader, lambda identity: None), authorize=allow, tool_names=("shell",),
+                    read_call=_unexpected_call_read, authorize=allow, tool_names=("shell",),
                     fixed_bindings={"shell": binding}, max_output_tokens=100, max_steps=4,
                 )
 
