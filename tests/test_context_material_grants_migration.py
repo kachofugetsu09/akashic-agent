@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import tomllib
 
 import pytest
 from yoyo import get_backend, read_migrations
@@ -24,7 +25,9 @@ def test_yoyo_installs_grants_without_overwriting_operator_choice(tmp_path):
         assert not backend.to_apply(migrations)
         initialized = tmp_path / "initialized"
         init_workspace(config_path=tmp_path / "init-config.toml", workspace=initialized)
-        assert path.read_bytes() == (initialized / "plugin-data/context-builtin/config.local.toml").read_bytes()
+        old = tomllib.loads(path.read_text())
+        old["prompt_sources"]["skills"] = "skills"
+        assert old == tomllib.loads((initialized / "plugin-data/context-builtin/config.local.toml").read_text())
         assert path.stat().st_mode & 0o777 == 0o600
         path.write_text('prompt_sources = {custom = "custom"}\n')
         before = (path.stat().st_ino, path.read_bytes())
@@ -72,3 +75,31 @@ def test_force_init_backs_up_config_and_preserves_owned_assets(tmp_path):
     assert len(backups) == 1 and backups[0].read_bytes() == original
     assert backups[0].stat().st_mode & 0o777 == 0o600
     assert all(path.read_text() == "operator owned bytes\n" for path in assets)
+
+
+@pytest.mark.parametrize("custom", ["default", "custom", "comment"])
+def test_skill_prompt_grant_backs_up_defaults_and_keeps_custom_choice(tmp_path, custom):
+    directory = tmp_path / "migrations"
+    directory.mkdir()
+    (directory / "20260907_02_retire_legacy_agent_config.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
+    source = Path(__file__).parents[1] / "migrations/yoyo/20260907_03_skill_prompt_grant.py"
+    (directory / source.name).write_bytes(source.read_bytes())
+    workspace = tmp_path / "workspace"
+    path = workspace / "plugin-data/context-builtin/config.local.toml"
+    path.parent.mkdir(parents=True)
+    before = ('prompt_sources = {custom = "custom"}\n' if custom == "custom" else
+              'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory"}\nsummary_source = ["compaction", "compaction"]\n')
+    if custom == "comment":
+        before += "# operator note\n"
+    path.write_text(before)
+    backend = get_backend(f"sqlite:///{tmp_path / 'ledger.db'}")
+    migrations = read_migrations(str(directory))
+    with backend, bind_migration_context(config_path=tmp_path / "config.toml", workspace=workspace):
+        backend.apply_migrations(backend.to_apply(migrations))
+        migrations[-1].module.grant_skills(None)
+    backup = path.with_name("config.before-skill-prompt-grant.toml")
+    if custom != "default":
+        assert path.read_text() == before and not backup.exists()
+    else:
+        assert backup.read_text() == before
+        assert tomllib.loads(path.read_text())["prompt_sources"]["skills"] == "skills"

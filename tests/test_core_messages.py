@@ -251,10 +251,8 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 sent = len(calls)
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                status = next(part.value for part in result.context if part.kind == "akasha.status")
-                assert isinstance(status, Mapping)
-                reason = status.get("reason")
-                assert status.get("available") is False and isinstance(reason, str) and "重建" in reason
+                status = next(part.text for part in result.reminders if part.name == "status")
+                assert "召回不可用" in status and "重建" in status
                 assert logical_state_sha256(graph) == before and len(calls) == sent
                 recalled = await tools.execution(authorize).execute("old-model-after-default-switch", binding, {"query": "saved memory"})
                 assert recalled.outcome == "success" and calls[-1]["model"] == "first"
@@ -262,7 +260,7 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 await control.apply(SetDefaultModel(5, None, "first"))
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                assert not any(part.kind == "akasha.status" for part in result.context)
+                assert not any(part.name == "status" for part in result.reminders)
                 assert all(item.healthy for item in snapshot.composition_root.receipt().health if item.owner == "akasha")
                 assert logical_state_sha256(graph) == before
                 assert core.plugin_manager.current_snapshot is root

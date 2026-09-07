@@ -368,6 +368,12 @@ Turn 是按 source 过滤的 Message 日志上的无状态读投影：`Output.fi
 
 skills、长期记忆和检索结果必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
 
+请求使用“system → 已保存消息的模型投影（含当前输入与摘要）→ 一个末尾 user-role `<system-reminder>`”。
+VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则留在 system；时间、Akasha 召回和本次后台结果进入提醒。
+提醒不写入 Message 日志，不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
+提醒块身份为实际贡献插件 ID 与局部名称，同一身份重复时报错；priority 升序，仅决定排列，同优先级按插件 ID、名称的 UTF-8 字节升序。
+SELF/MEMORY 低频更新不要求迁出 system，也不承诺其异步发布与 compaction 只产生一次 provider 缓存失效。
+
 ### CTX-005 新设计不得使用无修饰的 history
 
 新增接口、变量和设计文档必须区分 `persistent history`、`runtime history view` 和 `prompt history`。只写 `history`、`trim history` 或 `replace history` 且无法判断对象类别，设计不能通过评审。
@@ -522,6 +528,12 @@ Akasha 按固定版本的 Turn 投影取得全部 Input 与唯一完成 Output�
 ### MEM-011 历史投影按完整 Turn 和 token tail 保留
 
 Session compaction、Markdown consolidation 的切点和 prompt history 必须使用同一版本的完整 Turn 投影。每条已送达 proactive、`message_push`、schedule fire 和 spawn completion assistant 若属于独立 source，则各自作为独立单元；任何窗口、retained tail 或 consolidation cursor 不得落入一个已关闭 Turn 内部。runtime 不再使用 `memory_window` 计数；compaction 反向累积至少 20,000 token，并允许因完整 Turn 跨过阈值。展开后可以超过 token target，但重建 provider payload 必须满足当前模型硬输入边界。
+
+### MEM-012 Markdown 新用户事实必须有用户原文证据
+
+Markdown 新草稿逐条引用本次可学习的真实 Message ID。用户事实、偏好、明确要求及关系判断，必须包含 author=user 的 Input 引用；助手转述、工具、后台结果或摘要不能成为唯一依据。
+来源与 Session 学习资格由消息和学习 owner 决定，模型不能自行声明。压缩仍保留跨来源工作进展；Markdown 从摘要覆盖的原始消息读取事实，不把摘要正文作为用户原话。
+既有草稿与 before-image 恢复协议保留；本规则不授权删除、改写或补造旧条目和历史引用。引用资格检查证明来源存在且合格，不证明模型推断的语义必然正确。
 
 ## 9. 运行时、并发和出站
 

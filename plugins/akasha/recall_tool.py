@@ -175,7 +175,7 @@ class RecallTool:
                 "presented_message_ids": tuple(dict.fromkeys(ref.ref for ref in material.references)),
             })
             _ = self._records.save(identity, recall)
-            return self._result(identity, recall, material.context)
+            return self._result(identity, recall, tuple(ContentPart("text", part.text) for part in material.reminders))
 
     async def query(self, key: str) -> Result | None:
         """工具外部结果恢复只读实际查询记录；不读当前图或重跑模型。"""
@@ -187,7 +187,7 @@ class RecallTool:
             material = render_materials(identity, recall, learning, self._catalog, max_chars=recall.max_chars)
         if tuple(dict.fromkeys(ref.ref for ref in material.references)) != recall.presented_message_ids:
             raise ValueError("原查询呈现的材料发生变化，不能用当前结果冒充恢复")
-        return self._result(identity, recall, material.context)
+        return self._result(identity, recall, tuple(ContentPart("text", part.text) for part in material.reminders))
 
     @staticmethod
     def _result(identity: str, recall: Recall, parts: tuple[ContentPart, ...]) -> Result:

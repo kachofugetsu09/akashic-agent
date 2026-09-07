@@ -65,11 +65,18 @@ async def apply(ctx, config):
             memory = (root / "workspace/memory/MEMORY.md").read_text()
             if not memory:
                 memory = "# 用户长期记忆\\n\\n## 用户事实\\n\\n## 用户偏好\\n\\n## 用户明确要求长期记住的关键内容\\n"
+            source = json.loads(request.messages[0]["content"].split("本次精确来源：\\n", 1)[1])
             for fact in ("fact-one", "fact-two", "fact-three"):
-                if fact in request.messages[0]["content"] and fact not in memory:
+                if any(row["author"] == "user" and row["body"]["kind"] == "input"
+                       and fact in json.dumps(row) for row in source) and fact not in memory:
                     memory += "- " + fact + "\\n"
+            previous = (root / "workspace/memory/MEMORY.md").read_text()
+            evidence = {line: [row["message_id"] for row in source if row["author"] == "user"
+                              and row["body"]["kind"] == "input" and line[2:] in json.dumps(row)]
+                        for line in memory.splitlines() if line.startswith("- ") and line not in previous.splitlines()}
             completed.set()
-            return LLMResponse(json.dumps({"memory": memory, "self": (root / "workspace/memory/SELF.md").read_text()}))
+            return LLMResponse(json.dumps({"memory": memory, "self": (root / "workspace/memory/SELF.md").read_text(),
+                                           "evidence": {"memory": evidence, "self": {}}}))
     descriptor = BoundModelDescriptor(
         binding_id="fixture", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture", driver_contract_version="1",
@@ -139,7 +146,7 @@ async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts
     from plugins.markdown_memory.message_plugin import project
     from session.message import ContentReferences
     async with application(tmp_path) as (log, host):
-        writer = log.writer("s", author="migration", source="legacy-unattributed", body_types=(Input, Output),
+        writer = log.writer("s", author="user", source="legacy-unattributed", body_types=(Input, Output),
             content={"text": check_text, "history.provenance": lambda part: ContentReferences()})
         writer.append("excluded-input", Input((ContentPart("text", "fact-one"),
             legacy_part('{"effects":{"post_commit":"suppress"}}'))))
@@ -175,7 +182,7 @@ async def test_markdown_does_not_reintroduce_abandoned_late_result_from_raw_rang
     async with application(tmp_path) as (log, host):
         # 这里只验证已有消息的读取；fixture 调用从未执行，也不测试工具授权。
         log.save_binding("fixture:unexecuted", {"fixture": "raw-message-read"})
-        writer = log.writer("s", author="test", source="conversation", body_types=(Input, Output, Control),
+        writer = log.writer("s", author="user", source="conversation", body_types=(Input, Output, Control),
                             content={"text": check_text}, check_call=lambda call: None)
         writer.append("input", Input((ContentPart("text", "fact-one"),)))
         called = writer.append("call", Output((ToolCall("fixture:unexecuted", {}),), "continue"))
@@ -447,7 +454,7 @@ async def test_default_markdown_uses_programmatic_admission_for_real_summary_pro
 
     async with application(tmp_path) as (log, host):
         log.ensure_session("s", SessionAttributes("internal", learning))
-        writer = log.writer("s", author="fixture", source="programmatic", body_types=(Input, Output),
+        writer = log.writer("s", author="user", source="programmatic", body_types=(Input, Output),
                             content={"text": check_text})
         writer.append("input", Input((ContentPart("text", "fact-one"),)))
         writer.append("answer", Output((ContentPart("text", "fact-two"),), "complete"))
@@ -462,3 +469,38 @@ async def test_default_markdown_uses_programmatic_admission_for_real_summary_pro
             assert store.is_applied(summary.reference) is (learning == "eligible")
             assert (tmp_path / "requests.jsonl").exists() is (learning == "eligible")
         assert log.reader("s").get("input").body.parts[0].value == "fact-one"
+
+
+@pytest.mark.parametrize("evidence_id", ["assistant", "background", "missing"])
+def test_new_user_fact_cannot_use_an_assistant_or_background_claim(tmp_path, evidence_id):
+    """即使普通助手复述了后台结论，也不能独自把它升级成用户事实。"""
+    from plugins.markdown_memory.message_plugin import check_evidence
+
+    log = MessageLog(tmp_path / "facts.db")
+    try:
+        for identity, author, source, body in (
+            ("user", "user", "conversation", Input((ContentPart("text", "查一下结果"),))),
+            ("assistant", "assistant", "conversation", Output((ContentPart("text", "用户喜欢红色"),), "complete")),
+            ("background", "assistant", "subagent:job", Output((ContentPart("text", "用户喜欢红色"),), "complete")),
+        ):
+            log.writer("s", author=author, source=source, body_types=(type(body),), content={"text": check_text}).append(identity, body)
+        before = "# 用户长期记忆\n## 用户事实\n## 用户偏好\n## 用户明确要求长期记住的关键内容\n"
+        draft = {"memory_before": before, "memory": before + "- 用户喜欢红色\n", "self_before": "", "self": "",
+                 "evidence": {"memory": {"- 用户喜欢红色": [evidence_id]}, "self": {}}}
+        with pytest.raises(ValueError, match="用户事实|实际消息"):
+            check_evidence(draft, log.reader("s").snapshot())
+        assert len(log.reader("s").snapshot()) == 3
+    finally:
+        log.close()
+
+
+def test_moving_an_operation_note_into_user_facts_requires_new_evidence():
+    """相同文字换成用户资料也改变含义，不能沿用旧操作记录的资格。"""
+    from plugins.markdown_memory.message_plugin import check_evidence
+
+    headings = "# 用户长期记忆\n## 用户事实\n## 用户偏好\n## 用户明确要求长期记住的关键内容\n"
+    draft = {"memory_before": headings + "## 助手操作上下文\n- 红色主题\n",
+             "memory": headings + "- 红色主题\n## 助手操作上下文\n",
+             "self_before": "", "self": "", "evidence": {"memory": {}, "self": {}}}
+    with pytest.raises(ValueError, match="实际消息"):
+        check_evidence(draft, ())

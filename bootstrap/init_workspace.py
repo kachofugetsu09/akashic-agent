@@ -13,7 +13,7 @@ from infra.persistence.json_store import save_json
 _TEXT_FILES: dict[str, str] = {
     VEDA_RELATIVE_PATH.as_posix(): read_default_veda() + "\n",
     "plugin-data/context-builtin/config.local.toml": (
-        'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory"}\n'
+        'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory", skills = "skills"}\n'
         'summary_source = ["compaction", "compaction"]\n'
     ),
 }

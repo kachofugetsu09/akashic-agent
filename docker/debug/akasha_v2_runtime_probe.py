@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from html import unescape
+import re
 import ipaddress
 import json
 import os
@@ -438,7 +440,7 @@ def _akasha_recall_records(database: Path) -> dict[str, dict[str, object]]:
 
 
 def _context_rows(requests: list[object]) -> list[dict[str, object]]:
-    """Extract JSON recall rows from real provider request context messages."""
+    """Extract readable recall blocks from actual provider request reminders."""
 
     rows: list[dict[str, object]] = []
     for request in requests:
@@ -456,25 +458,13 @@ def _context_rows(requests: list[object]) -> list[dict[str, object]]:
             content = message.get("content")
             if not isinstance(content, str):
                 continue
-            try:
-                encoded = json.loads(content)
-            except json.JSONDecodeError:
+            if not content.startswith("<system-reminder>\n"):
                 continue
-            if not isinstance(encoded, dict) or not isinstance(encoded.get("context"), list):
-                continue
-            for part in encoded["context"]:
-                if not isinstance(part, dict) or part.get("kind") != "text":
-                    continue
-                value = part.get("value")
-                if not isinstance(value, str):
-                    continue
-                for line in value.splitlines():
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(row, dict) and {"message_id", "text"} <= set(row):
-                        rows.append(cast(dict[str, object], row))
+            for match in re.finditer(
+                r"### 消息 ([^\n]+)\n来源：[^\n]+\n\n(.*?)(?=\n\n### 消息 |\n</system-reminder>|$)",
+                content, re.DOTALL,
+            ):
+                rows.append({"message_id": unescape(match.group(1)), "text": unescape(match.group(2))})
     return rows
 
 

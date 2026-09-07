@@ -25,6 +25,7 @@ PROMPT = """更新当前长任务的上下文压缩摘要。
 
 只记录输入中已经出现的事实，不补充猜测，不把计划写成已完成。
 摘要只替代已结算的旧消息；完整原文和工具结果仍保留。
+区分用户原话、助手判断及工具/后台结果，保留重要来源身份；转述不能升级成用户事实或偏好。
 必须严格使用以下标题，不得增加标题：
 """ + "\n".join(HEADINGS) + """
 
@@ -50,7 +51,7 @@ def source_text(messages: Sequence[Message]) -> str:
                     "model.facts", "context.summary", "model.selection", "tool.selection",
                 }
             ))
-        rows.append({"message_id": message.message_id, "source": message.source,
+        rows.append({"message_id": message.message_id, "source": message.source, "author": message.author,
                      "seq": message.seq, "body": json.loads(encode_body(body))})
     return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 

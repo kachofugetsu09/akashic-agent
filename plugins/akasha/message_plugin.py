@@ -16,11 +16,11 @@ from agent.plugin_composition.commands import COMMANDS, CommandDefinition, Comma
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE
 from plugins.content.api import ContentSchema
 from plugins.content.plugin import CONTENT
-from plugins.context.api import Materials
+from plugins.context.api import Materials, Reminder
 from plugins.context.materials import MATERIALS
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.message import ContentPart, Message
+from session.message import Message
 from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
 from .domain.model import EmbeddingSpaceMismatchError
 
@@ -207,7 +207,7 @@ async def apply(ctx: Context, config: Config) -> None:
     ))
 
     def unavailable() -> Materials:
-        return Materials("", context=(ContentPart("akasha.status", {"available": False, "reason": health.reason}),))
+        return Materials("", reminders=(Reminder("status", f"## Akasha 状态\n召回不可用：{health.reason}", 300),))
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
         if running:
@@ -243,7 +243,7 @@ async def apply(ctx: Context, config: Config) -> None:
         health.recover()
         return result
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="akasha", prepare=prepare)
+    _ = await ctx.require(MATERIALS).register(ctx, name="akasha", prepare=prepare, priority=400)
 
     # 1. Feedback 读取已发布目标；归档调用不依赖正式运行事件或内存指针。
     actions: tuple[Literal["remember", "forget"], ...] = ("remember", "forget")

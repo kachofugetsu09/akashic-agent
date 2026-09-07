@@ -7,9 +7,9 @@ from typing import cast
 
 from agent.persona import read_veda_file
 from agent.plugin_composition import Context
-from plugins.context.api import Materials
+from plugins.context.api import Materials, Reminder
 from plugins.context.materials import MATERIALS
-from session.message import ContentPart, Input, Message
+from session.message import Input, Message
 from session.message_codec import json_value
 
 from .text import build_behavior_rules, build_identity, build_telegram_rendering_prompt
@@ -50,6 +50,7 @@ async def apply(ctx: Context, config: object) -> None:
                 channel = cast(Mapping[str, str], origin.value)["channel"]
                 if channel == "telegram" or channel.startswith("telegram_"):
                     prompt += build_telegram_rendering_prompt()
-        return Materials(prompt, (ContentPart("environment", values),))
+        text = "## 当前环境\n" + "\n".join(f"- {key}: {value}" for key, value in values.items())
+        return Materials(prompt, (Reminder("environment", text, 100),))
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="default_prompt", prepare=prepare, prompt=True)
+    _ = await ctx.require(MATERIALS).register(ctx, name="default_prompt", prepare=prepare, prompt=True, priority=100)

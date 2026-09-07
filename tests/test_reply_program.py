@@ -85,8 +85,8 @@ async def apply(ctx, config):
         from plugins.context.api import Summary
         from plugins.context.materials import MaterialView
         original_prepare = MaterialView.prepare
-        async def summarized_prepare(self, messages, source):
-            prepared = await original_prepare(self, messages, source)
+        async def summarized_prepare(self, messages, source, **kwargs):
+            prepared = await original_prepare(self, messages, source, **kwargs)
             if any(isinstance(message.body, ToolResult) for message in messages):
                 return replace(prepared, summary=Summary(
                     "published", tuple(message.message_id for message in messages[2:]), "tool work summary"))

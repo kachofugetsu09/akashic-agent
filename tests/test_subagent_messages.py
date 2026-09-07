@@ -123,7 +123,7 @@ async def apply(ctx, config):
     module = provider / "plugin.py"
     text = module.read_text().replace("async def apply(ctx, config):", "from " + __name__ + " import CONTROLS\nasync def apply(ctx, config):")
     text = text.replace("CONTROL_PATH", repr(str(tmp_path)))
-    text = text.replace("        async def complete(self, request):", "        async def complete(self, request):\n            control = CONTROLS[" + repr(str(tmp_path)) + "]\n            if 'background_task_result' in str(request.messages):\n                control.main_calls += 1\n                control.main_entered.put_nowait(request)\n                await control.main_release.wait()\n                if control.main_tool and 'main-report.txt' not in str(request.messages[:-1]):\n                    return LLMResponse(None, [ToolCall('main-write', 'write_file', {'path': CONTROL_REPORT_PATH, 'content': 'main result'})])\n                return LLMResponse('main summary: ' + ('cancelled' if 'cancelled' in str(request.messages[-1]) else 'child finished'))\n            if '[human followup]' in str(request.messages):\n                return LLMResponse('human answer')\n            control.calls += 1\n            control.entered.put_nowait(request)\n            await control.release.wait()")
+    text = text.replace("        async def complete(self, request):", "        async def complete(self, request):\n            control = CONTROLS[" + repr(str(tmp_path)) + "]\n            if '## 后台任务结果' in str(request.messages):\n                control.main_calls += 1\n                control.main_entered.put_nowait(request)\n                await control.main_release.wait()\n                if control.main_tool and 'main-report.txt' not in str(request.messages[:-1]):\n                    return LLMResponse(None, [ToolCall('main-write', 'write_file', {'path': CONTROL_REPORT_PATH, 'content': 'main result'})])\n                return LLMResponse('main summary: ' + ('cancelled' if 'cancelled' in str(request.messages[-1]) else 'child finished'))\n            if '[human followup]' in str(request.messages):\n                return LLMResponse('human answer')\n            control.calls += 1\n            control.entered.put_nowait(request)\n            await control.release.wait()")
     text = text.replace("CONTROL_REPORT_PATH", repr(str(tmp_path / "workspace/main-report.txt")))
     module.write_text(text)
     tasks = Tasks()
@@ -372,9 +372,9 @@ async def test_background_main_program_keeps_tools_and_new_input_interrupts_it(t
         control = CONTROLS[str(tmp_path)]
         await execution.execute_call(reply)
         request = await asyncio.wait_for(control.main_entered.get(), 10)
-        assert "background_task_result" in str(request.messages[-1])
+        assert "## 后台任务结果" in str(request.messages[-1])
         assert request.messages[-1]["role"] == "user"
-        assert all("background_task_result" not in str(item) for item in request.messages if item["role"] == "system")
+        assert all("## 后台任务结果" not in str(item) for item in request.messages if item["role"] == "system")
         assert any(tool["function"]["name"] == "write_file" for tool in request.tools)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             conversation = snapshot.composition_root.context.require(CONVERSATION)("test:parent")

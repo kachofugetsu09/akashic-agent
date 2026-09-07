@@ -89,8 +89,8 @@ async def test_context_query_uses_fixed_multimessage_input_and_published_referen
         assert material.system_prompt == ""
         assert calls[-1] == ["remember the detail", "and the correction"]
         assert [ref.ref for ref in material.references] == ["old-u1", "old-u2", "old-a"]
-        assert isinstance(material.context[0].value, str)
-        assert "learned answer" in material.context[0].value
+        assert isinstance(material.reminders[0].text, str)
+        assert "learned answer" in material.reminders[0].text
         identity = material.references[0].retrieval_ref
         assert identity is not None
         record = records.read(identity)
@@ -132,7 +132,7 @@ async def test_failed_query_record_cannot_return_materials_and_empty_hit_is_reco
             return result
         monkeypatch.setattr(records, "save", capture)
         material = await runtime.prepare(snapshot, "chat")
-        assert material.context == material.references == ()
+        assert material.reminders == material.references == ()
         assert len(observed) == 1 and observed[0].hits == ()
         assert calls == [["no old memories"]]
 
@@ -187,7 +187,7 @@ async def test_context_rejects_truncated_prefix_and_does_not_use_abandoned_input
         first = write("abandoned", "discarded query")
         log.writer("s", author="user", source="chat", body_types=(Control,), content={}).append(
             "abandon", Control("abandon", first.seq))
-        assert (await runtime.prepare(log.reader("s").snapshot(), "chat")).context == ()
+        assert (await runtime.prepare(log.reader("s").snapshot(), "chat")).reminders == ()
         assert calls == []
         write("current", "actual query")
         snapshot = log.reader("s").snapshot()
@@ -206,8 +206,8 @@ async def test_budget_records_exact_presented_members_without_losing_learning_me
             assert await runtime.consume() == 1
         write("q", "recall")
         material = await runtime.prepare(log.reader("s").snapshot(), "chat")
-        assert isinstance(material.context[0].value, str)
-        assert len(material.context[0].value) <= 100
+        assert isinstance(material.reminders[0].text, str)
+        assert len(material.reminders[0].text) <= 100
         assert len(material.references) == 1
         retrieval_ref = material.references[0].retrieval_ref
         assert retrieval_ref is not None
