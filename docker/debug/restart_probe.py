@@ -149,6 +149,16 @@ def _tool_result_for_call(
     return None
 
 
+def _tool_result_json(item: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Decode the JSON text returned by a discovery ToolResult."""
+
+    try:
+        value = json.loads(_body_text(item))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _output_text(item: dict[str, Any] | None) -> str:
     if item is None or not isinstance(item.get("body"), dict):
         return ""
@@ -160,6 +170,22 @@ def _output_text(item: dict[str, Any] | None) -> str:
         for part in parts
         if isinstance(part, dict) and part.get("kind") == "text"
     )
+
+
+def _body_text(item: dict[str, Any] | None) -> str:
+    """Extract text ContentParts from an Output or ToolResult row."""
+
+    if item is None or not isinstance(item.get("body"), dict):
+        return ""
+    parts = item["body"].get("parts")
+    if not isinstance(parts, list):
+        return ""
+    values = [
+        part.get("value")
+        for part in parts
+        if isinstance(part, dict) and part.get("kind") == "text"
+    ]
+    return "".join(value if isinstance(value, str) else str(value) for value in values)
 
 
 def _final_output(page: object, result: dict[str, Any]) -> dict[str, Any] | None:
@@ -198,6 +224,32 @@ def _raw_messages(session_id: str) -> list[Message]:
         ]
     except (sqlite3.Error, KeyError, TypeError, ValueError) as error:
         raise GateFailure(f"读取 raw Message 失败：{session_id}") from error
+
+
+def _raw_message_rows(session_id: str) -> list[dict[str, str | int]]:
+    """Capture exact append-only SQLite rows for a restart continuity check."""
+
+    try:
+        with sqlite3.connect(WORKSPACE / "sessions.db") as connection:
+            rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body "
+                "FROM messages WHERE session_key = ? ORDER BY seq",
+                (session_id,),
+            ).fetchall()
+    except sqlite3.Error as error:
+        raise GateFailure(f"读取 raw Message 行失败：{session_id}") from error
+    return [
+        {
+            "id": str(row[0]),
+            "sessionKey": str(row[1]),
+            "seq": int(row[2]),
+            "ts": str(row[3]),
+            "author": str(row[4]),
+            "source": str(row[5]),
+            "body": str(row[6]),
+        }
+        for row in rows
+    ]
 
 
 def _projection_evidence(session_id: str, page: object) -> dict[str, Any]:
@@ -540,17 +592,57 @@ def _write_mcp_plugin(
     module = plugin_root / "plugin.py"
     if not module.exists():
         module.write_text(
+            "from collections.abc import AsyncIterator, Mapping\n"
+            "from contextlib import asynccontextmanager\n"
             "from pathlib import Path\n"
             "import tomllib\n"
             "from agent.plugin_composition import MCP_SERVERS, McpServerDefinition\n"
+            "from plugins.tools.api import BoundTool, CallSource, ContentPart, Result\n"
+            "from plugins.tools.plugin import TOOLS\n"
             "_manifest = tomllib.loads(\n"
             "    Path(__file__).with_name('akashic.plugin.toml').read_text(encoding='utf-8')\n"
             ")\n"
             "api_version = 3\n"
             "name = 'restart_probe'\n"
             "version = str(_manifest['version'])\n"
-            "inject = (MCP_SERVERS,)\n"
+            "inject = (MCP_SERVERS, TOOLS)\n"
+            "\n"
+            "class VersionTool:\n"
+            "    def __init__(self, ctx):\n"
+            "        self._ctx = ctx\n"
+            "\n"
+            "    idempotent = True\n"
+            "\n"
+            "    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:\n"
+            "        if arguments:\n"
+            "            raise ValueError('version 工具不接受参数')\n"
+            "        return {}\n"
+            "\n"
+            "    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:\n"
+            "        if arguments:\n"
+            "            raise ValueError('version 工具不接受参数')\n"
+            "        async with self._ctx.require(MCP_SERVERS).open(self._ctx, 'restart_probe') as server:\n"
+            "            async with server.route() as route:\n"
+            "                call = await route.call('version', {})\n"
+            "        if call.status != 'success':\n"
+            "            return Result('error', (ContentPart('text', call.output),))\n"
+            "        return Result('success', (ContentPart('text', call.output),))\n"
+            "\n"
+            "    async def query(self, key: str) -> Result | None:\n"
+            "        return None\n"
+            "\n"
             "async def apply(ctx, config):\n"
+            "    @asynccontextmanager\n"
+            "    async def open_version_for_context(_state: Mapping[str, object]) -> AsyncIterator[BoundTool]:\n"
+            "        yield VersionTool(ctx)\n"
+            "    await ctx.require(TOOLS).register(\n"
+            "        ctx, name='mcp_restart_probe__version',\n"
+            "        description='Read the live restart probe MCP server version.',\n"
+            "        parameters={'type': 'object', 'properties': {}, 'additionalProperties': False},\n"
+            "        open=open_version_for_context, idempotent=True, risk='read-only',\n"
+            "        preloadable=False, requires_search=True,\n"
+            "        search_hint='MCP restart probe version',\n"
+            "    )\n"
             "    await ctx.require(MCP_SERVERS).register(\n"
             "        ctx, McpServerDefinition(\n"
             "            name='restart_probe',\n"
@@ -612,16 +704,21 @@ def _run_mcp_call(
     follow = _admit_follow(client, session_id, subscription_id)
     ack = client.send_programmatic(session_id, input_id, f"call MCP {version}")
     result = _wait_programmatic_result(client, session_id, input_id)
-    page, events = _wait_page_event(
-        client,
-        session_id,
-        subscription_id,
-        lambda value: _final_output(value, result) is not None,
-    )
+    page = client.read_messages(session_id)
+    if _final_output(page, result) is None:
+        page, events = _wait_page_event(
+            client,
+            session_id,
+            subscription_id,
+            lambda value: _final_output(value, result) is not None,
+        )
+    else:
+        events = []
     requests = _requests()[before:]
     calls = _tool_calls(page)
     results = _tool_results(page)
     version_call = next((item for item in calls if item.get("name") == "mcp_restart_probe__version"), None)
+    version_result = _tool_result_for_call(page, version_call) if version_call is not None else None
     tool_result_names = [
         item.get("body", {}).get("outcome")
         for item in results
@@ -635,6 +732,9 @@ def _run_mcp_call(
         and "mcp_restart_probe__version" not in _tool_names(requests[0])
         and "mcp_restart_probe__version" in _tool_names(requests[1])
         and version_call is not None
+        and version_result is not None
+        and version_result.get("body", {}).get("outcome") == "success"
+        and _body_text(version_result) == version
         and len(results) >= 2
         and all(outcome == "success" for outcome in tool_result_names)
         and result.get("status") == "complete"
@@ -658,6 +758,7 @@ def _run_mcp_call(
                 sorted(_tool_names(requests[1])) if len(requests) > 1 else []
             ),
             "toolCall": version_call,
+            "versionToolResult": version_result,
             "toolResults": results,
             "messageEvents": events,
             "messagePage": page,
@@ -766,6 +867,7 @@ def _run_restart_iteration(
             for item in _page_items(value)
         ),
     )
+    raw_before_restart = _raw_message_rows(session_id)
     old_child_alive_at_terminal = _identity_alive(old_identity)
     client.close()
     new_client, ready_after = _connect_new_boot(
@@ -799,6 +901,22 @@ def _run_restart_iteration(
     restart_result = _tool_result_for_call(page, restart_call)
     projection = _projection_evidence(session_id, page)
     final_output = _final_output(page, result)
+    raw_after_restart = _raw_message_rows(session_id)
+    raw_rows_match = raw_after_restart == raw_before_restart
+    replay_request_count_before = len(after)
+    replay_ack = new_client.send_programmatic(
+        session_id, input_id, f"restart iteration {index}"
+    )
+    replay_result = _wait_programmatic_result(new_client, session_id, input_id)
+    replay_request_count_after = len(_requests())
+    raw_after_replay = _raw_message_rows(session_id)
+    replay_stable = (
+        replay_ack == ack
+        and replay_result.get("status") == result.get("status") == "complete"
+        and replay_result.get("ending_message_id") == result.get("ending_message_id")
+        and replay_request_count_after == replay_request_count_before
+        and raw_after_replay == raw_after_restart
+    )
     error = rejected.get("error")
     passed = (
         len(iteration_requests) == 3
@@ -811,6 +929,8 @@ def _run_restart_iteration(
         and final_output is not None
         and _output_text(final_output) == f"restart-complete-{index}"
         and projection["wireMatchesRaw"]
+        and raw_rows_match
+        and replay_stable
         and projection["turnProjection"]
         and projection["turnProjection"][-1].get("status") == "complete"
         and old_child_alive_at_terminal
@@ -850,6 +970,15 @@ def _run_restart_iteration(
             "result": result,
             "messagePage": page,
             "projection": projection,
+            "rawRowsBeforeRestart": raw_before_restart,
+            "rawRowsAfterRestart": raw_after_restart,
+            "rawRowsMatch": raw_rows_match,
+            "replayAck": replay_ack,
+            "replayResult": replay_result,
+            "replayRequestCountBefore": replay_request_count_before,
+            "replayRequestCountAfter": replay_request_count_after,
+            "rawRowsAfterReplay": raw_after_replay,
+            "replayStable": replay_stable,
             "initialTools": sorted(_tool_names(iteration_requests[0])),
             "postSearchTools": sorted(_tool_names(iteration_requests[1])),
             "calledTools": sorted({str(item.get("name")) for item in calls}),
@@ -1192,15 +1321,22 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
         follow = _admit_follow(client, session_id, subscription_id)
         ack = client.send_programmatic(session_id, input_id, "find restart")
         result = _wait_programmatic_result(client, session_id, input_id)
-        page, events = _wait_page_event(
-            client,
-            session_id,
-            subscription_id,
-            lambda value: _final_output(value, result) is not None,
-        )
+        page = client.read_messages(session_id)
+        if _final_output(page, result) is None:
+            page, events = _wait_page_event(
+                client,
+                session_id,
+                subscription_id,
+                lambda value: _final_output(value, result) is not None,
+            )
+        else:
+            events = []
         client.close()
         requests = _requests()[before:]
         calls = _tool_calls(page)
+        search_call = next((item for item in calls if item.get("name") == "tool_search"), None)
+        search_result = _tool_result_for_call(page, search_call) if search_call is not None else None
+        search_payload = _tool_result_json(search_result)
         projection = _projection_evidence(session_id, page)
         final_output = _final_output(page, result)
         passed = (
@@ -1208,6 +1344,10 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
             and _output_text(final_output) == "unsupervised-complete"
             and all("agent_restart" not in _tool_names(request) for request in requests)
             and all(item.get("name") != "agent_restart" for item in calls)
+            and search_result is not None
+            and search_result.get("body", {}).get("outcome") == "success"
+            and search_payload is not None
+            and search_payload.get("selected") == []
             and projection["wireMatchesRaw"]
         )
         return CheckResult(
@@ -1223,6 +1363,8 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
                 "messageEvents": events,
                 "requestTools": [sorted(_tool_names(item)) for item in requests],
                 "toolCalls": calls,
+                "toolSearchResult": search_result,
+                "toolSearchPayload": search_payload,
                 "projection": projection,
             },
         )
@@ -1327,12 +1469,16 @@ def _inside(iterations: int, report_dir: Path, *, resource_gate: bool) -> int:
                 restart_session, resume_id, f"resume {index}"
             )
             resume_result = _wait_programmatic_result(client, restart_session, resume_id)
-            resume_page, resume_events = _wait_page_event(
-                client,
-                restart_session,
-                resume_subscription,
-                lambda value: _final_output(value, resume_result) is not None,
-            )
+            resume_page = client.read_messages(restart_session)
+            if _final_output(resume_page, resume_result) is None:
+                resume_page, resume_events = _wait_page_event(
+                    client,
+                    restart_session,
+                    resume_subscription,
+                    lambda value: _final_output(value, resume_result) is not None,
+                )
+            else:
+                resume_events = []
             request = _requests()[before]
             resume_projection = _projection_evidence(restart_session, resume_page)
             checks.append(
