@@ -125,7 +125,7 @@ Message {
 - `author` 是实际作者/执行者的引用，可以指人、Agent、Tool 或应用服务；不是 provider role。
 - `source` 是同一 Session 中稳定的来源流标识，见下节。
 - `body` 是封闭校验的公共内容类型；新增类型由声明它的能力拥有 schema。
-- `metadata` 遵循 SES-009；它是普通 JSON 字段，不建立 MetadataPart 或扩展类型注册表。选择理由见 [0059](../decisions/0059-message-plugin-metadata.md)。
+- `metadata` 遵循 SES-009；它是普通 JSON 字段，不建立 MetadataPart 或扩展类型注册表。选择理由见 [0060](../decisions/0060-message-plugin-metadata.md)。
 
 Session 可拥有名称等独立元数据，但不拥有“当前 Turn”“当前模型请求”或一份工具链正文副本。消息表是领域上的追加日志；底层仍可使用 SQLite，不需要另建 AOF 文件或双写 SessionEvent 表。
 

@@ -1,4 +1,4 @@
-# 0059 · 插件附加信息使用普通 Message metadata
+# 0060 · 插件附加信息使用普通 Message metadata
 
 - 状态：accepted
 - 日期：2026-09-07
