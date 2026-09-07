@@ -169,7 +169,7 @@ def _plan(rows: list[dict[str, Any]], handoffs: list[dict[str, Any]],
             continue
         tools = [(row["id"], item) for row, _, items in chain for item in items if item["type"] == "toolCall"]
         if tools:
-            if tail["status"] in {"queued", "in_progress"}:
+            if any(row["status"] in {"queued", "in_progress"} for row, _, _ in chain):
                 raise RuntimeError(f"旧活动执行缺少工具领域 terminal receipt，停止迁移: {tail_id}")
             # 已停止的旧链只保留原始历史；展示状态不升级成领域回执，也不重新执行。
             result.append({"tail_id": tail_id, "session_id": session_id,

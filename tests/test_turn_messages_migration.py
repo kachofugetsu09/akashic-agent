@@ -151,19 +151,23 @@ def test_stopped_tool_chain_is_archived_without_receipts_or_replay(tmp_path, sta
 
 
 @pytest.mark.parametrize('status', ['queued', 'in_progress', 'invented'])
-def test_active_or_unknown_tail_does_not_archive_or_resume(tmp_path, status):
+@pytest.mark.parametrize('stopped_child', [False, True])
+def test_active_or_unknown_chain_does_not_archive_or_resume(tmp_path, status, stopped_child):
     root = workspace(tmp_path)
     original = persisted(root, 0)
     old = turn(root, 't1', [user(0), {'id': 'tool', 'type': 'toolCall', 'data': {
         'status': 'completed', 'callId': 'call', 'name': 'shell', 'args': {},
     }}], status=status)
+    expected_turns = [old]
+    if stopped_child:
+        expected_turns.append(turn(root, 't2', [], continued='t1'))
     with pytest.raises(ValueError if status == 'invented' else RuntimeError):
         migrate_turn_messages(root)
     with closing(MessageLog(root / 'sessions.db')) as log:
         assert log.reader('probe:room').snapshot() == (original,)
         assert log.owner('migration:turn-messages-v1').read('manifest') is None
     with closing(sqlite3.connect(root / 'sessions.db')) as db:
-        assert db.execute('SELECT * FROM turns').fetchall() == [old]
+        assert db.execute('SELECT * FROM turns').fetchall() == expected_turns
 
 
 def test_conflicting_exact_input_reference_aborts_without_partial_archive(tmp_path):
