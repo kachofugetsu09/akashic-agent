@@ -1659,7 +1659,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                     "terminalEventCount": failed_terminal_count,
                     "toolStarted": pc10_started,
                     "toolCompleted": pc10_completed,
-                    "failureSource": "v3 after_reasoning fixture",
+                    "failureSource": "pc10 tool handler",
                 },
             )
         )
@@ -2354,37 +2354,29 @@ def _prepare_host_sandbox(
 
 
 def _install_control_failure_plugin(sandbox: Path) -> None:
-    """安装只为 PC10 构造 started 后 gate failure 的隔离插件。"""
+    """安装只为 PC10 构造工具 handler failure 的隔离插件。"""
 
     plugin_base = sandbox / "home/.akashic-plugin/cache/gate/control_failure"
     cache = plugin_base / ".artifacts/1.0.0"
     manifest = sandbox / "home/.akashic-plugin/manifest.toml"
     cache.mkdir(parents=True, exist_ok=True)
     _ = (cache / "plugin.py").write_text(
-        "from agent.lifecycle.composition import AFTER_REASONING_PREPROCESS_EVENT\n"
         "from agent.plugin_composition import TOOL_CATALOG, PluginToolDefinition\n"
         "api_version = 3\n"
         "name = 'control_failure'\n"
         "version = '1.0.0'\n"
         "inject = (TOOL_CATALOG,)\n"
-        "async def pc10_failure_probe(context, arguments):\n"
-        "    raise RuntimeError('pc10 tool failure')\n"
-        "async def fail_after_started(event):\n"
-        "    calls = (call for group in event.tool_chain "
-        "for call in group.get('calls', ()))\n"
-        "    if not any(call.get('name') == 'pc10_failure_probe' "
-        "for call in calls): return\n"
-        "    raise RuntimeError('pc10 gate failure after tool started')\n"
+        "async def pc10_failure_probe(_context, _arguments):\n"
+        "    raise RuntimeError('pc10 tool handler failure')\n"
         "async def apply(ctx, config):\n"
         "    await ctx.require(TOOL_CATALOG).register(ctx, PluginToolDefinition(\n"
         "        name='pc10_failure_probe',\n"
-        "        description='Fail after emitting the PC10 tool lifecycle.',\n"
+        "        description='Fail inside the PC10 tool handler.',\n"
         "        parameters={'type': 'object', 'properties': {\n"
         "            'probe': {'type': 'boolean'}}, 'required': ['probe'],\n"
         "            'additionalProperties': False},\n"
         "        handler_export='pc10_failure_probe', risk='read-only',\n"
-        "        always_on=True))\n"
-        "    await ctx.on(AFTER_REASONING_PREPROCESS_EVENT, fail_after_started)\n",
+        "        always_on=True))\n",
         encoding="utf-8",
     )
     _ = (cache / "akashic.plugin.toml").write_text(
