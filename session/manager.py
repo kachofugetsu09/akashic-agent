@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from agent.plugin_composition.request_projection import SessionHistoryUnit
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
@@ -29,6 +28,27 @@ _TOOL_RESULT_CHAR_BUDGET = 10000
 _STORED_TOOL_RESULT_CHAR_BUDGET = 20000
 _PROACTIVE_META_HISTORY_CHAR_BUDGET = 1200
 _MSG_KEYS = {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
+
+
+@dataclass(frozen=True, slots=True)
+class SessionHistoryUnit:
+    """One immutable, complete logical interaction owned by Session."""
+
+    source_from_seq: int
+    consolidated_through_seq: int
+    source_message_ids: tuple[str, ...]
+    messages: tuple[dict[str, Any], ...]
+    message_refs: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.source_from_seq < 0 or self.consolidated_through_seq < self.source_from_seq:
+            raise ValueError("history unit seq boundary 无效")
+        if not self.source_message_ids:
+            raise ValueError("history unit 必须包含 source message ids")
+        if not self.messages:
+            raise ValueError("history unit 必须包含 model messages")
+        if self.message_refs and len(self.message_refs) != len(self.messages):
+            raise ValueError("history unit message_refs 必须与 messages 等长")
 
 
 def _truncate_tool_result(content: object) -> str:
