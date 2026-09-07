@@ -16,6 +16,8 @@ import threading
 import time
 import uuid
 from dataclasses import asdict
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,6 +36,7 @@ from docker.debug.programmatic_control_probe import (
     _model_requests,
     _prepare_host_sandbox,
     _repository_digest,
+    _runtime_identity,
     _wait_barrier,
     _wait_http_ready,
     _wait_programmatic_result,
@@ -82,23 +85,54 @@ def _formal_identity(workspace: Path) -> dict[str, dict[str, object]]:
     }
 
 
+def _source_identity(repo: Path) -> dict[str, object]:
+    """Capture the source revision, dirty state, and content digest."""
+
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    dirty = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    return {"head": head, "dirty": dirty, "digest": _repository_digest(repo)}
+
+
+def _tree_digest(root: Path) -> str:
+    """Hash every regular file in a copied sandbox tree in stable order."""
+
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        if path.is_symlink():
+            target = os.readlink(path).encode("utf-8")
+            digest.update(b"symlink")
+            digest.update(len(relative).to_bytes(8, "big"))
+            digest.update(relative)
+            digest.update(len(target).to_bytes(8, "big"))
+            digest.update(target)
+            continue
+        if not path.is_file():
+            continue
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
 def _write_runtime_config(sandbox: Path) -> None:
     """Write a private config whose runtime state stays in the sandbox."""
 
     config = """\
-[runtime]
-workspace = "/sandbox/workspace"
-
-[agent]
-system_prompt = "Use memory when relevant and follow the scripted response."
-max_iterations = 4
-
 [agent.plugins]
 disabled_builtin = ["subagent"]
-
-[agent.context]
-[agent.context.compaction]
-keep_recent_tokens = 20000
 
 [app_server]
 enabled = true
@@ -111,15 +145,23 @@ outbound_queue_size = 64
 enabled = true
 
 [channels.telegram]
+enabled = false
 token = ""
 
 [channels.qq]
+enabled = false
 bot_uin = ""
 
 """
     path = sandbox / "config.toml"
     path.write_text(config, encoding="utf-8")
     path.chmod(0o600)
+    reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
+    reply_config.parent.mkdir(parents=True, exist_ok=True)
+    reply_config.write_text("max_steps = 4\n", encoding="utf-8")
+    compaction_config = sandbox / "workspace/plugin-data/compaction-builtin/config.local.toml"
+    compaction_config.parent.mkdir(parents=True, exist_ok=True)
+    compaction_config.write_text("keep_recent_tokens = 20000\n", encoding="utf-8")
 
 
 def _embedding_environment() -> tuple[str, str, str]:
@@ -155,6 +197,118 @@ def _configure_embedding(settings_url: str) -> None:
         embedding_model=model,
         embedding_dimensions=1024,
     )
+
+
+class _EmbeddingFixtureState:
+    """Count requests served by the explicit local embedding fixture."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self._lock = threading.Lock()
+        self._requests: list[dict[str, object]] = []
+
+    def record(self, payload: dict[str, object]) -> None:
+        with self._lock:
+            self._requests.append(payload)
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._requests)
+
+
+class _EmbeddingFixtureHandler(BaseHTTPRequestHandler):
+    """Serve the minimum OpenAI-compatible model and embedding contract."""
+
+    server: "_EmbeddingFixtureServer"
+
+    def do_GET(self) -> None:
+        if self.path != "/v1/models":
+            self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        self._json(
+            HTTPStatus.OK,
+            {
+                "object": "list",
+                "data": [{"id": self.server.state.model, "object": "model"}],
+            },
+        )
+
+    def do_POST(self) -> None:
+        if self.path != "/v1/embeddings":
+            self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("embedding fixture request must be an object")
+            inputs = payload.get("input")
+            model = payload.get("model")
+            if (
+                not isinstance(inputs, list)
+                or not inputs
+                or not all(isinstance(item, str) for item in inputs)
+                or model != self.server.state.model
+            ):
+                raise ValueError("embedding fixture request is invalid")
+        except (ValueError, TypeError, json.JSONDecodeError):
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request"})
+            return
+        self.server.state.record(cast(dict[str, object], payload))
+        vector = [0.0] * 1023 + [1.0]
+        self._json(
+            HTTPStatus.OK,
+            {
+                "object": "list",
+                "data": [
+                    {"object": "embedding", "index": index, "embedding": vector}
+                    for index, _text in enumerate(inputs)
+                ],
+                "model": self.server.state.model,
+                "usage": {"prompt_tokens": len(inputs), "total_tokens": len(inputs)},
+            },
+        )
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+    def _json(self, status: HTTPStatus, payload: object) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class _EmbeddingFixtureServer(ThreadingHTTPServer):
+    """Threaded local server used only by --local-fixture."""
+
+    daemon_threads = True
+
+    def __init__(self, state: _EmbeddingFixtureState) -> None:
+        super().__init__(("0.0.0.0", 0), _EmbeddingFixtureHandler)
+        self.state = state
+
+
+def _start_embedding_fixture() -> tuple[_EmbeddingFixtureServer, threading.Thread, str]:
+    """Start a host listener reachable from the Docker bridge."""
+
+    state = _EmbeddingFixtureState("akasha-local-embedding")
+    server = _EmbeddingFixtureServer(state)
+    thread = threading.Thread(target=server.serve_forever, name="akasha-embedding-fixture")
+    thread.start()
+    return server, thread, f"http://host.docker.internal:{server.server_port}/v1"
+
+
+def _stop_embedding_fixture(server: _EmbeddingFixtureServer, thread: threading.Thread) -> None:
+    """Stop the local fixture and fail if its serving thread remains alive."""
+
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+    if thread.is_alive():
+        raise GateFailure("local embedding fixture thread did not stop")
 
 
 def _wait_learning(
@@ -225,6 +379,65 @@ def _embedding_rows(database: Path) -> list[dict[str, object]]:
     return [dict(row) for row in rows]
 
 
+def _akasha_recall_records(database: Path) -> dict[str, dict[str, object]]:
+    """Read Akasha's durable recall owner records without re-running a query."""
+
+    with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT key, value FROM owner_records "
+            "WHERE owner = 'plugin:akasha' AND key LIKE 'recall:%' ORDER BY key"
+        ).fetchall()
+    records: dict[str, dict[str, object]] = {}
+    for row in rows:
+        value = json.loads(str(row["value"]))
+        if not isinstance(value, dict):
+            raise GateFailure(f"Akasha recall owner record 非 object: {row['key']!r}")
+        records[str(row["key"])] = cast(dict[str, object], value)
+    return records
+
+
+def _context_rows(requests: list[object]) -> list[dict[str, object]]:
+    """Extract JSON recall rows from real provider request context messages."""
+
+    rows: list[dict[str, object]] = []
+    for request in requests:
+        if not isinstance(request, dict):
+            continue
+        payload = request.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            try:
+                encoded = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(encoded, dict) or not isinstance(encoded.get("context"), list):
+                continue
+            for part in encoded["context"]:
+                if not isinstance(part, dict) or part.get("kind") != "text":
+                    continue
+                value = part.get("value")
+                if not isinstance(value, str):
+                    continue
+                for line in value.splitlines():
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row, dict) and {"message_id", "text"} <= set(row):
+                        rows.append(cast(dict[str, object], row))
+    return rows
+
+
 def _database_snapshot(sessions_db: Path, memory_db: Path) -> dict[str, object]:
     """Capture the complete published graph and its source-side durable facts."""
 
@@ -238,68 +451,6 @@ def _database_snapshot(sessions_db: Path, memory_db: Path) -> dict[str, object]:
         "embeddings": _embedding_rows(sessions_db),
     }
 
-
-def _runtime_identity(
-    compose: list[str], repo: Path, env: dict[str, str]
-) -> dict[str, object]:
-    """Read the actual gateway PID, proc starttime, and command line."""
-
-    script = r'''
-import json
-import pathlib
-
-
-def read(pid, name):
-    return pathlib.Path('/proc', str(pid), name).read_text()
-
-
-def children(pid):
-    raw = read(pid, 'task/' + str(pid) + '/children').split()
-    return [int(value) for value in raw]
-
-roots = [1, *children(1)]
-stack = list(roots)
-seen = set()
-candidates = []
-while stack:
-    pid = stack.pop()
-    if pid in seen:
-        continue
-    seen.add(pid)
-    cmd = read(pid, 'cmdline').replace(chr(0), ' ').strip()
-    if '/main.py' in cmd and ' gateway' in (' ' + cmd):
-        candidates.append((pid, cmd))
-    stack.extend(children(pid))
-if len(candidates) != 1:
-    raise RuntimeError('gateway identity ambiguous: %r' % (candidates,))
-pid, cmd = candidates[0]
-stat = read(pid, 'stat')
-starttime = stat.rsplit(')', 1)[1].split()[19]
-print(json.dumps({'pid': pid, 'starttime': int(starttime), 'cmdline': cmd}))
-'''
-    deadline = time.monotonic() + READINESS_DEADLINE_S
-    while time.monotonic() < deadline:
-        completed = subprocess.run(
-            [*compose, "exec", "-T", "akashic-control-gate", "python", "-c", script],
-            cwd=repo,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if completed.returncode == 0:
-            try:
-                payload = json.loads(completed.stdout.splitlines()[-1])
-                return {
-                    "pid": int(payload["pid"]),
-                    "starttime": int(payload["starttime"]),
-                    "cmdline": str(payload["cmdline"]),
-                }
-            except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-                pass
-        time.sleep(0.05)
-    raise GateFailure(f"gateway runtime identity unavailable: {completed.stderr[-1000:]}")
 
 
 def _inside_scenario(report_dir: Path) -> int:
@@ -391,37 +542,109 @@ def _inside_scenario(report_dir: Path) -> int:
         second_hash, second_progress = _wait_learning(memory_path, minimum_applied=2)
 
         requests = _model_requests(_http_json("GET", f"{model_url}/control/requests"))
-        automatic_context_seen = any(
-            "# Akasha memory" in json.dumps(payload, ensure_ascii=False)
-            for payload in requests[1:]
-        )
-        tool_calls = [
-            item
-            for item in second_items
-            if item.get("body", {}).get("kind") == "output"
-            and any(
-                isinstance(part, dict) and part.get("kind") == "tool_call"
-                for part in item.get("body", {}).get("parts", [])
+        recall_records = _akasha_recall_records(Path("/sandbox/workspace/sessions.db"))
+        context_rows = _context_rows(requests)
+        context_by_id = {
+            str(row["message_id"]): row
+            for row in context_rows
+            if isinstance(row.get("message_id"), str)
+        }
+        first_message_texts = {
+            str(item["id"]): _message_text(item)
+            for item in first_items
+            if isinstance(item.get("id"), str)
+        }
+        context_records: list[dict[str, object]] = []
+        for key, record in recall_records.items():
+            source = record.get("source")
+            ids = record.get("presented_message_ids")
+            if (
+                not isinstance(source, dict)
+                or source.get("kind") != "context"
+                or source.get("session_id") != SESSION_ID
+                or not isinstance(ids, list)
+                or not ids
+                or not all(isinstance(item, str) for item in ids)
+            ):
+                continue
+            expected_ids = [str(item) for item in ids]
+            exact_content = all(
+                message_id in context_by_id
+                and message_id in first_message_texts
+                and context_by_id[message_id].get("text") == first_message_texts[message_id]
+                for message_id in expected_ids
             )
-        ]
-        tool_results = [
-            item
-            for item in second_items
-            if item.get("body", {}).get("kind") == "tool_result"
-        ]
-        tool_result_success = len(tool_results) == 2 and all(
-            item.get("body", {}).get("outcome") == "success"
-            for item in tool_results
+            context_records.append(
+                {
+                    "key": key,
+                    "sourceMessageIds": expected_ids,
+                    "exactContent": exact_content,
+                    "record": record,
+                }
+            )
+        automatic_context_seen = bool(context_records) and any(
+            bool(record["exactContent"]) for record in context_records
         )
-        scripted_tools = [
-            call.get("name")
-            for request in requests
-            if isinstance(request, dict)
-            for script in [request.get("script")]
-            if isinstance(script, dict)
-            for call in script.get("tool_calls", [])
-            if isinstance(call, dict)
+
+        wire_tool_calls: list[dict[str, object]] = []
+        wire_tool_results: list[dict[str, object]] = []
+        for item in second_items:
+            body = item.get("body")
+            if not isinstance(body, dict):
+                continue
+            if body.get("kind") == "output":
+                parts = body.get("parts")
+                if not isinstance(parts, list):
+                    continue
+                for part_index, part in enumerate(parts):
+                    if isinstance(part, dict) and part.get("kind") == "tool_call":
+                        wire_tool_calls.append(
+                            {
+                                "messageId": item.get("id"),
+                                "partIndex": part_index,
+                                "bindingId": part.get("binding_id"),
+                                "name": part.get("name"),
+                                "arguments": part.get("arguments"),
+                            }
+                        )
+            elif body.get("kind") == "tool_result":
+                call_ref = body.get("call_ref")
+                if isinstance(call_ref, dict):
+                    wire_tool_results.append(
+                        {
+                            "messageId": item.get("id"),
+                            "callRef": call_ref,
+                            "outcome": body.get("outcome"),
+                        }
+                    )
+        matched_tool_results = [
+            {
+                **call,
+                "result": next(
+                    (
+                        result
+                        for result in wire_tool_results
+                        if result.get("callRef")
+                        == {
+                            "message_id": call.get("messageId"),
+                            "part_index": call.get("partIndex"),
+                        }
+                    ),
+                    None,
+                ),
+            }
+            for call in wire_tool_calls
         ]
+        tool_wire_ok = (
+            [call.get("name") for call in wire_tool_calls]
+            == ["tool_search", "recall_memory"]
+            and len(matched_tool_results) == 2
+            and all(
+                isinstance(item.get("result"), dict)
+                and item["result"].get("outcome") == "success"
+                for item in matched_tool_results
+            )
+        )
         output_texts = [
             _message_text(item)
             for item in second_items
@@ -449,20 +672,22 @@ def _inside_scenario(report_dir: Path) -> int:
                 CheckResult(
                     "AKV2-02",
                     automatic_context_seen,
-                    {"modelRequestCount": len(requests)},
+                    {
+                        "modelRequestCount": len(requests),
+                        "contextRows": context_rows,
+                        "contextRecallRecords": context_records,
+                    },
                 ),
                 CheckResult(
                     "AKV2-03",
                     first_hash == during_recall_hash
-                    and scripted_tools == ["tool_search", "recall_memory"]
-                    and len(tool_calls) == 2
-                    and tool_result_success,
+                    and tool_wire_ok,
                     {
                         "beforeRecall": first_hash,
                         "duringRecall": during_recall_hash,
-                        "scriptedTools": scripted_tools,
-                        "toolCalls": tool_calls,
-                        "toolResults": tool_results,
+                        "toolCalls": wire_tool_calls,
+                        "toolResults": wire_tool_results,
+                        "matchedToolResults": matched_tool_results,
                     },
                 ),
                 CheckResult(
@@ -525,7 +750,15 @@ def _inside_restart_check(report_dir: Path) -> int:
     client: JsonRpcSocketClient | None = None
     try:
         _wait_socket(endpoint, READINESS_DEADLINE_S)
-        client = _connect_client(endpoint, report_dir / "restart-events.jsonl")
+        ready_deadline = time.monotonic() + READINESS_DEADLINE_S
+        while True:
+            try:
+                client = _connect_client(endpoint, report_dir / "restart-events.jsonl")
+                break
+            except GateFailure:
+                if time.monotonic() >= ready_deadline:
+                    raise
+                threading.Event().wait(0.05)
         status = client.request("server/status", {}).get("result")
         session_id = state.get("sessionId")
         input_ids = state.get("inputIds")
@@ -577,38 +810,102 @@ def _inside_restart_check(report_dir: Path) -> int:
     return 0 if passed else 1
 
 
-def _run_controller(repo: Path, formal_workspace: Path | None) -> int:
+def _run_controller(
+    repo: Path,
+    formal_workspace: Path | None,
+    *,
+    local_fixture: bool = False,
+) -> int:
     """Run the isolated online scenario, restart it, and compare durable state."""
 
-    _embedding_environment()
     run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     report_dir = repo / "docker/debug/reports/akasha-v2-runtime" / run_id
     report_dir.mkdir(parents=True)
-    sandbox = Path(tempfile.mkdtemp(prefix="akashic-akasha-v2-gate-", dir="/tmp"))
-    _prepare_host_sandbox(sandbox, repo)
-    _write_runtime_config(sandbox)
+    sandbox: Path | None = None
+    compose_override: Path | None = None
+    embedding_server: _EmbeddingFixtureServer | None = None
+    embedding_thread: threading.Thread | None = None
+    embedding_observation: dict[str, object]
     formal_before = _formal_identity(formal_workspace) if formal_workspace else None
-    repository_before = _repository_digest(repo)
-    env = {
-        **os.environ,
-        "AKASHIC_CONTROL_SANDBOX": str(sandbox),
-        "UID": str(os.getuid()),
-        "GID": str(os.getgid()),
-    }
-    project = f"akashic-akasha-v2-{run_id.lower()}"
-    compose = [
-        "docker",
-        "compose",
-        "-p",
-        project,
-        "-f",
-        str(repo / "docker/debug/docker-compose.control-gate.yml"),
-    ]
+    source_before = _source_identity(repo)
+    if local_fixture:
+        embedding_server, embedding_thread, embedding_url = _start_embedding_fixture()
+        embedding_observation = {
+            "scope": "local-fixture",
+            "provider": "local",
+            "externalProvider": "unverified",
+            "url": embedding_url,
+        }
+    else:
+        _embedding_environment()
+        embedding_observation = {
+            "scope": "external-provider",
+            "provider": "external",
+            "externalProvider": "unverified",
+            "calls": "unavailable",
+        }
     checks: list[CheckResult] = []
     controller_error = ""
     cleanup_returncode = -1
     residual: list[str] = []
+    sandbox_app_before: str | None = None
+    sandbox_app_after: str | None = None
+    sandbox_cleanup_error: str | None = None
+    compose_cleanup_error: str | None = None
+    compose_override_cleanup_error: str | None = None
+    fixture_cleanup_error: str | None = None
+    sandbox_preserved = False
+    sandbox_path = ""
+    env: dict[str, str] = {}
+    compose: list[str] = []
     try:
+        sandbox = Path(tempfile.mkdtemp(prefix="akashic-akasha-v2-gate-", dir="/tmp"))
+        sandbox_path = str(sandbox)
+        _prepare_host_sandbox(sandbox, repo)
+        _write_runtime_config(sandbox)
+        sandbox_app_before = _tree_digest(sandbox / "app")
+        env = {
+            **os.environ,
+            "AKASHIC_CONTROL_SANDBOX": str(sandbox),
+            "UID": str(os.getuid()),
+            "GID": str(os.getgid()),
+        }
+        if local_fixture:
+            assert embedding_server is not None
+            env.update(
+                {
+                    "AKASHIC_E2E_EMBEDDING_API_KEY": "akasha-local-fixture-key",
+                    "AKASHIC_E2E_EMBEDDING_BASE_URL": embedding_observation["url"],
+                    "AKASHIC_E2E_EMBEDDING_MODEL": embedding_server.state.model,
+                }
+            )
+        project = f"akashic-akasha-v2-{run_id.lower()}"
+        compose = [
+            "docker",
+            "compose",
+            "-p",
+            project,
+            "-f",
+            str(repo / "docker/debug/docker-compose.control-gate.yml"),
+        ]
+        if local_fixture:
+            override_fd, override_name = tempfile.mkstemp(
+                prefix="akashic-akasha-v2-compose-", suffix=".yml", dir="/tmp"
+            )
+            os.close(override_fd)
+            compose_override = Path(override_name)
+            compose_override.write_text(
+                "services:\n"
+                "  akashic-control-gate:\n"
+                "    extra_hosts:\n"
+                "      - host.docker.internal:host-gateway\n"
+                "  control-probe:\n"
+                "    extra_hosts:\n"
+                "      - host.docker.internal:host-gateway\n",
+                encoding="utf-8",
+            )
+            compose.extend(["-f", str(compose_override)])
+
         build = subprocess.run([*compose, "build", "model-gate"], cwd=repo, env=env, check=False)
         if build.returncode != 0:
             raise GateFailure(f"control-gate image build failed: {build.returncode}")
@@ -665,6 +962,8 @@ def _run_controller(repo: Path, formal_workspace: Path | None) -> int:
         (sandbox / "reports/akasha-v2-state.json").write_text(
             json.dumps(scenario_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
+        if embedding_server is not None:
+            embedding_observation["callsBeforeRestart"] = embedding_server.state.count()
         runtime_before = _runtime_identity(compose, repo, env)
         stop = subprocess.run(
             [*compose, "stop", "-t", "15", "akashic-control-gate"],
@@ -720,6 +1019,18 @@ def _run_controller(repo: Path, formal_workspace: Path | None) -> int:
         progress_equal = before_state.get("consumerProgress") == after_state.get("consumerProgress")
         messages_equal = before_state.get("messages") == after_state.get("messages")
         embeddings_equal = before_state.get("embeddings") == after_state.get("embeddings")
+        if embedding_server is not None:
+            embedding_observation["callsAfterRestart"] = embedding_server.state.count()
+            embedding_observation["delta"] = (
+                embedding_observation["callsAfterRestart"]
+                - embedding_observation["callsBeforeRestart"]
+            )
+            embedding_unchanged = (
+                embedding_observation["callsBeforeRestart"] > 0
+                and embedding_observation["delta"] == 0
+            )
+        else:
+            embedding_unchanged = True
         restart_evidence = restart_result.evidence
         boot_changed = (
             isinstance(restart_evidence, dict)
@@ -739,7 +1050,8 @@ def _run_controller(repo: Path, formal_workspace: Path | None) -> int:
                 and progress_equal
                 and messages_equal
                 and embeddings_equal
-                and state_equal,
+                and state_equal
+                and embedding_unchanged,
                 {
                     "runtimeBefore": runtime_before,
                     "runtimeAfter": runtime_after,
@@ -761,6 +1073,7 @@ def _run_controller(repo: Path, formal_workspace: Path | None) -> int:
                     "consumerProgressUnchanged": progress_equal,
                     "rawMessagesUnchanged": messages_equal,
                     "embeddingsUnchanged": embeddings_equal,
+                    "embeddingCallObservation": embedding_observation,
                     "restartProbeReturncode": restart.returncode,
                 },
             )
@@ -774,50 +1087,110 @@ def _run_controller(repo: Path, formal_workspace: Path | None) -> int:
     except Exception as error:
         controller_error = f"{type(error).__name__}: {error}"
     finally:
-        logs = subprocess.run(
-            [*compose, "logs", "--no-color"],
-            cwd=repo,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
-        (report_dir / "compose.log").write_text(logs.stdout, encoding="utf-8")
-        cleanup = subprocess.run(
-            [*compose, "down", "--remove-orphans", "--volumes"],
-            cwd=repo,
-            env=env,
-            check=False,
-        )
-        cleanup_returncode = cleanup.returncode
-        residual = subprocess.run(
-            [*compose, "ps", "-aq"],
-            cwd=repo,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        ).stdout.split()
-        formal_after = _formal_identity(formal_workspace) if formal_workspace else None
-        repository_after = _repository_digest(repo)
+        if compose:
+            try:
+                logs = subprocess.run(
+                    [*compose, "logs", "--no-color"],
+                    cwd=repo,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+                (report_dir / "compose.log").write_text(logs.stdout, encoding="utf-8")
+            except Exception as error:
+                controller_error = controller_error or f"compose logs failed: {error}"
+            try:
+                cleanup = subprocess.run(
+                    [*compose, "down", "--remove-orphans", "--volumes"],
+                    cwd=repo,
+                    env=env,
+                    check=False,
+                )
+                cleanup_returncode = cleanup.returncode
+            except Exception as error:
+                compose_cleanup_error = f"{type(error).__name__}: {error}"
+                controller_error = controller_error or compose_cleanup_error
+            try:
+                residual = subprocess.run(
+                    [*compose, "ps", "-aq"],
+                    cwd=repo,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                ).stdout.split()
+            except Exception as error:
+                compose_cleanup_error = compose_cleanup_error or f"{type(error).__name__}: {error}"
+                controller_error = controller_error or compose_cleanup_error
+        if sandbox is not None and (sandbox / "app").exists():
+            try:
+                sandbox_app_after = _tree_digest(sandbox / "app")
+            except Exception as error:
+                sandbox_cleanup_error = f"sandbox app digest failed: {error}"
+                controller_error = controller_error or sandbox_cleanup_error
+        try:
+            formal_after = _formal_identity(formal_workspace) if formal_workspace else None
+        except Exception as error:
+            formal_after = None
+            controller_error = controller_error or f"formal workspace snapshot failed: {error}"
+        try:
+            source_after = _source_identity(repo)
+        except Exception as error:
+            source_after = {}
+            controller_error = controller_error or f"source snapshot failed: {error}"
+        if sandbox is not None:
+            try:
+                shutil.rmtree(sandbox)
+            except OSError as error:
+                sandbox_cleanup_error = f"{type(error).__name__}: {error}"
+                sandbox_preserved = True
+                controller_error = controller_error or sandbox_cleanup_error
+        if compose_override is not None:
+            try:
+                compose_override.unlink()
+            except OSError as error:
+                compose_override_cleanup_error = f"{type(error).__name__}: {error}"
+                controller_error = controller_error or compose_override_cleanup_error
+        if embedding_server is not None and embedding_thread is not None:
+            try:
+                _stop_embedding_fixture(embedding_server, embedding_thread)
+            except Exception as error:
+                fixture_cleanup_error = f"{type(error).__name__}: {error}"
+                controller_error = controller_error or fixture_cleanup_error
         checks.append(
             CheckResult(
                 "AKV2-06",
                 cleanup_returncode == 0
                 and not residual
                 and formal_before == formal_after
-                and repository_before == repository_after,
+                and source_before == source_after
+                and sandbox_app_before == sandbox_app_after
+                and sandbox_cleanup_error is None
+                and compose_cleanup_error is None
+                and compose_override_cleanup_error is None
+                and fixture_cleanup_error is None,
                 {
                     "cleanupReturncode": cleanup_returncode,
                     "residualContainers": residual,
                     "formalWorkspaceUnchanged": formal_before == formal_after,
-                    "repositoryUnchanged": repository_before == repository_after,
+                    "sourceBefore": source_before,
+                    "sourceAfter": source_after,
+                    "sourceUnchanged": source_before == source_after,
+                    "sandboxPath": sandbox_path,
+                    "sandboxAppDigestBefore": sandbox_app_before,
+                    "sandboxAppDigestAfter": sandbox_app_after,
+                    "sandboxAppUnchanged": sandbox_app_before == sandbox_app_after,
+                    "sandboxCleanupError": sandbox_cleanup_error,
+                    "sandboxPreserved": sandbox_preserved,
+                    "composeCleanupError": compose_cleanup_error,
+                    "composeOverrideCleanupError": compose_override_cleanup_error,
+                    "fixtureCleanupError": fixture_cleanup_error,
                 },
             )
         )
-        shutil.rmtree(sandbox, ignore_errors=True)
 
     passed = not controller_error and bool(checks) and all(check.passed for check in checks)
     report = {
@@ -826,6 +1199,7 @@ def _run_controller(repo: Path, formal_workspace: Path | None) -> int:
         "checks": [asdict(check) for check in checks],
         "controllerError": controller_error,
         "reportDir": str(report_dir),
+        "embeddingCallObservation": embedding_observation,
     }
     (report_dir / "gate.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -840,6 +1214,11 @@ def main() -> int:
     parser.add_argument("--phase", choices=("scenario", "restart-check"), default="scenario")
     parser.add_argument("--report-dir", type=Path, default=Path("/sandbox/reports"))
     parser.add_argument("--formal-workspace", type=Path, default=None)
+    parser.add_argument(
+        "--local-fixture",
+        action="store_true",
+        help="use an observable local OpenAI-compatible embedding fixture",
+    )
     arguments = parser.parse_args()
     if arguments.inside_container:
         if arguments.phase == "restart-check":
@@ -850,7 +1229,11 @@ def main() -> int:
         if arguments.formal_workspace
         else None
     )
-    return _run_controller(Path(__file__).resolve().parents[2], formal_workspace)
+    return _run_controller(
+        Path(__file__).resolve().parents[2],
+        formal_workspace,
+        local_fixture=arguments.local_fixture,
+    )
 
 
 if __name__ == "__main__":
