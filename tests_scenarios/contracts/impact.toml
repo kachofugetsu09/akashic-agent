@@ -264,7 +264,7 @@ paths = [
   "plugins/markdown_memory/**",
 ]
 depends_on = ["session_persistence"]
-scenarios = ["memory_persistence_contract", "plugin_domain_observe_events"]
+scenarios = ["memory_persistence_contract"]
 
 [groups.jobs]
 priority = "p1"

@@ -369,8 +369,8 @@ observes = [
 mutants = ["model_consumer_imports_plugin_source"]
 
 [scenarios.plugin_domain_observe_events]
-requirements = ["RUN-001", "OUT-001", "PLG-001", "MEM-001", "TST-001", "TST-003"]
-groups = ["plugin", "lifecycle", "events", "memory"]
+requirements = ["RUN-001", "PLG-001", "TST-001", "TST-003"]
+groups = ["plugin", "lifecycle", "events"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
 command = [

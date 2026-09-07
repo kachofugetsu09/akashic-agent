@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "683b4791b0c25e3e899d65fe7c028514240414b3",
-  "catalogDigest": "d2bd624867f16ee2a54ea730c74ee3eeb2918dd4df18d6040f5bc006f0e5223b",
+  "catalogDigest": "aa950d866e1fa448ec4b9ce788b5bd93ce4c58a1495875f22657569de0e820e4",
   "purpose": "approved_contract_mapping",
   "coveredP0": {
     "companion_control": [
@@ -40,18 +40,17 @@
       "mcp_process_lifecycle"
     ],
     "memory": [
-      "memory_persistence_contract",
-      "plugin_domain_observe_events"
+      "memory_persistence_contract"
     ],
     "migrations": [
       "contract_catalog",
       "workspace_bootstrap"
     ],
-    "model_owner": [
-      "model_owner_contract"
-    ],
     "mobile_realtime": [
       "mobile_realtime_contract"
+    ],
+    "model_owner": [
+      "model_owner_contract"
     ],
     "plugin": [
       "plugin_generation_contract",
