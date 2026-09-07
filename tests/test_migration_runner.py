@@ -46,6 +46,7 @@ _PROGRAMMATIC_EFFECTS_ID = "20260829_01_backfill_plugin_programmatic_effects"
 _EXPLICIT_PROGRAMMATIC_EFFECTS_ID = "20260829_02_backfill_explicit_programmatic_effects"
 _RETIRE_CORE_MODEL_CONFIG_ID = "20260829_03_retire_core_model_config"
 _COMPACTION_PLUGIN_CONFIG_ID = "20260831_01_migrate_compaction_plugin_config"
+_MESSAGE_LOG_ID = "20260905_01_message_log"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -75,6 +76,7 @@ _CURRENT_IDS = (
     _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
     _RETIRE_CORE_MODEL_CONFIG_ID,
     _COMPACTION_PLUGIN_CONFIG_ID,
+    _MESSAGE_LOG_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -112,15 +114,24 @@ def _applied_ids(ledger: Path) -> list[str]:
 def _create_sessions(path: Path) -> None:
     connection = sqlite3.connect(path)
     try:
+        connection.executescript("""
+            CREATE TABLE sessions (
+                key TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                last_consolidated INTEGER NOT NULL DEFAULT 0, metadata TEXT,
+                last_user_at TEXT, last_proactive_at TEXT, next_seq INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY, session_key TEXT NOT NULL, seq INTEGER NOT NULL,
+                role TEXT NOT NULL, content TEXT, tool_chain TEXT, extra TEXT,
+                ts TEXT NOT NULL, UNIQUE(session_key, seq)
+            );
+        """)
         connection.execute(
-            "CREATE TABLE sessions ("
-            "key TEXT PRIMARY KEY, last_consolidated INTEGER NOT NULL)"
+            "INSERT INTO sessions (key,created_at,updated_at,last_consolidated,next_seq) VALUES ('chat','2026-09-01T00:00:00+00:00','2026-09-01T00:00:00+00:00',4,1)"
         )
         connection.execute(
-            "CREATE TABLE messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)"
+            "INSERT INTO messages VALUES ('m1','chat',0,'user','session-bytes',NULL,NULL,'2026-09-01T00:00:00+00:00')"
         )
-        connection.execute("INSERT INTO sessions VALUES ('chat', 4)")
-        connection.execute("INSERT INTO messages VALUES ('m1', 'session-bytes')")
         connection.commit()
     finally:
         connection.close()
@@ -165,9 +176,11 @@ def test_origin_removes_legacy_state_without_touching_business_data(
         assert migrated.execute(
             "SELECT last_consolidated FROM sessions WHERE key = 'chat'"
         ).fetchone() == (0,)
-        assert migrated.execute("SELECT body FROM messages").fetchall() == [
-            ("session-bytes",)
-        ]
+        body = json.loads(
+            migrated.execute("SELECT body FROM messages WHERE id='m1'").fetchone()[0]
+        )
+        assert body["kind"] == "input"
+        assert body["parts"][0] == {"kind": "text", "value": "session-bytes"}
         assert {
             row[0]
             for row in migrated.execute(
@@ -205,6 +218,24 @@ def test_origin_is_a_noop_when_legacy_state_is_absent(tmp_path: Path) -> None:
     assert first.migrations == _CURRENT_IDS
     assert second.state == "current"
     assert second.migrations == ()
+
+
+def test_fresh_migration_then_log_writes_then_restart_uses_recorded_ledger(tmp_path):
+    from session.log import MessageLog
+    from session.message import Input
+
+    root = tmp_path / "state"
+    runner = _runner(root)
+    assert _MESSAGE_LOG_ID in runner.run().migrations
+    log = MessageLog(root / "workspace/sessions.db")
+    try:
+        writer = log.writer(
+            "s", author="user", source="conversation", body_types=(Input,), content={}
+        )
+        writer.append("first", Input(()))
+    finally:
+        log.close()
+    assert runner.run().state == "current"
 
 
 def test_runner_supplies_yoyo_identity_without_os_username(
@@ -322,7 +353,7 @@ def test_staged_catalog_upgrade_preserves_legacy_inputs_until_final_cutover(
 
     current_without_model_cleanup = _catalog(
         tmp_path / "current-without-model-cleanup",
-        _CURRENT_IDS[:-2],
+        _CURRENT_IDS[: _CURRENT_IDS.index(_RETIRE_CORE_MODEL_CONFIG_ID)],
     )
     second = _runner(root, repo_root=current_without_model_cleanup).run()
     assert _DIGEST_ID in second.migrations
@@ -362,8 +393,13 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     )
     config.chmod(0o640)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-14])
-    assert _runner(root, repo_root=legacy_repo).run().migrations == _CURRENT_IDS[:-14]
+    legacy_repo = _catalog(
+        tmp_path / "legacy-repo", _CURRENT_IDS[: _CURRENT_IDS.index(_TOOLSET_WIRING_ID)]
+    )
+    assert (
+        _runner(root, repo_root=legacy_repo).run().migrations
+        == _CURRENT_IDS[: _CURRENT_IDS.index(_TOOLSET_WIRING_ID)]
+    )
     before = config.read_bytes()
 
     outcome = _runner(root).run()
@@ -383,6 +419,7 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
+        _MESSAGE_LOG_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -419,7 +456,9 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         encoding="utf-8",
     )
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-14])
+    legacy_repo = _catalog(
+        tmp_path / "legacy-repo", _CURRENT_IDS[: _CURRENT_IDS.index(_TOOLSET_WIRING_ID)]
+    )
     _ = _runner(root, repo_root=legacy_repo).run()
     before = config.read_bytes()
 
@@ -440,12 +479,15 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
+        _MESSAGE_LOG_ID,
     )
     migrated = tomllib.loads(config.read_text())
     assert migrated["agent"]["wiring"]["toolsets"] == toolsets
     assert "context" not in migrated["agent"]
     assert tomllib.loads(
-        (root / "workspace/plugin-data/compaction-builtin/config.local.toml").read_text()
+        (
+            root / "workspace/plugin-data/compaction-builtin/config.local.toml"
+        ).read_text()
     ) == {"keep_recent_tokens": 20_000}
     assert not (root / "workspace/backups/retire-legacy-toolset-wiring").exists()
 
@@ -463,7 +505,9 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     config = root / "config.toml"
     config.symlink_to(source.name)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-14])
+    legacy_repo = _catalog(
+        tmp_path / "legacy-repo", _CURRENT_IDS[: _CURRENT_IDS.index(_TOOLSET_WIRING_ID)]
+    )
     _ = _runner(root, repo_root=legacy_repo).run()
 
     outcome = _runner(root).run()
@@ -483,6 +527,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
+        _MESSAGE_LOG_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -533,9 +578,15 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
 
     # 1. Recreate a workspace that already ran every migration through selection.
     root = tmp_path / "state"
-    prior_repo = _catalog(tmp_path / "prior-repo", _CURRENT_IDS[:-10])
+    prior_repo = _catalog(
+        tmp_path / "prior-repo",
+        _CURRENT_IDS[: _CURRENT_IDS.index(_AKASHA_PLUGIN_SELECTION_ID) + 1],
+    )
     first = _runner(root, repo_root=prior_repo).run()
-    assert first.migrations == _CURRENT_IDS[:-10]
+    assert (
+        first.migrations
+        == _CURRENT_IDS[: _CURRENT_IDS.index(_AKASHA_PLUGIN_SELECTION_ID) + 1]
+    )
     assert _AKASHA_PLUGIN_SELECTION_ID in _applied_ids(
         root / "workspace/migrations.sqlite3"
     )
@@ -553,6 +604,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
+        _MESSAGE_LOG_ID,
     )
 
 
@@ -750,7 +802,9 @@ def test_model_registry_migration_accepts_toml_rewritten_nested_tables(
     assert "llm" not in migrated
     assert migrated["agent"] == {"system_prompt": "plugin gate"}
     assert tomllib.loads(
-        (root / "workspace/plugin-data/compaction-builtin/config.local.toml").read_text()
+        (
+            root / "workspace/plugin-data/compaction-builtin/config.local.toml"
+        ).read_text()
     ) == {"keep_recent_tokens": 20_000}
     assert migrated["app_server"] == {"listen": "/sandbox/akashic.sock"}
 
@@ -899,6 +953,7 @@ api_key = "secret"
         _EXPLICIT_PROGRAMMATIC_EFFECTS_ID,
         _RETIRE_CORE_MODEL_CONFIG_ID,
         _COMPACTION_PLUGIN_CONFIG_ID,
+        _MESSAGE_LOG_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
