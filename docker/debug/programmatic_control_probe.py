@@ -613,6 +613,96 @@ def _receive_web_final(
     raise GateFailure("Web channel 未在 deadline 内返回 message.final")
 
 
+def _receive_web_follow_rows(
+    web: Any,
+    session_id: str,
+    complete: Any,
+    *,
+    timeout: float = SCENARIO_DEADLINE_S,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """从真实 session.follow 读取消息页和 reply.status，直到 predicate 成立。"""
+
+    deadline = time.monotonic() + timeout
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    statuses: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        frame = json.loads(web.recv(timeout=deadline - time.monotonic()))
+        frame_type = frame.get("type")
+        if frame_type == "messages.appended":
+            if frame.get("session_id") != session_id:
+                raise GateFailure(f"Web 消息页 Session 不匹配：{frame!r}")
+            items = frame.get("items")
+            if not isinstance(items, list):
+                raise GateFailure(f"Web messages.appended 缺少 items：{frame!r}")
+            for item in items:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    raise GateFailure(f"Web 消息页 item 非法：{frame!r}")
+                rows_by_id[item["id"]] = item
+        elif frame_type == "reply.status":
+            if frame.get("session_id") != session_id:
+                raise GateFailure(f"Web reply.status Session 不匹配：{frame!r}")
+            statuses.append(frame)
+        elif frame_type in {"session.following", "error"}:
+            continue
+        else:
+            raise GateFailure(f"Web session.follow 收到未知 frame：{frame!r}")
+        rows = sorted(rows_by_id.values(), key=lambda item: int(item["seq"]))
+        if complete(rows, statuses):
+            return rows, statuses
+    raise GateFailure(
+        f"Web session.follow 未在 deadline 内达到条件：session={session_id} "
+        f"rows={list(rows_by_id.values())!r} statuses={statuses!r}"
+    )
+
+
+def _wait_message_log_rows(
+    database: Path,
+    session_id: str,
+    *,
+    minimum: int = 1,
+    required_ids: set[str] | frozenset[str] = frozenset(),
+    timeout: float = SCENARIO_DEADLINE_S,
+) -> list[dict[str, Any]]:
+    """等待真实 Message 日志前缀，保留身份、seq、来源和完整 body。"""
+
+    deadline = time.monotonic() + timeout
+    last_rows: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        with sqlite3.connect(database) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body "
+                "FROM messages WHERE session_key = ? ORDER BY seq",
+                (session_id,),
+            ).fetchall()
+        try:
+            last_rows = [
+                {
+                    "id": row["id"],
+                    "session_id": row["session_key"],
+                    "seq": row["seq"],
+                    "timestamp": row["ts"],
+                    "author": row["author"],
+                    "source": row["source"],
+                    "body": json.loads(row["body"]),
+                }
+                for row in rows
+            ]
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise GateFailure(
+                f"Message 日志 body 不是有效 JSON：session={session_id}"
+            ) from error
+        if len(last_rows) >= minimum and required_ids <= {
+            str(row["id"]) for row in last_rows
+        }:
+            return last_rows
+        threading.Event().wait(0.02)
+    raise GateFailure(
+        f"Message 日志未在 deadline 内达到前缀：session={session_id} "
+        f"minimum={minimum} required={sorted(required_ids)} rows={last_rows!r}"
+    )
+
+
 def _extract_id(response: dict[str, Any], resource: str) -> str:
     result = response.get("result")
     if not isinstance(result, dict):
@@ -1145,6 +1235,28 @@ def _wait_programmatic_result(
             return result
         threading.Event().wait(0.05)
     raise GateFailure(f"programmatic result 超时：{session_id}/{input_id} {result!r}")
+
+
+def _message_wire_projection(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """把 Message page 收敛为 messages 表的完整列集合。"""
+
+    items = page.get("items")
+    if not isinstance(items, list):
+        raise GateFailure(f"message/read items 不是数组：{page!r}")
+    projected: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise GateFailure(f"message/read item 不是对象：{item!r}")
+        projected.append({
+            "id": item.get("id"),
+            "session_id": item.get("session_id"),
+            "seq": item.get("seq"),
+            "timestamp": item.get("timestamp"),
+            "author": item.get("author"),
+            "source": item.get("source"),
+            "body": item.get("body"),
+        })
+    return projected
 
 
 def _inside_smoke(report_dir: Path) -> int:
@@ -2165,7 +2277,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
     endpoint = Path("/sandbox/akashic.sock")
     checks: list[CheckResult] = []
     clients: list[JsonRpcSocketClient] = []
-    restart_state: dict[str, str] = {}
+    restart_state: dict[str, object] = {}
     try:
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _configure_model_gate(context_window=1_000_000)
@@ -3029,117 +3141,222 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             )
         )
 
-        # 7. WebSocket channel adapter 保留领域投影、完整出站字段和 lane 语义。
+        # 7. 新 Message 合同下核对 Web/程序接口 parity、并发、撤销和恢复。
         from websockets.sync.client import connect as connect_websocket
 
         websocket_url = "ws://akashic-control-gate:2236/ws"
-        with connect_websocket(websocket_url, open_timeout=READINESS_DEADLINE_S) as web:
-            web.send(
-                json.dumps({"type": "session.create", "request_id": "pc16-create"})
-            )
-            created = json.loads(web.recv(timeout=SCENARIO_DEADLINE_S))
-            web_thread = str(created["session_id"])
+        database = Path("/sandbox/workspace/sessions.db")
 
-            fixtures = (
+        def output_projection(rows: list[dict[str, Any]]) -> dict[str, object]:
+            outputs = [
+                row for row in rows
+                if isinstance(row.get("body"), dict)
+                and row["body"].get("kind") == "output"
+            ]
+            final = next(
                 (
-                    "parity success",
-                    {
-                        "mode": "complete",
-                        "content": "<think>channel reasoning</think>parity result",
-                    },
+                    row for row in outputs
+                    if isinstance(row["body"].get("finish"), str)
+                    and row["body"]["finish"] != "continue"
                 ),
-                (
-                    "parity failure",
-                    [
-                        {"mode": "error", "status": 500},
-                        {"mode": "error", "status": 500},
-                    ],
-                ),
+                None,
             )
-            parity_evidence: list[dict[str, object]] = []
-            parity_passed = True
-            for index, (input_text, script) in enumerate(fixtures):
-                _http_json("PUT", f"{model_url}/control/script", script)
-                program_thread = _start_thread(first, f"PC-16-{index}")
-                program_turn = _start_turn(first, program_thread, input_text)
-                program_terminal = _event_turn(first.wait_terminal(program_turn))
+            text = ""
+            thinking: str | None = None
+            if isinstance(final, dict) and isinstance(final.get("body"), dict):
+                for part in final["body"].get("parts", []):
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("kind") == "text":
+                        text += str(part.get("value", ""))
+                    if part.get("kind") == "model.facts" and isinstance(
+                        part.get("value"), dict
+                    ):
+                        value = part["value"].get("thinking")
+                        if isinstance(value, str):
+                            thinking = value
+            return {
+                "outputCount": len(outputs),
+                "final": final,
+                "content": text,
+                "thinking": thinking,
+            }
 
+        def programmatic_projection(
+            page: dict[str, Any], result: dict[str, Any]
+        ) -> dict[str, object]:
+            rows = [item for item in page.get("items", []) if isinstance(item, dict)]
+            return {
+                "status": result.get("status"),
+                "endingMessageId": result.get("ending_message_id"),
+                "endingSeq": result.get("ending_seq"),
+                "messages": rows,
+                **output_projection(rows),
+            }
+
+        fixtures = (
+            (
+                "parity success",
+                {
+                    "mode": "complete",
+                    "content": "<think>channel reasoning</think>parity result",
+                },
+                "complete",
+            ),
+            (
+                "parity failure",
+                [
+                    {"mode": "error", "status": 500},
+                    {"mode": "error", "status": 500},
+                ],
+                "failure",
+            ),
+        )
+        parity_evidence: list[dict[str, object]] = []
+        parity_passed = True
+        for index, (input_text, script, expected_status) in enumerate(fixtures):
+            program_session = f"programmatic:pc16-parity-{index}"
+            program_input = f"pc16-program-{index}"
+            first.admit_programmatic(program_session)
+            _http_json("PUT", f"{model_url}/control/script", script)
+            program_ack = first.send_programmatic(
+                program_session, program_input, input_text
+            )
+            program_result = _wait_programmatic_result(
+                first, program_session, program_input
+            )
+            program_page = first.read_messages(program_session)
+            program_view = programmatic_projection(program_page, program_result)
+
+            with connect_websocket(
+                websocket_url, open_timeout=READINESS_DEADLINE_S
+            ) as web:
+                web.send(json.dumps({
+                    "type": "session.create",
+                    "request_id": f"pc16-create-{index}",
+                }))
+                web_session = str(
+                    json.loads(web.recv(timeout=SCENARIO_DEADLINE_S))["session_id"]
+                )
+                web.send(json.dumps({
+                    "type": "session.follow",
+                    "version": 2,
+                    "request_id": f"pc16-follow-{index}",
+                    "session_id": web_session,
+                    "after_seq": -1,
+                }))
+                following = json.loads(web.recv(timeout=SCENARIO_DEADLINE_S))
+                if (
+                    following.get("type") != "session.following"
+                    or following.get("session_id") != web_session
+                ):
+                    raise GateFailure(f"Web session.follow ACK 非法：{following!r}")
                 _http_json("PUT", f"{model_url}/control/script", script)
-                web.send(
-                    json.dumps(
-                        {
-                            "type": "message.send",
-                            "request_id": f"pc16-{index}",
-                            "session_id": web_thread,
-                            "text": input_text,
-                            "media": [],
-                        }
-                    )
+                web_request_id = f"pc16-web-{index}"
+                web.send(json.dumps({
+                    "type": "message.send",
+                    "request_id": web_request_id,
+                    "session_id": web_session,
+                    "text": input_text,
+                    "media": [],
+                }))
+                web_rows, web_status_frames = _receive_web_follow_rows(
+                    web,
+                    web_session,
+                    lambda rows, _statuses: (
+                        any(
+                            isinstance(row.get("body"), dict)
+                            and row["body"].get("kind") == "output"
+                            and row["body"].get("finish") != "continue"
+                            for row in rows
+                        )
+                        if expected_status == "complete"
+                        else any(
+                            isinstance(row.get("body"), dict)
+                            and row["body"].get("kind") == "control"
+                            and row["body"].get("action") == "failure"
+                            for row in rows
+                        )
+                    ),
                 )
-                final_frame = _receive_web_final(web)
-                channel_turn = _wait_database_turn(
-                    Path("/sandbox/workspace/sessions.db"), web_thread, input_text
+            web_view = output_projection(web_rows)
+            web_status = (
+                "complete"
+                if web_view["outputCount"] == 1
+                else "failure"
+                if any(
+                    isinstance(row.get("body"), dict)
+                    and row["body"].get("kind") == "control"
+                    and row["body"].get("action") == "failure"
+                    for row in web_rows
                 )
-                program_projection = _turn_projection(program_terminal)
-                channel_projection = _turn_projection(channel_turn)
-                frame_projection = {
-                    "content": final_frame.get("content"),
-                    "thinking": final_frame.get("thinking"),
-                    "media": final_frame.get("media"),
-                    "metadata": final_frame.get("metadata"),
-                    "duration_ms": final_frame.get("duration_ms"),
-                }
-                frame_fields_passed = (
-                    isinstance(frame_projection["thinking"], str)
-                    and isinstance(frame_projection["media"], list)
-                    and isinstance(frame_projection["metadata"], dict)
-                    and frame_projection["duration_ms"]
-                    == cast(dict[str, object], frame_projection["metadata"]).get(
-                        "turn_duration_ms"
-                    )
+                else "open"
+            )
+            wire_projection = {
+                "following": following,
+                "messages": web_rows,
+                "replyStatus": web_status_frames,
+            }
+            fixture_passed = (
+                program_ack.get("message_id") == program_input
+                and program_result.get("status") == expected_status
+                and web_status == expected_status
+                and any(
+                    isinstance(frame, dict)
+                    and frame.get("type") == "reply.status"
+                    and isinstance(frame.get("available"), bool)
+                    for frame in web_status_frames
                 )
-                if input_text == "parity success":
-                    frame_fields_passed = (
-                        frame_fields_passed
-                        and frame_projection["content"] == "parity result"
-                        and frame_projection["thinking"] == "channel reasoning"
-                    )
-                fixture_passed = (
-                    program_projection == channel_projection and frame_fields_passed
+            )
+            if expected_status == "complete":
+                fixture_passed = fixture_passed and (
+                    program_view["content"] == "parity result"
+                    and program_view["thinking"] == "channel reasoning"
+                    and web_view["content"] == "parity result"
+                    and web_view["thinking"] == "channel reasoning"
                 )
-                parity_passed = parity_passed and fixture_passed
-                parity_evidence.append(
-                    {
-                        "input": input_text,
-                        "passed": fixture_passed,
-                        "programmatic": program_projection,
-                        "channel": channel_projection,
-                        "channelFrame": frame_projection,
-                    }
+            else:
+                fixture_passed = fixture_passed and (
+                    web_view["outputCount"] == 0
                 )
+            parity_passed = parity_passed and fixture_passed
+            parity_evidence.append({
+                "input": input_text,
+                "sessionId": program_session,
+                "inputId": program_input,
+                "passed": fixture_passed,
+                "programmaticResult": program_result,
+                "programmatic": program_view,
+                "channel": {"status": web_status, "messages": web_rows, **web_view},
+                "channelWire": wire_projection,
+            })
 
         lane_evidence: dict[str, object] = {}
-        database = Path("/sandbox/workspace/sessions.db")
         with (
-            connect_websocket(
-                websocket_url, open_timeout=READINESS_DEADLINE_S
-            ) as slow_web,
-            connect_websocket(
-                websocket_url, open_timeout=READINESS_DEADLINE_S
-            ) as fast_web,
+            connect_websocket(websocket_url, open_timeout=READINESS_DEADLINE_S) as slow_web,
+            connect_websocket(websocket_url, open_timeout=READINESS_DEADLINE_S) as fast_web,
         ):
-            slow_web.send(
-                json.dumps({"type": "session.create", "request_id": "pc16-slow"})
-            )
-            fast_web.send(
-                json.dumps({"type": "session.create", "request_id": "pc16-fast"})
-            )
-            slow_thread = str(
-                json.loads(slow_web.recv(timeout=SCENARIO_DEADLINE_S))["session_id"]
-            )
-            fast_thread = str(
-                json.loads(fast_web.recv(timeout=SCENARIO_DEADLINE_S))["session_id"]
-            )
+            slow_web.send(json.dumps({"type": "session.create", "request_id": "pc16-slow"}))
+            fast_web.send(json.dumps({"type": "session.create", "request_id": "pc16-fast"}))
+            slow_session = str(json.loads(slow_web.recv(timeout=SCENARIO_DEADLINE_S))["session_id"])
+            fast_session = str(json.loads(fast_web.recv(timeout=SCENARIO_DEADLINE_S))["session_id"])
+            for web, session_id, request_id in (
+                (slow_web, slow_session, "pc16-slow-follow"),
+                (fast_web, fast_session, "pc16-fast-follow"),
+            ):
+                web.send(json.dumps({
+                    "type": "session.follow",
+                    "version": 2,
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "after_seq": -1,
+                }))
+                following = json.loads(web.recv(timeout=SCENARIO_DEADLINE_S))
+                if (
+                    following.get("type") != "session.following"
+                    or following.get("session_id") != session_id
+                ):
+                    raise GateFailure(f"Web Session follow ACK 非法：{following!r}")
             _create_barrier(
                 model_url,
                 "pc16-channel-slow",
@@ -3150,199 +3367,454 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 f"{model_url}/control/script",
                 {"mode": "complete", "content": "fast complete"},
             )
-            slow_web.send(
-                json.dumps(
-                    {
-                        "type": "message.send",
-                        "request_id": "pc16-slow-turn",
-                        "session_id": slow_thread,
-                        "text": "slow lane",
-                        "media": [],
-                    }
-                )
-            )
+            slow_request_id = "pc16-slow-input"
+            slow_web.send(json.dumps({
+                "type": "message.send",
+                "request_id": slow_request_id,
+                "session_id": slow_session,
+                "text": "slow lane",
+                "media": [],
+            }))
             _wait_barrier(model_url, "pc16-channel-slow")
-            fast_web.send(
-                json.dumps(
-                    {
-                        "type": "message.send",
-                        "request_id": "pc16-fast-turn",
-                        "session_id": fast_thread,
-                        "text": "fast lane",
-                        "media": [],
-                    }
-                )
+            fast_request_id = "pc16-fast-input"
+            fast_web.send(json.dumps({
+                "type": "message.send",
+                "request_id": fast_request_id,
+                "session_id": fast_session,
+                "text": "fast lane",
+                "media": [],
+            }))
+            fast_rows, fast_statuses = _receive_web_follow_rows(
+                fast_web,
+                fast_session,
+                lambda rows, _statuses: output_projection(rows)["outputCount"] == 1,
             )
-            fast_completed = _wait_database_turn_status(
-                database, fast_thread, "fast lane", {"completed"}
-            )
-            fast_final = _receive_web_final(fast_web)
+            fast_completed = {
+                "status": "complete"
+                if output_projection(fast_rows)["outputCount"] == 1
+                else "open",
+                "messages": fast_rows,
+                "replyStatus": fast_statuses,
+            }
             _release_barrier(model_url, "pc16-channel-slow")
-            slow_final = _receive_web_final(slow_web)
-            lane_evidence["differentThreads"] = {
+            slow_rows, slow_statuses = _receive_web_follow_rows(
+                slow_web,
+                slow_session,
+                lambda rows, _statuses: output_projection(rows)["outputCount"] == 1,
+            )
+            lane_evidence["differentSessions"] = {
                 "fastCompletedBeforeRelease": fast_completed,
-                "slowFinal": slow_final.get("content"),
-                "fastFinal": fast_final.get("content"),
+                "fastFinal": output_projection(fast_rows)["content"],
+                "slowFinal": output_projection(slow_rows)["content"],
+                "fastRows": fast_rows,
+                "slowRows": slow_rows,
+                "slowReplyStatus": slow_statuses,
             }
 
-        with connect_websocket(
-            websocket_url, open_timeout=READINESS_DEADLINE_S
-        ) as lane_web:
-            lane_web.send(
-                json.dumps({"type": "session.create", "request_id": "pc16-lane"})
-            )
-            lane_thread = str(
-                json.loads(lane_web.recv(timeout=SCENARIO_DEADLINE_S))["session_id"]
-            )
-            _create_barrier(
-                model_url,
-                "pc16-strict-lane",
-                {"mode": "complete", "content": "order one final"},
-            )
-            _http_json(
-                "PUT",
-                f"{model_url}/control/script",
-                [
-                    {"mode": "complete", "content": "order two final"},
-                    {"mode": "complete", "content": "order three final"},
-                    {"mode": "complete", "content": "order four final"},
-                ],
-            )
-            lane_web.send(
-                json.dumps(
-                    {
-                        "type": "message.send",
-                        "request_id": "pc16-order-1",
-                        "session_id": lane_thread,
-                        "text": "order one",
-                        "media": [],
-                    }
+        def run_failure_recovery() -> dict[str, object]:
+            # Web failure 通过 session.follow 暴露 Control.failure，随后同 Session 新 Input 可以恢复。
+            with connect_websocket(
+                websocket_url, open_timeout=READINESS_DEADLINE_S
+            ) as recovery_web:
+                recovery_web.send(json.dumps({
+                    "type": "session.create",
+                    "request_id": "pc16-recovery",
+                }))
+                recovery_session = str(
+                    json.loads(recovery_web.recv(timeout=SCENARIO_DEADLINE_S))["session_id"]
+                )
+                recovery_web.send(json.dumps({
+                    "type": "session.follow",
+                    "version": 2,
+                    "request_id": "pc16-recovery-follow",
+                    "session_id": recovery_session,
+                    "after_seq": -1,
+                }))
+                following = json.loads(recovery_web.recv(timeout=SCENARIO_DEADLINE_S))
+                if (
+                    following.get("type") != "session.following"
+                    or following.get("session_id") != recovery_session
+                ):
+                    raise GateFailure(f"Web recovery follow ACK 非法：{following!r}")
+                _http_json(
+                    "PUT",
+                    f"{model_url}/control/script",
+                    {"mode": "error", "status": 500},
+                )
+                recovery_web.send(json.dumps({
+                    "type": "message.send",
+                    "request_id": "pc16-failure",
+                    "session_id": recovery_session,
+                    "text": "pc16 lane failure",
+                    "media": [],
+                }))
+                failed_rows, failed_statuses = _receive_web_follow_rows(
+                    recovery_web,
+                    recovery_session,
+                    lambda rows, _statuses: any(
+                        isinstance(row.get("body"), dict)
+                        and row["body"].get("kind") == "control"
+                        and row["body"].get("action") == "failure"
+                        for row in rows
+                    ),
+                )
+                _http_json(
+                    "PUT",
+                    f"{model_url}/control/script",
+                    {"mode": "complete", "content": "pc16 recovered"},
+                )
+                recovery_web.send(json.dumps({
+                    "type": "message.send",
+                    "request_id": "pc16-recovery-input",
+                    "session_id": recovery_session,
+                    "text": "pc16 lane recovery",
+                    "media": [],
+                }))
+                recovered_rows, recovered_statuses = _receive_web_follow_rows(
+                    recovery_web,
+                    recovery_session,
+                    lambda rows, _statuses: any(
+                        isinstance(row.get("body"), dict)
+                        and row["body"].get("kind") == "output"
+                        and row["body"].get("finish") == "complete"
+                        for row in rows
+                    ),
+                )
+            recovery_passed = (
+                any(
+                    isinstance(row.get("body"), dict)
+                    and row["body"].get("kind") == "input"
+                    and row.get("id") == "pc16-failure"
+                    for row in failed_rows
+                )
+                and any(
+                    isinstance(row.get("body"), dict)
+                    and row["body"].get("kind") == "control"
+                    and row["body"].get("action") == "failure"
+                    for row in failed_rows
+                )
+                and any(
+                    isinstance(row.get("body"), dict)
+                    and row["body"].get("kind") == "output"
+                    and row["body"].get("finish") == "complete"
+                    for row in recovered_rows
+                )
+                and _message_text(next(
+                    row for row in recovered_rows
+                    if isinstance(row.get("body"), dict)
+                    and row["body"].get("kind") == "output"
+                    and row["body"].get("finish") == "complete"
+                )) == "pc16 recovered"
+                and any(
+                    isinstance(frame, dict)
+                    and frame.get("type") == "reply.status"
+                    and isinstance(frame.get("available"), bool)
+                    for frame in (*failed_statuses, *recovered_statuses)
                 )
             )
-            _wait_barrier(model_url, "pc16-strict-lane")
-            for request_id, text in (
-                ("pc16-order-2", "order two"),
-                ("pc16-order-3", "order three"),
-                ("pc16-order-4", "order four"),
-            ):
-                lane_web.send(
-                    json.dumps(
-                        {
-                            "type": "message.send",
-                            "request_id": request_id,
-                            "session_id": lane_thread,
-                            "text": text,
-                            "media": [],
-                        }
-                    )
-                )
-            active_inputs = _wait_database_turn_inputs(
-                database, lane_thread, "order one", 1
-            )
-            _release_barrier(model_url, "pc16-strict-lane")
-            ordered_finals = [_receive_web_final(lane_web) for _ in range(4)]
-            ordered_turns = [
-                _wait_database_turn(database, lane_thread, f"order {name}")
-                for name in ("one", "two", "three", "four")
-            ]
-
-            _http_json(
-                "PUT",
-                f"{model_url}/control/script",
-                [{"mode": "error", "status": 500} for _ in range(4)],
-            )
-            lane_web.send(
-                json.dumps(
-                    {
-                        "type": "message.send",
-                        "request_id": "pc16-fail",
-                        "session_id": lane_thread,
-                        "text": "lane failure",
-                        "media": [],
-                    }
-                )
-            )
-            failed_final = _receive_web_final(lane_web)
-            failed_state = _wait_database_turn_status(
-                database, lane_thread, "lane failure", {"failed"}
-            )
-            failed_error = failed_state.get("error")
-            if not isinstance(failed_error, dict) or not isinstance(
-                failed_error.get("message"), str
-            ):
-                raise GateFailure(f"failed turn 缺少 error.message：{failed_state!r}")
-
-            _http_json(
-                "PUT",
-                f"{model_url}/control/script",
-                {"mode": "complete", "content": "recovered"},
-            )
-            lane_web.send(
-                json.dumps(
-                    {
-                        "type": "message.send",
-                        "request_id": "pc16-recover",
-                        "session_id": lane_thread,
-                        "text": "lane recovery",
-                        "media": [],
-                    }
-                )
-            )
-            recovered_final = _receive_web_final(lane_web)
-            recovered_state = _wait_database_turn_status(
-                database, lane_thread, "lane recovery", {"completed"}
-            )
-            lane_evidence["sameThread"] = {
-                "activeInputs": active_inputs,
-                "orderedTurns": [_turn_projection(turn) for turn in ordered_turns],
-                "finals": [
-                    *[frame.get("content") for frame in ordered_finals],
-                    failed_final.get("content"),
-                    recovered_final.get("content"),
-                ],
-                "statuses": [
-                    *[turn["status"] for turn in ordered_turns],
-                    failed_state["status"],
-                    recovered_state["status"],
-                ],
-                "failedError": failed_error["message"],
+            return {
+                "failedRows": failed_rows,
+                "recoveredRows": recovered_rows,
+                "failedReplyStatus": failed_statuses,
+                "recoveredReplyStatus": recovered_statuses,
+                "passed": recovery_passed,
             }
 
-        different_threads = cast(dict[str, object], lane_evidence["differentThreads"])
-        same_thread = cast(dict[str, object], lane_evidence["sameThread"])
-        lane_passed = (
-            cast(
-                dict[str, object],
-                different_threads["fastCompletedBeforeRelease"],
-            )["status"]
-            == "completed"
-            and different_threads["slowFinal"] == "slow complete"
-            and different_threads["fastFinal"] == "fast complete"
-            and cast(dict[str, object], same_thread["activeInputs"])["userInputs"]
-            == ["order one"]
-            and same_thread["finals"]
-            == [
-                "order one final",
-                "order two final",
-                "order three final",
-                "order four final",
-                same_thread["failedError"],
-                "recovered",
-            ]
-            and same_thread["statuses"]
-            == [
-                "completed",
-                "completed",
-                "completed",
-                "completed",
-                "failed",
-                "completed",
-            ]
+
+        lane_evidence["failureRecovery"] = run_failure_recovery()
+
+        # 同 source 的四条 Input 全部先落日志；旧 provider 被取消后只提交一个新 Output。
+        pc16_source = "programmatic:pc16-source-head"
+        pc16_inputs = [
+            (f"pc16-input-{index}", f"pc16 input {index}")
+            for index in range(1, 5)
+        ]
+        first.admit_programmatic(pc16_source)
+        pc16_old_barrier = "pc16-old-provider"
+        pc16_shared_barrier = "pc16-shared-provider"
+        _create_barrier(
+            model_url,
+            pc16_old_barrier,
+            {"mode": "timeout"},
         )
+        _http_json("PUT", f"{model_url}/control/barriers/{pc16_shared_barrier}")
+        _http_json(
+            "PUT",
+            f"{model_url}/control/script",
+            [
+                {
+                    "mode": "complete",
+                    "content": "pc16 four input final",
+                    "barrier": pc16_shared_barrier,
+                }
+                for _ in range(4)
+            ],
+        )
+        first_ack = first.send_programmatic(pc16_source, *pc16_inputs[0])
+        _wait_barrier(model_url, pc16_old_barrier)
+        request_start = len(
+            _model_requests(_http_json("GET", f"{model_url}/control/requests"))
+        ) - 1
+        input_acks = [first_ack]
+        for message_id, text in pc16_inputs[1:]:
+            input_acks.append(first.send_programmatic(pc16_source, message_id, text))
+        before_release = first.read_messages(pc16_source)
+        before_rows = [
+            item for item in before_release.get("items", [])
+            if isinstance(item, dict)
+        ]
+        input_rows = [
+            item for item in before_rows
+            if isinstance(item.get("body"), dict)
+            and item["body"].get("kind") == "input"
+        ]
+        # 旧 provider 先独立进入 client_disconnected；共享 barrier 仍保持，
+        # 因而后续请求只能在所有 Input 落日志后被观察和释放。
+        _release_barrier(model_url, pc16_old_barrier)
+        all_texts = [text for _, text in pc16_inputs]
+        request_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        old_request: dict[str, Any] | None = None
+        new_request: dict[str, Any] | None = None
+        while time.monotonic() < request_deadline:
+            requests = _model_requests(
+                _http_json("GET", f"{model_url}/control/requests")
+            )
+            for request in requests[max(0, request_start):]:
+                payload = request.get("payload") if isinstance(request, dict) else None
+                prompt = (
+                    json.dumps(payload, ensure_ascii=False)
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                if all(text in prompt for text in all_texts):
+                    new_request = request
+                elif all_texts[0] in prompt:
+                    old_request = request
+            if (
+                new_request is not None
+                and new_request.get("state") == "blocked"
+                and old_request is not None
+                and old_request.get("state") == "client_disconnected"
+            ):
+                break
+            threading.Event().wait(0.05)
+        pre_release_requests = {
+            "old": old_request,
+            "new": new_request,
+            "barrier": _http_json(
+                "GET", f"{model_url}/control/barriers/{pc16_shared_barrier}"
+            ),
+        }
+        _release_barrier(model_url, pc16_shared_barrier)
+        input_results = [
+            _wait_programmatic_result(first, pc16_source, message_id)
+            for message_id, _ in pc16_inputs
+        ]
+        post_release_requests = _model_requests(
+            _http_json("GET", f"{model_url}/control/requests")
+        )
+        for request in post_release_requests[max(0, request_start):]:
+            payload = request.get("payload") if isinstance(request, dict) else None
+            prompt = (
+                json.dumps(payload, ensure_ascii=False)
+                if isinstance(payload, dict)
+                else ""
+            )
+            if all(text in prompt for text in all_texts):
+                new_request = request
+            elif all_texts[0] in prompt:
+                old_request = request
+        source_page = first.read_messages(pc16_source)
+        source_rows = [
+            item for item in source_page.get("items", [])
+            if isinstance(item, dict)
+        ]
+        source_outputs = [
+            item for item in source_rows
+            if isinstance(item.get("body"), dict)
+            and item["body"].get("kind") == "output"
+        ]
+        final_output = source_outputs[0] if len(source_outputs) == 1 else None
+        input_body_exact = all(
+            item.get("id") == message_id
+            and item.get("session_id") == pc16_source
+            and item.get("source") == "programmatic"
+            and item.get("seq") == index
+            and isinstance(item.get("body"), dict)
+            and item["body"].get("kind") == "input"
+            and any(
+                isinstance(part, dict)
+                and part.get("kind") == "text"
+                and part.get("value") == text
+                for part in item["body"].get("parts", [])
+            )
+            for index, ((message_id, text), item) in enumerate(
+                zip(pc16_inputs, input_rows)
+            )
+        )
+        result_ids = {result.get("ending_message_id") for result in input_results}
+        same_source_passed = (
+            [ack.get("seq") for ack in input_acks] == [0, 1, 2, 3]
+            and len(input_rows) == 4
+            and input_body_exact
+            and len(source_rows) == 5
+            and len(source_outputs) == 1
+            and isinstance(final_output, dict)
+            and final_output.get("seq") == 4
+            and final_output.get("source") == "programmatic"
+            and final_output.get("body", {}).get("finish") == "complete"
+            and _message_text(final_output) == "pc16 four input final"
+            and all(result.get("status") == "complete" for result in input_results)
+            and len(result_ids) == 1
+            and new_request is not None
+            and old_request is not None
+            and old_request.get("state") == "client_disconnected"
+            and new_request.get("state") == "completed"
+        )
+        lane_evidence["sameSource"] = {
+            "acks": input_acks,
+            "inputsBeforeRelease": input_rows,
+            "results": input_results,
+            "messagePage": source_page,
+            "oldProvider": old_request,
+            "newProvider": new_request,
+            "preReleaseRequests": pre_release_requests,
+            "postReleaseRequests": post_release_requests[max(0, request_start):],
+            "passed": same_source_passed,
+        }
+        if input_results and source_outputs:
+            pc06_first_result = first.programmatic_result(pc06, "pc06-first")
+            pc07_current_result = first.programmatic_result(pc07, "pc07-input")
+            pc09_results = [
+                first.programmatic_result(pc09, f"pc09-input-{index}")
+                for index in range(producer_count)
+            ]
+            raw_messages = _wait_message_log_rows(
+                database,
+                pc16_source,
+                minimum=5,
+                required_ids={message_id for message_id, _ in pc16_inputs}
+                | {str(final_output["id"])},
+            )
+
+            def result_evidence(
+                session_id: str,
+                input_id: str,
+                result: dict[str, Any],
+                *,
+                lifecycle: str,
+                observations: list[dict[str, Any]] | None = None,
+            ) -> dict[str, object]:
+                status = result.get("status")
+                settled = status in {"complete", "pause", "failure"}
+                if lifecycle.startswith("superseded") or lifecycle == "pause_then_resumed":
+                    settled = True
+                return {
+                    "sessionId": session_id,
+                    "inputId": input_id,
+                    "status": status,
+                    "lifecycle": lifecycle,
+                    "settled": settled,
+                    "result": result,
+                    "observations": observations or [result],
+                }
+
+            programmatic_results = [
+                result_evidence(pc05_a, "pc05-input-a", pc05_a_result, lifecycle="complete"),
+                result_evidence(pc05_b, "pc05-input-b", pc05_b_result, lifecycle="complete"),
+                result_evidence(
+                    pc06, "pc06-first", pc06_first_result,
+                    lifecycle="superseded_same_source",
+                ),
+                result_evidence(pc06, "pc06-second", pc06_result, lifecycle="complete"),
+                result_evidence(
+                    pc07, "pc07-input", pc07_current_result,
+                    lifecycle="pause_then_resumed",
+                    observations=[pc07_paused_result, pc07_current_result],
+                ),
+                result_evidence(pc07, "pc07-new-input", pc07_new_result, lifecycle="complete"),
+                result_evidence(pc08, "pc08-input", resumed_result, lifecycle="complete"),
+                *[
+                    result_evidence(
+                        pc09, f"pc09-input-{index}", result, lifecycle="complete"
+                    )
+                    for index, result in enumerate(pc09_results)
+                ],
+                result_evidence(
+                    pc09_healthy, "pc09-healthy-input", pc09_healthy_result,
+                    lifecycle="complete",
+                ),
+                result_evidence(pc10, "pc10-input", pc10_result, lifecycle="failure"),
+                *[
+                    result_evidence(
+                        str(item["sessionId"]),
+                        str(item["inputId"]),
+                        cast(dict[str, Any], item["programmaticResult"]),
+                        lifecycle=(
+                            "complete"
+                            if cast(dict[str, Any], item["programmaticResult"]).get("status")
+                            == "complete"
+                            else "failure"
+                        ),
+                    )
+                    for item in parity_evidence
+                    if isinstance(item.get("programmaticResult"), dict)
+                ],
+                *[
+                    result_evidence(
+                        pc16_source, message_id, result, lifecycle="complete"
+                    )
+                    for (message_id, _), result in zip(pc16_inputs, input_results)
+                ],
+            ]
+            restart_state = {
+                "sessionId": pc16_source,
+                "inputId": pc16_inputs[-1][0],
+                "inputText": pc16_inputs[-1][1],
+                "inputSeq": 3,
+                "endingMessageId": input_results[-1].get("ending_message_id"),
+                "endingSeq": input_results[-1].get("ending_seq"),
+                "rawMessages": raw_messages,
+                "wireMessages": source_rows,
+                "statusBefore": first.request("server/status", {}).get("result"),
+                "providerRequestCount": len(
+                    _model_requests(_http_json("GET", f"{model_url}/control/requests"))
+                ),
+                "programmaticResults": programmatic_results,
+            }
+
+        different_sessions = cast(dict[str, object], lane_evidence["differentSessions"])
+        same_source = cast(dict[str, object], lane_evidence["sameSource"])
+        failure_recovery = cast(dict[str, object], lane_evidence["failureRecovery"])
+        if restart_state:
+            restart_state["messageTerminalEvidence"] = {
+                "parity": [
+                    {
+                        "status": item["channel"]["status"],
+                        "settled": item["passed"],
+                    }
+                    for item in parity_evidence
+                ],
+                "differentSessions": {
+                    "fast": different_sessions["fastCompletedBeforeRelease"]["status"]
+                    == "complete",
+                    "slow": different_sessions["slowFinal"] == "slow complete",
+                },
+                "sameSource": same_source.get("passed") is True,
+                "failureRecovery": failure_recovery.get("passed") is True,
+            }
         checks.append(
             CheckResult(
                 "PC-16",
-                parity_passed and lane_passed,
+                parity_passed
+                and same_source.get("passed") is True
+                and failure_recovery.get("passed") is True
+                and cast(
+                    dict[str, object],
+                    different_sessions["fastCompletedBeforeRelease"],
+                )["status"] == "complete"
+                and different_sessions["fastFinal"] == "fast complete"
+                and different_sessions["slowFinal"] == "slow complete",
                 {
                     "projection": parity_evidence,
                     "lanes": lane_evidence,
@@ -3350,7 +3822,6 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 },
             )
         )
-
         # 8. 非法 JSON/params 返回稳定 error，随后新连接仍可 readiness。
         raw_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         raw_socket.connect(str(endpoint))
@@ -3360,7 +3831,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         raw_reader.close()
         raw_socket.close()
         invalid_params = second.request_raw(
-            "thread/start", {"metadata": {}, "unexpected": True}
+            "programmatic/message/send", {"session_id": "programmatic:pc11-invalid"}
         )
         healthy = _connect_client(endpoint, events_path)
         clients.append(healthy)
@@ -3406,7 +3877,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
 
 
 def _inside_restart_check(report_dir: Path) -> int:
-    """重启后验证协议 readiness 与既有 turn 持久可读。"""
+    """重启后验证 Message 原文、结果 ACK 和 provider 请求均未改变。"""
 
     endpoint = Path("/sandbox/akashic.sock")
     _wait_socket(endpoint, READINESS_DEADLINE_S)
@@ -3415,14 +3886,127 @@ def _inside_restart_check(report_dir: Path) -> int:
         state = json.loads(
             (report_dir / "restart-state.json").read_text(encoding="utf-8")
         )
-        turn = client.request(
-            "turn/read",
-            {"threadId": state["threadId"], "turnId": state["turnId"]},
+        if not isinstance(state, dict):
+            raise GateFailure("restart-state 不是 object")
+        session_id = state.get("sessionId")
+        input_id = state.get("inputId")
+        input_text = state.get("inputText")
+        input_seq = state.get("inputSeq")
+        ending_id = state.get("endingMessageId")
+        ending_seq = state.get("endingSeq")
+        expected_messages = state.get("rawMessages")
+        expected_wire_messages = state.get("wireMessages")
+        before_status = state.get("statusBefore")
+        phase = state.get("restartPhase")
+        runtime = state.get("runtime")
+        phase_runtime = runtime.get(phase) if isinstance(runtime, dict) else None
+        if (
+            not isinstance(session_id, str)
+            or not isinstance(input_id, str)
+            or not isinstance(input_text, str)
+            or type(input_seq) is not int
+            or not isinstance(ending_id, str)
+            or type(ending_seq) is not int
+            or not isinstance(expected_messages, list)
+            or not isinstance(expected_wire_messages, list)
+            or not isinstance(before_status, dict)
+            or not isinstance(phase, str)
+            or not isinstance(phase_runtime, dict)
+        ):
+            raise GateFailure(f"restart-state 字段不完整：{state!r}")
+        status_response = client.request("server/status", {})
+        current_status = status_response.get("result")
+        if not isinstance(current_status, dict):
+            raise GateFailure(f"重启后 server/status 非 object：{status_response!r}")
+        ack = client.send_programmatic(session_id, input_id, input_text)
+        result = client.programmatic_result(session_id, input_id)
+        page = client.read_messages(session_id)
+        actual_messages = _wait_message_log_rows(
+            Path("/sandbox/workspace/sessions.db"),
+            session_id,
+            minimum=len(expected_messages),
+            required_ids={str(row["id"]) for row in expected_messages if isinstance(row, dict)},
+        )
+        model_url = os.environ.get("AKASHIC_MODEL_GATE_URL", "http://model-gate:8090")
+        provider_request_count = len(
+            _model_requests(_http_json("GET", f"{model_url}/control/requests"))
         )
     finally:
         client.close()
-    passed = turn.get("result", {}).get("status") == "completed"
-    result = CheckResult("PC-13", passed, turn)
+    runtime_before = phase_runtime.get("before")
+    runtime_after = phase_runtime.get("after")
+    boot_before = before_status.get("bootId")
+    boot_after = current_status.get("bootId")
+    runtime_changed = (
+        isinstance(runtime_before, dict)
+        and isinstance(runtime_after, dict)
+        and runtime_before.get("pid") == 1
+        and runtime_after.get("pid") == 1
+        and type(runtime_before.get("starttime")) is int
+        and type(runtime_after.get("starttime")) is int
+        and runtime_before.get("starttime") != runtime_after.get("starttime")
+    )
+    wire_messages = _message_wire_projection(page)
+    wire_messages_before = _message_wire_projection({"items": expected_wire_messages})
+    input_row = next(
+        (
+            row for row in expected_messages
+            if isinstance(row, dict) and row.get("id") == input_id
+        ),
+        None,
+    )
+    passed = (
+        current_status.get("ready") is True
+        and current_status.get("protocolVersion") == PROTOCOL_VERSION
+        and isinstance(boot_before, str)
+        and isinstance(boot_after, str)
+        and boot_before != boot_after
+        and runtime_changed
+        and ack.get("version") == 2
+        and ack.get("session_id") == session_id
+        and ack.get("message_id") == input_id
+        and ack.get("seq") == input_seq
+        and result.get("status") == "complete"
+        and result.get("ending_message_id") == ending_id
+        and result.get("ending_seq") == ending_seq
+        and page.get("session_id") == session_id
+        and page.get("through_seq") == ending_seq
+        and actual_messages == expected_messages
+        and wire_messages == wire_messages_before
+        and provider_request_count == state.get("providerRequestCount")
+        and isinstance(input_row, dict)
+        and input_row.get("seq") == input_seq
+        and any(
+            isinstance(part, dict)
+            and part.get("kind") == "text"
+            and part.get("value") == input_text
+            for part in (
+                input_row.get("body", {}).get("parts", [])
+                if isinstance(input_row.get("body"), dict)
+                else []
+            )
+        )
+    )
+    evidence = {
+        "phase": phase,
+        "statusBefore": before_status,
+        "statusAfter": current_status,
+        "runtimeBefore": runtime_before,
+        "runtimeAfter": runtime_after,
+        "runtimeChanged": runtime_changed,
+        "ack": ack,
+        "result": result,
+        "messagePage": page,
+        "rawMessagesBefore": expected_messages,
+        "rawMessagesAfter": actual_messages,
+        "wireMessagesBefore": expected_wire_messages,
+        "wireMessagesAfter": page.get("items"),
+        "wireUnchanged": wire_messages == wire_messages_before,
+        "messagesUnchanged": actual_messages == expected_messages,
+        "providerRequestCountBefore": state.get("providerRequestCount"),
+        "providerRequestCountAfter": provider_request_count,
+    }
+    result = CheckResult("PC-13", passed, evidence)
     _write_json(report_dir / "restart-check.json", asdict(result))
     print(json.dumps(asdict(result), ensure_ascii=False))
     return 0 if passed else 1
@@ -3564,10 +4148,16 @@ def _write_jsonl(path: Path, items: list[object]) -> None:
 
 
 def _snapshot_database(database: Path) -> dict[str, object]:
-    """读取控制面相关 SQLite 终态，缺失数据库时明确记录。"""
+    """读取控制面 SQLite 终态，并明确报告必需表是否存在。"""
 
     if not database.exists():
-        return {"exists": False, "path": str(database)}
+        return {
+            "exists": False,
+            "path": str(database),
+            "tableNames": [],
+            "missingRequiredTables": ["sessions", "messages"],
+            "tables": {},
+        }
     with sqlite3.connect(database) as connection:
         connection.row_factory = sqlite3.Row
         table_names = {
@@ -3577,12 +4167,131 @@ def _snapshot_database(database: Path) -> dict[str, object]:
             ).fetchall()
         }
         tables: dict[str, list[dict[str, object]]] = {}
-        for name in ("sessions", "turns", "operations"):
+        for name in ("sessions", "messages", "turns", "operations"):
             if name not in table_names:
                 continue
             rows = connection.execute(f'SELECT * FROM "{name}"').fetchall()
             tables[name] = [dict(row) for row in rows]
-    return {"exists": True, "path": str(database), "tables": tables}
+    required_tables = ("sessions", "messages")
+    return {
+        "exists": True,
+        "path": str(database),
+        "tableNames": sorted(table_names),
+        "missingRequiredTables": [
+            name for name in required_tables if name not in table_names
+        ],
+        "tables": tables,
+    }
+
+
+def _runtime_identity(
+    compose: list[str], repo: Path, env: dict[str, str]
+) -> dict[str, int]:
+    """读取 gateway 容器 PID 1 的真实 PID/starttime。"""
+
+    script = (
+        "import json,pathlib; "
+        "raw=pathlib.Path('/proc/1/stat').read_text(); "
+        "tail=raw.rsplit(') ', 1)[1].split(); "
+        "print(json.dumps({'pid': 1, 'starttime': int(tail[19])}))"
+    )
+    completed = subprocess.run(
+        [
+            *compose,
+            "exec",
+            "-T",
+            "akashic-control-gate",
+            "python",
+            "-c",
+            script,
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise GateFailure(f"读取 gateway runtime identity 失败：{completed.stderr[-1000:]}")
+    try:
+        payload = json.loads(completed.stdout.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as error:
+        raise GateFailure(
+            f"gateway runtime identity 不是 JSON：{completed.stdout[-1000:]}"
+        ) from error
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("pid")) is not int
+        or type(payload.get("starttime")) is not int
+    ):
+        raise GateFailure(f"gateway runtime identity 字段非法：{payload!r}")
+    return {"pid": payload["pid"], "starttime": payload["starttime"]}
+
+
+def _gateway_status(
+    compose: list[str], repo: Path, env: dict[str, str]
+) -> dict[str, Any]:
+    """通过 gateway 自己的 UDS 证明现有 owner 仍然 ready。"""
+
+    script = (
+        "import json,socket; "
+        "connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); "
+        "connection.connect('/sandbox/akashic.sock'); "
+        "reader=connection.makefile('rb'); "
+        "connection.sendall((json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize',"
+        "'params':{'protocolVersion':'2.0','clientInfo':{'name':'workspace-lock-check',"
+        "'version':'2.0'},'capabilities':{}}})+'\\n').encode()); "
+        "reader.readline(); "
+        "connection.sendall((json.dumps({'jsonrpc':'2.0','method':'initialized',"
+        "'params':{}})+'\\n').encode()); "
+        "connection.sendall((json.dumps({'jsonrpc':'2.0','id':2,'method':'server/status',"
+        "'params':{}})+'\\n').encode()); "
+        "print(reader.readline().decode().strip())"
+    )
+    completed = subprocess.run(
+        [
+            *compose,
+            "exec",
+            "-T",
+            "akashic-control-gate",
+            "python",
+            "-c",
+            script,
+        ],
+        cwd=repo,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return {
+            "ready": False,
+            "error": completed.stderr[-1000:],
+            "returncode": completed.returncode,
+        }
+    try:
+        frame = json.loads(completed.stdout.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as error:
+        return {
+            "ready": False,
+            "error": f"status output invalid: {error}",
+            "stdout": completed.stdout[-1000:],
+        }
+    result = frame.get("result") if isinstance(frame, dict) else None
+    return result if isinstance(result, dict) else {"ready": False, "frame": frame}
+
+
+def _socket_unavailable(endpoint: Path) -> bool:
+    """证明停止后共享 UDS 没有可接受连接的进程。"""
+
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        return not endpoint.exists() or probe.connect_ex(str(endpoint)) != 0
+    finally:
+        probe.close()
 
 
 def _repository_digest(repo: Path) -> dict[str, str]:
@@ -4003,13 +4712,21 @@ def _workspace_lock_check(
         timeout=READINESS_DEADLINE_S,
         check=False,
     )
-    (report_dir / "workspace-lock.stderr.log").write_bytes(completed.stderr)
+    stderr = completed.stderr.decode(errors="replace")
+    (report_dir / "workspace-lock.stderr.log").write_text(stderr, encoding="utf-8")
+    gateway_status = _gateway_status(compose, repo, env)
+    lock_reason = "workspace 已由其他 runtime 占用"
     return CheckResult(
         "PC-14",
-        completed.returncode != 0,
+        completed.returncode != 0
+        and lock_reason in stderr
+        and gateway_status.get("ready") is True,
         {
             "returncode": completed.returncode,
-            "stderrTail": completed.stderr.decode(errors="replace")[-2000:],
+            "lockReason": lock_reason,
+            "reasonMatched": lock_reason in stderr,
+            "stderrTail": stderr[-2000:],
+            "gatewayStatus": gateway_status,
         },
     )
 
@@ -4229,6 +4946,16 @@ def _run_host(gate: str) -> int:
             raise GateFailure(f"inside {gate} failed: {inside.returncode}")
         if gate == "failure-matrix":
             checks.append(_workspace_lock_check(compose, repo, env, report_dir))
+        restart_state_path = sandbox / "reports/restart-state.json"
+        if gate == "failure-matrix":
+            restart_state = json.loads(restart_state_path.read_text(encoding="utf-8"))
+            restart_state["restartPhase"] = "graceful"
+            restart_state["runtime"] = {
+                "graceful": {
+                    "before": _runtime_identity(compose, repo, env),
+                }
+            }
+            _write_json(restart_state_path, restart_state)
         stop_started = time.monotonic()
         gateway_stop = subprocess.run(
             [*compose, "stop", "-t", "15", "akashic-control-gate"],
@@ -4243,14 +4970,59 @@ def _run_host(gate: str) -> int:
             checks.append(_run_stdio_check(compose, repo, env, report_dir))
         elif gate == "failure-matrix":
             stopped_snapshot = _snapshot_database(sandbox / "workspace/sessions.db")
-            non_terminal = _non_terminal_turns(stopped_snapshot)
+            restart_state = json.loads(restart_state_path.read_text(encoding="utf-8"))
+            programmatic_results = restart_state.get("programmaticResults")
+            terminal_evidence = restart_state.get("messageTerminalEvidence")
+            missing_tables = stopped_snapshot.get("missingRequiredTables")
+            open_results = (
+                [
+                    item
+                    for item in programmatic_results
+                    if isinstance(item, dict) and item.get("settled") is not True
+                ]
+                if isinstance(programmatic_results, list)
+                else ["missing"]
+            )
+            different_sessions = (
+                terminal_evidence.get("differentSessions")
+                if isinstance(terminal_evidence, dict)
+                else None
+            )
+            no_running_work = (
+                isinstance(programmatic_results, list)
+                and bool(programmatic_results)
+                and not open_results
+                and isinstance(terminal_evidence, dict)
+                and isinstance(different_sessions, dict)
+                and all(value is True for value in different_sessions.values())
+                and terminal_evidence.get("sameSource") is True
+                and terminal_evidence.get("failureRecovery") is True
+            )
+            socket_unavailable = _socket_unavailable(sandbox / "akashic.sock")
             checks.append(
                 CheckResult(
                     "PC-12",
-                    stop_duration <= 15 and not non_terminal,
+                    stop_duration <= 15
+                    and stopped_snapshot.get("exists") is True
+                    and missing_tables == []
+                    and no_running_work
+                    and socket_unavailable,
                     {
                         "durationSeconds": stop_duration,
-                        "nonTerminalTurns": non_terminal,
+                        "database": {
+                            "exists": stopped_snapshot.get("exists"),
+                            "tableNames": stopped_snapshot.get("tableNames"),
+                            "missingRequiredTables": missing_tables,
+                            "messageCount": len(
+                                stopped_snapshot.get("tables", {}).get("messages", [])
+                            )
+                            if isinstance(stopped_snapshot.get("tables"), dict)
+                            else None,
+                        },
+                        "programmaticResults": programmatic_results,
+                        "openResults": open_results,
+                        "messageTerminalEvidence": terminal_evidence,
+                        "socketUnavailable": socket_unavailable,
                     },
                 )
             )
@@ -4262,6 +5034,11 @@ def _run_host(gate: str) -> int:
             )
             if restart.returncode != 0:
                 raise GateFailure(f"gateway restart failed: {restart.returncode}")
+            restart_state = json.loads(restart_state_path.read_text(encoding="utf-8"))
+            restart_state["runtime"]["graceful"]["after"] = _runtime_identity(
+                compose, repo, env
+            )
+            _write_json(restart_state_path, restart_state)
             restart_check = _run_inside(
                 compose,
                 repo,
@@ -4271,6 +5048,7 @@ def _run_host(gate: str) -> int:
             )
             restart_payload = sandbox / "reports/restart-check.json"
             if restart_payload.exists():
+                shutil.copy2(restart_payload, report_dir / "restart-check-graceful.json")
                 checks.append(CheckResult(**json.loads(restart_payload.read_text())))
             if restart_check.returncode != 0:
                 raise GateFailure(
@@ -4289,6 +5067,17 @@ def _run_host(gate: str) -> int:
                 env=env,
                 check=False,
             )
+            if restart_after_crash.returncode != 0:
+                raise GateFailure(
+                    f"gateway crash restart failed: {restart_after_crash.returncode}"
+                )
+            restart_state = json.loads(restart_state_path.read_text(encoding="utf-8"))
+            restart_state["restartPhase"] = "crash"
+            restart_state["runtime"]["crash"] = {
+                "before": restart_state["runtime"]["graceful"]["after"],
+                "after": _runtime_identity(compose, repo, env),
+            }
+            _write_json(restart_state_path, restart_state)
             crash_check = _run_inside(
                 compose,
                 repo,
@@ -4296,16 +5085,28 @@ def _run_host(gate: str) -> int:
                 gate=gate,
                 phase="restart-check",
             )
+            if restart_payload.exists():
+                shutil.copy2(restart_payload, report_dir / "restart-check-crash.json")
+            crash_payload = (
+                json.loads(restart_payload.read_text())
+                if restart_payload.exists()
+                else None
+            )
             checks.append(
                 CheckResult(
                     "PC-13-crash",
                     crash.returncode == 0
                     and restart_after_crash.returncode == 0
-                    and crash_check.returncode == 0,
+                    and crash_check.returncode == 0
+                    and isinstance(crash_payload, dict)
+                    and crash_payload.get("passed") is True,
                     {
                         "killReturncode": crash.returncode,
                         "restartReturncode": restart_after_crash.returncode,
                         "probeReturncode": crash_check.returncode,
+                        "restartCheck": (
+                            crash_payload
+                        ),
                     },
                 )
             )
