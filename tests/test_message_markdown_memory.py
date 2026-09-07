@@ -388,7 +388,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
 @pytest.mark.parametrize("phase", ["waiting", "held"])
 async def test_profile_lock_cancellation_closes_its_handle_and_allows_next_writer(tmp_path, monkeypatch, phase):
     import fcntl
-    from plugins.markdown_memory.plugin import profile_lock
+    from plugins.markdown_memory.message_plugin import profile_lock
     path = tmp_path / "profile.lock"
     blocker = path.open("a+b")
     if phase == "waiting":
