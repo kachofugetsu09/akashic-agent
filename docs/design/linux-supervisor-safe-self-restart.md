@@ -220,6 +220,18 @@ Supervisor 验证 ready + commit + 75，启动下一 boot
 
 本提议保证 Supervisor、Guardian、Gateway 三者中一个 lifecycle owner 单点故障时的收束。不承诺 Supervisor 与 Guardian 同时 SIGKILL、内核崩溃或断电后的在线清理；下一次启动必须检测 stale lock/端口占用并 fail-loud，未知 owner 不得被杀。
 
+### 7.1 当前实现的 claim 与 drain owner
+
+当前实现把重启前的几个事实分开结算：
+
+- `agent_restart` 普通工具只在 supervised Root 中可用。`RestartWatcher` 观察成功的 `ToolResult` 后先调用 `gate.prepare` 关闭新 Root 接纳，再等待所属 Turn complete；未成功的 ToolResult、断线或不完整回复都不能提交 restart。
+- `FrameBook` 以 `(Session, Input)` 定位 programmatic route，并保存 `connection` 作为 owner；它等待该 Input 对应的完整 Output writer drain。`FrameClaim` 只保存一个精确 `CallRef` 的 restart claim，等待同一 route 的最终 frame flush；它不拥有 Message、Delivery 或 supervisor 生命周期。
+- 非 programmatic 来源由 `FinalOutputDelivery` 等待实际回复送达。`RestartWatcher` 在 frame drain 或 Delivery receipt 完成后才调用 `RestartGate.commit`；它拥有单次 restart request 的等待/abort，不拥有外部 Root permit。
+- `RestartGate` 只拥有新 Root 接纳开关、外部 Root permit 计数和 supervisor commit。`prepare` 关闭新准入，`commit` 等待 permit drain 后向私有 lifecycle pipe 写入 opaque request ID，成功后 programmatic claim 才由 watcher `consume`；失败或取消走 `abort` 恢复准入。
+- 断线边界由 `FrameBook` 结算：控制连接断开会从 active routes 移除该连接的 route，并把原始 `ConnectionError` 留在 live claim 上；claim 索引直到 watcher `consume` 或 `abort` 才移除，不能被另一连接接管。`RestartWatcher` 只消费成功 `agent_restart` ToolResult；成功 ToolResult、Turn complete、Delivery receipt 或 frame drain 各自有独立 owner。
+
+因此接纳 ACK、回复 complete、Delivery receipt、完整 frame drain、restart claim 消费和 supervisor commit 不能互相替代。实现随 Root `18675fe8` 合入，`eabab9f4` 的回归覆盖 claim 的断线归属；正式 workspace 与跨客户端完整切换仍按主设计和 `NOW.md` 验收。
+
 ## 8. 启动、停止与性能规则
 
 ### 8.1 启动
