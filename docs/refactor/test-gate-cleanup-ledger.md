@@ -106,18 +106,18 @@
 | Mobile 旧 stop/interrupt 注入、生产 `_Bus` 假设及其过渡辅助 | 真实 ChannelRuntimePorts、MessageCatalog 和 recoverer 已承接输入与恢复；旧队列模型会误导新入口 | `infra/mobile_realtime/`、`session/`、Channel/来源插件 |
 | 旧 Memory2/runtime helper 路由 | 退役能力不再进入当前插件组合；其历史数据仍按状态地图和恢复合同保留 | `plugins/compaction/`、`plugins/markdown_memory/`、`plugins/akasha/` |
 
-`agent/plugins/manager.py`、snapshot 和兼容导出中仍存在的 `TOOL_CATALOG`、旧 delivery 导出及 `AFTER_TURN_COMMITTED` 残留没有被误写成当前公共能力：它们保留在兼容/历史图中，等待后续正式迁移或明确删除。当前工具入口是 `plugins.tools` 的 `TOOLS` 与 `plugins.tools.api`，当前出站入口是 `plugins.delivery` 的 `DELIVERY` / `DELIVERY_READ`。旧事件和测试残留不能证明新 Core 会发布对应业务事实。
+`core.tool_catalog` 不是兼容残留：`agent/plugin_composition/tool_catalog.py` 的 `TOOL_CATALOG` 仍由 manager 提供，并在 snapshot generation、freeze、activation 和 lease 路径消费；它是 Core 内部组合服务。插件公开工具合同是 `plugins.tools` 的 `TOOLS`（`tools.v1`），不是这个内部 key。当前普通出站 owner 是 `plugins.delivery`，提供 `DELIVERY_SENDERS`、`DELIVERY`、`FINAL_OUTPUT_DELIVERY` 和 `DELIVERY_READ`；`agent/plugin_composition` 的 `DELIVERIES` / `DURABLE_DELIVERIES` 仍由 manager/static candidate view 提供，但当前生产插件不再 import，只有 manager、导出和测试保留它们。`AFTER_TURN_COMMITTED` 仍有当前定义与测试残留，外部 Observe/Proactive Feedback stable artifact 的迁移仍待完成；这些旧事件和兼容导出不能证明新 Core 会发布对应业务事实。
 
 ### 写入集与恢复
 
-本次文档修正未修改数据库、yoyo、workspace、plugin-data、Android 源码、外部插件 checkout、安装 cache 或生成 bundle。此前 stacked code commits 可能包含各自 owner 的 yoyo 迁移；本句只描述本次文档写入集。删除代码不减少既有 Message、学习、附件、receipt 或 plugin-data。第 10 层已有分范围的 programmatic smoke、MC01 和 G5 证据；完整 MessageLog 启动的最终 Gate、Android 配套、外部插件迁移和正式切换仍未验收，见下方当前条目。
+本次文档修正未修改数据库、yoyo、workspace、plugin-data、Android 源码、外部插件 checkout、安装 cache 或生成 bundle。此前 stacked code commits 可能包含各自 owner 的 yoyo 迁移；本句只描述本次文档写入集。删除代码不减少既有 Message、学习、附件、receipt 或 plugin-data。第 10 层已有分范围的 programmatic smoke、MC01 和 G5 证据；完整 MessageLog 启动与每周 lifecycle/restart probe 已由下方 clean run 验收，Android 配套、外部插件迁移和正式切换仍未验收。
 
 代码清理的实际历史是：`1492ce5f` 为 `7340e5a0` 的父提交，`7340e5a0` 删除旧 lifecycle/passive graph，随后 `576e8add` 删除旧 event/retrieval leaves。`5e1b1b93` 是 Message 行为与 Gate 元数据的候选基线，不是这些代码删除的恢复点；如需回放文档/行为候选，可将其作为参考提交，不能据此恢复已删除代码。文档修改前的逐文件恢复副本位于 `/tmp/akasic-agent-backups/docs-cleanup-20260907-before-edit/`，包含本批次涉及的六份文档。恢复时先停用候选运行时，再按 Git worktree 和文档副本逐项回放，不能触碰正式 workspace。验证至少包括 `git diff --check`、相对链接检查、旧入口搜索，以及与当前实现直接相关的文档/API路径核对。
 
 ## 2026-09-07：MessageLog 第 10 层 Gate 分层
 
-- 当前候选已分别完成 programmatic control smoke、MC01 memory-context 和 G5 programmatic Message soak。它们各自验证来源接纳、MessageLog 追加/投影和受控失败边界；这些分范围 Gate 不等于完整 MessageLog 启动验收。
+- 当前候选已分别完成 programmatic control smoke、MC01 memory-context 和 G5 programmatic Message soak。它们各自验证来源接纳、MessageLog 追加/投影和受控失败边界；随后 clean run 又完成了完整 MessageLog 启动与 lifecycle/restart probe 验收。
 - MC01 在 admission 时显式传 `persist_memory=true`，并核对 `learning=eligible`；G5 soak 使用默认 `persist_memory=false`，并核对 `learning=excluded`。两种 Session 资格是有意分开的合同，不能把 G5 的默认排除写成 MC01 结果。
 - `agent/plugin_composition/tool_catalog.py` 的 `core.tool_catalog` 仍被 manager、snapshot generation、freeze、activation 和 lease 消费；active `content-source-interop.lock` 的 `emotion` revision `2bb332b7` 仍以该边界验收，公开插件/工具合同是 `tools.v1`，因此该 leaf 不能按名称相似或局部无调用就删除。
 - FrameBook 断线时移除 active route，将原始 `ConnectionError` 留给 live claim；RestartWatcher 先 `gate.prepare`，等待 Turn complete 后在 claim drain 与普通 delivery 之间分支，`gate.commit` 成功后才消费 programmatic claim。详细 owner 合同见 [消息日志设计](../design/0902-reviewed-v4.md) 与 [Linux 自重启设计](../design/linux-supervisor-safe-self-restart.md)。
-- 最终 clean-head 启动 Gate、每周 lifecycle/restart probe 的正式迁移、Android 原生配套、外部插件源码迁移、旧 workspace/历史效果转换和正式 workspace 演练仍是未完成事项；部署前提未被上述分范围证据替代。
+- clean Core `7189f19fb7ba385e37932e2d08c4c9a56c86942e` 的 run `20260907-182121-3efdcba6` 已通过完整启动与每周 lifecycle/restart probe：primary `103/103`（20 轮）、`unsupervised=true`、5 个 failure mode 全通过，`inside`/`unsupervised`/`failures`/`cleanup` 均为 0，残留 containers/networks/volumes 为空，`repositoriesUnchanged=true`。报告位于 `/mnt/data/coding/akasic-agent-worktrees/message-plugins-10-restart-probe/docker/debug/reports/restart/20260907-182121-3efdcba6/`，其中 `sourceDigest=sandboxAppDigest=a6de60971668fdabc0efc8a732050335f774d8e65c61177ab128f38330c44fbd`、`fileCount=1395`；完整 change-impact Gate 的最终提交与源码摘要由对应报告和 PR 记录。Android 原生配套、外部插件源码迁移、旧 workspace/历史效果转换和正式 workspace 演练仍是正式切换前提。
