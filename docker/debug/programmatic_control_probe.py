@@ -67,7 +67,7 @@ _MEMORY_CONTEXT_PROFILE_RESPONSE = json.dumps(
     {"memory": "", "self": _DEFAULT_SELF_MD},
     ensure_ascii=False,
 )
-_MEMORY_CONTEXT_TOKEN_REPEAT = 5_000
+_MEMORY_CONTEXT_TOKEN_REPEAT = 4_500
 
 
 @dataclass(frozen=True)
@@ -686,43 +686,43 @@ def _memory_context_seed_content(role: str, index: int) -> str:
     return (f"seed {role} {index} " + "token " * _MEMORY_CONTEXT_TOKEN_REPEAT).strip()
 
 
-def _memory_context_seed_rows(session_key: str) -> list[tuple[str, str, str]]:
-    """Return expected seed IDs, roles, and bodies in durable seq order."""
+def _memory_context_seed_rows() -> list[tuple[str, str]]:
+    """Return the expected historical role and text pairs in durable order."""
 
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str]] = []
     for index in range(4):
         for role in ("user", "assistant"):
-            seq = len(rows)
-            rows.append(
-                (
-                    f"{session_key}:{seq}",
-                    role,
-                    _memory_context_seed_content(role, index),
-                )
-            )
+            rows.append((role, _memory_context_seed_content(role, index)))
     return rows
 
 
-def _memory_context_source_plan_digest(session_key: str) -> str:
-    """Hash the three selected complete units exactly as ContextCompactor does."""
+def _memory_context_source_plan_digest(
+    rows: Sequence[sqlite3.Row], source_ids: Sequence[str] | None = None
+) -> str:
+    """Hash selected Message identity and complete encoded body facts."""
 
+    by_id = {str(row["id"]): row for row in rows}
+    selected_rows = (
+        [by_id[message_id] for message_id in source_ids]
+        if source_ids is not None
+        else list(rows[:6])
+    )
     selected: list[dict[str, object]] = []
-    for unit_index in range(3):
-        source_from_seq = unit_index * 2
-        through_seq = source_from_seq + 1
-        for offset, role in enumerate(("user", "assistant")):
-            seq = source_from_seq + offset
-            selected.append(
-                {
-                    "id": f"{session_key}:{seq}",
-                    "seq": seq,
-                    "unit_ref": f"{source_from_seq}:{through_seq}:{unit_index}",
-                    "message": {
-                        "role": role,
-                        "content": _memory_context_seed_content(role, unit_index),
-                    },
-                }
-            )
+    for row in selected_rows:
+        body = json.loads(str(row["body"]))
+        if not isinstance(body, dict):
+            raise GateFailure("memory-context source body 不是 object")
+        selected.append(
+            {
+                "id": str(row["id"]),
+                "session_key": str(row["session_key"]),
+                "seq": int(row["seq"]),
+                "ts": str(row["ts"]),
+                "author": str(row["author"]),
+                "source": str(row["source"]),
+                "body": body,
+            }
+        )
     encoded = json.dumps(
         selected,
         ensure_ascii=False,
@@ -732,10 +732,100 @@ def _memory_context_source_plan_digest(session_key: str) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
-    """Classify the exact three model requests and reject tool-boundary drift."""
+def _memory_context_summary_source(requests: Sequence[object]) -> list[dict[str, object]]:
+    """Extract the exact source rows submitted to the summary provider."""
 
-    if len(requests) != 3:
+    for raw_request in requests:
+        if not isinstance(raw_request, dict):
+            continue
+        payload = raw_request.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or len(messages) != 1:
+            continue
+        content = messages[0].get("content") if isinstance(messages[0], dict) else None
+        if not isinstance(content, str) or "\n[Source messages]\n" not in content:
+            continue
+        source_text = content.split("\n[Source messages]\n", 1)[1]
+        source_rows = json.loads(source_text)
+        if not isinstance(source_rows, list) or not all(
+            isinstance(row, dict) for row in source_rows
+        ):
+            raise GateFailure("摘要 provider source rows 不是 object 列表")
+        return source_rows
+    raise GateFailure("缺少摘要 provider 的 Source messages 输入")
+
+
+def _memory_context_summary_body(body: object) -> object:
+    """Remove private model replay parts exactly as summary source_text does."""
+
+    if not isinstance(body, dict) or body.get("kind") == "control":
+        return body
+    normalized = dict(body)
+    parts = normalized.get("parts")
+    if isinstance(parts, list):
+        normalized["parts"] = [
+            part
+            for part in parts
+            if not isinstance(part, dict)
+            or part.get("kind") not in {
+                "model.facts", "context.summary", "model.selection", "tool.selection",
+            }
+        ]
+    return normalized
+
+
+def _memory_context_business_tail(
+    messages: object, expected_rows: Sequence[sqlite3.Row], stop_text: str
+) -> tuple[dict[str, object], list[tuple[str, str]], list[str]]:
+    """Return the summary object, projected raw tail, and source text leaks."""
+
+    if not isinstance(messages, list):
+        raise GateFailure("业务 provider payload messages 不是 list")
+    summary_object: dict[str, object] | None = None
+    tail: list[tuple[str, str]] = []
+    source_texts: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            try:
+                value = json.loads(content)
+            except json.JSONDecodeError:
+                value = None
+            if isinstance(value, dict) and "summary" in value and "reference" in value:
+                summary_object = value
+                continue
+        if summary_object is None:
+            continue
+        if not isinstance(content, list):
+            continue
+        text_values = [
+            str(part["text"])
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+        if text_values and text_values[0] == stop_text:
+            break
+        if text_values:
+            tail.append((str(message.get("role")), text_values[0]))
+    for row in expected_rows:
+        body = json.loads(str(row["body"]))
+        parts = body.get("parts", []) if isinstance(body, dict) else []
+        source_texts.extend(
+            str(part["value"])
+            for part in parts
+            if isinstance(part, dict) and part.get("kind") == "text"
+        )
+    return summary_object or {}, tail, source_texts
+
+
+def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
+    """Classify four seed replies and the three expected memory requests."""
+
+    if len(requests) != 7:
         raise GateFailure(f"memory-context 模型请求数量异常：{len(requests)}")
     kinds: list[str] = []
     for raw_request in requests:
@@ -745,12 +835,17 @@ def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
         if not isinstance(payload, dict):
             raise GateFailure("memory-context 模型请求缺少 payload")
         serialized = json.dumps(payload.get("messages", []), ensure_ascii=False)
-        if "Closed history to consolidate" in serialized:
+        if (
+            "更新当前长任务的上下文压缩摘要" in serialized
+            and "[Source messages]" in serialized
+        ):
             kind = "summary"
         elif "你维护两个长期 Markdown 档案" in serialized:
             kind = "markdown"
         elif _MEMORY_CONTEXT_INPUT in serialized:
             kind = "business"
+        elif "seed user" in serialized:
+            kind = "seed"
         else:
             raise GateFailure("memory-context 模型请求无法归类")
         if kind in {"summary", "markdown"} and payload.get("tools", []) not in (
@@ -760,7 +855,7 @@ def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
             raise GateFailure(f"memory-context {kind} 请求不得携带 tools")
         kinds.append(kind)
     # Committed fact 在 business response settle 后消费，顺序固定。
-    if kinds != ["summary", "business", "markdown"]:
+    if kinds != ["seed", "seed", "seed", "seed", "summary", "business", "markdown"]:
         raise GateFailure(f"memory-context 模型请求顺序异常：{kinds!r}")
     return kinds
 
@@ -1338,7 +1433,7 @@ def _inside_smoke(report_dir: Path) -> int:
     return 0 if passed else 1
 
 def _inside_memory_context(report_dir: Path) -> int:
-    """验证真实 session compaction ledger、Markdown side effects 和 append-only 语义。"""
+    """验证显式 eligible 程序 Session 的 Message compaction 和 Markdown 投影。"""
 
     report_dir.mkdir(parents=True, exist_ok=True)
     events_path = report_dir / "events.jsonl"
@@ -1347,18 +1442,17 @@ def _inside_memory_context(report_dir: Path) -> int:
     checks: list[CheckResult] = []
     client: JsonRpcSocketClient | None = None
     try:
-        # 1. 按固定顺序提供 summary、业务响应和 Markdown profile projection。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _configure_model_gate(context_window=100_000)
-        _wait_socket(endpoint, READINESS_DEADLINE_S)
-        _http_json(
-            "PUT",
-            f"{model_url}/control/script",
+        seed_rows = _memory_context_seed_rows()
+        scripts = [
+            {"mode": "complete", "content": content}
+            for role, content in seed_rows
+            if role == "assistant"
+        ]
+        scripts.extend(
             [
-                {
-                    "mode": "complete",
-                    "content": _PC09_COMPACTION_SUMMARY,
-                },
+                {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY},
                 {
                     "mode": "complete",
                     "content": (
@@ -1366,201 +1460,402 @@ def _inside_memory_context(report_dir: Path) -> int:
                         f"{_MEMORY_CONTEXT_RESPONSE}"
                     ),
                 },
-                {
-                    "mode": "complete",
-                    "content": _MEMORY_CONTEXT_PROFILE_RESPONSE,
-                },
-            ],
+                {"mode": "complete", "content": _MEMORY_CONTEXT_PROFILE_RESPONSE},
+            ]
         )
+        _http_json("PUT", f"{model_url}/control/script", scripts)
+        _wait_socket(endpoint, READINESS_DEADLINE_S)
         client = _connect_client(endpoint, events_path)
-        turn_id = _start_turn(client, _MEMORY_CONTEXT_SESSION, _MEMORY_CONTEXT_INPUT)
-        terminal = client.wait_terminal(turn_id)
-        payload = _event_turn(terminal)
+        admission = client.admit_programmatic(
+            _MEMORY_CONTEXT_SESSION, persist_memory=True
+        )
+        if admission.get("learning") != "eligible":
+            raise GateFailure(f"memory-context Session 未取得 eligible 准入：{admission!r}")
         database = Path("/sandbox/workspace/sessions.db")
-        seed_rows = _memory_context_seed_rows(_MEMORY_CONTEXT_SESSION)
-        expected_seed_hashes = {
-            message_id: hashlib.sha256(content.encode("utf-8")).hexdigest()
-            for message_id, _, content in seed_rows
-        }
-        connection = sqlite3.connect(database)
-        try:
+        # 1. 通过正式程序来源显式声明 eligible，再追加四个已结算历史 Turn。
+        seed_results: list[dict[str, Any]] = []
+        for index in range(4):
+            user_text = seed_rows[index * 2][1]
+            assistant_text = seed_rows[index * 2 + 1][1]
+            input_id = f"mc01-seed-{index}"
+            ack = client.send_programmatic(
+                _MEMORY_CONTEXT_SESSION, input_id, user_text
+            )
+            result = _wait_programmatic_result(
+                client, _MEMORY_CONTEXT_SESSION, input_id
+            )
+            if (
+                ack.get("message_id") != input_id
+                or result.get("status") != "complete"
+            ):
+                raise GateFailure(
+                    f"memory-context seed turn {index} 未完成：ack={ack!r} result={result!r}"
+                )
+            seed_results.append({"ack": ack, "result": result, "text": assistant_text})
+
+        with sqlite3.connect(database) as connection:
             connection.row_factory = sqlite3.Row
-            session_row = connection.execute(
-                "SELECT last_consolidated FROM sessions WHERE key = ?",
-                (_MEMORY_CONTEXT_SESSION,),
-            ).fetchone()
-            message_rows = connection.execute(
-                "SELECT id, seq, role, content FROM messages "
+            seed_message_rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body FROM messages "
                 "WHERE session_key = ? ORDER BY seq",
                 (_MEMORY_CONTEXT_SESSION,),
             ).fetchall()
-            compaction_row = connection.execute(
-                "SELECT * FROM session_compactions "
-                "WHERE session_key = ? AND generation = 1",
+        if len(seed_message_rows) != 8:
+            raise GateFailure(
+                f"memory-context seed Message 数量异常：{len(seed_message_rows)}"
+            )
+        # 2. 最终业务 Input 继续走同一程序来源，触发 compaction 后完成 Reply。
+        business_id = "mc01-business"
+        business_ack = client.send_programmatic(
+            _MEMORY_CONTEXT_SESSION, business_id, _MEMORY_CONTEXT_INPUT
+        )
+        business_result = _wait_programmatic_result(
+            client, _MEMORY_CONTEXT_SESSION, business_id
+        )
+        if business_ack.get("message_id") != business_id:
+            raise GateFailure(f"memory-context business ACK 异常：{business_ack!r}")
+        if business_result.get("status") != "complete":
+            raise GateFailure(
+                f"memory-context business turn 未完成：{business_result!r}"
+            )
+
+        # Markdown 投影由已提交 SummaryRecord 的普通插件任务完成；等待其
+        # 可观察的 provider 请求，避免把 programmatic result 的完成 ACK 当成
+        # 所有 post-commit side effect 已经落盘。
+        final_requests: list[object] = []
+        request_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        while time.monotonic() < request_deadline:
+            final_requests = _model_requests(
+                _http_json("GET", f"{model_url}/control/requests")
+            )
+            if len(final_requests) == len(scripts):
+                break
+            threading.Event().wait(0.05)
+        if len(final_requests) != len(scripts):
+            raise GateFailure(
+                f"memory-context Markdown 请求未完成：{len(final_requests)}/{len(scripts)}"
+            )
+
+        with sqlite3.connect(database) as connection:
+            connection.row_factory = sqlite3.Row
+            session_row = connection.execute(
+                "SELECT attributes, next_seq FROM sessions WHERE key = ?",
                 (_MEMORY_CONTEXT_SESSION,),
             ).fetchone()
-            prepare_count = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM session_compaction_prepares "
-                    "WHERE session_key = ?",
-                    (_MEMORY_CONTEXT_SESSION,),
-                ).fetchone()[0]
-            )
-        finally:
-            connection.close()
+            message_rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body FROM messages "
+                "WHERE session_key = ? ORDER BY seq",
+                (_MEMORY_CONTEXT_SESSION,),
+            ).fetchall()
+            owner_rows = connection.execute(
+                "SELECT key, value FROM owner_records "
+                "WHERE owner = 'plugin:compaction' ORDER BY key"
+            ).fetchall()
+            integrity_rows = connection.execute("PRAGMA integrity_check").fetchall()
+            owner_records = {
+                str(row["key"]): json.loads(str(row["value"])) for row in owner_rows
+            }
+        integrity_ok = [tuple(row) for row in integrity_rows] == [("ok",)]
+        if session_row is None or not integrity_ok:
+            raise GateFailure("memory-context Message ledger 缺失或完整性检查失败")
+        head_record = owner_records.get(f"head:{_MEMORY_CONTEXT_SESSION}")
+        summary_reference = (
+            head_record.get("reference") if isinstance(head_record, dict) else None
+        )
+        summary_record = (
+            owner_records.get(f"summary:{summary_reference}")
+            if isinstance(summary_reference, str)
+            else None
+        )
+        if not isinstance(summary_reference, str) or not isinstance(summary_record, dict):
+            raise GateFailure("memory-context SummaryRecord/head 缺失")
 
-        if session_row is None or compaction_row is None:
-            raise GateFailure("memory-context ledger row 缺失")
-        actual_hashes = {
-            str(row["id"]): hashlib.sha256(
-                str(row["content"]).encode("utf-8")
-            ).hexdigest()
+        source_ids = summary_record.get("source_message_ids")
+        source_ids = list(source_ids) if isinstance(source_ids, (list, tuple)) else []
+        source_ids = [str(item) for item in source_ids]
+        message_ids = {str(row["id"]) for row in message_rows}
+        summary_record_valid = (
+            summary_record.get("reference") == summary_reference
+            and summary_record.get("session_id") == _MEMORY_CONTEXT_SESSION
+            and summary_record.get("generation") == 1
+            and summary_record.get("parent") is None
+            and bool(source_ids)
+            and len(source_ids) == len(set(source_ids))
+            and set(source_ids) <= message_ids
+            and summary_record.get("content") == _PC09_COMPACTION_SUMMARY.strip()
+            and isinstance(summary_record.get("model_call_ids"), list)
+            and bool(summary_record.get("model_call_ids"))
+        )
+
+        seed_pairs_match = True
+        seed_full_shape: list[dict[str, object]] = []
+        for row, (expected_role, expected_text) in zip(message_rows[:8], seed_rows):
+            body = json.loads(str(row["body"]))
+            parts = body.get("parts") if isinstance(body, dict) else None
+            text_values = [
+                part.get("value")
+                for part in parts or ()
+                if isinstance(part, dict) and part.get("kind") == "text"
+            ]
+            shape_ok = (
+                isinstance(body, dict)
+                and body.get("kind") == ("input" if expected_role == "user" else "output")
+                and int(row["seq"]) == len(seed_full_shape)
+                and str(row["author"]) == expected_role
+                and str(row["source"]) == "programmatic"
+                and text_values == [expected_text]
+            )
+            seed_pairs_match = seed_pairs_match and shape_ok
+            seed_full_shape.append({
+                "id": str(row["id"]), "session_key": str(row["session_key"]),
+                "seq": int(row["seq"]), "ts": str(row["ts"]),
+                "author": str(row["author"]), "source": str(row["source"]),
+                "body": body,
+            })
+        seed_snapshot = [
+            (str(row["id"]), str(row["session_key"]), int(row["seq"]),
+             str(row["ts"]), str(row["author"]), str(row["source"]),
+             str(row["body"]))
+            for row in seed_message_rows
+        ]
+        final_snapshot = [
+            (str(row["id"]), str(row["session_key"]), int(row["seq"]),
+             str(row["ts"]), str(row["author"]), str(row["source"]),
+             str(row["body"]))
             for row in message_rows
-            if int(row["seq"]) < 8
-        }
-        seed_hashes_unchanged = actual_hashes == expected_seed_hashes
-        source_ids = json.loads(compaction_row["source_message_ids_json"])
-        retained_tail = json.loads(compaction_row["retained_tail_json"])
-        source_digest = str(compaction_row["source_plan_digest"])
-        expected_source_ids = [message_id for message_id, _, _ in seed_rows[:6]]
-        expected_retained_ids = [message_id for message_id, _, _ in seed_rows[6:]]
-        retained_ids = [str(item.get("id")) for item in retained_tail]
+        ]
+        seed_immutable = (
+            len(seed_snapshot) == 8
+            and final_snapshot[:8] == seed_snapshot
+            and [int(row["seq"]) for row in message_rows] == list(range(10))
+        )
         final_messages_only_append = (
             len(message_rows) == 10
-            and [str(row["id"]) for row in message_rows[:8]]
-            == [message_id for message_id, _, _ in seed_rows]
-            and [str(row["role"]) for row in message_rows[8:]] == ["user", "assistant"]
-            and str(message_rows[8]["content"]) == _MEMORY_CONTEXT_INPUT
-            and str(message_rows[9]["content"]) == _MEMORY_CONTEXT_RESPONSE
+            and [str(row["author"]) for row in message_rows[8:]] == ["user", "assistant"]
+            and [str(row["source"]) for row in message_rows[8:]]
+            == ["programmatic", "programmatic"]
         )
-        retained_tail_exact = (
-            retained_ids == expected_retained_ids
-            and [str(item.get("unit_ref")) for item in retained_tail]
-            == ["6:7:0", "6:7:0"]
-            and [str(item.get("message", {}).get("content")) for item in retained_tail]
-            == [content for _, _, content in seed_rows[6:]]
+        final_texts = []
+        for row in message_rows[8:]:
+            body = json.loads(str(row["body"]))
+            final_texts.append([
+                part.get("value") for part in body.get("parts", [])
+                if isinstance(part, dict) and part.get("kind") == "text"
+            ])
+        final_messages_only_append = final_messages_only_append and (
+            final_texts == [[_MEMORY_CONTEXT_INPUT], [_MEMORY_CONTEXT_RESPONSE]]
         )
-        ledger_passed = (
-            session_row["last_consolidated"] == 1
-            and compaction_row["context_window"] == 100_000
-            and compaction_row["threshold_tokens"] == 74_000
-            and source_ids == expected_source_ids
-            and retained_tail_exact
-            and source_digest
-            == _memory_context_source_plan_digest(_MEMORY_CONTEXT_SESSION)
-            and prepare_count == 0
-            and seed_hashes_unchanged
-            and final_messages_only_append
-        )
-        receipt_connection = sqlite3.connect(
-            "/sandbox/workspace/memory/consolidation_writes.db"
-        )
-        try:
-            receipt_row = receipt_connection.execute(
-                "SELECT payload FROM consolidation_writes "
-                "WHERE source_ref = ? AND kind = 'session_compaction_receipt'",
-                (str(compaction_row["source_ref"]),),
-            ).fetchone()
-        finally:
-            receipt_connection.close()
+
+        final_output_body = json.loads(str(message_rows[9]["body"])) if len(message_rows) > 9 else {}
+        final_output_facts = [
+            part.get("value")
+            for part in final_output_body.get("parts", [])
+            if isinstance(part, dict) and part.get("kind") == "model.facts"
+        ] if isinstance(final_output_body, dict) else []
+        final_output_text = [
+            part.get("value")
+            for part in final_output_body.get("parts", [])
+            if isinstance(part, dict) and part.get("kind") == "text"
+        ] if isinstance(final_output_body, dict) else []
+
+        memory_path = Path("/sandbox/workspace/memory/MEMORY.md")
+        self_path = Path("/sandbox/workspace/memory/SELF.md")
+        receipt_payloads: dict[str, dict[str, object]] = {}
+        receipt_inventory: list[dict[str, object]] = []
+        receipt_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        while time.monotonic() < receipt_deadline:
+            with sqlite3.connect(
+                "/sandbox/workspace/memory/markdown-profile-writes.db"
+            ) as connection:
+                receipt_rows = connection.execute(
+                    "SELECT source_ref, kind, payload FROM consolidation_writes "
+                    "WHERE kind IN ('markdown_memory_applied_v1', 'markdown_self_applied_v1') "
+                    "ORDER BY source_ref, kind"
+                ).fetchall()
+            receipt_inventory = [
+                {"sourceRef": str(source_ref), "kind": str(kind)}
+                for source_ref, kind, _payload in receipt_rows
+            ]
+            candidate: dict[str, dict[str, object]] = {}
+            for source_ref, kind, payload in receipt_rows:
+                if str(source_ref) != summary_reference:
+                    continue
+                value = json.loads(str(payload))
+                if not isinstance(value, dict):
+                    raise GateFailure(f"Markdown receipt 不是 object：{kind}")
+                candidate[str(kind)] = value
+            memory_content = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+            self_content = self_path.read_text(encoding="utf-8") if self_path.exists() else ""
+            if (
+                set(candidate) == {
+                    "markdown_memory_applied_v1",
+                    "markdown_self_applied_v1",
+                }
+                and memory_path.exists()
+                and self_path.exists()
+                and candidate["markdown_memory_applied_v1"].get("digest")
+                == hashlib.sha256(memory_content.encode("utf-8")).hexdigest()
+                and candidate["markdown_self_applied_v1"].get("digest")
+                == hashlib.sha256(self_content.encode("utf-8")).hexdigest()
+            ):
+                receipt_payloads = candidate
+                break
+            threading.Event().wait(0.05)
+        if len(receipt_payloads) != 2:
+            raise GateFailure(
+                "Markdown receipt 或目标文件未收敛："
+                f"{sorted(receipt_payloads)} inventory={receipt_inventory!r} "
+                f"summaryReference={summary_reference!r}"
+            )
+
         pending_path = Path("/sandbox/workspace/memory/PENDING.md")
         pending_retired = (
             not pending_path.exists()
             or not pending_path.read_text(encoding="utf-8").strip()
         )
-        receipt_connection = sqlite3.connect(
-            "/sandbox/workspace/memory/markdown-profile-writes.db"
-        )
-        try:
-            memory_applied = receipt_connection.execute(
-                "SELECT 1 FROM consolidation_writes "
-                "WHERE source_ref = ? AND kind = 'markdown_memory_applied_v1'",
-                (str(compaction_row["source_ref"]),),
-            ).fetchone()
-            self_applied = receipt_connection.execute(
-                "SELECT 1 FROM consolidation_writes "
-                "WHERE source_ref = ? AND kind = 'markdown_self_applied_v1'",
-                (str(compaction_row["source_ref"]),),
-            ).fetchone()
-        finally:
-            receipt_connection.close()
-        final_requests = _model_requests(
-            _http_json("GET", f"{model_url}/control/requests")
-        )
-        if len(final_requests) != 3:
-            capabilities = _http_json(
-                "GET",
-                "http://akashic-control-gate:2236/api/chat/runtime/capabilities",
-            )
-            markdown_incidents = next(
-                (
-                    plugin.get("composition", {}).get("recent_incidents", [])
-                    for plugin in capabilities.get("plugins", [])
-                    if plugin.get("id") == "markdown_memory"
-                ),
-                [],
-            )
-            raise GateFailure(
-                "memory-context 模型请求数量异常："
-                f"{len(final_requests)} markdownIncidents="
-                f"{json.dumps(markdown_incidents, ensure_ascii=False, sort_keys=True)}"
-            )
+        memory_applied = receipt_payloads.get("markdown_memory_applied_v1")
+        self_applied = receipt_payloads.get("markdown_self_applied_v1")
+
         request_kinds = _memory_context_request_kinds(final_requests)
-        scripts = [
-            request.get("script")
-            for request in final_requests
-            if isinstance(request, dict)
+        source_positions = [
+            index for index, row in enumerate(message_rows)
+            if str(row["id"]) in source_ids
         ]
-        scripts_boundary = (
-            scripts[0] == {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY}
-            and isinstance(scripts[1], dict)
-            and "<think>" in str(scripts[1].get("content"))
-            and scripts[2] == {"mode": "complete", "content": _MEMORY_CONTEXT_PROFILE_RESPONSE}
+        if len(source_positions) != len(source_ids):
+            raise GateFailure("SummaryRecord 引用了不存在的 Message")
+        source_contiguous = (
+            bool(source_positions)
+            and source_positions == list(range(source_positions[0], source_positions[-1] + 1))
+            and source_positions[0] % 2 == 0
+            and (source_positions[-1] - source_positions[0] + 1) % 2 == 0
         )
-        projected = _turn_projection(payload)
-        assistant_items = [
-            item
-            for item in projected["items"]
-            if item.get("type") == "assistantMessage"
-        ]
+        source_digest = _memory_context_source_plan_digest(message_rows, source_ids)
+
+        summary_source_rows = _memory_context_summary_source(final_requests)
+        expected_summary_source = []
+        for position in source_positions:
+            row = message_rows[position]
+            expected_summary_source.append(
+                {
+                    "message_id": str(row["id"]),
+                    "source": str(row["source"]),
+                    "seq": int(row["seq"]),
+                    "body": _memory_context_summary_body(
+                        json.loads(str(row["body"]))
+                    ),
+                }
+            )
+        summary_source_matches = summary_source_rows == expected_summary_source
+
+        business_request = next(
+            request for request in final_requests
+            if isinstance(request, dict)
+            and isinstance(request.get("payload"), dict)
+            and _MEMORY_CONTEXT_INPUT in json.dumps(
+                request["payload"].get("messages", []), ensure_ascii=False
+            )
+        )
+        business_serialized = json.dumps(
+            business_request["payload"].get("messages", []), ensure_ascii=False
+        )
+        summary_payload, business_tail, source_contents = _memory_context_business_tail(
+            business_request["payload"].get("messages"),
+            [message_rows[position] for position in source_positions],
+            _MEMORY_CONTEXT_INPUT,
+        )
+        source_end = source_positions[-1] + 1
+        expected_business_tail = []
+        for row in message_rows[source_end:8]:
+            body = json.loads(str(row["body"]))
+            parts = body.get("parts", []) if isinstance(body, dict) else []
+            text_values = [
+                str(part["value"])
+                for part in parts
+                if isinstance(part, dict) and part.get("kind") == "text"
+            ]
+            if len(text_values) != 1:
+                raise GateFailure("业务保留尾部 Message 缺少唯一原文 text")
+            expected_business_tail.append((str(row["author"]), text_values[0]))
+        business_summary_replaced = (
+            summary_payload.get("summary") == summary_record.get("content")
+            and isinstance(summary_payload.get("reference"), str)
+            and bool(summary_payload.get("reference"))
+            and business_tail == expected_business_tail
+            and all(str(message_id) not in business_serialized for message_id in source_ids)
+            and all(content not in business_serialized for content in source_contents)
+        )
+        scripts_boundary = (
+            [request.get("script") for request in final_requests
+             if isinstance(request, dict)] == scripts
+        )
         thinking_boundary = (
-            len(assistant_items) == 1
-            and assistant_items[0]["data"].get("thinking") == _MEMORY_CONTEXT_THINKING
-            and not any(item.get("type") == "toolCall" for item in projected["items"])
+            len(final_output_facts) == 1
+            and isinstance(final_output_facts[0], dict)
+            and final_output_facts[0].get("thinking") == _MEMORY_CONTEXT_THINKING
+            and final_output_body.get("finish") == "complete"
+        )
+        attributes = json.loads(str(session_row["attributes"]))
+        attributes_valid = (
+            isinstance(attributes, dict)
+            and attributes.get("visibility") == "internal"
+            and attributes.get("learning") == "eligible"
         )
         checks.append(
             CheckResult(
                 "MC-01",
-                payload.get("status") == "completed"
-                and payload.get("finalResponse") == _MEMORY_CONTEXT_RESPONSE
-                and request_kinds == ["summary", "business", "markdown"]
+                business_result.get("status") == "complete"
+                and final_output_text == [_MEMORY_CONTEXT_RESPONSE]
+                and request_kinds == ["seed", "seed", "seed", "seed", "summary", "business", "markdown"]
                 and scripts_boundary
                 and thinking_boundary
-                and ledger_passed
-                and receipt_row is not None
+                and attributes_valid
+                and session_row["next_seq"] == 10
+                and seed_pairs_match
+                and seed_immutable
+                and summary_record_valid
+                and summary_source_matches
+                and source_contiguous
+                and final_messages_only_append
+                and business_summary_replaced
                 and pending_retired
                 and memory_applied is not None
                 and self_applied is not None,
                 {
-                    "terminal": payload,
+                    "admission": admission,
+                    "seedResults": seed_results,
+                    "businessAck": business_ack,
+                    "businessResult": business_result,
                     "requestKinds": request_kinds,
                     "ledger": {
-                        "lastConsolidated": session_row["last_consolidated"],
+                        "sessionAttributes": attributes,
+                        "nextSeq": session_row["next_seq"],
+                        "summaryReference": summary_reference,
                         "sourceIds": source_ids,
-                        "retainedIds": retained_ids,
-                        "sourceDigest": source_digest,
-                        "seedHashesUnchanged": seed_hashes_unchanged,
+                        "sourcePlanDigest": source_digest,
+                        "sourcePositions": source_positions,
+                        "sourceContiguous": source_contiguous,
+                        "summarySourceMatches": summary_source_matches,
+                        "summarySourceRows": summary_source_rows,
+                        "businessSummaryReplaced": business_summary_replaced,
+                        "businessTail": business_tail,
+                        "expectedBusinessTail": expected_business_tail,
+                        "summaryRecordValid": summary_record_valid,
+                        "seedPairsMatch": seed_pairs_match,
+                        "seedImmutable": seed_immutable,
                         "finalMessagesOnlyAppend": final_messages_only_append,
-                        "prepareCount": prepare_count,
-                        "retainedTailExact": retained_tail_exact,
                     },
-                    "receiptExists": receipt_row is not None,
                     "pendingRetired": pending_retired,
                     "memoryApplied": memory_applied is not None,
                     "selfApplied": self_applied is not None,
+                    "markdownTargets": {
+                        "memory": memory_path.read_text(encoding="utf-8"),
+                        "self": self_path.read_text(encoding="utf-8"),
+                    },
                     "scriptsBoundary": scripts_boundary,
                     "thinkingBoundary": thinking_boundary,
                     "modelRequestCount": len(final_requests),
+                    "seedFullShape": seed_full_shape,
+                    "finalOutputFacts": final_output_facts,
                 },
             )
         )
@@ -1586,7 +1881,6 @@ def _inside_memory_context(report_dir: Path) -> int:
     _write_json(report_dir / "inside-gate.json", report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if passed else 1
-
 
 def _inside_failure_matrix(report_dir: Path) -> int:
     """以真实 barrier 和多连接驱动 PR 必选故障矩阵。"""
@@ -2788,28 +3082,15 @@ def _seed_memory_context_fixture(
     repo: Path,
     env: dict[str, str],
 ) -> None:
-    """在 gateway 启动前用生产 SessionManager 写入分页测试会话。"""
+    """只完成生产迁移；历史消息由真实程序化 ingress 追加。"""
 
     script = """
 from pathlib import Path
-from session.manager import SessionManager
+from agent.migrations import migrate_installation
 
-manager = SessionManager(Path("/sandbox/workspace"))
-session = manager.get_or_create("programmatic:context-ledger")
-for index in range(4):
-    control_turn_id = f"memory-gate-seed-{index}"
-    session.add_message(
-        "user",
-        (f"seed user {index} " + "token " * 5000).strip(),
-        control_turn_id=control_turn_id,
-    )
-    session.add_message(
-        "assistant",
-        (f"seed assistant {index} " + "token " * 5000).strip(),
-        control_turn_id=control_turn_id,
-    )
-manager.save(session)
-manager.close()
+config = Path("/sandbox/config.toml")
+workspace = Path("/sandbox/workspace")
+migrate_installation(config, workspace)
 """
     seeded = subprocess.run(
         [
