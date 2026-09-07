@@ -30,7 +30,6 @@ COMMAND_TYPES = frozenset(
         "model.catalog.get",
         "model.call.get",
         "message.send",
-        "turn.stop",
         "attachment.begin",
         "attachment.finish",
         "attachment.download",
@@ -361,7 +360,6 @@ class GenericCommand(CommandEnvelope):
         "plugin.ui.query",
         "plugin.ui.query.prepare",
         "plugin.ui.cancel",
-        "turn.stop",
         "device.update",
         "ping",
     ]

@@ -27,7 +27,10 @@ try {
   await mobile.getByPlaceholder("输入消息").fill("从 Browser Bridge 发送一条消息");
   await mobile.getByRole("button", { name: "发送消息" }).click();
   await page.locator("#lab-activity strong", { hasText: "sendMessage" }).waitFor();
-  await mobile.getByText("这条回复由 Browser Bridge 接住发送动作后生成", { exact: false }).waitFor({ timeout: 12_000 });
+  await mobile.getByRole("button", { name: "中止回答" }).waitFor();
+  await mobile.getByRole("button", { name: "中止回答" }).click();
+  const stopActivity = page.locator("#lab-activity li").filter({ hasText: "sendSessionCommand" });
+  await stopActivity.getByText('["browser-lab-session","/stop"]', { exact: true }).waitFor();
 
   await mobile.getByRole("button", { name: "添加附件" }).click();
   await page.getByText("chooseAttachments 需要 Android 原生环境", { exact: true }).waitFor();
@@ -42,11 +45,11 @@ try {
   await focusPage.goto(`${lab.origin}?focus=1`, { waitUntil: "networkidle" });
   await focusPage.waitForFunction(() => document.body.dataset.labReady === "true");
   const focusMobileFrame = focusPage.frames()[1];
-  await focusMobileFrame.waitForFunction(() => document.querySelectorAll(".mobile-message-anchor").length === 4);
+  await focusMobileFrame.waitForFunction(() => document.querySelectorAll(".mobile-message-anchor").length === 6);
   assert.deepEqual(await inspectNarrowLayout(focusMobileFrame), {
     viewportWidth: 320,
     documentWidth: 320,
-    roles: ["user", "assistant", "user", "assistant"],
+    roles: ["user", "assistant", "user", "assistant", "tool", "assistant"],
     decorativeRoleLabels: 0,
   });
   await focusMobileFrame.getByRole("button", { name: "打开会话" }).click();
@@ -87,7 +90,9 @@ async function inspectNarrowLayout(frame) {
     viewportWidth: window.innerWidth,
     documentWidth: document.documentElement.scrollWidth,
     roles: [...document.querySelectorAll(".mobile-message-anchor")]
-      .map((node) => node.classList.contains("user") ? "user" : "assistant"),
+      .map((node) => node.classList.contains("timeline-input")
+        ? "user"
+        : node.classList.contains("timeline-tool_result") ? "tool" : "assistant"),
     decorativeRoleLabels: document.querySelectorAll(".mobile-manuscript-kicker").length,
   }));
 }

@@ -35,7 +35,6 @@ from agent.plugin_composition.channels import (
     RawInbound,
     StopReceipt,
 )
-
 from bus.events import (
     AttachmentKind as BusAttachmentKind,
     ChannelAttachment,
@@ -1415,8 +1414,6 @@ class MobileRealtimeChannel:
             return CommandReply(type="model.call.get.ok", payload=asdict(stats))
         if frame.type == "message.send":
             return await self._send_message(device_id, frame)
-        if frame.type == "turn.stop":
-            return await self._stop_turn(device_id, frame)
         if frame.type == "attachment.begin":
             return await self._begin_attachment(device_id, frame)
         if frame.type == "attachment.finish":
@@ -2261,85 +2258,6 @@ class MobileRealtimeChannel:
             role=role,
             content=content,
             preview=_reply_preview(content),
-        )
-
-    async def _stop_turn(
-        self,
-        device_id: str,
-        frame: GenericCommand,
-    ) -> CommandReply:
-        _expect_keys(frame.payload, set())
-        session_id = self._require_mobile_session(frame.session_id)
-        turn_id = frame.turn_id
-        if turn_id is None:
-            raise MobileCommandError("turn_id_required", "停止生成必须携带 turn_id")
-        turn = self._require_ctx().session_manager.control_store.read_turn(turn_id)
-        if (
-            turn is not None
-            and turn.thread_id == session_id
-            and turn.status.is_terminal
-        ):
-            # 已缓冲 delta 必须先于终态发布，保证 delta→terminal 顺序；
-            # completed 由 durable message.final 恢复，其余终态经 barrier 收口。
-            if turn.status is not TurnStatus.COMPLETED:
-                _ = await self._publish_terminal(
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    event_type="turn.interrupted",
-                    payload=self._interrupt_payload(
-                        session_id,
-                        turn_id,
-                        status=turn.status.value,
-                        message="服务端已确认本轮生成结束",
-                        reason="stop_reconciliation",
-                    ),
-                    device_id=device_id,
-                )
-            else:
-                _ = await self._flush_deltas(session_id, turn_id)
-            self._clear_turn_maps(session_id, turn_id)
-            return CommandReply(
-                type="turn.stop.ok",
-                session_id=session_id,
-                turn_id=turn_id,
-                payload={
-                    "status": "already_terminal",
-                    "terminal_status": turn.status.value,
-                    "message": "目标 turn 已经结束",
-                },
-            )
-        active_turn_id = self._active_turn_ids.get(session_id)
-        if active_turn_id is None:
-            raise MobileCommandError("turn_not_active", "当前会话没有正在生成的内容")
-        if active_turn_id != turn_id:
-            raise MobileCommandError("stale_turn", "目标 turn 已结束或已被新一轮替代")
-        interrupt = self._require_ctx().interrupt_controller
-        if interrupt is None:
-            raise MobileCommandError("interrupt_unavailable", "当前未启用中断功能")
-        result = interrupt.request_interrupt(
-            session_key=session_id,
-            sender=f"device:{device_id}",
-            command="/stop",
-        )
-        if result.status not in {"interrupted", "idle"}:
-            raise RuntimeError(f"中断控制器返回未知状态: {result.status}")
-        _ = await self._publish_terminal(
-            session_id=session_id,
-            turn_id=turn_id,
-            event_type="turn.interrupted",
-            payload=self._interrupt_payload(
-                session_id,
-                turn_id,
-                status=result.status,
-                message=result.message,
-            ),
-        )
-        self._clear_turn_maps(session_id, turn_id)
-        return CommandReply(
-            type="turn.stop.ok",
-            session_id=session_id,
-            turn_id=turn_id,
-            payload={"status": result.status, "message": result.message},
         )
 
     async def _on_turn_started(self, event: TurnStarted) -> None:

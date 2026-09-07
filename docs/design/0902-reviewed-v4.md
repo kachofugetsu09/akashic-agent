@@ -1773,3 +1773,7 @@ Delivery 恢复 unknown 且 query 无新证据时保留原 receipt，防止丢�
 维护者指定 Luna xhigh 负责旧执行链集中清理，Root 只负责拆分、核验与整合。清理必须从当前候选的干净 commit 进入各自独立 worktree；先证实新 owner 和真实消费者，再删除旧 Worker/Pipeline/Attempt 执行入口、旧插件实现、旧 UI 源码与相关失效测试。冻结 yoyo 导入路径、历史 schema/数据恢复、现行插件生命周期与窄授权保留；不通过兼容壳、修改旧 migration 或删掉仍有效 oracle 得到全绿。
 
 交接前文件级恢复点为 `/mnt/data/akasic-agent-backups/message-plugins-09-before-cleanup-20260907/`（base、完整改动清单、binary patch、含未跟踪文件的归档）；分项恢复点继续有效。清理后须重新完成累计类型/测试/build、change-impact Gate、完整公开场景、独立概念评审和 stacked draft PR 的精确 head CI，未经授权不得 merge 或 deploy。
+
+### Web/Mobile 停止命令交接前置条件（2026-09-07）
+
+Mobile WebUI 停止生成必须调用 `sendSessionCommand(session_id, "/stop")`，bridge 严格要求两个参数；Android 原生实现必须按显式 `session_id` 投递普通 `message.send`，不携带或消费草稿附件，也不能退回读取当前选中会话的 `sendCommand`。旧 APK 不支持该方法，不能作为已验证运行时，必须先完成配套发布。

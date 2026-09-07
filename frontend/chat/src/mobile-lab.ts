@@ -190,9 +190,14 @@ function handleBridgeCall(envelope: BridgeEnvelope): void {
       window.setTimeout(() => startStream("这条回复由 Browser Bridge 接住发送动作后生成。视觉和交互走的仍然是生产 Mobile WebUI。"), 160);
       return;
     }
-    case "stopTurn":
-      stopStream(true);
+    case "sendSessionCommand": {
+      const [sessionId, command] = envelope.args;
+      if (sessionId !== snapshot.selectedSessionId) {
+        throw new Error("停止命令的会话 owner 与当前 Mobile Lab 会话不一致");
+      }
+      if (command === "/stop") stopStream(true);
       return;
+    }
     case "setTheme": {
       const [theme] = envelope.args;
       if (typeof theme === "string") postNativeMessage("mobile.theme", theme);
@@ -266,7 +271,7 @@ function stopStream(interrupted: boolean): void {
   deliverSnapshot();
   streamButton.disabled = false;
   streamButton.textContent = "再播放一次";
-  setStatus("已按 Bridge stopTurn 中止流式回答");
+  setStatus("已按 Bridge /stop 中止流式回答");
 }
 
 function deliverSnapshot(): void {
