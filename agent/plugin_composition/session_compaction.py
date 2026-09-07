@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agent.control.context import running_turn_id
 from agent.plugin_composition.model import ServiceKey
-from agent.plugin_composition.request_projection import RequestHistoryUnit
 from agent.turn_effects import suppresses_post_commit
 
 if TYPE_CHECKING:
@@ -33,6 +32,28 @@ class SessionCompactionCommit:
     keep_recent_tokens: int
     estimated_tokens_before: int
     estimated_tokens_after: int
+
+
+@dataclass(frozen=True, slots=True)
+class RequestHistoryUnit:
+    """One immutable Session history unit returned by the compaction storage atom."""
+
+    source_from_seq: int
+    consolidated_through_seq: int
+    source_message_ids: tuple[str, ...]
+    messages_json: str
+    message_refs: tuple[tuple[str, int], ...]
+
+    def messages(self) -> tuple[dict[str, Any], ...]:
+        """Decode a fresh copy so callers cannot mutate the Session view."""
+
+        value = cast(Any, json.loads(self.messages_json))
+        if not isinstance(value, list):
+            raise ValueError("request history unit messages schema 无效")
+        items = cast(list[object], value)
+        if not all(isinstance(item, dict) for item in items):
+            raise ValueError("request history unit messages schema 无效")
+        return tuple(dict(cast(dict[str, Any], item)) for item in items)
 
 
 @dataclass(frozen=True, slots=True)

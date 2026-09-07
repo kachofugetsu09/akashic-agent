@@ -73,30 +73,9 @@ from agent.plugin_composition.session_compaction import (
     SESSION_COMPACTION_STORAGE,
     SessionCompactionStorage,
 )
-from agent.plugin_composition.request_projection import (
-    CONTEXT_PROJECTION_COMMITTED,
-    CONTEXT_PROJECTION_FACTS,
-    PROVIDER_REQUEST_PROJECTION,
-    ContextProjectionCommitted,
-    ContextProjectionFact,
-    ContextProjectionFacts,
-    PreparedProviderRequest,
-    ProviderRequestBinding,
-    ProviderRequestGate,
-    ProviderRequestProjection,
-    ProviderProjectionError,
-    ProviderTurnInput,
-    ProviderTurnProjection,
-    RequestHistoryUnit,
-    SessionHistoryUnit,
-)
 from agent.plugin_composition.semantic_interest import (
     CONVERSATION_SEMANTIC_INTEREST,
     ConversationSemanticInterest,
-)
-from agent.plugin_composition.continuations import (
-    CONTINUATIONS,
-    PluginContinuations,
 )
 from agent.plugin_composition.deliveries import DELIVERIES, PluginDeliveries
 from agent.plugin_composition.durable_deliveries import (
@@ -463,25 +442,8 @@ __all__ = [
     "SessionReadSnapshot",
     "SESSION_COMPACTION_STORAGE",
     "SessionCompactionStorage",
-    "CONTEXT_PROJECTION_COMMITTED",
-    "CONTEXT_PROJECTION_FACTS",
-    "PROVIDER_REQUEST_PROJECTION",
-    "ContextProjectionCommitted",
-    "ContextProjectionFact",
-    "ContextProjectionFacts",
-    "PreparedProviderRequest",
-    "ProviderRequestBinding",
-    "ProviderRequestGate",
-    "ProviderRequestProjection",
-    "ProviderProjectionError",
-    "ProviderTurnInput",
-    "ProviderTurnProjection",
-    "RequestHistoryUnit",
-    "SessionHistoryUnit",
     "ServiceKey",
     "ServiceView",
-    "CONTINUATIONS",
-    "PluginContinuations",
     "DELIVERIES",
     "PluginDeliveries",
     "DURABLE_DELIVERIES",
