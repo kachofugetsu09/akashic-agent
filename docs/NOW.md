@@ -27,9 +27,10 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 ## P1 · Message 日志与回复链插件化
 
-- 用户已批准[完整设计与分层合同](design/0902-reviewed-v4.md)：Message 独立保存，Turn 由普通无状态插件投影，Akasha 是消费者；完整回复链由非特权插件组合，替换现行 logical interaction / attempt 执行模型。
+- 用户已批准[完整设计与分层合同](design/0902-reviewed-v4.md)：Message 独立保存，Turn 由普通无状态插件投影，Akasha 是消费者；完整回复链由非特权插件组合，替换旧的执行身份模型。
 - 仓库内重构以 stacked draft PR 交付，持久变化的 yoyo 脚本与引入变化的 PR 同步；禁止灰度、shadow、双 writer 和旧 hook 兼容壳。已核实冗余的删除记录在既有账本，代码删除不授权减少历史消息、学习、附件和插件数据。
 - hua-home 上 Citation、Meme、反馈、诊断、命令和工具检查的功能按设计第 15 节保留并重组。外部插件源码迁移后续交付；其实际安装与功能验收是正式切换前提，不阻塞仓库内新接口实现。正式 workspace 尚未迁移。
+- 当前仓库已清理旧执行图，但这不等于第 10 层正式切换完成：完整 MessageLog 启动、Android 原生配套、外部插件源码迁移、历史摘要/旧效果转换和正式 workspace 演练仍未验收。
 
 ## P1 · 工作流扩展
 

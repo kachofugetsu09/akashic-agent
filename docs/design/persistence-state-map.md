@@ -787,7 +787,7 @@ Delivery provider 的 Core Tasks 按目标 key 持有活动计数和短发送排
 
 ### 2026-09-07 · 首次 App、工作台读取与 embedding binding
 
-默认初始化不再通过旧 SessionStore 开库。新 workspace 由 MessageLog 创建消息 schema；旧库必须先完成原 yoyo 链，不能用初始化覆盖。`init --force` 在重置配置模板前写入 0600 的独立 `.before-init-*.bak` 并核对字节；已有 VEDA、Context 配置和 Meme manifest 一律保留。新 `20260907_01_context_material_grants` 只在目标文件不存在时增加普通 Context 授权，完整临时文件刷盘后无覆盖发布并 fsync 目录；已有文件没有原位更新、逻辑失效或物理减少。失败只清理本次临时文件，操作者原配置与任何运行库保持不变。
+`init_workspace` 不打开 `MessageLog`，也不创建或迁移 `sessions.db`；新库由后续 `build_core_runtime` 创建消息 schema。会加载本地 runtime 的启动命令先执行 `migrate_installation` 的原 yoyo 链，再由 `build_core_runtime` 打开已迁移的 `sessions.db` 并核对 schema；已有库不能由初始化覆盖，`init` 对既有库不做迁移或写入。`init --force` 在重置配置模板前写入 0600 的独立 `.before-init-*.bak` 并核对字节；已有 VEDA、Context 配置和 Meme manifest 一律保留。新 `20260907_01_context_material_grants` 只在目标文件不存在时增加普通 Context 授权，完整临时文件刷盘后无覆盖发布并 fsync 目录；已有文件没有原位更新、逻辑失效或物理减少。失败只清理本次临时文件，操作者原配置与任何运行库保持不变。
 
 工作台移除 `sessions.db` 文件授权与注册时的 SessionStore。只读异步路由从 middleware 已持有的 exact snapshot 取得 MessageCatalog，按原目录 cursor 和固定消息上界读取；返回原始 Message 正文与当前 Session 属性，不转换成另一份持久消息。旧编辑、删除和 compaction 管理路由不再注册；它们不能从旧 interaction 管理协议取得新 Message 的写入/减少权。历史库、旧摘要账、学习出处、附件和出站回执均保持，未接管能力沿原 TODO 单独交付。
 

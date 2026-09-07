@@ -33,7 +33,9 @@
 
 ## 2. 当前链路与问题
 
-### 2.1 已核对的 Core 实现
+### 2.1 已核对的 Core 实现（历史调查基线）
+
+本小节保留 2026-09-05 设计调查时的旧执行图，供迁移和恢复对照；它不是 2026-09-07 当前源码入口。旧图的清理事实和当前 Message/插件路由见第 10.G 节，不能从下列旧类名推导现行 API。
 
 ```text
 ┌ Channel / Mobile / Web ingress ┐
@@ -66,21 +68,21 @@
 
 | 现有职责 | 源码证据 |
 |---|---|
-| 入站 lane、附件、durable handoff、渠道结果任务 | [`PassiveMessageWorker`](../../bootstrap/passive_worker.py)，约 96、257、440 行 |
-| 恢复 attempt 前驱、用户正文和工具轨迹 | [`ConversationRuntime._open_interaction_attempts / _attempt_user_inputs / _attempt_tool_chain`](../../agent/control/runtime.py)，651、715、871 行 |
+| 入站 lane、附件、durable handoff、渠道结果任务 | `PassiveMessageWorker`（历史删除：`bootstrap/passive_worker.py`），约 96、257、440 行 |
+| 恢复 attempt 前驱、用户正文和工具轨迹 | `ConversationRuntime._open_interaction_attempts / _attempt_user_inputs / _attempt_tool_chain`（历史删除：`agent/control/runtime.py`），651、715、871 行 |
 | 精确中断、资源回收和实时 replay | 同文件 `interrupt_turn / _run / subscribe` |
-| 固定阶段、命令短路、模型绑定 | [`PassiveTurnPipeline.run_command / run`](../../agent/core/passive_turn.py)，440、524 行 |
+| 固定阶段、命令短路、模型绑定 | `PassiveTurnPipeline.run_command / run`（历史删除：`agent/core/passive_turn.py`），440、524 行 |
 | 上下文投影、旧 attempt replay、工具预加载 | 同文件 `DefaultReasoner._run_turn_with_projection`，1157 行 |
 | 预算收尾、空回复修复、结构化终态、工具名特判 | 同文件 `DefaultReasoner.run`，1506 行；`tool_search` 和 `message_push` 分支约 2064 行 |
 | provider overflow 后强制 compaction、continuation 与 usage | 同文件 `_call_provider`，2698 行 |
-| Prompt 合并、记忆/Skill frame、渠道 envelope | [`PromptAssembler.assemble`](../../agent/prompting/assembler.py)、[`ContextBuilder`](../../agent/context.py)、[`prompt_render`](../../agent/lifecycle/phases/prompt_render.py) |
+| Prompt 合并、记忆/Skill frame、渠道 envelope | `PromptAssembler.assemble`（`agent/prompting/assembler.py`）；`ContextBuilder` 与 `prompt_render`（历史删除） |
 | 单次工具 prepare、authorize、execute、observe | [`ToolExecutor`](../../agent/tools/executor.py) |
-| reasoning 后暂存 user，最后批量追加 user/assistant | [`_PersistUserMessageModule / _AppendMessagesModule`](../../agent/lifecycle/phases/after_reasoning.py)，257、413 行 |
-| 观察者先于出站的固定顺序 | [`_FanoutTurnCommittedModule / _DispatchOutboundModule`](../../agent/lifecycle/phases/after_turn.py)，243、346 行 |
+| reasoning 后暂存 user，最后批量追加 user/assistant | `_PersistUserMessageModule / _AppendMessagesModule`（历史删除：`agent/lifecycle/phases/after_reasoning.py`），257、413 行 |
+| 观察者先于出站的固定顺序 | `_FanoutTurnCommittedModule / _DispatchOutboundModule`（历史删除：`agent/lifecycle/phases/after_turn.py`），243、346 行 |
 | 连续 control ID 与 proactive 特殊分组 | [`logical_history_unit_ranges`](../../session/manager.py)，190 行 |
-| 按全部 user IDs 与 final assistant ID 建立 Akasha 样本 | [`AkashaEngine._commit_source_event`](../../plugins/akasha/engine.py)，1211 行 |
+| 按全部 user IDs 与 final assistant ID 建立 Akasha 样本 | `AkashaEngine._commit_source_event`（历史删除：`plugins/akasha/engine.py`），1211 行 |
 | 插件发布借用父 Turn terminal 触发 | [`TurnPluginRollout.turn_terminal`](../../agent/plugins/turn_rollout.py)，205 行 |
-| 来源无关的一次性等待、Scheduler 业务状态 | [`PluginTimers`](../../agent/plugin_composition/timers.py)、[`Scheduler plugin`](../../plugins/scheduler/plugin.py) |
+| 来源无关的一次性等待、Scheduler 业务状态 | [`PluginTimers`](../../agent/plugin_composition/timers.py)、[`Scheduler message plugin`](../../plugins/scheduler/message_plugin.py) |
 
 Citation 与 Meme 的本地源码也显示了另一类耦合：Citation 改共享 `ctx.reply` 并提取引用，Meme 改同一正文和 media，Meme Prompt 还依赖 `citation.prompt`。检查路径是 `/mnt/data/coding/akashic-plugin/citation/plugin.py` 与 `/mnt/data/coding/akashic-plugin/meme/plugin.py`。这些 checkout 声明的是 V2 接口，只证明该份源码的依赖，不证明正式运行中的安装版本；迁移前必须核对正式 generation 对应的源码、cache 和实际消费者。
 
@@ -370,7 +372,7 @@ Task scope 是通用、短命的运行对象，可有一个跨重启失效的 ha
 
 ## 6. 去掉 Attempt 后，职责放在哪里
 
-现在的 Attempt 并非完全无用：它暂存尚未进入 messages 的输入，保存工具执行 checkpoint，承担精确取消与 UI replay，还被发布流程引用。真正冗余的是把这些不同职责收进一个对话实体，再与 logical interaction 互相转换。
+旧实现的 Attempt 上下文并非完全无用：它暂存尚未进入 messages 的输入，保存工具执行 checkpoint，承担精确取消与 UI replay，还被发布流程引用。真正冗余的是把这些不同职责收进一个持久对话实体，再让它们互相转换。
 
 | 旧 Attempt 职责 | 新 owner 与恢复依据 |
 |---|---|
@@ -565,7 +567,7 @@ UI 的 scope handle 和来源 head 前置条件在控制提交时一起核对；
 
 使用固定输入与明确预期分组验收默认 Turn 投影；历史数据副本用于迁移和重建演练，不接入实时 shadow。Akasha 与重建使用同一版本和 exact source IDs；UI 按 seq 同步。compaction 独立证明模型协议与保留切点。
 
-退出：更换学习投影不影响输入准入、模型调用次数、工具执行和输出可提交性。移除新路径的 control_turn_id 依赖。
+退出：更换学习投影不影响输入准入、模型调用次数、工具执行和输出可提交性。新路径只依赖 Message 身份、seq、source 与已提交 finish/control 事实。
 
 ### E. conversation 与 Delivery 接管外层
 
@@ -578,6 +580,28 @@ UI 的 scope handle 和来源 head 前置条件在控制提交时一起核对；
 发布/重启/子任务 owner 脱离 Attempt，工具和发送恢复完成后，移除 ConversationRuntime 中 attempt transcript 状态及旧 Worker/Pipeline 的固定业务编排。Task、Timer、generation、Artifact、工具/渠道安全边界保留各自实际职责。
 
 退出：bootstrap 只组装能力与默认插件；Core 没有 passive/proactive、具体工具名或插件 ID 分支。跨仓库安装、热更、关闭、恢复和真实 provider 验收完成后才删除旧接入点。旧运行数据保留至独立迁移/管理批准。
+
+### G. 2026-09-07 旧执行图清理事实与选择
+
+本轮清理以当前候选提交和独立 worktree 为边界，删除已经没有生产消费者的新旧执行图：旧 passive/context/runtime 支撑文件、`agent/lifecycle/` phase 目录、旧 retrieval event/protocol、`agent/plugin_composition/turn_lifecycle.py` 和旧 observe 接入点均不再作为 Message → source → reply → Delivery 的调用入口。对应功能由下列当前插件承接：
+
+```text
+MessageLog → sources/conversation → reply/react
+                         ├─ context → models → content
+                         ├─ tools → ToolResult Message
+                         └─ delivery → channel adapter
+Turn projection / Akasha 只读消费 MessageLog
+```
+
+清理时保留以下事实与边界：
+
+- `Message` 的 `message_id + seq`、SessionDB schema/yoyo lineage、附件与 plugin-data 恢复材料继续由原 owner 管理；删除代码不减少既有消息、学习、附件或插件数据。
+- `plugins.tools` 的 `TOOLS`、`CallSource`、`MessageReply`、`Result`、`BoundTool` 和 `plugins.delivery` 的 `DELIVERY` / `DELIVERY_READ` 是当前插件边界。manager/snapshot 中仍可见的 `TOOL_CATALOG`、旧 delivery 导出与兼容类型只表示保留内部图，不能写成新的插件入口。
+- `RUNTIME_STARTING`、`RUNTIME_STARTED`、`RUNTIME_STOPPING` 和 `SNAPSHOT_SEALING` 仍是当前生命周期信号；旧 `AFTER_TURN_COMMITTED`、旧 retrieval/observe 名称和测试残留不证明新 Core 会发布这些事实。新来源变化使用来源插件自己的 typed signal。
+- Mobile 已移除旧的 stop/interrupt 注入和 `_Bus` 生产假设；生产 `MobileRealtimeChannel` 通过真实 MessageCatalog、MessageBus recoverer 与 `ChannelRuntimePorts` 接线。旧测试辅助对象不构成新的运行时 API。
+- 旧 Memory2/Memory plugin 组合入口和已删除的 runtime helper 不再进入当前插件路由；`plugins/compaction`、`plugins/markdown_memory` 和 `plugins/akasha` 的 owner 与持久化合同继续保留。
+
+这次清理不宣称正式 workspace、Android 原生配套、外部插件源码迁移、历史摘要账转换、旧未确认外部效果恢复或完整 MessageLog 启动切换已经完成；这些仍由本节前述退出条件和 `NOW.md` 接手。receipt API 未合入前也不写入已实现公共合同。清理前恢复点见 [测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md) 的 2026-09-07 条目。
 
 ## 11. 验收：证明变化互不牵连
 
