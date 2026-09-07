@@ -2,40 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
 import subprocess
 import sys
 from typing import Any, AsyncIterator, cast
 
 import pytest
 
-from agent.core.response_parser import ResponseMetadata
-from agent.context import MessageEnvelopeBuilder
-from agent.lifecycle.composition import (
-    AFTER_REASONING_CLEANUP_EVENT,
-    AFTER_REASONING_PREPROCESS_EVENT,
-    CONTEXT_PREPARED_EVENT,
-    PROMPT_RENDER_EVENT,
-    observe_composition_event,
-    run_composition_lifecycle,
-)
-from agent.lifecycle.phases.before_turn import (
-    BeforeTurnFrame,
-    default_before_turn_modules,
-)
-from agent.lifecycle.phases.after_turn import (
-    AfterTurnFrame,
-    default_after_turn_modules,
-)
-from agent.lifecycle.phases.after_reasoning import (
-    AfterReasoningFrame,
-    default_after_reasoning_modules,
-)
-from agent.lifecycle.phases.prompt_render import (
-    PromptRenderFrame,
-    default_prompt_render_modules,
-)
-from agent.lifecycle.types import AfterReasoningCtx, BeforeTurnCtx, PromptRenderCtx
 from agent.plugin_composition import (
     Bail,
     CompositionError,
@@ -45,28 +17,19 @@ from agent.plugin_composition import (
 )
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import (
-    RuntimeSnapshot,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
     bind_runtime_snapshot,
     reset_runtime_snapshot,
 )
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
-from agent.turn_events.observe import (
-    MEMORY_WRITTEN_EVENT,
-    RETRIEVAL_COMPLETED_EVENT,
-)
+from agent.turn_events.observe import MEMORY_WRITTEN_EVENT, RETRIEVAL_COMPLETED_EVENT
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQueryResult, MemoryRecord
 from core.memory.events import MemoryWritten, RetrievalCompleted
 from agent.retrieval.events import build_retrieval_completed
 from agent.retrieval.protocol import RetrievalRequest
-from agent.prompting import PromptAssembler, PromptSectionRender
-from plugins.openai_compatible.driver import (
-    _merge_leading_system_messages,
-    _normalize_messages,
-)
 
 
 @asynccontextmanager
@@ -160,185 +123,6 @@ async def apply(ctx, config):
         async with asyncio.timeout(3):
             await manager.terminate_all()
         log.close()
-
-
-def _prompt_ctx() -> PromptRenderCtx:
-    return PromptRenderCtx(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        content="hello",
-        media=None,
-        timestamp=datetime.now(),
-        history=[],
-        skill_names=[],
-        disabled_sections=set(),
-        turn_injection_prompt="",
-    )
-
-
-def _assert_context_frame_keeps_dynamic_memory_after_stable_history() -> None:
-    history = [
-        {"role": "user", "content": "old question"},
-        {"role": "assistant", "content": "old answer"},
-    ]
-
-    class _ContextStub:
-        _envelope_builder = MessageEnvelopeBuilder()
-
-        @staticmethod
-        def _build_system_prompt_sections(**_kwargs: object) -> list[PromptSectionRender]:
-            return [
-                PromptSectionRender("stable", "stable system", True, order=20),
-                PromptSectionRender("active_skills", "active skill", False, order=50),
-            ]
-
-    assembler = PromptAssembler(cast(Any, _ContextStub()))
-
-    def assemble(memory: str):
-        return assembler.assemble(
-            history=history,
-            current_message="current question",
-            multimodal=False,
-            context_frame_sections=[
-                PromptSectionRender("memory", memory, False, order=10)
-            ],
-        )
-
-    first = assemble("recall one")
-    second = assemble("recall two")
-    provider_messages = _merge_leading_system_messages(
-        _normalize_messages(first.messages)
-    )
-
-    assert first.system_prompt == second.system_prompt == "stable system"
-    assert first.messages[:3] == second.messages[:3]
-    assert [message["role"] for message in provider_messages] == [
-        "system",
-        "user",
-        "assistant",
-        "user",
-        "user",
-    ]
-    reminder = provider_messages[-2]
-    assert reminder["role"] == "user"
-    assert str(reminder["content"]).startswith("<system-reminder")
-    assert str(reminder["content"]).index("## memory") < str(
-        reminder["content"]
-    ).index("## active_skills")
-
-
-def _before_turn_ctx() -> BeforeTurnCtx:
-    return BeforeTurnCtx(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        content="hello",
-        timestamp=datetime.now(),
-        history_messages=(),
-    )
-
-
-def _answer_ctx() -> AfterReasoningCtx:
-    return AfterReasoningCtx(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        tools_used=(),
-        thinking=None,
-        response_metadata=ResponseMetadata(raw_text="hello"),
-        streamed=False,
-        tool_chain=(),
-        context_retry={},
-        reply="hello",
-    )
-
-
-
-
-
-
-@pytest.mark.asyncio
-async def test_context_prepared_seam_is_noop_without_composition_root() -> None:
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}))
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
-
-    try:
-        await run_composition_lifecycle(CONTEXT_PREPARED_EVENT, _before_turn_ctx())
-    finally:
-        reset_runtime_snapshot(token)
-        await lease.release()
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_seam_is_noop_without_runtime_binding() -> None:
-    await run_composition_lifecycle(CONTEXT_PREPARED_EVENT, _before_turn_ctx())
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_seam_rejects_inherited_wrong_task_binding() -> None:
-    observed: list[str] = []
-    root = CompositionRoot("wrong-task-lifecycle")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(CONTEXT_PREPARED_EVENT, lambda _: observed.append("called"))
-
-    await root.mount(plugin, name="observer")
-    async with _bound_root(root):
-        task = asyncio.create_task(
-            run_composition_lifecycle(
-                CONTEXT_PREPARED_EVENT,
-                _before_turn_ctx(),
-            )
-        )
-        with pytest.raises(CompositionError) as caught:
-            await task
-
-    assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
-    assert observed == []
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_seam_rejects_released_owner_lease() -> None:
-    root = CompositionRoot("inactive-lifecycle")
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
-    await lease.release()
-
-    try:
-        with pytest.raises(CompositionError) as caught:
-            await run_composition_lifecycle(
-                CONTEXT_PREPARED_EVENT,
-                _before_turn_ctx(),
-            )
-    finally:
-        reset_runtime_snapshot(token)
-        await store.close()
-        await root.dispose()
-
-    assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_INACTIVE"
-
-
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_seam_rejects_bail() -> None:
-    root = CompositionRoot("lifecycle-bail")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(PROMPT_RENDER_EVENT, lambda _: Bail("blocked"))
-
-    await root.mount(plugin, name="bailing-plugin")
-    async with _bound_root(root):
-        with pytest.raises(CompositionError) as caught:
-            await run_composition_lifecycle(PROMPT_RENDER_EVENT, _prompt_ctx())
-
-    assert caught.value.code == "LIFECYCLE_BAIL_NOT_ALLOWED"
 
 
 @pytest.mark.asyncio
@@ -452,19 +236,14 @@ async def test_after_turn_committed_event_runs_after_core_fanout() -> None:
         await ctx.on(AFTER_TURN_COMMITTED, on_committed)
 
     await root.mount(plugin, name="observe-plugin")
+    committed = _committed_event()
     bus = EventBus()
     bus.on(TurnCommitted, lambda _: order.append("event-bus"))
-    module = _fanout_committed_module(bus)
-    committed = _committed_event()
-    frame = AfterTurnFrame(
-        input=cast(Any, None),
-        slots={"turn:committed": committed},
-    )
 
     async with _bound_root(root):
-        result = await module.run(frame)
+        await bus.fanout(committed)
+        root.context.emit(AFTER_TURN_COMMITTED, committed)
 
-    assert result is frame
     assert order == ["event-bus", "composition"]
     assert observed == [committed]
 
@@ -480,14 +259,9 @@ async def test_after_turn_committed_event_propagates_listener_failure() -> None:
         await ctx.on(AFTER_TURN_COMMITTED, fail)
 
     await root.mount(plugin, name="failing-observe-plugin")
-    frame = AfterTurnFrame(
-        input=cast(Any, None),
-        slots={"turn:committed": _committed_event()},
-    )
-
     async with _bound_root(root):
         with pytest.raises(RuntimeError, match="observe failed"):
-            await _fanout_committed_module(EventBus()).run(frame)
+            root.context.emit(AFTER_TURN_COMMITTED, _committed_event())
 
 
 def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
@@ -511,15 +285,11 @@ async def test_after_turn_committed_event_keeps_core_path_without_root() -> None
     observed: list[TurnCommitted] = []
     bus = EventBus()
     bus.on(TurnCommitted, observed.append)
-    frame = AfterTurnFrame(
-        input=cast(Any, None),
-        slots={"turn:committed": _committed_event()},
-    )
+    event = _committed_event()
+    result = await bus.fanout(event)
 
-    result = await _fanout_committed_module(bus).run(frame)
-
-    assert result is frame
-    assert observed == [frame.slots["turn:committed"]]
+    assert result is None
+    assert observed == [event]
 
 
 
@@ -540,9 +310,9 @@ async def test_domain_observe_event_uses_bound_candidate_root() -> None:
     await second.mount(second_plugin, name="second-observer")
     event = _memory_written_event()
     async with _bound_root(first):
-        await observe_composition_event(MEMORY_WRITTEN_EVENT, event)
+        await first.context.observe(MEMORY_WRITTEN_EVENT, event)
     async with _bound_root(second):
-        await observe_composition_event(MEMORY_WRITTEN_EVENT, event)
+        await second.context.observe(MEMORY_WRITTEN_EVENT, event)
 
     assert observed == ["first", "second"]
 
@@ -564,21 +334,25 @@ async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
 
 @pytest.mark.asyncio
 async def test_domain_observe_event_rejects_inherited_wrong_task_binding() -> None:
+    from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
+
     root = CompositionRoot("domain-observe-wrong-task")
+    store = RuntimeSnapshotStore()
+    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
+    lease = store.lease()
+    token = bind_runtime_snapshot(lease)
+    try:
+        async def read_snapshot() -> object:
+            return get_lifecycle_runtime_snapshot()
 
-    async def plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, lambda _: None)
-
-    await root.mount(plugin, name="domain-observer")
-    async with _bound_root(root):
-        task = asyncio.create_task(
-            observe_composition_event(
-                MEMORY_WRITTEN_EVENT,
-                _memory_written_event(),
-            )
-        )
+        task = asyncio.create_task(read_snapshot())
         with pytest.raises(CompositionError) as caught:
             await task
+    finally:
+        reset_runtime_snapshot(token)
+        await lease.release()
+        await store.close()
+        await root.dispose()
 
     assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
 
@@ -623,8 +397,6 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
 
 @pytest.mark.asyncio
 async def test_retrieval_completed_event_payload() -> None:
-    _assert_context_frame_keeps_dynamic_memory_after_stable_history()
-
     observed: list[RetrievalCompleted] = []
     root = CompositionRoot("retrieval-completed")
 
@@ -659,7 +431,7 @@ async def test_retrieval_completed_event_payload() -> None:
     )
 
     async with _bound_root(root):
-        await observe_composition_event(
+        await root.context.observe(
             RETRIEVAL_COMPLETED_EVENT,
             build_retrieval_completed(request, result),
         )
@@ -693,19 +465,6 @@ def test_domain_event_contract_imports_without_phase_runtime() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
-
-
-def _fanout_committed_module(bus: EventBus) -> Any:
-    modules = default_after_turn_modules(
-        bus,
-        cast(Any, object()),
-        cast(Any, object()),
-    )
-    return next(
-        item
-        for item in modules
-        if getattr(item, "slot", "") == "after_turn.fanout_committed"
-    )
 
 
 def _committed_event() -> TurnCommitted:

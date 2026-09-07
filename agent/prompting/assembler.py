@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
-
-if TYPE_CHECKING:
-    from datetime import datetime
-
-    from agent.context import ContextBuilder
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -18,48 +12,9 @@ class PromptSectionRender:
     order: int | None = None
 
 
-@dataclass(frozen=True)
-class PromptSectionMeta:
-    name: str
-    chars: int
-    est_tokens: int
-    is_static: bool
-    cache_hit: bool
-
-
-@dataclass
-class AssembledTurnInput:
-    system_sections: list[PromptSectionRender] = field(default_factory=list)
-    system_prompt: str = ""
-    turn_injection_context: dict[str, str] = field(default_factory=dict)
-    messages: list[dict[str, Any]] = field(default_factory=list)
-    debug_breakdown: list[PromptSectionMeta] = field(default_factory=list)
-
-
-class SectionCache:
-    def __init__(self) -> None:
-        self._data: dict[tuple[str, str, str], str] = {}
-
-    def get(self, scope: str, section_name: str, signature: str) -> str | None:
-        return self._data.get((scope, section_name, signature))
-
-    def set(self, scope: str, section_name: str, signature: str, content: str) -> None:
-        self._data[(scope, section_name, signature)] = content
-
-
-_CONTEXT_FRAME_SECTIONS = {
-    "active_skills",
-}
 SYSTEM_CONTEXT_FRAME_MARKER = '<system-reminder data-system-context-frame="true">'
 SYSTEM_CONTEXT_FRAME_END = "</system-reminder>"
 LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
-
-
-def is_context_frame(content: str) -> bool:
-    text = content.lstrip()
-    return text.startswith("<system-reminder") or text.startswith(
-        LEGACY_CONTEXT_FRAME_MARKER
-    )
 
 
 def build_context_frame_message(content: str) -> dict[str, str]:
@@ -77,125 +32,3 @@ def build_context_frame_content(sections: list[PromptSectionRender]) -> str:
         parts.append(f"## {section.name}\n{section.content}")
     parts.append(SYSTEM_CONTEXT_FRAME_END)
     return "\n\n".join(parts)
-
-
-class PromptAssembler:
-    def __init__(self, context_builder: "ContextBuilder") -> None:
-        self._context_builder = context_builder
-
-    def assemble(
-        self,
-        *,
-        history: list[dict[str, Any]],
-        current_message: str,
-        multimodal: bool,
-        media: list[str] | None = None,
-        skill_names: list[str] | None = None,
-        channel: str | None = None,
-        chat_id: str | None = None,
-        message_timestamp: "datetime | None" = None,
-        disabled_sections: set[str] | None = None,
-        turn_injection_context: dict[str, str] | None = None,
-        system_sections_top: list[PromptSectionRender] | None = None,
-        system_sections_bottom: list[PromptSectionRender] | None = None,
-        context_frame_sections: list[PromptSectionRender] | None = None,
-    ) -> AssembledTurnInput:
-        # assembler 负责把“主 prompt + turn injection + message envelope”
-        # 收束成一份统一输入，避免调用方各自手拼消息顺序。
-        built_sections = self._context_builder._build_system_prompt_sections(
-            skill_names=skill_names,
-            channel=channel,
-            chat_id=chat_id,
-            disabled_sections=disabled_sections,
-        )
-        injection_context = turn_injection_context or {}
-        disabled = disabled_sections or set()
-        top_sections = [
-            section
-            for section in (system_sections_top or [])
-            if section.name not in disabled
-        ]
-        bottom_sections = [
-            section
-            for section in (system_sections_bottom or [])
-            if section.name not in disabled
-        ]
-        ordered = [
-            section
-            for section in [*built_sections, *bottom_sections]
-            if section.order is not None
-        ]
-        ordered.sort(key=lambda section: cast(int, section.order))
-        unordered_bottom = [
-            section for section in bottom_sections if section.order is None
-        ]
-        all_sections = [*top_sections, *ordered, *unordered_bottom]
-        system_sections = [
-            section
-            for section in all_sections
-            if section.name not in _CONTEXT_FRAME_SECTIONS
-        ]
-        built_frame_sections = [
-            section
-            for section in all_sections
-            if section.name in _CONTEXT_FRAME_SECTIONS
-        ]
-        contributed_frame_sections = [
-            section
-            for section in (context_frame_sections or [])
-            if section.name not in disabled
-        ]
-        frame_sections = [*built_frame_sections, *contributed_frame_sections]
-        frame_sections.sort(
-            key=lambda section: (
-                section.order is None,
-                section.order if section.order is not None else 0,
-            )
-        )
-        for name, content in injection_context.items():
-            text = content.strip()
-            if text:
-                frame_sections.append(
-                    PromptSectionRender(
-                        name=name,
-                        content=text,
-                        is_static=False,
-                    )
-                )
-        system_prompt = "\n\n---\n\n".join(item.content for item in system_sections)
-        context_frame = build_context_frame_content(frame_sections)
-        messages = self._context_builder._envelope_builder.build(
-            history=history,
-            current_message=current_message,
-            system_prompt=system_prompt,
-            context_frame=context_frame,
-            channel=channel,
-            message_timestamp=message_timestamp,
-            media=media,
-            multimodal=multimodal,
-        )
-        return AssembledTurnInput(
-            system_sections=all_sections,
-            system_prompt=system_prompt,
-            turn_injection_context=injection_context,
-            messages=messages,
-            debug_breakdown=[
-                *_section_meta(top_sections),
-                *_section_meta(built_sections),
-                *_section_meta(bottom_sections),
-                *_section_meta(contributed_frame_sections),
-            ],
-        )
-
-
-def _section_meta(sections: list[PromptSectionRender]) -> list[PromptSectionMeta]:
-    return [
-        PromptSectionMeta(
-            name=section.name,
-            chars=len(section.content),
-            est_tokens=max(1, len(section.content) // 3),
-            is_static=section.is_static,
-            cache_hit=section.cache_hit,
-        )
-        for section in sections
-    ]
