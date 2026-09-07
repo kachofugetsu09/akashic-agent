@@ -54,6 +54,9 @@ jobs:
           ../../.venv/bin/pyright src tests --level error
           ../../.venv/bin/pytest -q tests
 
+      - name: Install Node dependencies
+        run: npm ci
+
       - name: Run Python regressions
         timeout-minutes: 15
         env:
@@ -63,7 +66,6 @@ jobs:
 
       - name: Run Web regressions
         run: |
-          npm ci
           npm run test:web
           npm run typecheck
 
