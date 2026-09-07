@@ -10,15 +10,21 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from akashic_sdk import ConnectionClosedError
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
+from agent.plugins.install import finalize_uninstall_plugin, set_installed_plugin_enabled
 from agent.plugins.reload_journal import ReloadJournal
 from agent.tools.registry import ToolRegistry
+from agent.control.client import ControlClient
+from agent.control.service import ControlService
 from bootstrap.app import AppRuntime
 from bus.event_bus import EventBus
+from infra.control.socket import SocketAppServer
+from session.log import MessageCatalog, MessageLog
 
 
 @pytest.mark.asyncio
@@ -178,6 +184,99 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
                 await lease.release()
         if manager.ready_candidate is not None:
             await manager.drop_candidate(plugin_id)
+        await manager.terminate_all()
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_socket_uninstall_waits_for_old_lease_after_client_disconnects(
+    tmp_path: Path,
+) -> None:
+    """真实控制 socket 的卸载操作由服务 owner 持续到旧代排空。"""
+
+    _source, manager, _app, bus, old_artifact = await _start_runtime_mcp(tmp_path)
+    plugin_id = "runtime_mcp@lab"
+    production_data = tmp_path / "workspace" / "plugin-data" / "runtime_mcp-lab"
+    production_marker = production_data / "retained.json"
+    production_marker.write_text('{"keep": true}\n', encoding="utf-8")
+    old_lease = manager.snapshot_store.lease()
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    outcome: dict[str, object] = {}
+
+    async def uninstall(plugin: str) -> dict[str, object]:
+        assert plugin == plugin_id
+        _ = set_installed_plugin_enabled(
+            plugin, enabled=False, plugins_home=manager.installed_plugins_home,
+        )
+        started.set()
+        try:
+            await manager.reconcile_disabled_and_drain(plugin)
+            cache_path, data_path = finalize_uninstall_plugin(
+                plugin,
+                workspace=tmp_path / "workspace",
+                plugins_home=manager.installed_plugins_home,
+            )
+            outcome.update({
+                "plugin_id": plugin,
+                "cache_path": str(cache_path),
+                "data_path": str(data_path),
+            })
+            return outcome
+        finally:
+            finished.set()
+
+    message_log = MessageLog(tmp_path / "workspace" / "sessions.db")
+
+    async def reject_accept(_session, _message_id, _incoming):
+        raise AssertionError("卸载测试不应接纳消息")
+
+    async def no_reply_status(_session):
+        if False:
+            yield {}
+
+    service = ControlService(
+        MessageCatalog(message_log),
+        tmp_path / "workspace",
+        accept=reject_accept,
+        reply_status=no_reply_status,
+        attachments=lambda _ids: (),
+        plugin_uninstall=uninstall,
+    )
+    server = SocketAppServer(tmp_path / "control.sock", service)
+    await server.start()
+    request_task: asyncio.Task[object] | None = None
+    try:
+        client = await ControlClient.connect(str(server.endpoint))
+        request_task = asyncio.create_task(
+            client.request("plugin/uninstall", {"plugin_id": plugin_id})
+        )
+        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.sleep(0)
+        assert not request_task.done()
+        assert old_artifact.is_dir()
+
+        await client.close()
+        await asyncio.sleep(0)
+        assert not finished.is_set()
+        assert request_task.done()
+        with pytest.raises(ConnectionClosedError, match="server closed connection"):
+            request_task.result()
+
+        await old_lease.release()
+        await asyncio.wait_for(finished.wait(), 10)
+        assert outcome["plugin_id"] == plugin_id
+        assert not old_artifact.exists()
+        assert production_marker.read_text(encoding="utf-8") == '{"keep": true}\n'
+    finally:
+        if request_task is not None and not request_task.done():
+            request_task.cancel()
+            await asyncio.gather(request_task, return_exceptions=True)
+        if old_lease.active:
+            await old_lease.release()
+        await server.stop()
+        await service.shutdown()
+        message_log.close()
         await manager.terminate_all()
         await bus.aclose()
 
