@@ -2019,3 +2019,7 @@ version 0 记录保存完整旧行、原 JSON 字符串与 SHA-256；未记录�
 非空 prepare、未知 schema/格式、坏 JSON、缺失或不连续来源、冲突 head 均拒绝转换，失败事务不发布半条链。
 重试核对不可变导入记录，不倒退后来推进的 head；恢复点为 `backups/legacy-summaries-v1/<id>/` 的数据库与 manifest。
 该路径不运行模型、工具、发送或学习；旧工具 trace 没有领域回执时不补造 ToolResult，也不重新执行。
+
+### 已停止旧链的迁移处置
+
+维护者在真实副本演练后确认 [0061](../decisions/0061-archive-stopped-legacy-executions.md)：failed、interrupted、cancelled 的旧链若缺工具领域回执，完整归档原行，并在迁移 manifest 中记录 `archived_without_tool_receipts`。不自动续跑、不重放外部效果，也不补造原生 ToolResult 或新用户输入。queued/in_progress 仍需真实恢复协议，否则阻断迁移。此决定不授权正式部署。

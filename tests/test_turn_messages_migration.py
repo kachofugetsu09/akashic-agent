@@ -132,17 +132,19 @@ def test_forged_control_channel_metadata_is_only_archived_without_independent_re
 
 
 @pytest.mark.parametrize('status', ['in_progress', 'interrupted', 'cancelled', 'completed', 'invented'])
-def test_open_tool_without_domain_receipt_blocks_entire_migration_and_preserves_state(tmp_path, status):
+def test_stopped_tool_chain_is_archived_without_receipts_or_replay(tmp_path, status):
     root = workspace(tmp_path)
     original = persisted(root, 0)
     old = turn(root, 't1', [user(0), {'id': 'tool', 'type': 'toolCall', 'data': {
         'status': status, 'callId': 'call', 'name': 'shell', 'args': {}, 'resultPreview': 'complete text',
     }}])
-    with pytest.raises(RuntimeError, match='terminal receipt'):
-        migrate_turn_messages(root)
+    receipt = migrate_turn_messages(root)
+    assert receipt['input_mapping'] == [] and receipt['pauses'] == []
+    assert receipt['unmapped'] == [{'tail_id': 't1', 'reason': 'archived_without_tool_receipts'}]
     with closing(MessageLog(root / 'sessions.db')) as log:
-        assert log.reader('probe:room').snapshot() == (original,)
-        assert log.owner('migration:turn-messages-v1').list() == ()
+        messages = log.reader('probe:room').snapshot()
+        assert messages[0] == original and len(messages) == 2
+        assert messages[1].body.parts[0].kind == 'history.record'
     with closing(sqlite3.connect(root / 'sessions.db')) as db:
         assert db.execute('SELECT * FROM turns').fetchall() == [old]
     assert list((root / 'backups/turn-messages-v1').iterdir())

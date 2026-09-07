@@ -167,9 +167,12 @@ def _plan(rows: list[dict[str, Any]], handoffs: list[dict[str, Any]],
             continue
         tools = [(row["id"], item) for row, _, items in chain for item in items if item["type"] == "toolCall"]
         if tools:
-            # TODO: 旧 ToolCall status/resultPreview 不是领域 receipt；确认真实效果后才能续接。
-            identities = [(record, item["id"], item["data"].get("status")) for record, item in tools]
-            raise RuntimeError(f"旧可续接执行缺少工具领域 terminal receipt，停止迁移: {identities}")
+            if tail["status"] in {"queued", "in_progress"}:
+                raise RuntimeError(f"旧活动执行缺少工具领域 terminal receipt，停止迁移: {tail_id}")
+            # 已停止的旧链只保留原始历史；展示状态不升级成领域回执，也不重新执行。
+            result.append({"tail_id": tail_id, "session_id": session_id,
+                           "reason": "archived_without_tool_receipts", "inputs": []})
+            continue
         inputs = [(row, meta, item) for row, meta, items in chain for item in items if item["type"] == "userMessage"]
         reason = None
         if (not inputs or any(type(item["data"].get("ordinal")) is not int for _, _, item in inputs)
