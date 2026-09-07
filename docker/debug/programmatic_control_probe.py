@@ -3429,7 +3429,7 @@ def _inside_restart_check(report_dir: Path) -> int:
 
 
 def _inside_soak(report_dir: Path) -> int:
-    """执行 10 次预热和 100 次混合 turn，并记录稳定终态。"""
+    """执行 programmatic Message soak，并核对每个结果的日志引用。"""
 
     report_dir.mkdir(parents=True, exist_ok=True)
     endpoint = Path("/sandbox/akashic.sock")
@@ -3439,115 +3439,318 @@ def _inside_soak(report_dir: Path) -> int:
     _configure_model_gate()
     _wait_socket(endpoint, READINESS_DEADLINE_S)
     client = _connect_client(endpoint, events_path)
-    counts = {"completed": 0, "failed": 0, "interrupted": 0, "reconnects": 0}
-    turn_ids: list[str] = []
+    session_id = "programmatic:g5-soak"
+    counts = {"complete": 0, "pause": 0, "failure": 0, "reconnects": 0}
+    records: list[dict[str, object]] = []
 
-    def run_complete(index: int, *, warmup: bool = False) -> None:
-        _http_json(
-            "PUT",
-            f"{model_url}/control/script",
-            {"mode": "complete", "content": f"soak-{index}"},
+    def wait_ack_barrier(path: Path) -> None:
+        deadline = time.monotonic() + READINESS_DEADLINE_S
+        while not path.exists():
+            if time.monotonic() >= deadline:
+                raise GateFailure(f"controller 未确认 soak milestone：{path.name}")
+            threading.Event().wait(0.02)
+
+    def run_message(
+        index: int,
+        *,
+        phase: str,
+        expected_status: str,
+        mode: str = "complete",
+    ) -> None:
+        message_id = f"g5-{phase}-{index:03d}"
+        text = f"soak {phase} {index}"
+        barrier_name = f"g5-pause-{index}"
+        if mode == "complete":
+            _http_json(
+                "PUT",
+                f"{model_url}/control/script",
+                {"mode": "complete", "content": f"reply {message_id}"},
+            )
+        elif mode == "failure":
+            _http_json(
+                "PUT",
+                f"{model_url}/control/script",
+                [
+                    {"mode": "error", "status": 500},
+                    {"mode": "error", "status": 500},
+                ],
+            )
+        elif mode == "pause":
+            _http_json("PUT", f"{model_url}/control/barriers/{barrier_name}")
+            _http_json(
+                "PUT",
+                f"{model_url}/control/script",
+                [
+                    {"mode": "timeout", "barrier": barrier_name},
+                ],
+            )
+        else:
+            raise GateFailure(f"未知 soak mode：{mode}")
+
+        ack = client.send_programmatic(session_id, message_id, text)
+        if ack.get("message_id") != message_id or not isinstance(ack.get("seq"), int):
+            raise GateFailure(f"soak Input ACK 异常：{ack!r}")
+        if mode == "pause":
+            _wait_barrier(model_url, barrier_name)
+            _release_barrier(model_url, barrier_name)
+            control_ack = client.request_result(
+                "programmatic/message/pause",
+                {
+                    "session_id": session_id,
+                    "message_id": f"g5-pause-control-{index:03d}",
+                },
+            )
+            if control_ack.get("seq") != ack["seq"] + 1:
+                raise GateFailure(f"soak pause Control ACK 序号异常：{control_ack!r}")
+        result = _wait_programmatic_result(client, session_id, message_id)
+        if result.get("status") != expected_status:
+            raise GateFailure(
+                f"soak {message_id} 结果状态异常：expected={expected_status!r} result={result!r}"
+            )
+        ending_seq = result.get("ending_seq")
+        if not isinstance(ending_seq, int) or ending_seq <= int(ack["seq"]):
+            raise GateFailure(f"soak {message_id} 结果缺少 terminal seq：{result!r}")
+        records.append(
+            {
+                "index": index,
+                "phase": phase,
+                "messageId": message_id,
+                "text": text,
+                "ack": ack,
+                "result": result,
+                "expectedStatus": expected_status,
+            }
         )
-        thread_id = _start_thread(client, "G5-warmup" if warmup else "G5")
-        turn_id = _start_turn(client, thread_id, f"soak complete {index}")
-        terminal = client.wait_terminal(turn_id)
-        if _terminal_status(terminal) != "completed":
-            raise GateFailure(f"soak complete turn 非 completed：{turn_id}")
-        counts["completed"] += 1
-        turn_ids.append(turn_id)
+        counts[expected_status] += 1
 
     try:
+        admission = client.admit_programmatic(session_id)
+        if (
+            admission.get("visibility") != "internal"
+            or admission.get("learning") != "excluded"
+        ):
+            raise GateFailure(f"G5 programmatic Session 准入异常：{admission!r}")
+
         # 1. 预热完成后等待 controller 采集资源基线。
         for index in range(10):
-            run_complete(index, warmup=True)
+            run_message(index, phase="warmup", expected_status="complete")
         _write_json(
             report_dir / "soak-progress.json",
             {"phase": "warmup", "completed": 10, "counts": counts},
         )
         start_barrier = report_dir / "soak-start"
-        deadline = time.monotonic() + READINESS_DEADLINE_S
-        while not start_barrier.exists():
-            if time.monotonic() >= deadline:
-                raise GateFailure("controller 未释放 soak-start barrier")
-            threading.Event().wait(0.02)
+        wait_ack_barrier(start_barrier)
 
-        # 2. 100 turns：10 reconnect、10 interrupt、10 provider failure。
+        # 2. 100 个独立 Input：80 complete、10 pause、10 provider failure。
         for index in range(100):
             if index % 10 == 0:
                 client.close()
                 client = _connect_client(endpoint, events_path)
                 counts["reconnects"] += 1
             if index < 10:
-                barrier = f"soak-interrupt-{index}"
-                _create_barrier(
-                    model_url,
-                    barrier,
-                    {"mode": "complete", "content": "must interrupt"},
-                )
-                thread_id = _start_thread(client, "G5-interrupt")
-                turn_id = _start_turn(client, thread_id, f"soak interrupt {index}")
-                _wait_barrier(model_url, barrier)
-                client.request(
-                    "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}
-                )
-                terminal = client.wait_terminal(turn_id, timeout=2)
-                _release_barrier(model_url, barrier)
-                if _terminal_status(terminal) != "interrupted":
-                    raise GateFailure(f"soak interrupt turn 非 interrupted：{turn_id}")
-                counts["interrupted"] += 1
-                turn_ids.append(turn_id)
+                run_message(index, phase="pause", expected_status="pause", mode="pause")
             elif index < 20:
-                _http_json(
-                    "PUT",
-                    f"{model_url}/control/script",
-                    [
-                        {"mode": "error", "status": 500},
-                        {"mode": "error", "status": 500},
-                    ],
+                run_message(
+                    index, phase="failure", expected_status="failure", mode="failure"
                 )
-                thread_id = _start_thread(client, "G5-failure")
-                turn_id = _start_turn(client, thread_id, f"soak failure {index}")
-                terminal = client.wait_terminal(turn_id)
-                if _terminal_status(terminal) != "failed":
-                    raise GateFailure(f"soak failure turn 非 failed：{turn_id}")
-                counts["failed"] += 1
-                turn_ids.append(turn_id)
             else:
-                run_complete(index)
+                run_message(index, phase="complete", expected_status="complete")
             if (index + 1) % 10 == 0:
+                milestone = index + 1
                 _write_json(
                     report_dir / "soak-progress.json",
                     {
                         "phase": "run",
-                        "completed": index + 1,
+                        "completed": milestone,
                         "counts": counts,
                     },
                 )
+                wait_ack_barrier(report_dir / f"soak-ack-{milestone}")
     finally:
         client.close()
 
     expected = {
-        "completed": 90,
-        "failed": 10,
-        "interrupted": 10,
+        "complete": 90,
+        "pause": 10,
+        "failure": 10,
         "reconnects": 10,
     }
-    passed = counts == expected and len(set(turn_ids)) == 110
+    unique_inputs = len({str(item["messageId"]) for item in records})
+    passed = counts == expected and unique_inputs == 110 and len(records) == 110
     result = CheckResult(
         "G5-turns",
         passed,
-        {"counts": counts, "uniqueTurns": len(set(turn_ids)), "expected": expected},
+        {
+            "counts": counts,
+            "uniqueInputs": unique_inputs,
+            "records": len(records),
+            "expected": expected,
+        },
     )
+    # Controller 采样期间已关闭原连接；这里明确建立独立只读核验连接。
+    ledger_client = _connect_client(endpoint, events_path)
+    try:
+        pages: list[dict[str, Any]] = []
+        after_seq = -1
+        while True:
+            current_page = ledger_client.read_messages(
+                session_id, after_seq=after_seq, limit=200
+            )
+            pages.append(current_page)
+            if current_page.get("has_more") is not True:
+                break
+            next_after = current_page.get("next_after_seq")
+            if not isinstance(next_after, int) or next_after <= after_seq:
+                raise GateFailure(f"G5 Message 分页游标无进展：{current_page!r}")
+            after_seq = next_after
+    finally:
+        ledger_client.close()
+    rows = [
+        item
+        for page in pages
+        for item in page.get("items", [])
+        if isinstance(page, dict) and isinstance(page.get("items"), list)
+    ]
+    ledger_passed = isinstance(rows, list) and len(rows) == 220
+    ledger_evidence: dict[str, object] = {
+        "sessionId": session_id,
+        "messageCount": len(rows) if isinstance(rows, list) else None,
+        "records": records,
+    }
+    if ledger_passed:
+        by_id = {str(item.get("id")): item for item in rows if isinstance(item, dict)}
+        ledger_passed = len(by_id) == 220 and [
+            item.get("seq") for item in rows if isinstance(item, dict)
+        ] == list(range(220))
+        for record in records:
+            message_id = str(record["messageId"])
+            ack = cast(dict[str, object], record["ack"])
+            result_payload = cast(dict[str, object], record["result"])
+            input_row = by_id.get(message_id)
+            ending_id = result_payload.get("ending_message_id")
+            ending_row = by_id.get(str(ending_id)) if ending_id is not None else None
+            if not isinstance(input_row, dict) or not isinstance(ending_row, dict):
+                ledger_passed = False
+                break
+            body = input_row.get("body")
+            ending_body = ending_row.get("body")
+            ledger_passed = ledger_passed and (
+                input_row.get("seq") == ack.get("seq")
+                and _message_text(input_row) == str(record["text"])
+                and input_row.get("author") == "user"
+                and input_row.get("source") == "programmatic"
+                and isinstance(body, dict)
+                and body.get("kind") == "input"
+                and ending_row.get("seq") == result_payload.get("ending_seq")
+                and ending_row.get("source") == "programmatic"
+                and (
+                    (
+                        record["expectedStatus"] == "complete"
+                        and ending_row.get("author") == "assistant"
+                        and isinstance(ending_body, dict)
+                        and ending_body.get("kind") == "output"
+                        and ending_body.get("finish") == "complete"
+                    )
+                    or (
+                        record["expectedStatus"] in {"pause", "failure"}
+                        and ending_row.get("author") == "app"
+                        and isinstance(ending_body, dict)
+                        and ending_body.get("kind") == "control"
+                        and ending_body.get("action") == record["expectedStatus"]
+                    )
+                )
+            )
+    from datetime import datetime
+
+    from plugins.turn_projection.plugin import TurnProjection
+    from session.message import Message
+    from session.message_codec import decode_body
+
+    database = Path("/sandbox/workspace/sessions.db")
+    raw_rows: list[sqlite3.Row] = []
+    if not database.exists():
+        raise GateFailure(f"G5 raw Message ledger 不存在：{database}")
+    try:
+        with closing(
+            sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        ) as connection:
+            connection.row_factory = sqlite3.Row
+            raw_rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body "
+                "FROM messages WHERE session_key = ? ORDER BY seq",
+                (session_id,),
+            ).fetchall()
+    except sqlite3.Error as error:
+        raise GateFailure(f"G5 raw Message ledger 只读读取失败：{error}") from error
+    try:
+        projected_messages = [
+            Message(
+                message_id=str(row["id"]),
+                session_id=str(row["session_key"]),
+                seq=int(row["seq"]),
+                recorded_at=datetime.fromisoformat(str(row["ts"])),
+                author=str(row["author"]),
+                source=str(row["source"]),
+                body=decode_body(str(row["body"])),
+            )
+            for row in raw_rows
+        ]
+    except (KeyError, TypeError, ValueError) as error:
+        raise GateFailure(
+            f"G5 raw Message 无法还原为 TurnProjection 输入：{error}"
+        ) from error
+    raw_ids = [str(row["id"]) for row in raw_rows]
+    raw_seqs = [int(row["seq"]) for row in raw_rows]
+    wire_ids = [str(item["id"]) for item in rows if isinstance(item, dict)]
+    ledger_evidence["rawDatabase"] = {
+        "path": str(database),
+        "messageCount": len(raw_rows),
+        "seqs": raw_seqs,
+        "idsDigest": hashlib.sha256("\n".join(raw_ids).encode()).hexdigest(),
+    }
+    ledger_evidence["wireIdsMatchRawIds"] = wire_ids == raw_ids
+    ledger_passed = (
+        ledger_passed
+        and len(raw_rows) == 220
+        and raw_seqs == list(range(220))
+        and wire_ids == raw_ids
+    )
+    projected = TurnProjection().project(projected_messages, "programmatic")
+    projection_open = [
+        {
+            "afterSeq": turn.after_seq,
+            "throughSeq": turn.through_seq,
+            "messageIds": list(turn.message_ids),
+            "status": turn.status,
+        }
+        for turn in projected
+        if turn.status == "open"
+    ]
+    ledger_evidence["projectionOpenTurns"] = projection_open
+    ledger_evidence["activeOpenTurns"] = projection_open
+    ledger_evidence["turnProjection"] = {
+        "turnCount": len(projected),
+        "activeOpenTurns": len(projection_open),
+    }
+    ledger_passed = ledger_passed and not projection_open
+    ledger_evidence["allTerminalReferences"] = ledger_passed
+    ledger_result = CheckResult("G5-ledger", ledger_passed, ledger_evidence)
+    _write_json(report_dir / "soak-ledger.json", ledger_evidence)
     _write_json(
         report_dir / "inside-gate.json",
         {
             "gate": "soak",
-            "status": "passed" if passed else "failed",
-            "checks": [asdict(result)],
+            "status": "passed" if passed and ledger_passed else "failed",
+            "checks": [asdict(result), asdict(ledger_result)],
         },
     )
-    print(json.dumps(asdict(result), ensure_ascii=False))
-    return 0 if passed else 1
+    print(
+        json.dumps(
+            {"turns": asdict(result), "ledger": asdict(ledger_result)},
+            ensure_ascii=False,
+        )
+    )
+    return 0 if passed and ledger_passed else 1
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -4030,16 +4233,44 @@ def _non_terminal_turns(snapshot: dict[str, object]) -> list[dict[str, object]]:
 
 def _sample_resources(
     compose: list[str], repo: Path, env: dict[str, str], milestone: int
-) -> dict[str, int | float]:
-    """从真实 gateway PID 1 读取 RSS、fd 和线程数。"""
+) -> dict[str, object]:
+    """从进程树中定位真实 gateway，并读取其 RSS、fd 和线程数。"""
 
-    script = (
-        "import json, pathlib; "
-        "status=pathlib.Path('/proc/1/status').read_text(); "
-        "rss=next(int(line.split()[1]) for line in status.splitlines() if line.startswith('VmRSS:')); "
-        "print(json.dumps({'rssKiB':rss,'fdCount':len(list(pathlib.Path('/proc/1/fd').iterdir())),"
-        "'threadCount':len(list(pathlib.Path('/proc/1/task').iterdir()))}))"
-    )
+    script = """
+import json
+import pathlib
+
+def read(pid, name):
+    return pathlib.Path('/proc', str(pid), name).read_text()
+
+def children(pid):
+    return [int(value) for value in read(pid, 'task/' + str(pid) + '/children').split()]
+
+roots = [1, *children(1)]
+candidates = []
+seen = set()
+stack = list(roots)
+while stack:
+    pid = stack.pop()
+    if pid in seen:
+        continue
+    seen.add(pid)
+    cmd = read(pid, 'cmdline').replace(chr(0), ' ').strip()
+    if '/main.py' in cmd and ' gateway' in (' ' + cmd):
+        candidates.append((pid, cmd))
+    stack.extend(children(pid))
+if len(candidates) != 1:
+    raise RuntimeError('gateway identity ambiguous: roots=%r candidates=%r' % (roots, candidates))
+pid, cmd = candidates[0]
+status = read(pid, 'status')
+rss = next(int(line.split()[1]) for line in status.splitlines() if line.startswith('VmRSS:'))
+stat = read(pid, 'stat')
+starttime = stat.rsplit(')', 1)[1].split()[19]
+print(json.dumps({'pid': pid, 'cmdline': cmd, 'rssKiB': rss,
+                  'starttime': starttime,
+                  'fdCount': len(list(pathlib.Path('/proc', str(pid), 'fd').iterdir())),
+                  'threadCount': len(list(pathlib.Path('/proc', str(pid), 'task').iterdir()))}))
+"""
     completed = subprocess.run(
         [
             *compose,
@@ -4063,6 +4294,9 @@ def _sample_resources(
     return {
         "timestamp": time.time(),
         "milestone": milestone,
+        "gatewayPid": int(payload["pid"]),
+        "gatewayCmdline": str(payload["cmdline"]),
+        "gatewayStarttime": str(payload["starttime"]),
         "rssKiB": int(payload["rssKiB"]),
         "fdCount": int(payload["fdCount"]),
         "threadCount": int(payload["threadCount"]),
@@ -4076,7 +4310,7 @@ def _run_soak(
     sandbox: Path,
     report_dir: Path,
 ) -> list[CheckResult]:
-    """并行采样 100-turn soak 资源，并执行公开增量阈值。"""
+    """并行采样 Message soak 资源，并执行公开增量阈值。"""
 
     command = [
         *compose,
@@ -4096,7 +4330,7 @@ def _run_soak(
     ]
     process = subprocess.Popen(command, cwd=repo, env=env)
     progress_path = sandbox / "reports/soak-progress.json"
-    samples: list[dict[str, int | float]] = []
+    samples: list[dict[str, object]] = []
     sampled_milestones: set[int] = set()
     deadline = time.monotonic() + 600
     try:
@@ -4114,6 +4348,8 @@ def _run_soak(
                     sampled_milestones.add(sample_key)
                     if phase == "warmup":
                         (sandbox / "reports/soak-start").touch()
+                    else:
+                        (sandbox / f"reports/soak-ack-{milestone}").touch()
             threading.Event().wait(0.05)
         returncode = process.wait()
     finally:
@@ -4140,21 +4376,31 @@ def _run_soak(
     rss_delta = int(final["rssKiB"]) - int(baseline["rssKiB"])
     fd_delta = int(final["fdCount"]) - int(baseline["fdCount"])
     thread_delta = int(final["threadCount"]) - int(baseline["threadCount"])
-    snapshot = _snapshot_database(sandbox / "workspace/sessions.db")
-    non_terminal = _non_terminal_turns(snapshot)
+    gateway_identities = [
+        (int(sample["gatewayPid"]), str(sample["gatewayStarttime"]))
+        for sample in samples
+    ]
+    ledger = json.loads(
+        (sandbox / "reports/soak-ledger.json").read_text(encoding="utf-8")
+    )
+    all_terminal = ledger.get("allTerminalReferences") is True
     checks.append(
         CheckResult(
             "G5-resources",
             rss_delta <= 64 * 1024
             and fd_delta <= 8
             and thread_delta <= 3
-            and not non_terminal,
+            and all_terminal
+            and len(set(gateway_identities)) == 1,
             {
                 "samples": len(samples),
                 "rssDeltaKiB": rss_delta,
                 "fdDelta": fd_delta,
                 "threadDelta": thread_delta,
-                "nonTerminalTurns": non_terminal,
+                "gatewayIdentities": gateway_identities,
+                "gatewayCmdline": baseline["gatewayCmdline"],
+                "gatewayStarttime": baseline["gatewayStarttime"],
+                "allTerminalReferences": all_terminal,
             },
         )
     )
