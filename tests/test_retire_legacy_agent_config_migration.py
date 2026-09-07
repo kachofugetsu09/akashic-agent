@@ -187,6 +187,18 @@ def test_custom_prompt_and_search_boolean_stop_before_any_write(tmp_path: Path) 
     assert not (workspace / "plugin-data").exists()
 
 
+def test_enabled_search_with_disabled_plugin_stops_before_any_write(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text('[agent.tools]\nsearch_enabled=true\n[agent.plugins]\ndisabled_builtin=["tool_search"]\n')
+    workspace = tmp_path / "workspace"
+    before = config.read_bytes()
+    with pytest.raises(RuntimeError, match="插件被禁用"):
+        _run(_module(tmp_path), config, workspace)
+    assert config.read_bytes() == before
+    assert not (workspace / "backups").exists()
+    assert not (workspace / "plugin-data").exists()
+
+
 def test_publication_failure_restores_both_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = tmp_path / "config.toml"
     config.write_text("[agent]\nmax_iterations = 3\n", encoding="utf-8")

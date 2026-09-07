@@ -404,6 +404,13 @@ def _plan(config_path: Path, workspace: Path) -> _Plan | None:
     search_enabled = data.get("tool_search_enabled") is True or (
         isinstance(legacy_tools, Mapping) and legacy_tools.get("search_enabled") is True
     )
+    if search_enabled:
+        plugins = _mapping(legacy_agent.get("plugins", {}), "agent.plugins")
+        disabled = plugins.get("disabled_builtin", [])
+        if not isinstance(disabled, list) or any(not isinstance(name, str) for name in disabled):
+            raise RuntimeError("agent.plugins.disabled_builtin 必须是字符串数组；原配置保持不变")
+        if "tool_search" in disabled:
+            raise RuntimeError("旧工具搜索已启用，但 tool_search 插件被禁用；原配置保持不变")
     if search_enabled and reply.content is not None:
         reply_data = tomllib.loads(reply.content.decode("utf-8"))
         names = reply_data.get("tools")
