@@ -973,7 +973,7 @@ Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。
 
 ### SEC-007 Shell 与 Subagent 准入有界
 
-Shell 的 retained log、同步 subagent 和后台 subagent 保留各自既有 admission owner；同步路径不能绕过既有容量约束。MessageBus 不拥有 Shell/Subagent 的准入，也不设置独立的全局 backpressure 或容量拒绝，只负责 channel lane 顺序。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。Mobile 的崩溃恢复由持久 handoff owner 保证；控制 admission 只统计 queued/running Task 的数量、实际字节和 live runtime objects，不统计历史 Message 或 programmatic source。
+Shell retained log 由进程 owner 管理；Subagent 的同步与后台形式共用 Subagent 准入 owner，不能通过同步形式绕过容量限制。MessageBus 不拥有 Shell/Subagent 的准入，也不设置独立的全局 backpressure 或容量拒绝，只负责 channel lane 顺序。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。Mobile 的崩溃恢复由持久 handoff owner 保证；控制 admission 只统计 queued/running Task 的数量、实际字节和 live runtime objects，不统计历史 Message 或 programmatic source。
 
 ### SEC-011 Subagent 与 Wake 的内部消息可恢复
 

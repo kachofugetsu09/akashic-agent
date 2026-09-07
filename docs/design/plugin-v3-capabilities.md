@@ -120,7 +120,7 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 |---|---|---|
 | `MESSAGE_CATALOG` | Core Message owner | 读取已提交 Message |
 | `MESSAGE_WRITERS` | Core Message owner | 按绑定权限追加 Input、Output 或 ToolResult |
-| `SESSION_ADMISSION` | Core Message owner | 校验 Session 与来源准入 |
+| `SESSION_ADMISSION` | Core Message owner | 首次创建具有固定 `SessionAttributes` 的 Session；不提供 Message 或 Control 写权 |
 | `MESSAGE_EMBEDDINGS` | Core Message owner | 读取和追加 Message embedding |
 | `CONTEXT` | `plugins.context` | 用已选 Message 与材料组装 provider request |
 | `MATERIALS` | `plugins.context` | 注册并按来源选择 Prompt、摘要与其他 Context 材料 |
