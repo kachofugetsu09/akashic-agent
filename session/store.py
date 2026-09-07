@@ -1119,15 +1119,17 @@ class SessionStore:
         self,
         *,
         limit: int | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[dict[str, str | None]]:
-        """按 durable 到达顺序读取有限页的 pending inbound handoff。"""
+        """按 durable 到达顺序读取有限页，跳过已扫描且仍在处理的记录。"""
 
         if limit is not None and (
             not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
         ):
             raise ValueError("inbound handoff limit 必须是正整数")
         limit_sql = "" if limit is None else " LIMIT ?"
-
+        after_sql = "" if after is None else " WHERE (created_at, handoff_id) > (?, ?)"
+        parameters = (() if after is None else after) + (() if limit is None else (limit,))
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -1135,9 +1137,8 @@ class SessionStore:
                        session_key, content, timestamp, media_json,
                        metadata_json, created_at
                 FROM inbound_handoffs
-                ORDER BY created_at ASC, handoff_id ASC
-                """ + limit_sql,
-                () if limit is None else (limit,),
+                """ + after_sql + " ORDER BY created_at ASC, handoff_id ASC" + limit_sql,
+                parameters,
             ).fetchall()
         return [{key: cast(str | None, row[key]) for key in row.keys()} for row in rows]
 

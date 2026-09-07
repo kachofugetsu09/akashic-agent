@@ -15,10 +15,11 @@ from markdown_it import MarkdownIt
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.bindings import Bindings
-from session.message import ContentPart
+from session.message import ContentPart, ContentReferences
 
 # 类型属于 Content 的公开 API；不同归档实现共享当前已校验的 binding ABI。
 from plugins.content.api import (
+    check_artifact,
     ContentCheck,
     ContentSchema,
     Reference,
@@ -34,10 +35,10 @@ desc = "按固定协议组装内容，各解析器只读取同一份原文"
 inject = ()
 
 
-def check_text(part: ContentPart) -> tuple[str, ...]:
+def check_text(part: ContentPart) -> ContentReferences:
     if not isinstance(part.value, str):
         raise TypeError("text 内容必须是字符串")
-    return ()
+    return ContentReferences()
 
 
 def _literal_ranges(text: str) -> tuple[tuple[int, int], ...]:
@@ -169,6 +170,7 @@ class _ContentView:
         return MappingProxyType(
             {
                 "text": self._live_check(check_text),
+                "artifact_ref": self._live_check(check_artifact),
                 **{
                     kind: self._live_check(check)
                     for definition in self._definitions
@@ -178,7 +180,7 @@ class _ContentView:
         )
 
     def _live_check(self, check: ContentCheck) -> ContentCheck:
-        def validate(part: ContentPart) -> tuple[str, ...]:
+        def validate(part: ContentPart) -> ContentReferences:
             self._check_active()
             return check(part)
 
@@ -215,7 +217,7 @@ class Content:
         def setup() -> Callable[[], None]:
             if definition.name in self._definitions:
                 raise ValueError(f"内容声明重复: {definition.name}")
-            kinds = {
+            kinds = {"text", "artifact_ref"} | {
                 kind for _, item in self._definitions.values() for kind in item.content
             }
             if kinds.intersection(definition.content):

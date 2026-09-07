@@ -2,6 +2,25 @@
 
 本账本记录测试与 Gate 的永久收敛。数量只是历史观察指标，不是删除依据；取舍按用户可观察失败、持久化与安全边界、并发 finality、恢复能力和插件 v3 生命周期排序。
 
+## 2026-09-06：Message 输入接纳替换旧回复队列
+
+本项属于已批准的 Message/plugins 栈第 08 层：Channel 在 Input 提交后返回，回复由独立消费者运行。`publish_channel_inbound` 的 BUS → LANE → LOOP 接纳已被删除；不为中间 PR 恢复兼容队列。原测试备份：`/tmp/message-plugins-pr08-inbound-recovery-backup-20260906/tests/test_message_bus_admission.py`，Git 相邻基线 `79fcc358` 也可恢复旧测试。
+
+以下对应旧 `tests/test_message_bus_admission.py` 的 19 项用例。新边界均在 `tests/test_channel_input.py`；独立回复在 `tests/test_default_reply.py`。删除不依据测试数量或失败本身。
+
+| 旧测试范围（共同前缀 `test_v3_`） | 处置与继续保护的行为 |
+| --- | --- |
+| `channel_inbound_transfers_bus_lane_loop_and_closes_once`、`channel_inbound_bus_close_releases_queued_exact_lease`、`channel_inbound_blocked_at_lane_is_closed_by_concurrent_bus_close`、`channel_bus_close_cancellation_drains_every_queued_lease`、`channel_inbound_release_cancellation_clears_lane_before_return` | 删除已移除队列/lane 的实现合同；新边界证明 Input 无排队、无模型或发送，取消关闭 exact lease，关闭后的 lock waiter 不能提交。 |
+| `channel_worker_preserves_exact_binding_through_terminal_delivery`、`channel_worker_holds_session_admission_until_terminal`、`channel_worker_cancel_closes_running_and_lane_queued_leases` | 删除旧 worker 持有到最终回复的合同。新接纳只持有到 Input ACK；重启仍取 current exact binding，独立回复取消与 drain 由 Task 和默认回复测试保护。 |
+| `mobile_inbound_reserves_before_bus_queue_and_deletes_after_terminal`、`mobile_delete_retry_retains_exact_and_session_owners` | 替换为 Input 提交前耐久预留、提交后清理失败不推翻接纳；交接行成功删除前保留 exact lease 与 Session admission。 |
+| `mobile_handoff_recovers_through_current_exact_binding`、`mobile_recovery_redelivers_existing_turn_without_duplicate` | 重启对尚未/已经提交的 Input 都走实际 Channel ingress；原 Message 身份/seq 不变，只收束传输，不重跑模型或发送。 |
+| `mobile_restart_missing_session_keeps_visible_handoff`、`mobile_same_process_recovery_does_not_duplicate_live_owner` | 缺失 Session 不复活、不删除原行；分页越过 live owner 后继续处理，失败不遗留阻止重试的 claim。 |
+| `mobile_bus_close_retains_durable_handoff_for_next_boot`、`mobile_mark_pending_race_with_close_cannot_queue_after_shutdown` | 提交前取消/关闭保留附件与交接行，释放进程资源；durable lock 等待者不能在关闭后提交 Input。 |
+| `mobile_delete_failure_then_bus_close_keeps_durable_row`、`mobile_completion_cancellation_waits_for_exact_cleanup` | 已提交 Input 不撤销；取消等待收束，失败后关闭仍保留下一次启动的恢复证据。 |
+| `channel_worker_projects_and_closes_attachment_lease` | 新用例使用真实 ArtifactStore 导入与 Message yoyo，经过实际 Channel ingress 核对 artifact_ref、数据库引用、文件保留与 read lease 关闭。 |
+
+保留的 Session override 拒绝测试改走 `prepare_channel_input`；仍保护 durable handoff 与 envelope 的 Session 一致性。公开 `companion_mobile_receipt_contract` 保留原 Mobile storage/channel、有效 bus 测试和 mutant，再加入新输入与独立回复测试，没有缩减公开场景。完整生产启动、实时客户端和 Delivery 由后续层累计验收。
+
 ## 2026-09-04：移除固定测试预算门槛
 
 1080 项 Python、62 项 Web 和 72 个 Python 测试文件是 2026-09-02 清理的历史快照，不再是当前合同。删除固定数量检查、Python 保留清单和 Web 数量断言；CI 继续运行仓库实际存在的 Python 测试，Web runner 自动发现源目录下的 `.test.mjs` 文件。后续测试只按用户可观察回归、非平凡不变量、边界或具体 bug 保留，新增或删除不因数量本身失败。

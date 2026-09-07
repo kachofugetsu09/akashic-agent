@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal, cast
 
+from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import CompositionError, ServiceKey
@@ -32,6 +33,7 @@ class CommandInvocation:
     channel: str
     chat_id: str
     sender: str
+    message_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,8 @@ class CommandDefinition:
     handler: CommandHandler
     aliases: tuple[str, ...] = ()
     input_hint: str | None = None
+    read_only: bool = False
+    recover: CommandHandler | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,9 +81,14 @@ class _RegisteredCommand:
     generation_id: str
     fiber: str
     definition: CommandDefinition
+    context: Context
 
 
 COMMANDS = ServiceKey["PluginCommands"]("core.commands")
+
+
+class CommandRecoveryRequired(RuntimeError):
+    """命令效果没有可确认的领域回执，调用者必须保留未知结果。"""
 
 
 class CommandRegistry:
@@ -92,13 +101,15 @@ class CommandRegistry:
         descriptors: tuple[CommandDescriptor, ...],
         generations: Mapping[str, str] | None = None,
         fibers: Mapping[str, str] | None = None,
+        contexts: Mapping[str, Context] | None = None,
     ) -> None:
         self._commands = MappingProxyType(dict(commands))
         self._owners = MappingProxyType(dict(owners))
         self._generations = MappingProxyType(dict(generations or {}))
         self._fibers = MappingProxyType(dict(fibers or {}))
+        self._contexts = MappingProxyType(dict(contexts or {}))
         self._descriptors = descriptors
-        payload = [
+        payload: list[dict[str, object]] = [
             {
                 "name": item.name,
                 "description": item.description,
@@ -125,6 +136,17 @@ class CommandRegistry:
     def catalog_digest(self) -> str:
         return self._catalog_digest
 
+    def bind(self, bindings: Bindings, line: str) -> str | None:
+        """匹配后固定真正的 handler owner；恢复不重新选择当前注册。"""
+        parsed = _parse_command(line)
+        if parsed is None or parsed.name not in self._commands:
+            return None
+        definition = self._commands[parsed.name]
+        return bindings.bind(
+            COMMANDS, {"name": definition.name},
+            contributors=(self._contexts[parsed.name],),
+        )
+
     async def execute(
         self,
         line: str,
@@ -133,6 +155,8 @@ class CommandRegistry:
         channel: str,
         chat_id: str,
         sender: str,
+        message_id: str = "",
+        recover: bool = False,
     ) -> CommandExecution | None:
         """Execute a known slash command and leave misses to the normal turn."""
 
@@ -152,10 +176,16 @@ class CommandRegistry:
             channel=channel,
             chat_id=chat_id,
             sender=sender,
+            message_id=message_id,
         )
+        handler = definition.handler
+        if recover and not definition.read_only:
+            if definition.recover is None:
+                raise CommandRecoveryRequired(f"命令 {definition.name} 没有领域恢复回执；禁止自动重跑")
+            handler = definition.recover
         generation_id = self._generations.get(parsed.name)
         if generation_id is None:
-            result = definition.handler(invocation)
+            result = handler(invocation)
             if inspect.isawaitable(result):
                 result = await result
             settled = _validate_result(definition.name, result)
@@ -167,7 +197,7 @@ class CommandRegistry:
                 operation="command.call",
                 entrypoint=definition.name,
             ):
-                result = definition.handler(invocation)
+                result = handler(invocation)
                 if inspect.isawaitable(result):
                     result = await result
                 settled = _validate_result(definition.name, result)
@@ -210,6 +240,7 @@ class PluginCommands:
                 ctx.runtime.generation_id,
                 ctx.fiber.name,
                 normalized,
+                ctx,
             ),
             label=f"command:{normalized.name}",
         )
@@ -227,6 +258,7 @@ class PluginCommands:
         owners: dict[str, str] = {}
         generations: dict[str, str] = {}
         fibers: dict[str, str] = {}
+        contexts: dict[str, Context] = {}
         for registration in ordered:
             definition = registration.definition
             for name in (definition.name, *definition.aliases):
@@ -234,6 +266,7 @@ class PluginCommands:
                 owners[name] = registration.plugin_id
                 generations[name] = registration.generation_id
                 fibers[name] = registration.fiber
+                contexts[name] = registration.context
         descriptors = tuple(
             sorted(
                 (
@@ -255,6 +288,7 @@ class PluginCommands:
             descriptors,
             generations,
             fibers,
+            contexts,
         )
         return self._frozen
 
@@ -264,6 +298,7 @@ class PluginCommands:
         generation_id: str,
         fiber: str,
         definition: CommandDefinition,
+        context: Context,
     ) -> Callable[[], None]:
         """Add one candidate definition and return its exact inverse."""
 
@@ -290,6 +325,7 @@ class PluginCommands:
             generation_id=generation_id,
             fiber=fiber,
             definition=definition,
+            context=context,
         )
         for name in claimed:
             self._names[name] = token
@@ -366,6 +402,11 @@ def _validate_definition(definition: CommandDefinition) -> CommandDefinition:
         if not definition.input_hint.strip():
             raise ValueError(f"Command input_hint 不能为空: {definition.name}")
 
+    if type(definition.read_only) is not bool:
+        raise TypeError("Command read_only 必须是 bool")
+    if definition.recover is not None and not callable(definition.recover):
+        raise TypeError("Command recover 必须是 callable")
+
     # 2. Copy tuple metadata before the candidate can publish.
     return CommandDefinition(
         name=definition.name,
@@ -373,6 +414,8 @@ def _validate_definition(definition: CommandDefinition) -> CommandDefinition:
         handler=definition.handler,
         aliases=tuple(aliases),
         input_hint=definition.input_hint,
+        read_only=definition.read_only,
+        recover=definition.recover,
     )
 
 
@@ -385,6 +428,6 @@ def _validate_result(command: str, value: object) -> CommandResult:
         raise ValueError(f'Command "{command}" result kind 无效: {value.kind}')
     if not isinstance(value.text, str):
         raise TypeError(f'Command "{command}" result text 必须是字符串')
-    if not value.text.strip():
+    if value.text and not value.text.strip() or not value.text and value.kind != "success":
         raise ValueError(f'Command "{command}" result text 不能为空')
     return cast(CommandResult, value)

@@ -17,10 +17,12 @@ from contextlib import nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, ContextManager, Literal, cast
+from typing import TYPE_CHECKING, Any, ContextManager, Literal, Protocol, cast
 
+from agent.plugin_composition.context import RuntimeScope
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.channels import (
+    CHANNEL_INPUT,
     AttachmentKind,
     AttachmentReadLease,
     AttachmentRef,
@@ -44,7 +46,6 @@ from agent.plugin_composition.channels import (
     DeliveryStatus,
     InboundEnvelope,
     InboundIdentity,
-    InboundOwner,
     OutboundEnvelope,
     ProviderClientFactory,
     ProviderDeliveryReceipt,
@@ -69,7 +70,14 @@ BeforeStartCallback = Callable[["ChannelStartRecord"], Awaitable[None]]
 ConfigRevisionChecker = Callable[["ChannelStartRecord"], Awaitable[None]]
 FailureCallback = Callable[["ChannelCleanupTombstone"], Awaitable[None] | None]
 SnapshotLeaseAcquirer = Callable[[str], "RuntimeSnapshotLease"]
-InboundPublisher = Callable[[InboundEnvelope], Awaitable[None]]
+class InputCustody(Protocol):
+    """Core 传输 owner 保留提交前的 handoff，完成后释放 lease 与接纳权。"""
+
+    async def prepare_channel_input(self, envelope: InboundEnvelope) -> None: ...
+    async def complete_channel_input(self, envelope: InboundEnvelope) -> None: ...
+    async def retain_channel_input(self, envelope: InboundEnvelope) -> None: ...
+
+
 IdentityResolver = Callable[[str, str], str | None]
 IdentityRememberer = Callable[
     [str, str, str],
@@ -972,7 +980,7 @@ class ChannelGenerationHost:
         self._config_revision_checker = config_revision_checker
         self._on_failure = on_failure
         self._snapshot_lease_acquirer = snapshot_lease_acquirer
-        self._inbound_publisher: InboundPublisher | None = None
+        self._input_custody: InputCustody | None = None
         self._identity_resolver = identity_resolver
         self._identity_rememberer = identity_rememberer
         self._identity_rollbacker = identity_rollbacker
@@ -986,14 +994,11 @@ class ChannelGenerationHost:
         self._start_counts: dict[tuple[str, str], int] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    def bind_inbound_publisher(self, publisher: InboundPublisher) -> None:
-        """Bind the sole MessageBus inbound admission callback."""
-
-        if not callable(publisher):
-            raise TypeError("Channel inbound publisher 必须可调用")
-        if self._inbound_publisher is not None:
-            raise RuntimeError("Channel inbound publisher 已绑定")
-        self._inbound_publisher = publisher
+    def bind_input_custody(self, custody: InputCustody) -> None:
+        """绑定传输接纳的唯一恢复 owner；来源由 exact Root 另行提供。"""
+        if self._input_custody is not None:
+            raise RuntimeError("Channel input custody 已绑定")
+        self._input_custody = custody
 
     def bind_control_interrupter(self, interrupter: ControlInterrupter) -> None:
         """Bind Core's typed interrupt effect owner exactly once."""
@@ -1571,7 +1576,7 @@ class ChannelGenerationHost:
         *,
         _retained_claim: tuple[str, str] | None = None,
     ) -> bool:
-        """Acquire, enqueue, and retain one deduplicated exact inbound lease."""
+        """在 exact Root 接纳 Input，再完成传输收束；没有回复队列。"""
 
         if not isinstance(raw, RawInbound):
             raise TypeError("Channel ingress 只接受 RawInbound")
@@ -1589,6 +1594,16 @@ class ChannelGenerationHost:
             state.plugin_id == "core" and state.channel_name == "akashic"
         ):
             raise RuntimeError("Mobile durable handoff 只属于 Core akashic binding")
+        session_key = f"{state.channel_name}:{raw.message.chat_id}"
+        if "session_key_override" in raw.message.metadata:
+            override = raw.message.metadata["session_key_override"]
+            if not (
+                state.plugin_id == "core" and state.channel_name == "akashic"
+                and raw.message.metadata.get("mobile_v3_handoff") is True
+                and isinstance(override, str) and override.strip()
+            ):
+                raise RuntimeError("Session override 只属于已验证的 Mobile durable handoff")
+            session_key = override.strip()
         provider_scope = raw.provider_identity or ""
         dedupe_key = (provider_scope, raw.message_id)
         retained_claim = _retained_claim is not None
@@ -1601,8 +1616,8 @@ class ChannelGenerationHost:
         if not retained_claim and dedupe_key in state.inbound_message_id_set:
             return False
         acquirer = self._snapshot_lease_acquirer
-        publisher = self._inbound_publisher
-        if acquirer is None or publisher is None:
+        custody = self._input_custody
+        if acquirer is None or custody is None:
             raise RuntimeError("Channel ingress runtime ports 未绑定")
 
         # 1. Claim before any await so concurrent duplicate callbacks serialize.
@@ -1654,33 +1669,43 @@ class ChannelGenerationHost:
                     raise
             envelope = InboundEnvelope(
                 message_id=raw.message_id,
+                session_key=session_key,
                 snapshot_id=binding.snapshot_id,
                 generation_id=binding.generation_id,
                 binding_token=binding.binding_token,
                 message=raw.message,
                 lease=binding,
             )
-            await publisher(envelope)
-            if envelope.owner in (InboundOwner.INGRESS, InboundOwner.CLOSED):
-                raise RuntimeError("Channel inbound publisher 未接管 envelope")
-            accepted = True
+            await custody.prepare_channel_input(envelope)
+
+            async def commit_input() -> None:
+                nonlocal accepted
+                # 显式传入原 binding 的 lease；热更新不能让输入落到后来发布的 Root。
+                assert binding is not None and envelope is not None
+                lease = binding.snapshot_lease.fork()
+                async with RuntimeScope(lease):
+                    root = lease.snapshot.composition_root
+                    if root is None:
+                        raise RuntimeError("Channel input 缺少 composition Root")
+                    accept = root.context.require(CHANNEL_INPUT)
+                    _ = await accept(session_key, raw.message_id, raw.message)
+                    accepted = True
+                    # 此后失败只能保留 cleanup/recovery，不能回滚身份或去重记录。
+                    await custody.complete_channel_input(envelope)
+
+            commit = asyncio.create_task(commit_input(), name=f"channel-input:{raw.message_id}")
+            await _await_task_after_cancellation(commit)
             while len(state.inbound_message_ids) > 500:
                 expired = state.inbound_message_ids.popleft()
                 state.inbound_message_id_set.remove(expired)
             return True
         except BaseException as error:
             cleanup_errors: list[BaseException] = []
-            accepted_elsewhere = envelope is not None and envelope.owner not in (
-                InboundOwner.INGRESS,
-                InboundOwner.CLOSED,
-            )
-            if accepted_elsewhere:
-                accepted = True
-            else:
-                if envelope is not None and envelope.owner is InboundOwner.INGRESS:
+            if not accepted:
+                if envelope is not None:
                     close_task = asyncio.create_task(
-                        envelope.close(InboundOwner.INGRESS),
-                        name=f"channel-ingress-close:{state.channel_name}",
+                        custody.retain_channel_input(envelope),
+                        name=f"channel-input-retain:{state.channel_name}",
                     )
                     try:
                         await _settle_cleanup_task(close_task)

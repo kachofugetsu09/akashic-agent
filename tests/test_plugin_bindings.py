@@ -1,3 +1,4 @@
+from session.message import ContentReferences
 import asyncio
 import importlib
 import shutil
@@ -379,7 +380,7 @@ async def test_content_binding_keeps_registered_protocol_owner_after_source_remo
     (protocol / "plugin.py").write_text("""
 from agent.plugin_composition import ServiceKey
 from plugins.content.api import TextProtocol, Span
-from session.message import ContentPart
+from session.message import ContentPart, ContentReferences
 api_version = 3
 name = "protocol"
 version = "1.0.0"
@@ -388,7 +389,7 @@ async def apply(ctx, config):
     async def decode(source, references):
         return (Span(len(source.text), len(source.text), (ContentPart("sample", "fixed A"),)),)
     await ctx.require(inject[0]).register(ctx, TextProtocol(
-        name="sample", content={"sample": lambda part: ()},
+        name="sample", content={"sample": lambda part: ContentReferences()},
         prompt="Protocol A", decode=decode,
     ))
 """)
@@ -409,10 +410,100 @@ async def apply(ctx, config):
         async with open_content(bindings, identity) as view:
             assert view.prompts == ("Protocol A",)
             assert await view.decode("body") == original
-            assert set(view.checks) == {"text", "sample"}
+            assert set(view.checks) == {"text", "artifact_ref", "sample"}
         with pytest.raises(RuntimeError, match="释放"):
             await view.decode("late")
         await restored.terminate_all()
     finally:
         log.close()
         await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_archived_context_accepts_public_summary_from_another_plugin(tmp_path):
+    from datetime import UTC, datetime
+    from agent.plugin_composition.models import ModelRequest
+    from plugins.context.api import Materials, Summary
+    from session.message import Input, Message, Output
+
+    sources = tmp_path / "plugins"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / "context", sources / "context",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    host = manager(tmp_path, [sources])
+    log = MessageLog(tmp_path / "messages.db")
+    key = ServiceKey("context.v1")
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store):
+            identity = bindings.bind(key, {})
+        await host.terminate_all()
+        shutil.rmtree(sources)
+        snapshot = (
+            Message("u", "s", 0, datetime.now(UTC), "user", "conversation", Input(())),
+            Message("a", "s", 1, datetime.now(UTC), "agent", "conversation", Output((), "complete")),
+        )
+        class Model:
+            context_window = None
+            max_tool_schemas = None
+            def render(self, messages, *, after_seq, summary_reference=None):
+                assert messages == snapshot and after_seq == 1
+                return ModelRequest(())
+            def estimate(self, request):
+                return 1
+        async with bindings.open(identity, key) as (context, metadata):
+            request = context.build(snapshot,
+                                    materials=Materials("", summary=Summary("saved", ("u", "a"), "summary")),
+                                    model=Model(), max_output_tokens=1)
+            assert "summary" in request.messages[0]["content"]
+    finally:
+        await host.terminate_all()
+        log.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [False, True])
+async def test_archive_exposes_only_declared_message_reader_without_starting_runtime(tmp_path, declared):
+    from session.message import Input
+    from agent.plugin_composition.messages import MESSAGE_CATALOG
+
+    sources = tmp_path / "plugins"
+    provider = sources / "reader"
+    provider.mkdir(parents=True)
+    (provider / "plugin.py").write_text('''
+from agent.plugin_composition import ServiceKey, RUNTIME_STARTED
+from agent.plugin_composition.messages import MESSAGE_CATALOG
+api_version = 3
+name = "reader"
+version = "1.0.0"
+inject = DECLARED
+async def apply(ctx, config):
+    value = {"catalog": ctx.get(MESSAGE_CATALOG), "started": False}
+    async def start(event):
+        value["started"] = True
+    await ctx.on(RUNTIME_STARTED, start)
+    await ctx.provide(ServiceKey("reader.test"), value)
+'''.replace("DECLARED", "(MESSAGE_CATALOG,)" if declared else "()"))
+    log = MessageLog(tmp_path / "sessions.db")
+    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
+                         installed_cache_root=tmp_path / "home", message_log=log)
+    key = ServiceKey("reader.test")
+    try:
+        await host.load_all()
+        await host._start_current_runtime_snapshot()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root.context.require(key)["started"]
+            identity = bindings.bind(key, {})
+        await host.terminate_all()
+        # 窄 reader 读取真实当前日志；归档代码与其启动生命周期仍保持独立。
+        log.writer("s", author="user", source="chat", body_types=(Input,), content={}).append("u", Input(()))
+        async with bindings.open(identity, key) as (state, _):
+            assert state["started"] is False
+            if declared:
+                assert state["catalog"].reader("s").get("u").message_id == "u"
+            else:
+                assert state["catalog"] is None
+    finally:
+        await host.terminate_all()
+        log.close()

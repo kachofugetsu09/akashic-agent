@@ -6,11 +6,14 @@ import hashlib
 import json
 import os
 import sqlite3
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from .consumption import Consumption
 
 from ..domain.features import effective_support
 from ..domain.graph import (
@@ -48,13 +51,27 @@ def write_memory_database(
     config: MemoryConfig,
     metadata: dict[str, str],
     recalls: list[RecallCapture] | tuple[RecallCapture, ...] = (),
+    consumption: Consumption | None = None,
 ) -> str:
     """Write a fresh deterministic database and return its SHA-256."""
 
+    if "consumer_state_json" in metadata:
+        raise ValueError("消费状态必须通过 consumption 提交")
+    if consumption is not None:
+        consumption.check_turns(turns)
+        metadata = {
+            **metadata,
+            "consumer_state_json": canonical_json(consumption.model_dump(mode="json")),
+        }
+    elif output_path.exists() and load_consumption(output_path) is not None:
+        raise ValueError("不能用旧 writer 覆盖已切换的消费状态")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output_path.with_suffix(output_path.suffix + ".tmp")
-    if temporary.exists():
-        temporary.unlink()
+    # 1. 本次写入只拥有自己的临时文件；失败不删除其他进程的恢复材料。
+    descriptor, name = tempfile.mkstemp(
+        prefix=output_path.name + ".", suffix=".tmp", dir=output_path.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(name)
     connection = sqlite3.connect(temporary)
     try:
         _initialize(connection)
@@ -72,7 +89,15 @@ def write_memory_database(
         connection.execute("VACUUM")
     finally:
         connection.close()
+    # 2. 先使完整 SQLite 文件耐久，再发布名字并同步目录。
+    with temporary.open("rb") as handle:
+        os.fsync(handle.fileno())
     os.replace(temporary, output_path)
+    directory = os.open(output_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     return sha256_file(output_path)
 
 
@@ -133,6 +158,22 @@ def load_memory_state(
         connection.close()
 
 
+def load_consumption(memory_path: Path) -> Consumption | None:
+    """只读识别切换状态；缺省仅代表旧快照，不能作为新消费者的空进度。"""
+    connection = sqlite3.connect(f"file:{memory_path}?mode=ro", uri=True)
+    try:
+        rows = dict(connection.execute(
+            "SELECT key, value FROM metadata WHERE key IN ('consumer_state_json', 'turn_count')"
+        ))
+        if "consumer_state_json" not in rows:
+            return None
+        state = Consumption.model_validate_json(rows["consumer_state_json"])
+        state.check_count(int(rows["turn_count"]))
+        return state
+    finally:
+        connection.close()
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -141,7 +182,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def logical_state_sha256(path: Path) -> str:
+def logical_state_sha256(path: Path, *, include_consumption: bool = True) -> str:
     """Hash canonical learned state independently of SQLite file layout."""
 
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -168,6 +209,13 @@ def logical_state_sha256(path: Path) -> str:
                     ).encode("utf-8")
                 )
                 digest.update(b"\n")
+        consumption = connection.execute(
+            "SELECT value FROM metadata WHERE key='consumer_state_json'"
+        ).fetchone()
+        if consumption is not None and include_consumption:
+            state = Consumption.model_validate_json(consumption[0])
+            digest.update(b"consumer_state_json\0")
+            digest.update(canonical_json(state.model_dump(mode="json")).encode("utf-8"))
         return digest.hexdigest()
     finally:
         connection.close()
@@ -598,6 +646,31 @@ def _verify(connection: sqlite3.Connection) -> None:
         raise sqlite3.IntegrityError(f"foreign key violations: {violations[:3]}")
 
 
+def check_memory_schema(path: Path) -> None:
+    """切换前核对真实 schema 谱系与完整性，版本号相同不代表可迁移。"""
+    expected = sqlite3.connect(":memory:")
+    actual = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        _ = expected.executescript(_SCHEMA)
+        query = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name"
+        def schema(connection: sqlite3.Connection) -> tuple[tuple[str, ...], ...]:
+            return tuple(
+                (kind, name, table, " ".join(sql.split()))
+                for kind, name, table, sql in connection.execute(query)
+            )
+        if schema(actual) != schema(expected):
+            raise ValueError("Akasha schema lineage 不匹配")
+        for pragma in ("application_id", "user_version"):
+            if actual.execute(f"PRAGMA {pragma}").fetchone() != expected.execute(f"PRAGMA {pragma}").fetchone():
+                raise ValueError(f"Akasha {pragma} 不匹配")
+        if actual.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+            raise ValueError("Akasha integrity_check 失败")
+        _verify(actual)
+    finally:
+        actual.close()
+        expected.close()
+
+
 def _validate_snapshot_identity(
     connection: sqlite3.Connection,
     turns: list[Turn],
@@ -610,6 +683,8 @@ def _validate_snapshot_identity(
             "SELECT key, value FROM metadata ORDER BY key"
         )
     )
+    if "consumer_state_json" in metadata:
+        Consumption.model_validate_json(metadata["consumer_state_json"]).check_turns(turns)
     expected = {
         "config_json": canonical_json(asdict(config)),
         "turn_count": str(len(turns)),

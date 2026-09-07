@@ -13,6 +13,7 @@ from agent.plugin_composition.models import (
     ModelRequest,
 )
 from session.message import (
+    ContentReferences,
     CallRef,
     ContentPart,
     Control,
@@ -23,6 +24,7 @@ from session.message import (
     ToolResult,
 )
 from session.message_codec import json_value
+from plugins.context.api import check_summary
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
@@ -59,7 +61,7 @@ def response_facts(response: LLMResponse, call_indices: Sequence[int]) -> Conten
     )
 
 
-def check_facts(part: ContentPart) -> tuple[str, ...]:
+def check_facts(part: ContentPart) -> ContentReferences:
     """验证存储边界的 replay 数据；它不能包含可执行消息或角色声明。"""
     value = part.value
     if not isinstance(value, Mapping):
@@ -97,7 +99,7 @@ def check_facts(part: ContentPart) -> tuple[str, ...]:
             or not isinstance(continuation["payload"], Mapping)
         ):
             raise ValueError("模型 continuation 无效")
-    return ()
+    return ContentReferences()
 
 
 class MessageProjection:
@@ -111,12 +113,14 @@ class MessageProjection:
         render_content: ContentRenderer,
         tool_name: Callable[[str], str],
         read_call: CallReader,
+        keep_input_ids: tuple[str, ...] = (),
     ):
         self._model = model
         self._source = source
         self._render_content = render_content
         self._tool_name = tool_name
         self._read_call = read_call
+        self._keep_input_ids = keep_input_ids
 
     @property
     def context_window(self) -> int | None:
@@ -129,19 +133,68 @@ class MessageProjection:
     def estimate(self, request: ModelRequest) -> int:
         return self._model.estimate_context_tokens(request.messages, request.tools)
 
-    def render(self, messages: tuple[Message, ...], *, after_seq: int) -> ModelRequest:
+    def facts(self, response: LLMResponse, call_indices: Sequence[int]) -> ContentPart:
+        """只为当前模型已成功结算的响应生成可持久 replay 内容。"""
+        facts = response_facts(response, call_indices)
+        assert response.call_record_id is not None
+        receipt = self._read_call(response.call_record_id)
+        if receipt["state"] != "success" or (
+            receipt["binding"]["binding_id"] != self._model.descriptor.binding_id
+        ):
+            raise ValueError("模型响应不属于当前已结算调用")
+        return facts
+
+    def render(self, messages: tuple[Message, ...], *, after_seq: int,
+               summary_reference: str | None = None, fresh: bool = False) -> ModelRequest:
         """按日志重建协议；交错输入保留，工具观察只在请求视图中与调用成组。"""
+        # 当前工作输入由 Turn owner 选定；摘要只替换历史，不吞掉本次要求。
+        keep = set(self._keep_input_ids)
+        if len(keep) != len(self._keep_input_ids) or keep != {
+            message.message_id for message in messages
+            if message.message_id in keep and isinstance(message.body, Input)
+            and message.source == self._source
+        }:
+            raise ValueError("保留输入必须是当前来源的真实 Input，且不能重复")
+        # 放弃只撤销未结束前缀的执行协议；可读正文仍属于聊天历史。
+        pending: dict[str, list[Message]] = {}
+        abandoned: set[str] = set()
+        abandoned_calls: set[CallRef] = set()
+        for message in messages:
+            body = message.body
+            if isinstance(body, Output):
+                if body.finish == "continue":
+                    pending.setdefault(message.source, []).append(message)
+                else:
+                    pending[message.source] = []
+            elif isinstance(body, Control) and body.action == "abandon":
+                outputs = pending.get(message.source, [])
+                for output in outputs:
+                    if output.seq <= body.through_seq:
+                        abandoned.add(output.message_id)
+                        assert isinstance(output.body, Output)
+                        abandoned_calls.update(
+                            CallRef(output.message_id, index)
+                            for index, part in enumerate(output.body.parts)
+                            if isinstance(part, ToolCall)
+                        )
+                pending[message.source] = [output for output in outputs if output.seq > body.through_seq]
         # 1. 读取完整前缀的 replay facts，摘要不能删除 provider 仍需要的状态。
         facts: dict[str, Mapping[str, Any]] = {}
         continuation: ModelContinuation | None = None
+        continuation_summary: str | None = None
+        continuation_seq = -1
         results: dict[CallRef, Message] = {}
         for message in messages:
             body = message.body
+            if isinstance(body, Control) and body.action == "abandon" and message.source == self._source:
+                continuation = None
             if isinstance(body, ToolResult):
+                if body.call_ref in abandoned_calls:
+                    continue
                 if body.call_ref in results:
                     raise ValueError("同一工具调用出现多个结果")
                 results[body.call_ref] = message
-            if not isinstance(body, Output):
+            if not isinstance(body, Output) or message.message_id in abandoned:
                 continue
             recorded = [
                 part
@@ -177,11 +230,26 @@ class MessageProjection:
                 raise ValueError("continuation 不属于记录中的模型")
             if message.source == self._source:
                 continuation = message_continuation
+                continuation_seq = message.seq
+                summaries = [
+                    part for part in body.parts
+                    if isinstance(part, ContentPart) and part.kind == "context.summary"
+                ]
+                if len(summaries) > 1:
+                    raise ValueError("同一模型 Output 只能使用一份摘要")
+                continuation_summary = (
+                    check_summary(summaries[0]).binding_ids[0] if summaries else None
+                )
             facts[message.message_id] = value
+        # 摘要明确开启新请求；原 opaque 保存在日志，只续接同一摘要后的响应。
+        if fresh or summary_reference is not None and (
+            continuation_summary != summary_reference or continuation_seq <= after_seq
+        ):
+            continuation = None
         if continuation is not None:
             if continuation.binding_id != self._model.descriptor.binding_id:
                 raise ValueError("当前模型不能接续另一 binding 的 opaque 状态")
-            if after_seq >= 0:
+            if after_seq >= 0 and summary_reference is None:
                 raise ValueError(
                     "当前投影不能证明摘要与 opaque continuation 可共同重放"
                 )
@@ -190,7 +258,7 @@ class MessageProjection:
         rows: list[Mapping[str, Any]] = []
         used_results: set[str] = set()
         for message in messages:
-            if message.seq <= after_seq:
+            if message.seq <= after_seq and message.message_id not in keep:
                 continue
             body = message.body
             if isinstance(body, (Control, ToolResult)):
@@ -203,6 +271,8 @@ class MessageProjection:
                 if isinstance(part, ContentPart):
                     if part.kind != "model.facts":
                         blocks.extend(self._render_content(part))
+                    continue
+                if message.message_id in abandoned:
                     continue
                 ref = CallRef(message.message_id, index)
                 identity = (

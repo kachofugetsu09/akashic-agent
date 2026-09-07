@@ -64,10 +64,11 @@ async def test_failed_admission_cannot_leave_a_new_task_running(eager):
             await tasks.admit("key", fail)
     finally:
         loop.set_task_factory(old_factory)
+    assert started == []
+    # 拒绝已完成清理，立即使用同 key 不需要额外 sleep 或 join。
+    replacement = await tasks.admit("key", lambda slot: slot.start(operation))
     with pytest.raises(asyncio.CancelledError):
         await accepted[0].join()
-    assert started == []
-    replacement = await tasks.admit("key", lambda slot: slot.start(operation))
     await replacement.join()
     assert started == [replacement.handle]
     await tasks.close()

@@ -1,3 +1,4 @@
+from session.message import ContentReferences
 import asyncio
 from dataclasses import replace
 from contextlib import asynccontextmanager
@@ -22,7 +23,7 @@ class Probe:
         self.release = asyncio.Event()
         self.release.set()
 
-    async def prepare(self, arguments):
+    async def prepare(self, arguments, source=None):
         return {**arguments, "prepared": True}
 
     async def invoke(self, key, arguments):
@@ -192,10 +193,10 @@ def dialogue(log, *, session_id="s", arguments=None):
         author="tool",
         source="conversation",
         body_types=(ToolResult,),
-        content={"text": lambda part: ()},
+        content={"text": lambda part: ContentReferences()},
         call_ref=ref,
     )
-    return MessageReply("result", ref, log.reader(session_id), writer)
+    return MessageReply("result", ref, log.reader(session_id), writer, lambda: None)
 
 
 @pytest.mark.asyncio
@@ -455,4 +456,87 @@ async def test_cancel_during_recovery_prevents_later_idempotent_reexecution(
         assert len(probe.calls) == 1
     finally:
         release.set()
+        await tasks.close()
+
+
+@pytest.mark.asyncio
+async def test_abandon_denies_unstarted_call_without_opening_target(environment):
+    log, state, tasks, probe, permissions, execution = environment
+    reply = dialogue(log)
+    @asynccontextmanager
+    async def must_not_open(binding):
+        raise AssertionError('a denied unstarted call must not need its old executable')
+        yield
+    execution._open_tool = must_not_open
+    try:
+        result = await execution.deny_call(reply, 'work abandoned')
+        assert result.outcome == 'denied'
+        assert await execution.execute_call(reply) == result
+        assert await execution.deny_call(reply, 'same decision') == result
+        assert not permissions and not probe.calls
+        assert log.reader('s').get('result').body.outcome == 'denied'
+        assert len(log.reader('s').snapshot()) == 2
+    finally:
+        await tasks.close()
+
+
+@pytest.mark.asyncio
+async def test_abandon_waits_for_started_owner_and_retains_real_success(environment):
+    log, state, tasks, probe, permissions, execution = environment
+    reply = dialogue(log)
+    probe.release.clear()
+    running = asyncio.create_task(execution.execute_call(reply))
+    await probe.started.wait()
+    admitted = asyncio.Event()
+    original = tasks.admit
+    async def observe(key, callback):
+        result = await original(key, callback)
+        admitted.set()
+        return result
+    tasks.admit = observe
+    denied = asyncio.create_task(execution.deny_call(reply, 'work abandoned'))
+    try:
+        await admitted.wait()
+        probe.release.set()
+        assert (await running).outcome == 'success'
+        assert (await denied).outcome == 'success'
+        assert len(probe.calls) == 1
+        assert log.reader('s').get('result').body.outcome == 'success'
+    finally:
+        probe.release.set()
+        await tasks.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_arguments_result_and_receipt_roll_back_together(environment, monkeypatch):
+    from plugins.tools.api import InvalidArguments
+    log, state, tasks, probe, permissions, execution = environment
+    reply = dialogue(log)
+    prepares = []
+    async def invalid(arguments, source=None):
+        prepares.append(source.call_ref)
+        raise InvalidArguments("unknown target")
+    probe.prepare = invalid
+    save = OwnerTransaction.save
+    def fail_receipt(self, key, value, **kwargs):
+        if value["phase"] == "done":
+            assert log.reader("s").get("result") is not None
+            raise OSError("receipt disk failure")
+        return save(self, key, value, **kwargs)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(OwnerTransaction, "save", fail_receipt)
+            with pytest.raises(OSError, match="receipt disk failure"):
+                await execution.execute_call(reply)
+        assert state.read('message:["call",0]') is None
+        assert log.reader("s").get("result") is None
+        assert log.reader("s").head() == 0
+        assert probe.calls == []
+        assert permissions == []
+        result = await execution.execute_call(reply)
+        assert result.outcome == "error"
+        assert await execution.execute_call(reply) == result
+        assert len(prepares) == 2
+        assert len(log.reader("s").read()) == 2
+    finally:
         await tasks.close()

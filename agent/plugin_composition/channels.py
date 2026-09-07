@@ -12,15 +12,18 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Literal, Protocol, TypeAlias
 
+from session.message import Message
+from session.artifacts import (
+    AttachmentKind, AttachmentRef, AttachmentReadLease,
+    AttachmentReadPort as ChannelAttachmentReadPort,
+)
+
 from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
 from agent.plugin_composition.model import CompositionError, IncidentView, ServiceKey
 
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _FACTORY_EXPORT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:]*$")
-_ATTACHMENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
-_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def channel_config_revision(projection: Mapping[str, object]) -> str:
@@ -98,38 +101,6 @@ class ChannelTerminalStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-class AttachmentKind(StrEnum):
-    FILE = "file"
-    IMAGE = "image"
-
-
-@dataclass(frozen=True, slots=True)
-class AttachmentRef:
-    """Identify one immutable Core-owned attachment without exposing its path."""
-
-    artifact_id: str
-    kind: AttachmentKind
-    filename: str | None
-    media_type: str | None
-    size_bytes: int
-    sha256: str
-
-    def __post_init__(self) -> None:
-        _attachment_id(self.artifact_id)
-        if not isinstance(self.kind, AttachmentKind):
-            raise TypeError("kind 必须是 AttachmentKind")
-        _attachment_filename(self.filename)
-        _attachment_media_type(self.media_type)
-        if isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int):
-            raise TypeError("size_bytes 必须是 int")
-        if self.size_bytes < 0:
-            raise ValueError("size_bytes 不能是负数")
-        if not isinstance(self.sha256, str):
-            raise TypeError("sha256 必须是 str")
-        if _SHA256.fullmatch(self.sha256) is None:
-            raise ValueError("sha256 必须是 64 位小写十六进制字符串")
-
-
 JsonValue: TypeAlias = (
     None
     | bool
@@ -168,6 +139,12 @@ class ChannelInboundMessage:
             "attachments",
             _attachment_refs(self.attachments, "attachments"),
         )
+
+
+# 来源插件接纳已验证的传输输入；不获得 Channel lease 或发送权。
+CHANNEL_INPUT = ServiceKey[
+    Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
+]("channel.input.v1")
 
 
 class InboundOwner(StrEnum):
@@ -231,24 +208,12 @@ class ChannelAttachmentImportPort(Protocol):
     ) -> AttachmentRef: ...
 
 
-class AttachmentReadLease(Protocol):
-    @property
-    def ref(self) -> AttachmentRef: ...
-
-    async def read_bytes(self, *, max_bytes: int) -> bytes: ...
-
-    async def aclose(self) -> None: ...
-
-
-class ChannelAttachmentReadPort(Protocol):
-    async def acquire(self, ref: AttachmentRef) -> AttachmentReadLease: ...
-
-
 @dataclass(slots=True, kw_only=True)
 class InboundEnvelope:
     """Own one inbound message lease through its fixed Core processing path."""
 
     message_id: str
+    session_key: str
     snapshot_id: str
     generation_id: str
     binding_token: str
@@ -265,6 +230,7 @@ class InboundEnvelope:
 
     def __post_init__(self) -> None:
         _message_id(self.message_id)
+        _text(self.session_key, "session_key")
         _text(self.snapshot_id, "snapshot_id")
         _text(self.generation_id, "generation_id")
         _text(self.binding_token, "binding_token")
@@ -311,13 +277,6 @@ class InboundEnvelope:
     @property
     def metadata(self) -> Mapping[str, JsonValue]:
         return self.message.metadata
-
-    @property
-    def session_key(self) -> str:
-        override = self.message.metadata.get("session_key_override")
-        if isinstance(override, str) and override.strip():
-            return override.strip()
-        return f"{self.channel}:{self.chat_id}"
 
     def handoff(
         self,
@@ -1723,42 +1682,6 @@ def _attachment_refs(value: object, field_name: str) -> tuple[AttachmentRef, ...
     if any(not isinstance(item, AttachmentRef) for item in result):
         raise TypeError(f"{field_name} 必须只包含 AttachmentRef")
     return result
-
-
-def _attachment_id(value: object) -> str:
-    if not isinstance(value, str):
-        raise TypeError("artifact_id 必须是 str")
-    if _ATTACHMENT_ID.fullmatch(value) is None:
-        raise ValueError("artifact_id 必须是安全的 opaque id")
-    return value
-
-
-def _attachment_filename(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError("filename 必须是 str 或 None")
-    if (
-        not value
-        or value != value.strip()
-        or len(value) > 255
-        or "/" in value
-        or "\\" in value
-        or "\x00" in value
-        or any(ord(char) < 32 or ord(char) == 127 for char in value)
-    ):
-        raise ValueError("filename 必须是 1..255 字符的纯文件名")
-    return value
-
-
-def _attachment_media_type(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError("media_type 必须是 str 或 None")
-    if len(value) > 255 or _MEDIA_TYPE.fullmatch(value) is None:
-        raise ValueError("media_type 必须是合法 MIME type")
-    return value
 
 
 def _text_tuple(value: object, field_name: str) -> tuple[str, ...]:

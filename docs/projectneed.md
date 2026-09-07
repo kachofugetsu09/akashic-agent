@@ -399,7 +399,7 @@ ledger。插件 jobs、history route 和视觉短调用由各自 owner 管理，
 再次经过本 Gate。
 
 ledger 没有任何 generation 时，首次 compact 必须先从当前向历史方向按完整 logical unit
-选择约 74% 的近期窗口；窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
+选择不超过 `floor(context_window * 0.74)` 软水位的最大连续近期窗口，同时满足完整请求的硬输入边界；不得为凑满预算跨过阈值。窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
 但 SessionDB 原始消息必须完整保留。已有 generation 后只处理有效 cursor 到当前的增量。
 
 持久 checkpoint 写入 `session_compactions`，保存 summary、parent lineage、source_ref、

@@ -14,11 +14,14 @@ from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import TypeVar, cast
 from pathlib import Path
+from types import MappingProxyType
 
+from session.artifacts import AttachmentKind, AttachmentRef
 from session.message import (
     Body,
     CallRef,
     ContentPart,
+    ContentReferences,
     Control,
     Input,
     Message,
@@ -32,6 +35,30 @@ from session.message_codec import decode_body, encode_body, json_value
 _T = TypeVar("_T")
 
 _SCHEMA = {
+    "attachments": """CREATE TABLE IF NOT EXISTS attachments (
+        artifact_id TEXT PRIMARY KEY, storage_key TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('image', 'file')),
+        filename TEXT, media_type TEXT,
+        size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+        state TEXT NOT NULL CHECK (state = 'ready'), created_at TEXT NOT NULL
+    );""",
+    "message_attachments": """CREATE TABLE IF NOT EXISTS message_attachments (
+        message_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        artifact_id TEXT NOT NULL, PRIMARY KEY (message_id, ordinal),
+        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id) REFERENCES attachments(artifact_id)
+    );""",
+    "idx_message_attachments_artifact": """CREATE INDEX IF NOT EXISTS idx_message_attachments_artifact
+        ON message_attachments(artifact_id, message_id, ordinal);""",
+    "message_embeddings": """CREATE TABLE IF NOT EXISTS message_embeddings (
+        message_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+        model TEXT NOT NULL, embedding BLOB NOT NULL, dim INTEGER NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (message_id, model)
+    );""",
+    "ix_message_embeddings_hash": """CREATE INDEX IF NOT EXISTS ix_message_embeddings_hash
+        ON message_embeddings (content_hash, model);""",
     "owner_records": """CREATE TABLE IF NOT EXISTS owner_records (
         owner TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL,
         value TEXT NOT NULL, PRIMARY KEY(owner, key)
@@ -69,6 +96,14 @@ _SCHEMA = {
                     ) WHERE json_extract(body, '$.kind')='tool_result';""",
 }
 
+_LEGACY_ATTACHMENT_SCHEMA = """CREATE TABLE message_attachments (
+    message_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    artifact_id TEXT NOT NULL, direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+    PRIMARY KEY (message_id, ordinal),
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (artifact_id) REFERENCES attachments(artifact_id)
+)"""
+
 _LEGACY_SESSION_SCHEMA = """CREATE TABLE sessions (
     key TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     last_consolidated INTEGER NOT NULL DEFAULT 0, metadata TEXT,
@@ -103,6 +138,8 @@ def _check_schema(connection: sqlite3.Connection) -> None:
         allowed = {_sql(statement)}
         if name == "sessions":
             allowed.add(_sql(_LEGACY_SESSION_SCHEMA))
+        if name == "message_attachments":
+            allowed.add(_sql(_LEGACY_ATTACHMENT_SCHEMA))
         if _sql(row["sql"]) not in allowed:
             raise RuntimeError(f"{name} schema 不匹配，请先完成对应 yoyo 迁移")
 
@@ -136,7 +173,8 @@ class MessageLog:
             with self._connection:
                 for name, statement in _SCHEMA.items():
                     # 新库由 owner 初始化；已有库的新持久能力只能由 yoyo 接纳。
-                    if name == "owner_records" and not fresh:
+                    if name in {"owner_records", "message_embeddings", "ix_message_embeddings_hash",
+                                "attachments", "message_attachments", "idx_message_attachments_artifact"} and not fresh:
                         continue
                     _ = self._connection.execute(statement)
         except BaseException:
@@ -173,6 +211,9 @@ class MessageLog:
                 _ = loop.call_soon_threadsafe(event.set)
             return result
 
+    def catalog(self) -> MessageCatalog:
+        return MessageCatalog(self)
+
     def reader(self, session_id: str) -> MessageReader:
         return MessageReader(self, session_id)
 
@@ -185,7 +226,7 @@ class MessageLog:
         body_types: tuple[
             type[Input] | type[Output] | type[ToolResult] | type[Control], ...
         ],
-        content: Mapping[str, Callable[[ContentPart], tuple[str, ...]]],
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
         call_ref: CallRef | None = None,
         check_call: Callable[[ToolCall], None] | None = None,
     ) -> MessageWriter:
@@ -251,6 +292,56 @@ class MessageLog:
                 _ = loop.call_soon_threadsafe(event.set)
 
 
+class MessageCatalog:
+    """只读会话目录；一次 heads 快照固定跨会话消费的消息上界。"""
+
+    def __init__(self, log: MessageLog | None):
+        self._storage = log
+
+    @property
+    def _log(self) -> MessageLog:
+        if self._storage is None:
+            raise RuntimeError("candidate 验证期禁止读取正式会话目录")
+        return self._storage
+
+    def snapshot_heads(self) -> Mapping[str, int]:
+        """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。"""
+        with self._log._lock:
+            rows = self._log._connection.execute(
+                "SELECT s.key, COALESCE(MAX(m.seq), -1) AS head "
+                "FROM sessions s LEFT JOIN messages m ON m.session_key=s.key "
+                "GROUP BY s.key ORDER BY s.key"
+            ).fetchall()
+        return MappingProxyType({row["key"]: row["head"] for row in rows})
+
+    def reader(self, session_id: str) -> MessageReader:
+        return self._log.reader(session_id)
+
+    async def follow(self) -> AsyncIterator[Mapping[str, int]]:
+        """先订阅再取 heads；通知可合并，消费者始终按快照重读事实。"""
+        event = asyncio.Event()
+        with self._log._lock:
+            if self._log._closed:
+                return
+            self._log._listeners[event] = asyncio.get_running_loop()
+        previous: Mapping[str, int] | None = None
+        try:
+            while True:
+                event.clear()
+                with self._log._lock:
+                    if self._log._closed:
+                        return
+                    heads = self.snapshot_heads()
+                if heads != previous:
+                    previous = heads
+                    yield heads
+                else:
+                    _ = await event.wait()
+        finally:
+            with self._log._lock:
+                del self._log._listeners[event]
+
+
 class MessageReader:
     def __init__(self, log: MessageLog, session_id: str):
         self._log = log
@@ -285,6 +376,19 @@ class MessageReader:
             rows = self._log._connection.execute(sql, values).fetchall()
         return tuple(_message(row) for row in rows)
 
+    def snapshot(self, *, through_seq: int | None = None) -> tuple[Message, ...]:
+        """固定上界后分页读取完整前缀，供需要完整历史的只读投影消费。"""
+        head = self.head() if through_seq is None else through_seq
+        messages: list[Message] = []
+        cursor = -1
+        while cursor < head:
+            page = self.read(after_seq=cursor, through_seq=head)
+            if not page:
+                break
+            messages.extend(page)
+            cursor = page[-1].seq
+        return tuple(messages)
+
     def get(self, message_id: str) -> Message | None:
         """按不可变身份读取消息，不能跨 reader 获授的 Session。"""
         with self._log._lock:
@@ -293,6 +397,17 @@ class MessageReader:
                 (message_id, self._session_id),
             ).fetchone()
         return None if row is None else _message(row)
+
+    def attachments(self, message_id: str) -> tuple[AttachmentRef, ...]:
+        """只读取已获授 Session 中该消息的有序附件引用，不暴露路径或任意 ID 查询。"""
+        with self._log._lock:
+            if self.get(message_id) is None:
+                raise LookupError("消息不在 reader 获授的 Session 中")
+            rows = self._log._connection.execute(
+                "SELECT a.* FROM message_attachments ma JOIN attachments a ON a.artifact_id=ma.artifact_id "
+                "WHERE ma.message_id=? ORDER BY ma.ordinal", (message_id,),
+            ).fetchall()
+        return tuple(_artifact_ref(row) for row in rows)
 
     def head(self, *, source: str | None = None) -> int:
         sql = "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=?"
@@ -336,7 +451,7 @@ class MessageWriter:
         author: str,
         source: str,
         body_types: tuple[type[Body], ...],
-        content: Mapping[str, Callable[[ContentPart], tuple[str, ...]]],
+        content: Mapping[str, Callable[[ContentPart], ContentReferences]],
         call_ref: CallRef | None,
         check_call: Callable[[ToolCall], None] | None,
     ):
@@ -353,6 +468,10 @@ class MessageWriter:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def source(self) -> str:
+        return self._source
 
     def check(self, body: Body) -> None:
         """预先核对提交权限与引用；不占序号，实际提交仍在事务内核对实时状态。"""
@@ -411,7 +530,7 @@ class MessageWriter:
         ).fetchone()[0]
         if expected_source_head is not None and head != expected_source_head:
             raise MessageConflict(f"来源 head 已变化: {head} != {expected_source_head}")
-        binding_ids = self._check_parts(body)
+        binding_ids, artifacts = self._check_parts(body)
         if isinstance(body, ToolResult):
             self._check_call_result(body)
 
@@ -440,6 +559,11 @@ class MessageWriter:
                 payload,
             ),
         )
+        for ordinal, artifact in enumerate(artifacts):
+            _ = connection.execute(
+                "INSERT INTO message_attachments (message_id,ordinal,artifact_id) VALUES (?,?,?)",
+                (message_id, ordinal, artifact),
+            )
         for binding_id in binding_ids:
             _ = connection.execute(
                 "INSERT INTO message_bindings VALUES (?, ?)",
@@ -452,9 +576,10 @@ class MessageWriter:
 
         return message
 
-    def _check_parts(self, body: Body) -> set[str]:
+    def _check_parts(self, body: Body) -> tuple[set[str], tuple[str, ...]]:
         """只为新提交验证内容和调用 grant；已提交身份的重放直接返回收据。"""
         bindings: set[str] = set()
+        artifacts: list[str] = []
         if not isinstance(body, Control):
             for part in body.parts:
                 if isinstance(part, ToolCall):
@@ -470,14 +595,22 @@ class MessageWriter:
                             f"writer 未获授内容类型 {part.kind}"
                         ) from exc
                     references = validator(part)
-                    if not isinstance(references, tuple) or any(
-                        not isinstance(ref, str) or not ref for ref in references
-                    ):
-                        raise TypeError(
-                            "内容 owner 必须返回非空 binding ID 的 tuple，无引用返回 ()"
-                        )
-                    bindings.update(references)
-        return bindings
+                    if not isinstance(references, ContentReferences):
+                        raise TypeError("内容 owner 必须返回 ContentReferences")
+                    bindings.update(references.binding_ids)
+                    artifacts.extend(references.artifact_ids)
+        if artifacts:
+            connection = self._log._connection
+            row = connection.execute("SELECT sql FROM sqlite_master WHERE name='message_attachments'").fetchone()
+            if row is None or _sql(row[0]) != _sql(_SCHEMA["message_attachments"]):
+                raise RuntimeError("附件引用写入需要先完成对应 yoyo 迁移")
+            for artifact_id in set(artifacts):
+                row = connection.execute(
+                    "SELECT state FROM attachments WHERE artifact_id=?", (artifact_id,)
+                ).fetchone()
+                if row is None or row["state"] != "ready":
+                    raise ValueError("附件引用必须指向已发布的不可变资源")
+        return bindings, tuple(artifacts)
 
     def _check_call_result(self, body: ToolResult) -> None:
         """在提交事务内校验调用地址与唯一结果，结果 writer 不得跨来源写入。"""
@@ -655,4 +788,14 @@ def _message(row: sqlite3.Row) -> Message:
         row["author"],
         row["source"],
         decode_body(row["body"]),
+    )
+
+
+def _artifact_ref(row: sqlite3.Row) -> AttachmentRef:
+    """数据库边界只接受已发布的完整附件元数据。"""
+    if row["state"] != "ready":
+        raise ValueError("附件尚未发布")
+    return AttachmentRef(
+        row["artifact_id"], AttachmentKind(row["kind"]), row["filename"],
+        row["media_type"], row["size_bytes"], row["sha256"],
     )

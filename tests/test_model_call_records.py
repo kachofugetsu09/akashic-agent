@@ -306,6 +306,21 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
     with pytest.raises(ValueError, match="缺少"):
         projection.render(messages, after_seq=1)
     assert projection.render(messages, after_seq=4).messages == ()
+    for keep in (("1",), ("4",), ("missing",), ("0", "0")):
+        invalid = MessageProjection(
+            model, source="conversation", render_content=lambda part: (),
+            tool_name=lambda binding: "unused", read_call=store.read_call,
+            keep_input_ids=keep,
+        )
+        with pytest.raises(ValueError, match="真实 Input"):
+            invalid.render(messages, after_seq=4)
+    repeated = MessageProjection(
+        model, source="conversation",
+        render_content=lambda part: ({"type": "text", "text": part.value},),
+        tool_name=lambda binding: "unused", read_call=store.read_call,
+        keep_input_ids=("2", "0"),
+    ).render(messages, after_seq=4)
+    assert [row["content"][0]["text"] for row in repeated.messages] == ["u1", "u2 interruption"]
 
 
 @pytest.mark.asyncio
@@ -456,3 +471,110 @@ def test_only_images_keep_valid_roles_and_flush_once_after_all_results(
         messages[2],
     ]
     assert _normalize_messages(plain) == plain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', ['conversation', 'wake'])
+@pytest.mark.parametrize('late_result', [False, True])
+async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned_protocol(
+    store, descriptor, source, late_result,
+):
+    from datetime import UTC, datetime
+    from agent.plugin_composition.models import ToolCall as ModelToolCall
+    from plugins.models.projection import MessageProjection, response_facts
+    from session.message import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
+
+    class Driver:
+        async def complete(self, request):
+            return LLMResponse('old work', tool_calls=[ModelToolCall('provider', 'tool', {})],
+                               continuation=ModelContinuation('bound', {'old': True}))
+    model = _BoundChat(descriptor, Driver(), store)
+    response = await model.complete(ModelRequest(()))
+    def message(seq, body):
+        return Message(str(seq), 's', seq, datetime.now(UTC), 'actor', source, body)
+    messages = [
+        message(0, Output((ToolCall('completed', {}),), 'continue')),
+        message(1, ToolResult(CallRef('0', 0), 'success', (ContentPart('text', 'completed result'),))),
+        message(2, Output((ContentPart('text', 'completed answer'),), 'complete')),
+        message(3, Input((ContentPart('text', 'old request'),))),
+        message(4, Output((ContentPart('text', 'old work'), ToolCall('abandoned', {}),
+                           response_facts(response, [1])), 'continue')),
+        message(5, Control('abandon', 4)),
+        message(6, Input((ContentPart('text', 'new request'),))),
+    ]
+    if late_result:
+        messages.append(message(7, ToolResult(CallRef('4', 1), 'success', (ContentPart('text', 'late result'),))))
+    names = []
+    def tool_name(binding):
+        names.append(binding)
+        assert binding == 'completed'
+        return 'completed_tool'
+    projection = MessageProjection(model, source='conversation',
+        render_content=lambda part: ({'type': 'text', 'text': part.value},),
+        tool_name=tool_name, read_call=store.read_call)
+    request = projection.render(tuple(messages), after_seq=-1)
+    assert names == ['completed']
+    assert request.continuation is None
+    assert sum('tool_calls' in row for row in request.messages) == 1
+    assert request.messages[0]['tool_calls'][0]['id'] == request.messages[1]['tool_call_id']
+    assert request.messages[1]['content'][0]['text'] == 'completed result'
+    assert any(any(part.get('text') == 'old work' for part in row['content']) for row in request.messages)
+    assert all('late result' not in str(row) and 'reasoning_content' not in row for row in request.messages)
+    assert request.messages[-1]['content'][0]['text'] == 'new request'
+
+
+@pytest.mark.asyncio
+async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_response(store, descriptor):
+    from datetime import UTC, datetime
+    from dataclasses import replace
+    from plugins.context.api import Materials, Summary
+    from plugins.context.plugin import ContextBuilder
+    from plugins.models.projection import MessageProjection, response_facts
+    from plugins.models.content import render_content
+    from plugins.codex.responses import _continuation_items, _responses_input
+    from session.message import ContentPart, Input, Message, Output
+
+    class Driver:
+        max_tool_schemas = None
+        def estimate_context_tokens(self, messages, tools):
+            return 100
+        async def complete(self, request):
+            return LLMResponse("answer", continuation=ModelContinuation("bound", {
+                "format_version": 1, "items": [{"type": "reasoning", "encrypted_content": "opaque-state"}],
+            }))
+    model = _BoundChat(descriptor, Driver(), store)
+    def message(seq, body):
+        return Message(str(seq), "s", seq, datetime.now(UTC), "test", "conversation", body)
+    response = await model.complete(ModelRequest(()))
+    before = (
+        message(0, Input((ContentPart("text", "old question"),))),
+        message(1, Output((ContentPart("text", "old answer"), response_facts(response, [])), "complete")),
+        message(2, Input((ContentPart("text", "current question"),))),
+    )
+    projection = MessageProjection(model, source="conversation", read_call=store.read_call,
+        render_content=lambda part: render_content(part, artifacts={}), tool_name=lambda binding: "unused",
+        keep_input_ids=("2",))
+    summary = Summary("summary-binding", ("0", "1"), "saved old work")
+    request = ContextBuilder().build(before, materials=Materials("", summary=summary),
+                                     model=projection, max_output_tokens=100)
+    assert request.continuation is None
+    payload, _ = _responses_input(request.messages, "", _continuation_items(request.continuation))
+    assert all(item.get("type") != "reasoning" for item in payload)
+    assert "saved old work" in str(payload) and "current question" in str(payload)
+    assert "old answer" not in str(payload)
+
+    next_response = await model.complete(request)
+    after = (*before, message(3, Output((
+        ContentPart("text", "fresh answer"), response_facts(next_response, []),
+        ContentPart("context.summary", {"reference": summary.reference}),
+    ), "complete")))
+    resumed = ContextBuilder().build(after, materials=Materials("", summary=summary),
+                                     model=projection, max_output_tokens=100)
+    assert resumed.continuation == next_response.continuation
+    payload, _ = _responses_input(resumed.messages, "", _continuation_items(resumed.continuation))
+    assert payload[0] == {"type": "reasoning", "encrypted_content": "opaque-state"}
+    changed = replace(summary, reference="next-summary", source_message_ids=("0", "1", "2", "3"))
+    fresh = ContextBuilder().build(after, materials=Materials("", summary=changed),
+                                   model=projection, max_output_tokens=100)
+    assert fresh.continuation is None
+    assert response.continuation is not None and before[1].body.parts[-1].value["continuation"] is not None

@@ -522,7 +522,7 @@ requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001"
 groups = ["companion_mobile"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant", "tests/mobile_realtime/test_storage.py", "tests/mobile_realtime/test_channel.py", "tests/test_message_bus_admission.py"]
+command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_receipt_retention_rejects_valid_delete_mutant", "tests/mobile_realtime/test_storage.py", "tests/mobile_realtime/test_channel.py", "tests/test_message_bus_admission.py", "tests/test_channel_input.py", "tests/test_default_reply.py"]
 observes = ["receipt_retention", "receipt_high_water", "external_effect_reconciliation", "durable_inbound_handoff", "durable_recovery_page", "receipt_write_set", "query_lease", "generation_drain", "failure_semantics"]
 mutants = ["companion_receipt_deletes_valid_result"]
 

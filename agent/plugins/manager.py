@@ -25,7 +25,14 @@ from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 from agent.plugins.archive import PluginArchive, decode_config, encode_config
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
 from agent.plugins.config import read_config_source
-from agent.plugin_composition.bindings import BindingScope
+from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
+from agent.plugin_composition.artifacts import ARTIFACT_READ, ArtifactRead
+from agent.plugin_composition.messages import (
+    MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, MessageWriters, OwnerState,
+)
+from agent.plugin_composition.tasks import TASKS, PluginTasks
+from session.log import MessageCatalog, MessageLog
+from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import RuntimeScope
 
 from agent.plugin_composition import (
@@ -68,6 +75,7 @@ from agent.plugin_composition import (
     PluginDurableDeliveries,
     PluginTimers,
     ServiceView,
+    ServiceKey,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
     SNAPSHOT_SEALING,
@@ -288,6 +296,7 @@ class PluginManager:
         workspace: Path,
         tool_registry: Any = None,
         session_manager: Any = None,
+        message_log: MessageLog | None = None,
         installed_cache_root: Path | None = None,
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
@@ -299,6 +308,9 @@ class PluginManager:
         self._workspace = workspace
         self._archive = PluginArchive(workspace / "runtime" / "plugin-archives")
         self._session_manager = session_manager
+        self._message_log = message_log
+        self._artifact_read = None if channel_attachment_store is None else ArtifactRead(channel_attachment_store.acquire)
+        self._plugin_tasks = PluginTasks()
         self._interaction_undo = (
             InteractionUndoCoordinator(session_manager)
             if session_manager is not None
@@ -1258,6 +1270,7 @@ class PluginManager:
 
         # 1. A prior Core boot cannot retain a live candidate lease.
         self._composition_generation_host.start_scoped()
+        self._plugin_tasks.start()
         await self._composition_generation_host.cleanup_candidates()
 
         # 2. 处理尚未进入 latest_ready 的残留事务，恢复磁盘 pointer。
@@ -5113,7 +5126,7 @@ class PluginManager:
 
             # 2. 使用同一 Core 能力装配，依赖只能来自这些归档组件。
             ordered = tuple(generations[key] for key in sorted(generations))
-            await self._provide_root_registries(root, ordered)
+            await self._provide_composition_services(root, ordered, candidate=False, archive=True)
             for generation in ordered:
                 await self._mount_generation_composition(root, generation)
             if not root.receipt().ready:
@@ -5381,10 +5394,52 @@ class PluginManager:
         mount_order: tuple[PluginGeneration, ...],
         *,
         candidate: bool,
+        archive: bool = False,
     ) -> None:
-        """向独立 Root 提供同一组 Core 能力，不选择或发布插件 generation。"""
+        """向独立 Root 提供宿主能力；归档只取得明确声明的窄端口。"""
 
         await self._provide_root_registries(root, mount_order)
+        requested = {
+            key
+            for generation in mount_order
+            for key in cast(ComposablePlugin, generation.instance).inject
+        }
+        message_services: set[ServiceKey[object]] = {
+            MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, BINDINGS
+        }
+        # 正式能力归宿主所有，不计入历史 provider 的依赖拓扑。
+        log = None if candidate else self._message_log
+        if requested & message_services and self._message_log is None:
+            raise RuntimeError("消息能力需要 bootstrap 提供已迁移的 MessageLog")
+        if self._message_log is not None:
+            if not archive or MESSAGE_CATALOG in requested:
+                _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
+            if not archive or MESSAGE_EMBEDDINGS in requested:
+                _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
+            if not archive or MESSAGE_WRITERS in requested:
+                _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
+            if not archive or OWNER_STATE in requested:
+                _ = await root.context.provide(OWNER_STATE, OwnerState(log))
+            if not archive or BINDINGS in requested:
+                _ = await root.context.provide(
+                    BINDINGS, Bindings(log, self._archive, self.open_binding)
+                )
+        if TASKS in requested or not archive and self._message_log is not None:
+            _ = await root.context.provide(
+                TASKS, PluginTasks(formal=False) if candidate else self._plugin_tasks
+            )
+        if (not archive or ARTIFACT_READ in requested) and self._artifact_read is not None:
+            _ = await root.context.provide(
+                ARTIFACT_READ, ArtifactRead(None) if candidate else self._artifact_read
+            )
+        if TIMERS in requested:
+            timers = (
+                PluginTimers(AsyncioOneShotTimer())
+                if not candidate else PluginTimers.candidate_validation()
+            )
+            _ = await root.context.provide(TIMERS, timers)
+        if archive:
+            return
         if self._session_manager is not None and any(
             SESSION_READ in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
@@ -5438,16 +5493,6 @@ class PluginManager:
                 else PluginContinuations.candidate_validation()
             )
             _ = await root.context.provide(CONTINUATIONS, continuations)
-        if any(
-            TIMERS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            timers = (
-                PluginTimers(AsyncioOneShotTimer())
-                if not candidate
-                else PluginTimers.candidate_validation()
-            )
-            _ = await root.context.provide(TIMERS, timers)
         if any(
             DELIVERIES in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
@@ -6573,10 +6618,19 @@ class PluginManager:
     async def terminate_all(self) -> None:
         """完成快照、插件生命周期和作用域资源的全量关闭。"""
 
-        # 1. 调用资源先归还借用，再允许正式 owner 进入 drain。
-        _, externally_cancelled = await _complete_critical(
+        # 1. 先停止接纳和插件生产者，再关闭它们仍需排空的 Task 与资源。
+        snapshot = self._snapshot_store.pause_admission()
+        externally_cancelled = False
+        if snapshot is not None:
+            _, externally_cancelled = await _complete_critical(
+                self._stop_runtime_snapshot(snapshot)
+            )
+        _, cancelled = await _complete_critical(self._plugin_tasks.close())
+        externally_cancelled = externally_cancelled or cancelled
+        _, cancelled = await _complete_critical(
             self._composition_generation_host.close_scoped()
         )
+        externally_cancelled = externally_cancelled or cancelled
         channel_runtime = self._active_channel_generation
         if channel_runtime is not None:
             _ = self._snapshot_store.pause_admission()

@@ -1,3 +1,4 @@
+from session.message import ContentReferences
 import asyncio
 import json
 import sqlite3
@@ -23,7 +24,7 @@ from session.message_codec import decode_body, encode_body
 def text_schema(part):
     if not isinstance(part.value, str):
         raise ValueError("text 必须是字符串")
-    return ()
+    return ContentReferences()
 
 
 def writer(
@@ -249,7 +250,7 @@ def test_new_model_output_uses_the_same_content_schema_grants(log):
     def check_facts(part):
         if part.value["binding"] != "selected-model":
             raise ValueError("Model facts belong to another binding")
-        return ("selected-model",)
+        return ContentReferences(binding_ids=("selected-model",))
 
     outputs = log.writer(
         "s",
@@ -279,7 +280,7 @@ def test_stale_output_does_not_run_content_or_call_checks(log):
 
     def check_content(part):
         checks.append(part)
-        return ()
+        return ContentReferences()
 
     def check_call(call):
         checks.append(call)
@@ -314,7 +315,7 @@ def test_content_binding_pins_commit_with_the_message(tmp_path):
             author="agent",
             source="s",
             body_types=(Output,),
-            content={"model.facts": lambda part: ("model",)},
+            content={"model.facts": lambda part: ContentReferences(binding_ids=("model",))},
         )
         output.append(
             "m", Output((ContentPart("model.facts", {"binding": "model"}),), "complete")
@@ -325,3 +326,55 @@ def test_content_binding_pins_commit_with_the_message(tmp_path):
         assert connection.execute(
             "SELECT message_id,binding_id FROM message_bindings"
         ).fetchall() == [("m", "model")]
+
+
+def test_catalog_heads_fix_cross_session_prefixes_without_creating_sessions(log):
+    catalog = log.catalog()
+    assert catalog.snapshot_heads() == {}
+    assert catalog.reader("absent").read() == ()
+    assert catalog.snapshot_heads() == {}
+    writer(log).append("u1", Input(()))
+    other = log.writer(
+        "other", author="user", source="conversation", body_types=(Input,), content={}
+    )
+    other.append("other1", Input(()))
+    heads = catalog.snapshot_heads()
+    writer(log).append("u2", Input(()))
+    other.append("other2", Input(()))
+    assert {
+        session: tuple(m.message_id for m in catalog.reader(session).read(through_seq=head))
+        for session, head in heads.items()
+    } == {"s": ("u1",), "other": ("other1",)}
+    with pytest.raises(TypeError):
+        heads["s"] = 100
+
+
+@pytest.mark.asyncio
+async def test_catalog_follow_discovers_new_sessions_and_closes(log, monkeypatch):
+    catalog = log.catalog()
+    feed = catalog.follow()
+    assert await anext(feed) == {}
+    observed = asyncio.Event()
+    snapshot = catalog.snapshot_heads
+
+    def read_and_signal():
+        result = snapshot()
+        observed.set()
+        return result
+
+    monkeypatch.setattr(catalog, "snapshot_heads", read_and_signal)
+    pending = asyncio.create_task(anext(feed))
+    await asyncio.wait_for(observed.wait(), 1)
+    writer(log).append("first", Input(()))
+    assert await asyncio.wait_for(pending, 1) == {"s": 0}
+    # 通知在消费者处理上一份快照时到达，重读仍发现新会话。
+    log.writer("new", author="app", source="timer", body_types=(Input,), content={}).append(
+        "new-input", Input(())
+    )
+    assert await anext(feed) == {"new": 0, "s": 0}
+    observed.clear()
+    pending = asyncio.create_task(anext(feed))
+    await asyncio.wait_for(observed.wait(), 1)
+    log.close()
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(pending, 1)
