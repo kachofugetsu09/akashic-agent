@@ -2871,3 +2871,16 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 
 - MCP 环境清理移入 `owned_process_env`，该 owner 最后固定 Supervisor 身份；MCP 注册边界拒绝配置这两个字段。删除 client 在 owner 处理之后再次擦除变量的路径。调用 scope 的清理失败不再误入正式插件发布恢复，查询/重试从实际资源 tombstone 计算；没有新增故障账本。
 - Docker Gate 的 pytest 临时运行数据移到各场景独立的 `/sandbox/pytest`，保留 `/tmp` 的 noexec 挂载。新环境需要执行复制的 interpreter；失败来自实际挂载能力，不通过恢复 cache symlink 或跳过测试绕开。
+
+## 2026-09-07 Message 插件栈第 10 层：FrameBook、MC01 与 G5 接管验收
+
+- 范围：在 Root `18675fe8` 的 FrameBook/restart/Message 路由上记录当前第 10 层接管证据；Root 后续以 `d43f463f` 合入最终 G5，Core cleanup leaf `c9dff019` 再由 `cfaf2591` 正常集成。本文只记录真实 owner、验收边界和未完成 Gate。
+- FrameBook owner：`agent/control/frame_book.py` 按 `(session_id, input_id, connection_id)` 保存短命 route，依据完整 Message 页识别最终 Output，接入实际 writer future 后才标记 drained。`FrameClaim` 只绑定一个精确 `CallRef` 并延长该 drain；route/claim 断线由 FrameBook 失败并释放。`eabab9f4` 的 restart 回归验证断线不能把另一连接的回复或 restart claim 接走。
+- restart owner：`plugins/agent_restart/plugin.py` 的 `RestartWatcher` 只消费成功 `agent_restart` ToolResult，等待所属 Turn complete；programmatic 来源等待 FrameBook 完整 frame drain，普通来源等待 `FinalOutputDelivery`。`agent/restart.py` 的 `RestartGate` 只拥有新 Root 接纳、外部 Root permit drain 和 supervisor 私有 lifecycle commit，不拥有 Message、Delivery 或 frame route。
+- Core leaf 边界：`agent/plugin_composition/tool_catalog.py` 的 `core.tool_catalog` 仍被 manager、snapshot generation、freeze、activation 和 lease 消费，且 active `content-source-interop.lock` 的 `emotion` revision `2bb332b7` 仍以该边界验收；公开插件/工具合同是 `tools.v1`。这些消费者尚未迁移，因此该 leaf 不能按名称相似或局部无调用就删除。
+- MC01：`d59c2b74` 验证 programmatic Session 的摘要绑定、retry recovery 和同 ID 重试；Session 原文正常进入 Message 日志，默认学习由 Session admission 属性排除。没有增加第二份正文日志或改变普通 Session 资格。
+- G5：`64b957ab` 的实际 soak 报告为 `docker/debug/reports/programmatic-control/20260907-152015-03c005d2/gate.json`。结果为 90 complete、10 pause、10 provider failure、10 reconnect、110 unique Inputs；wire/raw 220 条 Message，seq `0..219`，wire/raw ID 一致，Turn projection 无 open Turn；11 个资源采样 RSS `+29160 KiB`、FD `+0`、threads `+1`，PC-15 cleanup 通过。G5 只证明 probe 范围，不替代整栈正式切换 Gate。
+- Web 边界：当前链路由 `session.follow`、`messages.appended` 和 `reply.status` 提供；持久消息按 seq 追赶，回复状态是当前 generation 的窄只读活动。旧 `message.final` 不属于当前 Web API 合同。
+- 基线证据：`18675fe8` 上的完整 Python 回归为 `1645 passed, 6 skipped`，Web `77 tests`、类型检查和 isolated build 通过。它们绑定旧精确基线，不能冒充 `d43f463f` 或后续 clean head 的最终结果。public 27 latest186 报告属于 dirty 的旧 Core cleanup Gate baseline，记录 sourceDigest `746be2ce…`；clean `c9dff019` 计算为 `af0c9b15…`，因候选计划含未提交删除路径和 index stage 而不匹配，不能记作 exact-head pass。`c9dff019` 已通过 Terra Review（`/tmp/message-cleanup-leaf-terra-review.txt`）并由 `cfaf2591` 集成，Root clean head 的最终 Gate 待运行。
+- 持久化与外部效果：本记录和本轮文档修改没有写入正式 workspace、数据库、Android、外部插件源码或远端。Message 接纳 ACK、回复完成、Delivery receipt、完整 frame drain、restart claim 和 supervisor commit 继续分别由各 owner 结算。
+- 恢复点：源代码按 `d43f463f`/`18675fe8` 回退；本轮文档修改前备份为 `/tmp/akasic-agent-g5-docs-before-d43f463f-20260907/`，G5 probe 原始备份仍为 `/tmp/akasic-agent-g5-programmatic_control_probe-before-g5-20260907.py`。本条目提交后可用单提交 revert 回退。

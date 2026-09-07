@@ -1,11 +1,12 @@
 # Akashic v4：消息日志与可组合的 Agent 链路
 
-- 状态：设计已批准（2026-09-05 用户确认）；按 stacked PR 实施；本文件包含线上插件功能复核，生产实现尚未切换。
+- 状态：设计已批准（2026-09-05 用户确认）；按 stacked PR 实施。新 MessageLog 的完整启动验收已在当前 Core 候选中开始，正式 workspace、客户端配套和正式切换仍未完成。
 - 修订日期：2026-09-05。
 - 源码与原提案基线：`51f1467456881e7302abf76a931e9dfe698fef6c`。
 - DSH 参考基线：`49a606bc5b5934603f22a26957a07dc799ab0291`。
 - 实施基线：`6a15444009c807994d33691e0b756167880fad5d`，worktree `message-plugins-stack`。实施按第 16 节分层；当前已实现边界见第 18 节，业务全量切换尚未完成。
 - 已批准执行原则：回复业务由 100% 非特权插件组合；非灰度、非 shadow；可删除经核实不必要或冗余的功能，但逐项记录依据、影响、承接职责、验证与恢复点。开发可分批，正式运行采用完整新链路。
+- 当前证据边界：Root `18675fe8` 已包含 FrameBook、restart 与 Message 路由实现；`eabab9f4` 验证 restart claim 的断线归属，`d59c2b74` 验证 MC01 programmatic context 的摘要绑定与重试恢复，`64b957ab` 是 G5 programmatic Message soak。Core cleanup leaf `c9dff019` 已通过 Terra Review（`/tmp/message-cleanup-leaf-terra-review.txt`），并由 Root clean head `cfaf2591` 正常集成。
 - 前版概念复核：独立 reviewer `/root/design_concept_review`，调用请求配置 `gpt-5.6-terra / xhigh`，2026-09-05 设计层 PASS；首轮九项 must-fix 已闭合。被审正文 SHA256 为 `64c30bf568ff66fc50a79c73e73cac9af156bacf73dfb5c2da9fa612ac3b03a4`。本次进一步明确 Core/普通插件边界与切换方式，前版结论不自动覆盖本次修订。
 - 上次概念复核（不覆盖本次功能合同修订）：同一独立 reviewer 于 2026-09-05 对正文 SHA256 `2f06db73a347dd8f08b6292d6ae07caea8cc01cca5036cb828010140428967ff`（不含本条记录）给出设计层 PASS，无新增 P0/P1；可以开始实施准备，第 14.3 节合同与正式迁移/恢复验收仍未完成。
 
@@ -598,10 +599,13 @@ Turn projection / Akasha 只读消费 MessageLog
 - `Message` 的 `message_id + seq`、SessionDB schema/yoyo lineage、附件与 plugin-data 恢复材料继续由原 owner 管理；删除代码不减少既有消息、学习、附件或插件数据。
 - `plugins.tools` 的 `TOOLS`、`CallSource`、`MessageReply`、`Result`、`BoundTool` 和 `plugins.delivery` 的 `DELIVERY` / `DELIVERY_READ` 是当前插件边界。manager/snapshot 中仍可见的 `TOOL_CATALOG`、旧 delivery 导出与兼容类型只表示保留内部图，不能写成新的插件入口。
 - `RUNTIME_STARTING`、`RUNTIME_STARTED`、`RUNTIME_STOPPING` 和 `SNAPSHOT_SEALING` 仍是当前生命周期信号；旧 `AFTER_TURN_COMMITTED`、旧 retrieval/observe 名称和测试残留不证明新 Core 会发布这些事实。新来源变化使用来源插件自己的 typed signal。
+- `agent/control/frame_book.py` 是 control frame 的唯一 owner：它按 `(session_id, input_id, connection_id)` 保存短命 route，依据已提交 Message 页识别 complete Output，并等待该 Output 的实际 writer drain。`FrameClaim` 只为一个精确 `CallRef` 延长这段 drain；它不是新的 Turn、Delivery 或 supervisor 状态。
+- programmatic 来源的 ACK 只表示 Input/Control 已由 Message writer 提交；`programmatic/message/result` 从同一日志快照读取 `complete`、`pause`、`failure` 或 `open`。回复完成、渠道送达、完整 frame drain 和 restart claim 是四个独立事实。
 - Mobile 已移除旧的 stop/interrupt 注入和 `_Bus` 生产假设；生产 `MobileRealtimeChannel` 通过真实 MessageCatalog、MessageBus recoverer 与 `ChannelRuntimePorts` 接线。旧测试辅助对象不构成新的运行时 API。
+- Web 新实时链路只由 Message log 的 `session.follow`、`messages.appended` 和 `reply.status` 提供。`messages.appended` 是可按 seq 重读的持久事实，`reply.status` 是当前 generation 的短命只读活动；旧 `message.final` 不属于当前 Web API 合同。
 - 旧 Memory2/Memory plugin 组合入口和已删除的 runtime helper 不再进入当前插件路由；`plugins/compaction`、`plugins/markdown_memory` 和 `plugins/akasha` 的 owner 与持久化合同继续保留。
 
-这次清理不宣称正式 workspace、Android 原生配套、外部插件源码迁移、历史摘要账转换、旧未确认外部效果恢复或完整 MessageLog 启动切换已经完成；这些仍由本节前述退出条件和 `NOW.md` 接手。receipt API 未合入前也不写入已实现公共合同。清理前恢复点见 [测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md) 的 2026-09-07 条目。
+这次清理不宣称正式 workspace、Android 原生配套、外部插件源码迁移、旧 workspace 转换、历史摘要账转换、旧未确认外部效果恢复或完整 MessageLog 正式切换已经完成。当前候选已进入完整启动验收，最终 Gate 和正式切换仍由 `NOW.md` 接手；receipt API 只能按当前真实实现记录。清理前恢复点见 [测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md) 的 2026-09-07 条目。
 
 ## 11. 验收：证明变化互不牵连
 
@@ -870,6 +874,18 @@ Turn 成员、消费次数、引用、特征、权重与恢复差异报告
 - 迁移覆盖生产副本、干净空库、已知历史 schema、重复执行与中途进程退出。检查正文、ID、seq、附件、embedding、旧学习状态与迁移 receipt；未知 schema 或未决副作用明确阻止切换，不忽略或重新执行。
 - 端到端覆盖接纳 ACK、预览与持久消息同步、命令、ReAct、内容、附件、工具授权/恢复、Delivery、Wake ACK、Scheduler/Subagent、Akasha/compaction 与插件卸载/热更。组合测试使用真实存储和普通插件；受控 Model/Tool/渠道用于确定性故障注入，实际 provider 验收单独标明。
 - 每张 PR 提交前由 `gpt-5.6-terra`、`xhigh` 独立审查相邻 diff；最终再审累计行为。测试通过、独立审查、历史重放和生产验证分别报告，不互相替代。
+
+### 18.0 第 10 层当前候选接管与 Gate 状态（2026-09-07）
+
+当前验收已经从局部 fixture 进入新的 MessageLog 启动链，但证据仍按 owner 分开记录：
+
+- FrameBook 随 Root `18675fe8` 合入；`eabab9f4` 的重启回归证明控制连接断开时，原 route/claim 由 FrameBook 释放，断线不能偷走另一连接的最终回复或 restart claim。`RestartWatcher` 只消费成功 ToolResult 对应的 request，等待 Turn complete；programmatic 路径等待 FrameBook 的完整 Output frame drain，普通来源等待 `FinalOutputDelivery`，最后才调用 `RestartGate.commit`。`RestartGate` 只负责关闭新 Root 接纳、等待外部 permit 排空并向 supervisor 私有 lifecycle pipe 提交 opaque request ID。
+- MC01 的 programmatic 验收提交为 `d59c2b74`：独立 `programmatic:` Session 保存原始 Input/Output，但由 Session 属性排除默认学习；摘要绑定、retry identity 和同 ID ACK 重放沿 Message 日志核对。它不改变普通 Session 的学习资格，也不创建第二份正文日志。
+- G5 的最终提交为 `64b957ab`，实际报告为 `docker/debug/reports/programmatic-control/20260907-152015-03c005d2/gate.json`：90 complete、10 pause、10 provider failure、10 reconnect，110 unique Inputs；wire/raw 共 220 条 Message，seq `0..219`，projection 没有 open Turn；11 次资源采样的 RSS 增量为 29160 KiB、FD 增量为 0、线程增量为 1，PC-15 cleanup 通过。该报告是 G5 probe 的实际证据，不替代最终整栈 Gate。
+- 在 `18675fe8` 基线记录的完整 Python 回归为 `1645 passed, 6 skipped`；Web 为 `77 tests`、类型检查和 isolated build 通过。这些数字绑定该精确基线，不能冒充 `d43f463f` 或后续 clean head 的最终结果。
+- public 27 的 latest186 相关报告属于旧 Core cleanup Gate baseline：报告 sourceDigest 为 `746be2ce…`，clean `c9dff019` 的 source digest 为 `af0c9b15…`。差异来自预提交候选仍有未提交删除路径和 index stage，不能记作 exact-head pass；`c9dff019` 已由 `cfaf2591` 集成，Root clean head 的最终 Gate 待运行。
+
+验收顺序固定为：接纳 ACK → 日志投影得到回复完成 → 必要的 Delivery receipt → 同一连接的完整 frame drain → restart claim 消费 → Root permit drain → supervisor commit。任何前一步未成立都不能由后一步的状态代替。
 
 
 ### 18.1 第 04 层可观察边界
