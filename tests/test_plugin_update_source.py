@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import AsyncExitStack, closing
 import json
+from collections.abc import Mapping
 
 import pytest
 
@@ -67,9 +68,12 @@ async def apply(ctx, config):
                 return {"approved": True}
             result = await tools.execution(authorize).execute_call(reply)
             assert result.outcome == "success"
+            assert isinstance(result.parts[0].value, str)
             receipt = json.loads(result.parts[0].value)
-            identity = receipt["update_id"]
-            assert receipt["phase"] == "armed"
+            assert isinstance(receipt, Mapping)
+            identity = receipt.get("update_id")
+            assert isinstance(identity, str)
+            assert receipt.get("phase") == "armed"
         async def restart():
             nonlocal log, host, reader
             await host.terminate_all()

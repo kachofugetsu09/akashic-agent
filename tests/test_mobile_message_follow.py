@@ -3,6 +3,7 @@ import base64
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -226,8 +227,14 @@ def test_preview_budget_keeps_all_activity_ids_and_original_values():
     before = message_json(payload)
     result = bounded_reply_status(payload)
     assert len(message_json(result)) <= 240 * 1024 and message_json(payload) == before
-    assert [item['handle'] for item in result['items']] == [str(i) for i in range(8)]
-    assert all(item['preview']['truncated'] for item in result['items'])
+    items = result['items']
+    assert isinstance(items, list)
+    assert all(isinstance(item, dict) for item in items)
+    rows = cast(list[dict[str, object]], items)
+    assert [item['handle'] for item in rows] == [str(i) for i in range(8)]
+    for item in rows:
+        preview = item.get('preview')
+        assert isinstance(preview, dict) and preview.get('truncated') is True
 
 
 def test_replacement_closes_only_old_connection_and_stop_rejects_new_sessions(gateway):

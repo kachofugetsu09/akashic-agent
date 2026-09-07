@@ -1,5 +1,6 @@
 """普通插件使用公开更新能力；候选不能把验证变成另一次安装。"""
 import asyncio
+from typing import cast
 
 import pytest
 
@@ -51,7 +52,8 @@ async def test_ordinary_update_api_checks_scope_and_isolates_validation(tmp_path
             before = pointers.read_bytes()
             for invalid in (None, False, 0, "", " padded "):
                 with pytest.raises(ValueError, match="更新 ID"):
-                    await api.install(ctx, invalid, source=str(source), marketplace="lab")
+                    # 这些值故意越过静态类型，验证 API 的运行时 ID 校验。
+                    await api.install(ctx, cast(str, invalid), source=str(source), marketplace="lab")
                 assert host.ready_candidate is None and pointers.read_bytes() == before
             status = await api.install(ctx, "request", source=str(source), marketplace="lab")
             assert status.phase == "armed" and not status.publishing

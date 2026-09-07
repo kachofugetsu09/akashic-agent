@@ -51,6 +51,10 @@ class Controller:
         self.effects.append(("stop", lease.generation_id))
         return WorkloadStopReceipt(lease, True, True)
 
+    async def cleanup_candidates(self, workspace_id: str) -> tuple[WorkloadStopReceipt, ...]:
+        _ = workspace_id
+        return ()
+
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def workload(tmp_path):

@@ -4,6 +4,7 @@ import os
 import json
 import subprocess
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -140,9 +141,16 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
     )
 
     store = PythonEnvironments(tmp_path / "workspace")
-    ref = json.loads((result.installed_path / ENVIRONMENT_FILE).read_text())["mcp"]
+    environment_data = json.loads((result.installed_path / ENVIRONMENT_FILE).read_text())
+    assert isinstance(environment_data, Mapping)
+    ref = environment_data.get("mcp")
+    assert isinstance(ref, str)
     record = store.archive.read_descriptor(ref)
-    code = store.archive.open(record["input"]["code"])
+    input_data = record.get("input")
+    assert isinstance(input_data, Mapping)
+    code_ref = input_data.get("code")
+    assert isinstance(code_ref, str)
+    code = store.archive.open(code_ref)
     manifest = load_static_plugin_manifest(code)
     environment = store.open(ref, code, manifest.python[0])
     command = materialize_static_command(

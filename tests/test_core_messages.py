@@ -2,6 +2,7 @@
 import shutil
 from contextlib import closing
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -131,7 +132,7 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
             assert catalog.default_embedding_model_id is None
             health = [item for item in snapshot.composition_root.receipt().health if item.owner == "akasha"]
             assert len(health) == 1 and not health[0].required and not health[0].healthy
-            assert "embedding" in health[0].reason
+            assert health[0].reason is not None and "embedding" in health[0].reason
         assert not (workspace / "memory/akasha.db").exists()
     finally:
         await core.bus.aclose()
@@ -218,13 +219,28 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 from agent.plugins.archive import PluginArchive
                 tools = ctx.require(TOOLS)
                 binding = tools.bind("recall_memory", ctx.require(BINDINGS))
-                saved = ctx.require(BINDINGS).describe(binding, TOOLS)["state"]["embedding_binding"]
+                binding_description = ctx.require(BINDINGS).describe(binding, TOOLS)
+                assert isinstance(binding_description, Mapping)
+                binding_state = binding_description.get("state")
+                assert isinstance(binding_state, Mapping)
+                saved = binding_state.get("embedding_binding")
+                assert isinstance(saved, str)
                 descriptor = core.message_log.read_binding(saved)
                 archive = PluginArchive(workspace / "runtime/plugin-archives")
-                components = archive.read_descriptor(descriptor["root_ref"])["components"]
+                assert isinstance(descriptor, Mapping)
+                root_ref = descriptor.get("root_ref")
+                assert isinstance(root_ref, str)
+                root_descriptor = archive.read_descriptor(root_ref)
+                components = root_descriptor.get("components")
+                assert isinstance(components, (list, tuple))
                 assert {archive.read_descriptor(ref)["plugin_id"] for ref in components} == {"models", "openai-compatible"}
                 outer = core.message_log.read_binding(binding)
-                outer_components = archive.read_descriptor(outer["root_ref"])["components"]
+                assert isinstance(outer, Mapping)
+                outer_root_ref = outer.get("root_ref")
+                assert isinstance(outer_root_ref, str)
+                outer_descriptor = archive.read_descriptor(outer_root_ref)
+                outer_components = outer_descriptor.get("components")
+                assert isinstance(outer_components, (list, tuple))
                 assert "openai-compatible" not in {archive.read_descriptor(ref)["plugin_id"] for ref in outer_components}
                 shutil.rmtree(source / "openai_compatible")
                 shutil.rmtree(source / "models")
@@ -236,7 +252,9 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
                 status = next(part.value for part in result.context if part.kind == "akasha.status")
-                assert status["available"] is False and "重建" in status["reason"]
+                assert isinstance(status, Mapping)
+                reason = status.get("reason")
+                assert status.get("available") is False and isinstance(reason, str) and "重建" in reason
                 assert logical_state_sha256(graph) == before and len(calls) == sent
                 recalled = await tools.execution(authorize).execute("old-model-after-default-switch", binding, {"query": "saved memory"})
                 assert recalled.outcome == "success" and calls[-1]["model"] == "first"

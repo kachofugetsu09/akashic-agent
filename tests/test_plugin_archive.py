@@ -1,7 +1,10 @@
 import os
+import operator
 import shutil
+from collections.abc import MutableMapping
 from datetime import date, datetime, time, timezone
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -117,11 +120,12 @@ def test_descriptor_freezes_toml_and_opaque_credentials(tmp_path):
     read = archive.read_descriptor(identity)
     assert decode_config(read["config"]) == config
     config["day"] = date(2026, 9, 6)
-    assert decode_config(archive.read_descriptor(identity)["config"])["day"] == date(
-        2026, 9, 5
-    )
+    decoded = decode_config(archive.read_descriptor(identity)["config"])
+    assert isinstance(decoded, dict)
+    assert decoded["day"] == date(2026, 9, 5)
     with pytest.raises(TypeError):
-        read["config"] = {}
+        # 故意尝试修改只读 descriptor，验证冻结边界。
+        operator.setitem(cast(MutableMapping[str, object], read), "config", {})
     target = archive.path / f"{identity}.json"
     target.write_text("{}")
     with pytest.raises(RuntimeError, match="损坏"):

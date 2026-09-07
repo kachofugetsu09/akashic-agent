@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from contextlib import aclosing, closing, suppress
 
 import pytest
@@ -16,6 +17,19 @@ from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Input, Control, Output
 
 
+def page_data(value: object) -> Mapping[str, object]:
+    """Narrow one follow frame before inspecting its JSON fields."""
+    assert isinstance(value, Mapping)
+    return value
+
+
+def page_items(page: Mapping[str, object]) -> list[Mapping[str, object]]:
+    items = page.get("items")
+    assert isinstance(items, list)
+    assert all(isinstance(item, Mapping) for item in items)
+    return items
+
+
 @pytest.mark.asyncio
 async def test_follow_pages_fixed_prefix_then_reconnect_from_last_seq(tmp_path):
     with closing(MessageLog(tmp_path / 'sessions.db')) as log:
@@ -25,19 +39,19 @@ async def test_follow_pages_fixed_prefix_then_reconnect_from_last_seq(tmp_path):
             writer.append(str(i), Input((ContentPart('text', str(i)),)))
         before = log.reader('s').snapshot()
         async with aclosing(follow_messages(log.reader('s'), after_seq=2)) as stream:
-            first = await anext(stream)
+            first = page_data(await anext(stream))
             writer.append('late', Control('pause', 105, 'reason'))
-            second, third, fourth = await anext(stream), await anext(stream), await anext(stream)
+            second, third, fourth = (page_data(await anext(stream)), page_data(await anext(stream)), page_data(await anext(stream)))
             assert [p['through_seq'] for p in (first, second, third, fourth)] == [105, 105, 105, 106]
-            rows = [row for page in (first, second, third, fourth) for row in page['items']]
+            rows = [row for page in (first, second, third, fourth) for row in page_items(page)]
             assert rows == message_rows(log.reader('s').read_page(after_seq=2, limit=200))
             assert [p['next_after_seq'] for p in (first, second, third, fourth)] == [52, 102, 105, 106]
         assert log.reader('s').snapshot()[:-1] == before
         async with aclosing(follow_messages(log.reader('s'), after_seq=106)) as stream:
             pending = asyncio.create_task(anext(stream))
             writer.append('reconnected', Input(()))
-            page = await asyncio.wait_for(pending, 3)
-            assert [row['id'] for row in page['items']] == ['reconnected']
+            page = page_data(await asyncio.wait_for(pending, 3))
+            assert [row['id'] for row in page_items(page)] == ['reconnected']
         assert not log._listeners
 
 
@@ -68,16 +82,19 @@ async def test_status_switch_and_absence_never_pin_old_generation():
     await asyncio.wait_for(entered.wait(), 3)
     try:
         async with aclosing(RuntimeReplyStatus(store).follow('s')) as stream:
-            frame = await anext(stream)
-            assert frame['items'][0]['preview']['text'] == 'old preview'
+            frame = page_data(await anext(stream))
+            items = page_items(frame)
+            preview = items[0].get('preview')
+            assert isinstance(preview, Mapping)
+            assert preview.get('text') == 'old preview'
             assert roots[0][1].lease_count == 0
             await store.commit(store.begin_publish(roots[1][1]))
-            frame = await asyncio.wait_for(anext(stream), 3)
+            frame = page_data(await asyncio.wait_for(anext(stream), 3))
             assert frame['snapshot_id'] == roots[1][1].snapshot_id and frame['available'] and frame['items'] == []
             await asyncio.wait_for(store.wait_for_snapshot_drained(roots[0][1]), 3)
             # 新 stable 即使没有 reply 也要清旧草稿，不能冒充可回复的空闲状态。
             await store.commit(store.begin_publish(roots[2][1]))
-            frame = await asyncio.wait_for(anext(stream), 3)
+            frame = page_data(await asyncio.wait_for(anext(stream), 3))
             assert not frame['available'] and frame['items'] == []
         assert all(snapshot.lease_count == 0 for _, snapshot in roots)
     finally:

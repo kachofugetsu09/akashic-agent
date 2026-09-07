@@ -10,6 +10,12 @@ from session.log import MessageConflict, MessageLog
 from session.message import ContentPart, Input
 
 
+def message_text(message):
+    value = message.body.parts[0].value
+    assert isinstance(value, str)
+    return value
+
+
 def test_message_vectors_reuse_legacy_rows_and_never_overwrite_fixed_facts(tmp_path):
     path = tmp_path / "sessions.db"
     log = MessageLog(path)
@@ -18,7 +24,7 @@ def test_message_vectors_reuse_legacy_rows_and_never_overwrite_fixed_facts(tmp_p
         writer = log.writer("s", author="user", source="chat", body_types=(Input,), content={"text": lambda part: ContentReferences()})
         message = writer.append("u", Input((ContentPart("text", "actual"),)))
         store.upsert(message_id="u", content="actual", model="frozen-model", embedding=[0.25, 0.5])
-        records = MessageEmbeddings(log).bind(lambda m: m.body.parts[0].value)
+        records = MessageEmbeddings(log).bind(message_text)
         assert records.read(message, model="frozen-model", dimension=2) == (0.25, 0.5)
         records.save(message, model="frozen-model", embedding=[0.25, 0.5])
         with pytest.raises(MessageConflict):
