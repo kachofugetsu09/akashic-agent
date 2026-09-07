@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import array
+import fcntl
 import hashlib
 import json
 import os
@@ -13,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
 import uuid
@@ -932,6 +935,34 @@ def _message_text(item: object) -> str:
     )
 
 
+def _execution_payload(item: object) -> dict[str, Any]:
+    """Decode one standard shell ToolResult envelope."""
+
+    try:
+        payload = json.loads(_message_text(item))
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise GateFailure(f"shell ToolResult payload 不是 JSON：{item!r}") from error
+    if not isinstance(payload, dict):
+        raise GateFailure(f"shell ToolResult payload 不是 object：{item!r}")
+    return payload
+
+
+def _execution_last_json(item: object) -> dict[str, Any]:
+    """Decode the last JSON line emitted by one standard shell execution."""
+
+    payload = _execution_payload(item)
+    output = payload.get("output")
+    if not isinstance(output, str):
+        raise GateFailure(f"shell ToolResult 缺少 output：{item!r}")
+    try:
+        value = json.loads(output.strip().splitlines()[-1])
+    except (IndexError, TypeError, ValueError) as error:
+        raise GateFailure(f"shell ToolResult output 不是 JSON：{item!r}") from error
+    if not isinstance(value, dict):
+        raise GateFailure(f"shell ToolResult output JSON 不是 object：{item!r}")
+    return value
+
+
 def _message_items(page: object, kind: str) -> list[dict[str, Any]]:
     """Return wire rows of one body kind from a message page."""
 
@@ -969,16 +1000,12 @@ def _wait_for_message_items(
     )
 
 
-def _pid_is_alive(pid: int) -> bool:
-    """Check a process identity without treating a missing /proc entry as alive."""
+def _socket_pending_bytes(connection: socket.socket) -> int:
+    """Read queued bytes without consuming the slow subscriber's socket."""
 
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    pending = array.array("I", [0])
+    fcntl.ioctl(connection.fileno(), termios.FIONREAD, pending, True)
+    return int(pending[0])
 
 
 def _drain_socket_until_eof(
@@ -1907,14 +1934,44 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                             "name": "shell",
                             "arguments": {
                                 "command": (
-                                    "echo $$ > /sandbox/workspace/pc07-shell.pid; "
-                                    "ls -l /sandbox/workspace/pc07-shell.pid; "
-                                    "cat /sandbox/workspace/pc07-shell.pid; "
+                                    "pid_file=/sandbox/workspace/pc07-shell.pid; "
+                                    "start_file=/sandbox/workspace/pc07-shell.starttime; "
+                                    "printf '%s\\n' \"$$\" > \"$pid_file\"; "
+                                    "awk '{print $22}' /proc/$$/stat > \"$start_file\"; "
+                                    "printf '{\"pid\":%s,\"starttime\":%s}\\n' "
+                                    "\"$(cat \"$pid_file\")\" \"$(cat \"$start_file\")\"; "
                                     "exec sleep 300"
                                 ),
                                 "description": "PC07 long running cleanup probe",
                                 "yield_time_ms": 250,
                                 "timeout": 300,
+                            },
+                        }
+                    ],
+                },
+                {
+                    "mode": "complete",
+                    "tool_calls": [
+                        {
+                            "id": "call_pc07_shell_identity_before_pause",
+                            "name": "shell",
+                            "arguments": {
+                                "command": (
+                                    "pid=$(cat /sandbox/workspace/pc07-shell.pid); "
+                                    "expected=$(cat /sandbox/workspace/pc07-shell.starttime); "
+                                    "actual=$(awk '{print $22}' /proc/$pid/stat 2>/dev/null || true); "
+                                    "alive=false; status=42; "
+                                    "if kill -0 \"$pid\" 2>/dev/null && "
+                                    "[ -n \"$actual\" ] && [ \"$actual\" = \"$expected\" ]; then "
+                                    "alive=true; status=0; fi; "
+                                    "printf '{\"alive\":%s,\"pid\":%s,"
+                                    "\"expected_starttime\":%s,\"actual_starttime\":%s}\\n' "
+                                    "\"$alive\" \"$pid\" \"$expected\" "
+                                    "\"${actual:-null}\"; exit \"$status\""
+                                ),
+                                "description": "PC07 verify shell PID identity before pause",
+                                "yield_time_ms": 250,
+                                "timeout": 30,
                             },
                         }
                     ],
@@ -1926,7 +1983,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             pc07, "pc07-input", "pc07 start controllable shell"
         )
         pc07_page_with_tool, pc07_tool_rows = _wait_for_message_items(
-            first, pc07, "tool_result"
+            first, pc07, "tool_result", minimum=2
         )
         pc07_provider_count = len(
             _model_requests(_http_json("GET", f"{model_url}/control/requests"))
@@ -1934,63 +1991,86 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         _wait_barrier(model_url, pc07_pause_barrier)
         _release_barrier(model_url, pc07_pause_barrier)
         pc07_outputs_with_tool = _message_items(pc07_page_with_tool, "output")
-        pc07_tool_result = pc07_tool_rows[0]
+        pc07_tool_payloads = [
+            _execution_payload(item)
+            for item in pc07_tool_rows
+        ]
+        pc07_tool_result = next(
+            (
+                item
+                for item, payload in zip(pc07_tool_rows, pc07_tool_payloads)
+                if isinstance(payload, dict) and isinstance(payload.get("execution_id"), int)
+            ),
+            None,
+        )
+        pc07_pre_identity_result = next(
+            (
+                item
+                for item, payload in zip(pc07_tool_rows, pc07_tool_payloads)
+                if isinstance(payload, dict)
+                and isinstance(payload.get("output"), str)
+                and '"alive":true' in payload["output"].replace(" ", "")
+            ),
+            None,
+        )
+        if pc07_tool_result is None or pc07_pre_identity_result is None:
+            raise GateFailure(
+                f"PC07 shell identity ToolResult 缺失：{pc07_tool_rows!r}"
+            )
         pc07_tool_ref = pc07_tool_result.get("body", {}).get("call_ref", {})
         try:
-            pc07_tool_payload = json.loads(_message_text(pc07_tool_result))
+            pc07_tool_payload = _execution_payload(pc07_tool_result)
             pc07_execution_id = int(pc07_tool_payload["execution_id"])
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-            raise GateFailure(f"PC07 shell 未返回 execution_id：{pc07_tool_result!r}") from error
+            pc07_shell_identity = _execution_last_json(pc07_tool_result)
+            pc07_pre_identity = _execution_last_json(pc07_pre_identity_result)
+        except (KeyError, TypeError, ValueError) as error:
+            raise GateFailure(
+                f"PC07 shell 未返回可核验 PID identity：{pc07_tool_rows!r}"
+            ) from error
+        if not (
+            isinstance(pc07_shell_identity, dict)
+            and isinstance(pc07_pre_identity, dict)
+            and pc07_shell_identity.get("pid") == pc07_pre_identity.get("pid")
+            and pc07_shell_identity.get("starttime")
+            == pc07_pre_identity.get("expected_starttime")
+            and pc07_pre_identity.get("expected_starttime")
+            == pc07_pre_identity.get("actual_starttime")
+            and pc07_pre_identity.get("alive") is True
+        ):
+            raise GateFailure(
+                f"PC07 pause 前 shell identity 未确认存活："
+                f"{pc07_shell_identity!r} / {pc07_pre_identity!r}"
+            )
         pc07_tool_call: dict[str, Any] | None = None
         for output in pc07_outputs_with_tool:
+            if output.get("id") != pc07_tool_ref.get("message_id"):
+                continue
             parts = output.get("body", {}).get("parts", [])
             if not isinstance(parts, list):
                 continue
-            for part_index, part in enumerate(parts):
-                if (
-                    isinstance(part, dict)
-                    and part.get("kind") == "tool_call"
-                    and part.get("name") == "shell"
-                ):
-                    pc07_tool_call = {
-                        "message_id": output.get("id"),
-                        "part_index": part_index,
-                        "part": part,
-                    }
-                    break
-            if pc07_tool_call is not None:
+            part_index = pc07_tool_ref.get("part_index")
+            if (
+                type(part_index) is int
+                and 0 <= part_index < len(parts)
+                and isinstance(parts[part_index], dict)
+                and parts[part_index].get("kind") == "tool_call"
+                and parts[part_index].get("name") == "shell"
+            ):
+                pc07_tool_call = {
+                    "message_id": output.get("id"),
+                    "part_index": part_index,
+                    "part": parts[part_index],
+                }
                 break
-        pid_path = Path("/sandbox/workspace/pc07-shell.pid")
-        pid_deadline = time.monotonic() + SCENARIO_DEADLINE_S
-        pc07_pid: int | None = None
-        while time.monotonic() < pid_deadline:
-            try:
-                pc07_pid = int(pid_path.read_text(encoding="utf-8").strip())
-            except (FileNotFoundError, ValueError):
-                threading.Event().wait(0.05)
-                continue
-            if pc07_pid > 0:
-                break
-            pc07_pid = None
-            threading.Event().wait(0.05)
-        if pc07_pid is None:
-            raise GateFailure("PC07 shell 没有留下可控 PID")
+        if pc07_tool_call is None:
+            raise GateFailure(f"PC07 shell ToolCall 缺失：{pc07_tool_ref!r}")
 
-        # 第二次 provider 调用故意等待客户端断开，使 pause 发生在工具回执之后。
+        # 后续 provider 调用故意等待客户端断开，使 pause 发生在工具回执之后。
         pc07_pause_ack = first.request_result(
             "programmatic/message/pause",
             {"session_id": pc07, "message_id": "pc07-pause"},
         )
         pc07_paused_result = first.programmatic_result(pc07, "pc07-input")
-        pc07_pid_gone = False
-        pid_gone_deadline = time.monotonic() + SCENARIO_DEADLINE_S
-        while time.monotonic() < pid_gone_deadline:
-            if not _pid_is_alive(pc07_pid):
-                pc07_pid_gone = True
-                break
-            threading.Event().wait(0.05)
-        if not pc07_pid_gone:
-            raise GateFailure(f"PC07 pause 后 shell PID 仍存活：{pc07_pid}")
         pc07_cancel_deadline = time.monotonic() + SCENARIO_DEADLINE_S
         while time.monotonic() < pc07_cancel_deadline:
             pc07_after_pause_requests = _model_requests(
@@ -2021,7 +2101,29 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                                 "execution_id": pc07_execution_id,
                                 "yield_time_ms": 250,
                             },
-                        }
+                        },
+                        {
+                            "id": "call_pc07_shell_identity_after_pause",
+                            "name": "shell",
+                            "arguments": {
+                                "command": (
+                                    "pid=$(cat /sandbox/workspace/pc07-shell.pid); "
+                                    "expected=$(cat /sandbox/workspace/pc07-shell.starttime); "
+                                    "actual=$(awk '{print $22}' /proc/$pid/stat 2>/dev/null || true); "
+                                    "alive=false; status=42; "
+                                    "if kill -0 \"$pid\" 2>/dev/null && "
+                                    "[ -n \"$actual\" ] && [ \"$actual\" = \"$expected\" ]; then "
+                                    "alive=true; status=0; fi; "
+                                    "printf '{\"alive\":%s,\"pid\":%s,"
+                                    "\"expected_starttime\":%s,\"actual_starttime\":%s}\\n' "
+                                    "\"$alive\" \"$pid\" \"$expected\" "
+                                    "\"${actual:-null}\"; exit \"$status\""
+                                ),
+                                "description": "PC07 verify shell PID identity after pause",
+                                "yield_time_ms": 250,
+                                "timeout": 30,
+                            },
+                        },
                     ],
                 },
                 {
@@ -2035,10 +2137,41 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             pc07, "pc07-new-input", "pc07 new input after resume"
         )
         _wait_barrier(model_url, "pc07-new-input")
+        pc07_page_before_release = first.read_messages(pc07)
+        pc07_result_before_release = first.programmatic_result(pc07, "pc07-input")
         pc07_stale_pause_ack = first.request_result(
             "programmatic/message/pause",
             {"session_id": pc07, "message_id": "pc07-pause"},
         )
+        pc07_pre_release_tool_results = _message_items(
+            pc07_page_before_release, "tool_result"
+        )
+        pc07_post_identity_result: dict[str, Any] | None = None
+        for item in pc07_pre_release_tool_results:
+            try:
+                identity = _execution_last_json(item)
+            except GateFailure:
+                continue
+            if identity.get("alive") is False:
+                pc07_post_identity_result = item
+                break
+        pc07_write_stdin_result = next(
+            (
+                item
+                for item in pc07_pre_release_tool_results
+                if "未知 execution_id" in _message_text(item)
+            ),
+            None,
+        )
+        try:
+            if pc07_post_identity_result is None:
+                raise GateFailure("PC07 pause 后 shell identity ToolResult 缺失")
+            pc07_post_identity = _execution_last_json(pc07_post_identity_result)
+        except (GateFailure, KeyError, TypeError, ValueError) as error:
+            raise GateFailure(
+                f"PC07 pause 后 shell identity 未返回："
+                f"{pc07_pre_release_tool_results!r}"
+            ) from error
         _release_barrier(model_url, "pc07-new-input")
         pc07_result = first.programmatic_result(pc07, "pc07-input")
         pc07_new_result = _wait_programmatic_result(first, pc07, "pc07-new-input")
@@ -2047,16 +2180,32 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         pc07_inputs = _message_items(pc07_page, "input")
         pc07_outputs = _message_items(pc07_page, "output")
         pc07_tool_results = _message_items(pc07_page, "tool_result")
-        pc07_cleanup_tool_result = next(
-            (
-                item
-                for item in pc07_tool_results
-                if item.get("body", {}).get("call_ref") != pc07_tool_ref
-            ),
-            None,
+        pc07_cleanup_tool_result = pc07_write_stdin_result
+        pc07_post_identity_ref = (
+            pc07_post_identity_result.get("body", {}).get("call_ref", {})
+            if pc07_post_identity_result is not None
+            else {}
+        )
+        pc07_post_identity_call = any(
+            output.get("id") == pc07_post_identity_ref.get("message_id")
+            and isinstance(output.get("body", {}).get("parts"), list)
+            and type(pc07_post_identity_ref.get("part_index")) is int
+            and 0 <= pc07_post_identity_ref["part_index"]
+            < len(output["body"]["parts"])
+            and isinstance(output["body"]["parts"][pc07_post_identity_ref["part_index"]], dict)
+            and output["body"]["parts"][pc07_post_identity_ref["part_index"]].get("kind")
+            == "tool_call"
+            and output["body"]["parts"][pc07_post_identity_ref["part_index"]].get("name")
+            == "shell"
+            for output in pc07_outputs
         )
         pc07_shell_gone = (
-            pc07_pid_gone
+            pc07_post_identity.get("pid") == pc07_shell_identity.get("pid")
+            and pc07_post_identity.get("expected_starttime")
+            == pc07_shell_identity.get("starttime")
+            and pc07_post_identity.get("actual_starttime") is None
+            and pc07_post_identity.get("alive") is False
+            and pc07_post_identity_call
             and pc07_cleanup_tool_result is not None
             and pc07_cleanup_tool_result.get("body", {}).get("outcome") == "error"
             and "未知 execution_id"
@@ -2070,11 +2219,13 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 "part_index": pc07_tool_call.get("part_index"),
             }
             and pc07_tool_result.get("body", {}).get("outcome") == "success"
-            and pc07_pause_ack.get("seq") == 3
+            and pc07_pause_ack.get("seq") == pc07_pre_identity_result.get("seq", -1) + 1
             and pc07_paused_result.get("status") == "pause"
             # Once a newer Input is appended, the old Input is open again;
             # the durable result before that append remains the pause proof.
-            and pc07_result.get("status") == "open"
+            and pc07_result_before_release.get("status") == "open"
+            and pc07_page_before_release.get("items") is not None
+            and pc07_post_identity_result is not None
             and pc07_shell_gone
             and pc07_new_ack.get("seq") > pc07_pause_ack.get("seq", -1)
             # Repeating the same pause identity is idempotent: it returns the
@@ -2085,8 +2236,9 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             == ["pc07-input", "pc07-new-input"]
             and [item.get("body", {}).get("action") for item in pc07_controls]
             == ["pause"]
-            and pc07_controls[0].get("body", {}).get("through_seq") == 2
-            and len(pc07_tool_results) == 2
+            and pc07_controls[0].get("body", {}).get("through_seq")
+            == pc07_pre_identity_result.get("seq")
+            and len(pc07_tool_results) == 4
             and pc07_cleanup_tool_result is not None
             and pc07_cleanup_tool_result.get("body", {}).get("call_ref", {}).get(
                 "part_index"
@@ -2117,13 +2269,16 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                     "newInputAck": pc07_new_ack,
                     "stalePauseAck": pc07_stale_pause_ack,
                     "pausedResult": pc07_paused_result,
+                    "resultBeforeNewInputRelease": pc07_result_before_release,
                     "result": pc07_result,
                     "newInputResult": pc07_new_result,
                     "controls": pc07_controls,
                     "toolCall": pc07_tool_call,
                     "toolResult": pc07_tool_result,
-                    "shellPid": pc07_pid,
-                    "shellPidGone": pc07_pid_gone,
+                    "prePauseShellIdentity": pc07_pre_identity,
+                    "postPauseShellIdentity": pc07_post_identity,
+                    "shellPid": pc07_shell_identity.get("pid"),
+                    "shellPidGone": pc07_post_identity.get("actual_starttime") is None,
                     "shellGone": pc07_shell_gone,
                     "messagePage": pc07_page,
                 },
@@ -2195,6 +2350,19 @@ def _inside_failure_matrix(report_dir: Path) -> int:
         producer_sent = 0
         burst_ready = threading.Event()
         continue_tail = threading.Event()
+        producer_stop = threading.Event()
+        producer_done = threading.Event()
+        producer_client: JsonRpcSocketClient | None = None
+        producer: threading.Thread | None = None
+        pressure_pending_bytes = 0
+        pressure_min_pending_bytes = 0
+        pressure_observed_at: float | None = None
+        healthy_started_at: float | None = None
+        healthy_completed_at: float | None = None
+        producer_tail_released_at: float | None = None
+        slow_eof_at: float | None = None
+        slow_closed = False
+        drained_bytes = 0
 
         def produce_slow_tail() -> None:
             """Append a bounded tail and expose all producer failures to the gate."""
@@ -2202,13 +2370,16 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             nonlocal producer_sent
             try:
                 for index in range(producer_count):
-                    first.send_programmatic(
+                    if producer_stop.is_set():
+                        return
+                    assert producer_client is not None
+                    producer_client.send_programmatic(
                         pc09,
                         f"pc09-input-{index}",
                         f"pc09 slow input {index}",
                     )
                     result = _wait_programmatic_result(
-                        first, pc09, f"pc09-input-{index}"
+                        producer_client, pc09, f"pc09-input-{index}"
                     )
                     if result.get("status") != "complete":
                         raise GateFailure(
@@ -2217,59 +2388,119 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                     producer_sent = index + 1
                     if producer_sent == burst_count:
                         burst_ready.set()
-                        if not continue_tail.wait(SCENARIO_DEADLINE_S):
-                            raise GateFailure("PC09 slow producer 未收到继续信号")
+                        while not continue_tail.wait(0.05):
+                            if producer_stop.is_set():
+                                return
             except BaseException as error:
-                producer_errors.append(f"{type(error).__name__}: {error}")
+                if not producer_stop.is_set():
+                    producer_errors.append(f"{type(error).__name__}: {error}")
             finally:
                 burst_ready.set()
+                producer_done.set()
 
-        producer = threading.Thread(
-            target=produce_slow_tail, name="pc09-slow-producer", daemon=False
-        )
-        producer.start()
-        if not burst_ready.wait(SCENARIO_DEADLINE_S):
-            raise GateFailure("PC09 slow producer 未建立第一段压力")
-        pressure_readable, _, _ = select.select([slow._socket], [], [], SCENARIO_DEADLINE_S)
-        pressure_pending = bool(pressure_readable)
-        second.admit_programmatic(pc09_healthy)
-        second.send_programmatic(
-            pc09_healthy, "pc09-healthy-input", "pc09 healthy input"
-        )
-        pc09_healthy_result = _wait_programmatic_result(
-            second, pc09_healthy, "pc09-healthy-input"
-        )
-        continue_tail.set()
-        producer.join()
-        if producer.is_alive():
-            raise GateFailure("PC09 slow producer 未完整 join")
-        slow_closed, drained_bytes = _drain_socket_until_eof(slow._socket)
-        checks.append(
-            CheckResult(
-                "PC-09",
-                not producer_errors
-                and producer_sent == producer_count
-                and pressure_pending
-                and slow_closed
-                and pc09_healthy_result.get("status") == "complete",
-                {
-                    "slowConnectionClosed": slow_closed,
-                    "healthyResult": pc09_healthy_result,
-                    "producerSent": producer_sent,
-                    "producerCount": producer_count,
-                    "producerErrors": producer_errors,
-                    "producerJoined": not producer.is_alive(),
-                    "pressurePending": pressure_pending,
-                    "drainedBytesBeforeEof": drained_bytes,
-                    "healthyIsolation": pc09_healthy_result.get("status") == "complete",
-                    "slowReceiveBuffer": slow._socket.getsockopt(
-                        socket.SOL_SOCKET, socket.SO_RCVBUF
-                    ),
-                },
+        try:
+            producer_client = _connect_client(endpoint, events_path)
+            clients.append(producer_client)
+            producer = threading.Thread(
+                target=produce_slow_tail, name="pc09-slow-producer", daemon=False
             )
-        )
-        slow.close()
-        clients.remove(slow)
+            producer.start()
+            if not burst_ready.wait(SCENARIO_DEADLINE_S):
+                raise GateFailure("PC09 slow producer 未建立第一段压力")
+            slow_receive_buffer = slow._socket.getsockopt(
+                socket.SOL_SOCKET, socket.SO_RCVBUF
+            )
+            pressure_min_pending_bytes = max(64 * 1024, slow_receive_buffer * 2)
+            pressure_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+            while time.monotonic() < pressure_deadline:
+                pressure_pending_bytes = _socket_pending_bytes(slow._socket)
+                if pressure_pending_bytes >= pressure_min_pending_bytes:
+                    break
+                if producer_done.is_set() and producer_sent < burst_count:
+                    raise GateFailure(
+                        f"PC09 slow producer 在 burst 内结束：{producer_sent}/{burst_count}"
+                    )
+                threading.Event().wait(0.05)
+            pressure_pending_bytes = _socket_pending_bytes(slow._socket)
+            pressure_observed_at = time.monotonic()
+            if pressure_pending_bytes < pressure_min_pending_bytes:
+                raise GateFailure(
+                    "PC09 慢订阅未达到可观测 socket backlog："
+                    f"{pressure_pending_bytes} < {pressure_min_pending_bytes}"
+                )
+            second.admit_programmatic(pc09_healthy)
+            healthy_started_at = time.monotonic()
+            second.send_programmatic(
+                pc09_healthy, "pc09-healthy-input", "pc09 healthy input"
+            )
+            pc09_healthy_result = _wait_programmatic_result(
+                second, pc09_healthy, "pc09-healthy-input"
+            )
+            healthy_completed_at = time.monotonic()
+            continue_tail.set()
+            producer_tail_released_at = time.monotonic()
+            if not producer_done.wait(SCENARIO_DEADLINE_S):
+                raise GateFailure("PC09 slow producer 未在 deadline 内完成")
+            assert producer is not None
+            producer.join(timeout=SCENARIO_DEADLINE_S)
+            if producer.is_alive():
+                raise GateFailure("PC09 slow producer join 超时")
+            slow_closed, drained_bytes = _drain_socket_until_eof(slow._socket)
+            slow_eof_at = time.monotonic()
+            checks.append(
+                CheckResult(
+                    "PC-09",
+                    not producer_errors
+                    and producer_sent == producer_count
+                    and pressure_pending_bytes >= pressure_min_pending_bytes
+                    and slow_closed
+                    and pc09_healthy_result.get("status") == "complete"
+                    and pressure_observed_at < healthy_completed_at
+                    and healthy_completed_at <= producer_tail_released_at
+                    and producer_tail_released_at <= slow_eof_at,
+                    {
+                        "slowConnectionClosed": slow_closed,
+                        "healthyResult": pc09_healthy_result,
+                        "producerSent": producer_sent,
+                        "producerCount": producer_count,
+                        "producerErrors": producer_errors,
+                        "producerJoined": not producer.is_alive(),
+                        "pressurePending": pressure_pending_bytes >= pressure_min_pending_bytes,
+                        "pressurePendingBytesBeforeHealthy": pressure_pending_bytes,
+                        "pressureMinimumPendingBytes": pressure_min_pending_bytes,
+                        "drainedBytesBeforeEof": drained_bytes,
+                        "healthyIsolation": pc09_healthy_result.get("status") == "complete",
+                        "healthyStartedAt": healthy_started_at,
+                        "healthyCompletedAt": healthy_completed_at,
+                        "pressureObservedAt": pressure_observed_at,
+                        "producerTailReleasedAt": producer_tail_released_at,
+                        "slowEofAt": slow_eof_at,
+                        "pressureObservedBeforeHealthy": pressure_observed_at < healthy_completed_at,
+                        "healthyCompletedBeforeTailRelease": healthy_completed_at <= producer_tail_released_at,
+                        "tailReleasedBeforeSlowEof": producer_tail_released_at <= slow_eof_at,
+                        "slowReceiveBuffer": slow_receive_buffer,
+                    },
+                )
+            )
+        finally:
+            continue_tail.set()
+            producer_stop.set()
+            if producer is not None and producer.is_alive() and producer_client is not None:
+                try:
+                    producer_client.close()
+                except OSError:
+                    pass
+            if producer is not None:
+                producer.join(timeout=SCENARIO_DEADLINE_S)
+                if producer.is_alive():
+                    raise GateFailure("PC09 slow producer cleanup join 超时")
+            if producer_client is not None:
+                producer_client.close()
+                if producer_client in clients:
+                    clients.remove(producer_client)
+            slow.close()
+            if slow in clients:
+                clients.remove(slow)
 
         # 6. 真实 TOOLS BoundTool 在 started 后失败，日志必须保留 ToolResult。
         pc10 = "programmatic:pc10-tool-failure"
@@ -3508,7 +3739,7 @@ def _run_host(gate: str) -> int:
     _prepare_host_sandbox(
         sandbox,
         repo,
-        max_iterations=3 if gate == "failure-matrix" else 2,
+        max_iterations=4 if gate == "failure-matrix" else 2,
         outbound_queue_size=4 if gate == "failure-matrix" else 64,
     )
     if gate == "failure-matrix":
