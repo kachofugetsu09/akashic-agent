@@ -1,7 +1,7 @@
 {
   "acceptedGaps": [],
   "base": "683b4791b0c25e3e899d65fe7c028514240414b3",
-  "catalogDigest": "01f642b4464c98d650ba45ad8247b4ece1a9ad004f8dbd3f02f6db838863662b",
+  "catalogDigest": "d2bd624867f16ee2a54ea730c74ee3eeb2918dd4df18d6040f5bc006f0e5223b",
   "purpose": "approved_contract_mapping",
   "coveredP0": {
     "companion_control": [

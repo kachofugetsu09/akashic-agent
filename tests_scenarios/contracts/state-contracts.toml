@@ -166,14 +166,14 @@ failure_semantics = ["operation_rejected", "unit_failed", "cleanup_degraded", "r
 [states.control_replay]
 priority = "p0"
 requirements = ["SEC-008", "CTRL-002", "TST-001", "TST-002", "TST-003"]
-owner = "session.message_log"
+owner = "control.session_subscription"
 normal_change = "bounded_projection"
 destructive_owner = "not_applicable"
 writers = ["companion_control"]
 consumers = ["companion_control", "events"]
 protected_tables = []
 oracles = ["companion_control_replay_contract"]
-retention = "canonical MessageLog rows remain durable; each follow uses a session seq cursor and a bounded live subscription queue"
+retention = "temporary per-session follow cursor and bounded event queue; replacement, unsubscribe, and connection EOF cancel and drain the subscription; canonical MessageLog rows remain owned by session.store"
 physical_reduction_owner = "not_applicable"
 recovery_evidence = ["replay_cursor", "replay_message", "session_message_write_set"]
 failure_semantics = ["operation_rejected", "cleanup_degraded", "runtime_fatal"]
