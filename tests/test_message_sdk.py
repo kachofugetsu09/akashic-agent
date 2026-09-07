@@ -55,7 +55,9 @@ async def test_sync_sdk_uses_same_message_contract(tmp_path, monkeypatch):
                     for event in subscription.events():
                         if event["type"] == "messages.appended":
                             return ack, event
-        ack, event = await asyncio.wait_for(asyncio.to_thread(use_client), 5)
+        pair = await asyncio.wait_for(asyncio.to_thread(use_client), 5)
+        assert pair is not None
+        ack, event = pair
         assert event["items"][0]["id"] == ack["message_id"]
 
 

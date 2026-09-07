@@ -46,13 +46,13 @@ class _FakeChatServer:
             await asyncio.sleep(0)
 
 
-def test_plugin_uninstall_passes_active_turn_owner(
+def test_plugin_uninstall_uses_runtime_control_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text("[runtime]\nworkspace='workspace'\n", encoding="utf-8")
-    calls: list[str] = []
+    calls: list[tuple[str, str, Path]] = []
 
     monkeypatch.setattr(
         main.Config,
@@ -68,33 +68,25 @@ def test_plugin_uninstall_passes_active_turn_owner(
     async def request(
         _endpoint: str,
         plugin_id: str,
-        _workspace: Path,
-        *,
-        owner_turn_id: str,
+        workspace: Path,
     ) -> dict[str, object]:
-        calls.append(owner_turn_id)
+        calls.append((_endpoint, plugin_id, workspace))
         return {
             "pluginId": plugin_id,
             "publicationState": "pending_turn_end",
         }
 
     monkeypatch.setattr(main, "_request_plugin_uninstall", request)
-    monkeypatch.delenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", raising=False)
-    outside = main._uninstall_via_runtime(
-        str(config_path),
-        "context_pressure@github",
-        tmp_path / "workspace",
-    )
-    monkeypatch.setenv("AKASHIC_PLUGIN_ROLLOUT_OWNER_TURN", "turn:owner")
-    inside = main._uninstall_via_runtime(
+    result = main._uninstall_via_runtime(
         str(config_path),
         "context_pressure@github",
         tmp_path / "workspace",
     )
 
-    assert calls == ["", "turn:owner"]
-    assert outside["publicationState"] == "pending_turn_end"
-    assert inside["publicationState"] == "pending_turn_end"
+    assert calls == [
+        ("runtime.sock", "context_pressure@github", tmp_path / "workspace")
+    ]
+    assert result["publicationState"] == "pending_turn_end"
 
 
 def test_agent_turn_rejects_internal_plugin_commands(
@@ -155,6 +147,7 @@ def _write_config(path: Path, socket_path: Path) -> None:
         },
     }
     path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
+    _ = workspace_init.init_workspace(config_path=path, workspace=path.parent)
 
 
 def test_load_config_has_no_legacy_agent_fields(tmp_path: Path):
@@ -1066,7 +1059,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
     )
     resources = SharedHttpResources()
     event_bus = EventBus()
-    controller = object()
     host = await start_channels(
         config,
         bus=cast(Any, object()),
@@ -1075,7 +1067,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         http_resources=resources,
         event_bus=event_bus,
         command_catalog_provider=lambda: (("shared", "统一目录"),),
-        interrupt_controller=cast(Any, controller),
         extra_channels=[cast(Any, _PluginChannel())],
     )
     try:
@@ -1084,11 +1075,11 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         telegram, qq, plugin = host.channels
         assert starts == ["telegram", "qq", "plugin"]
         assert telegram.kwargs["event_bus"] is event_bus
-        assert telegram.kwargs["interrupt_controller"] is controller
+        assert "interrupt_controller" not in telegram.kwargs
         assert telegram.kwargs["command_catalog_provider"]() == (
             ("shared", "统一目录"),
         )
-        assert qq.kwargs["interrupt_controller"] is controller
+        assert "interrupt_controller" not in qq.kwargs
         assert plugin.name == "plugin"
         assert attachment_roots == [tmp_path / "uploads"]
         assert mobile_catalogs == [[("shared", "统一目录")]]

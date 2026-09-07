@@ -1,8 +1,9 @@
 import asyncio
 import hashlib
 import json
+from typing import cast
+from collections import deque
 from contextlib import closing
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -12,7 +13,10 @@ from agent.config_models import MobileRealtimeConfig
 from infra.channels.message_view import message_rows
 from infra.mobile_realtime.auth import DeviceAuthenticator
 from infra.mobile_realtime.channel import MobileCommandError, MobileRealtimeChannel
-from infra.mobile_realtime.gateway import MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
+from fastapi import WebSocket
+from starlette.types import Message
+
+from infra.mobile_realtime.gateway import ActiveMobileConnection, MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
 from infra.mobile_realtime.inbox import DurableInboxManager
 from infra.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
 from infra.mobile_realtime.pairing import PairingService
@@ -30,7 +34,7 @@ def mobile(tmp_path):
         device = uuid4().hex
         _register_device(storage, device)
         runtime = _Runtime(storage)
-        channel = MobileRealtimeChannel(runtime)
+        channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
         channel.bind_messages(log.catalog())
         yield log, runtime, channel, device
 
@@ -158,7 +162,25 @@ async def test_mobile_json_range_authentication_and_reopen(mobile, tmp_path):
         channel = MobileRealtimeChannel(runtime)
         channel.bind_messages(reopened.catalog())
         runtime.bind_channel(channel)
-        runtime._connections[device] = SimpleNamespace(connection_epoch=1)
+        async def receive() -> Message:
+            return {'type': 'websocket.disconnect'}
+
+        async def send(_message: Message) -> None:
+            return None
+
+        websocket = WebSocket(
+            {'type': 'websocket', 'path': '/', 'headers': [], 'query_string': b''},
+            receive,
+            send,
+        )
+        runtime._connections[device] = ActiveMobileConnection(
+            websocket=websocket,
+            connection_epoch=1,
+            send_lock=asyncio.Lock(),
+            pending_events=deque(),
+            ready=True,
+            delivery_task=None,
+        )
         grant = runtime.message_content_tickets.issue(device_id=device, connection_epoch=1, session_id=session,
             message_id='large', byte_length=ref['byte_length'], sha256=ref['sha256'])
         client = TestClient(create_mobile_gateway_app(runtime))

@@ -39,7 +39,6 @@ from bus.events_lifecycle import (
     TurnStarted,
 )
 from bus.queue import MessageBus
-from agent.looping.interrupt import InterruptController
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
@@ -209,11 +208,9 @@ class TelegramChannel:
             [], tuple[tuple[str, str], ...]
         ] | None = None,
         event_bus: EventBus | None = None,
-        interrupt_controller: InterruptController | None = None,
         channel_name: str = _CHANNEL,
     ) -> None:
         self._bus = bus
-        self._interrupt_controller = interrupt_controller
         self._channel = channel_name
         self.name = channel_name
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
@@ -292,7 +289,6 @@ class TelegramChannel:
         if ctx is not None:
             self._bus = ctx.bus
             self._event_bus = ctx.event_bus
-            self._interrupt_controller = ctx.interrupt_controller
         self._bind_runtime()
         await self._app.initialize()
         await self._app.start()

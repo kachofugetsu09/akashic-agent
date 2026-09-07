@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import shutil
@@ -322,7 +323,6 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
@@ -579,7 +579,6 @@ async def test_web_chat_message_send_can_create_session_without_persisting_empty
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
@@ -715,7 +714,6 @@ async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
@@ -930,7 +928,6 @@ async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: P
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     image = tmp_path / "meme.png"
     image.write_bytes(b"image")
@@ -1260,7 +1257,6 @@ async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
             event_bus=_EventBus(),
             push_tool=_PushTool(),
             attachment_store=AttachmentStore(tmp_path / "uploads"),
-            interrupt_controller=None,
         )))
         app = create_chat_app(workspace=tmp_path, channel=channel)
 
@@ -1345,7 +1341,6 @@ async def test_web_v3_closed_admission_rejects_message_without_legacy_bus_call(
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     socket = _WebSocket()
     channel._connections["akashic:abc"] = {cast(Any, socket)}
@@ -1380,7 +1375,6 @@ async def test_web_v3_adapter_stop_drains_old_callback_before_unregistering(
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     old = await _open_inbound_adapter(channel, ingress, binding_token="old-binding")
     socket = _WebSocket()
@@ -1413,7 +1407,6 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     old = await _open_inbound_adapter(
         channel,
@@ -1532,7 +1525,9 @@ async def test_web_v3_ingress_persists_unprefixed_identity_for_exact_session(tmp
             {"session_id": session, "text": "hello", "media": []})
         message = log.reader(session).get("request-1")
         assert isinstance(message.body, Input)
-        assert message.body.parts[0].value["chat_id"] == session.removeprefix("akashic:")
+        value = message.body.parts[0].value
+        assert isinstance(value, Mapping)
+        assert value["chat_id"] == session.removeprefix("akashic:")
         assert identities.load("akashic") == {session.removeprefix("akashic:"): session.removeprefix("akashic:")}
         assert bus.inbound_size == 0 and manager.current_snapshot.lease_count == 0
 
@@ -1572,7 +1567,9 @@ async def test_web_reply_uses_real_message_target_and_reports_source_conflicts(t
         reader = log.reader("akashic:abc")
         message = reader.get("reply")
         assert message.body.parts[1:] == (ContentPart("text", "继续"), ContentPart("reply_ref", "target"))
-        rendered = render_content(message.body.parts[-1], artifacts={}, read_message=reader.get)
+        part = message.body.parts[-1]
+        assert isinstance(part, ContentPart)
+        rendered = render_content(part, artifacts={}, read_message=reader.get)
         assert "原始引用全文" in rendered[0]["text"]
         before = reader.snapshot()
         for target in ("missing", "other", "control"):
@@ -1611,7 +1608,6 @@ async def test_web_rejects_invalid_external_ids_before_ingress_or_session_write(
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     adapter = await _open_inbound_adapter(channel, ingress)
     socket = _WebSocket()

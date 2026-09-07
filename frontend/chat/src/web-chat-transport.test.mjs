@@ -496,8 +496,8 @@ test("send transport serializes once, waits for open, and aborts before delivery
   }
   try {
     const open = new FakeSocket(1);
-    await sendWhenOpen(open, { type: "turn.stop" });
-    assert.deepEqual(open.sent, ['{"type":"turn.stop"}']);
+    await sendWhenOpen(open, { type: "message.send", text: "/stop", media: [] });
+    assert.deepEqual(open.sent, ['{"type":"message.send","text":"/stop","media":[]}']);
 
     const connecting = new FakeSocket(0);
     const pending = sendWhenOpen(connecting, { type: "message.send", text: "hi" });

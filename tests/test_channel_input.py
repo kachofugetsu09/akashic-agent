@@ -91,6 +91,7 @@ async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recov
     if session_manager is not None:
         inbound_store, admissions = session_manager.inbound_store, session_manager.admissions
     if inbound_store is not None:
+        assert admissions is not None
         custody.bind_durable_inbound_store(inbound_store)
         custody.bind_mobile_session_admission_owner(admissions)
     identities, rollbacks, adapters = {}, [], []

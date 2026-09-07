@@ -96,21 +96,11 @@ class Recall(BaseModel):
         return self
 
 
-class RecallRecords:
-    """Akasha 自有只增查询记录；对外只发布 read，不暴露 OwnerStore。"""
+class RecallRecordsRead:
+    """Read-only Akasha recall records; no OwnerStore or save capability."""
 
     def __init__(self, state: OwnerStore):
         self._state = state
-
-    def save(self, identity: str, recall: Recall) -> str:
-        """查询完成后创建；同一 key 不能覆盖另一张图上的查询结果。"""
-        payload = recall.model_dump(mode="json")
-        if len(json.dumps(payload, ensure_ascii=False).encode()) > 1_048_576:
-            raise ValueError("召回出处超过单条记录上限，请缩小查询范围")
-        _ = self._state.transact(lambda transaction: transaction.save(
-            "recall:" + identity, cast(Mapping[str, object], payload), expected_version=None,
-        ))
-        return identity
 
     def read(self, identity: str) -> Recall | None:
         record = self._state.read("recall:" + identity)
@@ -125,6 +115,20 @@ class RecallRecords:
             for key, record in self._state.list() if key.startswith("recall:")
         )
         return tuple(sorted(records, key=lambda item: (item[1].timestamp, item[0]), reverse=True))
+
+
+class RecallRecords(RecallRecordsRead):
+    """Akasha's append-only record owner; writes stay inside the plugin."""
+
+    def save(self, identity: str, recall: Recall) -> str:
+        """Store one completed query without replacing an existing record."""
+        payload = recall.model_dump(mode="json")
+        if len(json.dumps(payload, ensure_ascii=False).encode()) > 1_048_576:
+            raise ValueError("召回出处超过单条记录上限，请缩小查询范围")
+        _ = self._state.transact(lambda transaction: transaction.save(
+            "recall:" + identity, cast(Mapping[str, object], payload), expected_version=None,
+        ))
+        return identity
 
 
 def select_hits(

@@ -1,75 +1,35 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, nullcontext
-from datetime import datetime
+from contextlib import asynccontextmanager
 import subprocess
 import sys
-from types import SimpleNamespace
 from typing import Any, AsyncIterator, cast
-from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.core.response_parser import ResponseMetadata
-from agent.context import MessageEnvelopeBuilder
-from agent.lifecycle.composition import (
-    AFTER_REASONING_CLEANUP_EVENT,
-    AFTER_REASONING_PREPROCESS_EVENT,
-    CONTEXT_PREPARED_EVENT,
-    PROMPT_RENDER_EVENT,
-    observe_composition_event,
-    run_composition_lifecycle,
-)
-from agent.lifecycle.phases.before_turn import (
-    BeforeTurnFrame,
-    default_before_turn_modules,
-)
-from agent.lifecycle.phases.after_turn import (
-    AfterTurnFrame,
-    default_after_turn_modules,
-)
-from agent.lifecycle.phases.after_reasoning import (
-    AfterReasoningFrame,
-    default_after_reasoning_modules,
-)
-from agent.lifecycle.phases.prompt_render import (
-    PromptRenderFrame,
-    default_prompt_render_modules,
-)
-from agent.lifecycle.types import AfterReasoningCtx, BeforeTurnCtx, PromptRenderCtx
 from agent.plugin_composition import (
     Bail,
     CompositionError,
     CompositionRoot,
+    EmitEventKey,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
 )
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import (
-    RuntimeSnapshot,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
     bind_runtime_snapshot,
     reset_runtime_snapshot,
 )
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
-from agent.turn_events.observe import (
-    MEMORY_WRITTEN_EVENT,
-    RETRIEVAL_COMPLETED_EVENT,
-)
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
-from core.memory.engine import MemoryQueryResult, MemoryRecord
-from core.memory.events import MemoryWritten, RetrievalCompleted
-from agent.retrieval.events import build_retrieval_completed
-from agent.retrieval.protocol import RetrievalRequest
-from agent.prompting import PromptAssembler, PromptSectionRender
-from plugins.akasha.plugin import _inject_memory
-from plugins.openai_compatible.driver import (
-    _merge_leading_system_messages,
-    _normalize_messages,
-)
+from core.memory.events import MemoryWritten
+
+
+_MEMORY_WRITTEN_EVENT = EmitEventKey[MemoryWritten]("test.memory.written")
 
 
 @asynccontextmanager
@@ -135,6 +95,7 @@ async def apply(ctx, config):
         await manager.load_all()
         await manager.start_runtime()
         snapshot = manager.snapshot_store.pause_admission()
+        assert snapshot is not None
         await manager.snapshot_store.wait_for_no_leases(snapshot)
         old_root = snapshot.composition_root
         await manager._stop_runtime_snapshot(snapshot)
@@ -162,204 +123,6 @@ async def apply(ctx, config):
         async with asyncio.timeout(3):
             await manager.terminate_all()
         log.close()
-
-
-def _prompt_ctx() -> PromptRenderCtx:
-    return PromptRenderCtx(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        content="hello",
-        media=None,
-        timestamp=datetime.now(),
-        history=[],
-        skill_names=[],
-        disabled_sections=set(),
-        turn_injection_prompt="",
-    )
-
-
-async def _assert_akasha_inserts_first_user_context_frame_block() -> None:
-    ctx = _prompt_ctx()
-    runtime = SimpleNamespace(
-        query=AsyncMock(return_value=MemoryQueryResult(text_block="fresh recall"))
-    )
-    diagnostics = SimpleNamespace(
-        operation=lambda _name: nullcontext(),
-        measure=lambda _name, _value: None,
-    )
-
-    await _inject_memory(ctx, cast(Any, runtime), cast(Any, diagnostics))
-
-    assert ctx.system_sections_bottom == []
-    assert [
-        (section.name, section.content, section.order)
-        for section in ctx.context_frame_sections
-    ] == [("memory", "fresh recall", 10)]
-
-
-def _assert_context_frame_keeps_dynamic_memory_after_stable_history() -> None:
-    history = [
-        {"role": "user", "content": "old question"},
-        {"role": "assistant", "content": "old answer"},
-    ]
-
-    class _ContextStub:
-        _envelope_builder = MessageEnvelopeBuilder()
-
-        @staticmethod
-        def _build_system_prompt_sections(**_kwargs: object) -> list[PromptSectionRender]:
-            return [
-                PromptSectionRender("stable", "stable system", True, order=20),
-                PromptSectionRender("active_skills", "active skill", False, order=50),
-            ]
-
-    assembler = PromptAssembler(cast(Any, _ContextStub()))
-
-    def assemble(memory: str):
-        return assembler.assemble(
-            history=history,
-            current_message="current question",
-            multimodal=False,
-            context_frame_sections=[
-                PromptSectionRender("memory", memory, False, order=10)
-            ],
-        )
-
-    first = assemble("recall one")
-    second = assemble("recall two")
-    provider_messages = _merge_leading_system_messages(
-        _normalize_messages(first.messages)
-    )
-
-    assert first.system_prompt == second.system_prompt == "stable system"
-    assert first.messages[:3] == second.messages[:3]
-    assert [message["role"] for message in provider_messages] == [
-        "system",
-        "user",
-        "assistant",
-        "user",
-        "user",
-    ]
-    reminder = provider_messages[-2]
-    assert reminder["role"] == "user"
-    assert str(reminder["content"]).startswith("<system-reminder")
-    assert str(reminder["content"]).index("## memory") < str(
-        reminder["content"]
-    ).index("## active_skills")
-
-
-def _before_turn_ctx() -> BeforeTurnCtx:
-    return BeforeTurnCtx(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        content="hello",
-        timestamp=datetime.now(),
-        history_messages=(),
-    )
-
-
-def _answer_ctx() -> AfterReasoningCtx:
-    return AfterReasoningCtx(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        tools_used=(),
-        thinking=None,
-        response_metadata=ResponseMetadata(raw_text="hello"),
-        streamed=False,
-        tool_chain=(),
-        context_retry={},
-        reply="hello",
-    )
-
-
-
-
-
-
-@pytest.mark.asyncio
-async def test_context_prepared_seam_is_noop_without_composition_root() -> None:
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}))
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
-
-    try:
-        await run_composition_lifecycle(CONTEXT_PREPARED_EVENT, _before_turn_ctx())
-    finally:
-        reset_runtime_snapshot(token)
-        await lease.release()
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_seam_is_noop_without_runtime_binding() -> None:
-    await run_composition_lifecycle(CONTEXT_PREPARED_EVENT, _before_turn_ctx())
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_seam_rejects_inherited_wrong_task_binding() -> None:
-    observed: list[str] = []
-    root = CompositionRoot("wrong-task-lifecycle")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(CONTEXT_PREPARED_EVENT, lambda _: observed.append("called"))
-
-    await root.mount(plugin, name="observer")
-    async with _bound_root(root):
-        task = asyncio.create_task(
-            run_composition_lifecycle(
-                CONTEXT_PREPARED_EVENT,
-                _before_turn_ctx(),
-            )
-        )
-        with pytest.raises(CompositionError) as caught:
-            await task
-
-    assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
-    assert observed == []
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_seam_rejects_released_owner_lease() -> None:
-    root = CompositionRoot("inactive-lifecycle")
-    store = RuntimeSnapshotStore()
-    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
-    lease = store.lease()
-    token = bind_runtime_snapshot(lease)
-    await lease.release()
-
-    try:
-        with pytest.raises(CompositionError) as caught:
-            await run_composition_lifecycle(
-                CONTEXT_PREPARED_EVENT,
-                _before_turn_ctx(),
-            )
-    finally:
-        reset_runtime_snapshot(token)
-        await store.close()
-        await root.dispose()
-
-    assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_INACTIVE"
-
-
-
-
-@pytest.mark.asyncio
-async def test_lifecycle_seam_rejects_bail() -> None:
-    root = CompositionRoot("lifecycle-bail")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(PROMPT_RENDER_EVENT, lambda _: Bail("blocked"))
-
-    await root.mount(plugin, name="bailing-plugin")
-    async with _bound_root(root):
-        with pytest.raises(CompositionError) as caught:
-            await run_composition_lifecycle(PROMPT_RENDER_EVENT, _prompt_ctx())
-
-    assert caught.value.code == "LIFECYCLE_BAIL_NOT_ALLOWED"
 
 
 @pytest.mark.asyncio
@@ -460,55 +223,19 @@ async def test_runtime_start_ignores_snapshot_replaced_before_start(
 
 
 @pytest.mark.asyncio
-async def test_after_turn_committed_event_runs_after_core_fanout() -> None:
-    order: list[str] = []
-    observed: list[TurnCommitted] = []
-    root = CompositionRoot("after-turn-committed")
+async def test_emit_event_listener_failure_is_fail_loud() -> None:
+    root = CompositionRoot("emit-event-failure")
 
-    def on_committed(event: TurnCommitted) -> None:
-        order.append("composition")
-        observed.append(event)
-
-    async def plugin(ctx) -> None:
-        await ctx.on(AFTER_TURN_COMMITTED, on_committed)
-
-    await root.mount(plugin, name="observe-plugin")
-    bus = EventBus()
-    bus.on(TurnCommitted, lambda _: order.append("event-bus"))
-    module = _fanout_committed_module(bus)
-    committed = _committed_event()
-    frame = AfterTurnFrame(
-        input=cast(Any, None),
-        slots={"turn:committed": committed},
-    )
-
-    async with _bound_root(root):
-        result = await module.run(frame)
-
-    assert result is frame
-    assert order == ["event-bus", "composition"]
-    assert observed == [committed]
-
-
-@pytest.mark.asyncio
-async def test_after_turn_committed_event_propagates_listener_failure() -> None:
-    root = CompositionRoot("after-turn-committed-failure")
-
-    def fail(_: TurnCommitted) -> None:
+    def fail(_: object) -> None:
         raise RuntimeError("observe failed")
 
     async def plugin(ctx) -> None:
-        await ctx.on(AFTER_TURN_COMMITTED, fail)
+        await ctx.on(EmitEventKey[object]("test.emit.failure"), fail)
 
-    await root.mount(plugin, name="failing-observe-plugin")
-    frame = AfterTurnFrame(
-        input=cast(Any, None),
-        slots={"turn:committed": _committed_event()},
-    )
-
+    await root.mount(plugin, name="failing-emit-plugin")
     async with _bound_root(root):
         with pytest.raises(RuntimeError, match="observe failed"):
-            await _fanout_committed_module(EventBus()).run(frame)
+            root.context.emit(EmitEventKey[object]("test.emit.failure"), object())
 
 
 def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
@@ -528,55 +255,14 @@ def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_after_turn_committed_event_keeps_core_path_without_root() -> None:
-    observed: list[TurnCommitted] = []
-    bus = EventBus()
-    bus.on(TurnCommitted, observed.append)
-    frame = AfterTurnFrame(
-        input=cast(Any, None),
-        slots={"turn:committed": _committed_event()},
-    )
-
-    result = await _fanout_committed_module(bus).run(frame)
-
-    assert result is frame
-    assert observed == [frame.slots["turn:committed"]]
-
-
-
-
-@pytest.mark.asyncio
-async def test_domain_observe_event_uses_bound_candidate_root() -> None:
-    observed: list[str] = []
-    first = CompositionRoot("domain-observe-first")
-    second = CompositionRoot("domain-observe-second")
-
-    async def first_plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, lambda _: observed.append("first"))
-
-    async def second_plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, lambda _: observed.append("second"))
-
-    await first.mount(first_plugin, name="first-observer")
-    await second.mount(second_plugin, name="second-observer")
-    event = _memory_written_event()
-    async with _bound_root(first):
-        await observe_composition_event(MEMORY_WRITTEN_EVENT, event)
-    async with _bound_root(second):
-        await observe_composition_event(MEMORY_WRITTEN_EVENT, event)
-
-    assert observed == ["first", "second"]
-
-
-@pytest.mark.asyncio
 async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
     observed: list[MemoryWritten] = []
     root = CompositionRoot("event-bus-is-core-only")
 
     async def plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, observed.append)
+        await ctx.on(_MEMORY_WRITTEN_EVENT, observed.append)
 
-    await root.mount(plugin, name="domain-observer")
+    await root.mount(plugin, name="composition-observer")
     async with _bound_root(root):
         await EventBus().fanout(_memory_written_event())
 
@@ -584,22 +270,26 @@ async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
 
 
 @pytest.mark.asyncio
-async def test_domain_observe_event_rejects_inherited_wrong_task_binding() -> None:
-    root = CompositionRoot("domain-observe-wrong-task")
+async def test_runtime_snapshot_rejects_inherited_wrong_task_binding() -> None:
+    from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
 
-    async def plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, lambda _: None)
+    root = CompositionRoot("runtime-snapshot-wrong-task")
+    store = RuntimeSnapshotStore()
+    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
+    lease = store.lease()
+    token = bind_runtime_snapshot(lease)
+    try:
+        async def read_snapshot() -> object:
+            return get_lifecycle_runtime_snapshot()
 
-    await root.mount(plugin, name="domain-observer")
-    async with _bound_root(root):
-        task = asyncio.create_task(
-            observe_composition_event(
-                MEMORY_WRITTEN_EVENT,
-                _memory_written_event(),
-            )
-        )
+        task = asyncio.create_task(read_snapshot())
         with pytest.raises(CompositionError) as caught:
             await task
+    finally:
+        reset_runtime_snapshot(token)
+        await lease.release()
+        await store.close()
+        await root.dispose()
 
     assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
 
@@ -612,9 +302,9 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
     root = CompositionRoot(f"event-bus-wrong-task-{operation}")
 
     async def plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, lambda _: None)
+        await ctx.on(_MEMORY_WRITTEN_EVENT, lambda _: None)
 
-    await root.mount(plugin, name="domain-observer")
+    await root.mount(plugin, name="composition-observer")
     store = RuntimeSnapshotStore()
     store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
     bus = EventBus()
@@ -640,94 +330,6 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
         await root.dispose()
 
     assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
-
-
-@pytest.mark.asyncio
-async def test_retrieval_completed_event_payload() -> None:
-    await _assert_akasha_inserts_first_user_context_frame_block()
-    _assert_context_frame_keeps_dynamic_memory_after_stable_history()
-
-    observed: list[RetrievalCompleted] = []
-    root = CompositionRoot("retrieval-completed")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(RETRIEVAL_COMPLETED_EVENT, lambda event: observed.append(event))
-
-    await root.mount(plugin, name="retrieval-observer")
-
-    request = RetrievalRequest(
-        message="original",
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        history=[],
-        session_metadata={},
-    )
-    result = MemoryQueryResult(
-        text_block="memory block",
-        records=[
-            MemoryRecord(
-                id="memory-1",
-                kind="event",
-                summary="a long enough memory summary",
-                score=0.91,
-                engine_kind="fake",
-                signals={"confidence_label": "certain", "forced": True},
-                injected=True,
-            )
-        ],
-        trace={"route_decision": "RETRIEVE", "hyde_hypotheses": ["aux query"]},
-        raw={"rewritten_query": "rewritten"},
-    )
-
-    async with _bound_root(root):
-        await observe_composition_event(
-            RETRIEVAL_COMPLETED_EVENT,
-            build_retrieval_completed(request, result),
-        )
-
-    assert len(observed) == 1
-    event = observed[0]
-    assert event.query == "rewritten"
-    assert event.orig_query == "original"
-    assert event.route_decision == "RETRIEVE"
-    assert event.aux_queries == ["aux query"]
-    assert event.injected_count == 1
-    assert event.hits[0].item_id == "memory-1"
-    assert event.hits[0].confidence_label == "certain"
-    assert event.hits[0].forced is True
-    assert event.hits[0].metadata["forced"] is True
-
-
-def test_domain_event_contract_imports_without_phase_runtime() -> None:
-    code = (
-        "from agent.turn_events.observe import ("
-        "RETRIEVAL_COMPLETED_EVENT, MEMORY_WRITTEN_EVENT); "
-        "import sys; "
-        "assert 'agent.lifecycle.phases.after_turn' not in sys.modules; "
-        "assert RETRIEVAL_COMPLETED_EVENT.name == 'memory.retrieval.completed'; "
-        "assert MEMORY_WRITTEN_EVENT.name == 'memory.written'"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def _fanout_committed_module(bus: EventBus) -> Any:
-    modules = default_after_turn_modules(
-        bus,
-        cast(Any, object()),
-        cast(Any, object()),
-    )
-    return next(
-        item
-        for item in modules
-        if getattr(item, "slot", "") == "after_turn.fanout_committed"
-    )
 
 
 def _committed_event() -> TurnCommitted:
@@ -805,7 +407,9 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
             assert snapshot.lease_count == 0
             assert events == ["prepare", "stop"]
             assert root.instance_token not in manager._runtime_starting_roots
-            await manager.snapshot_store.abort(manager.snapshot_store.pending_transaction)
+            transaction = manager.snapshot_store.pending_transaction
+            assert transaction is not None
+            await manager.snapshot_store.abort(transaction)
         else:
             await manager._publish_committed_snapshot(snapshot)
             assert events == ["prepare"]
@@ -826,7 +430,9 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
                 await manager._publish_committed_snapshot(replacement)
                 await manager.start_runtime()
                 assert events == ["prepare", "start"]
-                await manager._stop_runtime_snapshot(manager.current_snapshot)
+                current = manager.current_snapshot
+                assert current is not None
+                await manager._stop_runtime_snapshot(current)
                 assert events == ["prepare", "start", "stop"]
         async with asyncio.timeout(2):
             await tasks.close()

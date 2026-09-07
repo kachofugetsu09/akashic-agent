@@ -40,6 +40,7 @@
     "message.send",
     "mobile.webui.content.prepare",
     "mobile.webui.release.get",
+    "model.call.get",
     "model.catalog.get",
     "ping",
     "plugin.ui.asset.get",
@@ -54,9 +55,9 @@
     "scheduler.job.get",
     "scheduler.job.list",
     "session.create",
+    "session.follow",
     "session.list",
-    "session.open",
-    "turn.stop"
+    "session.open"
   ],
   "controlTypes": [
     "auth.accepted",
@@ -69,7 +70,8 @@
     "plugin.ui.changed",
     "protocol.error",
     "resume",
-    "server.challenge"
+    "server.challenge",
+    "session.message"
   ],
   "eventTypes": [
     "answer.delta",
@@ -668,9 +670,11 @@
               "session.list",
               "session.create",
               "session.open",
+              "session.follow",
               "history.get",
               "message.content.prepare",
               "model.catalog.get",
+              "model.call.get",
               "command.list",
               "runtime.document.list",
               "runtime.document.get",
@@ -683,7 +687,6 @@
               "plugin.ui.query",
               "plugin.ui.query.prepare",
               "plugin.ui.cancel",
-              "turn.stop",
               "device.update",
               "ping"
             ],
@@ -881,79 +884,16 @@
       "MessageReplyReference": {
         "additionalProperties": false,
         "properties": {
-          "client_message_id": {
-            "anyOf": [
-              {
-                "maxLength": 36,
-                "minLength": 26,
-                "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Client Message Id"
-          },
-          "delivery_id": {
-            "anyOf": [
-              {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Delivery Id"
-          },
           "message_id": {
-            "anyOf": [
-              {
-                "maxLength": 512,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
-          },
-          "preview": {
-            "anyOf": [
-              {
-                "maxLength": 512,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Preview"
-          },
-          "role": {
-            "anyOf": [
-              {
-                "enum": [
-                  "user",
-                  "assistant"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Role"
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Message Id",
+            "type": "string"
           }
         },
+        "required": [
+          "message_id"
+        ],
         "title": "MessageReplyReference",
         "type": "object"
       },
@@ -1050,6 +990,11 @@
             "title": "Media Refs",
             "type": "array"
           },
+          "message_log_version": {
+            "const": 2,
+            "title": "Message Log Version",
+            "type": "integer"
+          },
           "model_reasoning_effort": {
             "anyOf": [
               {
@@ -1115,6 +1060,7 @@
           }
         },
         "required": [
+          "message_log_version",
           "client_message_id",
           "session_id",
           "text",
@@ -1584,6 +1530,62 @@
         "title": "ResumePayload",
         "type": "object"
       },
+      "SessionMessageControl": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_epoch": {
+            "minimum": 1,
+            "title": "Connection Epoch",
+            "type": "integer"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "minLength": 26,
+                "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-7[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12})$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "kind": {
+            "const": "control",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "title": "Payload",
+            "type": "object"
+          },
+          "type": {
+            "const": "session.message",
+            "title": "Type",
+            "type": "string"
+          },
+          "v": {
+            "const": 1,
+            "title": "V",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "kind",
+          "type",
+          "connection_epoch",
+          "payload"
+        ],
+        "title": "SessionMessageControl",
+        "type": "object"
+      },
       "ThinkingDeltaEvent": {
         "additionalProperties": false,
         "properties": {
@@ -1680,6 +1682,7 @@
               "message.send": "#/$defs/MessageSendCommand",
               "mobile.webui.content.prepare": "#/$defs/MobileWebUiContentPrepareCommand",
               "mobile.webui.release.get": "#/$defs/MobileWebUiReleaseGetCommand",
+              "model.call.get": "#/$defs/GenericCommand",
               "model.catalog.get": "#/$defs/GenericCommand",
               "ping": "#/$defs/GenericCommand",
               "plugin.ui.asset.get": "#/$defs/GenericCommand",
@@ -1694,9 +1697,9 @@
               "scheduler.job.get": "#/$defs/GenericCommand",
               "scheduler.job.list": "#/$defs/GenericCommand",
               "session.create": "#/$defs/GenericCommand",
+              "session.follow": "#/$defs/GenericCommand",
               "session.list": "#/$defs/GenericCommand",
-              "session.open": "#/$defs/GenericCommand",
-              "turn.stop": "#/$defs/GenericCommand"
+              "session.open": "#/$defs/GenericCommand"
             },
             "propertyName": "type"
           },
@@ -1737,7 +1740,8 @@
               "plugin.ui.changed": "#/$defs/PluginUiChangedControl",
               "protocol.error": "#/$defs/GenericControl",
               "resume": "#/$defs/ResumeControl",
-              "server.challenge": "#/$defs/GenericControl"
+              "server.challenge": "#/$defs/GenericControl",
+              "session.message": "#/$defs/SessionMessageControl"
             },
             "propertyName": "type"
           },
@@ -1747,6 +1751,9 @@
             },
             {
               "$ref": "#/$defs/ResumeControl"
+            },
+            {
+              "$ref": "#/$defs/SessionMessageControl"
             },
             {
               "$ref": "#/$defs/PluginUiChangedControl"
@@ -1812,6 +1819,7 @@
             "message.send": "#/$defs/MessageSendCommand",
             "mobile.webui.content.prepare": "#/$defs/MobileWebUiContentPrepareCommand",
             "mobile.webui.release.get": "#/$defs/MobileWebUiReleaseGetCommand",
+            "model.call.get": "#/$defs/GenericCommand",
             "model.catalog.get": "#/$defs/GenericCommand",
             "ping": "#/$defs/GenericCommand",
             "plugin.ui.asset.get": "#/$defs/GenericCommand",
@@ -1826,9 +1834,9 @@
             "scheduler.job.get": "#/$defs/GenericCommand",
             "scheduler.job.list": "#/$defs/GenericCommand",
             "session.create": "#/$defs/GenericCommand",
+            "session.follow": "#/$defs/GenericCommand",
             "session.list": "#/$defs/GenericCommand",
-            "session.open": "#/$defs/GenericCommand",
-            "turn.stop": "#/$defs/GenericCommand"
+            "session.open": "#/$defs/GenericCommand"
           },
           "propertyName": "type"
         },
@@ -1910,7 +1918,8 @@
             "plugin.ui.changed": "#/$defs/PluginUiChangedControl",
             "protocol.error": "#/$defs/GenericControl",
             "resume": "#/$defs/ResumeControl",
-            "server.challenge": "#/$defs/GenericControl"
+            "server.challenge": "#/$defs/GenericControl",
+            "session.message": "#/$defs/SessionMessageControl"
           },
           "propertyName": "type"
         },
@@ -1920,6 +1929,9 @@
           },
           {
             "$ref": "#/$defs/ResumeControl"
+          },
+          {
+            "$ref": "#/$defs/SessionMessageControl"
           },
           {
             "$ref": "#/$defs/PluginUiChangedControl"

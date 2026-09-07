@@ -1,4 +1,5 @@
 import asyncio
+from typing import Literal
 import shutil
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -224,7 +225,11 @@ def publish(log, reference, parent=None):
     return SummaryRecords(log.owner("plugin:compaction")).publish(record, log.reader("s"), parent=parent)
 
 
-async def record_use(log, host, record, identity, finish="continue", source="conversation"):
+async def record_use(
+    log, host, record, identity,
+    finish: Literal["continue", "complete", "quiet"] = "continue",
+    source="conversation",
+):
     async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
         binding = snapshot.composition_root.context.require(BINDINGS).bind(COMPACTION_SUMMARIES,
             {"record_ref": record.reference, "session_id": record.session_id})
@@ -274,7 +279,9 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
         from agent.plugin_composition import CHAT_MODELS
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            await project(log.reader("s").get("duplicate-use"), reader=log.reader("s"), bindings=ctx.require(BINDINGS),
+            message = log.reader("s").get("duplicate-use")
+            assert message is not None
+            await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS),
                           store=profile_store(tmp_path), models=ctx.require(CHAT_MODELS),
                           lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
@@ -367,7 +374,9 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
         store = profile_store(tmp_path)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            await project(log.reader("s").get("used"), reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
+            message = log.reader("s").get("used")
+            assert message is not None
+            await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                           models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
         assert store.is_applied(record.reference)
         assert store.latest_applied("s") == (record.reference, record.generation)
@@ -379,7 +388,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
 @pytest.mark.parametrize("phase", ["waiting", "held"])
 async def test_profile_lock_cancellation_closes_its_handle_and_allows_next_writer(tmp_path, monkeypatch, phase):
     import fcntl
-    from plugins.markdown_memory.plugin import profile_lock
+    from plugins.markdown_memory.message_plugin import profile_lock
     path = tmp_path / "profile.lock"
     blocker = path.open("a+b")
     if phase == "waiting":

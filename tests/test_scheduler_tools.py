@@ -8,6 +8,8 @@ from plugins.react.plugin import _settle
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore
 from plugins.scheduler.tools import ScheduleTool
+from plugins.tools.menu import ToolMenu
+from plugins.tools.api import Result
 from session.message import CallRef
 
 
@@ -23,8 +25,11 @@ async def test_cancel_self_commits_then_lets_original_fire_drain_its_tool(tmp_pa
     prepared = await target.prepare({"id": job.id})
     results = []
 
-    class Menu:
-        async def execute(self, call):
+    class Menu(ToolMenu):
+        def __init__(self) -> None:
+            pass
+
+        async def execute(self, call: CallRef) -> Result:
             result = await target.invoke("cancel-self", prepared)
             results.append(result)
             return result

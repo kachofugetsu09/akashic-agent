@@ -27,17 +27,11 @@ def _candidate_payloads(proposal: DutyProposal) -> list[dict[str, object]]:
 def _selected_content_refs(
     receipt: Mapping[str, object],
     item_ids: Sequence[str],
-    *,
-    allow_legacy_single: bool = False,
 ) -> tuple[Mapping[str, object], ...]:
     """Resolve the model's candidate ids only against the frozen Content batch."""
 
     raw_items = receipt.get("items")
     items = _sequence(raw_items, "Content selection items")
-    if not item_ids and allow_legacy_single:
-        if len(items) != 1:
-            raise RuntimeError("legacy Content selection 必须恰好包含一个 member")
-        return (_mapping(items[0].get("ref"), "Content selection ref"),)
     if not item_ids:
         raise ValueError("Content share_content 必须引用至少一个 candidate_id")
     candidates: dict[str, Mapping[str, object]] = {}

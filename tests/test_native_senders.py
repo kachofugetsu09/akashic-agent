@@ -70,7 +70,9 @@ async def qq_server(respond):
                 await connection.send(json.dumps(response))
 
     async with serve(handle, "127.0.0.1", 0) as server:
-        yield f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/api", calls, headers
+        sockets = tuple(server.sockets)
+        assert sockets
+        yield f"ws://127.0.0.1:{sockets[0].getsockname()[1]}/api", calls, headers
 
 
 @asynccontextmanager
@@ -269,7 +271,7 @@ async def test_native_sender_reads_all_artifacts_before_any_provider_effect(tmp_
             execution.prepare(log.reader("chat"), msg, (Sink(name=channel, binding_id=binding, address="123"),))
             try:
                 receipt = await execution.send(msg.message_id, channel)
-                assert receipt.status == "rejected" and "本地材料" in receipt.error
+                assert receipt.status == "rejected" and isinstance(receipt.error, str) and "本地材料" in receipt.error
                 assert calls == []
                 path.write_bytes(b"file payload")
                 assert (await execution.retry(msg.message_id, channel)).status == "delivered"
@@ -295,7 +297,7 @@ async def test_native_address_rejection_and_credential_revocation_have_no_effect
             execution.prepare(log.reader("chat"), msg, (Sink(name=channel, binding_id=binding, address="not-a-chat"),))
             try:
                 receipt = await execution.send(msg.message_id, channel)
-                assert receipt.status == "rejected" and "地址" in receipt.error
+                assert receipt.status == "rejected" and isinstance(receipt.error, str) and "地址" in receipt.error
                 assert records.read(msg.message_id, channel)[1].phase == "rejected"
                 config.write_text(config.read_text().replace("wire-fixture-secret", "revoked-replacement"))
                 # 显式 retry 仍使用原 binding；不能悄悄切到新 token。

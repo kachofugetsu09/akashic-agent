@@ -1,273 +1,188 @@
 from __future__ import annotations
 
-import asyncio
-import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
-from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.core.passive_turn import DefaultReasoner
-from agent.core.runtime_support import ToolDiscoveryState
-from agent.core.types import ContextRequest, ReasonerResult
-from agent.looping.ports import LLMConfig
-from agent.plugin_composition import ModelRole
-from plugins.compaction.engine import (
-    CommittedContextUnit,
-    ContextPayloadSegments,
-)
-from agent.prompting import AssembledTurnInput
-from plugins.compaction.runtime import CompactionProjection
-from session.manager import SessionManager
-from session.store import CompactionHead
-from tests_scenarios.contracts.oracles import (
-    assert_no_forbidden_writes,
-    assert_rows_unchanged,
-)
-from tests.model_plugin_fakes import BoundChatModelFake
+from agent.plugin_composition.models import LLMResponse
+from plugins.content.plugin import check_text
+from plugins.models.projection import check_facts
+from session.embedding_store import MessageEmbeddingStore
+from session.log import MessageLog
+from session.message import ContentPart, Input, Output
+from tests.test_message_react import runtime
+from tests_scenarios.contracts.oracles import assert_no_forbidden_writes, assert_rows_unchanged
 
 
-def _snapshot(
-    connection: sqlite3.Connection,
-    query: str,
-    parameters: tuple[object, ...] = (),
-) -> list[tuple[object, ...]]:
-    return [tuple(row) for row in connection.execute(query, parameters).fetchall()]
-
-
-def _seed_embeddings(manager: SessionManager, message_ids: list[str]) -> None:
-    connection = manager._store._conn
-    connection.execute("""
-        CREATE TABLE message_embeddings (
-            message_id TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            model TEXT NOT NULL,
-            embedding BLOB NOT NULL,
-            dim INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (message_id, model)
+def _seed_history(log: MessageLog) -> tuple:
+    """通过真实 MessageLog writer 建立已结算历史。"""
+    input_writer = log.writer(
+        "s", author="user", source="conversation", body_types=(Input,),
+        content={"text": check_text},
+        metadata_keys=frozenset({"semantic_marker"}),
+        update_metadata=lambda _body: {"semantic_marker": "history"},
+    )
+    output_writer = log.writer(
+        "s", author="assistant", source="conversation", body_types=(Output,),
+        content={"text": check_text, "model.facts": check_facts},
+    )
+    for index in range(3):
+        input_writer.append(
+            f"old-input-{index}",
+            Input((ContentPart("text", f"old input {index}"),)),
         )
-        """)
-    connection.executemany(
-        """
-        INSERT INTO message_embeddings
-            (message_id, content_hash, model, embedding, dim, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            (
-                message_id,
-                f"hash:{message_id}",
-                "gate-model",
-                f"vector:{message_id}".encode(),
-                1,
-                "before",
-                "before",
+        output_writer.append(
+            f"old-output-{index}",
+            Output((ContentPart("text", f"old output {index}"),), "complete"),
+        )
+    return log.reader("s").snapshot()
+
+
+def _text(message) -> str:
+    part = message.body.parts[0]
+    assert isinstance(part, ContentPart)
+    assert isinstance(part.value, str)
+    return part.value
+
+
+def _vector_snapshot(store: MessageEmbeddingStore, messages) -> dict[str, list[float]]:
+    """通过 embedding owner 读取指定历史消息的向量。"""
+    values: dict[str, list[float]] = {}
+    for message in messages:
+        vector = store.get(
+            message_id=message.message_id,
+            content=_text(message),
+            model="gate-model",
+        )
+        assert vector is not None
+        values[message.message_id] = vector
+    return values
+
+
+def _message_rows(messages) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (message.message_id, message.session_id, message.seq, message.author,
+         message.source, message.body)
+        for message in messages
+    )
+
+
+def _embedding_rows(vectors: dict[str, list[float]]) -> tuple[tuple[object, ...], ...]:
+    return tuple((message_id, tuple(vector)) for message_id, vector in sorted(vectors.items()))
+
+
+@pytest.mark.asyncio
+async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(tmp_path: Path) -> None:
+    """真实回复只投影历史，不改写原消息或向量。"""
+    requests: list[object] = []
+
+    async def complete(request):
+        requests.append(request)
+        return LLMResponse("ok")
+
+    async def invoke(_key, _arguments):
+        pytest.fail("this history oracle has no tool effects")
+
+    db_path = tmp_path / "sessions.db"
+    with_runtime = runtime(tmp_path, complete, invoke)
+    async with with_runtime as (conversation, log, _models, _run):
+        before = _seed_history(log)
+        before_metadata = log.reader("s").metadata()
+        embeddings = MessageEmbeddingStore(db_path)
+        for message in before:
+            embeddings.upsert(
+                message_id=message.message_id,
+                content=_text(message),
+                model="gate-model",
+                embedding=[float(message.seq), 1.0],
             )
-            for message_id in message_ids
-        ],
-    )
-    connection.commit()
+        before_vectors = _vector_snapshot(embeddings, before)
+        before_message_rows = _message_rows(before)
+        before_embedding_rows = _embedding_rows(before_vectors)
+        statements: list[str] = []
+        log._connection.set_trace_callback(statements.append)  # pyright: ignore[reportPrivateUsage]
+        await conversation.accept("current", Input((ContentPart("text", "continue"),)))
+        task = await conversation.start(_run)
+        assert task is not None
+        await task.join()
+        after = log.reader("s").snapshot()
+        log._connection.set_trace_callback(None)  # pyright: ignore[reportPrivateUsage]
 
-
-def _messages_snapshot(
-    manager: SessionManager, session_key: str
-) -> list[tuple[object, ...]]:
-    return _snapshot(
-        manager._store._conn,
-        """
-        SELECT id, session_key, seq, role, content, tool_chain, extra, ts
-        FROM messages
-        WHERE session_key = ?
-        ORDER BY seq
-        """,
-        (session_key,),
-    )
-
-
-def _embeddings_snapshot(manager: SessionManager) -> list[tuple[object, ...]]:
-    return _snapshot(
-        manager._store._conn,
-        """
-        SELECT message_id, content_hash, model, embedding, dim, created_at, updated_at
-        FROM message_embeddings
-        ORDER BY message_id, model
-        """,
-    )
-
-
-def _seed_session(workspace: Path) -> tuple[SessionManager, str]:
-    manager = SessionManager(workspace)
-    session_key = "semantic:context-retry"
-    session = manager.get_or_create(session_key)
-    for index in range(6):
-        role = "user" if index % 2 == 0 else "assistant"
-        session.add_message(role, f"message-{index}")
-    session.last_consolidated = 4
-    manager.save(session)
-    _seed_embeddings(
-        manager,
-        [cast(str, message["id"]) for message in session.messages],
-    )
-    return manager, session_key
-
-
-class _Provider:
-    context_window = 100_000
-
-    def __init__(self) -> None:
-        self.chat = AsyncMock()
-
-    def estimate_context_tokens(self, messages: list[dict], tools: list[dict]) -> int:
-        return len(messages) + len(tools)
-
-    def estimate_appended_message_tokens(self, messages: list[dict]) -> int:
-        return len(messages)
-
-
-def _reasoner(history_windows: list[int]) -> DefaultReasoner:
-    def render(request: ContextRequest, **_kwargs: object) -> AssembledTurnInput:
-        history_windows.append(len(request.history))
-        return AssembledTurnInput(
-            system_prompt="semantic contract",
-            messages=[
-                {"role": "system", "content": "semantic contract"},
-                *request.history,
-                {"role": "user", "content": request.current_message},
-            ],
-        )
-
-    tools = SimpleNamespace(
-        get_always_on_names=lambda: set(),
-        get_deferred_names=lambda visible=None: {"builtin": [], "mcp": {}},
-        get_schemas=lambda names=None: [],
-        get_tool=lambda name: None,
-    )
-    provider = _Provider()
-    reasoner = DefaultReasoner(
-        llm_config=LLMConfig(max_iterations=1, max_tokens=128),
-        tools=cast(Any, tools),
-        discovery=ToolDiscoveryState(),
-        tool_search_enabled=False,
-        context=cast(Any, SimpleNamespace(render=render)),
-    )
-    reasoner._test_agent_model = BoundChatModelFake(provider, model="semantic-gate")
-    reasoner._test_fallback_model = BoundChatModelFake(
-        provider,
-        model="semantic-gate",
-        role=ModelRole.DEFAULT,
-    )
-    return reasoner
-
-
-def _message() -> SimpleNamespace:
-    return SimpleNamespace(
-        content="continue",
-        media=[],
-        channel="semantic",
-        chat_id="context-retry",
-        timestamp=datetime.now(timezone.utc),
-        metadata={},
-    )
-
-
-def test_full_context_projection_preserves_append_only_history(tmp_path: Path) -> None:
-    manager, session_key = _seed_session(tmp_path)
-    session = manager.get_or_create(session_key)
-    before_runtime_messages = list(session.messages)
-    before_last_consolidated = session.last_consolidated
-    before_messages = _messages_snapshot(manager, session_key)
-    before_embeddings = _embeddings_snapshot(manager)
-    before_highwater = max(cast(int, row[2]) for row in before_messages)
-    statements: list[str] = []
-    manager._store._conn.set_trace_callback(statements.append)
-    windows: list[int] = []
-    reasoner = _reasoner(windows)
-    reasoner.run = AsyncMock(
-        return_value=ReasonerResult(reply="ok")
-    )
-
-    result = asyncio.run(
-        reasoner.run_turn(
-            msg=_message(),
-            session=session,
-            agent_model=reasoner._test_agent_model,
-            fallback_model=reasoner._test_fallback_model,
-            base_history=list(session.messages),
-        )
-    )
-
-    assert result.reply == "ok"
-    assert windows == [6]
-    assert result.context_retry["selected_plan"] == "full_context"
-    assert session.messages == before_runtime_messages
-    assert session.last_consolidated == before_last_consolidated
-    assert_rows_unchanged(
-        before_messages,
-        _messages_snapshot(manager, session_key),
-        state_name="sessions.db/messages",
-    )
-    assert_rows_unchanged(
-        before_embeddings,
-        _embeddings_snapshot(manager),
-        state_name="message_embeddings",
-    )
-    assert_no_forbidden_writes(
-        statements,
-        tables=("messages", "message_embeddings"),
-    )
-
-    manager._store._conn.set_trace_callback(None)
-    manager.close()
-    reloaded_manager = SessionManager(tmp_path)
-    reloaded = reloaded_manager.get_or_create(session_key)
-    assert [message["content"] for message in reloaded.messages] == [
-        f"message-{index}" for index in range(6)
-    ]
-    assert reloaded.last_consolidated == before_last_consolidated
-    reloaded.add_message("assistant", "message-6")
-    reloaded_manager.save(reloaded)
-    assert reloaded.messages[-1]["seq"] == before_highwater + 1
-    reloaded_manager.close()
-
-
-def test_history_oracle_rejects_historical_delete_mutant(tmp_path: Path) -> None:
-    manager, session_key = _seed_session(tmp_path)
-    before_messages = _messages_snapshot(manager, session_key)
-    before_embeddings = _embeddings_snapshot(manager)
-    statements: list[str] = []
-    connection = manager._store._conn
-    connection.set_trace_callback(statements.append)
-
-    connection.execute(
-        "DELETE FROM message_embeddings WHERE message_id IN (?, ?, ?)",
-        tuple(str(row[0]) for row in before_messages[:3]),
-    )
-    connection.execute(
-        "DELETE FROM messages WHERE session_key = ? AND seq < ?",
-        (session_key, 3),
-    )
-    connection.commit()
-
-    with pytest.raises(AssertionError, match="既有行发生删改"):
         assert_rows_unchanged(
-            before_messages,
-            _messages_snapshot(manager, session_key),
+            before_message_rows,
+            _message_rows(after[: len(before)]),
             state_name="sessions.db/messages",
         )
-    with pytest.raises(AssertionError, match="既有行发生删改"):
-        assert_rows_unchanged(
-            before_embeddings,
-            _embeddings_snapshot(manager),
-            state_name="message_embeddings",
-        )
-    with pytest.raises(AssertionError, match="受保护状态删改"):
+        assert len(after) == len(before) + 2
+        assert log.reader("s").metadata() == before_metadata
+        assert len(requests) == 1
+        assert "old input 0" in str(requests[0])
+        assert "old output 2" in str(requests[0])
         assert_no_forbidden_writes(
             statements,
             tables=("messages", "message_embeddings"),
         )
-    manager.close()
+        after_vectors = _vector_snapshot(embeddings, before)
+        assert_rows_unchanged(
+            before_embedding_rows,
+            _embedding_rows(after_vectors),
+            state_name="message_embeddings",
+        )
+        embeddings.close()
+        highwater = after[-1].seq
+
+    reopened = MessageLog(db_path)
+    try:
+        assert reopened.reader("s").snapshot() == after
+        writer = reopened.writer(
+            "s", author="user", source="conversation", body_types=(Input,),
+            content={"text": check_text},
+        )
+        appended = writer.append("after-reopen", Input((ContentPart("text", "after restart"),)))
+        assert appended.seq == highwater + 1
+        assert reopened.reader("s").head() == appended.seq
+    finally:
+        reopened.close()
+
+
+def test_history_oracle_rejects_historical_delete_mutant(tmp_path: Path) -> None:
+    """追加 oracle 同时发现消息和向量被删除。"""
+    log = MessageLog(tmp_path / "sessions.db")
+    try:
+        before = _seed_history(log)
+        embeddings = MessageEmbeddingStore(tmp_path / "sessions.db")
+        for message in before:
+            embeddings.upsert(
+                message_id=message.message_id,
+                content=_text(message),
+                model="gate-model",
+                embedding=[float(message.seq), 1.0],
+            )
+        before_vectors = _vector_snapshot(embeddings, before)
+        before_message_rows = _message_rows(before)
+        before_embedding_rows = _embedding_rows(before_vectors)
+        with log._lock:  # pyright: ignore[reportPrivateUsage]
+            log._connection.execute("DELETE FROM message_embeddings WHERE message_id = ?", (before[0].message_id,))  # pyright: ignore[reportPrivateUsage]
+            log._connection.execute("DELETE FROM messages WHERE id = ?", (before[0].message_id,))  # pyright: ignore[reportPrivateUsage]
+            log._connection.commit()  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(AssertionError, match="既有行发生删改"):
+            assert_rows_unchanged(
+                before_message_rows,
+                _message_rows(log.reader("s").snapshot()),
+                state_name="sessions.db/messages",
+            )
+        current_vectors = {
+            message.message_id: vector
+            for message in before[1:]
+            for vector in [_vector_snapshot(embeddings, (message,))[message.message_id]]
+        }
+        with pytest.raises(AssertionError, match="既有行发生删改"):
+            assert_rows_unchanged(
+                before_embedding_rows,
+                _embedding_rows(current_vectors),
+                state_name="message_embeddings",
+            )
+        assert before_vectors[before[0].message_id] == [0.0, 1.0]
+        embeddings.close()
+    finally:
+        log.close()

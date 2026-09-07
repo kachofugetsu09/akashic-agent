@@ -32,6 +32,43 @@
   line-height: 1.6;
 }
 
+.wake-flow-target {
+  color: var(--ak-color-text-secondary);
+  font-size: 12px;
+}
+
+.wake-message-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wake-message-list li {
+  border-top: 1px solid var(--ak-color-border-default);
+  padding-top: 10px;
+}
+
+.wake-message-list header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.wake-message-list small,
+.wake-message-list code {
+  color: var(--ak-color-text-muted);
+  font-size: 11px;
+}
+
+.wake-message-list p {
+  margin: 6px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .wake-run-header h2 {
   margin: 4px 0 0;
   font-size: 24px;

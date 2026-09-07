@@ -17,6 +17,7 @@ def migration(monkeypatch):
     monkeypatch.setattr(yoyo, "step", lambda callback: callback)
     path = Path(__file__).parents[1] / "migrations/yoyo/20260905_02_owner_records.py"
     spec = importlib.util.spec_from_file_location("owner_records_migration_test", path)
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

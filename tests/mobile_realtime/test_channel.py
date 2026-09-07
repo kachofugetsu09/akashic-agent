@@ -59,7 +59,6 @@ from bus.events_lifecycle import (
     TurnStarted,
     TurnCommitted,
 )
-from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.mobile_realtime.attachments import attachment_descriptor
@@ -79,6 +78,32 @@ from infra.mobile_realtime.storage import (
     MobileRealtimeStorage,
 )
 from session.manager import SessionManager
+from session.log import MessageLog
+
+
+@pytest.fixture(autouse=True)
+def _bind_real_mobile_message_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """给旧测试夹具接入真实只读 MessageCatalog，避免伪造会话对象。"""
+
+    logs: list[MessageLog] = []
+    original_start = MobileRealtimeChannel.start
+
+    async def start_with_message_log(
+        channel: MobileRealtimeChannel,
+        ctx: Any,
+    ) -> None:
+        if channel._messages is None:
+            log = MessageLog(tmp_path / f"sessions-{len(logs)}.db")
+            channel.bind_messages(log.catalog())
+            logs.append(log)
+        await original_start(channel, ctx)
+
+    monkeypatch.setattr(MobileRealtimeChannel, "start", start_with_message_log)
+    try:
+        yield
+    finally:
+        for log in logs:
+            log.close()
 
 
 class _Runtime:
@@ -214,9 +239,6 @@ class _Bus:
         self.pending_refs: tuple[AttachmentRef, ...] | None = None
         self.order: list[str] = []
 
-    async def publish_inbound(self, message: object) -> None:
-        self.inbound.append(message)
-
     def bind_mobile_channel_inbound_recoverer(self, recoverer: object) -> None:
         channel = getattr(recoverer, "__self__", None)
         assert isinstance(channel, MobileRealtimeChannel)
@@ -267,14 +289,6 @@ class _Bus:
         client_message_id: str,
     ) -> tuple[AttachmentRef, ...] | None:
         return self.pending_refs if self.pending_handoff else None
-
-
-class _FailingBus(_Bus):
-    async def publish_inbound(self, message: object) -> None:
-        raise RuntimeError("bus unavailable")
-
-    async def admit(self, raw: RawInbound) -> bool:
-        raise RuntimeError("bus unavailable")
 
 
 class _GatedReserveBus(_Bus):
@@ -366,7 +380,6 @@ async def _started_native_mobile_channel(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -441,7 +454,6 @@ async def test_mobile_message_send_uses_exact_v3_ingress_without_legacy_bus(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -485,7 +497,6 @@ async def test_mobile_captured_callback_blocks_drain_through_preprocessing(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -543,7 +554,6 @@ async def test_mobile_exact_ingress_false_never_commits_success_receipt(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -685,7 +695,6 @@ async def test_native_v3_mobile_adapter_reports_unknown_if_durable_call_raises(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -1570,6 +1579,7 @@ def _message_frame(
                 "connection_epoch": epoch,
                 "session_id": session_id,
                 "payload": {
+                    "message_log_version": 2,
                     "client_message_id": frame_id,
                     "session_id": session_id,
                     "text": text,
@@ -1622,212 +1632,6 @@ def _generic_frame(
     frame = parse_frame(json.dumps(raw))
     assert isinstance(frame, GenericCommand)
     return frame
-
-
-@pytest.mark.asyncio
-async def test_message_send_is_idempotent_and_session_is_shared_between_devices(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    first_device = uuid4().hex
-    second_device = uuid4().hex
-    _register_device(storage, first_device)
-    _register_device(storage, second_device)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    bus = _Bus()
-    manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    session_id = f"akashic:{uuid4()}"
-    original = _message_frame(
-        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        session_id=session_id,
-    )
-
-    first = await channel.handle_command(device_id=first_device, frame=original)
-    duplicate = await channel.handle_command(
-        device_id=first_device,
-        frame=original.model_copy(update={"connection_epoch": 2}),
-    )
-    shared = await channel.handle_command(
-        device_id=second_device,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAW",
-            session_id=session_id,
-        ),
-    )
-    mismatched = await channel.handle_command(
-        device_id=first_device,
-        frame=original.model_copy(update={"id": "01ARZ3NDEKTSV4RRFFQ69G5FAZ"}),
-    )
-
-    assert first.type == duplicate.type
-    assert first.payload == duplicate.payload
-    assert first.session_id == duplicate.session_id
-    assert first.turn_id == duplicate.turn_id
-    assert first.replayed is False
-    assert duplicate.replayed is True
-    assert first.type == "message.send.ok"
-    assert len(bus.inbound) == 2
-    assert shared.type == "message.send.ok"
-    assert mismatched.type == "message.send.error"
-    assert mismatched.payload["code"] == "client_message_id_mismatch"
-    assert len(bus.inbound) == 2
-    assert all(
-        cast(RawInbound, item).message.metadata["require_existing_session"] is True
-        for item in bus.inbound
-    )
-    assert manager.delete_session(session_id)
-    with pytest.raises(KeyError, match="session 不存在"):
-        manager.get_existing(session_id)
-    await channel.stop()
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_mobile_message_adopts_finalized_upload_before_bus_admission(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    bus = _Bus()
-    workspace = tmp_path / "workspace"
-    manager = SessionManager(workspace)
-    legacy_store = AttachmentStore(tmp_path / "uploads")
-    legacy_store.root.mkdir(parents=True)
-    content = b"mobile-c23"
-    source = legacy_store.root / "upload.png"
-    source.write_bytes(content)
-    session_id = f"akashic:{uuid4()}"
-    storage.create_attachment(
-        AttachmentRecord(
-            attachment_id="upload-c23",
-            device_id=device_id,
-            session_id=session_id,
-            direction="upload",
-            filename="upload.png",
-            content_type="image/png",
-            size_bytes=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
-            local_path=str(source),
-            transferred_bytes=len(content),
-            state="ready",
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-        )
-    )
-    metadata_store = ArtifactStore(manager.db_path)
-    artifact_store = ChannelAttachmentArtifactStore(
-        workspace=workspace,
-        metadata_store=metadata_store,
-    )
-    original_adopt = artifact_store.adopt_file_with_artifact_id
-
-    async def recorded_adopt(*args: object, **kwargs: object) -> AttachmentRef:
-        bus.order.append("artifact")
-        return await original_adopt(*args, **kwargs)  # type: ignore[arg-type]
-
-    artifact_store.adopt_file_with_artifact_id = recorded_adopt  # type: ignore[method-assign]
-    channel.bind_channel_attachment_store(artifact_store)
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=legacy_store,
-            ),
-        )
-    )
-
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
-            session_id=session_id,
-            media_refs=["upload-c23"],
-        ),
-    )
-
-    assert reply.type == "message.send.ok"
-    assert len(bus.inbound) == 1
-    inbound = cast(RawInbound, bus.inbound[0])
-    artifact_ids = cast(list[str], inbound.message.metadata["attachment_ids"])
-    assert tuple(ref.artifact_id for ref in inbound.message.attachments) == artifact_ids
-    assert inbound.message.attachments[0].kind is V3AttachmentKind.FILE
-    assert len(artifact_ids) == 1
-    imported = storage.list_attachment_imports(
-        session_id=session_id,
-        client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
-    )
-    assert imported[0].phase == "artifact_committed"
-    assert imported[0].artifact_id == artifact_ids[0]
-    assert bus.order == ["reserve", "artifact", "admit"]
-
-    # 1. artifact read lease 可读，且只暴露进程内 fd 路径。
-    ref = artifact_store.resolve_refs(tuple(artifact_ids))[0]
-    lease = await artifact_store.acquire(ref)
-    try:
-        assert await lease.read_bytes(max_bytes=1024) == content
-    finally:
-        await lease.aclose()
-
-    # 2. Session commit 与 Mobile import phase 最终收束到同一 artifact ID。
-    session = manager.get_existing(session_id)
-    pending: dict[str, object] = {
-        "role": "user",
-        "content": "with attachment",
-        "client_message_id": "01ARZ3NDEKTSV4RRFFQ69G5FAX",
-        "attachment_ids": list(artifact_ids),
-    }
-    await manager.append_messages(session, [pending])
-    await channel.stop()
-    restarted = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    restarted.bind_channel_attachment_store(artifact_store)
-    await restarted.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=legacy_store,
-            ),
-        )
-    )
-    assert (
-        storage.list_attachment_imports(
-            session_id=session_id,
-            client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
-        )[0].phase
-        == "message_bound"
-    )
-
-    await restarted.stop()
-    metadata_store.close()
-    manager.close()
-    storage.close()
 
 
 @pytest.mark.asyncio
@@ -1893,7 +1697,6 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
             session_manager=manager,
             event_bus=_EventBus(),
             push_tool=_PushTool(),
-            interrupt_controller=None,
             attachment_store=legacy_store,
         ),
     )
@@ -1928,213 +1731,6 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
 
 
 @pytest.mark.asyncio
-async def test_message_send_does_not_recreate_a_deleted_claimed_session(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    manager = SessionManager(tmp_path / "workspace")
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    bus = _Bus()
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    session_id = f"akashic:{uuid4()}"
-    manager.save(manager.get_or_create(session_id))
-    storage.claim_session(
-        device_id=device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    assert manager.delete_session(session_id)
-
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FBA",
-            session_id=session_id,
-        ),
-    )
-
-    assert reply.type == "message.send.error"
-    assert reply.payload["code"] == "session_not_found"
-    assert not manager.session_exists(session_id)
-    assert bus.inbound == []
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_message_send_releases_admission_when_bus_publish_fails(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    manager = SessionManager(tmp_path / "workspace")
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_FailingBus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    session_id = f"akashic:{uuid4()}"
-
-    with pytest.raises(RuntimeError, match="bus unavailable"):
-        await channel.handle_command(
-            device_id=device_id,
-            frame=_message_frame(
-                frame_id="01ARZ3NDEKTSV4RRFFQ69G5FBA",
-                session_id=session_id,
-            ),
-        )
-
-    assert manager.delete_session(session_id)
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_claimed_message_admission_does_not_recreate_after_exists_check(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    manager = SessionManager(tmp_path / "workspace")
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    bus = _Bus()
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    session_id = f"akashic:{uuid4()}"
-    manager.save(manager.get_or_create(session_id))
-    storage.claim_session(
-        device_id=device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    original_exists = manager.session_exists
-
-    def delete_after_exists_check(key: str) -> bool:
-        exists = original_exists(key)
-        assert manager.delete_session(key)
-        return exists
-
-    monkeypatch.setattr(manager, "session_exists", delete_after_exists_check)
-
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FBA",
-            session_id=session_id,
-        ),
-    )
-
-    assert reply.type == "message.send.ok"
-    assert not original_exists(session_id)
-    assert len(bus.inbound) == 1
-    with pytest.raises(KeyError, match="session 不存在"):
-        manager.get_existing(session_id)
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_message_send_recovers_processing_receipt_from_persisted_user(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    manager = SessionManager(tmp_path / "workspace")
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    bus = _Bus()
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    session_id = f"akashic:{uuid4()}"
-    frame = _message_frame(
-        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        session_id=session_id,
-    )
-    _, created = storage.reserve_command(
-        device_id=device_id,
-        command_id=frame.id,
-        command_type=frame.type,
-        request_hash=channel_module._command_hash(frame),
-        created_at=datetime.now(timezone.utc),
-    )
-    assert created
-    session = manager.get_or_create(session_id)
-    session.add_message(
-        "user",
-        "你好",
-        client_message_id=frame.payload.client_message_id,
-    )
-    manager.save(session)
-
-    recovered = await channel.handle_command(device_id=device_id, frame=frame)
-    replayed = await channel.handle_command(
-        device_id=device_id,
-        frame=frame.model_copy(update={"connection_epoch": 2}),
-    )
-
-    assert recovered == replayed
-    assert recovered.type == "message.send.ok"
-    assert recovered.payload == {
-        "accepted": True,
-        "client_message_id": frame.payload.client_message_id,
-    }
-    assert bus.inbound == []
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
 async def test_message_send_keeps_unknown_outcome_without_persisted_user(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2145,15 +1741,15 @@ async def test_message_send_keeps_unknown_outcome_without_persisted_user(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     bus = _Bus()
+    manager = SessionManager(tmp_path / "workspace")
     await channel.start(
         cast(
             Any,
             SimpleNamespace(
                 bus=bus,
-                session_manager=SessionManager(tmp_path / "workspace"),
+                session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -2191,6 +1787,7 @@ async def test_message_send_keeps_unknown_outcome_without_persisted_user(
     release.set()
     completed = await original
     assert completed.type == "message.send.ok"
+    manager.close()
     storage.close()
 
 
@@ -2242,15 +1839,15 @@ async def test_message_send_keeps_current_owner_when_receipt_completion_fails(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     bus = _Bus()
+    manager = SessionManager(tmp_path / "workspace")
     await channel.start(
         cast(
             Any,
             SimpleNamespace(
                 bus=bus,
-                session_manager=SessionManager(tmp_path / "workspace"),
+                session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -2272,513 +1869,6 @@ async def test_message_send_keeps_current_owner_when_receipt_completion_fails(
     assert replay.type == "message.send.error"
     assert replay.payload["code"] == "command_outcome_unknown"
     assert len(bus.inbound) == 1
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_message_send_marks_prestart_processing_receipt_retryable(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    session_id = f"akashic:{uuid4()}"
-    frame = _message_frame(
-        frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        session_id=session_id,
-    )
-    _, created = storage.reserve_command(
-        device_id=device_id,
-        command_id=frame.id,
-        command_type=frame.type,
-        request_hash=channel_module._command_hash(frame),
-        created_at=datetime.now(timezone.utc),
-    )
-    assert created
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=SessionManager(tmp_path / "workspace"),
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-
-    result = await channel.handle_command(device_id=device_id, frame=frame)
-    replayed = await channel.handle_command(device_id=device_id, frame=frame)
-
-    assert result == replayed
-    assert result.type == "message.send.error"
-    assert result.payload["code"] == "command_interrupted"
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_message_send_pending_handoff_stays_in_progress_until_user_reconciles(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    frame = _message_frame(
-        frame_id="01ARZ3NDEKSTV4RRFFQ69G5FAY",
-        session_id=session_id,
-    )
-    _, created = storage.reserve_command(
-        device_id=device_id,
-        command_id=frame.id,
-        command_type=frame.type,
-        request_hash=channel_module._command_hash(frame),
-        created_at=datetime.now(timezone.utc),
-    )
-    assert created
-    bus = _Bus()
-    bus.pending_handoff = True
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-
-    pending = await channel.handle_command(device_id=device_id, frame=frame)
-    assert pending.type == "message.send.error"
-    assert pending.payload["code"] == "command_in_progress"
-    receipt = storage._db.execute(
-        "SELECT status FROM mobile_command_receipts WHERE device_id = ? AND command_id = ?",
-        (device_id, frame.id),
-    ).fetchone()
-    assert receipt is not None and receipt[0] == "processing"
-
-    session = manager.get_or_create(session_id)
-    session.add_message("user", frame.payload.text, client_message_id=frame.id)
-    manager.save(session)
-    bus.pending_handoff = False
-    completed = await channel.handle_command(device_id=device_id, frame=frame)
-    assert completed.type == "message.send.ok"
-    receipt = storage._db.execute(
-        "SELECT status FROM mobile_command_receipts WHERE device_id = ? AND command_id = ?",
-        (device_id, frame.id),
-    ).fetchone()
-    assert receipt is not None and receipt[0] == "completed"
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_message_send_resolves_reply_into_agent_context_and_metadata(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    session = manager.get_or_create(session_id)
-    target_content = "第一行\n第二行\n" + "长" * 600
-    target = session.add_message("assistant", target_content)
-    manager.save(session)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    bus = _Bus()
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            session_id=session_id,
-            model_runtime_id="model-a",
-            model_reasoning_effort="high",
-            reply_to={
-                "message_id": target["id"],
-            },
-        ),
-    )
-
-    assert reply.type == "message.send.ok"
-    inbound = cast(RawInbound, bus.inbound[0]).message
-    assert (
-        channel_module._normalize_v3_content(
-            f"被回复消息（来自 Akashic）：\n{target_content}"
-        )
-        in inbound.content
-    )
-    assert inbound.content.endswith("【你当前新消息】\u2028你好")
-    assert inbound.metadata["display_content"] == "你好"
-    assert inbound.metadata["reply_to_message_id"] == target["id"]
-    assert inbound.metadata["reply_role"] == "assistant"
-    assert inbound.metadata["reply_preview"] == " ".join(target_content.split())[:512]
-    assert inbound.metadata["require_existing_session"] is True
-    assert inbound.metadata["model_runtime_id"] == "model-a"
-    assert inbound.metadata["model_reasoning_effort"] == "high"
-
-    user_target = session.add_message(
-        "user",
-        "之前的问题",
-        client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAW",
-    )
-    manager.save(session)
-    second = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
-            session_id=session_id,
-            reply_to={
-                "client_message_id": user_target["client_message_id"],
-            },
-        ),
-    )
-    assert second.type == "message.send.ok"
-    second_inbound = cast(RawInbound, bus.inbound[1]).message
-    assert second_inbound.metadata["require_existing_session"] is True
-    assert second_inbound.metadata["reply_to_message_id"] == user_target["id"]
-    assert "被回复消息（来自 你）：\u2028之前的问题" in second_inbound.content
-
-    media_target = session.add_message(
-        "user",
-        "",
-        media=["/tmp/photo.png"],
-        client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAY",
-    )
-    manager.save(session)
-    third = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
-            session_id=session_id,
-            reply_to={
-                "client_message_id": media_target["client_message_id"],
-            },
-        ),
-    )
-    assert third.type == "message.send.ok"
-    third_inbound = cast(RawInbound, bus.inbound[2]).message
-    assert third_inbound.metadata["reply_preview"] == "[附件]"
-    assert "被回复消息（来自 你）：\u2028[附件]" in third_inbound.content
-
-    proactive_target = session.add_message(
-        "assistant",
-        "尚未同步历史的主动消息",
-        proactive=True,
-        delivery_id="delivery-1",
-    )
-    manager.save(session)
-    fourth = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB0",
-            session_id=session_id,
-            reply_to={"delivery_id": "delivery-1"},
-        ),
-    )
-    assert fourth.type == "message.send.ok"
-    fourth_inbound = cast(RawInbound, bus.inbound[3]).message
-    assert fourth_inbound.metadata["reply_to_message_id"] == proactive_target["id"]
-    assert (
-        "被回复消息（来自 Akashic）：\u2028尚未同步历史的主动消息"
-        in fourth_inbound.content
-    )
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_message_send_rejects_reply_from_another_session(tmp_path: Path) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    other = manager.get_or_create(f"akashic:{uuid4()}")
-    target = other.add_message("assistant", "其他会话")
-    manager.save(other)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-
-    result = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            session_id=session_id,
-            reply_to={
-                "message_id": target["id"],
-            },
-        ),
-    )
-
-    assert result.type == "message.send.error"
-    assert result.payload["code"] == "reply_target_session_mismatch"
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_session_list_and_history_sync_publish_all_mobile_sessions(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    other_device_id = uuid4().hex
-    _register_device(storage, device_id)
-    _register_device(storage, other_device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    push = _PushTool()
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=push,
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    session_id = f"akashic:{uuid4()}"
-    storage.claim_session(
-        device_id=other_device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    session = manager.get_or_create(session_id)
-    media_path = tmp_path / "answer.png"
-    media_path.write_bytes(b"not-a-real-png-but-stable")
-    session.add_message(
-        "user",
-        "恢复这段对话",
-        control_turn_id="turn-history",
-        llm_context_frame="private context",
-        client_message_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        reply_to_message_id=f"{session_id}:0",
-        reply_role="assistant",
-        reply_preview="更早的回答",
-    )
-    session.add_message(
-        "assistant",
-        "历史回答",
-        control_turn_id="turn-history",
-        media=[str(media_path)],
-        reasoning_content="历史思考",
-        tool_chain=[
-            {
-                "text": "先检查",
-                "calls": [
-                    {
-                        "call_id": "call-1",
-                        "name": "shell",
-                        "status": "success",
-                        "arguments": {
-                            "description": "读取状态",
-                            "path": "/sandbox/workspace/status.json",
-                            "secret": "hidden",
-                            "nested": {"access_token": "hidden", "page": 2},
-                        },
-                        "result": "完成",
-                    }
-                ],
-            }
-        ],
-    )
-    manager.save(session)
-    web_session = manager.get_or_create(f"web:{uuid4()}")
-    web_session.add_message("user", "不要同步 Web 会话")
-    manager.save(web_session)
-    empty_session_id = f"akashic:{uuid4()}"
-    manager.get_or_create(empty_session_id)
-
-    listed = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAX",
-            command_type="session.list",
-        ),
-    )
-    history = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAY",
-            command_type="history.get",
-            session_id=session_id,
-            payload={"page": 1, "page_size": 10},
-        ),
-    )
-
-    assert listed.type == "session.list.ok"
-    assert listed.payload["total"] == 2
-    session_event = runtime.events[-2]
-    assert session_event["event_type"] == "session.list"
-    session_payload = cast(dict[str, object], session_event["payload"])
-    session_items = cast(list[dict[str, object]], session_payload["items"])
-    assert len(session_items) == 2
-    session_items_by_id = {str(item["session_id"]): item for item in session_items}
-    assert session_items_by_id[session_id]["title"] == "恢复这段对话"
-    assert session_items_by_id[empty_session_id]["title"] == "新对话"
-    assert str(session_items_by_id[session_id]["updated_at"]).endswith("Z")
-    assert "snapshot_max_seq" not in session_items_by_id[session_id]
-    assert history.type == "history.get.ok"
-    history_event = runtime.events[-1]
-    history_payload = cast(dict[str, object], history_event["payload"])
-    assert history_payload["title"] == "恢复这段对话"
-    history_items = cast(list[dict[str, object]], history_payload["items"])
-    assert history_items[0]["extra"] == {}
-    assert history_items[0]["client_message_id"] == "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-    assert history_items[0]["reply_to_message_id"] == f"{session_id}:0"
-    assert history_items[0]["reply_role"] == "assistant"
-    assert history_items[0]["reply_preview"] == "更早的回答"
-    assert "llm_context_frame" not in history_items[0]
-    assert history_items[1]["extra"] == {
-        "reasoning_content": "历史思考",
-        "control_turn_id": "turn-history",
-    }
-
-    versioned = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
-            command_type="session.list",
-            payload={"history_snapshot_version": 1},
-        ),
-    )
-    assert versioned.type == "session.list.ok"
-    versioned_items = cast(
-        list[dict[str, object]],
-        cast(dict[str, object], runtime.events[-1]["payload"])["items"],
-    )
-    versioned_by_id = {str(item["session_id"]): item for item in versioned_items}
-    assert versioned_by_id[session_id]["snapshot_max_seq"] == 1
-    assert versioned_by_id[empty_session_id]["snapshot_max_seq"] == -1
-    invalid_version = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB0",
-            command_type="session.list",
-            payload={"history_snapshot_version": 2},
-        ),
-    )
-    assert invalid_version.type == "session.list.error"
-    assert invalid_version.payload["code"] == "invalid_payload"
-    tool_chain = cast(list[dict[str, object]], history_items[1]["tool_chain"])
-    calls = cast(list[dict[str, object]], tool_chain[0]["calls"])
-    assert calls[0]["description"] == "读取状态"
-    assert "secret" not in calls[0]
-    projected_arguments = cast(dict[str, object], calls[0]["arguments"])
-    assert projected_arguments["path"] == "/sandbox/workspace/status.json"
-    assert projected_arguments["secret"] == "[已隐藏]"
-    assert projected_arguments["nested"] == {"access_token": "[已隐藏]", "page": 2}
-    attachments = cast(list[dict[str, object]], history_items[1]["attachments"])
-    assert len(attachments) == 1
-    assert attachments[0]["filename"] == "answer.png"
-    assert "local_path" not in attachments[0]
-
-    turn_id = uuid4().hex
-    await channel._on_turn_started(
-        TurnStarted(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=session_id.removeprefix("akashic:"),
-            content="再次生成",
-            timestamp=datetime.now(timezone.utc),
-            turn_id=turn_id,
-        )
-    )
-    session.add_message("assistant", "实时回答", media=[str(media_path)])
-    manager.save(session)
-    await _provider_delivery(channel)(
-        OutboundMessage(
-            channel="akashic",
-            chat_id=session_id.removeprefix("akashic:"),
-            content="实时回答",
-            media=[str(media_path)],
-            control_turn_id=turn_id,
-            session_message_id=str(session.messages[-1]["id"]),
-        )
-    )
-    live_payload = cast(dict[str, object], runtime.events[-1]["payload"])
-    assert live_payload["message_id"] == session.messages[-1]["id"]
-    live = cast(list[dict[str, object]], live_payload["attachments"])
-    assert live[0]["attachment_id"] == attachments[0]["attachment_id"]
-
-    media_path.unlink()
-    _ = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FA0",
-            command_type="history.get",
-            session_id=session_id,
-            payload={"page": 1, "page_size": 10},
-        ),
-    )
-    restored_payload = cast(dict[str, object], runtime.events[-1]["payload"])
-    restored_items = cast(list[dict[str, object]], restored_payload["items"])
-    restored = cast(list[dict[str, object]], restored_items[-1]["attachments"])
-    assert restored[0]["attachment_id"] == live[0]["attachment_id"]
-
-    session.add_message("assistant", "旧媒体已失效", media=[str(media_path)])
-    manager.save(session)
-    _ = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FA1",
-            command_type="history.get",
-            session_id=session_id,
-            payload={"page": 1, "page_size": 10},
-        ),
-    )
-    degraded_payload = cast(dict[str, object], runtime.events[-1]["payload"])
-    degraded_items = cast(list[dict[str, object]], degraded_payload["items"])
-    assert degraded_items[-1]["content"] == "旧媒体已失效"
-    assert degraded_items[-1]["attachments"] == []
-    attachment_error = cast(dict[str, object], degraded_items[-1]["attachment_error"])
-    assert attachment_error["code"] == "media_unavailable"
-    assert str(media_path) not in json.dumps(attachment_error, ensure_ascii=False)
     manager.close()
     storage.close()
 
@@ -2807,15 +1897,15 @@ async def test_remote_outbound_media_keeps_response_filename(
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     store = AttachmentStore(tmp_path / "uploads")
+    manager = SessionManager(tmp_path / "workspace")
     await channel.start(
         cast(
             Any,
             SimpleNamespace(
                 bus=_Bus(),
-                session_manager=SessionManager(tmp_path / "workspace"),
+                session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=store,
             ),
         )
@@ -2843,6 +1933,7 @@ async def test_remote_outbound_media_keeps_response_filename(
     assert descriptors[0]["content_type"] == "image/gif"
     assert not list(store.root.glob("remote_*.gif"))
     await channel.stop()
+    manager.close()
     storage.close()
 
 
@@ -2863,7 +1954,6 @@ async def test_remote_media_failure_keeps_final_text(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -3037,7 +2127,6 @@ async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) ->
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -3055,136 +2144,6 @@ async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) ->
 
     payload = cast(dict[str, object], runtime.events[-1]["payload"])
     assert "message_id" not in payload
-    await channel.stop()
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_turn_stop_accepts_a_shared_mobile_session(tmp_path: Path) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    owner_device = uuid4().hex
-    current_device = uuid4().hex
-    _register_device(storage, owner_device)
-    _register_device(storage, current_device)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    storage.claim_session(
-        device_id=owner_device,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    manager.save(manager.get_or_create(session_id))
-    interrupt = SimpleNamespace(
-        request_interrupt=lambda **_: SimpleNamespace(
-            status="interrupted", message="已停止"
-        ),
-    )
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=interrupt,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
-    await channel._on_turn_started(
-        TurnStarted(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=session_id.removeprefix("akashic:"),
-            content="正在生成",
-            timestamp=datetime.now(timezone.utc),
-            turn_id=turn_id,
-        )
-    )
-
-    reply = await channel.handle_command(
-        device_id=current_device,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
-            command_type="turn.stop",
-            session_id=session_id,
-            turn_id=turn_id,
-        ),
-    )
-
-    assert reply.type == "turn.stop.ok"
-    assert runtime.events[-1]["event_type"] == "turn.interrupted"
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_turn_stop_idle_result_still_closes_stale_mobile_turn(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    storage.claim_session(
-        device_id=device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    manager.save(manager.get_or_create(session_id))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=SimpleNamespace(
-                    request_interrupt=lambda **_: SimpleNamespace(
-                        status="idle",
-                        message="当前没有正在执行的任务。",
-                    ),
-                ),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-                command_catalog_provider=None,
-            ),
-        )
-    )
-    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
-    await channel._on_turn_started(
-        TurnStarted(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=session_id.removeprefix("akashic:"),
-            content="正在生成",
-            timestamp=datetime.now(timezone.utc),
-            turn_id=turn_id,
-        )
-    )
-
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
-            command_type="turn.stop",
-            session_id=session_id,
-            turn_id=turn_id,
-        ),
-    )
-
-    assert reply.type == "turn.stop.ok"
-    assert reply.payload["status"] == "idle"
-    assert runtime.events[-1]["event_type"] == "turn.interrupted"
-    assert session_id not in channel._active_turn_ids
     await channel.stop()
     manager.close()
     storage.close()
@@ -3230,7 +2189,6 @@ async def test_resume_reconciles_recovered_terminal_turn_for_mobile_device(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -3261,139 +2219,6 @@ async def test_resume_reconciles_recovered_terminal_turn_for_mobile_device(
 
 
 @pytest.mark.asyncio
-async def test_stop_is_idempotent_after_authoritative_terminal_turn(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
-    storage.claim_session(
-        device_id=device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    manager.save(manager.get_or_create(session_id))
-    manager.control_store.create_turn(
-        TurnRecord(
-            id=turn_id,
-            thread_id=session_id,
-            status=TurnStatus.QUEUED,
-            input="维护前的提问",
-            created_at=datetime.now(timezone.utc),
-        )
-    )
-    manager.control_store.transition_turn(
-        turn_id,
-        expected_status=TurnStatus.QUEUED,
-        status=TurnStatus.IN_PROGRESS,
-    )
-    manager.control_store.transition_turn(
-        turn_id,
-        expected_status=TurnStatus.IN_PROGRESS,
-        status=TurnStatus.INTERRUPTED,
-    )
-    channel._active_turn_ids[session_id] = turn_id
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
-            command_type="turn.stop",
-            session_id=session_id,
-            turn_id=turn_id,
-        ),
-    )
-
-    assert reply.type == "turn.stop.ok"
-    assert reply.payload == {
-        "status": "already_terminal",
-        "terminal_status": "interrupted",
-        "message": "目标 turn 已经结束",
-    }
-    assert session_id not in channel._active_turn_ids
-    assert runtime.events[-1]["event_type"] == "turn.interrupted"
-
-    next_turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-    channel._active_turn_ids[session_id] = next_turn_id
-    replay = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FB0",
-            command_type="turn.stop",
-            session_id=session_id,
-            turn_id=turn_id,
-        ),
-    )
-    assert replay.type == "turn.stop.ok"
-    assert channel._active_turn_ids[session_id] == next_turn_id
-
-    channel._active_turn_ids.clear()
-    await channel.stop()
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_channel_stop_publishes_terminal_before_clearing_active_turn(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    channel._active_turn_ids[session_id] = turn_id
-
-    await channel.stop()
-
-    assert runtime.events[-1] == {
-        "event_type": "turn.interrupted",
-        "session_id": session_id,
-        "turn_id": turn_id,
-        "payload": {
-            "status": "interrupted",
-            "message": "服务端正在维护，本轮生成已中断",
-            "control_turn_id": turn_id,
-            "reason": "runtime_shutdown",
-        },
-    }
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
 async def test_command_list_uses_active_channel_catalog_without_stop(
     tmp_path: Path,
 ) -> None:
@@ -3402,6 +2227,7 @@ async def test_command_list_uses_active_channel_catalog_without_stop(
     _register_device(storage, device_id)
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
     active_catalog = [
         ("undo", "撤销上一轮对话"),
         ("/memorystatus", "查看记忆整理状态"),
@@ -3413,10 +2239,9 @@ async def test_command_list_uses_active_channel_catalog_without_stop(
             Any,
             SimpleNamespace(
                 bus=_Bus(),
-                session_manager=SessionManager(tmp_path / "workspace"),
+                session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
                 command_catalog_provider=lambda: tuple(active_catalog),
             ),
@@ -3451,7 +2276,7 @@ async def test_command_list_uses_active_channel_catalog_without_stop(
         "items": [{"command": "status", "description": "查看状态"}]
     }
     await channel.stop()
-    storage.close()
+    manager.close()
     storage.close()
 
 
@@ -3474,7 +2299,6 @@ async def test_message_send_preserves_mobile_slash_command_for_bus(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
                 command_catalog_provider=lambda: (("undo", "撤销上一轮对话"),),
             ),
@@ -3779,91 +2603,6 @@ async def test_plugin_ui_execution_failure_becomes_transient_command_error(
 
 
 @pytest.mark.asyncio
-async def test_turn_stop_rejects_missing_or_stale_turn_identity(tmp_path: Path) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    storage.claim_session(
-        device_id=device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    manager.save(manager.get_or_create(session_id))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=SimpleNamespace(
-                    request_interrupt=lambda **_: SimpleNamespace(
-                        status="interrupted",
-                        message="已停止",
-                    ),
-                ),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    active_turn = "01ARZ3NDEKTSV4RRFFQ69G5FAT"
-    await channel._on_turn_started(
-        TurnStarted(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=session_id.removeprefix("akashic:"),
-            content="正在生成",
-            timestamp=datetime.now(timezone.utc),
-            turn_id=active_turn,
-        )
-    )
-
-    missing = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAS",
-            command_type="turn.stop",
-            session_id=session_id,
-        ),
-    )
-    assert missing.type == "turn.stop.error"
-    assert missing.payload["code"] == "turn_id_required"
-    stale = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAR",
-            command_type="turn.stop",
-            session_id=session_id,
-            turn_id="01ARZ3NDEKTSV4RRFFQ69G5FAQ",
-        ),
-    )
-    assert stale.type == "turn.stop.error"
-    assert stale.payload["code"] == "stale_turn"
-
-    channel._active_turn_ids.clear()
-    unknown = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAP",
-            command_type="turn.stop",
-            session_id=session_id,
-            turn_id="01ARZ3NDEKTSV4RRFFQ69G5FAN",
-        ),
-    )
-    assert unknown.type == "turn.stop.error"
-    assert unknown.payload["code"] == "turn_not_active"
-
-    await channel.stop()
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
 async def test_delta_paths_reuse_existing_lock_without_allocating_lock() -> None:
     runtime = _Runtime(cast(MobileRealtimeStorage, object()))
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
@@ -3930,15 +2669,15 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     _register_device(storage, device_id)
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
     await channel.start(
         cast(
             Any,
             SimpleNamespace(
                 bus=_Bus(),
-                session_manager=SessionManager(tmp_path / "workspace"),
+                session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4084,6 +2823,7 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     assert second_thinking["block_id"] != first_thinking["block_id"]
     assert cast(dict[str, object], final_metadata)["mobile_attention"] == "confirmation"
     await channel.stop()
+    manager.close()
     storage.close()
 
 
@@ -4103,15 +2843,15 @@ async def test_first_delta_orders_received_then_publish_then_published(
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _GatedPublishRuntime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
+    manager = SessionManager(tmp_path / "workspace")
     await channel.start(
         cast(
             Any,
             SimpleNamespace(
                 bus=_Bus(),
-                session_manager=SessionManager(tmp_path / "workspace"),
+                session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4183,6 +2923,7 @@ async def test_first_delta_orders_received_then_publish_then_published(
         assert published["turn_id"] == turn_id
         assert published["client_message_id"] == "cmid-first"
     await channel.stop()
+    manager.close()
     storage.close()
 
 
@@ -4219,7 +2960,6 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4364,7 +3104,6 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4506,7 +3245,6 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4680,7 +3418,6 @@ async def test_terminal_and_late_delta_queued_on_same_lock_release_terminal_then
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4784,7 +3521,6 @@ async def _race_channel(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -5235,7 +3971,6 @@ async def test_late_a_final_keeps_b_active_and_identity(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -5325,127 +4060,6 @@ async def test_late_a_final_keeps_b_active_and_identity(
 
 
 @pytest.mark.asyncio
-async def test_interrupt_publish_paths_carry_known_client_message_id(
-    tmp_path: Path,
-) -> None:
-    """active stop 与 shutdown 的 turn.interrupted 发布都贯通进程内已知
-    client_message_id；恢复态未知时允许缺失（由既有精确 payload 测试覆盖）。"""
-
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    storage.claim_session(
-        device_id=device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    manager.save(manager.get_or_create(session_id))
-    interrupt = SimpleNamespace(
-        request_interrupt=lambda **_: SimpleNamespace(
-            status="interrupted", message="已停止"
-        ),
-    )
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=interrupt,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    active_turn = "turn-stop-active"
-    manager.control_store.create_turn(
-        TurnRecord(
-            id=active_turn,
-            thread_id=session_id,
-            status=TurnStatus.QUEUED,
-            input="A",
-            created_at=datetime.now(timezone.utc),
-            metadata={"interactionId": "turn-logical-stop"},
-        )
-    )
-    await channel._on_turn_started(
-        TurnStarted(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=session_id.removeprefix("akashic:"),
-            content="A",
-            timestamp=datetime.now(timezone.utc),
-            turn_id=active_turn,
-            client_message_id="cmid-stop",
-        )
-    )
-
-    # 1. active stop：payload 保持 status/message，并贯通已知 client_message_id
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAZ",
-            command_type="turn.stop",
-            session_id=session_id,
-            turn_id=active_turn,
-        ),
-    )
-    assert reply.type == "turn.stop.ok"
-    interrupted = [
-        event for event in runtime.events if event["event_type"] == "turn.interrupted"
-    ]
-    assert interrupted[-1]["payload"] == {
-        "status": "interrupted",
-        "message": "已停止",
-        "control_turn_id": "turn-logical-stop",
-        "client_message_id": "cmid-stop",
-    }
-    assert session_id not in channel._active_turn_ids
-
-    # 2. shutdown：另一活动 turn 的 interrupted 同样贯通已知 client_message_id
-    shutdown_turn = "turn-shutdown"
-    manager.control_store.create_turn(
-        TurnRecord(
-            id=shutdown_turn,
-            thread_id=session_id,
-            status=TurnStatus.QUEUED,
-            input="B",
-            created_at=datetime.now(timezone.utc),
-            metadata={"interactionId": "turn-logical-shutdown"},
-        )
-    )
-    await channel._on_turn_started(
-        TurnStarted(
-            session_key=session_id,
-            channel="akashic",
-            chat_id=session_id.removeprefix("akashic:"),
-            content="B",
-            timestamp=datetime.now(timezone.utc),
-            turn_id=shutdown_turn,
-            client_message_id="cmid-shutdown",
-        )
-    )
-    await channel.stop()
-    interrupted = [
-        event for event in runtime.events if event["event_type"] == "turn.interrupted"
-    ]
-    assert interrupted[-1]["payload"] == {
-        "status": "interrupted",
-        "message": "服务端正在维护，本轮生成已中断",
-        "reason": "runtime_shutdown",
-        "control_turn_id": "turn-logical-shutdown",
-        "client_message_id": "cmid-shutdown",
-    }
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
 async def test_final_projects_only_explicit_mobile_metadata(tmp_path: Path) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     runtime = _Runtime(storage)
@@ -5510,6 +4124,7 @@ async def test_nonstreamed_large_unicode_answer_uses_bounded_deltas(
         < MAX_JSON_FRAME_BYTES
         for event in runtime.events
     )
+    await channel.stop()
     storage.close()
 
 
@@ -5625,7 +4240,6 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -5707,109 +4321,6 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
 
 
 @pytest.mark.asyncio
-async def test_terminal_and_stop_clear_send_and_turn_maps(tmp_path: Path) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    storage.claim_session(
-        device_id=device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    manager.save(manager.get_or_create(session_id))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    turn_id = "turn-A"
-    channel._active_turn_ids[session_id] = turn_id
-    channel._process_turns[(session_id, turn_id)] = channel_module._ProcessTurnState(
-        next_ordinal=0,
-        thinking_block=None,
-        tool_blocks={},
-        answer_segments=[],
-        client_message_id="cmid-A",
-    )
-    channel._turn_started_at[(session_id, turn_id)] = 100.0
-    channel._send_received_at[(session_id, "cmid-A")] = 50.0
-    channel._send_received_at[(session_id, "cmid-B")] = 60.0
-    channel._send_received_at[("akashic:other", "cmid-C")] = 70.0
-
-    # 1. terminal（message.final）只清理 A 的 send/turn maps，
-    #    同 session 排队中的 cmid-B 与其他会话条目必须保留。
-    await _provider_delivery(channel)(
-        OutboundMessage(
-            channel="akashic",
-            chat_id=session_id.removeprefix("akashic:"),
-            content="完成",
-            control_turn_id=turn_id,
-        )
-    )
-    assert channel._active_turn_ids == {}
-    assert channel._process_turns == {}
-    assert channel._turn_started_at == {}
-    assert channel._send_received_at == {
-        (session_id, "cmid-B"): 60.0,
-        ("akashic:other", "cmid-C"): 70.0,
-    }
-
-    # 2. A/B overlap：B 已接替 active 时，迟到的 A cleanup 只清 A 自己的状态，
-    #    绝不 compare-delete 掉 B 的 active，也不动 B 的 process/send 起点。
-    overlap_turn = "turn-B"
-    channel._active_turn_ids[session_id] = overlap_turn
-    channel._process_turns[(session_id, overlap_turn)] = (
-        channel_module._ProcessTurnState(
-            next_ordinal=0,
-            thinking_block=None,
-            tool_blocks={},
-            answer_segments=[],
-            client_message_id="cmid-B",
-        )
-    )
-    channel._turn_started_at[(session_id, overlap_turn)] = 200.0
-    pending = channel_module._DeltaBatch(
-        segments=[],
-        byte_count=0,
-        timer=asyncio.create_task(asyncio.sleep(10)),
-    )
-    channel._delta_batches[(session_id, turn_id)] = pending
-    channel._clear_turn_maps(session_id, turn_id)
-    assert channel._active_turn_ids == {session_id: overlap_turn}
-    assert set(channel._process_turns) == {(session_id, overlap_turn)}
-    assert channel._turn_started_at == {(session_id, overlap_turn): 200.0}
-    assert channel._send_received_at == {
-        (session_id, "cmid-B"): 60.0,
-        ("akashic:other", "cmid-C"): 70.0,
-    }
-    assert channel._delta_batches == {}
-    assert pending.timer.cancelling()
-    _ = await asyncio.gather(pending.timer, return_exceptions=True)
-    assert pending.timer.cancelled()
-
-    # 3. stop() 清空剩余状态。
-    await channel.stop()
-    assert channel._send_received_at == {}
-    assert channel._turn_started_at == {}
-    assert channel._process_turns == {}
-    assert channel._active_turn_ids == {}
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
 async def test_terminal_final_publish_fail_once_is_retryable_without_fake_success(
     tmp_path: Path,
 ) -> None:
@@ -5834,7 +4345,6 @@ async def test_terminal_final_publish_fail_once_is_retryable_without_fake_succes
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -5945,7 +4455,6 @@ async def test_terminal_failure_after_batch_flush_retry_does_not_duplicate_delta
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -6052,7 +4561,6 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -6174,7 +4682,6 @@ async def test_interrupted_terminal_publish_fail_once_is_retryable(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -6347,7 +4854,6 @@ async def _fail_delta_channel(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )

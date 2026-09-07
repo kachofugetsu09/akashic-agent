@@ -777,8 +777,6 @@ class WebChatChannel:
             return await self._follow_session(websocket, request_id, payload, tasks)
         if frame_type == "message.send":
             return await self._send_user_message(websocket, request_id, payload)
-        if frame_type == "turn.stop":
-            return await self._stop_turn(websocket, request_id, payload)
         if frame_type == "ping":
             await websocket.send_json({"type": "pong", "request_id": request_id})
             return ""
@@ -1012,38 +1010,6 @@ class WebChatChannel:
             raise
         finally:
             adapter._finish_inbound()
-        return session_key
-
-    async def _stop_turn(
-        self,
-        websocket: WebSocket,
-        request_id: str,
-        payload: dict[str, Any],
-    ) -> str:
-        ctx = self._require_ctx()
-        try:
-            session_key = self._normalize_session_id(payload.get("session_id"))
-        except ValueError as error:
-            await self._send_error(websocket, request_id, str(error))
-            return ""
-        if not session_key:
-            await self._send_error(websocket, request_id, "session_id 缺失或无效")
-            return ""
-        if ctx.interrupt_controller is None:
-            await self._send_error(websocket, request_id, "当前未启用中断功能")
-            return session_key
-        result = ctx.interrupt_controller.request_interrupt(
-            session_key=session_key,
-            sender="web",
-            command="/stop",
-        )
-        await websocket.send_json({
-            "type": "turn.interrupted",
-            "request_id": request_id,
-            "session_id": session_key,
-            "message": result.message,
-            "status": result.status,
-        })
         return session_key
 
     async def _on_turn_started(self, event: TurnStarted) -> None:

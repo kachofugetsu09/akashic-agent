@@ -378,6 +378,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         ctx.require(DRIFT_PROPOSALS).propose("duty", "1", {"summary": "my interests"}, now)
         runtime = Runtime(ctx, Config(delivery=DeliveryTarget(channel="test", recipient="room", session_id="test:room")))
         original = runtime.capture("b" * 32, await runtime.duties.check(now), now)
+        assert original is not None
         assert original.model_id == "chosen-original"
         source.accept(original)
         select("new", "changed-later")
@@ -385,6 +386,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         assert await asyncio.wait_for(task.join(), 10) == "shared"
         assert control["models"] == [("chosen-original", "high")]
         phase = log.reader(original.session_id).get(original.phase_id("drift"))
+        assert phase is not None
         cue = Learning(ctx.require(TURN_PROJECTION), owner="akasha").text(phase)
         assert "my interests" in cue
         assert str(control["calls"][0].messages).count("my interests") == 1
@@ -570,6 +572,7 @@ async def test_missing_target_only_maintains_pool_then_reload_can_admit_original
                 await running
         enabled = Runtime(ctx, Config(delivery=DeliveryTarget(channel="test", recipient="room", session_id="test:room")))
         original = enabled.capture("c" * 32, await enabled.duties.check(now), now)
+        assert original is not None
         enabled.source.accept(original)
         assert await enabled._run(original.flow_id) == "shared"
         assert len(control["calls"]) == 1

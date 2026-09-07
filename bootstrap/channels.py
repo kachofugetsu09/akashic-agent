@@ -4,7 +4,6 @@ import logging
 from collections.abc import Callable
 
 from agent.config_models import Config
-from agent.looping.interrupt import InterruptController
 from bootstrap.channel_host import ChannelHost
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
@@ -26,7 +25,6 @@ async def start_channels(
     command_catalog_provider: Callable[
         [], tuple[tuple[str, str], ...]
     ] | None = None,
-    interrupt_controller: InterruptController | None = None,
     extra_channels: list[Channel] | None = None,
 ) -> ChannelHost:
     attachment_store = AttachmentStore(workspace / "uploads")
@@ -37,7 +35,6 @@ async def start_channels(
             event_bus=event_bus,
             attachment_store=attachment_store,
             http_resources=http_resources,
-            interrupt_controller=interrupt_controller,
             log=logging.getLogger(f"channels.{channel.name}"),
             command_catalog_provider=command_catalog_provider,
         )
@@ -55,7 +52,6 @@ async def start_channels(
             allow_from=tg.allow_from,
             command_catalog_provider=command_catalog_provider,
             event_bus=event_bus,
-            interrupt_controller=interrupt_controller,
             channel_name=tg.channel_name,
         ), requires_sender=True)
 
@@ -72,7 +68,6 @@ async def start_channels(
             websocket_open_timeout_seconds=qq.websocket_open_timeout_seconds,
             http_requester=http_resources.external_default,
             event_bus=event_bus,
-            interrupt_controller=interrupt_controller,
         ), requires_sender=True)
 
     for channel in extra_channels or []:

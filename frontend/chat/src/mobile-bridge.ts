@@ -12,9 +12,9 @@ export const MOBILE_NATIVE_METHODS = [
   "retryDownloadedAttachment", "touchDownloadedAttachment", "openDownloadedAttachment",
   "shareDownloadedAttachment", "saveDownloadedAttachment", "setWebHistoryActive", "dismissError",
   "shareText", "saveComposerDraft", "commitSharedText", "rejectSharedText", "sendMessage",
-  "copyText", "performActionHaptic", "sendCommand", "refreshRuntimeInspection",
+  "copyText", "performActionHaptic", "sendCommand", "sendSessionCommand", "refreshRuntimeInspection",
   "openRuntimeDocument", "openRuntimeMcp", "openRuntimeJob", "clearRuntimeInspectionDetail",
-  "stopTurn", "readModelCallStats", "queryPluginUi", "cancelPluginUiOwner", "setTheme", "setModelSelection", "reportHealthy",
+  "readModelCallStats", "queryPluginUi", "cancelPluginUiOwner", "setTheme", "setModelSelection", "reportHealthy",
 ] as const;
 
 export type MobileNativeMethod = (typeof MOBILE_NATIVE_METHODS)[number];
@@ -27,9 +27,9 @@ const METHOD_ARITY: Record<MobileNativeMethod, number> = {
   retryDownloadedAttachment: 1, touchDownloadedAttachment: 1, openDownloadedAttachment: 1,
   shareDownloadedAttachment: 1, saveDownloadedAttachment: 1, setWebHistoryActive: 1, dismissError: 0,
   shareText: 2, saveComposerDraft: 4, commitSharedText: 4, rejectSharedText: 2, sendMessage: 6,
-  copyText: 1, performActionHaptic: 0, sendCommand: 1, refreshRuntimeInspection: 0,
+  copyText: 1, performActionHaptic: 0, sendCommand: 1, sendSessionCommand: 2, refreshRuntimeInspection: 0,
   openRuntimeDocument: 1, openRuntimeMcp: 2, openRuntimeJob: 1, clearRuntimeInspectionDetail: 0,
-  stopTurn: 0, readModelCallStats: 2, queryPluginUi: 10, cancelPluginUiOwner: 1, setTheme: 1, setModelSelection: 2,
+  readModelCallStats: 2, queryPluginUi: 10, cancelPluginUiOwner: 1, setTheme: 1, setModelSelection: 2,
   reportHealthy: 0,
 };
 

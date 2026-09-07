@@ -2,15 +2,29 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import hashlib
+import json
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncGenerator
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPPING, Context
+from agent.plugin_composition import (
+    CHAT_MODELS,
+    RUNTIME_STARTED,
+    RUNTIME_STOPPING,
+    Context,
+    ModelRequest,
+    ModelRole,
+)
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.models import ChatModels
+from agent.llm_json import load_json_object_loose
 from agent.turn_effects import PostCommitEffect
+from infra.persistence.json_store import atomic_write_text
 from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, SummaryRecord
 from plugins.compaction.message_summary import source_text, summary_groups
 from plugins.content.api import legacy_post_commit_effect
@@ -20,8 +34,7 @@ from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from session.log import MessageCatalog, MessageReader
 from session.message import ContentPart, Message, Output
 
-from .plugin import prepare_profile_draft, profile_lock, start_store, check_draft
-from .store import DEFAULT_SELF_MD, MarkdownProfileStore
+from .store import DEFAULT_SELF_MD, MarkdownProfileStore, content_digest
 
 api_version = 3
 name = "markdown_memory"
@@ -35,9 +48,364 @@ workspace_files = (
 )
 
 
+_MEMORY_HEADINGS = (
+    "# 用户长期记忆",
+    "## 用户事实",
+    "## 用户偏好",
+    "## 用户明确要求长期记住的关键内容",
+)
+_MEMORY_OPTIONAL_HEADING = "## 助手操作上下文"
+_SELF_HEADINGS = (
+    "# Akashic 的自我认知",
+    "## 人格与形象",
+    "## 我对当前用户的理解",
+    "## 我们关系的定义",
+)
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sources: tuple[str, ...] = Field(default=("conversation", "programmatic"), min_length=1)
+
+
+async def prepare_profile_draft(
+    source: str,
+    store: MarkdownProfileStore,
+    chat_models: ChatModels,
+) -> dict[str, object]:
+    current_memory = store.read_memory()
+    current_self = store.read_self()
+    prompt = _profile_prompt(current_memory, current_self, source)
+    async with chat_models.independent_execution() as execution:
+        provider = execution.chat(ModelRole.DEFAULT)
+        output_cap = provider.descriptor.capabilities.max_output_tokens or 4_096
+        response = await provider.complete(
+            ModelRequest(
+                messages=[{"role": "user", "content": prompt}],
+                max_output_tokens=min(4_096, output_cap),
+                disable_reasoning=True,
+            )
+        )
+    raw = load_json_object_loose(response.content or "")
+    if not isinstance(raw, dict):
+        raise ValueError("Markdown memory 模型必须返回 JSON object")
+    memory = raw.get("memory")
+    self_profile = raw.get("self")
+    if not isinstance(memory, str) or not isinstance(self_profile, str):
+        raise ValueError("Markdown memory 模型缺少 memory/self 字符串")
+    memory = memory.strip()
+    self_profile = self_profile.strip() + "\n"
+    if memory:
+        memory += "\n"
+    _validate_memory(memory)
+    _validate_self(self_profile)
+    _validate_preserved_bullets(current_memory, memory, document="MEMORY.md")
+    _validate_preserved_bullets(current_self, self_profile, document="SELF.md")
+    return {
+        "version": 1,
+        "memory": memory,
+        "self": self_profile,
+        "memory_before": current_memory,
+        "self_before": current_self,
+        "memory_before_digest": content_digest(current_memory),
+        "self_before_digest": content_digest(current_self),
+        "memory_after_digest": content_digest(memory),
+        "self_after_digest": content_digest(self_profile),
+    }
+
+
+async def start_store(
+    store: MarkdownProfileStore,
+    lock_path: Path,
+    pending_path: Path,
+    snapshot_path: Path,
+    retired_path: Path,
+) -> None:
+    """Recover document commits, then retire the old pending queue."""
+
+    async with profile_lock(lock_path):
+        for source_ref in store.pending_source_refs():
+            store.apply_pending(source_ref)
+    await _migrate_pending(
+        store,
+        lock_path,
+        pending_path,
+        snapshot_path,
+        retired_path,
+    )
+
+
+async def _migrate_pending(
+    store: MarkdownProfileStore,
+    lock_path: Path,
+    pending_path: Path,
+    snapshot_path: Path,
+    retired_path: Path,
+) -> None:
+    """Merge exact retired queue bytes once, then preserve their file boundary."""
+
+    async with profile_lock(lock_path):
+        migration = store.read_legacy_pending_migration()
+        if migration is None:
+            pending = (
+                pending_path.read_text(encoding="utf-8")
+                if pending_path.exists()
+                else ""
+            )
+            snapshot = (
+                snapshot_path.read_text(encoding="utf-8")
+                if snapshot_path.exists()
+                else ""
+            )
+            if not pending and not snapshot:
+                return
+            migration = {
+                "version": 1,
+                "pending": pending,
+                "pending_digest": content_digest(pending),
+                "snapshot": snapshot,
+                "snapshot_digest": content_digest(snapshot),
+            }
+            store.write_legacy_pending_migration(migration)
+        pending = migration.get("pending")
+        snapshot = migration.get("snapshot")
+        pending_digest = migration.get("pending_digest")
+        snapshot_digest = migration.get("snapshot_digest")
+        if not all(
+            isinstance(value, str)
+            for value in (pending, snapshot, pending_digest, snapshot_digest)
+        ):
+            raise ValueError("legacy PENDING migration receipt schema 无效")
+        assert isinstance(pending, str)
+        assert isinstance(snapshot, str)
+        if (
+            content_digest(pending) != pending_digest
+            or content_digest(snapshot) != snapshot_digest
+        ):
+            raise ValueError("legacy PENDING migration receipt digest 无效")
+        encoded_migration = json.dumps(
+            migration,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(encoded_migration.encode("utf-8")).hexdigest()
+        source_ref = f"legacy-pending:{digest}"
+        combined = "\n".join(item for item in (snapshot, pending) if item)
+        if not store.is_applied(source_ref):
+            draft = store.read_draft(source_ref)
+            if draft is None:
+                draft = _prepare_legacy_draft(combined, store)
+                _ = store.write_draft(
+                    source_ref,
+                    draft,
+                    session_key="legacy-pending",
+                    generation=0,
+                )
+            check_draft(draft)
+            store.apply_draft(source_ref, draft)
+        archive = json.dumps(
+            {"source_ref": source_ref, **migration},
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ) + "\n"
+        if retired_path.exists() and retired_path.read_text(encoding="utf-8") != archive:
+            raise RuntimeError("PENDING retired archive 内容冲突")
+        current_pending = pending_path.read_text(encoding="utf-8") if pending_path.exists() else ""
+        current_snapshot = (
+            snapshot_path.read_text(encoding="utf-8") if snapshot_path.exists() else ""
+        )
+        if current_pending not in {"", pending}:
+            raise RuntimeError("PENDING.md 在退休 receipt 后出现新内容，拒绝清空")
+        if current_snapshot not in {"", snapshot}:
+            raise RuntimeError("PENDING.snapshot.md 在退休 receipt 后出现新内容，拒绝清空")
+        atomic_write_text(retired_path, archive, domain="pending_retirement")
+        atomic_write_text(pending_path, "", domain="pending_retirement")
+        atomic_write_text(snapshot_path, "", domain="pending_retirement")
+        store.mark_legacy_pending_retired(source_ref)
+
+
+
+def _prepare_legacy_draft(
+    pending_items: str,
+    store: MarkdownProfileStore,
+) -> dict[str, object]:
+    """Preserve every retired pending line without another model interpretation."""
+
+    current_memory = store.read_memory()
+    current_self = store.read_self()
+    memory = _merge_legacy_pending(current_memory, pending_items)
+    _validate_memory(memory)
+    _validate_self(current_self)
+    return {
+        "version": 1,
+        "memory": memory,
+        "self": current_self,
+        "memory_before": current_memory,
+        "self_before": current_self,
+        "memory_before_digest": content_digest(current_memory),
+        "self_before_digest": content_digest(current_self),
+        "memory_after_digest": content_digest(memory),
+        "self_after_digest": content_digest(current_self),
+    }
+
+
+def _merge_legacy_pending(memory: str, pending_items: str) -> str:
+    """Map old tagged lines into the fixed MEMORY schema without dropping text."""
+
+    if not pending_items.strip():
+        return memory
+    content = memory
+    if not content.strip():
+        content = "\n\n".join(_MEMORY_HEADINGS) + "\n"
+    grouped: dict[str, list[str]] = {heading: [] for heading in _MEMORY_HEADINGS[1:]}
+    grouped[_MEMORY_OPTIONAL_HEADING] = []
+    heading_by_tag = {
+        "identity": _MEMORY_HEADINGS[1],
+        "health_long_term": _MEMORY_HEADINGS[1],
+        "preference": _MEMORY_HEADINGS[2],
+        "key_info": _MEMORY_HEADINGS[3],
+        "requested_memory": _MEMORY_HEADINGS[3],
+        "correction": _MEMORY_HEADINGS[3],
+        "agent_context": _MEMORY_OPTIONAL_HEADING,
+    }
+    for raw_line in pending_items.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        tag = ""
+        if line.startswith("- [") and "]" in line:
+            tag = line[3 : line.index("]")].strip().lower()
+        target = heading_by_tag.get(tag, _MEMORY_HEADINGS[3])
+        preserved = line if line.startswith("- ") else f"- [legacy_pending] {line}"
+        grouped[target].append(preserved)
+    for heading, lines in grouped.items():
+        content = _append_section_lines(content, heading, lines)
+    return content.rstrip() + "\n"
+
+
+def _append_section_lines(content: str, heading: str, lines: list[str]) -> str:
+    unique = [line for line in lines if line not in content.splitlines()]
+    if not unique:
+        return content
+    values = content.rstrip().splitlines()
+    if heading not in values:
+        values.extend(["", heading])
+    start = values.index(heading) + 1
+    end = next(
+        (index for index in range(start, len(values)) if values[index].startswith("#")),
+        len(values),
+    )
+    values[end:end] = unique
+    return "\n".join(values) + "\n"
+
+
+def _profile_prompt(memory: str, self_profile: str, source: str) -> str:
+    return f"""你维护两个长期 Markdown 档案。根据本次已提交的精确对话事实，返回完整的新档案。
+
+只返回 JSON：{{"memory":"完整 MEMORY.md", "self":"完整 SELF.md"}}。
+
+MEMORY.md 只保留跨对话稳定的用户事实、偏好、用户明确要求记住的内容，以及已部署且已授权使用的助手操作上下文。不要写短期状态、动态指标、网络诊断、方案讨论、SOP 或助手建议。没有新事实时保持原文。
+
+SELF.md 只能包含这四个标题：# Akashic 的自我认知、## 人格与形象、## 我对当前用户的理解、## 我们关系的定义。它不是用户资料清单；大多数事实不应改变 SELF.md，没有关系层面的长期证据时保持原文。
+
+当前 MEMORY.md：
+{memory or "（空）"}
+
+当前 SELF.md：
+{self_profile}
+
+本次精确来源：
+{source}
+"""
+
+
+def check_draft(payload: dict[str, object]) -> None:
+    memory = payload.get("memory")
+    self_profile = payload.get("self")
+    memory_before = payload.get("memory_before")
+    self_before = payload.get("self_before")
+    if not all(
+        isinstance(value, str)
+        for value in (memory, self_profile, memory_before, self_before)
+    ):
+        raise ValueError("Markdown profile draft schema 无效")
+    assert isinstance(memory, str)
+    assert isinstance(self_profile, str)
+    assert isinstance(memory_before, str)
+    assert isinstance(self_before, str)
+    _validate_memory(memory)
+    _validate_self(self_profile)
+    _validate_preserved_bullets(memory_before, memory, document="MEMORY.md")
+    _validate_preserved_bullets(self_before, self_profile, document="SELF.md")
+
+
+def _validate_preserved_bullets(before: str, after: str, *, document: str) -> None:
+    """Reject implicit deletion of any previously committed profile fact."""
+
+    old_facts = {
+        line.strip() for line in before.splitlines() if line.lstrip().startswith("- ")
+    }
+    new_facts = {
+        line.strip() for line in after.splitlines() if line.lstrip().startswith("- ")
+    }
+    removed = sorted(old_facts - new_facts)
+    if removed:
+        raise ValueError(f"{document} 不得隐式删除既有事实: {removed}")
+
+
+def _headings(content: str) -> tuple[str, ...]:
+    return tuple(
+        line.strip()
+        for line in content.splitlines()
+        if line.lstrip().startswith("#")
+    )
+
+
+def _validate_memory(content: str) -> None:
+    if not content:
+        return
+    headings = _headings(content)
+    if headings not in {
+        _MEMORY_HEADINGS,
+        _MEMORY_HEADINGS + (_MEMORY_OPTIONAL_HEADING,),
+    } or "```" in content:
+        raise ValueError("MEMORY.md 模型输出格式无效")
+    if not any(line.lstrip().startswith("- ") for line in content.splitlines()):
+        raise ValueError("MEMORY.md 模型输出不包含记忆条目")
+
+
+def _validate_self(content: str) -> None:
+    lines = content.splitlines()
+    if _headings(content) != _SELF_HEADINGS or "```" in content:
+        raise ValueError("SELF.md 模型输出格式无效")
+    positions = [lines.index(heading) for heading in _SELF_HEADINGS] + [len(lines)]
+    for index in range(1, len(_SELF_HEADINGS)):
+        if not any(
+            line.lstrip().startswith("- ")
+            for line in lines[positions[index] + 1 : positions[index + 1]]
+        ):
+            raise ValueError(f"SELF.md section 为空: {_SELF_HEADINGS[index]}")
+
+
+@asynccontextmanager
+async def profile_lock(path: Path, *, create: bool = True) -> AsyncGenerator[None]:
+    """跨 Session 和 generation 串行写档案；取消等待不会遗留持锁线程。"""
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b" if create else "rb") as handle:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                await asyncio.sleep(0.05)
+            else:
+                break
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _unapplied_messages(record: SummaryRecord, lookup: SummaryLookup, reader: MessageReader,
