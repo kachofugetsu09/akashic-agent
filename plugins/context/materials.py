@@ -3,14 +3,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from graphlib import TopologicalSorter
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from plugins.content.api import Reference
-from session.message import ContentPart, Message
+from session.message import Message
 
-from .api import ContextModel, Materials, Summary, SummaryReducer
+from .api import ContextModel, Materials, Reminder, Summary, SummaryReducer
 
 Prepare = Callable[[tuple[Message, ...], str], Awaitable[Materials]]
 
@@ -18,7 +17,7 @@ Prepare = Callable[[tuple[Message, ...], str], Awaitable[Materials]]
 @dataclass(frozen=True, slots=True)
 class _Source:
     prepare: Prepare
-    after: tuple[str, ...]
+    priority: int
     prompt: bool
     summary: bool
     context: Context
@@ -32,7 +31,8 @@ class _Source:
 class MaterialView:
     """固定本次请求的贡献者；只收集材料，不调用模型或修改消息。"""
 
-    def __init__(self, sources: tuple[_Source, ...]):
+    def __init__(self, ctx: Context, sources: tuple[_Source, ...]):
+        self._ctx = ctx
         self._sources = sources
         self._active = True
 
@@ -43,11 +43,26 @@ class MaterialView:
         if not self._active:
             raise RuntimeError("材料 view 已关闭")
 
-    async def prepare(self, snapshot: tuple[Message, ...], source: str) -> Materials:
-        """按显式依赖收集；摘要只能有一个 owner，冲突引用不能静默覆盖。"""
+    async def prepare(
+        self, snapshot: tuple[Message, ...], source: str, *,
+        caller: Context | None = None, reminders: tuple[Reminder, ...] = (),
+    ) -> Materials:
+        """按固定贡献者收集；同优先级按实际插件 ID 和块名称的 UTF-8 字节排序。"""
         self._check_active()
         prompts: list[str] = []
-        context: list[ContentPart] = []
+        blocks: dict[tuple[str, str], Reminder] = {}
+
+        def collect(plugin_id: str, items: tuple[Reminder, ...]) -> None:
+            for item in items:
+                key = (plugin_id, item.name)
+                if key in blocks:
+                    raise ValueError(f"提醒身份重复: {key}")
+                blocks[key] = item
+
+        if reminders:
+            if caller is None or caller.root_instance_token is not self._ctx.root_instance_token:
+                raise ValueError("调用程序的提醒需要同一 Root 的实际 Context owner")
+            collect(caller.runtime.plugin_id, reminders)
         summary: Summary | None = None
         references: dict[str, Reference] = {}
         for owner in self._sources:
@@ -59,7 +74,7 @@ class MaterialView:
                 if not owner.prompt:
                     raise PermissionError("此材料 owner 没有 Prompt 贡献权")
                 prompts.append(material.system_prompt)
-            context.extend(material.context)
+            collect(owner.plugin_id, material.reminders)
             if material.summary is not None:
                 if not owner.summary:
                     raise PermissionError("此材料 owner 没有摘要发布权")
@@ -71,7 +86,10 @@ class MaterialView:
                 if previous is not None and previous != ref:
                     raise ValueError("同一引用的材料证据冲突")
                 references[ref.ref] = ref
-        return Materials("\n\n".join(prompts), tuple(context), summary, tuple(references.values()))
+        ordered = tuple(block for _, block in sorted(
+            blocks.items(), key=lambda item: (item[1].priority, item[0][0].encode("utf-8"), item[0][1].encode("utf-8")),
+        ))
+        return Materials("\n\n".join(prompts), ordered, summary, tuple(references.values()))
 
     async def reduce(
         self, snapshot: tuple[Message, ...], materials: Materials,
@@ -114,16 +132,16 @@ class ContextMaterials:
 
     async def register(
         self, ctx: Context, *, name: str, prepare: Prepare,
-        after: tuple[str, ...] = (), prompt: bool = False,
+        priority: int = 0, prompt: bool = False,
         reduce: SummaryReducer | None = None,
     ) -> Effect:
-        """同一名称只有一个真实注册 owner；不按安装顺序或数字 priority 合并。"""
+        """同一名称只有一个真实注册 owner；priority 只排序，不表示依赖或权限。"""
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("材料注册不能跨 composition Root")
         if not isinstance(name, str) or not name or not callable(prepare):
             raise ValueError("材料必须有名称和 prepare 函数")
-        if not isinstance(after, tuple) or any(not isinstance(key, str) or not key for key in after):
-            raise ValueError("材料依赖必须是非空名称的 tuple")
+        if type(priority) is not int:
+            raise TypeError("材料 priority 必须是整数")
         if type(prompt) is not bool:
             raise TypeError("Prompt 声明必须是 bool")
         plugin_id = ctx.runtime.plugin_id
@@ -144,7 +162,7 @@ class ContextMaterials:
         def setup():
             if name in self._sources:
                 raise ValueError(f"材料 owner 重复: {name}")
-            self._sources[name] = _Source(prepare, after, prompt, summary, ctx, reduce)
+            self._sources[name] = _Source(prepare, priority, prompt, summary, ctx, reduce)
             return lambda: self._sources.pop(name)
 
         return await ctx.effect(setup, label=f"materials:{name}")
@@ -169,12 +187,10 @@ class ContextMaterials:
                 source = sources.get(name)
                 if source is None or not source.summary or source.plugin_id != plugin_id:
                     raise ValueError(f"获授的摘要材料未就绪: {name}")
-            graph = {key: sources[key].after for key in sorted(sources)}
-            missing = {dep for deps in graph.values() for dep in deps} - sources.keys()
-            if missing:
-                raise ValueError(f"材料依赖缺失: {sorted(missing)}")
-            order = tuple(TopologicalSorter(graph).static_order())
-            view = MaterialView(tuple(sources[key] for key in order))
+            order = sorted(sources, key=lambda key: (
+                sources[key].priority, sources[key].plugin_id.encode("utf-8"), key.encode("utf-8"),
+            ))
+            view = MaterialView(self._ctx, tuple(sources[key] for key in order))
             try:
                 yield view
             finally:

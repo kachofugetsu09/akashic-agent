@@ -31,7 +31,7 @@ def prompt_sources(sources):
                         ignore=shutil.ignore_patterns("__pycache__"))
     settings = sources.parent / "workspace/plugin-data/context-builtin/config.local.toml"
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text('summary_source = []\nprompt_sources = {default_prompt = "prompt"}\n')
+    settings.write_text('summary_source = []\nprompt_sources = {default_prompt = "prompt", skills = "skills"}\n')
     veda = sources.parent / "workspace/memory/VEDA.md"
     veda.parent.mkdir(parents=True, exist_ok=True)
     veda.write_text("唯一人格甲")
@@ -91,19 +91,18 @@ async def test_prompt_reads_veda_and_fixed_input_time_without_rewriting_messages
                 assert "唯一人格甲" in first.system_prompt
                 assert "load_skill" not in first.system_prompt
                 assert ("Telegram 渲染限制" in first.system_prompt) == (channel == "telegram_bot")
-                environment = cast(Mapping[str, object], next(part.value for part in first.context if part.kind == "environment"))
-                assert environment["request_time"] == accepted.recorded_at.astimezone().isoformat()
-                assert environment["input_id"] == "input"
+                environment = next(part.text for part in first.reminders if part.name == "environment")
+                assert accepted.recorded_at.astimezone().isoformat() in environment
+                assert "input_id: input" in environment
                 assert "time_basis" in environment
                 assert ("channel_origin" in environment) == (channel is not None)
                 assert "Client Surface" not in str(first)
-                catalog = cast(Mapping[str, object], next(part.value for part in first.context if part.kind == "skills"))
-                skills = cast(tuple[Mapping[str, object], ...], catalog["skills"])
-                assert [entry["name"] for entry in skills] == ["example"]
+                assert "example" in first.system_prompt
                 assert "非插件技能" not in str(first)
-                active = cast(Mapping[str, object], cast(tuple[object, ...], catalog["active_skills"])[0])
-                assert (Path(cast(str, active["base_directory"])) / "resource.txt").read_text() == "resource-a"
-                assert "读取 resource.txt" not in first.system_prompt
+                base_directory = next(line.removeprefix("资源目录：") for line in first.system_prompt.splitlines()
+                                      if line.startswith("资源目录："))
+                assert (Path(base_directory) / "resource.txt").read_text() == "resource-a"
+                assert "读取 resource.txt" in first.system_prompt
                 (tmp_path / "workspace/memory/VEDA.md").write_text("唯一人格乙")
                 third = await view.prepare(original, source)
                 assert "唯一人格乙" in third.system_prompt and "唯一人格甲" in first.system_prompt
@@ -227,10 +226,9 @@ async def test_default_reply_uses_prompt_and_real_skill_tool_with_menu_authority
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
             assert "唯一人格甲" in str(calls[0].messages)
-            context = json.loads(calls[0].messages[-1]["content"])["context"]
-            environment = next(part["value"] for part in context if part["kind"] == "environment")
-            assert environment["input_id"] == "input"
-            assert environment["request_time"] == rows[0].recorded_at.astimezone().isoformat()
+            environment = calls[0].messages[-1]["content"]
+            assert "input_id: input" in environment
+            assert rows[0].recorded_at.astimezone().isoformat() in environment
             assert "fixture task" in str(calls[0].messages)
             assert ("load_skill" in str(calls[0].tools)) != restricted
             if not restricted:

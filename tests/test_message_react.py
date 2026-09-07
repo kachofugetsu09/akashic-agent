@@ -14,7 +14,7 @@ from agent.plugin_composition.models import (
 )
 from agent.plugin_composition.tasks import Task, Tasks
 from plugins.content.plugin import _decode_text, check_text
-from plugins.context.api import ContextModel, Materials, Summary, check_summary
+from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary
 from plugins.context.plugin import ContextBuilder
 from plugins.conversation.source import Conversation, needs_reply
 from plugins.models.content import render_content
@@ -388,7 +388,7 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
     async def materials(snapshot):
         nonlocal prepared_count
         prepared_count += 1
-        return Materials("fixed prompt", (ContentPart("retrieval", "actual query result"),))
+        return Materials("fixed prompt", (Reminder("retrieval", "actual query result", 100),))
 
     async def reduce(
         snapshot: tuple[Message, ...], materials: Materials, request: ModelRequest,

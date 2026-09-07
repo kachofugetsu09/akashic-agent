@@ -8,7 +8,7 @@ from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, lease_runtime_snapshot
 from plugins.content.api import Reference
 from agent.plugin_composition.models import BoundChatModel, LLMResponse, ModelRequest
-from plugins.context.api import ContextModel, Materials, Summary
+from plugins.context.api import ContextModel, Materials, Reminder, Summary
 from plugins.context.materials import ContextMaterials
 from session.message import ContentPart, Message
 
@@ -81,7 +81,7 @@ async def test_materials_fix_explicit_order_and_keep_retrieval_evidence_out_of_p
     calls = []
     async def memory(snapshot, source):
         calls.append("memory")
-        return Materials("", (ContentPart("memory", profile.read_text()),),
+        return Materials("", (Reminder("memory", profile.read_text(), 300),),
                          references=(Reference("memory:1", retrieval_ref="retrieval:1"),))
     async def persona(snapshot, source):
         calls.append("persona")
@@ -90,12 +90,12 @@ async def test_materials_fix_explicit_order_and_keep_retrieval_evidence_out_of_p
         for wants_prompt in (False, True):
             with pytest.raises(PermissionError, match="实际插件"):
                 await service.register(evil, name="persona", prepare=persona, prompt=wants_prompt)
-        await service.register(ctx, name="memory", prepare=memory, after=("persona",))
-        await service.register(ctx, name="persona", prepare=persona, prompt=True)
+        await service.register(ctx, name="memory", prepare=memory, priority=200)
+        await service.register(ctx, name="persona", prepare=persona, prompt=True, priority=100)
         async with service.bind() as view:
             result = await view.prepare((), "conversation")
             assert result.system_prompt == "fixed persona"
-            assert result.context == (ContentPart("memory", "published profile"),)
+            assert result.reminders == (Reminder("memory", "published profile", 300),)
             assert result.references == (Reference("memory:1", retrieval_ref="retrieval:1"),)
             assert calls == ["persona", "memory"]
         with pytest.raises(RuntimeError, match="关闭"):
@@ -108,41 +108,28 @@ async def test_program_excludes_retrieval_without_running_it_or_losing_persona()
 
     async def memory(snapshot, source):
         calls.append("memory")
-        return Materials("", (ContentPart("text", "retrieved private context"),))
+        return Materials("", (Reminder("text", "retrieved private context", 300),))
 
     async def persona(snapshot, source):
         calls.append("persona")
         return Materials("fixed persona")
 
     async with catalog(prompt_sources={"persona": "trusted"}) as (ctx, service, _):
-        await service.register(ctx, name="persona", prepare=persona, prompt=True)
-        await service.register(ctx, name="memory", prepare=memory, after=("persona",))
+        await service.register(ctx, name="persona", prepare=persona, prompt=True, priority=100)
+        await service.register(ctx, name="memory", prepare=memory, priority=200)
         async with service.bind(exclude=frozenset({"memory"})) as view:
             result = await view.prepare((), "scheduler:job")
         assert result.system_prompt == "fixed persona"
-        assert not result.context
+        assert not result.reminders
         assert calls == ["persona"]
         # 显式排除不改变全局注册；普通回复仍能取得原有检索。
         async with service.bind() as view:
             result = await view.prepare((), "conversation")
-        assert result.context[0].value == "retrieved private context"
+        assert result.reminders[0].text == "retrieved private context"
 
 
 @pytest.mark.asyncio
-async def test_material_exclusion_cannot_silently_break_a_required_dependency():
-    async def prepare(snapshot, source):
-        return Materials("")
-
-    async with catalog() as (ctx, service, _):
-        await service.register(ctx, name="first", prepare=prepare)
-        await service.register(ctx, name="second", prepare=prepare, after=("first",))
-        with pytest.raises(ValueError, match="依赖缺失"):
-            async with service.bind(exclude=frozenset({"first"})):
-                pytest.fail("dependent material must not run")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("conflict", ["prompt", "summary", "reference", "dependency"])
+@pytest.mark.parametrize("conflict", ["prompt", "summary", "reference"])
 async def test_materials_reject_unauthorized_prompt_and_conflicting_owners(conflict):
     async def first(snapshot, source):
         return Materials("", summary=Summary("summary:1", ("u1",), "one"),
@@ -158,7 +145,7 @@ async def test_materials_reject_unauthorized_prompt_and_conflicting_owners(confl
             await service.register(ctx, name="forged", prepare=first, prompt=True)
         await service.register(ctx, name="first", prepare=first)
         await service.register(ctx, name="second", prepare=second,
-                               after=("missing",) if conflict == "dependency" else ("first",))
+                               priority=200)
         with pytest.raises(PermissionError if conflict in {"prompt", "summary"} else ValueError):
             async with service.bind() as view:
                 await view.prepare((), "conversation")
@@ -218,3 +205,43 @@ async def test_reduction_preserves_durable_identity_and_recognizes_no_progress(c
             else:
                 assert await view.reduce((), material, ModelRequest(messages=[]), _UNREACHED_MODEL, _UNREACHED_PROJECTION,
                                          source="conversation", force=True) is previous
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_reminder_order_uses_owner_and_name_and_keeps_each_request_snapshot(reverse):
+    """安装顺序不影响同优先级块；下一次准备不改写上一份请求。"""
+    current = "old"
+
+    async def trusted(snapshot, source):
+        return Materials("", (Reminder("z", "trusted-z", 200), Reminder("a", current, 200)))
+
+    async def evil(snapshot, source):
+        return Materials("", (Reminder("a", "evil-a", 200), Reminder("early", "early", 100)))
+
+    async with catalog() as (ctx, service, other):
+        registrations = [(ctx, "t", trusted), (other, "e", evil)]
+        for owner, name, prepare in reversed(registrations) if reverse else registrations:
+            await service.register(owner, name=name, prepare=prepare)
+        async with service.bind() as view:
+            before = await view.prepare((), "conversation")
+            current = "new"
+            after = await view.prepare((), "conversation")
+        assert [item.text for item in before.reminders] == ["early", "evil-a", "old", "trusted-z"]
+        assert [item.text for item in after.reminders] == ["early", "evil-a", "new", "trusted-z"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_reminder_identity_rejects_different_priorities():
+    async def first(snapshot, source):
+        return Materials("", (Reminder("same", "first", 100),))
+
+    async def second(snapshot, source):
+        return Materials("", (Reminder("same", "second", 200),))
+
+    async with catalog() as (ctx, service, _):
+        await service.register(ctx, name="one", prepare=first)
+        await service.register(ctx, name="two", prepare=second)
+        async with service.bind() as view:
+            with pytest.raises(ValueError, match="身份重复"):
+                await view.prepare((), "conversation")

@@ -50,7 +50,7 @@ def source_text(messages: Sequence[Message]) -> str:
                     "model.facts", "context.summary", "model.selection", "tool.selection",
                 }
             ))
-        rows.append({"message_id": message.message_id, "source": message.source,
+        rows.append({"message_id": message.message_id, "source": message.source, "author": message.author,
                      "seq": message.seq, "body": json.loads(encode_body(body))})
     return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 

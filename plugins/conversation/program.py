@@ -13,7 +13,7 @@ from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ChatModelSelection, ModelRequest, ModelRole
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import Task
-from plugins.context.api import ContextModel, Materials, Summary, check_summary, summary_range
+from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary, summary_range
 from plugins.models.selection import selection
 from plugins.models.content import load_artifacts, render_content as render_model_content
 from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts
@@ -55,7 +55,7 @@ async def run_reply(
     exclude_materials: frozenset[str] = frozenset(), prompt_hints: Sequence[str] = (),
     fixed_bindings: Mapping[str, str] | None = None,
     preview: Preview | None = None,
-    extra_context: Sequence[ContentPart] = (),
+    reminders: Sequence[Reminder] = (),
     terminal_tools: frozenset[str] = frozenset(),
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
@@ -115,7 +115,7 @@ async def run_reply(
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
         async def build_materials(messages: tuple[Message, ...]) -> Materials:
             nonlocal artifacts
-            result = await material_view.prepare(messages, source)
+            result = await material_view.prepare(messages, source, caller=ctx, reminders=tuple(reminders))
             if render_content is None:
                 start = 0 if result.summary is None else summary_range(messages, result.summary.source_message_ids).stop
                 refs = tuple(
@@ -129,7 +129,7 @@ async def run_reply(
                         accepts_images="image" in model.descriptor.capabilities.input_modalities,
                     )
             check_source(task, reader, source, source_head)
-            return replace(result, context=(*result.context, *extra_context), system_prompt="\n\n".join(
+            return replace(result, system_prompt="\n\n".join(
                 part for part in (result.system_prompt, *view.prompts, *prompt_hints) if part
             ))
 

@@ -134,4 +134,4 @@ async def apply(ctx: Context, config: Config) -> None:
         _ = records().publish(record, reader, parent=parent)
         return summary
 
-    _ = await ctx.require(MATERIALS).register(ctx, name="compaction", prepare=prepare, reduce=reduce)
+    _ = await ctx.require(MATERIALS).register(ctx, name="compaction", prepare=prepare, reduce=reduce, priority=500)

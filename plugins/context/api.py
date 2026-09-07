@@ -73,26 +73,43 @@ class Summary:
 
 
 @dataclass(frozen=True, slots=True)
+class Reminder:
+    """一次请求中的具名文本；priority 只决定显示顺序，不授予权限。"""
+
+    name: str
+    text: str
+    priority: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("提醒必须有稳定的局部名称")
+        if not isinstance(self.text, str):
+            raise TypeError("提醒正文必须是字符串")
+        if type(self.priority) is not int:
+            raise TypeError("提醒 priority 必须是整数")
+
+
+@dataclass(frozen=True, slots=True)
 class Materials:
     """权限已由组合确定的 Prompt，以及保持低信任的检索材料。"""
 
     system_prompt: str
-    context: tuple[ContentPart, ...] = ()
+    reminders: tuple[Reminder, ...] = ()
     summary: Summary | None = None
     references: tuple[Reference, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.system_prompt, str):
             raise TypeError("system Prompt 必须是字符串")
-        parts = tuple(self.context)
-        if any(not isinstance(part, ContentPart) for part in parts):
-            raise TypeError("检索材料必须是已校验的内容块")
+        parts = tuple(self.reminders)
+        if any(not isinstance(part, Reminder) for part in parts):
+            raise TypeError("提醒必须是已校验的文本块")
         if self.summary is not None and not isinstance(self.summary, Summary):
             raise TypeError("摘要必须来自已发布的 Summary")
         references = tuple(self.references)
         if any(not isinstance(ref, Reference) for ref in references):
             raise TypeError("引用必须是材料 owner 已取得的 Reference")
-        object.__setattr__(self, "context", parts)
+        object.__setattr__(self, "reminders", parts)
         object.__setattr__(self, "references", references)
 
 

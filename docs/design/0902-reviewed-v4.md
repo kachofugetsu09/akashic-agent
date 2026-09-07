@@ -1928,3 +1928,35 @@ Mobile WebUI 停止生成必须调用 `sendSessionCommand(session_id, "/stop")`�
 日常内置行为修改可用这些自动化结果取代重复的手动走流程。它们不能证明真实模型的决策质量、浏览器视觉与交互、手机生命周期、Computer/宿主权限、外部插件、真实网络认证或正式 workspace 升级。改到这些边界或发布时仍须保留对应的小范围真实验收；本轮没有运行设备、正式部署或外部插件 E2E。
 
 恢复点：`backup/pr558-before-system-fixtures-20260907` 与 `/mnt/data/akasic-agent-backups/pr558-system-fixtures-20260907/`。所有运行写入只在测试临时目录；最终测试、独立概念 Gate 与 change-impact Gate 结果记录在 PR。
+
+
+## 2026-09-07：请求提醒与 Markdown 来源约束
+
+状态：维护者已授权实现。此节取代上文将 Skills 留在 JSON 检索材料中的选择。
+
+目标：低频材料保留稳定前缀，频繁变化的资料只进入本次请求；后台结果不能伪装成用户输入或成为长期用户事实的唯一证据。
+`change_type=feature`，`semantic_delta=breaking`；能力 owner 为普通 Context、Prompt、Skills、Akasha、Reply 和 Markdown 插件；消费者为材料贡献者及模型请求。`runtime_patch=none`，Core 不增加来源分支，客户端不能拥有模型请求或长期记忆规则。
+
+```text
+┌ system：VEDA / SELF / MEMORY / Skills / 渠道规则 ┐
+└──────────────────────┬────────────────────────┘
+                       ▼
+┌ 摘要及真实消息的模型投影，保留当前输入和工具配对 ┐
+└──────────────────────┬────────────────────────┘
+                       ▼
+┌ 一个 user-role system-reminder                 ┐
+│ 时间(100) → Akasha(300) → 本次后台结果(500)      │
+└───────────────────────────────────────────────┘
+```
+
+- Context 收集具名 `Reminder(name, text, priority)`；贡献者拥有可读正文，Context 只排序并包裹一次。块身份由实际注册 Context 的插件 ID 和局部名称决定；同优先级使用 UTF-8 字节顺序，重复身份不覆盖。数字是各插件的当前选择，不是 Core 枚举或权限等级。
+- system 材料按注册 priority 排序：Prompt 100、Markdown 200、Skills 300；既有内容协议和程序规则继续随原程序组合。移除没有实际生产消费者的材料 `after` 依赖图，不把排序伪装成执行依赖。
+- 空提醒省略；所有文本转义外层标签；完整包裹后估算容量。材料错误照常传播。缩减只替换已发布摘要，其余本次材料冻结；下一次请求重新取得材料。
+- 后台结果由原 Reply 程序读取，Conversation 负责空闲准入与新用户输入优先，子任务仍保存独立内部 Session。父回复使用原 job 来源，默认学习不消费它；本次提醒本身不落库。没有新队列、空用户输入或第二条原调用 ToolResult。
+- Compaction 给原消息保留 author/source；Markdown 的 version 2 草稿逐条附带 evidence，用户事实只接受实际用户 Input 为必要来源。助手操作上下文、自身人格允许其他实际消息；不能以这些章节代存用户资料。旧 version 1 草稿按原恢复合同处理，不批量重算。
+
+受保护状态：已有 Message 正文、摘要和 Akasha 出处、Markdown 条目、技能归档、原工具/发送绑定及回执。正常只增加请求所需的新技能归档和后续 version 2 草稿；Markdown 文件仍由原 before-image receipt 原位发布，不新增删除协议。提醒不参与持久化，压缩不改变其来源资格。
+
+配置：新 workspace 默认授予 `skills=skills` Prompt 权。yoyo 只升级已知的内置默认授权配置，先保存 `config.before-skill-prompt-grant.toml`；自定义授权原样保留，操作者需显式加入 Skills 授权或移除该贡献插件。旧迁移文件不改写。正式 workspace、外部插件 cache、部署和发送均不在本次执行范围。
+
+验证：真实材料组合、请求包裹/排序/冲突/超限、后台空闲汇报与抢占、实际 Akasha 出处、摘要后 Markdown 来源过滤和恢复；相关类型检查、change-impact Gate、独立 Terra xhigh 概念评审。恢复点为基线 `05a6521c` 与 `/tmp/context-reminder-memory-boundaries-backup-20260907/base-05a6521c.tar`，代码可回退本 PR；配置恢复使用迁移前备份，不回退或删除已保存消息。
