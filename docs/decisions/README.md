@@ -65,6 +65,7 @@
 | [0057](0057-internal-source-messages.md) | accepted | Subagent 与 Wake 保留完整内部消息 | SES-003～SES-005、MEM-001～MEM-002 |
 | [0058](0058-scheduler-keeps-internal-messages.md) | accepted | Scheduler 保留可恢复的内部消息 | SCH-001～SCH-003、SES-003～SES-005、MEM-001～MEM-002 |
 | [0059](0059-abandon-settles-tool-calls.md) | accepted | 明确放弃结算工具调用，不等待物理清理 | RUN-003、RUN-008、SES-003～SES-005、SH-002 |
+| [0059](0059-message-plugin-metadata.md) | accepted | 插件附加信息使用普通 Message metadata | SES-001、SES-003～SES-006、SES-009 |
 
 ## 新增规则
 

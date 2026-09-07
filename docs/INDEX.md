@@ -104,6 +104,7 @@
 | Web/Mobile 共享 Session、Akashic Channel 或客户端 adapter | `projectneed` AKC-001～AKC-003 → [0044](decisions/0044-akashic-channel-uses-web-and-mobile-adapters.md) → [Akashic Channel 与客户端 Adapter 规格](design/akashic-channel-client-adapters.md) → [持久化状态地图](design/persistence-state-map.md) | `session/`、`infra/channels/`、`infra/mobile_realtime/`、`bootstrap/app.py`、`bootstrap/chat_api.py`、`plugins/scheduler/`、`plugins/wake/`、`plugins/akasha/`；实现仍需独立授权 |
 | 其他 Akashic 产品路线、Project Session、Project Akasha 或大型 tool result | [未来方向与 Issue 拆分草案](design/akashic-future-roadmap-issue-drafts.md) → 草案中对应领域的现行条款、决策与设计 | `session/`、`plugins/eventmail/`、`plugins/wake/`、`plugins/drift/`、`plugins/scheduler/`、`plugins/subagent/`、`plugins/akasha/`、`agent/tools/message_push.py`；草案未提升为现行合同前不得直接实现 |
 | Prompt、人格、上下文窗口、历史裁切、重试 | `projectneed` 第 5～7、13 节 → [Veda 人格设计](design/veda-persona.md) → [0002](decisions/0002-context-reduction-is-a-nondestructive-projection.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [Session compaction ledger](design/session-context-compaction-ledger.md) → [上下文事故设计](design/project-workbook-and-semantic-safety.md) → [Wake 最近主动消息上下文](design/wake-recent-delivery-context.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/prompting/`、`session/`、`plugins/turn_projection/` |
+| 插件 Message metadata、Citation/Meme 附加信息 | `projectneed` SES-009 → [0059](decisions/0059-message-plugin-metadata.md) → [Message metadata 合同](design/0902-reviewed-v4.md#34-message-metadata-的实现与迁移) → [持久化状态地图](design/persistence-state-map.md) | `session/message.py`、`session/log.py`、`plugins/content/`、`plugins/react/`、`infra/channels/message_view.py` |
 | 会话、消息、turn、同 Turn 输入、打断、附件、删除或恢复 | `projectneed` 第 6～7、11～13 节 → [持久化状态地图](design/persistence-state-map.md) → [Codex 式同 Turn 输入需求](design/codex-style-same-turn-input-requirements.md) → [Codex 式同 Turn 输入设计](design/codex-style-same-turn-input.md) → [0025](decisions/0025-codex-style-same-turn-input.md) | `session/`、`plugins/sources/`、`plugins/conversation/`、`plugins/reply/`、`plugins/turn_projection/`、`infra/mobile_realtime/`、`bootstrap/chat_api.py` |
 | Markdown 记忆、退役 Memory2 归档、Akasha | `projectneed` 第 6、8、11～13 节 → [0041](decisions/0041-turn-effects-and-memory-plugins-are-orthogonal.md) → [0052](decisions/0052-compaction-and-markdown-memory-are-ordinary-plugins.md) → [0006](decisions/0006-akasha-v2-is-the-canonical-explicit-memory-engine.md) → [Akasha V2 在线与重放](design/akasha-v2-runtime-migration.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/markdown_memory/`、`plugins/compaction/`、`plugins/akasha/` |
 | Compaction 与 Markdown 记忆普通插件化 | `projectneed` CTX-007、MEM-001～MEM-011 → [0052](decisions/0052-compaction-and-markdown-memory-are-ordinary-plugins.md) → [插件化任务合同](design/compaction-markdown-memory-plugin-task-contract.md) → [0030](decisions/0030-session-context-compaction-ledger.md) → [持久化状态地图](design/persistence-state-map.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/plugin_composition/`、`session/` 与任务合同 P01～P09 |
@@ -260,7 +261,8 @@ docs/
 │   ├── 0056-plugin-update-crashes-return-to-stable.md
 │   ├── 0057-internal-source-messages.md
 │   ├── 0058-scheduler-keeps-internal-messages.md
-│   └── 0059-abandon-settles-tool-calls.md
+│   ├── 0059-abandon-settles-tool-calls.md
+│   └── 0059-message-plugin-metadata.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-channel-client-adapters.md

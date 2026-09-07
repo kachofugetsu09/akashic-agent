@@ -6,11 +6,24 @@ import { mergeTimelineMessages, readMessageLogFrame, readTimelineMessage, timeli
 const row = (seq, body, changes = {}) => ({
   id: `message-${seq}`, session_id: "akashic:fixture", seq,
   timestamp: "2026-09-06T12:00:00+08:00", author: "fixture-author", source: "fixture-source",
-  attachments: [], body, ...changes,
+  attachments: [], body, metadata: {}, ...changes,
 });
 const text = (value) => ({ kind: "text", value });
 const page = (items, through, more = false) => ({ version: 2, items, through_seq: through,
   has_more: more, before_seq: more ? items[0].seq : null });
+
+test("unknown plugin metadata survives history and live merging without affecting text", () => {
+  const metadata = { citation: { version: 17, references: [null, { id: "old" }] }, meme: { category: "happy" } };
+  const message = row(0, { kind: "output", finish: "complete", parts: [text("hello")] }, { metadata });
+  const history = chatHistoryPage(page([message], 0), "fixture").items;
+  const live = readMessageLogFrame({ type: "messages.appended", version: 2, session_id: message.session_id,
+    after_seq: -1, through_seq: 0, next_after_seq: 0, has_more: false, items: [structuredClone(message)] });
+  const merged = mergeTimelineMessages(history, live.items);
+  assert.deepEqual(merged[0].metadata, metadata);
+  assert.equal(timelineText(merged[0]), "hello");
+  assert.throws(() => readTimelineMessage({ ...message, metadata: [] }), /metadata/u);
+  assert.throws(() => mergeTimelineMessages(history, [{ ...message, metadata: { meme: {} } }]), /发生变化/u);
+});
 
 for (const outcome of ["unknown", "interrupted"]) test(`fixed history pages retain ${outcome} results after abandon without changing archives`, () => {
   const archive = { raw: '[ {"result":null, "arguments": "old"} ]', completeness: "unknown" };
@@ -94,4 +107,17 @@ test("reply snapshots distinguish unavailable, idle, active preview and draining
     { items: [item, item] }, { items: [{ ...item, session_id: "other" }] }, { items: [{ ...item, preview: {} }] }]) {
     assert.throws(() => readMessageLogFrame({ ...frame, ...changes }));
   }
+});
+
+
+test("history and live overlap accept omitted metadata as the empty default", () => {
+  const old = row(0, { kind: "input", parts: [] });
+  delete old.metadata;
+  const history = chatHistoryPage(page([old], 0), "fixture").items;
+  const live = readMessageLogFrame({ type: "messages.appended", version: 2, session_id: old.session_id,
+    after_seq: -1, through_seq: 0, next_after_seq: 0, has_more: false, items: [{ metadata: {}, ...old }] });
+  assert.equal(mergeTimelineMessages(history, live.items).length, 1);
+  assert.deepEqual(history[0].metadata, {});
+  const oldLive = readMessageLogFrame({ ...live, items: [old] });
+  assert.equal(mergeTimelineMessages(live.items, oldLive.items).length, 1);
 });

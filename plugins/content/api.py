@@ -149,7 +149,10 @@ class TextSource:
         )
 
 
-TextDecoder = Callable[[TextSource, tuple[Reference, ...]], Awaitable[Sequence[Span]]]
+TextDecoder = Callable[
+    [TextSource, tuple[Reference, ...]],
+    Awaitable[tuple[Sequence[Span], Mapping[str, object]]],
+]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

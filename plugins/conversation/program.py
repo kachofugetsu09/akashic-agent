@@ -103,6 +103,7 @@ async def run_reply(
                         limit=model.max_tool_schemas, fixed_bindings=fixed_bindings)
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
+            check_metadata=view.check_metadata,
             content={**view.checks, "model.facts": check_facts, "context.summary": check_summary}, check_call=menu.check_call,
         )(reader.session_id)
         task.on_close(output.expire)

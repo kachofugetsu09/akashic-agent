@@ -114,6 +114,8 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             raise AssertionError(f"controlled menu unexpectedly checked selection {ref}: {part}")
 
     class Content:
+        def check_metadata(self, metadata):
+            assert not metadata
         prompts = ()
         checks = {}
         async def decode(self, text, references=()):
