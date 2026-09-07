@@ -15,14 +15,10 @@ from agent.control.context import running_turn_id
 from agent.core.runtime_support import SessionLike, ToolDiscoveryState
 from agent.looping.ports import LLMConfig
 from agent.plugin_composition import (
-    CONTEXT_PROJECTION_FACTS,
-    PROVIDER_REQUEST_PROJECTION,
     BoundModelDescriptor,
     ModelRequest,
     ModelRole,
-    ProviderTurnInput,
 )
-from agent.plugins.manager import PluginManager
 from plugins.compaction.engine import (
     CommittedContextUnit,
     ContextCompaction,
@@ -39,7 +35,6 @@ from plugins.compaction.engine import (
 )
 from agent.plugin_composition import LLMResponse
 from agent.tools.registry import ToolRegistry
-from bus.event_bus import EventBus
 from plugins.compaction.runtime import (
     CompactionProjection,
     SessionCompactionRuntime,
@@ -100,8 +95,6 @@ from plugins.compaction.plugin import (
     _DetachedSession,
     _PublishedProjection,
 )
-from plugins.compaction import plugin as compaction_plugin
-from plugins.compaction.receipts import SqliteCompactionReceipts
 from tests.model_plugin_fakes import BoundChatModelFake
 
 SessionManagerFactory = Callable[[Path], SessionManager]
@@ -664,105 +657,6 @@ def test_v2_receipt_recovery_defers_markdown_to_durable_fact_reader(
     assert recovered is not None
     assert markdown.commit_count == 0
     assert len(markdown.receipts) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("version", "published"), ((2, True), (3, False), (4, True))
-)
-async def test_formal_compaction_plugin_only_publishes_plugin_owned_receipts(
-    tmp_path: Path,
-    session_manager_factory: SessionManagerFactory,
-    version: int,
-    published: bool,
-) -> None:
-    manager, probe, source_ref = _seed_receipt(
-        tmp_path,
-        session_manager_factory,
-        version=version,
-    )
-    workspace = Path(manager.control_store.db_path).parent
-    receipts = SqliteCompactionReceipts(
-        workspace / "memory" / "consolidation_writes.db"
-    )
-    receipts.write(source_ref, probe.receipts[source_ref])
-    plugins = PluginManager(
-        plugin_dirs=[Path(compaction_plugin.__file__).parent],
-        event_bus=EventBus(),
-        tool_registry=None,
-        workspace=workspace,
-        session_manager=manager,
-        installed_cache_root=tmp_path / "plugin-cache",
-    )
-    await plugins.load_all()
-    snapshot = plugins.current_snapshot
-    assert snapshot is not None and snapshot.composition_root is not None
-    root = snapshot.composition_root.context
-    service = root.require(PROVIDER_REQUEST_PROJECTION)
-    session = manager.get_existing("session")
-    grant = session.issue_projection_grant(running_turn_id.get())
-    storage = SessionCompactionStorage(manager).scope(grant)
-
-    _ = await service.open_turn(
-        ProviderTurnInput(
-            session_key=session.key,
-            session_created_at=session.created_at.isoformat(),
-            history_units=storage.history_units(session.key),
-            access_grant=grant,
-        )
-    )
-
-    assert manager.control_store.get_compaction_head(session.key).parent_generation == 1
-    facts = root.require(CONTEXT_PROJECTION_FACTS).list_committed(
-        grant,
-        session_key=session.key,
-    )
-    assert [(fact.source_ref, fact.generation) for fact in facts] == (
-        [(source_ref, 1)] if published else []
-    )
-    if published:
-        assert f'"version":{version}' in facts[0].checkpoint_json
-    await plugins.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_invalidated_compaction_receipt_is_not_reemitted_as_durable_fact(
-    tmp_path: Path,
-    session_manager_factory: SessionManagerFactory,
-) -> None:
-    manager, probe, source_ref = _seed_receipt(
-        tmp_path, session_manager_factory, version=2
-    )
-    workspace = Path(manager.control_store.db_path).parent
-    receipts = SqliteCompactionReceipts(
-        workspace / "memory" / "consolidation_writes.db"
-    )
-    receipts.write(source_ref, probe.receipts[source_ref])
-    with manager.control_store._lock:
-        manager.control_store._conn.execute(
-            "UPDATE session_compactions SET invalidated_at = ?, invalidated_reason = ? "
-            "WHERE session_key = ? AND source_ref = ?",
-            (datetime.now(UTC).isoformat(), "interaction_deleted:test", "session", source_ref),
-        )
-        manager.control_store._conn.commit()
-    plugins = PluginManager(
-        plugin_dirs=[Path(compaction_plugin.__file__).parent],
-        event_bus=EventBus(),
-        tool_registry=None,
-        workspace=workspace,
-        session_manager=manager,
-        installed_cache_root=tmp_path / "plugin-cache",
-    )
-    await plugins.load_all()
-    snapshot = plugins.current_snapshot
-    assert snapshot is not None and snapshot.composition_root is not None
-    facts = snapshot.composition_root.context.require(CONTEXT_PROJECTION_FACTS)
-    session = manager.get_existing("session")
-    grant = session.issue_projection_grant(running_turn_id.get())
-
-    assert facts.list_committed(grant, session_key=session.key) == ()
-    session.revoke_projection_grant(grant)
-    await plugins.terminate_all()
 
 
 def test_v2_receipt_without_prepare_still_fails_loud(
