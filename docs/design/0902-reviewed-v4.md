@@ -2023,3 +2023,7 @@ version 0 记录保存完整旧行、原 JSON 字符串与 SHA-256；未记录�
 ### 已停止旧链的迁移处置
 
 维护者在真实副本演练后确认 [0061](../decisions/0061-archive-stopped-legacy-executions.md)：failed、interrupted、cancelled 的旧链若缺工具领域回执，完整归档原行，并在迁移 manifest 中记录 `archived_without_tool_receipts`。不自动续跑、不重放外部效果，也不补造原生 ToolResult 或新用户输入。queued/in_progress 仍需真实恢复协议，否则阻断迁移。此决定不授权正式部署。
+
+### 真实副本发现的无效开发标记
+
+2026-09-08 演练确认：正式源版本 `6429c806` 中 `dev_mode/dev_model` 只有 config 解析、模型字段和 setup 初值，没有运行时或当前十四个插件消费者。实际配置的 `dev_mode=true` 不对应需要迁移的功能。修订本批尚未部署的 `20260907_02_retire_legacy_agent_config` 候选迁移，严格校验布尔类型后，沿既有完整原配置备份移除 true/false 两种值；不新增开发模式 owner，也不把无效标记变成迁移阻塞。原配置字节与权限可从该迁移备份恢复，正式配置未修改。

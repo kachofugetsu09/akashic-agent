@@ -37,13 +37,14 @@ def _run(module, config: Path, workspace: Path) -> None:
         module.retire_legacy_agent_config(None)
 
 
-def test_migrates_zero_budget_and_preserves_veda(tmp_path: Path) -> None:
+@pytest.mark.parametrize("dev_mode", ["false", "true"])
+def test_migrates_zero_budget_and_preserves_veda(tmp_path: Path, dev_mode: str) -> None:
     config = tmp_path / "config.toml"
     config.write_text(
         "[agent]\n"
         f'system_prompt = "{_DEFAULT_PROMPT}"\n'
         "max_iterations = 0\n"
-        "dev_mode = false\n"
+        f"dev_mode = {dev_mode}\n"
         "[agent.wiring]\n"
         'toolsets = ["meta_common"]\n',
         encoding="utf-8",

@@ -257,7 +257,7 @@ def _check_safe_defaults(data: Mapping[str, object], agent: Mapping[str, object]
                 "原配置保持不变，不覆盖或拼接 VEDA"
             )
 
-    dev_values = []
+    # 原正式版本只解析此布尔标记，没有运行时消费者；保留原配置备份后移除。
     for field, container in (("dev_mode", data), ("dev_model", data),
                              ("agent.dev_mode", agent), ("agent.dev_model", agent)):
         key = field.rsplit(".", 1)[-1]
@@ -265,9 +265,6 @@ def _check_safe_defaults(data: Mapping[str, object], agent: Mapping[str, object]
             value = container[key]
             if type(value) is not bool:
                 raise RuntimeError(f"{field} 必须是布尔值；原配置保持不变")
-            dev_values.append((field, value))
-    if any(value for _, value in dev_values):
-        raise RuntimeError("dev_mode=true 没有当前 owner；原配置保持不变")
 
     wiring_values = []
     for field, container in (("wiring", data), ("agent.wiring", agent)):
