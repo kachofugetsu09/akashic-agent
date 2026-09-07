@@ -100,7 +100,7 @@ export function completeLabReply(snapshot: LabSnapshot, content: string, interru
   const message: LabMessage = interrupted ? {
     id: `lab-pause-${seq}`, session_id: snapshot.selectedSessionId, seq,
     timestamp: new Date(BASE_TIME + seq * 60_000).toISOString(), author: "花月", source: "conversation",
-    attachments: [], body: { kind: "control", action: "pause", through_seq: snapshot.throughSeq, reason: null },
+    attachments: [], metadata: {}, body: { kind: "control", action: "pause", through_seq: snapshot.throughSeq, reason: null },
   } : assistantMessage(preview.message_id, content, seq);
   return { ...snapshot, messages: [...snapshot.messages, message], throughSeq: seq,
     replyStatus: replyStatus(), sessions: snapshot.sessions.map((session) => ({ ...session, isRunning: false })),
@@ -164,6 +164,6 @@ function assistantMessage(id: string, content: string, index: number): LabMessag
 function message(id: string, content: string, seq: number, kind: "input" | "output"): LabMessage {
   const parts = [{ kind: "text" as const, value: content }];
   return { id, session_id: SESSION_ID, seq, timestamp: new Date(BASE_TIME + seq * 60_000).toISOString(),
-    author: kind === "input" ? "花月" : "Akashic", source: "conversation", attachments: [],
+    author: kind === "input" ? "花月" : "Akashic", source: "conversation", attachments: [], metadata: {},
     body: kind === "input" ? { kind, parts } : { kind, parts, finish: "complete" } };
 }
