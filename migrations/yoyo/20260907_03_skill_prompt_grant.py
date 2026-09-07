@@ -2,6 +2,10 @@
 from yoyo import step
 
 from agent.migrations.context import current_migration_context
+from agent.plugins.manifest import (
+    builtin_plugin_data_dir,
+    validate_workspace_plugin_data_path,
+)
 from infra.persistence.json_store import atomic_write_text
 
 __depends__ = {"20260907_02_retire_legacy_agent_config"}
@@ -10,7 +14,9 @@ __transactional__ = False
 
 def grant_skills(_ledger):
     """只更新已知默认授权，先保存原配置；恢复或重试不会覆盖备份。"""
-    path = current_migration_context().workspace / "plugin-data/context-builtin/config.local.toml"
+    context = current_migration_context()
+    path = builtin_plugin_data_dir("context", context.workspace) / "config.local.toml"
+    validate_workspace_plugin_data_path(path, context.workspace)
     if not path.exists():
         return
     before = path.read_text(encoding="utf-8")

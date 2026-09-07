@@ -103,3 +103,38 @@ def test_skill_prompt_grant_backs_up_defaults_and_keeps_custom_choice(tmp_path, 
     else:
         assert backup.read_text() == before
         assert tomllib.loads(path.read_text())["prompt_sources"]["skills"] == "skills"
+
+
+def test_skill_prompt_grant_rejects_symlinked_plugin_data_without_external_write(tmp_path):
+    """父目录越界时在读取或备份配置前失败，外部文件保持不变。"""
+    directory = tmp_path / "migrations"
+    directory.mkdir()
+    (directory / "20260907_02_retire_legacy_agent_config.py").write_text(
+        'from yoyo import step\nsteps = [step("SELECT 1")]\n'
+    )
+    source = Path(__file__).parents[1] / "migrations/yoyo/20260907_03_skill_prompt_grant.py"
+    (directory / source.name).write_bytes(source.read_bytes())
+    migration = read_migrations(str(directory))[-1]
+    migration.load()
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external-plugin-data"
+    config_dir = external / "context-builtin"
+    config_dir.mkdir(parents=True)
+    config = config_dir / "config.local.toml"
+    config.write_text(
+        'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory"}\n'
+        'summary_source = ["compaction", "compaction"]\n'
+    )
+    before = config.read_bytes()
+    (workspace / "plugin-data").symlink_to(external, target_is_directory=True)
+
+    with bind_migration_context(
+        config_path=tmp_path / "config.toml", workspace=workspace
+    ):
+        with pytest.raises(ValueError, match="不能穿过符号链接"):
+            migration.module.grant_skills(None)
+
+    assert config.read_bytes() == before
+    assert not config.with_name("config.before-skill-prompt-grant.toml").exists()
