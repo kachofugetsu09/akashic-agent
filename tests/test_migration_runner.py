@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import stat
 import tomllib
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,9 @@ from agent.migrations.runner import MigrationRunner
 from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.store import ModelRegistryStore
 from bootstrap.workspace_lock import WorkspaceInstanceLock
+from bootstrap.init_workspace import init_workspace
+from session.log import MessageLog, SessionAttributes
+from session.message import Input
 
 _PROJECT_ROOT = Path(__file__).parents[1]
 _ORIGIN_ID = "20260802_01_yoyo_origin"
@@ -986,3 +990,58 @@ api_key = "secret"
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")
         == "secret"
     )
+
+
+def test_fresh_init_runs_migrations_before_message_log_owner_creates_schema(
+    tmp_path: Path,
+) -> None:
+    """新 workspace 先完成 Yoyo，再由 MessageLog owner 创建当前 schema。"""
+
+    root = tmp_path / "fresh"
+    root.mkdir()
+    config = root / "config.toml"
+    workspace = root / "workspace"
+
+    init_workspace(config_path=config, workspace=workspace)
+    sessions = workspace / "sessions.db"
+    assert not sessions.exists()
+
+    first = _runner(root).run()
+    assert first.migrations == _CURRENT_IDS
+    assert not sessions.exists()
+
+    message_log = MessageLog(sessions)
+    message_log.ensure_session("fresh", SessionAttributes())
+    message = message_log.writer(
+        "fresh",
+        author="user",
+        source="test",
+        body_types=(Input,),
+        content={},
+    ).append("input-1", Input(()))
+    message_log.close()
+    before_init = sessions.read_bytes()
+    init_workspace(config_path=config, workspace=workspace, force=True)
+    assert sessions.read_bytes() == before_init
+    with closing(sqlite3.connect(sessions)) as connection:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(sessions)")
+        }
+        assert columns == {
+            "key",
+            "created_at",
+            "updated_at",
+            "metadata",
+            "attributes",
+            "next_seq",
+        }
+
+    reopened = MessageLog(sessions)
+    try:
+        assert reopened.reader("fresh").snapshot() == (message,)
+    finally:
+        reopened.close()
+
+    second = _runner(root).run()
+    assert second.state == "current"
+    assert second.migrations == ()

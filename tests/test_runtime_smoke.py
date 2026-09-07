@@ -892,7 +892,8 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert any("embedding 模型" in step for step in summary.next_steps)
     assert not any("llm.main" in step for step in summary.next_steps)
     assert not any("memory.embedding" in step for step in summary.next_steps)
-    assert (workspace / "sessions.db").exists()
+    # 启动迁移完成后由 MessageLog owner 创建 canonical schema。
+    assert not (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
     assert not (workspace / "memory" / "consolidation_writes.db").exists()
     assert not (workspace / "memory" / "journal").exists()

@@ -78,6 +78,13 @@ class ModelGateState:
             "released": barrier.released.is_set(),
         }
 
+    def wait_chunk_barrier(self, name: str) -> None:
+        """在流发送完指定 chunk 后暂停，直到控制端释放 barrier。"""
+
+        barrier = self._barrier(name)
+        barrier.reached.set()
+        barrier.released.wait()
+
     def begin_request(
         self,
         payload: dict[str, Any],
@@ -151,6 +158,21 @@ class ModelGateState:
             raise ValueError("script.delay_ms 必须是 0..5000 的整数")
         if "barrier" in script and not isinstance(script["barrier"], str):
             raise ValueError("script.barrier 必须是字符串")
+        chunk_barrier = script.get("chunk_barrier")
+        if chunk_barrier is not None:
+            if mode not in {"stream", "truncate"}:
+                raise ValueError("script.chunk_barrier 只能用于 stream")
+            if not isinstance(chunk_barrier, dict):
+                raise ValueError("script.chunk_barrier 必须是对象")
+            if not isinstance(chunk_barrier.get("name"), str) or not chunk_barrier["name"]:
+                raise ValueError("script.chunk_barrier.name 必须是非空字符串")
+            after_chunk = chunk_barrier.get("after_chunk")
+            if (
+                isinstance(after_chunk, bool)
+                or not isinstance(after_chunk, int)
+                or after_chunk < 0
+            ):
+                raise ValueError("script.chunk_barrier.after_chunk 必须是非负整数")
         if mode == "error":
             status = script.get("status")
             if not isinstance(status, int) or status < 400 or status > 599:
@@ -161,6 +183,11 @@ class ModelGateState:
                 isinstance(delta, (str, dict)) for delta in deltas
             ):
                 raise ValueError("stream script.deltas 必须是字符串或对象数组")
+            if (
+                isinstance(chunk_barrier, dict)
+                and chunk_barrier["after_chunk"] >= len(deltas)
+            ):
+                raise ValueError("script.chunk_barrier.after_chunk 超出 stream chunk 范围")
         tool_calls = script.get("tool_calls")
         if tool_calls is not None:
             if not isinstance(tool_calls, list) or not all(
@@ -354,7 +381,7 @@ class ModelGateHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
-        for raw_delta in script.get("deltas", []):
+        for index, raw_delta in enumerate(script.get("deltas", [])):
             delta = {"content": raw_delta} if isinstance(raw_delta, str) else raw_delta
             self._write_sse(
                 {
@@ -365,6 +392,14 @@ class ModelGateHandler(BaseHTTPRequestHandler):
                     "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
                 }
             )
+            chunk_barrier = script.get("chunk_barrier")
+            if (
+                isinstance(chunk_barrier, dict)
+                and index == chunk_barrier.get("after_chunk")
+            ):
+                self.server.state.wait_chunk_barrier(
+                    cast(str, chunk_barrier["name"])
+                )
             if delay_seconds:
                 time.sleep(delay_seconds)
         if truncated:

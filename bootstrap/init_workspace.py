@@ -9,7 +9,6 @@ from pathlib import Path
 from agent.config import Config
 from agent.persona import VEDA_RELATIVE_PATH, read_default_veda
 from infra.persistence.json_store import save_json
-from session.log import MessageLog
 
 _TEXT_FILES: dict[str, str] = {
     VEDA_RELATIVE_PATH.as_posix(): read_default_veda() + "\n",
@@ -134,19 +133,6 @@ def _ensure_workspace_directories(
             summary.created.append(path)
 
 
-def _ensure_workspace_db_assets(
-    workspace: Path,
-    *,
-    summary: InitSummary,
-) -> None:
-    sessions_db = workspace / "sessions.db"
-    sessions_exists = sessions_db.exists()
-    MessageLog(sessions_db).close()
-    if not sessions_exists:
-        summary.created.append(sessions_db)
-    else:
-        summary.skipped.append(sessions_db)
-
 def init_workspace(
     *,
     config_path: str | Path = "config.toml",
@@ -162,10 +148,6 @@ def init_workspace(
     _ensure_workspace_text_assets(workspace, force=force, summary=summary)
     _ensure_workspace_json_assets(workspace, force=force, summary=summary)
     _ensure_workspace_directories(workspace, summary=summary)
-    _ensure_workspace_db_assets(
-        workspace,
-        summary=summary,
-    )
 
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [
