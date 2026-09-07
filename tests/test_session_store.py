@@ -2,11 +2,12 @@ from session.admissions import SessionAdmissions
 from session.inbound_store import InboundHandoffStore
 from datetime import UTC, datetime, timedelta
 import asyncio
+import hashlib
+import json
 import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
 
 import pytest
 
@@ -19,16 +20,9 @@ from agent.control.models import (
     TurnStatus,
     TurnUsage,
 )
-from plugins.compaction.engine import (
-    compaction_scope_id,
-    compaction_source_ref,
-    source_plan_digest,
-)
 from session.manager import Session, SessionManager
 from session.store import (
-    CompactionPrepare,
     SessionAdmissionConflictError,
-    SessionCompactionPrepareConflictError,
     SessionStore,
     _decode_message_extra,
 )
@@ -38,38 +32,10 @@ from bus.queue import MessageBus
 NOW = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
 
 
-class _CompactionKwargs(TypedDict):
-    session_key: str
-    trigger: str
-    summary: str
-    source_ref: str
-    source_plan_digest: str
-    source_from_seq: int
-    consolidated_through_seq: int
-    source_message_ids: list[str]
-    retained_tail: list[dict[str, Any]]
-    model_runtime_id: str
-    model: str
-    context_window: int
-    threshold_tokens: int
-    hard_input_tokens: int
-    keep_recent_tokens: int
-    tokens_before: int
-    tokens_after: int
-    summary_usage: dict[str, Any]
-    generation: NotRequired[int | None]
-    summary_format_version: NotRequired[int]
-
-
-@pytest.fixture
-def compaction_store(tmp_path):
-    """Create and close the store used by compaction-fence tests."""
-
-    store = SessionStore(tmp_path / "sessions.db")
-    try:
-        yield store
-    finally:
-        store.close()
+def _source_plan_digest(rows: tuple[dict[str, object], ...]) -> str:
+    """Build the legacy fixture digest without importing the retired compaction engine."""
+    payload = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @pytest.fixture
@@ -81,93 +47,6 @@ def turn_store(tmp_path):
         yield store
     finally:
         store.close()
-
-
-def _seed_compaction_message(store: SessionStore, session_key: str) -> dict:
-    """Create the canonical row referenced by compaction fixtures."""
-
-    return store.insert_message(
-        session_key,
-        role="user",
-        content="tail",
-        ts=NOW.isoformat(),
-        seq=1,
-    )
-
-
-def _compaction_kwargs(
-    session_key: str,
-    message: dict[str, object],
-    *,
-    generation: int | None = None,
-    source_ref: str | None = None,
-    summary: str = "## Goal\nsummary",
-) -> _CompactionKwargs:
-    message_id = str(message["id"])
-    raw_seq = message["seq"]
-    if not isinstance(raw_seq, int) or isinstance(raw_seq, bool):
-        raise AssertionError("compaction fixture message seq must be an integer")
-    message_seq = raw_seq
-    retained_message = {"role": "user", "content": "tail"}
-    kwargs: _CompactionKwargs = {
-        "session_key": session_key,
-        "trigger": "soft_limit",
-        "summary": summary,
-        "source_ref": source_ref or f"source:{generation or 1}",
-        "source_plan_digest": source_plan_digest(
-            (
-                {
-                    "id": message_id,
-                    "seq": message_seq,
-                    "unit_ref": f"turn:{message_seq}",
-                    "message": retained_message,
-                },
-            )
-        ),
-        "source_from_seq": message_seq,
-        "consolidated_through_seq": message_seq,
-        "source_message_ids": [message_id],
-        "retained_tail": [
-            {
-                "id": message_id,
-                "seq": message_seq,
-                "unit_ref": f"turn:{message_seq}",
-                "message": retained_message,
-            }
-        ],
-        "model_runtime_id": "main",
-        "model": "test-model",
-        "context_window": 100_000,
-        "threshold_tokens": 74_000,
-        "hard_input_tokens": 90_000,
-        "keep_recent_tokens": 20_000,
-        "tokens_before": 80_000,
-        "tokens_after": 30_000,
-        "summary_usage": {"input_tokens": 10, "output_tokens": 5},
-    }
-    if generation is not None:
-        kwargs["generation"] = generation
-    return kwargs
-
-
-def _prepare_for_compaction(
-    store: SessionStore,
-    session_key: str,
-    kwargs: _CompactionKwargs,
-) -> CompactionPrepare:
-    meta = store.get_session_meta(session_key)
-    assert meta is not None
-    return store.prepare_compaction(
-        session_key=session_key,
-        session_created_at=str(meta["created_at"]),
-        generation=kwargs.get("generation") or 1,
-        parent_generation=0,
-        source_ref=kwargs["source_ref"],
-        source_from_seq=kwargs["source_from_seq"],
-        consolidated_through_seq=kwargs["consolidated_through_seq"],
-        source_message_ids=tuple(kwargs["source_message_ids"]),
-        retained_tail=tuple(dict(item) for item in kwargs["retained_tail"]),
-    )
 
 
 def _seed_interaction_with_compactions(
@@ -216,7 +95,7 @@ def _seed_interaction_with_compactions(
             trigger="test",
             summary=f"checkpoint-{generation}",
             source_ref=f"test:cache:{generation}",
-            source_plan_digest=source_plan_digest(
+            source_plan_digest=_source_plan_digest(
                 (
                     {
                         "id": str(source["id"]),
@@ -1237,375 +1116,6 @@ def test_turn_corrupted_json_fails_loud(
         store.read_turn(record.id)
 
 
-def test_compaction_head_is_store_owned_and_monotonic(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
-    store.create_session(key="cli:head")
-    message = _seed_compaction_message(store, "cli:head")
-
-    initial = store.get_compaction_head("cli:head")
-    assert (initial.parent_generation, initial.next_generation) == (0, 1)
-
-    first = store.persist_compaction(
-        **_compaction_kwargs("cli:head", message, generation=1),
-        parent_generation=initial.parent_generation,
-    )
-    assert first.generation == 1
-    second = store.persist_compaction(
-        **_compaction_kwargs("cli:head", message, generation=2, source_ref="source:2"),
-        parent_generation=first.generation,
-    )
-    assert second.generation == 2
-
-    head = store.get_compaction_head("cli:head")
-    assert (head.parent_generation, head.next_generation) == (2, 3)
-    store.close()
-
-
-def test_pending_compaction_prepare_is_idempotent_and_fences_mutations(
-    compaction_store: SessionStore,
-) -> None:
-    store = compaction_store
-    store.create_session(key="cli:prepare")
-    message = _seed_compaction_message(store, "cli:prepare")
-    kwargs = _compaction_kwargs("cli:prepare", message, generation=1)
-    prepare = _prepare_for_compaction(store, "cli:prepare", kwargs)
-    replay = _prepare_for_compaction(store, "cli:prepare", kwargs)
-
-    assert replay == prepare
-    with pytest.raises(
-        SessionCompactionPrepareConflictError,
-        match="pending compaction prepare",
-    ):
-        store.update_message(str(message["id"]), content="edited")
-    with pytest.raises(
-        SessionCompactionPrepareConflictError,
-        match="pending compaction prepare",
-    ):
-        store.delete_message(str(message["id"]))
-    with pytest.raises(
-        SessionCompactionPrepareConflictError,
-        match="pending compaction prepare",
-    ):
-        store.delete_messages_batch([str(message["id"])])
-
-    assert store.get_message(str(message["id"]))["content"] == "tail"
-    assert (
-        store.get_compaction_prepare("cli:prepare", source_ref=prepare.source_ref)
-        == prepare
-    )
-
-
-def test_compaction_source_mutation_digest_rechecks_raw_rows(
-    compaction_store: SessionStore,
-) -> None:
-    store = compaction_store
-    session_key = "cli:source-digest"
-    store.create_session(key=session_key)
-    message = _seed_compaction_message(store, session_key)
-    message_id = str(message["id"])
-    kwargs = _compaction_kwargs(session_key, message, generation=1)
-    digest = store.source_mutation_digest(session_key, [message_id])
-
-    store.update_message(message_id, content="edited")
-    meta = store.get_session_meta(session_key)
-    assert meta is not None
-    with pytest.raises(RuntimeError, match="source snapshot"):
-        store.prepare_compaction(
-            session_key=session_key,
-            session_created_at=str(meta["created_at"]),
-            generation=1,
-            parent_generation=0,
-            source_ref=kwargs["source_ref"],
-            source_from_seq=kwargs["source_from_seq"],
-            consolidated_through_seq=kwargs["consolidated_through_seq"],
-            source_message_ids=kwargs["source_message_ids"],
-            retained_tail=kwargs["retained_tail"],
-            source_mutation_digest=digest,
-        )
-    assert (
-        store.get_compaction_prepare(session_key, source_ref=kwargs["source_ref"])
-        is None
-    )
-
-    with pytest.raises(RuntimeError, match="source snapshot"):
-        store.persist_compaction(**kwargs, source_mutation_digest=digest)
-    assert store.get_compaction(session_key, 1) is None
-    assert store.get_compaction_head(session_key).parent_generation == 0
-
-
-def test_persist_compaction_clears_prepare_with_checkpoint_transaction(
-    compaction_store: SessionStore,
-) -> None:
-    store = compaction_store
-    store.create_session(key="cli:prepare-commit")
-    message = _seed_compaction_message(store, "cli:prepare-commit")
-    kwargs = _compaction_kwargs("cli:prepare-commit", message, generation=1)
-    prepare = _prepare_for_compaction(store, "cli:prepare-commit", kwargs)
-
-    persisted = store.persist_compaction(**kwargs, prepare=prepare)
-
-    assert persisted.generation == 1
-    assert (
-        store.get_compaction_prepare(
-            "cli:prepare-commit", source_ref=prepare.source_ref
-        )
-        is None
-    )
-    assert store.get_compaction_head("cli:prepare-commit").parent_generation == 1
-
-
-def test_persist_compaction_without_prepare_cannot_bypass_pending_fence(
-    compaction_store: SessionStore,
-) -> None:
-    store = compaction_store
-    store.create_session(key="cli:prepare-bypass")
-    message = _seed_compaction_message(store, "cli:prepare-bypass")
-    kwargs = _compaction_kwargs("cli:prepare-bypass", message, generation=1)
-    prepare = _prepare_for_compaction(store, "cli:prepare-bypass", kwargs)
-
-    with pytest.raises(
-        SessionCompactionPrepareConflictError,
-        match="pending compaction prepare",
-    ):
-        store.persist_compaction(**kwargs)
-
-    assert store.get_compaction_head("cli:prepare-bypass").parent_generation == 0
-    assert (
-        store.get_compaction_prepare(
-            "cli:prepare-bypass", source_ref=prepare.source_ref
-        )
-        == prepare
-    )
-
-
-def test_session_cascade_rejects_pending_prepare_before_backup(
-    tmp_path,
-    compaction_store: SessionStore,
-) -> None:
-    store = compaction_store
-    store.create_session(key="cli:prepare-delete")
-    message = _seed_compaction_message(store, "cli:prepare-delete")
-    kwargs = _compaction_kwargs("cli:prepare-delete", message, generation=1)
-    prepare = _prepare_for_compaction(store, "cli:prepare-delete", kwargs)
-
-    with pytest.raises(
-        SessionCompactionPrepareConflictError,
-        match="pending compaction prepare",
-    ) as exc_info:
-        store.delete_session_with_audit("cli:prepare-delete", cascade=True)
-
-    assert exc_info.value.audit_id
-    audit = store.get_session_delete_audit(exc_info.value.audit_id)
-    assert audit is not None
-    assert audit.result == "rejected"
-    assert audit.backup_path is None
-    assert store.session_exists("cli:prepare-delete")
-    assert store.get_message(str(message["id"])) is not None
-    assert (
-        store.get_compaction_prepare(
-            "cli:prepare-delete", source_ref=prepare.source_ref
-        )
-        == prepare
-    )
-    assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
-
-
-def test_session_batch_cascade_rejects_any_pending_prepare(
-    tmp_path,
-    compaction_store: SessionStore,
-) -> None:
-    store = compaction_store
-    store.create_session(key="cli:prepare-batch-a")
-    store.create_session(key="cli:prepare-batch-b")
-    message_a = _seed_compaction_message(store, "cli:prepare-batch-a")
-    _ = _seed_compaction_message(store, "cli:prepare-batch-b")
-    kwargs = _compaction_kwargs("cli:prepare-batch-a", message_a, generation=1)
-    prepare = _prepare_for_compaction(store, "cli:prepare-batch-a", kwargs)
-
-    with pytest.raises(
-        SessionCompactionPrepareConflictError,
-        match="pending compaction prepare",
-    ) as exc_info:
-        store.delete_sessions_batch_with_audit(
-            ["cli:prepare-batch-a", "cli:prepare-batch-b"],
-            cascade=True,
-        )
-
-    assert exc_info.value.audit_id
-    audit = store.get_session_delete_audit(exc_info.value.audit_id)
-    assert audit is not None
-    assert audit.result == "rejected"
-    assert audit.backup_path is None
-    assert store.session_exists("cli:prepare-batch-a")
-    assert store.session_exists("cli:prepare-batch-b")
-    assert (
-        store.get_compaction_prepare(
-            "cli:prepare-batch-a", source_ref=prepare.source_ref
-        )
-        == prepare
-    )
-    assert not list((tmp_path / "backups" / "session-deletions").glob("sessions-*.db"))
-
-
-def test_orphan_prepare_cleanup_allows_new_session_incarnation(
-    compaction_store: SessionStore,
-) -> None:
-    store = compaction_store
-    session_key = "cli:prepare-recreate"
-    store.create_session(key=session_key)
-    message = _seed_compaction_message(store, session_key)
-    previous_meta = store.get_session_meta(session_key)
-    assert previous_meta is not None
-    kwargs = _compaction_kwargs(session_key, message, generation=1)
-    kwargs["source_ref"] = compaction_source_ref(
-        compaction_scope_id(session_key, str(previous_meta["created_at"])),
-        1,
-    )
-    prepare = _prepare_for_compaction(store, session_key, kwargs)
-
-    assert store._clear_orphan_compaction_prepare(prepare)
-    assert (
-        store.get_compaction_prepare(session_key, source_ref=prepare.source_ref) is None
-    )
-    audit = store.delete_session_with_audit(session_key, cascade=True)
-    assert audit.result == "committed"
-
-    store.create_session(key=session_key)
-    current_meta = store.get_session_meta(session_key)
-    assert current_meta is not None
-    new_message = _seed_compaction_message(store, session_key)
-    new_kwargs = _compaction_kwargs(session_key, new_message, generation=1)
-    new_kwargs["source_ref"] = compaction_source_ref(
-        compaction_scope_id(session_key, str(current_meta["created_at"])),
-        1,
-    )
-    new_prepare = _prepare_for_compaction(store, session_key, new_kwargs)
-
-    assert current_meta["created_at"] != previous_meta["created_at"]
-    assert new_prepare.source_ref != prepare.source_ref
-
-
-def test_pending_compaction_prepare_fences_interaction_delete(
-    compaction_store: SessionStore,
-) -> None:
-    store = compaction_store
-    timestamp = NOW.isoformat()
-    rows = store.persist_session(
-        "cli:prepare-interaction",
-        created_at=timestamp,
-        updated_at=timestamp,
-        metadata={},
-        messages=[
-            {
-                "role": "user",
-                "content": "question",
-                "timestamp": timestamp,
-                "extra": {
-                    "control_turn_id": "turn:prepare",
-                    "turn_input_ordinal": 0,
-                },
-            },
-            {
-                "role": "assistant",
-                "content": "answer",
-                "timestamp": timestamp,
-                "extra": {
-                    "control_turn_id": "turn:prepare",
-                    "turn_terminal": True,
-                    "turn_input_count": 1,
-                },
-            },
-        ],
-    )
-    prepare = store.prepare_compaction(
-        session_key="cli:prepare-interaction",
-        session_created_at=timestamp,
-        generation=1,
-        parent_generation=0,
-        source_ref="prepare:interaction",
-        source_from_seq=int(rows[0]["seq"]),
-        consolidated_through_seq=int(rows[-1]["seq"]),
-        source_message_ids=tuple(str(row["id"]) for row in rows),
-        retained_tail=(),
-    )
-
-    with pytest.raises(
-        SessionCompactionPrepareConflictError,
-        match="pending compaction prepare",
-    ):
-        store.delete_interaction("turn:prepare")
-    assert (
-        store.get_compaction_prepare(
-            "cli:prepare-interaction", source_ref=prepare.source_ref
-        )
-        == prepare
-    )
-
-
-def test_compaction_retained_unit_ref_survives_store_reopen(tmp_path) -> None:
-    db_path = tmp_path / "sessions.db"
-    store = SessionStore(db_path)
-    store.create_session(key="cli:reopen")
-    message = _seed_compaction_message(store, "cli:reopen")
-    persisted = store.persist_compaction(
-        **_compaction_kwargs("cli:reopen", message, generation=1),
-        parent_generation=0,
-    )
-    store.close()
-
-    reopened = SessionStore(db_path)
-    loaded = reopened.get_compaction("cli:reopen", persisted.generation)
-
-    assert loaded is not None
-    assert loaded.retained_tail[0]["id"] == message["id"]
-    assert loaded.retained_tail[0]["unit_ref"] == "turn:1"
-    reopened.close()
-
-
-def test_compaction_head_rejects_cursor_without_active_generation(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
-    store.create_session(key="cli:invalid-head")
-    store._conn.execute(
-        "UPDATE sessions SET last_consolidated = 4 WHERE key = ?",
-        ("cli:invalid-head",),
-    )
-    store._conn.commit()
-
-    with pytest.raises(ValueError, match="超出 ledger head"):
-        store.get_compaction_head("cli:invalid-head")
-    store.close()
-
-
-def test_compaction_source_ref_is_idempotent_after_cursor_advances(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
-    store.create_session(key="cli:idempotent")
-    message = _seed_compaction_message(store, "cli:idempotent")
-    first = store.persist_compaction(
-        **_compaction_kwargs("cli:idempotent", message, generation=1),
-        parent_generation=0,
-    )
-    _ = store.persist_compaction(
-        **_compaction_kwargs(
-            "cli:idempotent", message, generation=2, source_ref="source:2"
-        ),
-        parent_generation=1,
-    )
-
-    replay = store.persist_compaction(
-        **_compaction_kwargs("cli:idempotent", message, generation=None),
-    )
-    assert replay.generation == first.generation
-    assert store.get_compaction_head("cli:idempotent").parent_generation == 2
-
-    with pytest.raises(ValueError, match="source_ref 内容冲突"):
-        store.persist_compaction(
-            **_compaction_kwargs(
-                "cli:idempotent", message, generation=None, summary="different"
-            ),
-        )
-    store.close()
-
-
 def test_legacy_react_compaction_extra_is_preserved_without_runtime_read(
     tmp_path,
 ) -> None:
@@ -1695,27 +1205,6 @@ def test_new_update_accepts_non_retired_assistant_extra_without_role(tmp_path) -
 
     assert updated is not None
     assert updated["trace_id"] == "trace-1"
-    store.close()
-
-
-def test_session_save_cannot_regress_ledger_cursor(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
-    store.create_session(key="cli:stale-save")
-    message = _seed_compaction_message(store, "cli:stale-save")
-    _ = store.persist_compaction(
-        **_compaction_kwargs("cli:stale-save", message, generation=1),
-        parent_generation=0,
-    )
-
-    store.persist_session(
-        "cli:stale-save",
-        created_at=NOW.isoformat(),
-        updated_at=NOW.isoformat(),
-        metadata={},
-        messages=[],
-    )
-
-    assert store.get_session_meta("cli:stale-save")["last_consolidated"] == 1
     store.close()
 
 
