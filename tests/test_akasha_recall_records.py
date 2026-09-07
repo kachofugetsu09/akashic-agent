@@ -2,9 +2,11 @@ from datetime import UTC, datetime
 
 import pytest
 
+from plugins.akasha.domain.model import Turn
+from plugins.akasha.infrastructure.consumption import Applied
 from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
 from session.log import MessageConflict, MessageLog, OwnerTransaction
-from session.message import ContentPart, ContentReferences, Input, Output
+from session.message import ContentPart, ContentReferences, Input, Message, Output
 
 
 def record(head):
@@ -89,11 +91,22 @@ def test_actual_retrieval_keeps_all_interrupted_members_after_graph_advances(tmp
     try:
         rule = Learning(TurnProjection(), owner="akasha")
         vectors = MessageEmbeddings(log).bind(rule.text)
-        def add(identity, text, kind=Input):
+        def add(
+            identity: str,
+            text: str,
+            kind: type[Input] | type[Output] = Input,
+        ) -> Message:
             parts = (ContentPart("text", text),)
-            message = log.writer("s", author="test", source="chat", body_types=(kind,),
-                                 content={"text": lambda part: ContentReferences()}).append(
-                                     identity, Input(parts) if kind is Input else Output(parts, "complete"))
+            if kind is Input:
+                message = log.writer(
+                    "s", author="test", source="chat", body_types=(Input,),
+                    content={"text": lambda part: ContentReferences()},
+                ).append(identity, Input(parts))
+            else:
+                message = log.writer(
+                    "s", author="test", source="chat", body_types=(Output,),
+                    content={"text": lambda part: ContentReferences()},
+                ).append(identity, Output(parts, "complete"))
             vectors.save(message, model="fixed", embedding=[0.6, 0.8])
             return message
         state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256="0" * 64,
@@ -104,11 +117,12 @@ def test_actual_retrieval_keeps_all_interrupted_members_after_graph_advances(tmp
             "pause", Control("pause", 0))
         add("u2", "correction")
         add("a", "complete answer", Output)
-        def turn():
+        def turn() -> tuple[Turn, Applied]:
             sample = project_samples(log.catalog(), rule.projection, include=lambda session, source: True)[-1]
             material = dialogue_turn(sample, node_id=consumer.cycle.state_version,
                 previous=None if not consumer.cycle.turns else datetime.fromisoformat(consumer.cycle.turns[-1].committed_at),
                 text=rule.text, embeddings=vectors, embedding_model="fixed", dimension=2)
+            assert material is not None
             return material, applied_source(sample, learning_binding="fixed-learning")
         first, entry = turn()
         consumer.apply(first, entry)
@@ -164,10 +178,15 @@ def test_inspector_keeps_all_hit_members_and_marks_only_presented_messages(tmp_p
         records = RecallRecords(log.owner("akasha"))
         inspector = RecallInspector(read=records.read, list_records=records.list, catalog=log.catalog())
         detail = inspector.mobile_detail("query")
+        assert detail is not None
         assert detail["hit_count"] == 1
         assert detail["presented_count"] == 1
-        assert [message["preview"] for message in detail["hits"][0]["messages"]] == ["first input", "correction", "answer"]
-        assert [message["presented"] for message in detail["hits"][0]["messages"]] == [False, True, False]
+        hits = detail["hits"]
+        assert isinstance(hits, list) and len(hits) == 1
+        messages = hits[0]["messages"]
+        assert isinstance(messages, list)
+        assert [message["preview"] for message in messages] == ["first input", "correction", "answer"]
+        assert [message["presented"] for message in messages] == [False, True, False]
         assert inspector.recent(page=2, page_size=1) == {"schema": "akasha.queries.v1", "items": [], "total": 1, "page": 2, "page_size": 1}
         assert inspector.mobile_detail("unknown") is None
 

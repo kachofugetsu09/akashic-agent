@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from plugins.akasha.application.cycle import MemoryCycle
-from plugins.akasha.domain.model import MemoryConfig
+from plugins.akasha.domain.model import MemoryConfig, Turn
 from plugins.akasha.infrastructure.consumption import Consumption, LegacyPrefix, turns_digest
 from plugins.akasha.infrastructure.persistence import (
     load_consumption, load_memory_state, logical_state_sha256, write_memory_database,
@@ -18,22 +18,40 @@ from plugins.akasha.projection import applied_source, dialogue_turn, project_sam
 from plugins.turn_projection.plugin import TurnProjection
 from session.embedding_store import MessageEmbeddingStore, MessageEmbeddings
 from session.log import MessageLog
-from session.message import ContentPart, Input, Output, Control
+from session.message import ContentPart, Control, Input, Message, Output
 
 
 @pytest.fixture
 def conversation(tmp_path):
     log = MessageLog(tmp_path / "sessions.db")
     store = MessageEmbeddingStore(tmp_path / "sessions.db")
-    def append(kind, identity, body, source="chat"):
+    def append(
+        kind: type[Input] | type[Output] | type[Control],
+        identity: str,
+        body: Input | Output | Control,
+        source: str = "chat",
+    ) -> Message:
         return log.writer("s", author="actor", source=source, body_types=(kind,),
                           content={"text": lambda part: ContentReferences()}).append(identity, body)
-    def text(message):
-        return "".join(part.value for part in message.body.parts if part.kind == "text")
+    def text(message: Message) -> str:
+        values: list[str] = []
+        for part in message.body.parts:
+            if isinstance(part, ContentPart) and part.kind == "text":
+                assert isinstance(part.value, str)
+                values.append(part.value)
+        return "".join(values)
     records = MessageEmbeddings(log).bind(text)
-    def add(identity, value, body=Input, source="chat"):
+    def add(
+        identity: str,
+        value: str,
+        body: type[Input] | type[Output] = Input,
+        source: str = "chat",
+    ) -> Message:
         parts = (ContentPart("text", value),)
-        message = append(body, identity, body(parts) if body is Input else body(parts, "complete"), source)
+        if body is Input:
+            message = append(Input, identity, Input(parts), source)
+        else:
+            message = append(Output, identity, Output(parts, "complete"), source)
         records.save(message, model="fixed", embedding=[0.6, 0.8])
         return message
     try:
@@ -74,8 +92,10 @@ def test_interrupted_inputs_learn_one_real_graph_node_and_restore_without_replay
     sample = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: source == "chat")[0]
     turn = dialogue_turn(sample, node_id=0, previous=None, text=text, embeddings=records,
                          embedding_model="fixed", dimension=2)
+    assert turn is not None
     assert turn.user_text == "first input\n\nsecond input\n\nthird input"
     assert turn.assistant_text == "full answer"
+    assert turn.user_dense is not None
     np.testing.assert_allclose(turn.user_dense, [0.6, 0.8])
     state = Consumption(legacy_prefix=LegacyPrefix(count=0, index_state_sha256="0" * 64,
                                                   turns_digest=turns_digest([])), cutover_heads=())
@@ -123,6 +143,7 @@ def test_cutover_preserves_old_graph_and_publish_failure_keeps_old_snapshot(conv
     old = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)[0]
     turn = dialogue_turn(old, node_id=0, previous=None, text=text, embeddings=records,
                          embedding_model="fixed", dimension=2)
+    assert turn is not None
     cycle = MemoryCycle()
     cycle.commit(turn, None)
     path = tmp_path / "akasha.db"
@@ -146,6 +167,7 @@ def test_cutover_preserves_old_graph_and_publish_failure_keeps_old_snapshot(conv
     sample = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)[1]
     next_turn = dialogue_turn(sample, node_id=1, previous=datetime.fromisoformat(turn.committed_at),
                               text=text, embeddings=records, embedding_model="fixed", dimension=2)
+    assert next_turn is not None
     next_state = state.append(applied_source(sample, learning_binding="new"))
     cycle.commit(next_turn, None)
     before = path.read_bytes()
@@ -165,9 +187,11 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
     from plugins.akasha.projection import restore_sample
     import plugins.akasha.infrastructure.persistence as persistence
     log, append, add, text, records = conversation
-    def build(sample, node=0, previous=None):
-        return dialogue_turn(sample, node_id=node, previous=previous, text=text,
-                             embeddings=records, embedding_model='fixed', dimension=2)
+    def build(sample, node: int = 0, previous: datetime | None = None) -> Turn:
+        result = dialogue_turn(sample, node_id=node, previous=previous, text=text,
+                               embeddings=records, embedding_model='fixed', dimension=2)
+        assert result is not None
+        return result
     add('u1', 'question one')
     add('a1', 'answer one', Output)
     first = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)[0]
@@ -185,6 +209,7 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
     finally:
         consumer.close()
     state = load_consumption(path)
+    assert state is not None
     restored_sample = restore_sample(log.catalog(), TurnProjection(), state.applied[0])
     restored_turn = build(restored_sample)
     consumer = MessageConsumer(path, turns=[restored_turn], state=state, config=MemoryConfig())
@@ -207,6 +232,7 @@ def test_real_consumer_is_idempotent_after_restart_and_stops_after_uncertain_pub
     consumer.close()
     # replace 已提交：重新读取实际文件发现第二次学习已完成，不补学一次。
     state = load_consumption(path)
+    assert state is not None
     assert len(state.applied) == 2
     consumer = MessageConsumer(path, turns=[restored_turn, second_turn], state=state, config=MemoryConfig())
     try:
@@ -228,7 +254,7 @@ def test_reprojection_rejects_changed_members_and_unknown_consumer_version(conve
     add('a', 'answer', Output)
     sample = project_samples(log.catalog(), TurnProjection(), include=lambda session, source: True)[0]
     entry = applied_source(sample, learning_binding='fixed')
-    class WrongProjection:
+    class WrongProjection(TurnProjection):
         def project(self, messages, source):
             return tuple(replace(turn, message_ids=turn.message_ids[1:])
                          for turn in TurnProjection().project(messages, source))

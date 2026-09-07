@@ -277,7 +277,11 @@ async def test_mobile_attachment_is_bound_to_real_input_and_survives_reopen(tmp_
 async def test_cancelled_input_restarts_through_current_binding_and_uses_final_receipt(tmp_path, monkeypatch, valid):
     async with runtime(tmp_path) as (log, identities, manager, bus, channel, storage, device, handoffs):
         session = f'akashic:{uuid4()}'
-        frame = command(session, **({} if valid else {'reply_to': {'message_id': 'missing'}}))
+        frame = (
+            command(session)
+            if valid
+            else command(session, reply_to={'message_id': 'missing'})
+        )
         entered, release = asyncio.Event(), asyncio.Event()
         original = bus.prepare_channel_input
         async def held(envelope):
