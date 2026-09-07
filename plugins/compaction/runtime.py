@@ -30,9 +30,23 @@ from session.store import (
 
 logger = logging.getLogger(__name__)
 
+
+class CompactionReceiptPort(Protocol):
+    """Read and write immutable checkpoint saga receipts by source identity."""
+
+    def read(self, source_ref: str) -> dict[str, object] | None: ...
+
+    def write(
+        self,
+        source_ref: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]: ...
+
+    def list_all(self) -> tuple[dict[str, object], ...]: ...
+
+
 if TYPE_CHECKING:
     from agent.plugin_composition.session_compaction import SessionCompactionStorage
-    from plugins.compaction.receipts import CompactionReceiptPort
 
 
 class CompactionSessionView(Protocol):
