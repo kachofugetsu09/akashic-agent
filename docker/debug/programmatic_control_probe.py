@@ -470,149 +470,6 @@ def _turn_projection(turn: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _wait_database_turn(
-    database: Path,
-    thread_id: str,
-    input_text: str,
-    *,
-    timeout: float = SCENARIO_DEADLINE_S,
-) -> dict[str, Any]:
-    """等待 channel adapter 写入指定输入的领域终态并返回 wire 投影。"""
-
-    deadline = time.monotonic() + timeout
-    last_status = "missing"
-    while time.monotonic() < deadline:
-        with sqlite3.connect(database) as connection:
-            connection.row_factory = sqlite3.Row
-            rows = connection.execute(
-                """
-                SELECT id, session_key, status, input_json, items_json,
-                       usage_json, error_json, final_response
-                FROM turns WHERE session_key = ? ORDER BY created_at DESC
-                """,
-                (thread_id,),
-            ).fetchall()
-        for row in rows:
-            input_payload = json.loads(row["input_json"])
-            if input_payload.get("input") != input_text:
-                continue
-            last_status = str(row["status"])
-            if last_status not in {"completed", "failed", "interrupted", "cancelled"}:
-                break
-            return {
-                "id": row["id"],
-                "threadId": row["session_key"],
-                "status": row["status"],
-                "finalResponse": row["final_response"],
-                "items": json.loads(row["items_json"]),
-                "usage": json.loads(row["usage_json"]) if row["usage_json"] else None,
-                "error": json.loads(row["error_json"]) if row["error_json"] else None,
-            }
-        threading.Event().wait(0.02)
-    raise GateFailure(
-        f"等待 channel turn 终态超时：thread={thread_id} input={input_text!r} status={last_status}"
-    )
-
-
-def _wait_database_turn_status(
-    database: Path,
-    thread_id: str,
-    input_text: str,
-    expected: set[str],
-    *,
-    timeout: float = SCENARIO_DEADLINE_S,
-) -> dict[str, Any]:
-    """等待 channel turn 进入指定状态并返回最小可审计证据。"""
-
-    deadline = time.monotonic() + timeout
-    last_status = "missing"
-    while time.monotonic() < deadline:
-        with sqlite3.connect(database) as connection:
-            connection.row_factory = sqlite3.Row
-            row = connection.execute(
-                """
-                SELECT id, status, final_response, error_json
-                FROM turns
-                WHERE session_key = ? AND json_extract(input_json, '$.input') = ?
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                (thread_id, input_text),
-            ).fetchone()
-        if row is not None:
-            last_status = str(row["status"])
-            if last_status in expected:
-                return {
-                    "id": row["id"],
-                    "status": last_status,
-                    "finalResponse": row["final_response"],
-                    "error": (
-                        json.loads(row["error_json"]) if row["error_json"] else None
-                    ),
-                }
-        threading.Event().wait(0.02)
-    raise GateFailure(
-        f"等待 channel turn 状态超时：thread={thread_id} input={input_text!r} "
-        f"expected={sorted(expected)} actual={last_status}"
-    )
-
-
-def _wait_database_turn_inputs(
-    database: Path,
-    thread_id: str,
-    input_text: str,
-    expected_count: int,
-    *,
-    timeout: float = SCENARIO_DEADLINE_S,
-) -> dict[str, object]:
-    """等待 active channel turn 持久化指定数量的有序 user item。"""
-
-    deadline = time.monotonic() + timeout
-    last_inputs: list[object] = []
-    while time.monotonic() < deadline:
-        with sqlite3.connect(database) as connection:
-            connection.row_factory = sqlite3.Row
-            row = connection.execute(
-                """
-                SELECT id, status, items_json
-                FROM turns
-                WHERE session_key = ? AND json_extract(input_json, '$.input') = ?
-                ORDER BY created_at DESC LIMIT 1
-                """,
-                (thread_id, input_text),
-            ).fetchone()
-        if row is not None:
-            items = json.loads(row["items_json"])
-            last_inputs = [
-                item.get("data", {}).get("content")
-                for item in items
-                if isinstance(item, dict) and item.get("type") == "userMessage"
-            ]
-            if len(last_inputs) == expected_count:
-                return {
-                    "id": row["id"],
-                    "status": row["status"],
-                    "userInputs": last_inputs,
-                }
-        threading.Event().wait(0.02)
-    raise GateFailure(
-        f"等待 channel turn 输入超时：thread={thread_id} input={input_text!r} "
-        f"expected_count={expected_count} actual={last_inputs!r}"
-    )
-
-
-def _receive_web_final(
-    web: Any, *, timeout: float = SCENARIO_DEADLINE_S
-) -> dict[str, Any]:
-    """忽略流式帧并返回下一条 Web channel 最终帧。"""
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        frame = json.loads(web.recv(timeout=deadline - time.monotonic()))
-        if frame.get("type") == "message.final":
-            return cast(dict[str, Any], frame)
-    raise GateFailure("Web channel 未在 deadline 内返回 message.final")
-
-
 def _receive_web_follow_rows(
     web: Any,
     session_id: str,
@@ -642,8 +499,10 @@ def _receive_web_follow_rows(
             if frame.get("session_id") != session_id:
                 raise GateFailure(f"Web reply.status Session 不匹配：{frame!r}")
             statuses.append(frame)
-        elif frame_type in {"session.following", "error"}:
+        elif frame_type == "session.following":
             continue
+        elif frame_type == "error":
+            raise GateFailure(f"Web session.follow 返回 error：{frame!r}")
         else:
             raise GateFailure(f"Web session.follow 收到未知 frame：{frame!r}")
         rows = sorted(rows_by_id.values(), key=lambda item: int(item["seq"]))
@@ -1256,6 +1115,55 @@ def _message_wire_projection(page: dict[str, Any]) -> list[dict[str, Any]]:
             "source": item.get("source"),
             "body": item.get("body"),
         })
+    return projected
+
+
+def _message_observable_projection(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project wire and database rows onto the fields the Web contract exposes."""
+
+    projected: list[dict[str, Any]] = []
+    for row in rows:
+        body = row.get("body")
+        if not isinstance(body, dict):
+            raise GateFailure(f"Message row body 不是 object：{row!r}")
+        kind = body.get("kind")
+        if not isinstance(kind, str):
+            raise GateFailure(f"Message row body 缺少 kind：{row!r}")
+        parts = body.get("parts", [])
+        if not isinstance(parts, list):
+            raise GateFailure(f"Message row parts 不是数组：{row!r}")
+        item: dict[str, Any] = {
+            "id": row.get("id"),
+            "session_id": row.get("session_id"),
+            "seq": row.get("seq"),
+            "author": row.get("author"),
+            "source": row.get("source"),
+            "kind": kind,
+            "text": [
+                part.get("value")
+                for part in parts
+                if isinstance(part, dict) and part.get("kind") == "text"
+            ],
+        }
+        if kind == "output":
+            item["finish"] = body.get("finish")
+            item["modelFacts"] = [
+                {
+                    "call_record_id": value.get("call_record_id"),
+                    "thinking": value.get("thinking"),
+                }
+                for part in parts
+                if isinstance(part, dict)
+                and part.get("kind") == "model.facts"
+                and isinstance(value := part.get("value"), dict)
+            ]
+        elif kind == "control":
+            item["control"] = {
+                "action": body.get("action"),
+                "through_seq": body.get("through_seq"),
+                "reason": body.get("reason"),
+            }
+        projected.append(item)
     return projected
 
 
@@ -3279,6 +3187,18 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                         )
                     ),
                 )
+            web_raw_rows = _wait_message_log_rows(
+                database,
+                web_session,
+                minimum=len(web_rows),
+                required_ids={str(row["id"]) for row in web_rows},
+            )
+            web_wire_observable = _message_observable_projection(web_rows)
+            web_raw_observable = _message_observable_projection(web_raw_rows)
+            web_raw_matches_wire = (
+                len(web_raw_rows) == len(web_rows)
+                and web_raw_observable == web_wire_observable
+            )
             web_view = output_projection(web_rows)
             web_status = (
                 "complete"
@@ -3301,6 +3221,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 program_ack.get("message_id") == program_input
                 and program_result.get("status") == expected_status
                 and web_status == expected_status
+                and web_raw_matches_wire
                 and any(
                     isinstance(frame, dict)
                     and frame.get("type") == "reply.status"
@@ -3328,6 +3249,12 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 "programmaticResult": program_result,
                 "programmatic": program_view,
                 "channel": {"status": web_status, "messages": web_rows, **web_view},
+                "channelDatabase": {
+                    "sessionId": web_session,
+                    "rawMessages": web_raw_rows,
+                    "observable": web_raw_observable,
+                    "matchesWire": web_raw_matches_wire,
+                },
                 "channelWire": wire_projection,
             })
 
@@ -3653,6 +3580,20 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             )
         )
         result_ids = {result.get("ending_message_id") for result in input_results}
+        result_seqs = {result.get("ending_seq") for result in input_results}
+        pre_release_passed = (
+            isinstance(pre_release_requests.get("old"), dict)
+            and isinstance(pre_release_requests.get("new"), dict)
+            and pre_release_requests["old"].get("state") == "client_disconnected"
+            and pre_release_requests["new"].get("state") == "blocked"
+        )
+        ending_refs_match = (
+            isinstance(final_output, dict)
+            and isinstance(final_output.get("id"), str)
+            and final_output.get("seq") == 4
+            and result_ids == {final_output["id"]}
+            and result_seqs == {final_output["seq"]}
+        )
         same_source_passed = (
             [ack.get("seq") for ack in input_acks] == [0, 1, 2, 3]
             and len(input_rows) == 4
@@ -3665,7 +3606,8 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             and final_output.get("body", {}).get("finish") == "complete"
             and _message_text(final_output) == "pc16 four input final"
             and all(result.get("status") == "complete" for result in input_results)
-            and len(result_ids) == 1
+            and ending_refs_match
+            and pre_release_passed
             and new_request is not None
             and old_request is not None
             and old_request.get("state") == "client_disconnected"
@@ -3680,6 +3622,8 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             "newProvider": new_request,
             "preReleaseRequests": pre_release_requests,
             "postReleaseRequests": post_release_requests[max(0, request_start):],
+            "preReleasePassed": pre_release_passed,
+            "endingReferencesMatch": ending_refs_match,
             "passed": same_source_passed,
         }
         if input_results and source_outputs:
@@ -3707,12 +3651,12 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             ) -> dict[str, object]:
                 status = result.get("status")
                 settled = status in {"complete", "pause", "failure"}
-                if lifecycle.startswith("superseded") or lifecycle == "pause_then_resumed":
-                    settled = True
                 return {
                     "sessionId": session_id,
                     "inputId": input_id,
                     "status": status,
+                    "endingMessageId": result.get("ending_message_id"),
+                    "endingSeq": result.get("ending_seq"),
                     "lifecycle": lifecycle,
                     "settled": settled,
                     "result": result,
