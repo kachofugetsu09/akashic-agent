@@ -121,7 +121,6 @@ async def test_display_name_reads_old_binding_without_opening_removed_tool(tmp_p
         await host.terminate_all()
         shutil.rmtree(sources / "target")
         shutil.rmtree(sources / "prepare")
-        shutil.rmtree(sources / "authorize")
         restored = manager(tmp_path, [sources], log)
         try:
             await restored.load_all()
