@@ -12,6 +12,8 @@ from typing import cast
 import pytest
 
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.control.protocol.method import OutputReservation, RequestTransport
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -24,7 +26,7 @@ from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
 from session.log import MessageLog
-from session.message import CallRef, Message, Output, ToolCall, ToolResult, freeze_json
+from session.message import CallRef, Input, Message, Output, ToolCall, ToolResult, freeze_json
 
 
 def _copy_plugin_sources(root: Path, names: tuple[str, ...]) -> None:
@@ -36,14 +38,51 @@ def _copy_plugin_sources(root: Path, names: tuple[str, ...]) -> None:
         )
 
 
-def _write_restart_provider(root: Path) -> None:
+def _write_restart_provider(
+    root: Path, *, reload_fixture: bool = False, state_root: Path | None = None,
+) -> None:
     provider = root / "restart_provider"
     provider.mkdir()
+    if reload_fixture and state_root is None:
+        raise ValueError("reload fixture needs state root")
+    fixture_imports = (
+        "import asyncio\n"
+        "from pathlib import Path\n"
+        "from agent.plugin_composition import RUNTIME_STARTING\n"
+        "from plugins.delivery.api import FINAL_OUTPUT_DELIVERY\n"
+        if reload_fixture else ""
+    )
+    inject = "(FINAL_OUTPUT_DELIVERY,)" if reload_fixture else "()"
+    fixture_setup = f"""
+    delivery = ctx.require(FINAL_OUTPUT_DELIVERY)
+
+    class Waiter:
+        async def wait(self, reader, turn):
+            return None
+
+    waiter = Waiter()
+    delivery.register("reload-probe", waiter)
+    await ctx.effect(
+        lambda: lambda: delivery.unregister("reload-probe", waiter),
+        label="reload-probe-delivery",
+    )
+
+    def prepared(_event):
+        marker = Path({str(state_root)!r}, "await-prepare")
+        if marker.exists():
+            generation_id = ctx.runtime.generation_id
+            asyncio.get_running_loop().call_soon(
+                lambda: Path({str(state_root)!r}, "prepared").write_text(generation_id),
+            )
+
+    await ctx.on(RUNTIME_STARTING, prepared)
+""" if reload_fixture else ""
     (provider / "plugin.py").write_text(
-        """
+        f"""
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
+{fixture_imports}
 from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
     ModelRole, ToolCall,
@@ -55,9 +94,10 @@ from plugins.models.store import ModelsStore
 api_version = 3
 name = "restart_provider"
 version = "1.0.0"
-inject = ()
+inject = {inject}
 
 async def apply(ctx, config):
+{fixture_setup}
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
@@ -70,13 +110,13 @@ async def apply(ctx, config):
 
         async def complete(self, request):
             calls.append(request)
-            if len(calls) == 1:
+            if len(calls) in (1, 4):
                 return LLMResponse(None, [ToolCall(
-                    "search-call", "tool_search", {"query": "select:agent_restart"},
+                    "search-call", "tool_search", {{"query": "select:agent_restart"}},
                 )])
-            if len(calls) == 2:
+            if len(calls) in (2, 5):
                 return LLMResponse(None, [ToolCall(
-                    "restart-call", "agent_restart", {"reason": "fixture"},
+                    "restart-call", "agent_restart", {{"reason": "fixture"}},
                 )])
             return LLMResponse("final fixture reply")
 
@@ -102,7 +142,7 @@ async def apply(ctx, config):
     )
 
 
-def _write_blocking_sender(root: Path, state_root: Path) -> None:
+def _write_blocking_sender(root: Path, state_root: Path, *, reject_first: bool = False) -> None:
     sender = root / "fixture_sender"
     sender.mkdir()
     (sender / "plugin.py").write_text(
@@ -119,6 +159,7 @@ name = "fixture_sender"
 version = "1.0.0"
 inject = (DELIVERY_SENDERS,)
 STATE_ROOT = {str(state_root)!r}
+REJECT_FIRST = {reject_first!r}
 
 async def apply(ctx, config):
     Path(STATE_ROOT).mkdir(parents=True, exist_ok=True)
@@ -127,6 +168,13 @@ async def apply(ctx, config):
         idempotent = True
 
         async def send(self, key, address, message):
+            count_path = Path(STATE_ROOT, "send-count")
+            count = int(count_path.read_text()) if count_path.exists() else 0
+            count += 1
+            count_path.write_text(str(count))
+            if REJECT_FIRST and count == 1:
+                Path(STATE_ROOT, "rejected").write_text(message.message_id)
+                return Receipt(status="rejected", provider_ids=("fixture",), error="fixture rejection")
             Path(STATE_ROOT, "started").write_text("1")
             while not Path(STATE_ROOT, "release").exists():
                 await asyncio.sleep(0.01)
@@ -147,21 +195,107 @@ async def apply(ctx, config):
     )
 
 
+def _write_startup_probe(root: Path, run_id: str, state_root: Path) -> None:
+    probe = root / "startup_probe"
+    probe.mkdir()
+    (probe / "plugin.py").write_text(
+        f"""
+import asyncio
+from contextlib import asynccontextmanager
+from pathlib import Path
+from agent.plugin_composition import RUNTIME_STARTING
+from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.messages import MESSAGE_WRITERS
+from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
+from plugins.tools.plugin import TOOLS
+from session.message import CallRef, Input, Output, ToolCall, ToolResult
+
+api_version = 3
+name = "startup_probe"
+version = "1.0.0"
+inject = (MESSAGE_WRITERS, BINDINGS, TOOLS, FINAL_OUTPUT_DELIVERY)
+RUN_ID = {run_id!r}
+STATE_ROOT = {str(state_root)!r}
+
+
+class Waiter:
+    async def wait(self, reader, turn):
+        Path(STATE_ROOT).mkdir(parents=True, exist_ok=True)
+        Path(STATE_ROOT, "delivered-" + reader.session_id.replace(":", "_")).write_text("1")
+        return None
+
+
+async def apply(ctx, config):
+    delivery = ctx.require(FINAL_OUTPUT_DELIVERY)
+    waiter = Waiter()
+    delivery.register("startup-probe", waiter)
+    await ctx.effect(
+        lambda: lambda: delivery.unregister("startup-probe", waiter),
+        label="startup-probe-delivery",
+    )
+    writers = ctx.require(MESSAGE_WRITERS)
+    tools = ctx.require(TOOLS)
+    bindings = ctx.require(BINDINGS)
+
+    def append_after_prepare(_event):
+        binding = tools.bind("agent_restart", bindings)
+        session = "startup-probe:" + RUN_ID
+        inputs = writers.bind(
+            ctx, author="user", source="startup-probe", body_types=(Input,), content={{}},
+        )(session)
+        outputs = writers.bind(
+            ctx, author="assistant", source="startup-probe", body_types=(Output,),
+            content={{}}, check_call=lambda call: None,
+        )(session)
+        inputs.append("startup-input-" + RUN_ID, Input(()))
+        call = outputs.append(
+            "startup-call-" + RUN_ID,
+            Output((ToolCall(binding, {{"reason": "startup"}}),), "continue"),
+        )
+        results = writers.bind(
+            ctx, author="tool", source="startup-probe", body_types=(ToolResult,), content={{}},
+        )(session, call_ref=CallRef(call.message_id, 0))
+        def append_result():
+            results.append(
+                "startup-result-" + RUN_ID,
+                ToolResult(CallRef(call.message_id, 0), "success", ()),
+            )
+            outputs.append("startup-final-" + RUN_ID, Output((), "complete"))
+
+        asyncio.get_running_loop().call_soon(append_result)
+
+    await ctx.on(RUNTIME_STARTING, append_after_prepare)
+"""
+    )
+
+
 @asynccontextmanager
 async def _restart_application(
     tmp_path: Path, gate: RestartGate, *, channel: bool,
+    source_tag: str | None = None, reject_first: bool = False,
+    startup_run: str | None = None, reload_probe: bool = False,
+    message_log: MessageLog | None = None,
 ):
-    sources = tmp_path / "plugins"
+    sources = tmp_path / ("plugins" if source_tag is None else f"plugins-{source_tag}")
     names = (
         "sources", "content", "context", "tools", "conversation", "react",
         "turn_projection", "reply", "tool_search", "delivery", "agent_restart",
     )
     names += ("delivery_policy",) if channel else ("programmatic",)
     _copy_plugin_sources(sources, names)
-    _write_restart_provider(sources)
+    _write_restart_provider(
+        sources,
+        reload_fixture=reload_probe,
+        state_root=tmp_path / "reload-state" if reload_probe else None,
+    )
+    if startup_run is not None:
+        _write_startup_probe(sources, startup_run, tmp_path / "startup-state")
     if channel:
-        _write_blocking_sender(sources, tmp_path / "sender-state")
-    log = MessageLog(tmp_path / "sessions.db")
+        _write_blocking_sender(
+            sources, tmp_path / "sender-state", reject_first=reject_first,
+        )
+    owns_log = message_log is None
+    log = MessageLog(tmp_path / "sessions.db") if message_log is None else message_log
     host = PluginManager(
         [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home/cache", message_log=log,
@@ -173,7 +307,8 @@ async def _restart_application(
         yield log, host
     finally:
         await host.terminate_all()
-        log.close()
+        if owns_log:
+            log.close()
 
 
 def _source(message_id: str = "call-a", reason: str = "reload") -> CallSource:
@@ -188,6 +323,14 @@ def _source(message_id: str = "call-a", reason: str = "reload") -> CallSource:
         Output((ToolCall("binding-a", {"reason": reason}),), "continue"),
     )
     return CallSource(call_ref, (message,))
+
+
+def _commit_recorder(commits: list[str], committed: asyncio.Event):
+    def record(request_id: str) -> None:
+        commits.append(request_id)
+        committed.set()
+
+    return record
 
 
 def _pending(source: CallSource) -> PendingRestart:
@@ -273,6 +416,37 @@ async def test_unmanaged_runtime_does_not_register_restart_tool(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_starting_baseline_ignores_old_result_and_reads_result_after_prepare(
+    tmp_path: Path,
+) -> None:
+    """启动期间追加的真实 ToolResult 不能被异步基线吞掉。"""
+    first_commits: list[str] = []
+    first_committed = asyncio.Event()
+    first_gate = RestartGate(
+        boot_id="first-boot", supervised=True,
+        commit=_commit_recorder(first_commits, first_committed),
+    )
+    async with _restart_application(
+        tmp_path, first_gate, channel=False, source_tag="baseline-first", startup_run="first",
+    ):
+        await asyncio.wait_for(first_committed.wait(), 2)
+    assert len(first_commits) == 1
+
+    second_commits: list[str] = []
+    second_committed = asyncio.Event()
+    second_gate = RestartGate(
+        boot_id="second-boot", supervised=True,
+        commit=_commit_recorder(second_commits, second_committed),
+    )
+    async with _restart_application(
+        tmp_path, second_gate, channel=False, source_tag="baseline-second", startup_run="second",
+    ):
+        await asyncio.wait_for(second_committed.wait(), 2)
+        assert (tmp_path / "startup-state" / "delivered-startup-probe_second").exists()
+    assert len(second_commits) == 1
+
+
+@pytest.mark.asyncio
 async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,7 +455,7 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
     committed = asyncio.Event()
     gate = RestartGate(
         boot_id="fixture-boot", supervised=True,
-        commit=lambda request_id: (commits.append(request_id), committed.set()),
+        commit=_commit_recorder(commits, committed),
         drain_timeout_s=2.0,
     )
     cleanup_blocked = asyncio.Event()
@@ -331,6 +505,146 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
 
 
 @pytest.mark.asyncio
+async def test_real_channel_restart_reopens_after_rejected_delivery(
+    tmp_path: Path,
+) -> None:
+    """首个真实发送被拒后必须释放 gate，下一次请求仍可提交。"""
+    commits: list[str] = []
+    committed = asyncio.Event()
+    gate = RestartGate(
+        boot_id="fixture-boot", supervised=True,
+        commit=_commit_recorder(commits, committed),
+        drain_timeout_s=2.0,
+    )
+    async with _restart_application(
+        tmp_path, gate, channel=True, reject_first=True,
+    ) as (log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            accept = snapshot.composition_root.context.require(CHANNEL_INPUT)
+            message = lambda input_id, text: ChannelInboundMessage(
+                "test", "user", "room", text, datetime.now(timezone.utc), {},
+            )
+            await accept("test:room", "input-1", message("input-1", "reject once"))
+
+        sender_state = tmp_path / "sender-state"
+
+        async def wait_for_file(name: str) -> None:
+            while not (sender_state / name).exists():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(wait_for_file("rejected"), 2)
+        async def wait_for_gate_drain() -> None:
+            await gate.wait_until_open()
+            while gate.permit_count:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_gate_drain(), 2)
+        assert gate.permit_count == 0
+        assert not commits
+
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            accept = snapshot.composition_root.context.require(CHANNEL_INPUT)
+            await accept("test:room", "input-2", message("input-2", "retry now"))
+        await asyncio.wait_for(wait_for_file("started"), 2)
+        assert not commits
+        (sender_state / "release").write_text("1")
+        await asyncio.wait_for(wait_for_file("calls"), 2)
+        await asyncio.wait_for(committed.wait(), 2)
+        assert len(commits) == 1
+        assert gate.permit_count == 0
+        assert (sender_state / "calls").read_text()
+
+
+@pytest.mark.asyncio
+async def test_manager_reload_hands_late_tool_result_to_new_watcher(
+    tmp_path: Path,
+) -> None:
+    """Manager 热重载后，旧 writer 的迟到结果只由新 watcher 提交一次。"""
+    commits: list[str] = []
+    committed = asyncio.Event()
+    gate = RestartGate(
+        boot_id="fixture-boot", supervised=True,
+        commit=_commit_recorder(commits, committed),
+        drain_timeout_s=2.0,
+    )
+    log = MessageLog(tmp_path / "sessions.db")
+    try:
+        async with _restart_application(
+            tmp_path, gate, channel=False, source_tag="reload-first", reload_probe=True,
+            message_log=log,
+        ) as (_old_log, host):
+            session = "reload-probe:late"
+            message_writer = log.writer(
+                session, author="user", source="reload-probe", body_types=(Input,), content={},
+            )
+            output_writer = log.writer(
+                session, author="assistant", source="reload-probe", body_types=(Output,),
+                content={}, check_call=lambda call: None,
+            )
+            message_writer.append("late-input", Input(()))
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                ctx = snapshot.composition_root.context
+                async with ctx.runtime_scope():
+                    binding = ctx.require(TOOLS).bind("agent_restart", ctx.require(BINDINGS))
+                    descriptor = log.read_binding(binding)
+                    generations = snapshot.generations
+            metadata = descriptor["metadata"]
+            assert isinstance(metadata, Mapping)
+            tool_descriptor = metadata["tool"]
+            assert isinstance(tool_descriptor, Mapping)
+            assert tool_descriptor["name"] == "agent_restart"
+            assert isinstance(tool_descriptor["owner"], str)
+            assert tool_descriptor["owner"] in generations
+            call = output_writer.append(
+                "late-call", Output((ToolCall(binding, {"reason": "reload"}),), "continue"),
+            )
+            result_writer = log.writer(
+                session, author="tool", source="reload-probe", body_types=(ToolResult,), content={},
+                call_ref=CallRef(call.message_id, 0),
+            )
+            final_output = Output((), "complete")
+            await host.terminate_all()
+            state = tmp_path / "reload-state"
+            (state / "await-prepare").parent.mkdir(parents=True, exist_ok=True)
+            (state / "await-prepare").write_text("1")
+
+            async def append_late_result() -> None:
+                await asyncio.wait_for(_wait_for_path(state / "prepared"), 2)
+                result_writer.append(
+                    "late-result", ToolResult(CallRef(call.message_id, 0), "success", ()),
+                )
+                output_writer.append("late-final", final_output)
+
+            late_task = asyncio.create_task(append_late_result())
+            async with _restart_application(
+                tmp_path, gate, channel=False, source_tag="reload-second", reload_probe=True,
+                message_log=log,
+            ):
+                assert any(
+                    task.get_name() == "plugin-task:agent-restart-watcher"
+                    for task in asyncio.all_tasks()
+                )
+                await asyncio.wait_for(late_task, 2)
+                assert (state / "prepared").read_text()
+                rows = log.reader(session).snapshot()
+                assert [row.seq for row in rows] == [0, 1, 2, 3]
+                assert all(row.source == "reload-probe" for row in rows)
+                assert isinstance(rows[2].body, ToolResult)
+                assert isinstance(rows[3].body, Output)
+                assert rows[3].body.finish == "complete"
+                await asyncio.wait_for(committed.wait(), 2)
+                assert len(commits) == 1
+                assert gate.permit_count == 0
+    finally:
+        log.close()
+
+
+async def _wait_for_path(path: Path) -> None:
+    while not path.exists():
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
 async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_commit(
     tmp_path: Path,
 ) -> None:
@@ -339,7 +653,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
     committed = asyncio.Event()
     gate = RestartGate(
         boot_id="fixture-boot", supervised=True,
-        commit=lambda request_id: (commits.append(request_id), committed.set()),
+        commit=_commit_recorder(commits, committed),
         drain_timeout_s=2.0,
     )
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):

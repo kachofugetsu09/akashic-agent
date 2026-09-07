@@ -185,7 +185,7 @@ class RestartWatcher:
                                     continue
                                 try:
                                     request = await self._request(reader, message)
-                                except (RestartRejectedError, ValueError, KeyError) as error:
+                                except RestartRejectedError as error:
                                     logger.warning(
                                         "agent_restart ToolResult ignored; watcher remains active: %s",
                                         error,
