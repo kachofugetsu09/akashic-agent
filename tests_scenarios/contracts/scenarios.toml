@@ -167,8 +167,31 @@ requirements = ["CTX-001", "SES-002", "SES-003", "SES-005", "TST-002", "TST-003"
 groups = ["context_projection", "session_persistence"]
 environment = "public_clean_workspace"
 timeout_seconds = 120
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_context_history_contract.py", "tests/test_session_compaction_runtime.py"]
-observes = ["retry_history_windows", "messages_full_snapshot", "message_embeddings_full_snapshot", "metadata_snapshot", "sqlite_write_set", "restart_sequence", "receipt_v2_v3_recovery", "generation_zero_window", "markdown_task_lifecycle"]
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_context_history_contract.py",
+  "tests/test_context_compaction_contract.py",
+  "tests/test_message_context.py",
+  "tests/test_message_compaction_summary.py",
+  "tests/test_message_compaction_records.py",
+  "tests/test_default_reply.py::test_actual_reply_compacts_history_before_provider_and_records_each_successful_use",
+]
+observes = [
+  "messages_full_snapshot",
+  "message_embeddings_full_snapshot",
+  "metadata_snapshot",
+  "sqlite_write_set",
+  "restart_sequence",
+  "message_reply_projection",
+  "context_summary_exact_prefix",
+  "tool_batch_atomicity",
+  "summary_provider_bisection",
+  "summary_default_fallback",
+  "summary_records_restart",
+]
 mutants = ["historical_session_delete"]
 
 [scenarios.mobile_realtime_contract]
@@ -446,7 +469,8 @@ command = [
   "tests/control/test_control_execution.py::test_control_execution_preserves_inbound_metadata",
   "tests/control/test_protocol.py::test_thread_runtime_selector_rejects_persisted_latest",
   "tests/control/test_protocol.py::test_router_disconnect_interrupts_only_attached_turn",
-  "tests/test_session_compaction_runtime.py::test_suppressed_turn_commit_advances_ledger_without_markdown",
+  "tests/test_message_compaction_records.py::test_summary_use_reopens_original_archive_after_head_advance_and_source_removal",
+  "tests/test_default_reply.py::test_actual_reply_compacts_history_before_provider_and_records_each_successful_use",
 ]
 observes = [
   "runtime_pointer_snapshot",
@@ -460,6 +484,8 @@ observes = [
   "chat_lane_timer_order",
   "message_push_receipt",
   "crash_recovery",
+  "summary_archive_reopens",
+  "message_compaction_replaces_legacy_ledger_suppression",
 ]
 mutants = [
   "recursive_stable_misbinding",

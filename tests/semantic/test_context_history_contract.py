@@ -15,10 +15,12 @@ from tests_scenarios.contracts.oracles import assert_no_forbidden_writes, assert
 
 
 def _seed_history(log: MessageLog) -> tuple:
-    """Create a settled Message history through the real MessageLog writer."""
+    """通过真实 MessageLog writer 建立已结算历史。"""
     input_writer = log.writer(
         "s", author="user", source="conversation", body_types=(Input,),
         content={"text": check_text},
+        metadata_keys=frozenset({"semantic_marker"}),
+        update_metadata=lambda _body: {"semantic_marker": "history"},
     )
     output_writer = log.writer(
         "s", author="assistant", source="conversation", body_types=(Output,),
@@ -44,7 +46,7 @@ def _text(message) -> str:
 
 
 def _vector_snapshot(store: MessageEmbeddingStore, messages) -> dict[str, list[float]]:
-    """Read vectors through the embedding owner for the exact historical messages."""
+    """通过 embedding owner 读取指定历史消息的向量。"""
     values: dict[str, list[float]] = {}
     for message in messages:
         vector = store.get(
@@ -71,7 +73,7 @@ def _embedding_rows(vectors: dict[str, list[float]]) -> tuple[tuple[object, ...]
 
 @pytest.mark.asyncio
 async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(tmp_path: Path) -> None:
-    """A real reply projects history without rewriting source messages or vectors."""
+    """真实回复只投影历史，不改写原消息或向量。"""
     requests: list[object] = []
 
     async def complete(request):
@@ -85,6 +87,7 @@ async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(t
     with_runtime = runtime(tmp_path, complete, invoke)
     async with with_runtime as (conversation, log, _models, _run):
         before = _seed_history(log)
+        before_metadata = log.reader("s").metadata()
         embeddings = MessageEmbeddingStore(db_path)
         for message in before:
             embeddings.upsert(
@@ -111,6 +114,7 @@ async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(t
             state_name="sessions.db/messages",
         )
         assert len(after) == len(before) + 2
+        assert log.reader("s").metadata() == before_metadata
         assert len(requests) == 1
         assert "old input 0" in str(requests[0])
         assert "old output 2" in str(requests[0])
@@ -142,7 +146,7 @@ async def test_real_message_reply_preserves_history_embeddings_and_restart_seq(t
 
 
 def test_history_oracle_rejects_historical_delete_mutant(tmp_path: Path) -> None:
-    """The append-only oracle reports both message and embedding deletion."""
+    """追加 oracle 同时发现消息和向量被删除。"""
     log = MessageLog(tmp_path / "sessions.db")
     try:
         before = _seed_history(log)
