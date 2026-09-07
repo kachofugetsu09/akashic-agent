@@ -13,6 +13,10 @@ class RestartRejectedError(RuntimeError):
     """表示当前 runtime 明确拒绝了一次重启请求。"""
 
 
+class RestartPendingError(RestartRejectedError):
+    """表示重启已等待提交，暂时不接纳新的外部 Root。"""
+
+
 @dataclass(frozen=True, slots=True)
 class ExternalRootPermit:
     """一次外部 Root 接纳；释放后才允许提交重启。"""
@@ -78,7 +82,7 @@ class RestartGate:
     def check_open(self) -> None:
         """在持久接纳新 work 前核对 Core 的 admission 状态。"""
         if not self._accepting:
-            raise RestartRejectedError("runtime 正在等待重启，暂不接纳新 Root")
+            raise RestartPendingError("runtime 正在等待重启，暂不接纳新 Root")
 
     async def wait_until_open(self) -> None:
         """等待一次 abort/reopen 通知，不保存任何来源或 Session 状态。"""

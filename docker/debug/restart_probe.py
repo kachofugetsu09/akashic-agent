@@ -24,6 +24,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.plugins.reload_journal import ReloadJournal
+from agent.migrations.runner import MigrationRunner
 from docker.debug.programmatic_control_probe import (
     CheckResult,
     GateFailure,
@@ -200,11 +201,11 @@ def _final_output(page: object, result: dict[str, Any]) -> dict[str, Any] | None
     return None
 
 
-def _raw_messages(session_id: str) -> list[Message]:
+def _raw_messages(session_id: str, *, workspace: Path = WORKSPACE) -> list[Message]:
     """Read the append-only Message log for projection evidence."""
 
     try:
-        with sqlite3.connect(WORKSPACE / "sessions.db") as connection:
+        with sqlite3.connect(workspace / "sessions.db") as connection:
             rows = connection.execute(
                 "SELECT id, session_key, seq, ts, author, source, body "
                 "FROM messages WHERE session_key = ? ORDER BY seq",
@@ -226,11 +227,13 @@ def _raw_messages(session_id: str) -> list[Message]:
         raise GateFailure(f"读取 raw Message 失败：{session_id}") from error
 
 
-def _raw_message_rows(session_id: str) -> list[dict[str, str | int]]:
+def _raw_message_rows(
+    session_id: str, *, workspace: Path = WORKSPACE,
+) -> list[dict[str, str | int]]:
     """Capture exact append-only SQLite rows for a restart continuity check."""
 
     try:
-        with sqlite3.connect(WORKSPACE / "sessions.db") as connection:
+        with sqlite3.connect(workspace / "sessions.db") as connection:
             rows = connection.execute(
                 "SELECT id, session_key, seq, ts, author, source, body "
                 "FROM messages WHERE session_key = ? ORDER BY seq",
@@ -252,8 +255,10 @@ def _raw_message_rows(session_id: str) -> list[dict[str, str | int]]:
     ]
 
 
-def _projection_evidence(session_id: str, page: object) -> dict[str, Any]:
-    raw = _raw_messages(session_id)
+def _projection_evidence(
+    session_id: str, page: object, *, workspace: Path = WORKSPACE,
+) -> dict[str, Any]:
+    raw = _raw_messages(session_id, workspace=workspace)
     projection = TurnProjection().project(raw, "programmatic") if raw else ()
     wire = _page_items(page)
     raw_ids = [item.message_id for item in raw]
@@ -1260,6 +1265,10 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
     endpoint = Path("/sandbox/unsupervised.sock")
     config_path.write_text(config, encoding="utf-8")
     _initialize_current_workspace(workspace, Path("/app"))
+    # Initialize this disposable workspace through the real migration owner.
+    _ = MigrationRunner(
+        repo_root=Path("/app"), config_path=config_path, workspace=workspace,
+    ).run()
     source_registry = WORKSPACE / "model-registry.sqlite3"
     target_registry = workspace / "model-registry.sqlite3"
     with (
@@ -1320,7 +1329,7 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
         search_call = next((item for item in calls if item.get("name") == "tool_search"), None)
         search_result = _tool_result_for_call(page, search_call) if search_call is not None else None
         search_payload = _tool_result_json(search_result)
-        projection = _projection_evidence(session_id, page)
+        projection = _projection_evidence(session_id, page, workspace=workspace)
         final_output = _final_output(page, result)
         passed = (
             result.get("status") == "complete"
@@ -1862,10 +1871,9 @@ def _inside_failures(report_dir: Path) -> int:
 
 
 def _configure_restart_gate(sandbox: Path) -> None:
-    config = sandbox / "config.toml"
-    text = config.read_text(encoding="utf-8")
-    text = text.replace("max_iterations = 2", "max_iterations = 5")
-    config.write_text(text, encoding="utf-8")
+    reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
+    reply_config.parent.mkdir(parents=True, exist_ok=True)
+    reply_config.write_text("max_steps = 5\n", encoding="utf-8")
     _write_mcp_plugin(
         "bootstrap",
         plugin_root=sandbox / "restart-plugins/restart_probe",
@@ -1874,7 +1882,7 @@ def _configure_restart_gate(sandbox: Path) -> None:
         stage_runtime=False,
     )
     # 启动迁移会改写活动配置；隔离场景必须从不可变模板各自迁移。
-    (sandbox / "restart-config-template.toml").write_text(text, encoding="utf-8")
+    shutil.copyfile(sandbox / "config.toml", sandbox / "restart-config-template.toml")
 
 
 def _digest_summary(files: dict[str, str]) -> dict[str, object]:

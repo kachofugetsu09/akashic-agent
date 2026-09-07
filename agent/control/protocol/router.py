@@ -34,6 +34,7 @@ from agent.control.protocol.errors import (
 from agent.control.protocol.models import METHOD_PARAMS, InitializeParams, StrictModel, MessageSendParams
 from agent.control.protocol.method import RequestTransport
 from agent.control.service import ControlService
+from agent.restart import RestartPendingError
 
 logger = logging.getLogger(__name__)
 JsonObject = dict[str, Any]
@@ -153,7 +154,7 @@ class ConnectionRouter:
             await self._send(
                 JsonRpcError(INVALID_PARAMS, str(exc)).envelope(request_id)
             )
-        except RuntimeClosedError as exc:
+        except (RestartPendingError, RuntimeClosedError) as exc:
             await self._send(
                 JsonRpcError(SERVER_OVERLOADED, str(exc), {"retryable": True}).envelope(
                     request_id

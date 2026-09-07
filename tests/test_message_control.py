@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import shutil
@@ -10,13 +11,14 @@ import pytest
 from agent.config_models import Config
 from agent.control.service import ControlService
 from agent.control.protocol.router import ConnectionRouter
+from agent.plugin_composition.channels import ChannelInboundMessage
+from agent.restart import RestartGate
 from bootstrap import tools as bootstrap
 from bootstrap.app_server import build_control_service
 from core.net.http import SharedHttpResources
-from session.message import Input
+from session.message import ContentPart, Input, Message
 from session.artifacts import AttachmentRef
 from session.log import MessageCatalog, MessageLog
-from session.message import Message
 
 
 @asynccontextmanager
@@ -86,6 +88,81 @@ async def test_control_v2_uses_real_message_input_and_cancellable_read_subscript
             await router.close()
         messages = core.message_log.reader(session).snapshot()
         assert len(messages) == 1 and isinstance(messages[0].body, Input)
+
+
+@pytest.mark.asyncio
+async def test_restart_pending_is_retryable_and_same_input_is_admitted_after_abort(tmp_path):
+    """重启等待期间拒绝输入并标为可重试，abort 后原 message id 可再次接纳。"""
+    gate = RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None)
+    log = MessageLog(tmp_path / "sessions.db")
+    accepted: list[str] = []
+
+    async def accept(session_id: str, message_id: str, incoming: object) -> Message:
+        permit = gate.acquire()
+        try:
+            assert isinstance(incoming, ChannelInboundMessage)
+            accepted.append(message_id)
+            return Message(
+                message_id, session_id, 0, datetime.now(UTC), "user", "control",
+                Input((ContentPart("text", incoming.content),)),
+            )
+        finally:
+            permit.release()
+
+    async def reply_status(_session_id: str) -> AsyncGenerator[dict[str, object], None]:
+        if False:
+            yield {}
+
+    service = ControlService(
+        MessageCatalog(log), tmp_path, accept=accept,
+        reply_status=reply_status, attachments=lambda _ids: (),
+    )
+    frames: list[dict[str, object]] = []
+
+    async def send(frame: dict[str, object]) -> None:
+        frames.append(frame)
+
+    router = ConnectionRouter(service, send)
+    request_id = 0
+
+    async def request(method: str, params: dict[str, object]) -> dict[str, object]:
+        nonlocal request_id
+        request_id += 1
+        await router.handle_line(json.dumps({
+            "jsonrpc": "2.0", "id": request_id, "method": method, "params": params,
+        }).encode())
+        return next(frame for frame in frames if frame.get("id") == request_id)
+
+    session = "akashic:restart-pending"
+    try:
+        await request("initialize", {
+            "protocolVersion": "2.0", "clientInfo": {"name": "test", "version": "1"},
+        })
+        await router.handle_line(b'{"jsonrpc":"2.0","method":"initialized"}')
+
+        gate.prepare("restart-1")
+        refused = await request("message/send", {
+            "session_id": session, "message_id": "same", "text": "retry me",
+        })
+        assert refused["error"] == {
+            "code": -32001,
+            "message": "runtime 正在等待重启，暂不接纳新 Root",
+            "data": {"retryable": True},
+        }
+        assert accepted == []
+
+        gate.abort("restart-1")
+        admitted = await request("message/send", {
+            "session_id": session, "message_id": "same", "text": "retry me",
+        })
+        assert admitted["result"] == {
+            "version": 2, "session_id": session, "message_id": "same", "seq": 0,
+        }
+        assert accepted == ["same"]
+    finally:
+        await router.close()
+        await service.shutdown()
+        log.close()
 
 
 @pytest.mark.asyncio
