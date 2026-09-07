@@ -119,6 +119,8 @@ def _plan(rows: list[dict[str, Any]], handoffs: list[dict[str, Any]],
     by_id: dict[str, tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]] = {}
     latest: dict[str, str] = {}
     for row in rows:
+        if row["status"] not in {"queued", "in_progress", "completed", "interrupted", "failed", "cancelled"}:
+            raise ValueError(f"旧执行状态未知: {row['id']}")
         if any(not isinstance(row[key], str) or not row[key] for key in ("id", "session_key", "created_at")):
             raise ValueError("旧执行缺少稳定身份或接纳时间")
         raw_data, raw_items = _load(row["input_json"]), _load(row["items_json"])

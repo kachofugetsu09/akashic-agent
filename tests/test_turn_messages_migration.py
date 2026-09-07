@@ -150,6 +150,22 @@ def test_stopped_tool_chain_is_archived_without_receipts_or_replay(tmp_path, sta
     assert list((root / 'backups/turn-messages-v1').iterdir())
 
 
+@pytest.mark.parametrize('status', ['queued', 'in_progress', 'invented'])
+def test_active_or_unknown_tail_does_not_archive_or_resume(tmp_path, status):
+    root = workspace(tmp_path)
+    original = persisted(root, 0)
+    old = turn(root, 't1', [user(0), {'id': 'tool', 'type': 'toolCall', 'data': {
+        'status': 'completed', 'callId': 'call', 'name': 'shell', 'args': {},
+    }}], status=status)
+    with pytest.raises(ValueError if status == 'invented' else RuntimeError):
+        migrate_turn_messages(root)
+    with closing(MessageLog(root / 'sessions.db')) as log:
+        assert log.reader('probe:room').snapshot() == (original,)
+        assert log.owner('migration:turn-messages-v1').read('manifest') is None
+    with closing(sqlite3.connect(root / 'sessions.db')) as db:
+        assert db.execute('SELECT * FROM turns').fetchall() == [old]
+
+
 def test_conflicting_exact_input_reference_aborts_without_partial_archive(tmp_path):
     root = workspace(tmp_path)
     first, second = persisted(root, 0), persisted(root, 1)
