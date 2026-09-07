@@ -7,7 +7,7 @@ import hashlib
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator, cast
+from typing import AsyncGenerator
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,31 +66,6 @@ _SELF_HEADINGS = (
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sources: tuple[str, ...] = Field(default=("conversation", "programmatic"), min_length=1)
-
-
-async def _prepare_draft(
-    checkpoint_json: str,
-    source_ref: str,
-    store: MarkdownProfileStore,
-    chat_models: ChatModels,
-) -> dict[str, object]:
-    receipt = cast(Any, json.loads(checkpoint_json))
-    if not isinstance(receipt, dict):
-        raise ValueError("Markdown memory checkpoint fact schema 无效")
-    if receipt.get("version") == 2:
-        legacy = receipt.get("markdown_draft")
-        if not isinstance(legacy, dict):
-            raise ValueError("v2 compaction receipt 缺少 markdown_draft")
-        if legacy.get("source_ref") != source_ref:
-            raise ValueError("v2 compaction markdown_draft source_ref 冲突")
-        pending_items = legacy.get("pending_items", "")
-        if not isinstance(pending_items, str):
-            raise ValueError("v2 compaction markdown_draft pending_items 无效")
-        return _prepare_legacy_draft(pending_items, store)
-    if receipt.get("version") != 4:
-        raise ValueError("Markdown memory 不支持此 compaction receipt version")
-    source = _source_text(cast(dict[str, object], receipt))
-    return await prepare_profile_draft(source, store, chat_models)
 
 
 async def prepare_profile_draft(
@@ -250,17 +225,6 @@ async def _migrate_pending(
         atomic_write_text(snapshot_path, "", domain="pending_retirement")
         store.mark_legacy_pending_retired(source_ref)
 
-
-def _source_text(receipt: dict[str, object]) -> str:
-    """Use the v4 exact source plan, never SessionDB."""
-
-    checkpoint = receipt.get("checkpoint")
-    if not isinstance(checkpoint, dict):
-        raise ValueError("v4 compaction receipt 缺少 checkpoint")
-    source = cast(dict[str, object], checkpoint).get("selected_source_messages")
-    if not isinstance(source, list):
-        raise ValueError("v4 compaction receipt 缺少 exact source plan")
-    return json.dumps(source, ensure_ascii=False, sort_keys=True)
 
 
 def _prepare_legacy_draft(
