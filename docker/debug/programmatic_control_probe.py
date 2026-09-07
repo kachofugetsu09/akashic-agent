@@ -697,16 +697,17 @@ def _memory_context_seed_rows() -> list[tuple[str, str]]:
 
 
 def _memory_context_source_plan_digest(
-    rows: Sequence[sqlite3.Row], source_ids: Sequence[str] | None = None
+    rows: Sequence[sqlite3.Row], source_ids: Sequence[str]
 ) -> str:
     """Hash selected Message identity and complete encoded body facts."""
 
     by_id = {str(row["id"]): row for row in rows}
-    selected_rows = (
-        [by_id[message_id] for message_id in source_ids]
-        if source_ids is not None
-        else list(rows[:6])
-    )
+    if not source_ids:
+        raise GateFailure("memory-context source digest 缺少 source IDs")
+    try:
+        selected_rows = [by_id[message_id] for message_id in source_ids]
+    except KeyError as error:
+        raise GateFailure(f"memory-context source digest 缺少 Message：{error}") from error
     selected: list[dict[str, object]] = []
     for row in selected_rows:
         body = json.loads(str(row["body"]))
@@ -1776,13 +1777,144 @@ def _inside_memory_context(report_dir: Path) -> int:
             if len(text_values) != 1:
                 raise GateFailure("业务保留尾部 Message 缺少唯一原文 text")
             expected_business_tail.append((str(row["author"]), text_values[0]))
+        summary_binding_ids = [
+            str(part["value"]["reference"])
+            for part in final_output_body.get("parts", [])
+            if (
+                isinstance(part, dict)
+                and part.get("kind") == "context.summary"
+                and isinstance(part.get("value"), dict)
+                and isinstance(part["value"].get("reference"), str)
+            )
+        ] if isinstance(final_output_body, dict) else []
+        if len(summary_binding_ids) != 1:
+            raise GateFailure(
+                "业务 Output 缺少唯一 context.summary binding："
+                f"{summary_binding_ids!r}"
+            )
+        summary_binding_id = summary_binding_ids[0]
+        with sqlite3.connect(database) as connection:
+            binding_row = connection.execute(
+                "SELECT descriptor FROM bindings WHERE binding_id = ?",
+                (summary_binding_id,),
+            ).fetchone()
+        binding_descriptor = (
+            json.loads(str(binding_row[0])) if binding_row is not None else None
+        )
+        binding_metadata = (
+            binding_descriptor.get("metadata")
+            if isinstance(binding_descriptor, dict)
+            else None
+        )
+        summary_binding_metadata_valid = (
+            isinstance(binding_descriptor, dict)
+            and binding_descriptor.get("version") == 1
+            and binding_descriptor.get("service") == "compaction.summaries.v1"
+            and isinstance(binding_metadata, dict)
+            and binding_metadata.get("record_ref") == summary_reference
+            and binding_metadata.get("session_id") == _MEMORY_CONTEXT_SESSION
+        )
         business_summary_replaced = (
             summary_payload.get("summary") == summary_record.get("content")
-            and isinstance(summary_payload.get("reference"), str)
-            and bool(summary_payload.get("reference"))
+            and summary_payload.get("reference") == summary_binding_id
+            and summary_binding_metadata_valid
             and business_tail == expected_business_tail
             and all(str(message_id) not in business_serialized for message_id in source_ids)
             and all(content not in business_serialized for content in source_contents)
+        )
+
+        owner_snapshot = [
+            (str(row["key"]), str(row["value"])) for row in owner_rows
+        ]
+        receipts_database = Path(
+            "/sandbox/workspace/memory/markdown-profile-writes.db"
+        )
+        with sqlite3.connect(receipts_database) as connection:
+            receipt_snapshot = [
+                tuple(str(value) for value in row)
+                for row in connection.execute(
+                    "SELECT source_ref, kind, payload, trailing_blank_line, done_at "
+                    "FROM consolidation_writes ORDER BY source_ref, kind"
+                ).fetchall()
+            ]
+        target_snapshot = {
+            "memory": memory_path.read_text(encoding="utf-8"),
+            "self": self_path.read_text(encoding="utf-8"),
+        }
+        pending_snapshot = (
+            pending_path.read_text(encoding="utf-8")
+            if pending_path.exists()
+            else None
+        )
+
+        # 3. 断开原连接，再用同一 message_id/text 重试持久 send/result。
+        client.close()
+        client = None
+        _wait_socket(endpoint, READINESS_DEADLINE_S)
+        client = _connect_client(endpoint, events_path)
+        retry_ack = client.send_programmatic(
+            _MEMORY_CONTEXT_SESSION, business_id, _MEMORY_CONTEXT_INPUT
+        )
+        retry_result = _wait_programmatic_result(
+            client, _MEMORY_CONTEXT_SESSION, business_id
+        )
+        retry_requests = _model_requests(
+            _http_json("GET", f"{model_url}/control/requests")
+        )
+        with sqlite3.connect(database) as connection:
+            connection.row_factory = sqlite3.Row
+            retry_message_rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body "
+                "FROM messages WHERE session_key = ? ORDER BY seq",
+                (_MEMORY_CONTEXT_SESSION,),
+            ).fetchall()
+            retry_owner_rows = connection.execute(
+                "SELECT key, value FROM owner_records "
+                "WHERE owner = 'plugin:compaction' ORDER BY key"
+            ).fetchall()
+        retry_message_snapshot = [
+            (str(row["id"]), str(row["session_key"]), int(row["seq"]),
+             str(row["ts"]), str(row["author"]), str(row["source"]),
+             str(row["body"]))
+            for row in retry_message_rows
+        ]
+        retry_owner_snapshot = [
+            (str(row["key"]), str(row["value"])) for row in retry_owner_rows
+        ]
+        with sqlite3.connect(receipts_database) as connection:
+            retry_receipt_snapshot = [
+                tuple(str(value) for value in row)
+                for row in connection.execute(
+                    "SELECT source_ref, kind, payload, trailing_blank_line, done_at "
+                    "FROM consolidation_writes ORDER BY source_ref, kind"
+                ).fetchall()
+            ]
+        retry_target_snapshot = {
+            "memory": memory_path.read_text(encoding="utf-8"),
+            "self": self_path.read_text(encoding="utf-8"),
+        }
+        retry_pending_snapshot = (
+            pending_path.read_text(encoding="utf-8")
+            if pending_path.exists()
+            else None
+        )
+        retry_ack_same = retry_ack == business_ack
+        retry_result_same = retry_result == business_result
+        retry_messages_unchanged = retry_message_snapshot == final_snapshot
+        retry_owner_unchanged = retry_owner_snapshot == owner_snapshot
+        retry_receipts_unchanged = retry_receipt_snapshot == receipt_snapshot
+        retry_targets_unchanged = retry_target_snapshot == target_snapshot
+        retry_pending_unchanged = retry_pending_snapshot == pending_snapshot
+        retry_transport_recovery = (
+            retry_ack_same
+            and retry_result_same
+            and len(retry_message_snapshot) == 10
+            and retry_messages_unchanged
+            and retry_owner_unchanged
+            and retry_receipts_unchanged
+            and retry_targets_unchanged
+            and retry_pending_unchanged
+            and len(retry_requests) == len(scripts) == 7
         )
         scripts_boundary = (
             [request.get("script") for request in final_requests
@@ -1816,7 +1948,9 @@ def _inside_memory_context(report_dir: Path) -> int:
                 and summary_source_matches
                 and source_contiguous
                 and final_messages_only_append
+                and summary_binding_metadata_valid
                 and business_summary_replaced
+                and retry_transport_recovery
                 and pending_retired
                 and memory_applied is not None
                 and self_applied is not None,
@@ -1836,6 +1970,11 @@ def _inside_memory_context(report_dir: Path) -> int:
                         "sourceContiguous": source_contiguous,
                         "summarySourceMatches": summary_source_matches,
                         "summarySourceRows": summary_source_rows,
+                        "summaryBinding": {
+                            "bindingId": summary_binding_id,
+                            "metadata": binding_metadata,
+                            "metadataValid": summary_binding_metadata_valid,
+                        },
                         "businessSummaryReplaced": business_summary_replaced,
                         "businessTail": business_tail,
                         "expectedBusinessTail": expected_business_tail,
@@ -1843,6 +1982,23 @@ def _inside_memory_context(report_dir: Path) -> int:
                         "seedPairsMatch": seed_pairs_match,
                         "seedImmutable": seed_immutable,
                         "finalMessagesOnlyAppend": final_messages_only_append,
+                    },
+                    "transportRetry": {
+                        "disconnected": True,
+                        "newConnection": True,
+                        "ack": retry_ack,
+                        "result": retry_result,
+                        "ackSameIdSeq": retry_ack_same,
+                        "resultUnchanged": retry_result_same,
+                        "messageCount": len(retry_message_snapshot),
+                        "messagesUnchanged": retry_messages_unchanged,
+                        "summaryOwnerCount": len(owner_snapshot),
+                        "summaryOwnerUnchanged": retry_owner_unchanged,
+                        "receiptCount": len(receipt_snapshot),
+                        "receiptsUnchanged": retry_receipts_unchanged,
+                        "targetsUnchanged": retry_targets_unchanged,
+                        "pendingUnchanged": retry_pending_unchanged,
+                        "providerRequestCount": len(retry_requests),
                     },
                     "pendingRetired": pending_retired,
                     "memoryApplied": memory_applied is not None,
