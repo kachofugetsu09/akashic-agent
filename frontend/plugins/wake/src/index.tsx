@@ -42,6 +42,15 @@ interface WakeAttempt {
   owner: "alert" | "content" | "drift" | null;
   detail: string | null;
   completed_at: string | null;
+  flow?: WakeFlow | null;
+}
+
+interface WakeFlow {
+  flow_id: string;
+  pointer: { version: number; session_id: string; input_id: string; settled: boolean };
+  request: { owner: string; session_id: string; input_id: string; notification_id: string; target: { channel: string; recipient: string } };
+  messages: Array<{ message_id: string; seq: number; recorded_at: string; author: string; source: string; text: string; body: { kind?: string } }>;
+  delivery: { message_id: string; channel: string; recipient: string; status: string; receipt?: { provider_ids?: string[]; error?: string | null } | null };
 }
 
 function timeText(value: unknown): string {
@@ -82,6 +91,31 @@ function outcomeText(outcome: WakeAttempt["outcome"]): string {
   }[outcome];
 }
 
+function renderFlow(flow: WakeFlow): string {
+  return `
+    <section class="wake-section wake-flow">
+      <h3>原始 Wake Flow</h3>
+      <dl class="wake-summary">
+        <div><dt>恢复指针</dt><dd><code>${escapeHtml(flow.flow_id)}</code></dd></div>
+        <div><dt>输入会话</dt><dd><code>${escapeHtml(flow.pointer.session_id)}</code></dd></div>
+        <div><dt>原始 Input</dt><dd><code>${escapeHtml(flow.pointer.input_id)}</code></dd></div>
+        <div><dt>指针状态</dt><dd>${flow.pointer.settled ? "已结算" : "待结算"}</dd></div>
+        <div><dt>送达状态</dt><dd>${escapeHtml(flow.delivery.status)}</dd></div>
+      </dl>
+      <p class="wake-flow-target">${escapeHtml(flow.delivery.channel)} · ${escapeHtml(flow.delivery.recipient)}</p>
+      <ol class="wake-message-list">
+        ${flow.messages.map((message) => `
+          <li>
+            <header><strong>#${message.seq} · ${escapeHtml(message.author)}</strong><small>${escapeHtml(message.source)} · ${escapeHtml(message.body.kind ?? "Message")} · ${escapeHtml(timeText(message.recorded_at))}</small></header>
+            <p>${escapeHtml(message.text || "（无文本内容）")}</p>
+            <code>${escapeHtml(message.message_id)}</code>
+          </li>
+        `).join("")}
+      </ol>
+    </section>
+  `;
+}
+
 function renderWakeDetail(attempt: WakeAttempt, closePane?: () => void): string {
   return `
     <article class="wake-run">
@@ -104,6 +138,7 @@ function renderWakeDetail(attempt: WakeAttempt, closePane?: () => void): string 
         <p>${escapeHtml(attempt.detail || "Timer 已触发，正在检查 EventMail。")}</p>
         <p><code>${escapeHtml(attempt.timer_id)}</code></p>
       </section>
+      ${attempt.flow ? renderFlow(attempt.flow) : ""}
     </article>
   `;
 }

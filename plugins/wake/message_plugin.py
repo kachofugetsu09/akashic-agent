@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 
-from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS
@@ -28,6 +28,7 @@ from plugins.turn_projection.plugin import TURN_PROJECTION
 from .api import Config, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_CHANGED
 from .program import run
 from .runtime import Runtime
+from .runtime import DashboardView
 from .request import WAKE_PROGRAM, check_phase, check_request
 from .tools import DecisionTool, SCHEMAS
 
@@ -35,9 +36,18 @@ api_version = 3
 name = "wake"
 version = "4.0.0"
 desc = "内部消息完成初筛、调查与告警，真实送达后确认原职责"
+dashboard_module = "dashboard.py"
+web_module = "web_module.js"
+web_requires = ("workbench.panels.v2",)
+web_provides = ()
+web_contract_digests = {
+    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+}
 inject = (BINDINGS, TASKS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
           TOOLS, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, REACT, MODEL_CALLS, TURN_PROJECTION,
           DELIVERY, DELIVERY_SENDERS, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, TIMERS, SEMANTIC_INTEREST, DELIVERY_READ)
+
+WAKE_DASHBOARD = ServiceKey[Callable[[], DashboardView | None]]("wake.dashboard.v1")
 
 
 async def apply(ctx: Context, config: Config) -> None:
@@ -57,20 +67,30 @@ async def apply(ctx: Context, config: Config) -> None:
     _ = await ctx.provide(WAKE_PROGRAM, partial(run, ctx))
 
     runtime: Runtime | None = None
+    dashboard: DashboardView | None = None
     watcher: asyncio.Task[None] | None = None
 
+    def current_dashboard() -> DashboardView | None:
+        return dashboard
+
+    _ = await ctx.provide(WAKE_DASHBOARD, current_dashboard)
+
     async def start(_event: object) -> None:
-        nonlocal runtime, watcher
+        nonlocal runtime, dashboard, watcher
         runtime = Runtime(ctx, config)
+        dashboard = runtime.dashboard_view()
         watcher = await ctx.spawn(runtime.follow(), name="wake")
 
     async def stop(_event: object) -> None:
+        nonlocal dashboard, runtime
         if watcher is not None:
             _ = watcher.cancel()
             try:
                 await watcher
             except asyncio.CancelledError:
                 pass
+        dashboard = None
+        runtime = None
 
     def changed(_event: object) -> None:
         if runtime is not None:
