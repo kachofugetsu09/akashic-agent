@@ -41,6 +41,7 @@ from agent.plugin_composition.tasks import TASKS, PluginTasks
 from session.log import MessageCatalog, MessageLog
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import RuntimeScope
+from agent.restart import RESTART_GATE, RestartGate
 
 from agent.plugin_composition import (
     CHANNELS,
@@ -318,6 +319,7 @@ class PluginManager:
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
         workload_controller: WorkloadController | None = None,
+        restart_gate: RestartGate | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -382,6 +384,7 @@ class PluginManager:
             if workload_socket:
                 workload_controller = UnixWorkloadController(Path(workload_socket))
         self._workload_controller = workload_controller
+        self._restart_gate = restart_gate
         workload_workspace_id = hashlib.sha256(
             str(workspace.resolve(strict=False)).encode("utf-8")
         ).hexdigest()[:16]
@@ -5734,6 +5737,16 @@ class PluginManager:
         message_services: set[ServiceKey[object]] = {
             MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION, BINDINGS
         }
+        if RESTART_GATE in requested:
+            gate = self._restart_gate
+            if candidate:
+                gate = RestartGate(boot_id="candidate", supervised=False)
+            elif gate is None:
+                # 直接使用 PluginManager 的测试/嵌入式运行没有 Supervisor；仍提供
+                # 一个允许正常 work 的 unmanaged gate，不伪造可提交的重启通道。
+                gate = RestartGate(boot_id="unmanaged", supervised=False)
+                self._restart_gate = gate
+            _ = await root.context.provide(RESTART_GATE, gate)
         # 正式能力归宿主所有，不计入历史 provider 的依赖拓扑。
         log = None if candidate else self._message_log
         if requested & message_services and self._message_log is None:

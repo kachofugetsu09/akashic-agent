@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent.config_models import Config
 from agent.control.service import ControlService
-from agent.control.protocol.method import RpcMethod
+from agent.control.protocol.method import RequestTransport, RpcMethod
 from agent.control.protocol.models import StrictModel
 from agent.control.protocol.errors import JsonRpcError, METHOD_NOT_FOUND
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
@@ -31,23 +31,25 @@ def build_control_service(
     manager = core.plugin_manager
 
     async def accept(session_id: str, message_id: str, incoming: ChannelInboundMessage) -> Message:
-        # 当前 Root 的同一租约覆盖输入接纳，发布排空不能换掉中途的来源 owner。
+        # 当前 Root 的同一租约覆盖输入接纳；Conversation 在 append 前核对 gate。
         async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
             root = snapshot.composition_root
             assert root is not None
             return await root.context.require(CHANNEL_INPUT)(session_id, message_id, incoming)
 
     def programmatic_method(name: str, params_type: type[StrictModel]) -> RpcMethod:
-        async def call(params: StrictModel) -> object:
-            # 短操作取得当前 stable；连接与日志订阅不持有 generation 租约。
+        async def call(params: StrictModel, transport: RequestTransport) -> object:
+            # 同一 snapshot 只覆盖这次 source lookup；work permit 由 Conversation.Task 持有。
             async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
                 root = snapshot.composition_root
                 assert root is not None
                 source = root.context.get(PROGRAMMATIC)
                 if source is None:
                     raise JsonRpcError(METHOD_NOT_FOUND, "程序调用来源未启用")
-                return await source.call(name, params)
-        return RpcMethod(params_type, call)
+                return await source.call(name, params, transport)
+        async def unavailable(_params: StrictModel) -> object:
+            raise RuntimeError("程序 RPC 缺少 RequestTransport")
+        return RpcMethod(params_type, unavailable, call_with_transport=call)
 
     async def install(source: str, marketplace: str, ref: str, sparse: list[str],
                       update_id: str) -> dict[str, object]:

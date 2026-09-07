@@ -4,8 +4,11 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Annotated, Literal, Protocol
 
+from agent.plugin_composition import ServiceKey
 from pydantic import BaseModel, ConfigDict, Field
 
+from plugins.turn_projection.plugin import Turn
+from session.log import MessageReader
 from session.message import Message
 
 Text = Annotated[str, Field(min_length=1)]
@@ -40,3 +43,30 @@ class Sender(Protocol):
 
 
 OpenSender = Callable[[str], AbstractAsyncContextManager[Sender]]
+
+
+class FinalOutputWaiter(Protocol):
+    """等待一个已投影 Turn 的最终 Output 完成其外部送达。"""
+
+    async def wait(self, reader: MessageReader, turn: Turn) -> None: ...
+
+
+class FinalOutputDelivery:
+    """按来源选择最终 Output 的普通 delivery 能力。"""
+
+    def __init__(self) -> None:
+        self._providers: dict[str, FinalOutputWaiter] = {}
+
+    def register(self, source: str, provider: FinalOutputWaiter) -> None:
+        if not source or source in self._providers:
+            raise ValueError("最终 Output provider 已有 owner")
+        self._providers[source] = provider
+
+    async def wait(self, reader: MessageReader, turn: Turn) -> None:
+        provider = self._providers.get(turn.source)
+        if provider is None:
+            raise ValueError(f"没有来源 {turn.source!r} 的最终 Output provider")
+        await provider.wait(reader, turn)
+
+
+FINAL_OUTPUT_DELIVERY = ServiceKey[FinalOutputDelivery]("delivery.final_output.v1")

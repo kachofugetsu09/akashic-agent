@@ -6,9 +6,10 @@ from pydantic import Field
 
 from agent.control.protocol.models import StrictModel, SessionIdParams
 from agent.plugin_composition import Context, ServiceKey
+from agent.control.protocol.method import OutputReservation, RequestTransport
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
-from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.log import SessionAttributes
+from plugins.turn_projection.plugin import TURN_PROJECTION, Turn
+from session.log import MessageReader, SessionAttributes
 from session.message import ContentPart, Input
 
 from .result import read_result
@@ -54,8 +55,38 @@ class Programmatic:
 
     def __init__(self, ctx: Context):
         self.ctx = ctx
+        self._reservations: dict[tuple[str, str], tuple[str, OutputReservation]] = {}
 
-    async def call(self, method: str, params: StrictModel) -> dict[str, object]:
+    def reserve_input(self, session_id: str, input_id: str, transport: RequestTransport) -> OutputReservation:
+        """保存 Input 所属连接，最终 Output 只能从同一连接确认。"""
+        key = (session_id, input_id)
+        existing = self._reservations.get(key)
+        if existing is not None:
+            return existing[1]
+        reservation = transport.reserve_input(session_id, input_id)
+        self._reservations[key] = (transport.connection_id, reservation)
+        return reservation
+
+    async def wait(self, reader: MessageReader, turn: Turn) -> None:
+        """等待同连接完整最终 Output frame 的 writer flush。"""
+        ending = turn.ending_message_id
+        if ending is None:
+            raise ValueError("programmatic delivery 缺少 Session 或最终 Output")
+        input_id: str | None = None
+        for identity in reversed(turn.message_ids):
+            message = reader.get(identity)
+            if message is not None and isinstance(message.body, Input):
+                input_id = identity
+                break
+        reservation = self._reservations.get((reader.session_id, input_id or ""))
+        if reservation is None:
+            raise ValueError("程序最终 Output 没有同连接 Input reservation")
+        await reservation[1].wait_output(ending)
+
+    async def call(
+        self, method: str, params: StrictModel,
+        transport: RequestTransport | None = None,
+    ) -> dict[str, object]:
         """仅接受声明的 typed 方法；每次调用已由入口绑定一个实际 Root。"""
         from .plugin import open_source
 
@@ -88,11 +119,15 @@ class Programmatic:
                 ContentPart("channel.origin", {"channel": "programmatic", "chat_id": session_id[13:],
                                                 "sender": "control"}),
             )))
+            if transport is not None:
+                self.reserve_input(session_id, send.message_id, transport)
         elif method == "programmatic/message/pause":
             message = await source.pause(cast(PauseParams, params).message_id)
         elif method == "programmatic/message/resume":
             resume = cast(ResumeParams, params)
             message = await source.resume(resume.message_id, resume.input_id)
+            if transport is not None:
+                self.reserve_input(session_id, resume.input_id, transport)
         else:
             raise AssertionError("未声明的程序调用方法: " + method)
         return {"version": 2, "session_id": message.session_id,

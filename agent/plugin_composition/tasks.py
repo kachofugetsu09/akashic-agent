@@ -11,6 +11,8 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager, asyn
 from dataclasses import dataclass, field
 from typing import TypeVar, Protocol
 
+from agent.restart import ExternalRootPermit
+
 from agent.plugin_composition.context import Context, RuntimeScope
 from uuid import uuid4
 
@@ -32,18 +34,46 @@ class Task:
     """一次短命工作及其资源；不拥有 Message、逻辑 Turn 或持久执行身份。"""
 
     def __init__(
-        self, operation: Callable[[Task], Awaitable[object]], admitted: asyncio.Event
+        self,
+        operation: Callable[[Task], Awaitable[object]],
+        admitted: asyncio.Event,
+        child_permit: Callable[[], ExternalRootPermit] | None = None,
     ):
         self.handle = uuid4().hex
         self._active = True
         self._cancel_requested = False
         self._running = False
+        self._child_permit = child_permit
         from agent.plugins.snapshot import get_current_runtime_lease
 
         lease = get_current_runtime_lease()
         self._scope = None if lease is None else RuntimeScope(lease.fork())
         self._cleanup: list[Callable[[], None]] = []
+        self._done_callbacks: list[Callable[[], None]] = []
         self._task = asyncio.create_task(self._run(operation, admitted))
+        self._task.add_done_callback(self._run_done_callbacks)
+
+    def child_permit(self) -> ExternalRootPermit:
+        """取得当前 external Root 明确转交的外部效果 permit。"""
+        if self._child_permit is None:
+            raise RuntimeError("当前 Task 不是 external Root，不能派生外部 permit")
+        return self._child_permit()
+
+    def on_done(self, callback: Callable[[], None]) -> None:
+        """在内部 asyncio Task 完成并清理 scope 后执行一次 callback。"""
+        if self._task.done():
+            callback()
+            return
+        self._done_callbacks.append(callback)
+
+    def _run_done_callbacks(self, _task: asyncio.Task[object]) -> None:
+        callbacks = tuple(self._done_callbacks)
+        self._done_callbacks.clear()
+        for callback in callbacks:
+            try:
+                callback()
+            except BaseException:
+                logger.exception("Task 完成 callback 失败 handle=%s", self.handle)
 
     @property
     def active(self) -> bool:
@@ -135,11 +165,16 @@ class TaskSlot:
             raise StaleTask("handle 不属于当前活动任务")
         return task
 
-    def start(self, operation: Callable[[Task], Awaitable[object]]) -> Task:
+    def start(
+        self,
+        operation: Callable[[Task], Awaitable[object]],
+        *,
+        child_permit: Callable[[], ExternalRootPermit] | None = None,
+    ) -> Task:
         self._check_active()
         if self.current is not None:
             raise TaskBusy("旧任务尚未排空")
-        task = Task(operation, self._admitted)
+        task = Task(operation, self._admitted, child_permit)
         self._started = task
         self._owner._tasks[self._key] = task
         task._task.add_done_callback(lambda _: self._owner._release(self._key, task))

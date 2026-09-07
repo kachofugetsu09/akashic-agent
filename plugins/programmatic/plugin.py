@@ -1,6 +1,8 @@
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS
+from agent.restart import RESTART_GATE
+from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.conversation.source import Conversation
@@ -15,7 +17,7 @@ api_version = 3
 name = "programmatic"
 version = "1.0.0"
 desc = "程序调用的输入、停止、恢复与结果；默认保存原文但排除学习"
-inject = (SOURCES, MESSAGE_WRITERS, SESSION_ADMISSION, TURN_PROJECTION)
+inject = (SOURCES, MESSAGE_WRITERS, SESSION_ADMISSION, TURN_PROJECTION, RESTART_GATE)
 
 
 def open_source(ctx: Context, session_id: str) -> Conversation:
@@ -36,9 +38,14 @@ def open_source(ctx: Context, session_id: str) -> Conversation:
             content={"text": check_text, "channel.origin": check_origin})(session_id),
         controls=writers.bind(ctx, author="app", source="programmatic", body_types=(Control,),
             content={})(session_id),
-        tasks=ctx.require(TASKS).open(ctx), changed=changed)
+        tasks=ctx.require(TASKS).open(ctx), changed=changed,
+        restart_gate=ctx.require(RESTART_GATE))
 
 
 async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.require(SOURCES).register(ctx, Source("programmatic", lambda session: open_source(ctx, session)))
-    _ = await ctx.provide(PROGRAMMATIC, Programmatic(ctx))
+    programmatic = Programmatic(ctx)
+    _ = await ctx.provide(PROGRAMMATIC, programmatic)
+    delivery = ctx.get(FINAL_OUTPUT_DELIVERY)
+    if delivery is not None:
+        delivery.register("programmatic", programmatic)

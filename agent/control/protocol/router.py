@@ -32,6 +32,7 @@ from agent.control.protocol.errors import (
     JsonRpcError,
 )
 from agent.control.protocol.models import METHOD_PARAMS, InitializeParams, StrictModel, MessageSendParams
+from agent.control.protocol.method import RequestTransport
 from agent.control.service import ControlService
 
 logger = logging.getLogger(__name__)
@@ -48,9 +49,11 @@ class ConnectionRouter:
         send: SendMessage,
         *,
         max_pending_requests: int = 64,
+        transport: RequestTransport | None = None,
     ) -> None:
         self._service = service
         self._send = send
+        self._transport = transport
         self._pending = asyncio.Semaphore(max_pending_requests)
         self._state = "new"
         self._subscriptions: dict[str, tuple[str, asyncio.Task[None] | None]] = {}
@@ -217,7 +220,7 @@ class ConnectionRouter:
     async def _call_method(self, method: str, params: StrictModel) -> object:
         operation = self._service.methods.get(method)
         if operation is not None:
-            return await operation.call(params)
+            return await operation.invoke(params, self._transport)
         values = params.model_dump()
         if method == "server/status":
             return self._service.status()

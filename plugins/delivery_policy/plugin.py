@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from functools import partial
 from typing import cast
@@ -12,13 +12,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.plugin_composition import Context, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.restart import ExternalRootPermit, RestartRejectedError
 from plugins.conversation.plugin import check_origin
+from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.reply.completion import REPLY_COMPLETION
 from session.log import MessageReader
 from session.message import ContentPart, Input, Message, Output, ToolCall
+from plugins.turn_projection.plugin import Turn
 
 from .follow import follow
 
@@ -28,7 +31,7 @@ api_version = 3
 name = "delivery_policy"
 version = "1.0.0"
 desc = "默认只发送完整可见回复；显式通知沿来源自己的固定发送选择"
-inject = (DELIVERY, DELIVERY_SENDERS, BINDINGS, MESSAGE_CATALOG)
+inject = (DELIVERY, DELIVERY_SENDERS, BINDINGS, MESSAGE_CATALOG, FINAL_OUTPUT_DELIVERY)
 
 
 class Config(BaseModel):
@@ -68,8 +71,38 @@ def input_origin(reader: MessageReader, source: str, *, through_seq: int) -> tup
     return None
 
 
+class DeliveryFinalOutput:
+    """等待 delivery owner 为一个最终 Output 写入 delivered 回执。"""
+
+    def __init__(self, ctx: Context, timeout_s: float = 15.0) -> None:
+        self._ctx = ctx
+        self._timeout_s = timeout_s
+
+    async def wait(self, reader: MessageReader, turn: Turn) -> None:
+        ending = turn.ending_message_id
+        if ending is None:
+            raise RestartRejectedError("最终 Turn 没有 Output")
+        delivery = self._ctx.require(DELIVERY).open(self._ctx)
+        selection = delivery.selection(ending)
+        if selection is None or not selection.sinks:
+            raise RestartRejectedError("最终 Output 没有 delivery provider")
+        async with asyncio.timeout(self._timeout_s):
+            while True:
+                receipts = tuple(delivery.receipt(ending, sink) for sink in selection.sinks)
+                if any(receipt is not None and receipt.status in {"unknown", "rejected"} for receipt in receipts):
+                    raise RestartRejectedError("最终 Output delivery 未确认")
+                if len(receipts) == len(selection.sinks) and all(
+                    receipt is not None and receipt.status == "delivered" for receipt in receipts
+                ):
+                    return
+                await asyncio.sleep(0.01)
+
+
 async def apply(ctx: Context, config: Config) -> None:
     """正式启动后跟随日志；不把策略、学习或来源 ACK 放进发送原子能力。"""
+    final_delivery = DeliveryFinalOutput(ctx)
+    for source in config.sources:
+        ctx.require(FINAL_OUTPUT_DELIVERY).register(source, final_delivery)
     watcher: asyncio.Task[None] | None = None
     recovery: dict[tuple[str, str], AbstractContextManager[None]] = {}
 
@@ -114,7 +147,13 @@ async def apply(ctx: Context, config: Config) -> None:
             return nullcontext() if route is None else ctx.require(DELIVERY).open(ctx).activity(*route)
 
         @asynccontextmanager
-        async def __call__(self, reader: MessageReader, source: str) -> AsyncGenerator[None]:
+        async def __call__(
+            self,
+            reader: MessageReader,
+            source: str,
+            *,
+            child_permit: Callable[[], ExternalRootPermit] | None = None,
+        ) -> AsyncGenerator[None]:
             """完成后固定选路并独立启动发送，新 Input 不取得旧发送的取消权。"""
             head = reader.head()
             delivery = ctx.require(DELIVERY).open(ctx)
@@ -132,7 +171,15 @@ async def apply(ctx: Context, config: Config) -> None:
                             assert sinks is not None
                             selected = delivery.prepare(reader, message, sinks, passive=True)
                             for sink in selected.sinks:
-                                _ = await delivery.start(message.message_id, sink)
+                                permit = None if child_permit is None else child_permit()
+                                try:
+                                    task = await delivery.start(message.message_id, sink)
+                                except BaseException:
+                                    if permit is not None:
+                                        permit.release()
+                                    raise
+                                if permit is not None:
+                                    task.on_done(permit.release)
                         except Exception:
                             # 回复事实已提交；发送失败不能反向改写来源为推理失败。
                             logger.exception("回复发送未结算，保留原效果 message=%s", message.message_id)

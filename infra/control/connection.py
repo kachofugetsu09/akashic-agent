@@ -2,19 +2,114 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from uuid import uuid4
 
 from agent.control.protocol.router import ConnectionRouter
+from agent.control.protocol.method import OutputReservation, RequestTransport
 from agent.control.service import ControlService
 
 
 @dataclass(frozen=True)
 class _PendingFrame:
     payload: bytes
-    written: asyncio.Future[None] | None
+    written: asyncio.Future[None]
 
 
-class NdjsonConnection:
+class _FrameReservation:
+    """只接受同一连接完整 Output frame 的 writer-drain 回执。"""
+
+    def __init__(self, session_id: str, input_id: str) -> None:
+        self.session_id = session_id
+        self.input_id = input_id
+        self._expected: str | None = None
+        self._delivered: set[str] = set()
+        self._observed: dict[str, set[asyncio.Future[None]]] = {}
+        self._waiters: dict[str, asyncio.Future[None]] = {}
+        self._closed: BaseException | None = None
+
+    def expect(self, message_id: str) -> None:
+        if not message_id:
+            raise ValueError("最终 Output message id 不能为空")
+        if self._expected is not None and self._expected != message_id:
+            raise ValueError("一次 Input 不能绑定多个最终 Output")
+        self._expected = message_id
+
+    async def wait_output(self, message_id: str) -> None:
+        self.expect(message_id)
+        if message_id in self._delivered:
+            return
+        if self._closed is not None:
+            raise self._closed
+        loop = asyncio.get_running_loop()
+        waiter = self._waiters.setdefault(message_id, loop.create_future())
+        await asyncio.shield(waiter)
+
+    def observe(self, message: Mapping[str, object], written: asyncio.Future[None]) -> bool:
+        tracked = False
+        for row in _output_rows(message):
+            if row.get("session_id") != self.session_id or not _complete_output(row):
+                continue
+            tracked = True
+            message_id = row["id"]
+            assert isinstance(message_id, str)
+            observed = self._observed.setdefault(message_id, set())
+            if written in observed:
+                continue
+            observed.add(written)
+            written.add_done_callback(
+                lambda future, identity=message_id: self._frame_done(identity, future)
+            )
+        return tracked
+
+    def _frame_done(self, message_id: str, future: asyncio.Future[None]) -> None:
+        try:
+            future.result()
+        except BaseException as error:
+            self.fail(error)
+        else:
+            self._delivered.add(message_id)
+            waiter = self._waiters.pop(message_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(None)
+
+    def fail(self, error: BaseException) -> None:
+        self._closed = error
+        for waiter in self._waiters.values():
+            if not waiter.done():
+                waiter.set_exception(error)
+        self._waiters.clear()
+
+
+def _output_rows(message: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    """提取允许证明最终 Output 的 message/read 或 session/event 行。"""
+    rows: object = None
+    result = message.get("result")
+    if isinstance(result, Mapping):
+        rows = result.get("items")
+    params = message.get("params")
+    if isinstance(params, Mapping):
+        event = params.get("event")
+        if isinstance(event, Mapping) and event.get("type") == "messages.appended":
+            rows = event.get("items")
+    if not isinstance(rows, list):
+        return ()
+    return tuple(row for row in rows if isinstance(row, Mapping))
+
+
+def _complete_output(row: Mapping[str, object]) -> bool:
+    body = row.get("body")
+    return (
+        isinstance(row.get("id"), str)
+        and isinstance(body, Mapping)
+        and body.get("kind") == "output"
+        and body.get("finish") == "complete"
+        and isinstance(body.get("parts"), list)
+    )
+
+
+class NdjsonConnection(RequestTransport):
     """在有界 writer queue 上运行一条 JSON-RPC NDJSON 连接。"""
 
     def __init__(
@@ -37,19 +132,36 @@ class NdjsonConnection:
             service,
             self.send,
             max_pending_requests=max_pending_requests,
+            transport=self,
         )
         self._request_tasks: set[asyncio.Task[None]] = set()
+        self.connection_id = f"ndjson:{uuid4().hex}"
+        self._reservations: dict[tuple[str, str], _FrameReservation] = {}
+
+    def reserve_input(self, session_id: str, input_id: str) -> OutputReservation:
+        key = (session_id, input_id)
+        existing = self._reservations.get(key)
+        if existing is not None:
+            return existing
+        reservation = _FrameReservation(session_id, input_id)
+        self._reservations[key] = reservation
+        return reservation
 
     async def send(self, message: dict[str, object]) -> None:
         encoded = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-        written = None
+        written = asyncio.get_running_loop().create_future()
+        observed = False
+        for reservation in self._reservations.values():
+            observed = reservation.observe(message, written) or observed
         try:
             self._queue.put_nowait(_PendingFrame(encoded, written))
         except asyncio.QueueFull as exc:
+            if observed:
+                written.set_exception(exc)
+            else:
+                written.cancel()
             self._writer.close()
             raise ConnectionError("client outbound queue is full") from exc
-        if written is not None:
-            await asyncio.shield(written)
 
     async def run(self) -> None:
         writer_task = asyncio.create_task(self._write_loop(), name="control-writer")
@@ -81,6 +193,10 @@ class NdjsonConnection:
             self._writer.transport.abort()
             results = await asyncio.gather(writer_task, return_exceptions=True)
             self._fail_pending_frames(ConnectionError("control connection closed"))
+            error = ConnectionError("control connection closed")
+            for reservation in self._reservations.values():
+                reservation.fail(error)
+            self._reservations.clear()
             await self._writer.wait_closed()
             for result in results:
                 if isinstance(result, Exception):
