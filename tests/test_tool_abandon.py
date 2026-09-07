@@ -20,6 +20,17 @@ def abandon(log, reply, identity="abandon"):
     return writer.append(identity, Control("abandon", reader.head(source=reply.writer.source)))
 
 
+def named_dialogue(log, session_id, call_id):
+    log.save_binding("fixed-A", {"target": "immutable-A"})
+    outputs = log.writer(session_id, author="agent", source="conversation", body_types=(Output,),
+                         content={"text": check_text}, check_call=lambda call: None)
+    outputs.append(call_id, Output((ToolCall("fixed-A", {}),), "continue"))
+    ref = CallRef(call_id, 0)
+    writer = log.writer(session_id, author="tool", source="conversation", body_types=(ToolResult,),
+                        content={"text": check_text}, call_ref=ref)
+    return MessageReply(result_message_id(ref), ref, log.reader(session_id), writer, lambda: None)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["prepare", "invoke", "cleanup"])
 async def test_abandon_releases_waiter_but_keeps_real_owner_and_one_result(environment, phase):
@@ -126,6 +137,96 @@ async def test_startup_consumer_settles_old_calls_after_new_turn_completed(envir
         assert not probe.calls and probe.query_count == 0
         assert (await execution.execute_call(first)).outcome == "interrupted"
         assert first.reader.get("new-done").body.parts[0].value == "new answer"
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        await tasks.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_receipts_recover_proven_identity_without_replaying_effect(environment):
+    log, state, tasks, probe, _, _ = environment
+    default = named_dialogue(log, "default", "default-call")
+    custom = named_dialogue(log, "custom", "custom-call")
+    custom = MessageReply(
+        "old-custom-result", custom.call_ref, custom.reader, custom.writer, custom.check_start,
+    )
+    stored = custom.writer.append(
+        custom.message_id,
+        ToolResult(custom.call_ref, "success", (ContentPart("text", "saved"),)),
+    )
+    for reply, phase, result in (
+        (default, "prepared", None),
+        (custom, "done", {"message_id": custom.message_id, "seq": stored.seq}),
+    ):
+        value = {
+            "version": 1,
+            "request": _fingerprint("fixed-A", {}, reply),
+            "binding": "fixed-A",
+            "phase": phase,
+            "arguments": {},
+        }
+        if result is not None:
+            value["result"] = result
+        state.transact(lambda tx, key=durable_call_key(reply.call_ref), value=value: tx.save(
+            key, value, expected_version=None,
+        ))
+        abandon(log, reply, identity=f"abandon-{reply.call_ref.message_id}")
+
+    assert (await abandon_call(state, tasks, default, task_key="tools")).outcome == "denied"
+    assert (await abandon_call(state, tasks, custom, task_key="tools")).outcome == "success"
+    assert not probe.calls and probe.query_count == 0
+    assert len([m for m in custom.reader.snapshot() if isinstance(m.body, ToolResult)]) == 1
+    await tasks.close()
+
+
+@pytest.mark.asyncio
+async def test_unrecoverable_legacy_custom_identity_records_incident_and_keeps_consumer_alive(environment):
+    log, state, tasks, probe, _, _ = environment
+    broken = named_dialogue(log, "broken", "broken-call")
+    legacy_custom = MessageReply(
+        "old-custom-result", broken.call_ref, broken.reader, broken.writer, broken.check_start,
+    )
+    original = {
+        "version": 1,
+        "request": _fingerprint("fixed-A", {}, legacy_custom),
+        "binding": "fixed-A",
+        "phase": "started",
+        "arguments": {},
+        "permission": {},
+    }
+    state.transact(lambda tx: tx.save(
+        durable_call_key(broken.call_ref), original, expected_version=None,
+    ))
+    abandon(log, broken, identity="abandon-broken")
+    incidents = []
+
+    async def reply(reader, source, ref):
+        writer = log.writer(reader.session_id, author="tool", source=source,
+                            body_types=(ToolResult,), content={"text": check_text}, call_ref=ref)
+        return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+
+    watcher = asyncio.create_task(follow_abandon(
+        log.catalog(), state, tasks, reply, task_key="tools",
+        report_incident=lambda kind, message: incidents.append((kind, message)),
+    ))
+    try:
+        good = named_dialogue(log, "good", "good-call")
+        abandon(log, good, identity="abandon-good")
+
+        async def settled():
+            async for _ in good.reader.follow():
+                result = good.reader.get(good.message_id)
+                if result is not None:
+                    return result.body
+            raise AssertionError("工具结果订阅提前结束")
+
+        result = await asyncio.wait_for(settled(), 1)
+        assert isinstance(result, ToolResult) and result.outcome == "denied"
+        assert incidents and incidents[0][0] == "legacy_tool_reply_identity"
+        assert state.read(durable_call_key(broken.call_ref)).value == original
+        assert broken.reader.get(result_message_id(broken.call_ref)) is None
+        assert not watcher.done() and not probe.calls and probe.query_count == 0
     finally:
         watcher.cancel()
         await asyncio.gather(watcher, return_exceptions=True)

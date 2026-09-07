@@ -27,7 +27,7 @@
 
 等待超时不证明远端失败，取消协程也不保证外部效果撤销。interrupted 明确记录停止等待，不授权自动重跑。先提交终态再发取消信号，无需根据事件循环速度猜测一个“已经完成但还未提交”的结果；取消合作期不成为消息语义。
 
-prepare 之前增加 requested 回执，用于固定请求与结果消息身份。已有 prepared/started/done 继续按原版本读取，不批量修改旧回执。默认结果身份有一个公共生成函数；自定义结果身份从既有回执恢复，普通调用仍不能更换已固定目的地。
+prepare 之前增加 requested 回执，用于固定请求与结果消息身份。已有 prepared/started/done 继续按原版本读取，不批量修改旧回执。默认结果身份有一个公共生成函数；自定义结果身份从既有回执恢复，普通调用仍不能更换已固定目的地。旧回执没有保存 `reply_id` 时，只在原 request hash 与默认结果身份精确匹配，或 done 结果指针保存了真实 message ID 时恢复。旧 prepared/started 使用自定义身份却未保存映射时，hash 无法逆推出身份；Tools 保留原回执、记录 `legacy_tool_reply_identity` Incident 并继续结算其他调用，不猜测身份或重跑效果。
 
 效果和 Shell 清理由独立 Task 保留 generation 与必要的 child permit。新 Shell binding 保存分区标记，以最近的 abandon 消息区分旧新进程集合；同段的 PTY 续接不受影响。旧无标记归档维持原释放接口。只靠把旧清理放到后台而仍共用整个 source owner 会误杀新进程，因此不采用。
 

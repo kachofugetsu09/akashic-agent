@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Hashable
+from collections.abc import Awaitable, Callable, Hashable, Mapping
 from dataclasses import replace
 from typing import cast
 
@@ -9,6 +9,10 @@ from plugins.tools.api import Denied, MessageReply, Result, durable_call_key
 from plugins.tools.execution import _fingerprint, finish
 from session.log import MessageCatalog, MessageReader, OwnerStore
 from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+
+
+class LegacyReplyIdentityUnavailable(ValueError):
+    """旧回执使用自定义结果身份，但没有保存可恢复的明文身份。"""
 
 
 async def abandon_call(
@@ -36,10 +40,18 @@ async def abandon_call(
             target = replace(reply, message_id=identity)
         else:
             target = reply
+            if record is not None and record.value["phase"] == "done":
+                result = record.value.get("result")
+                if isinstance(result, Mapping) and isinstance(result.get("message_id"), str):
+                    target = replace(reply, message_id=cast(str, result["message_id"]))
         call = target.request()
         fingerprint = _fingerprint(call.binding_id, call.arguments, target)
         if record is not None:
             if record.value["request"] != fingerprint:
+                if "reply_id" not in record.value:
+                    raise LegacyReplyIdentityUnavailable(
+                        f"旧工具回执缺少可恢复的结果身份 call={reply.call_ref.message_id}:{reply.call_ref.part_index}"
+                    )
                 raise ValueError("放弃的工具回执与原请求不一致")
             if record.value["phase"] == "done":
                 if slot.current is not None:
@@ -67,6 +79,7 @@ async def abandon_call(
 async def follow_abandon(
     catalog: MessageCatalog, state: OwnerStore, tasks: TaskAdmission,
     reply: Callable[[MessageReader, str, CallRef], Awaitable[MessageReply]], *, task_key: Hashable,
+    report_incident: Callable[[str, str], object] | None = None,
 ) -> None:
     """只消费持久 abandon；启动追赶也结算未开始或进程中断后的调用。"""
     seen: dict[str, int] = {}
@@ -83,7 +96,11 @@ async def follow_abandon(
                 for ref in abandoned_calls(messages, control):
                     target = await reply(reader, control.source, ref)
                     try:
-                        _ = await abandon_call(state, tasks, target, task_key=task_key)
+                        try:
+                            _ = await abandon_call(state, tasks, target, task_key=task_key)
+                        except LegacyReplyIdentityUnavailable as error:
+                            if report_incident is not None:
+                                _ = report_incident("legacy_tool_reply_identity", str(error))
                     finally:
                         target.writer.expire()
             seen[session_id] = head

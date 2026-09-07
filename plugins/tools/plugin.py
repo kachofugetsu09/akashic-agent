@@ -355,6 +355,7 @@ async def apply(ctx: Context, config: object) -> None:
         watcher = await ctx.spawn(follow_abandon(
             ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),
             ctx.require(TASKS).open(ctx), reply, task_key="effects",
+            report_incident=ctx.report_incident,
         ), name="tools-abandon")
 
     async def stop(_event: object) -> None:
