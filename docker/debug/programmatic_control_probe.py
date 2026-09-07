@@ -3330,6 +3330,8 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 lambda rows, _statuses: output_projection(rows)["outputCount"] == 1,
             )
             lane_evidence["differentSessions"] = {
+                "slowSessionId": slow_session,
+                "fastSessionId": fast_session,
                 "fastCompletedBeforeRelease": fast_completed,
                 "fastFinal": output_projection(fast_rows)["content"],
                 "slowFinal": output_projection(slow_rows)["content"],
@@ -3440,6 +3442,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 )
             )
             return {
+                "sessionId": recovery_session,
                 "failedRows": failed_rows,
                 "recoveredRows": recovered_rows,
                 "failedReplyStatus": failed_statuses,
@@ -3626,6 +3629,9 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             "endingReferencesMatch": ending_refs_match,
             "passed": same_source_passed,
         }
+        different_sessions = cast(dict[str, object], lane_evidence["differentSessions"])
+        same_source = cast(dict[str, object], lane_evidence["sameSource"])
+        failure_recovery = cast(dict[str, object], lane_evidence["failureRecovery"])
         if input_results and source_outputs:
             pc06_first_result = first.programmatic_result(pc06, "pc06-first")
             pc07_current_result = first.programmatic_result(pc07, "pc07-input")
@@ -3726,10 +3732,28 @@ def _inside_failure_matrix(report_dir: Path) -> int:
                 ),
                 "programmaticResults": programmatic_results,
             }
+            web_session_ids = {
+                str(item["channelDatabase"]["sessionId"])
+                for item in parity_evidence
+                if isinstance(item.get("channelDatabase"), dict)
+                and isinstance(item["channelDatabase"].get("sessionId"), str)
+            }
+            web_session_ids.update(
+                str(different_sessions[key])
+                for key in ("slowSessionId", "fastSessionId")
+                if isinstance(different_sessions.get(key), str)
+            )
+            if isinstance(failure_recovery.get("sessionId"), str):
+                web_session_ids.add(str(failure_recovery["sessionId"]))
+            programmatic_session_ids = {
+                str(item["sessionId"])
+                for item in programmatic_results
+                if isinstance(item, dict) and isinstance(item.get("sessionId"), str)
+            }
+            restart_state["relevantSessionIds"] = sorted(
+                programmatic_session_ids | web_session_ids
+            )
 
-        different_sessions = cast(dict[str, object], lane_evidence["differentSessions"])
-        same_source = cast(dict[str, object], lane_evidence["sameSource"])
-        failure_recovery = cast(dict[str, object], lane_evidence["failureRecovery"])
         if restart_state:
             restart_state["messageTerminalEvidence"] = {
                 "parity": [
@@ -3884,11 +3908,17 @@ def _inside_restart_check(report_dir: Path) -> int:
     runtime_changed = (
         isinstance(runtime_before, dict)
         and isinstance(runtime_after, dict)
-        and runtime_before.get("pid") == 1
-        and runtime_after.get("pid") == 1
+        and isinstance(runtime_before.get("cmdline"), str)
+        and runtime_before.get("cmdline") == runtime_after.get("cmdline")
         and type(runtime_before.get("starttime")) is int
         and type(runtime_after.get("starttime")) is int
-        and runtime_before.get("starttime") != runtime_after.get("starttime")
+        and type(runtime_before.get("pid")) is int
+        and type(runtime_after.get("pid")) is int
+        and (
+            runtime_before.get("pid"), runtime_before.get("starttime")
+        ) != (
+            runtime_after.get("pid"), runtime_after.get("starttime")
+        )
     )
     wire_messages = _message_wire_projection(page)
     wire_messages_before = _message_wire_projection({"items": expected_wire_messages})
@@ -4317,7 +4347,8 @@ def _snapshot_database(database: Path) -> dict[str, object]:
         for name in ("sessions", "messages", "turns", "operations"):
             if name not in table_names:
                 continue
-            rows = connection.execute(f'SELECT * FROM "{name}"').fetchall()
+            order = " ORDER BY session_key, seq" if name == "messages" else ""
+            rows = connection.execute(f'SELECT * FROM "{name}"{order}').fetchall()
             tables[name] = [dict(row) for row in rows]
     required_tables = ("sessions", "messages")
     return {
@@ -4331,49 +4362,76 @@ def _snapshot_database(database: Path) -> dict[str, object]:
     }
 
 
+def _snapshot_message_rows(
+    snapshot: dict[str, object], session_ids: Sequence[str]
+) -> tuple[dict[str, list[dict[str, object]]], list[str]]:
+    """从数据库快照解码指定 Session 的完整 Message 行。"""
+
+    wanted = list(dict.fromkeys(session_ids))
+    rows_by_session = {session_id: [] for session_id in wanted}
+    errors: list[str] = []
+    tables = snapshot.get("tables")
+    messages = tables.get("messages") if isinstance(tables, dict) else None
+    if not isinstance(messages, list):
+        return rows_by_session, ["messages table snapshot missing"]
+    for index, raw_row in enumerate(messages):
+        if not isinstance(raw_row, dict):
+            errors.append(f"messages[{index}] is not an object")
+            continue
+        session_id = raw_row.get("session_key")
+        if session_id not in rows_by_session:
+            continue
+        required = ("id", "session_key", "seq", "ts", "author", "source", "body")
+        missing = [name for name in required if name not in raw_row]
+        if missing:
+            errors.append(
+                f"messages[{index}] missing columns for {session_id}: {missing}"
+            )
+            continue
+        raw_body = raw_row["body"]
+        if not isinstance(raw_body, str):
+            errors.append(f"messages[{index}] body is not text for {session_id}")
+            continue
+        try:
+            body = json.loads(raw_body)
+        except json.JSONDecodeError as error:
+            errors.append(f"messages[{index}] invalid body for {session_id}: {error}")
+            continue
+        rows_by_session[str(session_id)].append(
+            {
+                "id": raw_row["id"],
+                "session_id": raw_row["session_key"],
+                "seq": raw_row["seq"],
+                "timestamp": raw_row["ts"],
+                "author": raw_row["author"],
+                "source": raw_row["source"],
+                "body": body,
+            }
+        )
+    return rows_by_session, errors
+
+
 def _runtime_identity(
     compose: list[str], repo: Path, env: dict[str, str]
-) -> dict[str, int]:
-    """读取 gateway 容器 PID 1 的真实 PID/starttime。"""
+) -> dict[str, object]:
+    """读取进程树中真实 gateway 的 PID、启动时间和命令行。"""
 
-    script = (
-        "import json,pathlib; "
-        "raw=pathlib.Path('/proc/1/stat').read_text(); "
-        "tail=raw.rsplit(') ', 1)[1].split(); "
-        "print(json.dumps({'pid': 1, 'starttime': int(tail[19])}))"
-    )
-    completed = subprocess.run(
-        [
-            *compose,
-            "exec",
-            "-T",
-            "akashic-control-gate",
-            "python",
-            "-c",
-            script,
-        ],
-        cwd=repo,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise GateFailure(f"读取 gateway runtime identity 失败：{completed.stderr[-1000:]}")
+    deadline = time.monotonic() + READINESS_DEADLINE_S
+    while True:
+        try:
+            sample = _sample_resources(compose, repo, env, milestone=-1)
+            break
+        except GateFailure as error:
+            if time.monotonic() >= deadline:
+                raise
+            threading.Event().wait(0.05)
     try:
-        payload = json.loads(completed.stdout.splitlines()[-1])
-    except (IndexError, json.JSONDecodeError) as error:
-        raise GateFailure(
-            f"gateway runtime identity 不是 JSON：{completed.stdout[-1000:]}"
-        ) from error
-    if (
-        not isinstance(payload, dict)
-        or type(payload.get("pid")) is not int
-        or type(payload.get("starttime")) is not int
-    ):
-        raise GateFailure(f"gateway runtime identity 字段非法：{payload!r}")
-    return {"pid": payload["pid"], "starttime": payload["starttime"]}
+        pid = int(sample["gatewayPid"])
+        starttime = int(str(sample["gatewayStarttime"]))
+        cmdline = str(sample["gatewayCmdline"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise GateFailure(f"gateway runtime identity 字段非法：{sample!r}") from error
+    return {"pid": pid, "starttime": starttime, "cmdline": cmdline}
 
 
 def _gateway_status(
@@ -5145,6 +5203,26 @@ def _run_host(gate: str) -> int:
                     "before": _runtime_identity(compose, repo, env),
                 }
             }
+            relevant_session_ids = restart_state.get("relevantSessionIds")
+            if not isinstance(relevant_session_ids, list) or not all(
+                isinstance(session_id, str) and session_id
+                for session_id in relevant_session_ids
+            ):
+                raise GateFailure(
+                    f"restart-state 缺少 relevantSessionIds：{relevant_session_ids!r}"
+                )
+            pre_stop_snapshot = _snapshot_database(
+                sandbox / "workspace/sessions.db"
+            )
+            pre_stop_messages, pre_stop_message_errors = _snapshot_message_rows(
+                pre_stop_snapshot,
+                cast(list[str], relevant_session_ids),
+            )
+            restart_state["preStopMessages"] = pre_stop_messages
+            restart_state["preStopMessageErrors"] = pre_stop_message_errors
+            restart_state["preStopMissingRequiredTables"] = pre_stop_snapshot.get(
+                "missingRequiredTables"
+            )
             _write_json(restart_state_path, restart_state)
         stop_started = time.monotonic()
         gateway_stop = subprocess.run(
@@ -5163,7 +5241,27 @@ def _run_host(gate: str) -> int:
             restart_state = json.loads(restart_state_path.read_text(encoding="utf-8"))
             programmatic_results = restart_state.get("programmaticResults")
             terminal_evidence = restart_state.get("messageTerminalEvidence")
+            relevant_session_ids = restart_state.get("relevantSessionIds")
+            pre_stop_messages = restart_state.get("preStopMessages")
+            pre_stop_message_errors = restart_state.get("preStopMessageErrors")
+            pre_stop_missing_tables = restart_state.get("preStopMissingRequiredTables")
             missing_tables = stopped_snapshot.get("missingRequiredTables")
+            post_stop_messages, post_stop_message_errors = _snapshot_message_rows(
+                stopped_snapshot,
+                cast(list[str], relevant_session_ids)
+                if isinstance(relevant_session_ids, list)
+                else [],
+            )
+            session_message_exact_match = (
+                isinstance(relevant_session_ids, list)
+                and bool(relevant_session_ids)
+                and all(isinstance(session_id, str) for session_id in relevant_session_ids)
+                and isinstance(pre_stop_messages, dict)
+                and pre_stop_missing_tables == []
+                and not pre_stop_message_errors
+                and not post_stop_message_errors
+                and pre_stop_messages == post_stop_messages
+            )
             open_results = (
                 [
                     item
@@ -5196,6 +5294,7 @@ def _run_host(gate: str) -> int:
                     and stopped_snapshot.get("exists") is True
                     and missing_tables == []
                     and no_running_work
+                    and session_message_exact_match
                     and socket_unavailable,
                     {
                         "durationSeconds": stop_duration,
@@ -5208,6 +5307,15 @@ def _run_host(gate: str) -> int:
                             )
                             if isinstance(stopped_snapshot.get("tables"), dict)
                             else None,
+                        },
+                        "sessionMessageParity": {
+                            "relevantSessionIds": relevant_session_ids,
+                            "preStopMessages": pre_stop_messages,
+                            "preStopMissingRequiredTables": pre_stop_missing_tables,
+                            "postStopMessages": post_stop_messages,
+                            "preStopErrors": pre_stop_message_errors,
+                            "postStopErrors": post_stop_message_errors,
+                            "exactMatch": session_message_exact_match,
                         },
                         "programmaticResults": programmatic_results,
                         "openResults": open_results,
