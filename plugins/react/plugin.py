@@ -245,7 +245,8 @@ async def react(
             snapshot, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
         ) as (response, prepared, message_id):
-            parts: list[Part] = list(await content.decode(response.content or "", prepared.references))
+            decoded, metadata = await content.decode(response.content or "", prepared.references)
+            parts: list[Part] = list(decoded)
             indices: list[int] = []
             for call in response.tool_calls:
                 indices.append(len(parts))
@@ -258,7 +259,7 @@ async def react(
             # 3. 内容完成后按来源 CAS 提交；失败的草稿绝不触发工具。
             message = writer.append(
                 message_id, Output(tuple(parts), "continue" if indices else "complete"),
-                expected_source_head=head,
+                expected_source_head=head, metadata=metadata,
             )
             if not indices:
                 return message

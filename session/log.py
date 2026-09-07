@@ -31,6 +31,7 @@ from session.message import (
     ToolCall,
     ToolResult,
     freeze_json,
+    freeze_metadata,
 )
 from session.message_codec import decode_body, encode_body, json_value
 
@@ -111,6 +112,8 @@ _SESSION_ATTRIBUTES_COLUMN = (
     "attributes TEXT NOT NULL DEFAULT '{\"learning\": \"eligible\", \"visibility\": \"listed\"}'"
 )
 
+_MESSAGE_METADATA_COLUMN = "metadata TEXT NOT NULL DEFAULT '{}'"
+
 _SCHEMA = {
     "attachments": ARTIFACT_SCHEMA["attachments"],
     "message_attachments": """CREATE TABLE IF NOT EXISTS message_attachments (
@@ -141,7 +144,7 @@ _SCHEMA = {
                         next_seq INTEGER NOT NULL DEFAULT 0,
                         {_SESSION_ATTRIBUTES_COLUMN}
                     );""",
-    "messages": """CREATE TABLE IF NOT EXISTS messages (
+    "messages": f"""CREATE TABLE IF NOT EXISTS messages (
                         id TEXT PRIMARY KEY,
                         session_key TEXT NOT NULL,
                         seq INTEGER NOT NULL,
@@ -149,6 +152,7 @@ _SCHEMA = {
                         author TEXT NOT NULL,
                         source TEXT NOT NULL,
                         body TEXT NOT NULL,
+                        {_MESSAGE_METADATA_COLUMN},
                         UNIQUE(session_key, seq)
                     );""",
     "bindings": """CREATE TABLE IF NOT EXISTS bindings (
@@ -166,6 +170,10 @@ _SCHEMA = {
                         json_extract(body, '$.call_ref.part_index')
                     ) WHERE json_extract(body, '$.kind')='tool_result';""",
 }
+
+_OLD_MESSAGE_SCHEMA = _SCHEMA["messages"].replace(
+    "                        " + _MESSAGE_METADATA_COLUMN + ",\n", ""
+)
 
 _LEGACY_ATTACHMENT_SCHEMA = """CREATE TABLE message_attachments (
     message_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
@@ -217,6 +225,9 @@ def _check_schema(connection: sqlite3.Connection) -> None:
         if row is None:
             continue
         allowed = {_sql(statement)}
+        if name == "messages":
+            # 已发布 yoyo 的中间步骤仍通过同一日志读取/追加无扩展消息。
+            allowed.add(_sql(_OLD_MESSAGE_SCHEMA))
         if name == "sessions":
             allowed.update(_session_schemas())
         if name == "message_attachments":
@@ -258,6 +269,9 @@ class MessageLog:
                                 "attachments", "message_attachments", "idx_message_attachments_artifact"} and not fresh:
                         continue
                     _ = self._connection.execute(statement)
+            self._has_metadata = "metadata" in {
+                row["name"] for row in self._connection.execute("PRAGMA table_info(messages)")
+            }
         except BaseException:
             self._connection.close()
             raise
@@ -378,6 +392,8 @@ class MessageLog:
         check_call: Callable[[ToolCall], None] | None = None,
         metadata_keys: frozenset[str] = frozenset(),
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
+        message_metadata_keys: frozenset[str] = frozenset(),
+        check_metadata: Callable[[Mapping[str, object]], None] | None = None,
     ) -> MessageWriter:
         """绑定纯检查与元数据投影；投影只改获授键，None 移除键，不执行外部效果。"""
         if ToolResult in body_types and call_ref is None:
@@ -393,6 +409,8 @@ class MessageLog:
             check_call,
             metadata_keys,
             update_metadata,
+            message_metadata_keys,
+            check_metadata,
         )
 
     def save_binding(self, binding_id: str, descriptor: Mapping[str, object]) -> None:
@@ -507,11 +525,12 @@ class MessageCatalog:
             SELECT p.*, COALESCE(t.message_count,0) AS message_count,
                    COALESCE(t.head_seq,-1) AS head_seq,
                    m.id AS first_id, m.seq AS first_seq, m.ts AS first_ts,
-                   m.author AS first_author, m.source AS first_source, m.body AS first_body
+                   m.author AS first_author, m.source AS first_source, m.body AS first_body,
+                   %s AS first_metadata
             FROM page p LEFT JOIN stats t ON t.session_key=p.key
             LEFT JOIN messages m ON m.session_key=p.key AND m.seq=t.first_seq
             ORDER BY julianday(p.updated_at) DESC, p.key ASC
-        """ % " AND ".join(where)
+        """ % (" AND ".join(where), "m.metadata" if self._log._has_metadata else "'{}'")
         with self._log._read() as connection:
             total = connection.execute("SELECT COUNT(*) FROM sessions s WHERE " + base_where, values).fetchone()[0]
             rows = connection.execute(sql, [*page_values, limit + 1]).fetchall()
@@ -728,6 +747,8 @@ class MessageWriter:
         check_call: Callable[[ToolCall], None] | None,
         metadata_keys: frozenset[str],
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None,
+        message_metadata_keys: frozenset[str],
+        check_metadata: Callable[[Mapping[str, object]], None] | None,
     ):
         self._log: MessageLog = log
         self._session_id: str = session_id
@@ -737,6 +758,8 @@ class MessageWriter:
         self._content = content
         self._call_ref = call_ref
         self._check_call = check_call
+        self._message_metadata_keys = frozenset(message_metadata_keys)
+        self._check_metadata = check_metadata
         self._metadata_keys = frozenset(metadata_keys)
         self._update_metadata = update_metadata
         self._active = True
@@ -771,20 +794,27 @@ class MessageWriter:
 
     def append(
         self, message_id: str, body: Body, *, expected_source_head: int | None = None,
+        metadata: Mapping[str, object] | None = None,
     ) -> Message:
         """原子追加消息及其绑定 owner 计算的元数据变化，重放不重复更新。"""
         return self._log._write(
             lambda: self._append(
-                message_id, body, expected_source_head=expected_source_head,
+                message_id, body, expected_source_head=expected_source_head, metadata=metadata,
             )
         )
 
     def _append(
         self, message_id: str, body: Body, *, expected_source_head: int | None = None,
+        metadata: Mapping[str, object] | None = None,
     ) -> Message:
         # 1. 固定 writer 的能力范围；内容 schema 由其注册 owner 验证。
         self._check_grant(body)
         payload = encode_body(body)
+        message_metadata = freeze_metadata({} if metadata is None else metadata)
+        if self._check_metadata is None and not message_metadata.keys() <= self._message_metadata_keys:
+            raise PermissionError("writer 未获授这些 Message metadata 命名空间")
+        if message_metadata and not self._log._has_metadata:
+            raise RuntimeError("Message metadata 尚未完成 yoyo 迁移")
         connection = self._log._connection
         old = connection.execute(
             "SELECT * FROM messages WHERE id=?", (message_id,)
@@ -797,9 +827,15 @@ class MessageWriter:
                 payload,
             ):
                 raise MessageConflict("message_id 已用于不同的不可变内容")
-            return _message(old)
+            previous = _message(old)
+            if (json.dumps(json_value(previous.metadata), sort_keys=True)
+                    != json.dumps(json_value(message_metadata), sort_keys=True)):
+                raise MessageConflict("message_id 已用于不同的不可变 metadata")
+            return previous
         if not self._active:
             raise WriterExpired("writer 已失效")
+        if self._check_metadata is not None and message_metadata:
+            self._check_metadata(message_metadata)
         head = connection.execute(
             "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=? AND source=?",
             (self._session_id, self._source),
@@ -810,8 +846,8 @@ class MessageWriter:
         if isinstance(body, ToolResult):
             self._check_call_result(body)
 
-        metadata: Mapping[str, object | None] = {} if self._update_metadata is None else self._update_metadata(body)
-        if not set(metadata) <= self._metadata_keys:
+        session_metadata: Mapping[str, object | None] = {} if self._update_metadata is None else self._update_metadata(body)
+        if not set(session_metadata) <= self._metadata_keys:
             raise PermissionError("writer 未获授这些 Session metadata 键")
 
         # 2. Session 自己分配不复用的序号；Control 不得指向尚未接纳的前缀。
@@ -825,19 +861,16 @@ class MessageWriter:
             "SELECT next_seq FROM sessions WHERE key=?", (self._session_id,)
         ).fetchone()[0]
         message = Message(
-            message_id, self._session_id, seq, now, self._author, self._source, body
+            message_id, self._session_id, seq, now, self._author, self._source, body, message_metadata
         )
+        columns = "id,session_key,seq,ts,author,source,body"
+        values = (message_id, self._session_id, seq, stamp, self._author, self._source, payload)
+        if self._log._has_metadata:
+            columns += ",metadata"
+            values += (json.dumps(json_value(message_metadata), ensure_ascii=False,
+                                  sort_keys=True, separators=(",", ":"), allow_nan=False),)
         _ = connection.execute(
-            "INSERT INTO messages (id,session_key,seq,ts,author,source,body) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                message_id,
-                self._session_id,
-                seq,
-                stamp,
-                self._author,
-                self._source,
-                payload,
-            ),
+            f"INSERT INTO messages ({columns}) VALUES ({','.join('?' for _ in values)})", values,
         )
         for ordinal, artifact in enumerate(artifacts):
             _ = connection.execute(
@@ -855,10 +888,10 @@ class MessageWriter:
         )
 
         # 3. 只合并获授键；失败回滚消息、序号与元数据，不覆盖其他 owner 的键。
-        if metadata:
+        if session_metadata:
             current = self._log.reader(self._session_id).metadata()
             updated = dict(current) if current is not None else {}
-            for key, value in metadata.items():
+            for key, value in session_metadata.items():
                 if value is None:
                     _ = updated.pop(key, None)
                 else:
@@ -1078,13 +1111,14 @@ class OwnerTransaction:
         body: Body,
         *,
         expected_source_head: int | None = None,
+        metadata: Mapping[str, object] | None = None,
     ) -> Message:
         self._check_active()
         if writer._log is not self._store._log:
             raise ValueError("原子提交不能跨存储 authority")
         return self._perform(
             lambda: writer._append(
-                message_id, body, expected_source_head=expected_source_head
+                message_id, body, expected_source_head=expected_source_head, metadata=metadata
             )
         )
 
@@ -1123,6 +1157,7 @@ def _session_entry(row: sqlite3.Row) -> SessionEntry:
     first = None if row["first_id"] is None else Message(
         row["first_id"], key, row["first_seq"], _timestamp(row["first_ts"], key),
         row["first_author"], row["first_source"], decode_body(row["first_body"]),
+        _message_metadata(row["first_metadata"], key, row["first_id"]),
     )
     return SessionEntry(
         key, _timestamp(row["created_at"], key), _timestamp(row["updated_at"], key),
@@ -1170,6 +1205,14 @@ def _owner_record(row: sqlite3.Row) -> OwnerRecord:
     return OwnerRecord(row["version"], cast(Mapping[str, object], value))
 
 
+def _message_metadata(raw: str, session_id: str, message_id: str) -> Mapping[str, object]:
+    """持久附加信息损坏时保留消息定位，不依赖解释它的插件。"""
+    try:
+        return freeze_metadata(_json_object(raw, "metadata"))
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"Session {session_id} Message {message_id} metadata 损坏: {error}") from error
+
+
 def _message(row: sqlite3.Row) -> Message:
     return Message(
         row["id"],
@@ -1179,6 +1222,7 @@ def _message(row: sqlite3.Row) -> Message:
         row["author"],
         row["source"],
         decode_body(row["body"]),
+        _message_metadata(row["metadata"], row["session_key"], row["id"]) if "metadata" in row.keys() else {},
     )
 
 

@@ -417,7 +417,7 @@ version = "1.0.0"
 inject = (ServiceKey("content.v1"),)
 async def apply(ctx, config):
     async def decode(source, references):
-        return (Span(len(source.text), len(source.text), (ContentPart("sample", "fixed A"),)),)
+        return (Span(len(source.text), len(source.text), (ContentPart("sample", "fixed A"),)),), {}
     await ctx.require(inject[0]).register(ctx, TextProtocol(
         name="sample", content={"sample": lambda part: ContentReferences()},
         prompt="Protocol A", decode=decode,

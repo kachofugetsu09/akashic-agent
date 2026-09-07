@@ -65,6 +65,7 @@ _MOBILE_INPUT_REJECTIONS_ID = "20260906_05_mobile_input_rejections"
 _MODEL_CALL_TIMING_ID = "20260906_06_model_call_timing"
 _CONTEXT_MATERIAL_GRANTS_ID = "20260907_01_context_material_grants"
 _LEGACY_AGENT_CONFIG_ID = "20260907_02_retire_legacy_agent_config"
+_MESSAGE_METADATA_ID = "20260907_03_message_metadata"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -109,6 +110,7 @@ _CURRENT_IDS = (
     _MODEL_CALL_TIMING_ID,
     _CONTEXT_MATERIAL_GRANTS_ID,
     _LEGACY_AGENT_CONFIG_ID,
+    _MESSAGE_METADATA_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -466,6 +468,7 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
         _LEGACY_AGENT_CONFIG_ID,
+        _MESSAGE_METADATA_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert "agent" not in migrated
@@ -499,7 +502,7 @@ def test_legacy_agent_migration_rejects_custom_wiring_without_writing(
         encoding="utf-8",
     )
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-1])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:_CURRENT_IDS.index(_LEGACY_AGENT_CONFIG_ID)])
     _ = _runner(root, repo_root=legacy_repo).run()
     before = config.read_bytes()
 
@@ -528,13 +531,13 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
     config = root / "config.toml"
     config.symlink_to(source.name)
 
-    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:-1])
+    legacy_repo = _catalog(tmp_path / "legacy-repo", _CURRENT_IDS[:_CURRENT_IDS.index(_LEGACY_AGENT_CONFIG_ID)])
     _ = _runner(root, repo_root=legacy_repo).run()
     before = source.read_bytes()
 
     outcome = _runner(root).run()
 
-    assert outcome.migrations == (_LEGACY_AGENT_CONFIG_ID,)
+    assert outcome.migrations == (_LEGACY_AGENT_CONFIG_ID, _MESSAGE_METADATA_ID)
 
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -625,6 +628,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
         _LEGACY_AGENT_CONFIG_ID,
+        _MESSAGE_METADATA_ID,
     )
 
 
@@ -985,6 +989,7 @@ api_key = "secret"
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
         _LEGACY_AGENT_CONFIG_ID,
+        _MESSAGE_METADATA_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

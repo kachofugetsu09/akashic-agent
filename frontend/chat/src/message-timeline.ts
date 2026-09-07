@@ -30,6 +30,7 @@ export interface TimelineMessage {
   source: string;
   attachments: TimelineAttachment[];
   body: TimelineBody;
+  metadata?: Record<string, unknown>;
 }
 
 export interface TimelineReply {
@@ -109,6 +110,7 @@ export function readTimelineMessage(value: unknown): TimelineMessage {
     throw new Error("历史消息身份或附件无效");
   }
   const body = object(row.body);
+  if (row.metadata !== undefined && !object(row.metadata)) throw new Error("消息 metadata 必须是对象");
   if (!body) throw new Error("历史消息缺少正文");
   if (body.kind === "control") {
     if (!["pause", "resume", "abandon", "failure"].includes(String(body.action))

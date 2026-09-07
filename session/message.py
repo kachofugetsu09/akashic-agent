@@ -1,11 +1,36 @@
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Literal, cast
+
+
+MAX_METADATA_BYTES = 64 * 1024
+
+
+def freeze_metadata(value: Mapping[str, object]) -> Mapping[str, object]:
+    """附加信息只接受有界 JSON 对象；插件内部结构不参与消息类型校验。"""
+    if not isinstance(value, Mapping):
+        raise TypeError("消息 metadata 必须是 JSON 对象")
+    frozen = cast(Mapping[str, object], freeze_json(value))
+    if any(not key for key in frozen):
+        raise ValueError("消息 metadata 命名空间不能为空")
+    # JSON 编码同时固定字节预算；不按 Python 对象大小或字符数计算。
+    payload = json.dumps(frozen, default=_json_container, ensure_ascii=False,
+                         sort_keys=True, separators=(",", ":"), allow_nan=False)
+    if len(payload.encode("utf-8")) > MAX_METADATA_BYTES:
+        raise ValueError("消息 metadata 超过 64 KiB")
+    return frozen
+
+
+def _json_container(value: object) -> dict[str, object]:
+    if isinstance(value, Mapping):
+        return dict(cast(Mapping[str, object], value))
+    raise TypeError("消息 metadata 包含非 JSON 值")
 
 
 def freeze_json(value: object) -> object:
@@ -164,8 +189,10 @@ class Message:
     author: str
     source: str
     body: Body
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", freeze_metadata(self.metadata))
         if not all(
             isinstance(value, str) and value
             for value in (self.message_id, self.session_id, self.author, self.source)

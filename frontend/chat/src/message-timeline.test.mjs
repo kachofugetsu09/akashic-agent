@@ -12,6 +12,19 @@ const text = (value) => ({ kind: "text", value });
 const page = (items, through, more = false) => ({ version: 2, items, through_seq: through,
   has_more: more, before_seq: more ? items[0].seq : null });
 
+test("unknown plugin metadata survives history and live merging without affecting text", () => {
+  const metadata = { citation: { version: 17, references: [null, { id: "old" }] }, meme: { category: "happy" } };
+  const message = row(0, { kind: "output", finish: "complete", parts: [text("hello")] }, { metadata });
+  const history = chatHistoryPage(page([message], 0), "fixture").items;
+  const live = readMessageLogFrame({ type: "messages.appended", version: 2, session_id: message.session_id,
+    after_seq: -1, through_seq: 0, next_after_seq: 0, has_more: false, items: [structuredClone(message)] });
+  const merged = mergeTimelineMessages(history, live.items);
+  assert.deepEqual(merged[0].metadata, metadata);
+  assert.equal(timelineText(merged[0]), "hello");
+  assert.throws(() => readTimelineMessage({ ...message, metadata: [] }), /metadata/u);
+  assert.throws(() => mergeTimelineMessages(history, [{ ...message, metadata: { meme: {} } }]), /发生变化/u);
+});
+
 test("fixed history pages retain all four bodies, gaps, late results and raw archives", () => {
   const archive = { raw: '[ {"result":null, "arguments": "old"} ]', completeness: "unknown" };
   const records = [

@@ -115,6 +115,7 @@ Message {
   author
   source
   body               # 有明确 schema 的消息内容
+  metadata           # 插件命名空间下的普通 JSON 附加信息
 }
 ```
 
@@ -123,7 +124,8 @@ Message {
 - `recorded_at` 表示持久接纳时间；它不能冒充外部事件原始发生时间。外部发生时间若有意义，由对应消息类型保留。
 - `author` 是实际作者/执行者的引用，可以指人、Agent、Tool 或应用服务；不是 provider role。
 - `source` 是同一 Session 中稳定的来源流标识，见下节。
-- `body` 是封闭校验的类型，不增加任意 `meta/mode/variant` 配置袋。新增类型由声明它的能力拥有 schema。
+- `body` 是封闭校验的公共内容类型；新增类型由声明它的能力拥有 schema。
+- `metadata` 遵循 SES-009；它是普通 JSON 字段，不建立 MetadataPart 或扩展类型注册表。选择理由见 [0059](../decisions/0059-message-plugin-metadata.md)。
 
 Session 可拥有名称等独立元数据，但不拥有“当前 Turn”“当前模型请求”或一份工具链正文副本。消息表是领域上的追加日志；底层仍可使用 SQLite，不需要另建 AOF 文件或双写 SessionEvent 表。
 
@@ -135,7 +137,7 @@ Output      { parts, finish: continue | complete | quiet }
 ToolResult  { call_ref, outcome: success | denied | error | unknown, parts }
 Control     { action: pause | resume | abandon | failure, through_seq, reason? }
 
-parts = text | artifact_ref | tool_call | citation | 其他已声明内容类型
+parts = text | artifact_ref | tool_call | 其他已声明公共内容类型
 tool_call = { binding_id, arguments }
 call_ref  = { message_id, part_index }
 ```
@@ -179,6 +181,16 @@ writer 已绑定 Session、source、author 及允许的消息类型，调用时�
 - 接纳 ACK、回复完成、渠道送达是三个不同事实，不能用一个 terminal flag 代替。
 
 `follow` 是持久日志的追赶接口，callback 只负责降低唤醒延迟。commit 后崩溃、通知重复或断连都按 seq 重读。启动先建立通知订阅再读取一致 head，重读到该 head 后继续追赶；缓冲溢出明确要求重扫，不能依赖没有丢过通知。消费者保存自己的 cursor/规则版本，cursor 不推进到尚未成功应用的位置。副作用消费者按自身幂等/receipt 协议提交，不能由 cursor 假装保证 exactly-once。
+
+### 3.4 Message metadata 的实现与迁移
+
+`MessageWriter.append(..., metadata={...})` 将正文和 metadata 一次提交；不传时为空对象。生产者通过现有 MessageWriters 取得自己的命名空间，组合者只取得 Content view 的窄检查器，新消息只接受本次解码实际产生的完整 metadata，不取得生产者 Context 或按任意插件 ID 签发权限。Content decoder 只返回自己的 JSON，不填写命名空间；`view.decode()` 返回 `(parts, metadata)`，reply 直接转交给 writer。一个请求内同一插件重复产生附加信息时明确失败，不静默覆盖。所有内容 producer 仍共用本请求的 generation lease。
+
+当前单条 metadata 上限为 64 KiB UTF-8 JSON。JSON 深冻结后保存到 `messages.metadata`，读取不加载插件或解释扩展版本。Session 的可变 metadata 与此字段独立，既有模型选择投影不变。Web/Mobile/SDK 共用的消息页与 follow 数据携带完整 metadata；它是已授权会话读者可见的信息，不得写入凭据或 provider 私有 replay 数据。
+
+Yoyo `20260907_03_message_metadata` 仅在已知 Message schema 上增加 `TEXT NOT NULL DEFAULT '{}'` 列。旧 body 字节、rowid、ID、seq、附件和 binding 引用保持不变，不搬迁历史 ContentPart。既有 yoyo 中间步骤仍可经同一 MessageLog 读写无扩展消息；旧 schema 在该迁移前拒绝非空 metadata，不隐式加列。未知 schema、损坏 JSON、越权写入或同 ID 不同 metadata 均失败。
+
+正常增加、减少及恢复边界见[持久化状态地图](persistence-state-map.md)。验证覆盖真实 reply、Citation/Meme 协议样例、不可变重放、owner 事务回滚、插件缺席后的历史与同步、加列保全和重复迁移。这里没有迁移外部 Citation/Meme 源码或正式 workspace；外部插件发布前提仍由 NOW 维护。
 
 ## 4. Turn 是读者的分段
 
@@ -343,7 +355,7 @@ Compaction 与 Markdown memory 保持已确认的独立 owner。摘要 source ID
 
 Citation、Meme、媒体与文本清理不能全部回流到 ReAct，也不应成为提交后的 mutator。
 
-content 插件把完整模型输出转换成 typed Output。具体解码器只处理自己声明的协议，例如引用标记或 meme 标记，返回不可变的内容片段与引用；统一组装者拥有片段范围、重叠与最终顺序。Meme 解码器不改 Citation 的结果，Citation 也不清理任意其他协议。解码器存在实际顺序依赖时，优先收拢共享语法的解析责任，不用数字 priority 掩盖冲突。
+content 插件把完整模型输出转换成 typed Output。具体解码器只处理自己声明的协议，例如引用标记或 meme 标记，返回 `(spans, metadata)`；metadata 是该插件自己的 JSON 对象，由组装者放入实际插件 owner 的命名空间。统一组装者拥有片段范围、重叠与最终顺序。Meme 解码器不改 Citation 的结果，Citation 也不清理任意其他协议。解码器存在实际顺序依赖时，优先收拢共享语法的解析责任，不用数字 priority 掩盖冲突。
 
 图片/文件由 Artifact owner 导入并确认 durable，Output 才能引用；随机选图的实际选择落入 Output，重建不重新抽签。引用只能指向允许引用的真实材料，不能仅凭模型给出的 ID 赋权。现有从 recall 结果推断 cited IDs 的行为须列入迁移样例，明确保留或替换，不能漏掉。
 
@@ -746,7 +758,9 @@ Content 普通插件拥有一次内容组装；协议插件拥有自己的语法
   引用及证据类型        类别 → 固定图片
          └─────────┬─────────┘
                    ▼
-       Content 一次组装 text / citation / artifact
+       Content 一次组装正文与附加信息
+       ├─ parts：text / artifact_ref
+       └─ metadata：citation / meme
                    ▼
        导入附件完成 → 追加 Message → Delivery
 ```
@@ -755,20 +769,20 @@ Content 普通插件拥有一次内容组装；协议插件拥有自己的语法
 
 一次请求从构建 Context 到内容组装、附件导入并 append 完成持有同一协议集合的 exact generation lease。进程崩溃或 decode/import/append 失败后尚未提交的模型输出属于未接纳的临时结果，允许丢弃，不承诺从诊断原文恢复；重启后从已提交 Message 建立新请求和新协议集合，不把旧文本交给新解码器。Model owner 在 I/O 前耐久记录调用与配置要求的费用占额，在 I/O 后记录实际 usage 或计费 unknown；新请求独立计费并受剩余预算约束，不以丢弃输出清零额度。工具只有在 call Output 已提交后才执行，因此这一窗口不会隐藏已执行工具。原始模型输出若留作诊断仍由 Model owner 管理；已经提交的 provider replay facts 随 Message 保留，不能依靠可清理诊断恢复会话。
 
-两种直接调用足够：模型文本在 `async with content.bind()` 中调用 `view.decode(output, references)`；已经结构化的程序直接构造 text/artifact/citation parts，并走同一附件导入与 Message 校验。普通回复、Wake、定时发送和 `message_push` 都能使用 Content；ReAct 没有专属入口。用户输入、工具结果和引用的代码不会因为经过存储或 Delivery 被再次解析。
+两种直接调用足够：模型文本在 `async with content.bind()` 中调用 `view.decode(output, references)`；已经结构化的程序直接构造 text/artifact parts 和 metadata，并走同一附件导入与 Message 校验。普通回复、Wake、定时发送和 `message_push` 都能使用 Content；ReAct 没有专属入口。用户输入、工具结果和引用的代码不会因为经过存储或 Delivery 被再次解析。
 
-Citation 保留隐藏内部标记、清理其自有 inline 引用、显式引用列表与召回兜底。新内容区分证据：`declared` 表示模型明确声明，`retrieved` 表示实际召回候选。无显式引用时，候选可作为旧产品行为的兜底，但不能被持久记录成“模型确认用过”。召回 owner 返回结构化 reference，Citation 不扫描名字恰好叫 `recall_memory` 的任意 JSON。未知引用记录无法解析的状态；不得造出来源或静默映射成别的记忆。Akasha 决定不同证据怎样参与强化；既有已学习权重不因新标记自动重算。
+Citation 保留隐藏内部标记、清理其自有 inline 引用、显式引用列表与召回兜底。`metadata.citation` 区分证据：`declared` 表示模型明确声明，`retrieved` 表示实际召回候选。无显式引用时，候选可作为旧产品行为的兜底，但不能被持久记录成“模型确认用过”。召回 owner 返回结构化 reference，Citation 不扫描名字恰好叫 `recall_memory` 的任意 JSON。未知引用记录无法解析的状态；不得造出来源或静默映射成别的记忆。Akasha 决定不同证据怎样参与强化；既有已学习权重不因新标记自动重算。
 
-引用块的最小内容为 `{ref, declared, retrieval_ref?, resolved_ref?}`：`ref` 保存模型声明或候选的原始引用；`declared` 明确它是否来自模型；`retrieval_ref` 指向本次实际召回记录；`resolved_ref` 指向已确认的领域对象及其不可变 revision。没有 `resolved_ref` 就是未解析，不另设一份可能矛盾的 resolved 状态。`declared=false` 必须有真实 `retrieval_ref`；声明与召回命中同一对象时一块同时保留两项事实，不复制两份 citation。Content 只在本请求固定的 reference 快照上关联；Akasha 不从字段缺省或出现顺序猜测证据等级。
+`metadata.citation.references` 中每个引用的最小内容为 `{ref, declared, retrieval_ref?, resolved_ref?}`：`ref` 保存模型声明或候选的原始引用；`declared` 明确它是否来自模型；`retrieval_ref` 指向本次实际召回记录；`resolved_ref` 指向已确认的领域对象及其不可变 revision。没有 `resolved_ref` 就是未解析，不另设一份可能矛盾的 resolved 状态。`declared=false` 必须有真实 `retrieval_ref`；声明与召回命中同一对象时一项同时保留两项事实，不复制两份引用。Content 只在本请求固定的 reference 快照上关联；Akasha 不从字段缺省或出现顺序猜测证据等级。
 
-Meme 保留启用类别、动态提示、每条回复最多一张图、文本清理、分类管理面板、Skill 和附件显示。解析只消费协议允许的位置，代码示例保持原文。类别合法但没有可用图片时返回明确的缺失结果，由调用程序选择文本回复并记录诊断；导入失败不谎称附件 ready。图片选定后必须先导入 Artifact，再提交消息；Delivery 重试读取同一 artifact，不能重新随机选图。Meme 不依赖 Citation，两者单独启用、卸载、交换注册顺序都成立。分类文件和图片仍由 Meme 领域 owner 管理，不迁成 Core 配置。
+Meme 将类别及选择依据放入 `metadata.meme`，实际图片保留为通用 `artifact_ref`；卸载 Meme 不影响图片展示。Meme 保留启用类别、动态提示、每条回复最多一张图、文本清理、分类管理面板、Skill 和附件显示。解析只消费协议允许的位置，代码示例保持原文。类别合法但没有可用图片时返回明确的缺失结果，由调用程序选择文本回复并记录诊断；导入失败不谎称附件 ready。图片选定后必须先导入 Artifact，再提交消息；Delivery 重试读取同一 artifact，不能重新随机选图。Meme 不依赖 Citation，两者单独启用、卸载、交换注册顺序都成立。分类文件和图片仍由 Meme 领域 owner 管理，不迁成 Core 配置。
 
 ### 15.2 保留能力，而非旧事件形状
 
 | 活跃插件与已核对位置 | 要保留的用户功能 | 新组合与持久 owner | 验收边界 |
 |---|---|---|---|
-| Citation `plugin.py:58–99` | 回复不泄露内部引用协议，记忆引用可追踪 | Context 协议贡献 + Content 引用块；召回 owner 提供来源 | 显式/兜底可区分，未知 ID 不伪造，Meme 缺席仍可用 |
-| Meme `plugin.py:28–75`、`runtime.py:80–151` | 按类别表达表情、图片和分类面板 | Content 解码 + Artifact；目录与 UI 归 Meme | 普通/主动内容、代码示例、空分类、固定附件重发 |
+| Citation `plugin.py:58–99` | 回复不泄露内部引用协议，记忆引用可追踪 | Context 协议贡献 + metadata.citation；召回 owner 提供来源 | 显式/兜底可区分，未知 ID 不伪造，Meme 缺席仍可用 |
+| Meme `plugin.py:28–75`、`runtime.py:80–151` | 按类别表达表情、图片和分类面板 | Content 解码 + Artifact + metadata.meme；目录与 UI 归 Meme | 普通/主动内容、代码示例、空分类、固定附件重发 |
 | Shell Restore `plugin.py:80–101` | 简单 rm 改为可恢复移动 | Tool owner 的参数准备贡献；restore 目录归插件 | 原始与最终参数可查；复合语法不误称已保护 |
 | Shell Safety `plugin.py:61–95` | 阻止会卡住的交互编辑、sudo、包管理命令 | Tool owner 在全部转换后授权最终参数 | 直调和 ReAct 一致；拒绝不调用工具、不记成功 |
 | Proactive Feedback `plugin.py:133–180,231–270,457–535` | 判断主动消息是否被接续、引用命中与反馈历史 | 拉取 Message/Turn；评分、幂等记录和 cursor 归反馈插件 | 断开通知可重扫；保留原候选时间窗，不丢漏多输入 |

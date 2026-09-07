@@ -213,7 +213,7 @@ committed snapshot ── stable/latest pointer ── request lease
 2. 插件之间共享行为：版本化 `ServiceKey` + `provide/require`。
 3. 已提交事实的变更通知：由事实 owner 定义窄 typed signal。
 4. 对人暴露动作：`COMMANDS`；对模型暴露动作：`TOOLS`。
-5. Message、Context、Turn projection、Model、Tool、Content 和 Delivery 通过各自插件 Service 组合。
+5. Message、Context、Turn projection、Model、Tool、Content 和 Delivery 通过各自插件 Service 组合。可选插件标签写入普通 Message metadata，使用 [SES-009](../projectneed.md#ses-009-插件附加信息使用普通-message-metadata) 与[消息附加信息合同](0902-reviewed-v4.md#34-message-metadata-的实现与迁移)，不注册新的内容块。
 6. 长时或可恢复工作：`TASKS`、`TIMERS`。
 7. 外部进程、MCP、容器：`MANAGED_PROCESSES`、`MCP_SERVERS`、`WORKLOADS`。
 8. 找不到匹配能力时先定义窄 Service，不给 Manager 增加新的固定插件方法。

@@ -66,6 +66,7 @@ def _message_row(message: Message, page: MessagePage) -> dict[str, object]:
         "timestamp": message.recorded_at.isoformat(),
         "author": message.author,
         "source": message.source,
+        "metadata": json_value(message.metadata),
         "attachments": [asdict(ref) for ref in page.attachments[message.message_id]],
     }
     if isinstance(body, Control):

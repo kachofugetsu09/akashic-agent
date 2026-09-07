@@ -52,7 +52,10 @@ async def test_formal_capabilities_use_real_owner_and_task_holds_exact_runtime(t
             writer = factory("s")
             with pytest.raises(PermissionError):
                 writer.append("forged", Input((ContentPart("model.facts", {}),)))
-            writer.append("u1", Input((ContentPart("text", "accepted"),)))
+            with pytest.raises(PermissionError, match="命名空间"):
+                writer.append("forged-metadata", Input(()), metadata={"two": {"tag": "fake"}})
+            message = writer.append("u1", Input((ContentPart("text", "accepted"),)), metadata={"one": {"tag": "own"}})
+            assert message.metadata == {"one": {"tag": "own"}}
             first = state.open(one)
             first.transact(lambda tx: tx.save("same", {"value": 1}, expected_version=None))
             assert state.open(one).read("same").value["value"] == 1

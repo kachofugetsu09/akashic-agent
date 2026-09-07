@@ -186,6 +186,50 @@ async def test_bad_reply_tool_configuration_fails_before_consuming_any_input(tmp
 
 
 @pytest.mark.asyncio
+async def test_reply_commits_plugin_metadata_and_history_reads_it_without_the_plugin(tmp_path):
+    """实际插件注册、模型与工具循环、writer 授权和重启读取共用一份附加信息。"""
+    from contextlib import closing
+    from infra.channels.message_view import message_rows
+    from session.message_codec import json_value
+
+    def extra(sources):
+        plugin = sources / "citation"
+        plugin.mkdir()
+        (plugin / "plugin.py").write_text('''
+from plugins.content.plugin import CONTENT
+from plugins.content.api import TextProtocol
+api_version = 3
+name = "citation"
+version = "1.0.0"
+inject = (CONTENT,)
+async def apply(ctx, config):
+    async def decode(source, references):
+        return (), {"version": 1, "references": [{"ref": "remembered", "declared": True}]} if source.text else {}
+    await ctx.require(CONTENT).register(ctx, TextProtocol(
+        name="citation", prompt="", content={}, decode=decode))
+''')
+
+    async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+                "s", "u", ChannelInboundMessage("test", "user", "s", "record evidence",
+                                                 datetime(2026, 9, 5, tzinfo=UTC), {}))
+        async def completed():
+            async for _ in log.catalog().follow():
+                for row in log.reader("s").snapshot():
+                    if isinstance(row.body, Output) and row.body.finish == "complete":
+                        return row
+        output = await asyncio.wait_for(completed(), 5)
+        assert json_value(output.metadata) == {"citation": {"version": 1, "references": [{"ref": "remembered", "declared": True}]}}
+        assert all(part.kind != "citation" for part in output.body.parts)
+    shutil.rmtree(tmp_path / "plugins/citation")
+    with closing(MessageLog(tmp_path / "sessions.db")) as restarted:
+        assert restarted.reader("s").get(output.message_id) == output
+        rows = message_rows(restarted.reader("s").read_page())
+        assert rows[-1]["metadata"] == {"citation": {"version": 1, "references": [{"ref": "remembered", "declared": True}]}}
+
+
+@pytest.mark.asyncio
 async def test_default_reply_discovers_then_calls_tool_without_react_search_branch(tmp_path):
     from agent.plugin_composition import ServiceKey
     async with application(tmp_path, replying=True, discovery=True) as (log, host):

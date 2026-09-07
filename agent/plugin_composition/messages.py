@@ -50,12 +50,13 @@ class MessageWriters:
         content: Mapping[str, Callable[[ContentPart], ContentReferences]],
         check_call: Callable[[ToolCall], None] | None = None,
         update_metadata: Callable[[Body], Mapping[str, object | None]] | None = None,
+        check_metadata: Callable[[Mapping[str, object]], None] | None = None,
     ) -> Callable[..., MessageWriter]:
         """固定身份、类型和检查器；打开时只选择 Session 和可选 exact call。"""
         log = self._log
         if log is None:
             raise RuntimeError("candidate 验证期禁止签发消息 writer")
-        _ = ctx.require_runtime_owner(MESSAGE_WRITERS, self)
+        owner = ctx.require_runtime_owner(MESSAGE_WRITERS, self)
         grants = {
             key: grant for key, grant in self._metadata.items()
             if grant[0] is ctx and grant[1] is update_metadata
@@ -77,6 +78,8 @@ class MessageWriters:
                 content=content, call_ref=call_ref, check_call=check_call,
                 metadata_keys=frozenset(grants),
                 update_metadata=project_metadata if update_metadata is not None else None,
+                message_metadata_keys=frozenset({owner}),
+                check_metadata=check_metadata,
             )
 
         return open
