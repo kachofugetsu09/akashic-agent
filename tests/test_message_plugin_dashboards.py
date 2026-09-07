@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 import hashlib
 import json
 import os
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
@@ -153,6 +155,8 @@ async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tm
         assert sessions_db.is_file()
         before_db = sessions_db.read_bytes()
         before_messages = log.reader("s").snapshot()
+        with closing(sqlite3.connect(sessions_db)) as database:
+            before_dump = tuple(database.iterdump())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers,
         ) as client:
@@ -160,6 +164,8 @@ async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tm
             listing = await client.get("/api/dashboard/akasha-inspector/turns?page=1&page_size=25")
             detail_response = await client.get("/api/dashboard/akasha-inspector/turns/saved-query")
         after_db = sessions_db.read_bytes()
+        with closing(sqlite3.connect(sessions_db)) as database:
+            after_dump = tuple(database.iterdump())
 
         assert [response.status_code for response in (overview, listing, detail_response)] == [200, 200, 200]
         assert overview.json() == {"available": True, "total": 1}
@@ -178,6 +184,7 @@ async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tm
         assert len(messages[0]["text"]) > 240
         assert before_db
         assert after_db == before_db
+        assert after_dump == before_dump
         assert log.reader("s").snapshot() == before_messages
         assert not (tmp_path / "embedding-calls.txt").exists()
         _render_compiled_module(tmp_path, module, detail, "命中回忆")
