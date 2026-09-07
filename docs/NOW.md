@@ -30,8 +30,7 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 - 用户已批准[完整设计与分层合同](design/0902-reviewed-v4.md)：Message 独立保存，Turn 由普通无状态插件投影，Akasha 是消费者；完整回复链由非特权插件组合，替换旧的执行身份模型。
 - 仓库内重构以 stacked draft PR 交付，持久变化的 yoyo 脚本与引入变化的 PR 同步；禁止灰度、shadow、双 writer 和旧 hook 兼容壳。已核实冗余的删除记录在既有账本，代码删除不授权减少历史消息、学习、附件和插件数据。
 - hua-home 上 Citation、Meme、反馈、诊断、命令和工具检查的功能按设计第 15 节保留并重组。外部插件源码迁移后续交付；其实际安装与功能验收是正式切换前提，不阻塞仓库内新接口实现。正式 workspace 尚未迁移。
-- 当前候选已开始第 10 层新的 MessageLog 完整启动验收：Root `18675fe8` 已合入 FrameBook、restart 和 Message 路由，MC01 `d59c2b74` 与 G5 `64b957ab` 的实际证据已记录在设计和清理账本；Core cleanup 已由 `cfaf2591` 正常合入，最终 clean-head Gate 仍待 Root 执行。
-- `c9dff019` 已通过 Terra Review（证据：`/tmp/message-cleanup-leaf-terra-review.txt`）并由 `cfaf2591` 正常集成。其 pre-commit public 27 报告属于 dirty/sourceDigest 不匹配的旧 baseline，不能记作 exact-head pass。
+- 第 10 层完整 MessageLog 启动的最终 clean-head Gate 尚未完成；每周 lifecycle/restart probe 的正式迁移仍在进行。
 - Android 原生配套、外部插件源码迁移、旧 workspace 转换、历史摘要/旧效果转换和正式 workspace 演练仍是正式切换前提；这些事项尚未完成，不能用当前 Core/ Web 证据代替。
 
 ## P1 · 工作流扩展

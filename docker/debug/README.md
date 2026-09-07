@@ -107,7 +107,7 @@ programmatic/message/result
 `result` 从同一 Message 日志快照读取 `complete`、`pause`、`failure` 或 `open`，持久消息按 `seq` 追赶；回复活动与持久完成事实分别读取，不能用空闲状态代替完成回执。
 
 Input、Control 和模型原始 Output 都进入同一 append-only Message 日志；投影只计算状态，不保存第二份正文或完成标记。
-Session 的准入属性创建后不自动改写或减少，默认学习资格在 Session 创建边界确定；调试 API 不绕过普通来源的读取、回复和学习边界。
+Session 的准入属性创建后不自动改写或减少；显式 `persist_memory=true` 取得 `learning=eligible`，省略或传 `false` 取得 `learning=excluded`。调试 API 不绕过普通来源的读取、回复和学习边界。
 
 ## Akasha memory engine 在线与重放等价 Gate
 
@@ -406,10 +406,12 @@ docker compose -f docker/debug/docker-compose.yml up akashic-debug
 调试容器通过固定 Supervisor 启动每个 boot 唯一的 Guardian，再由 Guardian 启动 Gateway。
 Supervisor 只会在当前 boot 已通过私有事件 ready、`agent_restart` 的最终回复已经实际送达、
 Gateway 提交一次匹配证据、以 75 退出且 Guardian 证明旧 boot 已空时拉起下一代。普通退出、
-崩溃、伪造 75、断线和送达超时都不会触发重启。`RestartWatcher` 只消费成功 ToolResult 并等待所属
-Turn complete；programmatic 来源还必须等 `FrameBook` 的同连接完整 frame drain，普通来源等待
-`FinalOutputDelivery` 的实际送达。`RestartGate` 只负责关闭新 Root 接纳、等待外部 permit 排空和
-向 supervisor 私有 lifecycle pipe 提交 opaque request ID；连接断线时对应 route/claim 由 FrameBook 释放。
+崩溃、伪造 75、断线和送达超时都不会触发重启。`RestartWatcher` 只消费成功 ToolResult，先调用
+`RestartGate.prepare` 关闭新 Root 接纳，再等待所属 Turn complete；programmatic 来源随后等待
+`FrameBook` 的同连接完整 frame drain，普通来源等待 `FinalOutputDelivery` 的实际送达。两条分支
+都由 `RestartGate.commit` 等待 permit 排空并向 supervisor 私有 lifecycle pipe 提交 opaque request ID；
+commit 成功后 programmatic claim 才由 watcher consume。连接断线时 FrameBook 移除 active route、保留
+原始 `ConnectionError` 到 claim consume/abort，不能被另一连接接管。
 
 本机若仍由忽略版本控制的 `start.sh` 启动，应让它调用正式默认入口：
 
