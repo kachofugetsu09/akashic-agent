@@ -54,7 +54,6 @@ from agent.plugin_composition import (
     MCP_SERVERS,
     SESSION_READ,
     SESSION_COMPACTION_STORAGE,
-    CONTINUATIONS,
     DELIVERIES,
     DURABLE_DELIVERIES,
     TIMERS,
@@ -75,7 +74,6 @@ from agent.plugin_composition import (
     PluginRuntime,
     SessionReadService,
     SessionCompactionStorage,
-    PluginContinuations,
     PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
@@ -434,7 +432,6 @@ class PluginManager:
         self._drain_transactions: dict[str, str] = {}
         self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
-        self._continuation_publisher: Callable[[Any], Awaitable[None]] | None = None
         self._delivery_sender: (
             Callable[[ChannelMessage], Awaitable[ChannelDeliveryReceipt]] | None
         ) = None
@@ -444,16 +441,6 @@ class PluginManager:
     @property
     def loaded_count(self) -> int:
         return len(self._loaded)
-
-    def bind_continuation_publisher(
-        self,
-        publisher: Callable[[Any], Awaitable[None]],
-    ) -> None:
-        """Bind the narrow internal Message publisher before loading plugins."""
-
-        if self._continuation_publisher is not None:
-            raise RuntimeError("PluginManager continuation publisher 已绑定")
-        self._continuation_publisher = publisher
 
     def bind_delivery_sender(
         self,
@@ -5830,16 +5817,6 @@ class PluginManager:
                 compaction_storage,
             )
         if any(
-            CONTINUATIONS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            continuations = (
-                PluginContinuations(self._continuation_publisher)
-                if not candidate
-                else PluginContinuations.candidate_validation()
-            )
-            _ = await root.context.provide(CONTINUATIONS, continuations)
-        if any(
             DELIVERIES in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
         ):
@@ -5971,11 +5948,6 @@ class PluginManager:
         """冻结静态 v3 声明可读取的 Core service 输入。"""
 
         values: dict[Any, object] = {}
-        values[CONTINUATIONS] = (
-            PluginContinuations(self._continuation_publisher)
-            if self._continuation_publisher is not None
-            else PluginContinuations.candidate_validation()
-        )
         values[TIMERS] = PluginTimers(AsyncioOneShotTimer())
         values[DELIVERIES] = (
             PluginDeliveries(self._delivery_sender)
