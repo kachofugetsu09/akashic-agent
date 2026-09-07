@@ -10,7 +10,7 @@ from akashic_sdk import AsyncAkashic, RemoteError
 from infra.control.socket import SocketAppServer
 from plugins.content.plugin import check_text
 from session.log import SessionAttributes
-from session.message import ContentPart, Input, Output
+from session.message import CallRef, ContentPart, Input, Output
 from tests.test_message_control import runtime
 
 
@@ -65,6 +65,71 @@ async def test_programmatic_admission_is_immutable_and_ack_retries_recover_same_
             assert response_data(await client.request("programmatic/message/result", query))["status"] == "open"
         assert core.message_log.catalog().attributes(session) == SessionAttributes("internal", "excluded")
         assert sum(isinstance(row.body, Input) for row in core.message_log.reader(session).snapshot()) == 1
+
+
+@pytest.mark.asyncio
+async def test_programmatic_committed_output_releases_route_without_result_read(tmp_path, monkeypatch):
+    async with endpoint(tmp_path, monkeypatch) as (address, core):
+        session = "programmatic:route-settle"
+        async with await AsyncAkashic.connect(address) as client:
+            await client.request("programmatic/session/admit", {"session_id": session})
+            await client.request("programmatic/message/send", {
+                "session_id": session, "message_id": "input", "text": "finish without read",
+            })
+        writer = core.message_log.writer(
+            session, author="assistant", source="programmatic",
+            body_types=(Output,), content={"text": check_text},
+        )
+        writer.append("final", Output((ContentPart("text", "done"),), "complete"))
+        async with asyncio.timeout(3):
+            while core.control_frames._routes:  # type: ignore[attr-defined]
+                await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_programmatic_resume_rebinds_output_to_new_connection_after_disconnect(
+    tmp_path, monkeypatch,
+):
+    """旧连接断开后，显式 resume 必须把最终 Output 观察交给新连接。"""
+    from agent.plugins.snapshot import lease_runtime_snapshot
+    from plugins.programmatic.control import PROGRAMMATIC
+    from plugins.turn_projection.plugin import TURN_PROJECTION
+
+    async with endpoint(tmp_path, monkeypatch) as (address, core):
+        session = "programmatic:resume"
+        async with await AsyncAkashic.connect(address) as first:
+            await first.request("programmatic/session/admit", {"session_id": session})
+            await first.request("programmatic/message/send", {
+                "session_id": session, "message_id": "input", "text": "pause me",
+            })
+            await first.request("programmatic/message/pause", {
+                "session_id": session, "message_id": "pause",
+            })
+
+        async with await AsyncAkashic.connect(address) as second:
+            await second.request("programmatic/message/resume", {
+                "session_id": session, "message_id": "resume", "input_id": "input",
+            })
+            claim = core.control_frames.arm_claim(session, "input", CallRef("resume-call", 0))
+            writer = core.message_log.writer(
+                session, author="assistant", source="programmatic",
+                body_types=(Output,), content={"text": check_text},
+            )
+            writer.append("final", Output((ContentPart("text", "恢复结果"),), "complete"))
+
+            async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
+                context = snapshot.composition_root.context
+                reader = core.message_log.reader(session)
+                projection = context.require(TURN_PROJECTION)
+                turn = projection.project(reader.snapshot(), "programmatic")[-1]
+                waiter = asyncio.create_task(
+                    context.require(PROGRAMMATIC).wait(reader, turn),
+                )
+            page = await second.message_read(session)
+            await asyncio.wait_for(waiter, 3)
+            claim.consume()
+
+            assert [item["id"] for item in page["items"]][-1] == "final"
 
 
 @pytest.mark.asyncio
@@ -192,14 +257,14 @@ async def test_programmatic_requests_keep_exact_snapshot_while_follow_does_not_p
         entered, release = asyncio.Event(), asyncio.Event()
         observed = []
 
-        async def blocked(method, params):
+        async def blocked(method, params, transport=None):
             snapshot = get_current_runtime_snapshot()
             observed.append(snapshot.snapshot_id)
             if params.session_id == "programmatic:old":
                 entered.set()
                 await release.wait()
                 assert get_current_runtime_snapshot() is snapshot
-            return await original(method, params)
+            return await original(method, params, transport)
 
         monkeypatch.setattr(api, "call", blocked)
         async with await AsyncAkashic.connect(address) as client:

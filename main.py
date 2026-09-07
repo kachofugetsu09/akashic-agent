@@ -221,7 +221,7 @@ from agent.migrations import (
     MigrationOutcome,
     migrate_installation,
 )
-from agent.restart import RestartCoordinator, SupervisorCommitChannel
+from agent.restart import RestartGate, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.persona import read_veda
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
@@ -535,11 +535,25 @@ async def serve(config_path: str, workspace: Path) -> int:
     config = Config.load(config_path, workspace=workspace)
     if commit_channel is not None:
         commit_channel.stage("config.loaded")
-    restart_coordinator = (
-        RestartCoordinator(
-            commit_channel.boot_id,
+    restart_committed = asyncio.Event()
+    restart_commit_error: list[BaseException] = []
+
+    def commit_opaque(request_id: str) -> None:
+        if commit_channel is None:
+            raise RuntimeError("unmanaged runtime 没有 restart commit channel")
+        try:
+            commit_channel.commit_opaque(request_id)
+        except BaseException as error:
+            restart_commit_error.append(error)
+            raise
+        finally:
+            restart_committed.set()
+
+    restart_gate = (
+        RestartGate(
+            boot_id=commit_channel.boot_id,
             supervised=True,
-            commit=commit_channel.commit,
+            commit=commit_opaque,
         )
         if commit_channel is not None
         else None
@@ -552,7 +566,7 @@ async def serve(config_path: str, workspace: Path) -> int:
     runtime = build_app_runtime(
         config,
         workspace=workspace,
-        restart_coordinator=restart_coordinator,
+        restart_gate=restart_gate,
         readiness=readiness,
     )
     loop = asyncio.get_running_loop()
@@ -575,20 +589,17 @@ async def serve(config_path: str, workspace: Path) -> int:
 
     async def commit_settings_restart() -> None:
         await settings_restart_event.wait()
-        while runtime.conversation_runtime is None:
+        while runtime.core is None:
             await asyncio.sleep(0.05)
-        await runtime.conversation_runtime.quiesce_and_drain()
-        assert commit_channel is not None
-        commit_channel.commit_settings(f"settings_{uuid4().hex}")
+        request_id = "settings_" + uuid4().hex
+        runtime.core.restart_gate.prepare(request_id)
+        await runtime.core.restart_gate.commit(request_id)
 
     runtime_task = asyncio.create_task(runtime.run(), name="app_runtime")
     stop_task = asyncio.create_task(stop_event.wait(), name="shutdown_signal")
     restart_task = (
-        asyncio.create_task(
-            restart_coordinator.wait_committed(),
-            name="restart_committed",
-        )
-        if restart_coordinator is not None
+        asyncio.create_task(restart_committed.wait(), name="restart_committed")
+        if commit_channel is not None
         else None
     )
     settings_restart_task = (
@@ -613,6 +624,8 @@ async def serve(config_path: str, workspace: Path) -> int:
         restart_requested = False
         if restart_task is not None and restart_task in done:
             await restart_task
+            if restart_commit_error:
+                raise restart_commit_error[0]
             restart_requested = True
         if settings_restart_task is not None and settings_restart_task in done:
             await settings_restart_task

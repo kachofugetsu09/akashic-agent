@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +9,7 @@ from plugins.compaction.message_summary import SummaryError, _request
 from plugins.context.api import ContextOverflow, Materials
 from plugins.context.plugin import ContextBuilder
 from session.message import ContentPart, Input, Message, Output
+from tests.model_plugin_fakes import BoundChatModelFake
 
 
 def message(seq: int, body) -> Message:
@@ -35,7 +35,7 @@ class Projection:
             continuation=self.continuation,
         )
 
-    def estimate(self, _request):
+    def estimate(self, request):
         return 900
 
 
@@ -55,17 +55,22 @@ def test_context_overflow_keeps_real_messages_and_model_continuation() -> None:
 
 
 def test_summary_request_stops_at_current_soft_watermark() -> None:
-    class SoftWatermarkModel:
-        descriptor = SimpleNamespace(
-            capabilities=SimpleNamespace(context_window=100),
-        )
+    class SoftWatermarkProvider:
+        context_window = 100
+        max_tool_schemas = None
 
-        def estimate_context_tokens(self, _messages, _tools=()):
+        def estimate_context_tokens(self, messages, tools=()):
             return 74
+
+        def estimate_appended_message_tokens(self, messages):
+            return 0
+
+        async def chat(self, **kwargs):
+            raise AssertionError("soft-watermark request must not call provider")
 
     with pytest.raises(SummaryError, match="软水位"):
         _request(
-            SoftWatermarkModel(),
+            BoundChatModelFake(SoftWatermarkProvider()),
             "",
             ((message(0, Output((ContentPart("text", "facts"),), "complete")),),),
         )

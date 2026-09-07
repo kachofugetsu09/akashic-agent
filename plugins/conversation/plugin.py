@@ -7,6 +7,7 @@ from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
 from agent.plugin_composition.tasks import TASKS, Task
+from agent.restart import RESTART_GATE
 from session.log import MessageConflict, MessageReader
 from plugins.content.plugin import check_text
 from plugins.content.api import check_artifact
@@ -21,7 +22,7 @@ api_version = 3
 name = "conversation"
 version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
-inject = (MESSAGE_WRITERS, SOURCES)
+inject = (MESSAGE_WRITERS, SOURCES, RESTART_GATE)
 
 CONVERSATION = ServiceKey[Callable[[str], Conversation]]("conversation.v1")
 
@@ -66,6 +67,7 @@ async def apply(ctx: Context, config: object) -> None:
             reader=ctx.require(MESSAGE_CATALOG).reader(session_id),
             inputs=inputs(session_id), controls=controls(session_id),
             tasks=ctx.require(TASKS).open(ctx), changed=changed,
+            restart_gate=ctx.require(RESTART_GATE),
         )
 
     async def accept(session_id: str, message_id: str, message: ChannelInboundMessage) -> Message:

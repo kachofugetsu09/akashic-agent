@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import aclosing
 from typing import Any, cast
 
@@ -32,11 +32,13 @@ from agent.control.protocol.errors import (
     JsonRpcError,
 )
 from agent.control.protocol.models import METHOD_PARAMS, InitializeParams, StrictModel, MessageSendParams
+from agent.control.protocol.method import RequestTransport
 from agent.control.service import ControlService
 
 logger = logging.getLogger(__name__)
 JsonObject = dict[str, Any]
 SendMessage = Callable[[dict[str, object]], Awaitable[None]]
+SendMessagePage = Callable[[dict[str, object], Mapping[str, object]], Awaitable[None]]
 
 
 class ConnectionRouter:
@@ -48,9 +50,13 @@ class ConnectionRouter:
         send: SendMessage,
         *,
         max_pending_requests: int = 64,
+        transport: RequestTransport | None = None,
+        send_message_page: SendMessagePage | None = None,
     ) -> None:
         self._service = service
         self._send = send
+        self._send_message_page = send_message_page
+        self._transport = transport
         self._pending = asyncio.Semaphore(max_pending_requests)
         self._state = "new"
         self._subscriptions: dict[str, tuple[str, asyncio.Task[None] | None]] = {}
@@ -159,7 +165,11 @@ class ConnectionRouter:
                 JsonRpcError(INTERNAL_ERROR, "Internal error").envelope(request_id)
             )
         else:
-            await self._send({"jsonrpc": "2.0", "id": request_id, "result": result})
+            frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
+            if request["method"] == "message/read" and self._send_message_page is not None:
+                await self._send_message_page(frame, cast(Mapping[str, object], result))
+            else:
+                await self._send(frame)
             await self._post_response_notifications(request, result)
 
     async def _dispatch(self, request: JsonObject) -> object:
@@ -217,7 +227,7 @@ class ConnectionRouter:
     async def _call_method(self, method: str, params: StrictModel) -> object:
         operation = self._service.methods.get(method)
         if operation is not None:
-            return await operation.call(params)
+            return await operation.invoke(params, self._transport)
         values = params.model_dump()
         if method == "server/status":
             return self._service.status()
@@ -286,8 +296,12 @@ class ConnectionRouter:
         try:
             async with aclosing(self._service.follow(session_id, after_seq)) as feed:
                 async for event in feed:
-                    await self._send({"jsonrpc": "2.0", "method": "session/event",
-                        "params": {"subscription_id": identity, "event": event}})
+                    frame = {"jsonrpc": "2.0", "method": "session/event",
+                        "params": {"subscription_id": identity, "event": event}}
+                    if event.get("type") == "messages.appended" and self._send_message_page is not None:
+                        await self._send_message_page(frame, event)
+                    else:
+                        await self._send(frame)
         except asyncio.CancelledError:
             raise
         except Exception as error:

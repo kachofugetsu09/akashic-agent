@@ -19,6 +19,7 @@ from infra.channels.message_view import follow_messages, message_rows, session_r
 from session.artifacts import AttachmentRef
 from session.log import MessageCatalog
 from session.message import Message
+from agent.control.frame_book import FrameBook
 
 logger = logging.getLogger(__name__)
 Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
@@ -44,6 +45,7 @@ class ControlService:
         workspace_token: str | None = None, boot_id: str | None = None,
         ready: Callable[[], bool] | None = None,
         methods: Mapping[str, RpcMethod] | None = None,
+        control_frames: FrameBook | None = None,
     ) -> None:
         self.messages = messages
         self.workspace = workspace.resolve()
@@ -62,6 +64,8 @@ class ControlService:
         self._ready = ready
         self._operations: set[asyncio.Task[object]] = set()
         self._closed = False
+        self._owns_control_frames = control_frames is None
+        self.control_frames = FrameBook() if control_frames is None else control_frames
         self.methods = MappingProxyType(dict(methods or {}))
 
     def initialize(self, params: InitializeParams) -> dict[str, object]:
@@ -235,3 +239,5 @@ class ControlService:
             _ = task.cancel()
         if tasks:
             _ = await asyncio.gather(*tasks, return_exceptions=True)
+        if self._owns_control_frames:
+            self.control_frames.close()

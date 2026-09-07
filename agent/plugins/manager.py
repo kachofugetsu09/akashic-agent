@@ -41,6 +41,8 @@ from agent.plugin_composition.tasks import TASKS, PluginTasks
 from session.log import MessageCatalog, MessageLog
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import RuntimeScope
+from agent.restart import RESTART_GATE, RestartGate
+from agent.control.frame_book import CONTROL_FRAMES, FrameBook
 
 from agent.plugin_composition import (
     CHANNELS,
@@ -318,6 +320,8 @@ class PluginManager:
         channel_attachment_store: ChannelAttachmentArtifactStore | None = None,
         disabled_builtin_plugins: frozenset[str] = frozenset(),
         workload_controller: WorkloadController | None = None,
+        restart_gate: RestartGate | None = None,
+        control_frames: FrameBook | None = None,
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
@@ -382,6 +386,9 @@ class PluginManager:
             if workload_socket:
                 workload_controller = UnixWorkloadController(Path(workload_socket))
         self._workload_controller = workload_controller
+        self._restart_gate = restart_gate
+        self._owns_control_frames = control_frames is None
+        self._control_frames = FrameBook() if control_frames is None else control_frames
         workload_workspace_id = hashlib.sha256(
             str(workspace.resolve(strict=False)).encode("utf-8")
         ).hexdigest()[:16]
@@ -5734,6 +5741,27 @@ class PluginManager:
         message_services: set[ServiceKey[object]] = {
             MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION, BINDINGS
         }
+        if RESTART_GATE in requested:
+            gate = self._restart_gate
+            if candidate:
+                gate = RestartGate(
+                    boot_id="candidate",
+                    supervised=gate is not None and gate.supervised,
+                    execution_enabled=False,
+                )
+            elif gate is None:
+                # 直接使用 PluginManager 的测试/嵌入式运行没有 Supervisor；仍提供
+                # 一个允许正常 work 的 unmanaged gate，不伪造可提交的重启通道。
+                gate = RestartGate(boot_id="unmanaged", supervised=False)
+                self._restart_gate = gate
+            _ = await root.context.provide(RESTART_GATE, gate)
+        if CONTROL_FRAMES in requested:
+            # 候选与独立验证只读取副本；它们不能取得正式连接的发送 owner。
+            isolated = candidate
+            frames = FrameBook() if candidate else self._control_frames
+            _ = await root.context.provide(CONTROL_FRAMES, frames)
+            if isolated:
+                root._defer_internal_cleanup("control_frames.close", frames.close)  # pyright: ignore[reportPrivateUsage]
         # 正式能力归宿主所有，不计入历史 provider 的依赖拓扑。
         log = None if candidate else self._message_log
         if requested & message_services and self._message_log is None:
@@ -7013,6 +7041,8 @@ class PluginManager:
         self._draining_generations.clear()
         self._prepared_generations.clear()
         self._stable_aliases.clear()
+        if self._owns_control_frames:
+            self._control_frames.close()
         if externally_cancelled:
             raise asyncio.CancelledError
 
