@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+import logging
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import cast
 from uuid import uuid4
 
 from agent.plugin_composition import (
@@ -23,6 +24,7 @@ from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import Message, MessageCatalog, MessageReader
 from session.message import CallRef, Output, ToolCall, ToolResult, freeze_json
 
+logger = logging.getLogger(__name__)
 
 api_version = 3
 name = "agent_restart"
@@ -114,59 +116,40 @@ class RestartTool(BoundTool):
         return None
 
 
-class _ClosableHeads(Protocol):
-    def __aiter__(self) -> AsyncIterator[Mapping[str, int]]: ...
-    async def __anext__(self) -> Mapping[str, int]: ...
-    async def aclose(self) -> None: ...
-
-
 class RestartWatcher:
     """只在正式 Root 观察新 ToolResult，并拥有一次重启请求的等待生命周期。"""
 
     def __init__(self, ctx: Context) -> None:
         self._ctx = ctx
         self._gate = None
-        self._baseline_task: asyncio.Task[tuple[_ClosableHeads, Mapping[str, int]]] | None = None
-        self._stream: _ClosableHeads | None = None
+        self._baseline: Mapping[str, int] | None = None
+        self._bindings = None
+        self._plugin_id: str | None = None
         self._watcher: asyncio.Task[None] | None = None
         self._active: str | None = None
 
     def prepare(self, _event: object) -> None:
-        """在正式接纳开放前订阅日志并固定旧消息 heads。"""
+        """在正式接纳开放前固定旧消息 heads，避免启动窗口吞掉新结果。"""
         self._gate = self._ctx.require(RESTART_GATE)
         catalog = self._ctx.require(MESSAGE_CATALOG)
-
-        async def prime() -> tuple[_ClosableHeads, Mapping[str, int]]:
-            stream = cast(_ClosableHeads, catalog.follow())
-            try:
-                heads = await stream.__anext__()
-            except BaseException:
-                await stream.aclose()
-                raise
-            return stream, heads
-
-        self._baseline_task = asyncio.create_task(prime(), name="agent-restart-baseline")
+        self._bindings = self._ctx.require(BINDINGS)
+        self._plugin_id = self._ctx.runtime.plugin_id
+        self._baseline = catalog.snapshot_heads()
 
     async def start(self, _event: object) -> None:
-        baseline_task = self._baseline_task
-        if baseline_task is None:
+        baseline = self._baseline
+        if baseline is None:
             raise RuntimeError("agent_restart watcher 缺少启动基线")
-        self._baseline_task = None
-        self._stream, baseline = await baseline_task
         catalog = self._ctx.require(MESSAGE_CATALOG)
         projection = self._ctx.require(TURN_PROJECTION)
         delivery = self._ctx.require(FINAL_OUTPUT_DELIVERY)
+        stream = cast(AsyncGenerator[Mapping[str, int], None], catalog.follow())
         self._watcher = await self._ctx.spawn(
-            self._watch(self._stream, baseline, catalog, projection, delivery),
+            self._watch(stream, baseline, catalog, projection, delivery),
             name="agent-restart-watcher",
         )
 
     async def stop(self, _event: object) -> None:
-        baseline_task = self._baseline_task
-        self._baseline_task = None
-        if baseline_task is not None and not baseline_task.done():
-            _ = baseline_task.cancel()
-            _ = await asyncio.gather(baseline_task, return_exceptions=True)
         watcher = self._watcher
         self._watcher = None
         if watcher is not None and not watcher.done():
@@ -175,51 +158,63 @@ class RestartWatcher:
         if self._active is not None and self._gate is not None:
             self._gate.abort(self._active)
             self._active = None
-        stream = self._stream
-        self._stream = None
-        if stream is not None:
-            await stream.aclose()
 
     async def _watch(
         self,
-        stream: _ClosableHeads,
+        stream: AsyncGenerator[Mapping[str, int], None],
         baseline: Mapping[str, int],
         catalog: MessageCatalog,
         projection: TurnProjection,
         delivery: FinalOutputWaiter,
     ) -> None:
         cursors = dict(baseline)
-        try:
-            async for heads in stream:
-                for session_id, head in sorted(heads.items()):
-                    after = cursors.get(session_id, -1)
-                    if head <= after:
-                        continue
-                    reader = catalog.reader(session_id)
-                    messages = reader.read(after_seq=after, limit=100)
-                    while messages:
-                        for message in messages:
-                            if self._active is not None:
-                                return
-                            if not isinstance(message.body, ToolResult) or message.body.outcome != "success":
-                                continue
-                            request = await self._request(reader, message)
-                            if request is None:
-                                continue
-                            self._active = request.request_id
-                            await self._wait_for_request(request, reader, projection, delivery)
-                            self._active = None
-                            return
-                        after = messages[-1].seq
-                        if after >= head:
-                            break
+        async with aclosing(stream):
+            try:
+                async for heads in stream:
+                    for session_id, head in sorted(heads.items()):
+                        after = cursors.get(session_id, -1)
+                        if head <= after:
+                            continue
+                        reader = catalog.reader(session_id)
                         messages = reader.read(after_seq=after, limit=100)
-                    cursors[session_id] = head
-        finally:
-            if self._active is not None and self._gate is not None:
-                self._gate.abort(self._active)
-                self._active = None
-            await stream.aclose()
+                        while messages:
+                            for message in messages:
+                                if self._active is not None:
+                                    return
+                                if not isinstance(message.body, ToolResult) or message.body.outcome != "success":
+                                    continue
+                                try:
+                                    request = await self._request(reader, message)
+                                except (RestartRejectedError, ValueError, KeyError) as error:
+                                    logger.warning(
+                                        "agent_restart ToolResult ignored; watcher remains active: %s",
+                                        error,
+                                    )
+                                    continue
+                                if request is None:
+                                    continue
+                                self._active = request.request_id
+                                try:
+                                    await self._wait_for_request(request, reader, projection, delivery)
+                                except (RestartRejectedError, TimeoutError, ConnectionError, ValueError) as error:
+                                    logger.warning(
+                                        "agent_restart request=%s rejected; watcher remains active: %s",
+                                        request.request_id,
+                                        error,
+                                    )
+                                else:
+                                    self._active = None
+                                    return
+                                self._active = None
+                            after = messages[-1].seq
+                            if after >= head:
+                                break
+                            messages = reader.read(after_seq=after, limit=100)
+                        cursors[session_id] = head
+            finally:
+                if self._active is not None and self._gate is not None:
+                    self._gate.abort(self._active)
+                    self._active = None
 
     async def _request(self, reader: MessageReader, message: Message) -> RestartRequest | None:
         result = message.body
@@ -233,15 +228,16 @@ class RestartWatcher:
         call = call_message.body.parts[result.call_ref.part_index]
         if not isinstance(call, ToolCall):
             raise RestartRejectedError("agent_restart ToolResult 未指向 ToolCall")
-        async with self._ctx.runtime_scope():
-            bindings = self._ctx.require(BINDINGS)
-            metadata = bindings.describe(call.binding_id, TOOLS)
-            descriptor = cast(Mapping[str, object], metadata).get("tool")
-            if not isinstance(descriptor, Mapping):
-                raise ValueError("工具 binding 描述无效")
-            descriptor = cast(Mapping[str, object], descriptor)
-            if descriptor.get("name") != name or descriptor.get("owner") != self._ctx.runtime.plugin_id:
-                return None
+        bindings = self._bindings
+        if bindings is None:
+            raise RuntimeError("agent_restart watcher 缺少 bindings")
+        metadata = bindings.describe(call.binding_id, TOOLS)
+        descriptor = cast(Mapping[str, object], metadata).get("tool")
+        if not isinstance(descriptor, Mapping):
+            raise ValueError("工具 binding 描述无效")
+        descriptor = cast(Mapping[str, object], descriptor)
+        if descriptor.get("name") != name or descriptor.get("owner") != self._plugin_id:
+            return None
         if call_message.source != message.source:
             raise RestartRejectedError("agent_restart ToolResult 来源不一致")
         return RestartRequest(
