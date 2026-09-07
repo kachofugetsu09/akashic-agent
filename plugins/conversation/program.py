@@ -80,6 +80,7 @@ async def run_reply(
         materials.bind(exclude=exclude_materials) as material_view,
     ):
         bindings = ctx.require(BINDINGS)
+        model = execution.chat(ModelRole.AGENT)
         writers = ctx.require(MESSAGE_WRITERS)
         keep_input_ids = tuple(
             item.message_id for item in snapshot
@@ -96,13 +97,13 @@ async def run_reply(
             )
 
         menu = ToolMenu(tools, bindings, tools.execution(authorize), reply,
-                        names=tool_names, reader=reader, source=source, fixed_bindings=fixed_bindings)
+                        names=tool_names, reader=reader, source=source,
+                        limit=model.max_tool_schemas, fixed_bindings=fixed_bindings)
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
             content={**view.checks, "model.facts": check_facts, "context.summary": check_summary}, check_call=menu.check_call,
         )(reader.session_id)
         task.on_close(output.expire)
-        model = execution.chat(ModelRole.AGENT)
         artifacts: Mapping[str, tuple[Mapping[str, Any], ...]] = {}
         def render(part: ContentPart):
             return render_model_content(part, artifacts=artifacts, read_message=reader.get)

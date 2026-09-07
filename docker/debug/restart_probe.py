@@ -1862,9 +1862,6 @@ def _inside_failures(report_dir: Path) -> int:
 
 
 def _configure_restart_gate(sandbox: Path) -> None:
-    config = sandbox / "config.toml"
-    text = config.read_text(encoding="utf-8")
-    config.write_text(text, encoding="utf-8")
     reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
     reply_config.parent.mkdir(parents=True, exist_ok=True)
     reply_config.write_text("max_steps = 5\n", encoding="utf-8")
@@ -1876,7 +1873,7 @@ def _configure_restart_gate(sandbox: Path) -> None:
         stage_runtime=False,
     )
     # 启动迁移会改写活动配置；隔离场景必须从不可变模板各自迁移。
-    (sandbox / "restart-config-template.toml").write_text(text, encoding="utf-8")
+    shutil.copyfile(sandbox / "config.toml", sandbox / "restart-config-template.toml")
 
 
 def _digest_summary(files: dict[str, str]) -> dict[str, object]:

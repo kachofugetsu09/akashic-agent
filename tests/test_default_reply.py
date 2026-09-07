@@ -13,7 +13,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from session.log import MessageLog
-from session.message import Input, Output, ToolResult
+from session.message import Control, Input, Output, ToolResult
 
 
 @asynccontextmanager
@@ -207,6 +207,44 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
             assert [tool["function"]["name"] for tool in calls[0].tools] == ["tool_search"]
             assert {tool["function"]["name"] for tool in calls[1].tools} == {"tool_search", "write_evidence"}
+
+
+@pytest.mark.asyncio
+async def test_default_reply_applies_provider_tool_capacity_before_first_request(tmp_path):
+    def constrain_provider(sources):
+        module = sources / "test_provider/plugin.py"
+        source = module.read_text()
+        assert source.count("max_tool_schemas = None") == 1
+        assert source.count('parameters={"type":"object"}, open=open)') == 1
+        module.write_text(source.replace(
+            "max_tool_schemas = None", "max_tool_schemas = 1"
+        ).replace(
+            'parameters={"type":"object"}, open=open)',
+            'parameters={"type":"object"}, open=open, always_on=True)',
+        ))
+
+    from agent.plugin_composition import ServiceKey
+    async with application(
+        tmp_path, replying=True, discovery=True, extra_sources=constrain_provider
+    ) as (log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+                "s", "u", ChannelInboundMessage("test", "user", "s", "record evidence",
+                                                 datetime(2026, 9, 5, tzinfo=UTC), {}))
+
+        async def failed():
+            async for _ in log.catalog().follow():
+                rows = log.reader("s").snapshot()
+                if isinstance(rows[-1].body, Control) and rows[-1].body.action == "failure":
+                    return rows
+
+        rows = await asyncio.wait_for(failed(), 5)
+        assert rows is not None
+        assert isinstance(rows[-1].body, Control)
+        assert "容量不足" in (rows[-1].body.reason or "")
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
+            assert calls == []
 
 
 @pytest.mark.asyncio

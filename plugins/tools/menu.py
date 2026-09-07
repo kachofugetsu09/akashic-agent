@@ -32,11 +32,11 @@ class ToolMenu:
     def __init__(
         self, catalog: ToolCatalog, bindings: Bindings, execution: ToolExecution,
         reply: Callable[[CallRef], MessageReply], *, names: Sequence[str],
-        reader: MessageReader, source: str, limit: int = 8,
+        reader: MessageReader, source: str, limit: int | None = None,
         fixed_bindings: Mapping[str, str] | None = None,
     ):
-        if limit < 1:
-            raise ValueError("工具菜单容量必须为正数")
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise ValueError("工具菜单容量必须为正整数或 None")
         fixed: dict[str, str] = {} if fixed_bindings is None else dict(fixed_bindings)
         if fixed_bindings is None:
             check_menu(catalog, names)
@@ -143,10 +143,15 @@ class ToolMenu:
 
         fixed = {name: self._bind_current(name) for name, item in self._allowed.items()
                  if item["always_on"] or not self._discovery}
+        if self._limit is not None and len(fixed) > self._limit:
+            raise ValueError(
+                "模型工具容量不足以容纳固定工具集合: "
+                f"required={len(fixed)} limit={self._limit}"
+            )
         if self._discovery:
-            remaining = max(0, self._limit - len(fixed))
+            remaining = None if self._limit is None else self._limit - len(fixed)
             extra = [(name, identity) for name, identity in recent.items() if name not in fixed]
-            fixed.update(extra[-remaining:] if remaining else ())
+            fixed.update(extra if remaining is None else extra[-remaining:] if remaining else ())
         self._selected = fixed
 
     @property
