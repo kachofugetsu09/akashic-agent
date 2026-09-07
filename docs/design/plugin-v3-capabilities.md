@@ -75,74 +75,60 @@ async def apply(ctx: Context, config: object) -> None:
 
 双方各自声明同名、同结构的 key，通过 `inject` 和 `ctx.require()` 连接，不能 import 对方源码。
 
-## 3. Typed event
+## 3. Typed lifecycle and source signals
 
-注册统一使用 `await ctx.on(KEY, listener)`。
+插件通过明确的 typed key 注册监听；每个 key 只有一个 owner，发布者负责定义 payload 和失败语义。
 
-| Key | 发布 | 失败与顺序 |
+| 当前合同 | 用途 | owner |
 |---|---|---|
-| `EmitEventKey[T]` | `ctx.emit(KEY, payload)` | 同步、按注册顺序、首个失败立即传播 |
-| `SerialEventKey[T, R]` | `await ctx.serial(KEY, payload)` | 逐个等待；只有显式 `Bail(value)` 短路 |
-| `ParallelEventKey[T]` | `await ctx.parallel(KEY, payload)` | 仅 async listener；全部 settle 后聚合失败 |
-| `TransformEventKey[T]` | `await ctx.transform(KEY, payload)` | 按顺序把同类型不可变值传给下一 listener |
-| `ObserveEventKey[T]` | `await ctx.observe(KEY, payload)` | 全部 settle；普通失败隔离为 Incident |
+| `ctx.emit(KEY, payload)` | 发布来源或插件自己的已提交变更信号 | 定义该 key 的来源插件 |
+| `RUNTIME_STARTING` | 正式接纳开放前准备插件拥有的临时资源 | Runtime lifecycle |
+| `RUNTIME_STARTED` | 正式外部服务已就绪，启动插件工作 | Runtime lifecycle |
+| `RUNTIME_STOPPING` | 外部服务停止前收束插件工作 | Runtime lifecycle |
+| `SNAPSHOT_SEALING` | candidate catalog 冻结前完成插件自己的 seal | Snapshot owner |
 
-Key 的结构与调度实现归 Core；事实只能由下列领域 owner 发布：
+`SOURCE_CHANGED`、`EVENTMAIL_CHANGED` 和 `DRIFT_CHANGED` 等来源信号由各自插件声明和发布；它们不组成 Core
+全局事件表。`agent.plugin_composition.events` 中保留的通用 dispatch 实现仍服务 manager/snapshot 的兼容图，
+不属于新的插件能力目录。新插件应优先定义窄 `ServiceKey` 或 owner-specific signal，不依赖旧的 Core 业务事件名。
 
-| Key | 时机 |
-|---|---|
-| `CONTEXT_PREPARED_EVENT` | Session 与上下文准备后 |
-| `PROMPT_RENDER_EVENT` | Prompt 渲染前 |
-| `AFTER_REASONING_PREPROCESS_EVENT` | 推理结果形成后、持久化前 |
-| `AFTER_REASONING_CLEANUP_EVENT` | Core 清理阶段 |
-| `AFTER_TURN_COMMITTED` | user/assistant 已原子提交 |
-| `RUNTIME_STARTED`、`RUNTIME_STOPPING` | committed snapshot 启停 |
-| `SNAPSHOT_SEALING` | candidate catalog 冻结前 |
-| `RETRIEVAL_COMPLETED` | Akasha 插件检索完成；仅 Akasha 活动时发布 |
-| `CONTEXT_PROJECTION_COMMITTED` | Compaction 插件完成上下文投影；仅该插件活动时发布 |
+## 4. Runtime Service 与插件能力
 
-`MEMORY_WRITTEN` key 仍是公开结构合同，但当前 pure-V3 Core 没有生产者；Memory2 退役后不得把
-“能注册 listener”误报成“线上会发布事件”。新增生产者必须由领域 owner 明确发布，不能恢复
-EventBus 类型猜测桥。
-
-## 4. Core Service 原子能力
-
-所有 Service 先写入 `inject`，再用 `service = ctx.require(KEY)`。声明型注册本身是 Effect。
+Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由拥有该 key 的插件注册，声明型注册本身是 Effect。
 
 ### 4.1 人与 Agent 的入口
 
 | Key | 主要方法 | 用途 |
 |---|---|---|
 | `COMMANDS` | `register(ctx, CommandDefinition(...))` | 人类命令、alias 和 handler |
-| `TOOL_CATALOG` | `register(ctx, PluginToolDefinition(...), handler)` | 模型 Tool |
+| `TOOLS` | `register(...)`、`bind(...)`、`open(...)` | `plugins.tools` 的工具描述、参数准备、exact binding 与执行入口 |
 | `UI_SLOTS` | `register_mobile(ctx, definition, query=...)` | Mobile 页面、查询和导航 |
-| `CHANNELS` | `register(ctx, ChannelDefinition(...))` | inbound/outbound Channel blueprint |
-| `DELIVERIES` | `send(...)` | 当前 Turn 内的一次投递 |
-| `DURABLE_DELIVERIES` | `submit()`、`lookup()`、`resume()` | 三态、可恢复的外部投递 |
+| `CHANNELS` / `CHANNEL_INPUT` | 注册 blueprint，按绑定调用入站入口 | inbound/outbound Channel 适配 |
+| `DELIVERY` / `DELIVERY_READ` | 打开发送 admission 或只读历史 | Delivery 发送、恢复和查询 |
 
-Tool 还支持纯 V3 的命名 handler：省略直接 handler，使用 `handler_export` 指向模块内
-`async (context, arguments)`。Core 在 snapshot 编译时解析并校验 exact generation；它用于需要稳定
-导出身份的已安装插件，不是 V2 fallback。
+`TOOL_CATALOG`、`DELIVERIES` 和 `DURABLE_DELIVERIES` 是旧 Core 组合图中的保留导出，不是当前插件
+消费者应采用的能力入口。工具插件的公开结构合同在 `plugins.tools.api`：`CallSource`、`MessageReply`、
+`Result` 和 `BoundTool`；ToolResult Message 是对话调用的结果正文。
 
-### 4.2 Turn、Session 与上下文
+### 4.2 Message、Session 与上下文
 
 | Key | 主要方法 | 用途 |
 |---|---|---|
-| `SCOPED_TURNS` | `create_session()`、`ensure_session()`、`start()`、`read()` | generation-bound programmatic Turn |
-| `CONTINUATIONS` | `submit(...)` | 向已有 Turn 提交继续输入 |
+| `MESSAGE_CATALOG` | 读取已提交 Message | 只读消息正文和稳定身份 |
+| `MESSAGE_WRITERS` | 使用已绑定 writer 追加消息 | 按权限追加 Input、Output 或 ToolResult |
+| `SESSION_ADMISSION` | 校验 Session 与来源准入 | 建立写入和控制边界 |
 | `SESSION_READ` | `read(session_key)` | 只读既有 Session 投影 |
 | `SESSION_COMPACTION_STORAGE` | `history_units()`、`prepare()`、`persist()` | Compaction 专用窄持久化边界 |
 | `PROVIDER_REQUEST_PROJECTION` | `open_turn(...)` | provider request 的冻结投影和 retry gate |
 | `CONTEXT_PROJECTION_FACTS` | `list_committed()`、`get_committed()` | 读取已提交上下文投影事实 |
-| `INTERACTION_UNDO` | `bind_source_fence()`、`undo_latest()` | 显式撤销最近 interaction |
-| `CONVERSATION_SEMANTIC_INTEREST` | `score(texts, cutoff=...)` | 统一语义兴趣评分 |
+
+Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影，不是 Core Service 中的可变执行对象。
+消费者自行保存 cursor 和学习状态；投影不能授权消息写入、工具执行或外部发送。
 
 ### 4.3 调度与外部运行
 
 | Key | 主要方法 | 用途 |
 |---|---|---|
 | `TIMERS` | `schedule(deadline)` | Core-owned timer |
-| `BACKGROUND_JOBS` | `register(ctx, BackgroundJobDefinition(...))` | trigger job 与命名 handler export |
 | `MCP_SERVERS` | `register(ctx, McpServerDefinition(...))` | generation-bound MCP server |
 | `MANAGED_PROCESSES` | `register(ctx, ManagedProcessDefinition(...))` | Core 监督的进程 |
 | `WORKLOADS` | `register(ctx, Workload(...))` | 窄 Controller 管理的容器 workload |
@@ -207,9 +193,9 @@ committed snapshot ── stable/latest pointer ── request lease
 
 1. 同一插件内部拆生命周期：`ctx.mount()`。
 2. 插件之间共享行为：版本化 `ServiceKey` + `provide/require`。
-3. 已结算事实的一对多通知：`ObserveEventKey`。
-4. 顺序策略：`SerialEventKey`；同类型改写链：`TransformEventKey`。
-5. 对人暴露动作：`COMMANDS`；对模型暴露动作：`TOOL_CATALOG`。
-6. 长时或可恢复工作：`BACKGROUND_JOBS`、`SCOPED_TURNS`、`DURABLE_DELIVERIES`。
+3. 已提交事实的变更通知：由事实 owner 定义窄 typed signal。
+4. 对人暴露动作：`COMMANDS`；对模型暴露动作：`TOOLS`。
+5. Message、Context、Turn projection、Model、Tool、Content 和 Delivery 通过各自插件 Service 组合。
+6. 长时或可恢复工作：`TASKS`、`TIMERS`。
 7. 外部进程、MCP、容器：`MANAGED_PROCESSES`、`MCP_SERVERS`、`WORKLOADS`。
 8. 找不到匹配能力时先定义窄 Service，不给 Manager 增加新的固定插件方法。
