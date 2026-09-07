@@ -8,22 +8,11 @@ from pathlib import Path
 import pytest
 
 from agent.migrations.runner import MigrationRunner
+from tests.test_migration_runner import _create_sessions
 
 
 _PROJECT_ROOT = Path(__file__).parents[1]
 _PREPARE_ID = "20260808_02_session_compaction_prepares"
-
-
-def _create_sessions(path: Path) -> None:
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute(
-            "CREATE TABLE sessions ("
-            "key TEXT PRIMARY KEY, last_consolidated INTEGER NOT NULL)"
-        )
-        connection.commit()
-    finally:
-        connection.close()
 
 
 _PREPARE_TABLE_WITHOUT_UNIQUE = """
@@ -55,6 +44,7 @@ def test_prepare_migration_publishes_exact_schema_and_indexes(tmp_path: Path) ->
     root = tmp_path / "state"
     workspace = root / "workspace"
     workspace.mkdir(parents=True)
+    (root / "config.toml").write_text("", encoding="utf-8")
     _create_sessions(workspace / "sessions.db")
 
     outcome = _runner(root).run()
