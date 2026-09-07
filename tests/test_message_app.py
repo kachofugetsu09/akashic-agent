@@ -2,6 +2,7 @@
 import shutil
 from pathlib import Path
 
+import httpx
 import pytest
 
 from akashic_sdk import AsyncAkashic
@@ -30,6 +31,17 @@ async def test_app_starts_web_and_control_with_message_owners(tmp_path, monkeypa
             assert page["items"][0]["id"] == "app-input"
         assert app.web_chat_channel is not None
         assert app.channel_host.channels
+        chat_app = app.chat_server.config.app
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=chat_app),
+            base_url="http://testserver",
+        ) as web:
+            sessions = await web.get("/api/chat/sessions")
+            assert sessions.status_code == 200
+            assert any(item["key"] == session for item in sessions.json()["items"])
+            messages = await web.get(f"/api/chat/sessions/{session}/messages")
+            assert messages.status_code == 200
+            assert messages.json()["items"][0]["id"] == "app-input"
     finally:
         await app.shutdown()
     log = MessageLog(workspace / "sessions.db")
