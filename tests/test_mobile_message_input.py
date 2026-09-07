@@ -129,6 +129,34 @@ async def test_mobile_input_and_reference_commit_original_facts_and_replay_once(
 
 
 @pytest.mark.asyncio
+async def test_paired_devices_append_once_to_one_shared_session_history(tmp_path):
+    async with runtime(tmp_path) as (log, identities, manager, bus, channel, storage, device, handoffs):
+        second_device = 'paired-device-2'
+        _register_device(storage, second_device)
+        session = f'akashic:{uuid4()}'
+
+        first = command(session, text='来自第一台设备')
+        second = command(session, 1, text='来自第二台设备')
+        assert (await channel.handle_command(device_id=device, frame=first)).type == 'message.send.ok'
+        assert (await channel.handle_command(device_id=second_device, frame=second)).type == 'message.send.ok'
+
+        history = log.reader(session).snapshot()
+        assert [message.message_id for message in history] == [first.id, second.id]
+        assert [message.seq for message in history] == [0, 1]
+        assert [message.source for message in history] == ['conversation', 'conversation']
+        assert [
+            next(part.value for part in message.body.parts if part.kind == 'channel.origin')
+            for message in history
+            if isinstance(message.body, Input)
+        ] == [
+            {'channel': 'akashic', 'chat_id': session[8:], 'sender': f'device:{device}'},
+            {'channel': 'akashic', 'chat_id': session[8:], 'sender': f'device:{second_device}'},
+        ]
+        assert storage.list_device_sessions(device) == (session,)
+        assert storage.list_device_sessions(second_device) == ()
+
+
+@pytest.mark.asyncio
 async def test_mobile_rejects_invalid_targets_without_leaving_recovery_rows(tmp_path):
     async with runtime(tmp_path) as (log, identities, manager, bus, channel, storage, device, handoffs):
         session = f'akashic:{uuid4()}'
