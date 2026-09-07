@@ -44,13 +44,19 @@ class RestartGate:
         supervised: bool,
         commit: Callable[[str], None] | None = None,
         drain_timeout_s: float = 15.0,
+        execution_enabled: bool = True,
     ) -> None:
         if not boot_id.strip() or drain_timeout_s <= 0:
             raise ValueError("restart gate 参数无效")
-        if supervised != (commit is not None):
+        if not isinstance(execution_enabled, bool):
+            raise TypeError("restart gate execution_enabled 必须是 bool")
+        if supervised and commit is None and execution_enabled:
             raise ValueError("supervised 与 restart commit channel 必须同时成立")
+        if (not supervised or not execution_enabled) and commit is not None:
+            raise ValueError("restart commit channel 只能属于可执行的 supervised gate")
         self.boot_id = boot_id
         self.supervised = supervised
+        self.execution_enabled = execution_enabled
         self._commit = commit
         self._drain_timeout_s = drain_timeout_s
         self._request_id: str | None = None
@@ -84,6 +90,8 @@ class RestartGate:
         """立即关闭新外部 Root 接纳，并只保留 opaque request id。"""
         if not self.supervised:
             raise RestartRejectedError("当前进程未由 supervisor 托管")
+        if not self.execution_enabled:
+            raise RestartRejectedError("当前 runtime 不允许重启效果")
         if not request_id or request_id.strip() != request_id:
             raise ValueError("restart request id 无效")
         if self._request_id is not None:
@@ -119,6 +127,8 @@ class RestartGate:
 
     async def commit(self, request_id: str) -> None:
         """等待既有外部 Root 排空后向 Supervisor 提交 opaque id。"""
+        if not self.execution_enabled:
+            raise RestartRejectedError("当前 runtime 不允许重启效果")
         if request_id != self._request_id:
             raise RestartRejectedError("restart request id 不属于当前 gate")
         if self._committed:

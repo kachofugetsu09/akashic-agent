@@ -16,7 +16,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.restart import RESTART_GATE, RestartRejectedError
+from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
 from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durable_call_key
 from plugins.tools.plugin import TOOLS
@@ -62,8 +62,13 @@ class RestartTool(BoundTool):
     def idempotent(self) -> bool:
         return False
 
-    def __init__(self) -> None:
+    def __init__(self, gate: RestartGate) -> None:
+        self._gate = gate
         self._prepared: PendingRestart | None = None
+
+    def _require_supervised(self) -> None:
+        if not self._gate.supervised or not self._gate.execution_enabled:
+            raise RestartRejectedError("agent_restart 仅能在正式 supervisor runtime 使用")
 
     async def prepare(
         self,
@@ -72,6 +77,7 @@ class RestartTool(BoundTool):
     ) -> Mapping[str, object]:
         if source is None:
             raise ValueError("agent_restart 必须引用当前 Turn 的 ToolCall")
+        self._require_supervised()
         if set(arguments) != {"reason"}:
             raise ValueError("agent_restart 参数只能包含 reason")
         reason = arguments.get("reason")
@@ -102,6 +108,7 @@ class RestartTool(BoundTool):
         return current.arguments
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+        self._require_supervised()
         pending = self._prepared
         if pending is None:
             raise RestartRejectedError("agent_restart 当前 binding 没有可恢复的 prepare")
@@ -131,12 +138,19 @@ class RestartWatcher:
     def prepare(self, _event: object) -> None:
         """在正式接纳开放前固定旧消息 heads，避免启动窗口吞掉新结果。"""
         self._gate = self._ctx.require(RESTART_GATE)
+        if not self._gate.execution_enabled:
+            return
         catalog = self._ctx.require(MESSAGE_CATALOG)
         self._bindings = self._ctx.require(BINDINGS)
         self._plugin_id = self._ctx.runtime.plugin_id
         self._baseline = catalog.snapshot_heads()
 
     async def start(self, _event: object) -> None:
+        gate = self._gate
+        if gate is None:
+            raise RuntimeError("agent_restart watcher 缺少 RestartGate")
+        if not gate.execution_enabled:
+            return
         baseline = self._baseline
         if baseline is None:
             raise RuntimeError("agent_restart watcher 缺少启动基线")
@@ -298,7 +312,7 @@ async def apply(ctx: Context, config: object) -> None:
 
     @asynccontextmanager
     async def open_tool(_state: Mapping[str, object]) -> AsyncGenerator[BoundTool, None]:
-        yield RestartTool()
+        yield RestartTool(gate)
 
     _ = await ctx.require(TOOLS).register(
         ctx,

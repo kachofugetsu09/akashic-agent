@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import subprocess
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -15,18 +16,24 @@ from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessa
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.control.protocol.method import OutputReservation, RequestTransport
+from agent.plugins.generation import PluginGeneration
+from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugins.snapshot import RuntimeSnapshot, lease_runtime_snapshot
 from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
 from bus.event_bus import EventBus
 from infra.control.connection import _FrameReservation
 from plugins.agent_restart.plugin import PendingRestart, RestartTool
-from plugins.tools.api import CallSource, ContentPart, durable_call_key
+from plugins.tools.api import CallSource, ContentPart, Denied, MessageReply, durable_call_key
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
 from session.log import MessageLog
-from session.message import CallRef, Input, Message, Output, ToolCall, ToolResult, freeze_json
+from session.message import (
+    CallRef, ContentReferences, Input, Message, Output, ToolCall, ToolResult, freeze_json,
+)
+
+import agent.plugins.manager as plugin_manager_module
 
 
 def _copy_plugin_sources(root: Path, names: tuple[str, ...]) -> None:
@@ -358,7 +365,7 @@ class _FrameTransport(RequestTransport):
 
 @pytest.mark.asyncio
 async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
-    tool = RestartTool()
+    tool = RestartTool(RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None))
     source = _source()
     with pytest.raises(ValueError, match="只能包含 reason"):
         await tool.prepare({"reason": "reload", "extra": True}, source)
@@ -382,7 +389,7 @@ async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
 
 @pytest.mark.asyncio
 async def test_restart_prepare_is_idempotent_only_for_same_call_and_arguments() -> None:
-    tool = RestartTool()
+    tool = RestartTool(RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None))
     source = _source()
     await tool.prepare({"reason": "reload"}, source)
     first = tool._prepared
@@ -399,7 +406,7 @@ async def test_restart_prepare_is_idempotent_only_for_same_call_and_arguments() 
 
 @pytest.mark.asyncio
 async def test_restart_requires_prepare_and_query_is_unknown() -> None:
-    tool = RestartTool()
+    tool = RestartTool(RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None))
     assert tool.idempotent is False
     assert await tool.query("message:[\"call-a\",0]") is None
     with pytest.raises(RestartRejectedError, match="prepare"):
@@ -642,6 +649,315 @@ async def test_manager_reload_hands_late_tool_result_to_new_watcher(
 async def _wait_for_path(path: Path) -> None:
     while not path.exists():
         await asyncio.sleep(0.01)
+
+
+async def _wait_for_admission_pause(snapshot: RuntimeSnapshot) -> None:
+    while snapshot.accepting_leases:
+        await asyncio.sleep(0)
+
+
+async def _wait_for_watcher_count(
+    watchers: list[asyncio.Task[None]], count: int,
+) -> None:
+    while len(watchers) < count:
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supervised", [True, False], ids=["supervised", "unmanaged"])
+async def test_restart_provider_candidate_preserves_formal_root_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supervised: bool,
+) -> None:
+    """候选和正式 Root 按宿主 gate 保持相同的 restart 声明。"""
+    sources = tmp_path / "plugins"
+    _copy_plugin_sources(
+        sources,
+        (
+            "sources", "content", "context", "tools", "conversation", "react",
+            "turn_projection", "reply", "tool_search", "delivery", "programmatic",
+            "agent_restart",
+        ),
+    )
+
+    # 1. 只替换一个已安装 provider generation。
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    _write_restart_provider(generated)
+    provider_repo = tmp_path / "restart-provider"
+    provider_repo.mkdir()
+    provider_source = generated / "restart_provider" / "plugin.py"
+    shutil.copy2(provider_source, provider_repo / "plugin.py")
+    (provider_repo / "akashic.plugin.toml").write_text(
+        "schema_version=1\n"
+        "name='restart_provider'\n"
+        "version='1.0.0'\n"
+        "api_version=3\n"
+        "entrypoint='plugin.py'\n",
+    )
+    for args in (
+        ("git", "init", "-q"),
+        ("git", "add", "."),
+        ("git", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-qm", "stable"),
+    ):
+        subprocess.run(args, cwd=provider_repo, check=True)
+    install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(provider_repo),
+        marketplace="fixture",
+        ref_name="HEAD",
+        sparse_paths=[],
+        plugins_home=tmp_path / "home",
+    )
+
+    commits: list[str] = []
+    gate = RestartGate(
+        boot_id="fixture-boot", supervised=supervised,
+        commit=commits.append if supervised else None,
+    )
+    log = MessageLog(tmp_path / "sessions.db")
+    host = PluginManager(
+        [sources],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home" / "cache",
+        message_log=log,
+        restart_gate=gate,
+    )
+    observed: dict[str, RuntimeSnapshot] = {}
+    original_check = plugin_manager_module._validate_candidate_formal_snapshot_identity
+
+    def capture_identity(
+        generation: PluginGeneration, *, candidate: RuntimeSnapshot, formal: RuntimeSnapshot,
+    ) -> None:
+        observed["candidate"] = candidate
+        observed["formal"] = formal
+        original_check(generation, candidate=candidate, formal=formal)
+
+    monkeypatch.setattr(
+        plugin_manager_module,
+        "_validate_candidate_formal_snapshot_identity",
+        capture_identity,
+    )
+    old_task: asyncio.Task[object] | None = None
+    promotion_task: asyncio.Task[dict[str, object]] | None = None
+    release_authorize: asyncio.Event | None = None
+    watcher_monitor: asyncio.Task[None] | None = None
+    stop_watcher_monitor: asyncio.Event | None = None
+    try:
+        await host.load_all()
+        runtime_runner = asyncio.create_task(host.run_runtime_services())
+
+        async def watcher_task() -> asyncio.Task[None]:
+            async def find() -> asyncio.Task[None]:
+                while True:
+                    for task in asyncio.all_tasks():
+                        if task.get_name() == "plugin-task:agent-restart-watcher":
+                            return cast(asyncio.Task[None], task)
+                    await asyncio.sleep(0)
+
+            return await asyncio.wait_for(find(), 2)
+
+        old_watcher: asyncio.Task[None] | None = None
+        watcher_history: list[asyncio.Task[None]] = []
+        stop_watcher_monitor: asyncio.Event | None = None
+
+        async def monitor_watchers() -> None:
+            while not stop_watcher_monitor.is_set():
+                for task in asyncio.all_tasks():
+                    if (
+                        task.get_name() == "plugin-task:agent-restart-watcher"
+                        and task not in watcher_history
+                    ):
+                        watcher_history.append(cast(asyncio.Task[None], task))
+                await asyncio.sleep(0)
+
+        if supervised:
+            old_watcher = await watcher_task()
+            watcher_history.append(old_watcher)
+            stop_watcher_monitor = asyncio.Event()
+            watcher_monitor = asyncio.create_task(monitor_watchers())
+        stable = host.current_snapshot
+        assert stable is not None
+        stable_generation_ids = {
+            plugin_id: generation.generation_id
+            for plugin_id, generation in stable.generations.items()
+        }
+
+        # 2. 通过真实 install_candidate 准备更新。
+        (provider_repo / "plugin.py").write_text(
+            (provider_repo / "plugin.py").read_text() + "\n# candidate revision\n",
+        )
+        for args in (
+            ("git", "add", "."),
+            ("git", "-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture", "commit", "-qm", "candidate"),
+        ):
+            subprocess.run(args, cwd=provider_repo, check=True)
+        installed, status = await host.install_candidate(
+            source=str(provider_repo),
+            marketplace="fixture",
+            ref_name="HEAD",
+            sparse_paths=[],
+        )
+        assert installed.plugin_name == "restart_provider"
+        assert status["candidate_plugin_id"] == "restart_provider@fixture"
+        latest = host.latest_snapshot
+        assert latest is not None
+        changed = [
+            plugin_id
+            for plugin_id, generation in latest.generations.items()
+            if stable.generations[plugin_id].generation_id != generation.generation_id
+        ]
+        assert changed == ["restart_provider@fixture"]
+        assert latest.generations["agent_restart"].generation_id == stable_generation_ids["agent_restart"]
+        assert latest.composition_root is not None
+        candidate_gate = latest.composition_root.context.require(RESTART_GATE)
+        assert isinstance(candidate_gate, RestartGate)
+        assert candidate_gate.supervised is supervised
+        assert candidate_gate.execution_enabled is False
+        expected_gate_error = "不允许重启效果" if supervised else "未由 supervisor 托管"
+        with pytest.raises(RestartRejectedError, match=expected_gate_error):
+            candidate_gate.prepare("candidate-request")
+        with pytest.raises(RestartRejectedError, match="不允许重启效果"):
+            await candidate_gate.commit("candidate-request")
+        candidate_tools = latest.composition_root.context.require(TOOLS)
+        candidate_tool_names = {
+            str(description["name"]) for description in candidate_tools.descriptions()
+        }
+        if supervised:
+            assert "agent_restart" in candidate_tool_names
+        else:
+            assert "agent_restart" not in candidate_tool_names
+
+        release_authorize = asyncio.Event()
+        if supervised:
+            # 3. 真实 ToolExecution 在授权处阻塞，证明 promotion 必须等待旧 lease。
+            session = "reload-probe:real"
+            input_writer = log.writer(
+                session, author="user", source="reload-probe", body_types=(Input,), content={},
+            )
+            output_writer = log.writer(
+                session, author="assistant", source="reload-probe", body_types=(Output,),
+                content={}, check_call=lambda call: None,
+            )
+            input_writer.append("real-input", Input(()))
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                context = snapshot.composition_root.context
+                async with context.runtime_scope():
+                    binding = context.require(TOOLS).bind(
+                        "agent_restart", context.require(BINDINGS),
+                    )
+            call = output_writer.append(
+                "real-call", Output((ToolCall(binding, {"reason": "reload"}),), "continue"),
+            )
+            old_result_writer = log.writer(
+                session, author="tool", source="reload-probe", body_types=(ToolResult,),
+                content={"text": lambda _part: ContentReferences()},
+                call_ref=CallRef(call.message_id, 0),
+            )
+            entered_authorize = asyncio.Event()
+
+            async def authorize(_binding_id: str, _arguments: Mapping[str, object]) -> Mapping[str, object]:
+                entered_authorize.set()
+                await release_authorize.wait()
+                raise Denied("old runtime drained before promotion")
+
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                context = snapshot.composition_root.context
+                async with context.runtime_scope():
+                    execution = context.require(TOOLS).execution(authorize)
+                    old_task = asyncio.create_task(
+                        execution.execute_call(
+                            MessageReply(
+                                "real-old-result", CallRef(call.message_id, 0),
+                                log.reader(session), old_result_writer, lambda: None,
+                            )
+                        ),
+                        name="reload-probe:old-tool-execution",
+                    )
+                    await asyncio.wait_for(entered_authorize.wait(), 2)
+
+        # 5. promotion 完成 candidate Overlay 到 formal Root 的切换。
+        promotion_task = asyncio.create_task(
+            host.switch_ready("restart_provider@fixture", update_id=installed.update_id),
+        )
+        if supervised:
+            await asyncio.wait_for(_wait_for_admission_pause(stable), 2)
+            assert not promotion_task.done()
+            assert old_task is not None and not old_task.done()
+            assert commits == []
+            release_authorize.set()
+            old_result = await asyncio.wait_for(old_task, 2)
+            assert old_result.outcome == "denied"
+            persisted_result = log.reader(session).get("real-old-result")
+            assert persisted_result is not None
+            assert persisted_result.body == ToolResult(
+                CallRef(call.message_id, 0), "denied", old_result.parts,
+            )
+        promoted = await asyncio.wait_for(promotion_task, 5)
+        assert promoted["publication_state"] == "promoted"
+        candidate = observed["candidate"]
+        formal = observed["formal"]
+        assert candidate.snapshot_id == formal.snapshot_id
+
+        candidate_topology = candidate.composition_topology
+        formal_topology = formal.composition_topology
+        assert candidate_topology is not None and formal_topology is not None
+        assert candidate_topology.services == formal_topology.services
+        assert candidate_topology.fibers == formal_topology.fibers
+        assert candidate.composition_root is not None
+        assert formal.composition_root is not None
+        assert (
+            candidate.composition_root.plugin_service_owners()
+            == formal.composition_root.plugin_service_owners()
+        )
+        expected_listeners = {
+            "emit:runtime.starting:reply",
+            "serial:runtime.started:reply",
+            "serial:runtime.stopping:reply",
+        }
+        if supervised:
+            expected_listeners |= {
+                "emit:runtime.starting:agent_restart",
+                "serial:runtime.started:agent_restart",
+                "serial:runtime.stopping:agent_restart",
+            }
+        assert set(candidate_topology.listeners) == expected_listeners
+        assert formal_topology.listeners == candidate_topology.listeners
+        assert commits == []
+        assert gate.permit_count == 0
+        if supervised:
+            await asyncio.wait_for(_wait_for_watcher_count(watcher_history, 2), 2)
+            assert stop_watcher_monitor is not None
+            stop_watcher_monitor.set()
+            await watcher_monitor
+            new_watchers = [task for task in watcher_history if task is not old_watcher]
+            assert new_watchers
+            assert new_watchers[-1] is not old_watcher
+            assert old_watcher is not None and old_watcher.done()
+
+        candidate_tool = RestartTool(candidate_gate)
+        with pytest.raises(RestartRejectedError, match="正式 supervisor"):
+            await candidate_tool.prepare({"reason": "candidate"}, _source())
+    finally:
+        if release_authorize is not None:
+            release_authorize.set()
+        if promotion_task is not None and not promotion_task.done():
+            promotion_task.cancel()
+        if old_task is not None and not old_task.done():
+            old_task.cancel()
+        await asyncio.gather(
+            *(task for task in (promotion_task, old_task) if task is not None),
+            return_exceptions=True,
+        )
+        if "runtime_runner" in locals():
+            runtime_runner.cancel()
+            await asyncio.gather(runtime_runner, return_exceptions=True)
+        if watcher_monitor is not None and not watcher_monitor.done():
+            assert stop_watcher_monitor is not None
+            stop_watcher_monitor.set()
+            await watcher_monitor
+        await host.terminate_all()
+        log.close()
 
 
 @pytest.mark.asyncio

@@ -5740,7 +5740,11 @@ class PluginManager:
         if RESTART_GATE in requested:
             gate = self._restart_gate
             if candidate:
-                gate = RestartGate(boot_id="candidate", supervised=False)
+                gate = RestartGate(
+                    boot_id="candidate",
+                    supervised=gate is not None and gate.supervised,
+                    execution_enabled=False,
+                )
             elif gate is None:
                 # 直接使用 PluginManager 的测试/嵌入式运行没有 Supervisor；仍提供
                 # 一个允许正常 work 的 unmanaged gate，不伪造可提交的重启通道。
