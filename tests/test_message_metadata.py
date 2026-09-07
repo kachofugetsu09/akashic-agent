@@ -156,3 +156,6 @@ def test_corrupt_metadata_names_the_persisted_message(tmp_path, raw):
             log.reader("s").get("broken")
         with pytest.raises(ValueError, match="Session s Message broken metadata"):
             log.catalog().sessions()
+        with pytest.raises(ValueError, match="Session s Message broken metadata"):
+            load_migration().migrate(path, tmp_path / "backup")
+        assert not (tmp_path / "backup").exists()

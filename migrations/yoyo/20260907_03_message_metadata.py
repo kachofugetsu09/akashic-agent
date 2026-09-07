@@ -34,8 +34,11 @@ def _schema(connection: sqlite3.Connection) -> bool:
         return False
     if actual != _sql(_NEW_SCHEMA):
         raise ValueError("Message metadata 迁移遇到未知 schema")
-    for (raw,) in connection.execute("SELECT metadata FROM messages"):
-        freeze_metadata(json.loads(raw, object_pairs_hook=_unique_fields))
+    for message_id, session_id, raw in connection.execute("SELECT id,session_key,metadata FROM messages"):
+        try:
+            freeze_metadata(json.loads(raw, object_pairs_hook=_unique_fields))
+        except (ValueError, TypeError) as error:
+            raise ValueError(f"Session {session_id} Message {message_id} metadata 损坏: {error}") from error
     return True
 
 

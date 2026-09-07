@@ -4,7 +4,7 @@ import { applyMobileMessageEvent, readMobileDownloads, readMobileMessageLog, rea
 
 const session = "akashic:mobile-fixture";
 const message = (id, seq, body) => ({ id, seq, session_id: session, timestamp: "2026-09-06T01:00:00Z",
-  author: "scheduler", source: "scheduled-program", attachments: [], body });
+  author: "scheduler", source: "scheduled-program", attachments: [], body, metadata: {} });
 const text = (value) => ({ kind: "text", value });
 const baseline = (messages = []) => ({ selectedSessionId: session, projectionGeneration: 4,
   messages, throughSeq: messages.at(-1)?.seq ?? -1, replyStatus: null });

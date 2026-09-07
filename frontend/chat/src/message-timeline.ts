@@ -30,7 +30,7 @@ export interface TimelineMessage {
   source: string;
   attachments: TimelineAttachment[];
   body: TimelineBody;
-  metadata?: Record<string, unknown>;
+  metadata: Record<string, unknown>;
 }
 
 export interface TimelineReply {
@@ -77,6 +77,7 @@ export function readMessageLogFrame(value: unknown): MessageLogFrame | null {
     if (seq !== frame.next_after_seq || frame.has_more !== (seq < (frame.through_seq as number))) {
       throw new Error("实时消息页游标无效");
     }
+    return { ...frame, items } as unknown as MessageLogFrame;
   } else {
     if (typeof frame.available !== "boolean" || !Array.isArray(frame.items)
       || !(nonempty(frame.snapshot_id) || (frame.snapshot_id === null && !frame.available))
@@ -134,7 +135,7 @@ export function readTimelineMessage(value: unknown): TimelineMessage {
       throw new Error("历史消息附件引用缺少元数据");
     }
   }
-  return row as unknown as TimelineMessage;
+  return (row.metadata === undefined ? { ...row, metadata: {} } : row) as unknown as TimelineMessage;
 }
 
 /** 保持 seq 顺序并发现跨页身份冲突；正常重叠只保留一份。 */
@@ -146,7 +147,13 @@ export function mergeTimelineMessages(current: TimelineMessage[], incoming: Time
     const prior = byId.get(row.id);
     if (row.session_id !== sessionId || (prior && prior.seq !== row.seq)
       || (bySeq.has(row.seq) && bySeq.get(row.seq) !== row.id)) throw new Error("历史消息分页身份冲突");
-    if (prior && JSON.stringify(prior) !== JSON.stringify(row)) throw new Error("历史消息正文发生变化");
+    if (prior) {
+      const { metadata: before, ...oldFacts } = prior;
+      const { metadata: after, ...newFacts } = row;
+      if (JSON.stringify(oldFacts) !== JSON.stringify(newFacts) || JSON.stringify(before) !== JSON.stringify(after)) {
+        throw new Error("历史消息正文发生变化");
+      }
+    }
     byId.set(row.id, row);
     bySeq.set(row.seq, row.id);
   }
