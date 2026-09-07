@@ -542,7 +542,7 @@ UI 的 scope handle 和来源 head 前置条件在控制提交时一起核对；
 
 先以独立合同和隔离 fixture 验证接纳时保存 Input、工具请求/结果与完整输出分别追加、作者/来源/内容类型与稳定身份；此阶段不接管正式入口、不改变运行库 schema。新算法直接读取新日志，不添加旧 hook 兼容壳或双 writer。保留原始工具全文与所需 provider replay facts。
 
-退出：`U1/stop/U2/P/A1`、ACK loss、call/result、重启后输入保全成立。旧 attempt 字段不再是任何新正文的唯一来源。正式 schema、历史转入及 yoyo 随第 16 节实际 writer、全部消费者和 Delivery 的原子切换层一起提交并隔离验收；正式环境执行迁移属于后续发布操作。
+退出：`U1/stop/U2/P/A1`、ACK loss、call/result、重启后输入保全成立。旧 attempt 字段不再是任何新正文的唯一来源。schema、历史转入及 yoyo 随引入实际持久变化的 PR 提交并隔离验收；整个栈全部 review 后统一合并和发布，最终 writer、全部消费者和 Delivery 一起接管。
 
 ### C. 拆开模型、工具、上下文和内容能力
 
@@ -746,7 +746,7 @@ Observe 不依靠最终 Turn 事件夹带整份 context/tool/model 状态。Mode
 
 ### 15.3 无状态 Turn 的消费合同
 
-`turn_projection.project(messages, source)` 对一个明确、完整的日志前缀返回分段引用。返回值只有来源、边界、状态、成员 message IDs 和工具 call refs；正文从 Message 读取。插件没有数据库、后台 worker、订阅 cursor、学习队列或新的 Turn 身份。分段版本是算法合同，不是用户消息字段；它必须固定算法 artifact digest 和输入 schema，不能由可复用的显示版本号或 latest 指针代替。
+`turn_projection.project(messages, source)` 对一个明确、完整的日志前缀返回分段引用。返回值只有来源、边界、状态、Input/Output 成员 message IDs 和实际工具观察的 `(call_ref, result_message_id)` 引用；正文从 Message 读取。工具是否应当结算后才写 finish 由生产者保证，投影不复查执行授权或结算规则。插件没有数据库、后台 worker、订阅 cursor、学习队列或新的 Turn 身份。分段版本是算法合同，不是用户消息字段；它必须固定算法 artifact digest 和输入 schema，不能由可复用的显示版本号或 latest 指针代替。
 
 Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。它自己保存 `(projection_version, ending_message_id)` 的已应用事实、消费进度、向量和反馈，并以普通 durable binding 保留该 projection artifact；离线重建按此身份解析。旧 artifact 缺失时明确停止对应重建，不能自动换成新版；更换规则要先比较样本并显式迁移学习状态。处理成功及其进度在 Akasha 自有事务内一致提交。其他需要逻辑 Turn 的消费者可复用同一服务，各自拥有进度；不要求只需要 seq 的读者使用 Turn。
 
@@ -766,14 +766,14 @@ Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。�
 |---|---|---|
 | 01 合同 | 本设计、真实插件功能落点、验收和删除边界 | 无持久变化，不创建空迁移 |
 | 02 Message 类型与 Turn 能力 | 不可变 Message 合同、无状态投影普通插件；用独立调用证明分组无需执行对象 | 不改 schema，不接管旧 writer；Turn 不建表，不创建空迁移 |
-| 03 日志存储准备 | 只读/追加/CAS 与 schema 转换算法在隔离 fixture 验收；明确一次性切换集合 | 转换代码尚不进入自动 yoyo catalog，不自动改变运行库；正式脚本随第 06 层实际 schema 切换提交 |
+| 03 Message 日志 | 窄读取/追加/CAS、schema 与历史转换在隔离 fixture 验收 | yoyo 与新 schema 同层提交；保留旧事实并核对 ID/seq/正文、重复执行和 crash 恢复 |
 | 04 内容与 Context | 移除共享可变 Prompt/AfterReasoning 编排；Citation/Meme 形态的普通能力样例 | 仅改变新消息内容无需重写旧消息；有配置归属迁移时随本 PR |
 | 05 Model、Tool 与资源 | 单次推理/工具独立调用、通用 Task、持久绑定、最终参数授权与 effect 恢复 | 所需 binding/receipt schema 与配置脚本随本 PR；执行前后 crash point，不盲重跑 |
-| 06 Message 与回复原子切换 | 新日志、ReAct/conversation、Akasha/compaction/记忆读者及实时协议一起切换；接管命令、暂停/恢复 | Message schema/历史转入、Akasha provenance/消费 ledger、控制恢复的 yoyo 随实际切换同 PR；原 ID/seq/正文及学习状态核对 |
+| 06 回复与消费接入 | ReAct/conversation、Akasha/compaction/记忆读者及实时协议使用新日志；接管命令、暂停/恢复 | 本层引入的 Akasha provenance/消费 ledger 与控制状态迁移同 PR；学习状态保全 |
 | 07 Delivery 与来源 | 独立发送/重试；Scheduler/Subagent/Wake 组合公开能力；发布操作脱离父 Turn | Delivery/来源状态脚本随本 PR；已发送不重发、ACK 丢失与重启验收 |
 | 08 删除与累计验收 | 删除旧 Worker/Pipeline/Attempt 执行权与重复入口；同步长期规格、能力手册和删除账本 | 不 DROP 历史表或自动删除数据；剩余实际 schema 变化仍附本层脚本，不能补漏前层迁移 |
 
-第 02～05 层的新增能力可独立使用和验收，但不制造另一份正式消息事实。第 06～07 层已知存在发送与来源依赖，必须合为一次入口切换 PR：Message、所有读写消费者、ReAct/conversation、Delivery 和来源同时可用，yoyo 也归此合并层；不能先迁库再让旧读写器继续服务。所需外部插件随后完成迁移才允许正式 release，当前不部署该栈。表中顺序是依赖计划。实际代码证明两层必须原子切换时可合并相邻 PR，或先交付可独立测试、尚未接入正式入口的能力；不能为了凑层数加入长期 adapter、影子执行或让中间 PR 使用缺失迁移的 schema。每层 PR 描述列明它是否已经接入运行入口、相邻验证与累计未完成项。
+用户补充的发布背景：整个 stacked PR 栈全部 review 后一起合并、统一上生产。分层按职责与相邻 diff 的可审阅性拆分，不要求每个中间 PR 单独可部署，也不为此建立兼容壳或把所有实现塞进一张大 PR。对应 yoyo 放在引入该持久变化的层；正式发布时按依赖执行整套迁移。新能力在隔离环境分别验收，最终栈顶必须证明 writer、所有消费者、Delivery、来源和所需外部插件同时可用；正式环境一次性接管。每层描述相邻验证、尚未接入部分和累计未完成项，不以中间代码尚未完成冒充功能已删除。
 
 每个涉及状态的 PR 都列已知 schema lineage、影响表/字段、增加/原位更新/逻辑失效/物理减少条件及 owner。`sessions.db/messages` 既有正文不得因迁移、摘要或投影减少；旧 turns 中尚未落消息的输入和工具事实先核对映射，不能按 status 直接丢弃。迁移前使用原生一致备份；核对行数、稳定身份、正文摘要、引用、附件、外键及 `integrity_check`，未知形状 fail-loud。
 
