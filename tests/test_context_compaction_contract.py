@@ -1,1069 +1,250 @@
 from __future__ import annotations
 
-import asyncio
-import json
-from collections.abc import Mapping, Sequence
-from typing import Any
+from datetime import UTC, datetime
 
 import pytest
 
-from plugins.compaction.engine import (
-    CommittedContextUnit,
-    ContextCompactionError,
-    ContextCompactor,
-    ContextPayloadSegments,
-)
-from agent.plugin_composition import (
+from agent.plugin_composition.models import (
     BoundModelDescriptor,
+    CapabilitySources,
     ContextLengthError,
     LLMResponse,
+    ModelCapabilities,
     ModelRequest,
-    ModelUsage,
+    ModelRole,
+    ModelContinuation,
+    RateLimitError,
 )
-from agent.tool_runtime import append_tool_result
-from tests.model_plugin_fakes import BoundChatModelFake
-
-_SUMMARY = """## Goal
-goal
-## Constraints & Preferences
-constraints
-## Progress
-### Done
-done
-### In Progress
-in progress
-### Blocked
-blocked
-## Key Decisions
-decisions
-## Next Steps
-next
-## Critical Context
-critical
-"""
+from plugins.compaction.message_summary import (
+    HEADINGS,
+    SummaryError,
+    _request,
+    closed_groups,
+    summarize,
+    summary_groups,
+    window_starts,
+)
+from plugins.context.api import ContextOverflow, Materials, Summary
+from plugins.context.plugin import ContextBuilder
+from plugins.models.state import _BoundChat
+from plugins.models.store import ModelsStore
+from plugins.turn_projection.plugin import TurnProjection
+from session.message import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 
 
-class _Provider:
-    context_window: int = 0
-    runtime_id: str = ""
-
-    def __init__(
-        self,
-        *,
-        context_window: int = 100_000,
-        fail: bool = False,
-        runtime_id: str = "main",
-    ) -> None:
-        self.context_window = context_window
-        self.fail = fail
-        self.runtime_id = runtime_id
-        self.max_output_tokens: int | None = None
-        self.calls: list[dict[str, object]] = []
-
-    def estimate_context_tokens(
-        self,
-        messages: Sequence[Mapping[str, Any]],
-        tools: Sequence[Mapping[str, Any]] = (),
-    ) -> int:
-        return sum(int(message.get("tokens", 1)) for message in messages) + len(tools)
-
-    def estimate_appended_message_tokens(
-        self,
-        messages: Sequence[Mapping[str, Any]],
-    ) -> int:
-        return sum(int(message.get("tokens", 1)) for message in messages)
-
-    async def chat(self, **kwargs: object) -> LLMResponse:
-        self.calls.append(kwargs)
-        if self.fail:
-            raise RuntimeError("summary provider unavailable")
-        return LLMResponse(content=_SUMMARY)
-
-    @property
-    def descriptor(self) -> BoundModelDescriptor:
-        return BoundChatModelFake(
-            self, model=str(getattr(self, "model", "m"))
-        ).descriptor
-
-    @property
-    def max_tool_schemas(self) -> int | None:
-        return None
-
-    async def complete(self, request: ModelRequest) -> LLMResponse:
-        return await BoundChatModelFake(
-            self,
-            model=str(getattr(self, "model", "m")),
-        ).complete(request)
+def message(seq: int, body, source: str = "conversation") -> Message:
+    return Message(str(seq), "s", seq, datetime(2026, 9, 5, tzinfo=UTC), "test", source, body)
 
 
-def _unit(seq: int, token_count: int, *, prefix: str = "m") -> CommittedContextUnit:
-    return CommittedContextUnit(
-        source_from_seq=seq,
-        consolidated_through_seq=seq,
-        source_message_ids=(f"{prefix}{seq}",),
-        messages=({"role": "user", "content": f"u{seq}", "tokens": token_count},),
-        message_refs=((f"{prefix}{seq}", seq),),
-    )
+class Projection:
+    context_window = 1000
+    max_tool_schemas = 10
 
+    def __init__(self, estimate: int = 500) -> None:
+        self.estimate_value = estimate
+        self.seen: tuple[Message, ...] = ()
+        self.continuation = ModelContinuation("model-binding", {"opaque": "kept"})
 
-def _execution_batch(
-    call_id: str,
-    *,
-    name: str,
-    arguments: dict[str, object],
-    result: dict[str, object],
-) -> tuple[dict[str, Any], ...]:
-    messages: list[dict[str, Any]] = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tokens": 10,
-            "tool_calls": [
+    def render(self, messages, *, after_seq, summary_reference=None, fresh=False):
+        self.seen = tuple(messages)
+        return ModelRequest(
+            messages=tuple(
                 {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": json.dumps(arguments),
-                    },
+                    "role": "user" if isinstance(item.body, Input) else "assistant",
+                    "content": str(item.body.parts),
                 }
-            ],
-        }
-    ]
-    append_tool_result(
-        messages,
-        tool_call_id=call_id,
-        content=json.dumps(result),
-        tool_name=name,
-        execution_status="success",
-    )
-    messages[-1]["tokens"] = 10
-    return tuple(messages)
-
-
-def _run(coro):
-    return asyncio.run(coro)
-
-
-def _call_message_content(call: dict[str, object]) -> str:
-    """Read a provider fixture call after validating its JSON-like shape."""
-
-    raw_messages = call.get("messages")
-    if not isinstance(raw_messages, list) or not raw_messages:
-        raise AssertionError("provider call must contain a non-empty messages list")
-    first = raw_messages[0]
-    if not isinstance(first, dict) or "content" not in first:
-        raise AssertionError("provider call first message must contain content")
-    return str(first["content"])
-
-
-def _call_int(call: dict[str, object], field: str) -> int:
-    """Read one integer request field from a provider fixture call."""
-
-    value = call.get(field)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise AssertionError(f"provider call {field} must be an integer")
-    return value
-
-
-def test_tail_crosses_twenty_thousand_tokens_and_keeps_refs() -> None:
-    units = (_unit(1, 10_000), _unit(2, 15_000), _unit(3, 5_000))
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=units,
-        current_anchor=({"role": "user", "content": "current", "tokens": 1},),
-    )
-    provider = _Provider()
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="s",
-        payload_segments=segments,
-        max_output_tokens=100,
-        next_generation=1,
-        keep_recent_tokens=20_000,
-    )
-    messages = segments.flatten()
-    result = _run(compactor.prepare(messages, pending_start=4, tools=[], force=True))
-
-    assert result.compacted
-    assert [item["id"] for item in result.checkpoint.retained_tail] == ["m2", "m3"]
-
-
-def test_tail_below_twenty_thousand_tokens_has_no_legal_cut() -> None:
-    units = (_unit(1, 5_000), _unit(2, 5_000))
-    compactor = ContextCompactor(
-        provider=_Provider(),
-        scope_id="s",
-        payload_segments=ContextPayloadSegments(
-            prefix=(),
-            committed_units=units,
-            current_anchor=(),
-        ),
-        max_output_tokens=100,
-        next_generation=1,
-        keep_recent_tokens=20_000,
-    )
-
-    with pytest.raises(
-        ContextCompactionError,
-        match="no_valid_cut_before_keep_recent_target",
-    ):
-        compactor._select_units(list(units))
-
-
-class _UsageProvider(_Provider):
-    def __init__(self) -> None:
-        super().__init__(context_window=100)
-        self._summary_index = 0
-
-    async def chat(self, **kwargs: object) -> LLMResponse:
-        self.calls.append(kwargs)
-        self._summary_index += 1
-        return LLMResponse(
-            content=_SUMMARY,
-            usage=ModelUsage(
-                input_tokens=10 * self._summary_index,
-                output_tokens=self._summary_index,
-                request_count=1,
-                covered_request_count=1,
+                for item in messages
+                if item.seq > after_seq and not isinstance(item.body, Control)
             ),
+            continuation=self.continuation,
         )
 
-
-def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
-    active_batch = (
-        {"role": "assistant", "tool_calls": [{"id": "c1"}], "tokens": 20},
-        {"role": "tool", "tool_call_id": "c1", "content": "r", "tokens": 20},
-    )
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(_unit(1, 30), _unit(2, 30)),
-        current_anchor=({"role": "user", "content": "q", "tokens": 1},),
-        active_batches=(active_batch, active_batch),
-    )
-    provider = _UsageProvider()
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="s",
-        payload_segments=segments,
-        max_output_tokens=10,
-        next_generation=1,
-        keep_recent_tokens=20,
-    )
-
-    result = _run(
-        compactor.prepare(
-            segments.flatten(),
-            pending_start=7,
-            tools=[],
-            force=True,
-        )
-    )
-
-    assert len(provider.calls) == 2
-    assert result.summary_usage is not None
-    assert result.summary_usage.input_tokens == 30
-    assert result.summary_usage.output_tokens == 3
-    assert result.summary_usage.request_count == 2
-    assert result.checkpoint is not None
-    assert result.checkpoint.generation == 1
-    assert result.checkpoint.summary_usage is not None
-    assert result.checkpoint.summary_usage.input_tokens == 10
-    assert result.checkpoint.summary_usage.output_tokens == 1
+    def estimate(self, request):
+        return self.estimate_value
 
 
-@pytest.mark.parametrize("tool_count, expected_calls", [(0, 1), (12, 2)])
-def test_history_summary_keeps_active_originals_when_full_request_fits(
-    tool_count: int, expected_calls: int,
-) -> None:
-    """旧历史摘要后按完整请求复查，只有仍超限才摘要当前工具批次。"""
-
-    batches = tuple(
-        (
-            {"role": "assistant", "content": "", "tool_calls": [{"id": call_id}], "tokens": 15},
-            {"role": "tool", "tool_call_id": call_id, "content": call_id, "tokens": 15},
-        )
-        for call_id in ("sent", "reply")
-    )
-    segments = ContextPayloadSegments(
-        prefix=({"role": "system", "content": "rules", "tokens": 1},),
-        committed_units=(_unit(1, 30), _unit(2, 30)),
-        current_anchor=({"role": "user", "content": "continue", "tokens": 1},),
-        active_batches=batches,
-        pending=({"role": "assistant", "content": "pending", "tokens": 1},),
-    )
-    provider = _UsageProvider()
-    compactor = ContextCompactor(
-        provider=provider, scope_id="restore-active", payload_segments=segments,
-        max_output_tokens=10, next_generation=1, keep_recent_tokens=20,
-    )
-    messages = segments.flatten()
-    original = segments.flatten()
-    tools = [{"type": "function", "function": {"name": f"tool_{i}"}} for i in range(tool_count)]
-
-    result = _run(compactor.prepare(messages, pending_start=8, tools=tools))
-
-    assert len(provider.calls) == expected_calls
-    assert result.checkpoint.source_message_ids == ("m1", "m2")
-    assert result.summary_usage.request_count == expected_calls
-    assert result.estimated_tokens == provider.estimate_context_tokens(messages, tools)
-    assert result.estimated_tokens < 74
-    assert segments.flatten() == original
-    if expected_calls == 1:
-        assert messages[2:] == [*segments.current_anchor, *batches[0], *batches[1], *segments.pending]
-        assert result.pending_start == len(messages) - 1
-        assert compactor._segments.active_batches == batches
-        assert not compactor._segments.temporary_summary
-        assert "sent" not in _call_message_content(provider.calls[0])
-    else:
-        assert "sent" in _call_message_content(provider.calls[1])
-        assert compactor._segments.active_batches == (batches[1],)
+def summary_text() -> str:
+    return "\n".join(heading + "\nPreserved facts." for heading in HEADINGS)
 
 
-def test_single_interaction_remains_atomic_after_closed_tool_batches() -> None:
-    messages = (
-        {"role": "user", "content": "u", "id": "m1", "seq": 1},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": "c1"}],
-            "id": "m2",
-            "seq": 2,
-        },
-        {"role": "tool", "tool_call_id": "c1", "content": "r", "id": "m3", "seq": 3},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": "c2"}],
-            "id": "m4",
-            "seq": 4,
-        },
-        {"role": "tool", "tool_call_id": "c2", "content": "r", "id": "m5", "seq": 5},
-        {"role": "assistant", "content": "done", "id": "m6", "seq": 6},
-    )
-    unit = CommittedContextUnit(
-        source_from_seq=1,
-        consolidated_through_seq=6,
-        source_message_ids=tuple(f"m{i}" for i in range(1, 7)),
-        messages=messages,
-        message_refs=tuple((f"m{i}", i) for i in range(1, 7)),
-    )
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(unit,),
-        current_anchor=(),
-    )
-    compactor = ContextCompactor(
-        provider=_Provider(),
-        scope_id="s",
-        payload_segments=segments,
-        max_output_tokens=100,
-        next_generation=1,
-        keep_recent_tokens=5,
-    )
-
-    candidates = compactor._candidate_units()
-    assert [tuple(item.source_message_ids) for item in candidates] == [
-        ("m1", "m2", "m3", "m4", "m5", "m6"),
-    ]
-
-
-def test_live_shell_execution_blocks_cut_until_terminal_evidence_arrives() -> None:
-    live = _execution_batch(
-        "shell-call",
-        name="shell",
-        arguments={"command": "python train.py"},
-        result={"process_status": "running", "execution_id": 4201},
-    )
-    closed = (
-        {"role": "assistant", "content": "", "tokens": 10, "tool_calls": [{"id": "c"}]},
-        {"role": "tool", "tool_call_id": "c", "content": "done", "tokens": 10},
-    )
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(),
-        current_anchor=({"role": "user", "content": "finish training", "tokens": 1},),
-        active_batches=(live, closed, closed),
-    )
-    provider = _Provider(context_window=100)
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="shell-session",
-        payload_segments=segments,
-        max_output_tokens=10,
-        next_generation=1,
-        keep_recent_tokens=20,
-    )
-    messages = segments.flatten()
-
-    with pytest.raises(ContextCompactionError, match="no_closed_prefix"):
-        _run(compactor.prepare(messages, pending_start=7, tools=[], force=True))
-
-    terminal = _execution_batch(
-        "stdin-call",
-        name="write_stdin",
-        arguments={"execution_id": 4201},
-        result={"process_status": "succeeded", "exit_code": 0},
-    )
-    batch_start = len(messages)
-    messages.extend(terminal)
-    compactor.record_completed_batch(messages, batch_start=batch_start)
-
-    completed = _run(
-        compactor.prepare(
-            messages,
-            pending_start=compactor.pending_start,
-            tools=[],
-            force=True,
-        )
-    )
-
-    assert completed.compacted is True
-    assert provider.calls
-    summary_input = _call_message_content(provider.calls[0])
-    assert "python train.py" in summary_input
-    assert "4201" in summary_input
-    assert "succeeded" in str(messages[-1]["content"])
-
-
-def test_generation_comes_from_store_head_and_temporary_projection_does_not_consume_it() -> (
-    None
+def model(
+    store: ModelsStore,
+    complete,
+    *,
+    identity: str = "main",
+    window: int = 10_000,
+    estimate_context=None,
 ):
-    committed = _unit(1, 100)
-    committed_tail = _unit(2, 100)
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(committed, committed_tail),
-        current_anchor=({"role": "user", "content": "q", "tokens": 1},),
+    descriptor = BoundModelDescriptor(
+        binding_id=identity,
+        plugin_snapshot_id="snapshot",
+        model_revision=0,
+        model_id=identity,
+        connection_id="fixture",
+        driver_id="fixture",
+        driver_contract_version="1",
+        auth_identity="fixture",
+        model=identity,
+        role=ModelRole.AGENT,
+        reasoning_effort=None,
+        capabilities=ModelCapabilities(context_window=window, max_output_tokens=800),
+        capability_sources=CapabilitySources(),
+        capability_digest="fixture",
     )
-    provider = _Provider()
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="s",
-        payload_segments=segments,
+
+    class Driver:
+        max_tool_schemas = None
+
+        def estimate_context_tokens(self, messages, tools=()):
+            if estimate_context is not None:
+                return estimate_context(messages, tools)
+            return len(str(messages)) // 4
+
+        def estimate_appended_message_tokens(self, messages):
+            return len(str(messages)) // 4
+
+        async def complete(self, request):
+            return await complete(request)
+
+    return _BoundChat(descriptor, Driver(), store)
+
+
+def test_context_overflow_keeps_real_messages_and_model_continuation() -> None:
+    snapshot = (message(0, Input((ContentPart("text", "large"),))),)
+    projection = Projection(estimate=900)
+    with pytest.raises(ContextOverflow) as caught:
+        ContextBuilder().build(
+            snapshot,
+            materials=Materials("trusted"),
+            model=projection,
+            max_output_tokens=200,
+        )
+    assert caught.value.request.continuation is projection.continuation
+    assert projection.seen == snapshot
+    assert snapshot[0].body.parts[0].value == "large"
+
+
+def test_context_summary_requires_exact_settled_message_prefix() -> None:
+    snapshot = (
+        message(0, Output((ToolCall("tool", {}),), "continue")),
+        message(1, ToolResult(CallRef("0", 0), "success", ())),
+        message(2, Output((ContentPart("text", "answer"),), "complete")),
+        message(3, Input((ContentPart("text", "current"),))),
+    )
+    projection = Projection()
+    request = ContextBuilder().build(
+        snapshot,
+        materials=Materials("", summary=Summary("summary@2", ("0", "1", "2"), "saved")),
+        model=projection,
         max_output_tokens=100,
-        ledger_parent_generation=7,
-        next_generation=8,
-        keep_recent_tokens=1,
     )
-    result = _run(
-        compactor.prepare(segments.flatten(), pending_start=3, tools=[], force=True)
-    )
-    assert result.checkpoint.generation == 8
-    assert result.checkpoint.parent_generation == 7
-
-    active = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(),
-        current_anchor=({"role": "user", "content": "q", "tokens": 1},),
-        active_batches=(
-            (
-                {"role": "assistant", "tool_calls": [{"id": "c"}], "tokens": 1},
-                {"role": "tool", "tool_call_id": "c", "content": "r", "tokens": 1},
-            ),
-            (
-                {"role": "assistant", "tool_calls": [{"id": "d"}], "tokens": 1},
-                {"role": "tool", "tool_call_id": "d", "content": "r", "tokens": 1},
-            ),
-        ),
-    )
-    temporary = ContextCompactor(
-        provider=provider,
-        scope_id="s",
-        payload_segments=active,
-        max_output_tokens=100,
-        keep_recent_tokens=1,
-    )
-    result = _run(
-        temporary.prepare(active.flatten(), pending_start=5, tools=[], force=True)
-    )
-    assert not result.checkpoint.committable
-    assert result.checkpoint.generation == 0
-
-
-def test_mixed_segments_preserve_anchor_before_active_batches() -> None:
-    active_batch = (
-        {"role": "assistant", "tool_calls": [{"id": "c"}], "tokens": 200},
-        {
-            "role": "tool",
-            "tool_call_id": "c",
-            "content": "ACTIVE_SHOULD_NOT_PERSIST",
-            "tokens": 200,
-        },
-    )
-    segments = ContextPayloadSegments(
-        prefix=({"role": "system", "content": "prefix", "tokens": 1},),
-        committed_units=(_unit(1, 100), _unit(2, 100)),
-        current_anchor=({"role": "user", "content": "anchor", "tokens": 1},),
-        active_batches=(active_batch, active_batch),
-        pending=({"role": "assistant", "content": "pending", "tokens": 1},),
-    )
-    provider = _Provider(context_window=1_000)
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="s",
-        payload_segments=segments,
-        max_output_tokens=100,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
-    messages = segments.flatten()
-    result = _run(compactor.prepare(messages, pending_start=8, tools=[], force=True))
-
-    compaction_blocks = [
-        message
-        for message in messages
-        if message.get("role") == "system"
-        and "<session-context-compaction>" in str(message.get("content"))
-    ]
-    assert len(compaction_blocks) == 1
-    assert "ACTIVE_SHOULD_NOT_PERSIST" not in str(compaction_blocks[0])
-    assert "ACTIVE_SHOULD_NOT_PERSIST" in _call_message_content(provider.calls[-1])
-    assert result.pending_start == 5
-    assert result.checkpoint.committable
-    assert "ACTIVE_SHOULD_NOT_PERSIST" not in result.checkpoint.summary
-    assert "ACTIVE_SHOULD_NOT_PERSIST" not in str(result.checkpoint.retained_tail)
-
-
-def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget() -> (
-    None
-):
-    current = _Provider(context_window=500, fail=True, runtime_id="agent")
-    fallback = _Provider(context_window=2_000, runtime_id="main")
-    current.model = "selected-model"
-    fallback.model = "default-model"
-    unit = _unit(1, 100)
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(unit, _unit(2, 100)),
-        current_anchor=({"role": "user", "content": "q", "tokens": 1},),
-    )
-    compactor = ContextCompactor(
-        provider=current,
-        scope_id="s",
-        payload_segments=segments,
-        max_output_tokens=100,
-        next_generation=1,
-        fallback_provider=fallback,
-        keep_recent_tokens=1,
-    )
-    result = _run(
-        compactor.prepare(segments.flatten(), pending_start=3, tools=[], force=True)
-    )
-
-    assert len(current.calls) == 1
-    assert len(fallback.calls) == 1
-    assert current.calls[0]["model"] == "selected-model"
-    assert fallback.calls[0]["model"] == "default-model"
-    assert _call_int(current.calls[0], "max_tokens") == 0
-    assert _call_int(fallback.calls[0], "max_tokens") == 0
-    assert result.checkpoint is not None
-    assert result.checkpoint.model_runtime_id == "main"
-    assert result.checkpoint.model == "default-model"
-
-
-def test_summary_checkpoint_records_selected_provider_model_and_runtime() -> None:
-    provider = _Provider(runtime_id="selected")
-    provider.model = "selected-model"
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="selected-runtime",
-        payload_segments=ContextPayloadSegments(
-            prefix=(),
-            committed_units=(_unit(1, 100), _unit(2, 100)),
-            current_anchor=(),
-        ),
-        max_output_tokens=100,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
-
-    result = _run(
-        compactor.prepare(
-            compactor._segments.flatten(),
-            pending_start=2,
-            tools=[],
-            force=True,
-        )
-    )
-
-    assert provider.calls[0]["model"] == "selected-model"
-    assert result.checkpoint is not None
-    assert result.checkpoint.model_runtime_id == "selected"
-    assert result.checkpoint.model == "selected-model"
-
-
-def test_summary_does_not_duplicate_same_selected_main_provider() -> None:
-    provider = _Provider(runtime_id="main")
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="same-provider",
-        payload_segments=ContextPayloadSegments(
-            prefix=(),
-            committed_units=(_unit(1, 100), _unit(2, 100)),
-            current_anchor=(),
-        ),
-        max_output_tokens=100,
-        next_generation=1,
-        fallback_provider=provider,
-        keep_recent_tokens=1,
-    )
-
-    _run(
-        compactor.prepare(
-            compactor._segments.flatten(), pending_start=2, tools=[], force=True
-        )
-    )
-
-    assert len(provider.calls) == 1
-
-
-def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
-    active = (
-        {
-            "role": "user",
-            "content": "U1",
-            "tokens": 2,
-        },
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": "c1"}],
-            "tokens": 2,
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "c1",
-            "content": "result-1",
-            "tokens": 2,
-        },
-    )
-    active_tail = (
-        {
-            "role": "user",
-            "content": "U2",
-            "tokens": 2,
-        },
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": "c2"}],
-            "tokens": 2,
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "c2",
-            "content": "result-2",
-            "tokens": 2,
-        },
-    )
-    current_query = {
-        "logical_interaction_inputs": ["U1", "U2", "U3"],
-    }
-    temporary_provider = _Provider()
-    temporary_segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(),
-        current_anchor=(),
-        active_batches=(active, active_tail),
-        pending=({"role": "user", "content": "U3", "tokens": 1},),
-    )
-    temporary = ContextCompactor(
-        provider=temporary_provider,
-        scope_id="temporary-interaction",
-        current_query=current_query,
-        payload_segments=temporary_segments,
-        max_output_tokens=100,
-        keep_recent_tokens=1,
-    )
-    temporary_messages = temporary_segments.flatten()
-    _run(
-        temporary.prepare(
-            temporary_messages,
-            pending_start=6,
-            tools=[],
-            force=True,
-        )
-    )
-    temporary_prompt = _call_message_content(temporary_provider.calls[0])
-    assert all(value in temporary_prompt for value in ("U1", "U2", "U3"))
-
-    committed_provider = _Provider()
-    committed_segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(
-            _unit(1, 2, prefix="history-"),
-            _unit(2, 2, prefix="history-"),
-        ),
-        current_anchor=(),
-    )
-    committed = ContextCompactor(
-        provider=committed_provider,
-        scope_id="committed-interaction",
-        current_query=current_query,
-        payload_segments=committed_segments,
-        max_output_tokens=100,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
-    committed_messages = committed_segments.flatten()
-    _run(
-        committed.prepare(
-            committed_messages,
-            pending_start=2,
-            tools=[],
-            force=True,
-        )
-    )
-    committed_prompt = _call_message_content(committed_provider.calls[0])
-    assert all(value not in committed_prompt for value in ("U1", "U2", "U3"))
-
-
-@pytest.mark.parametrize("through_callback", [False, True])
-@pytest.mark.parametrize("model_output_limit", [None, 123])
-def test_summary_request_leaves_output_limit_to_provider(
-    through_callback: bool, model_output_limit: int | None,
-) -> None:
-    """两条摘要调用入口都不把模型能力或历史常量变成输出截断参数。"""
-
-    provider = _Provider()
-    provider.max_output_tokens = model_output_limit
-    segments = ContextPayloadSegments(
-        prefix=(), committed_units=(_unit(1, 30), _unit(2, 30)), current_anchor=(),
-    )
-    compactor = ContextCompactor(
-        provider=provider, scope_id="summary-output", payload_segments=segments,
-        max_output_tokens=100, next_generation=1, keep_recent_tokens=20,
-        chat_call=provider.chat if through_callback else None,
-    )
-
-    result = _run(compactor.prepare(segments.flatten(), pending_start=2, tools=[], force=True))
-
-    assert result.compacted
-    assert len(provider.calls) == 1
-    assert _call_int(provider.calls[0], "max_tokens") == 0
-
-
-def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
-    class _ChunkProvider(_Provider):
-        def __init__(self) -> None:
-            super().__init__(context_window=10)
-
-        def estimate_context_tokens(
-            self,
-            messages: Sequence[Mapping[str, Any]],
-            tools: Sequence[Mapping[str, Any]] = (),
-        ) -> int:
-            content = str(messages[0].get("content", "")) if messages else ""
-            units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 5))
-            previous = 2 if "[Previous compaction summary]" in content else 0
-            return 1 + previous + units * 3
-
-        def estimate_appended_message_tokens(
-            self,
-            messages: Sequence[Mapping[str, Any]],
-        ) -> int:
-            return sum(int(message.get("tokens", 1)) for message in messages)
-
-    provider = _ChunkProvider()
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=tuple(_unit(seq, 3) for seq in range(1, 5)),
-        current_anchor=(),
-    )
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="chunked-summary",
-        payload_segments=segments,
-        max_output_tokens=1,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
-
-    result = _run(
-        compactor.prepare(segments.flatten(), pending_start=4, tools=[], force=True)
-    )
-
-    assert result.compacted
-    assert len(provider.calls) == 3
-    assert "[Previous compaction summary]" in _call_message_content(provider.calls[1])
-    assert all(_call_int(call, "max_tokens") == 0 for call in provider.calls)
-
-
-def test_summary_shrinks_complete_unit_chunk_after_provider_overflow() -> None:
-    class _UnderestimatingProvider(_Provider):
-        def __init__(self) -> None:
-            super().__init__(context_window=100)
-            self.attempt_sizes: list[int] = []
-
-        def estimate_context_tokens(
-            self,
-            messages: Sequence[Mapping[str, Any]],
-            tools: Sequence[Mapping[str, Any]] = (),
-        ) -> int:
-            content = str(messages[0].get("content", "")) if messages else ""
-            units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 7))
-            return 1 + units * 10
-
-        async def chat(self, **kwargs: object) -> LLMResponse:
-            content = _call_message_content(kwargs)
-            units = sum(content.count(f'"content":"u{seq}"') for seq in range(1, 7))
-            self.attempt_sizes.append(units)
-            if units > 2:
-                raise ContextLengthError("provider counted more tokens")
-            return await super().chat(**kwargs)
-
-    provider = _UnderestimatingProvider()
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=tuple(_unit(seq, 10) for seq in range(1, 7)),
-        current_anchor=(),
-    )
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="provider-overflow",
-        payload_segments=segments,
-        max_output_tokens=1,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
-
-    result = _run(
-        compactor.prepare(segments.flatten(), pending_start=6, tools=[], force=True)
-    )
-
-    assert result.compacted
-    assert provider.attempt_sizes[:2] == [5, 2]
-    assert provider.attempt_sizes[2:] == [3, 1, 2]
-
-
-def test_summary_does_not_split_single_unit_after_provider_overflow() -> None:
-    class _SingleUnitOverflowProvider(_Provider):
-        def __init__(self) -> None:
-            super().__init__(context_window=100)
-            self.attempts = 0
-
-        async def chat(self, **kwargs: object) -> LLMResponse:
-            self.attempts += 1
-            raise ContextLengthError("one complete unit exceeds provider window")
-
-    provider = _SingleUnitOverflowProvider()
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(_unit(1, 10), _unit(2, 10)),
-        current_anchor=(),
-    )
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="single-unit-overflow",
-        payload_segments=segments,
-        max_output_tokens=1,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
-
-    with pytest.raises(ContextCompactionError, match="ContextLengthError"):
-        _run(
-            compactor.prepare(segments.flatten(), pending_start=2, tools=[], force=True)
+    assert projection.seen == snapshot
+    assert projection.continuation is request.continuation
+    assert projection.seen[0].message_id == "0"
+    assert '"summary":"saved"' in request.messages[0]["content"]
+    with pytest.raises(ValueError, match="尚未结算"):
+        ContextBuilder().build(
+            snapshot,
+            materials=Materials("", summary=Summary("bad", ("0",), "incomplete")),
+            model=Projection(),
+            max_output_tokens=100,
         )
 
-    assert provider.attempts == 1
 
-
-def test_request_output_limit_does_not_move_input_edge() -> None:
-    class _BoundaryProvider(_Provider):
-        def __init__(self) -> None:
-            super().__init__(context_window=100)
-
-        def estimate_context_tokens(
-            self,
-            messages: Sequence[Mapping[str, Any]],
-            tools: Sequence[Mapping[str, Any]] = (),
-        ) -> int:
-            if any(
-                "<session-context-compaction>" in str(message.get("content", ""))
-                for message in messages
-            ):
-                return 1
-            return 60
-
-        def estimate_appended_message_tokens(
-            self,
-            messages: Sequence[Mapping[str, Any]],
-        ) -> int:
-            return 1
-
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(_unit(1, 1), _unit(2, 1)),
-        current_anchor=(),
+def test_message_groups_preserve_complete_turn_and_tool_batch() -> None:
+    rows = (
+        message(0, Input((ContentPart("text", "input"),))),
+        message(1, Output((ToolCall("call", {}),), "continue")),
+        message(2, ToolResult(CallRef("1", 0), "success", ())),
+        message(3, Output((ContentPart("text", "answer"),), "complete")),
+        message(4, Input((ContentPart("text", "open"),))),
+        message(5, Output((ToolCall("next", {}),), "continue")),
     )
+    projection = TurnProjection()
+    groups = closed_groups(rows, projection)
+    assert groups == (rows[:4],)
+    assert window_starts(rows, projection) == (0, 4)
+    assert summary_groups(groups, rows) == groups
 
-    below_edge = ContextCompactor(
-        provider=_BoundaryProvider(),
-        scope_id="hard-edge-below",
-        payload_segments=segments,
-        max_output_tokens=20,
-        next_generation=1,
-        keep_recent_tokens=1,
+
+@pytest.mark.asyncio
+async def test_summary_provider_overflow_bisects_complete_groups_without_truncating_source(tmp_path) -> None:
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    requests: list[ModelRequest] = []
+
+    async def complete(request):
+        requests.append(request)
+        if str(request.messages).count('"message_id"') > 1:
+            raise ContextLengthError("provider rejected payload")
+        return LLMResponse(summary_text())
+
+    provider = model(store, complete)
+    groups = tuple(
+        (message(index, Output((ContentPart("text", f"body {index}"),), "complete")),)
+        for index in range(3)
     )
-    below = _run(
-        below_edge.prepare(
-            below_edge._segments.flatten(),
-            pending_start=2,
-            tools=[],
-            max_output_tokens=20,
+    original = groups
+    summary, calls = await summarize(groups, previous="", model=provider, fallback=provider)
+    assert summary == summary_text()
+    assert len(requests) == 5
+    assert len(calls) == 3
+    assert groups == original
+
+
+def test_summary_request_stops_at_current_soft_watermark(tmp_path) -> None:
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+
+    async def complete(_request):
+        pytest.fail("the soft-watermark rejection happens before provider I/O")
+
+    provider = model(
+        store,
+        complete,
+        window=100,
+        estimate_context=lambda _messages, _tools: 74,
+    )
+    with pytest.raises(SummaryError, match="软水位"):
+        _request(
+            provider,
+            "",
+            ((message(0, Output((ContentPart("text", "facts"),), "complete")),),),
         )
-    )
-    assert not below.compacted
-
-    above_edge = ContextCompactor(
-        provider=_BoundaryProvider(),
-        scope_id="hard-edge-above",
-        payload_segments=segments,
-        max_output_tokens=20,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
-    above = _run(
-        above_edge.prepare(
-            above_edge._segments.flatten(),
-            pending_start=2,
-            tools=[],
-            max_output_tokens=50,
-        )
-    )
-    assert not above.compacted
 
 
-def test_soft_limit_uses_fixed_context_window_ratio() -> None:
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(_unit(1, 36), _unit(2, 36)),
-        current_anchor=({"role": "user", "content": "current", "tokens": 2},),
-    )
-    compactor = ContextCompactor(
-        provider=_Provider(context_window=100),
-        scope_id="fixed-soft-limit",
-        payload_segments=segments,
-        max_output_tokens=0,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
+@pytest.mark.asyncio
+async def test_summary_fallback_only_handles_provider_failure(tmp_path) -> None:
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    used: list[ModelRequest] = []
 
-    result = _run(
-        compactor.prepare(
-            segments.flatten(),
-            pending_start=3,
-            tools=[],
-        )
-    )
+    async def failed(_request):
+        raise RateLimitError("limited")
 
-    assert result.compacted
+    async def fallback(request):
+        used.append(request)
+        return LLMResponse(summary_text())
+
+    primary = model(store, failed, identity="primary")
+    default = model(store, fallback, identity="default")
+    groups = ((message(0, Output((ContentPart("text", "facts"),), "complete")),),)
+    summary, calls = await summarize(groups, previous="", model=primary, fallback=default)
+    assert summary == summary_text()
+    assert len(used) == 1
+    assert len(calls) == 1
 
 
-def test_unknown_context_window_estimates_but_never_compacts() -> None:
-    provider = _Provider(context_window=0)
-    segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=(_unit(1, 100), _unit(2, 100)),
-        current_anchor=({"role": "user", "content": "current", "tokens": 2},),
-    )
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="unknown-window",
-        payload_segments=segments,
-        max_output_tokens=512,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
+@pytest.mark.asyncio
+async def test_single_oversized_message_is_rejected_without_source_truncation(tmp_path) -> None:
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
 
-    result = _run(
-        compactor.prepare(
-            segments.flatten(),
-            pending_start=3,
-            tools=[{"type": "function", "function": {"name": "tool"}}],
-            force=True,
-        )
-    )
+    async def complete(_request):
+        pytest.fail("oversized message must not reach provider")
 
-    assert result.compacted is False
-    assert result.checkpoint is None
-    assert result.estimated_tokens > 0
-    assert provider.calls == []
-
-
-def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
-    class _SentinelProvider(_Provider):
-        async def chat(self, **kwargs: object) -> LLMResponse:
-            self.calls.append(kwargs)
-            marker = f"C{len(self.calls)}"
-            return LLMResponse(content=_SUMMARY.replace("goal", marker))
-
-    active = (
-        {"role": "assistant", "tool_calls": [{"id": "a"}], "tokens": 2},
-        {"role": "tool", "tool_call_id": "a", "content": "active", "tokens": 2},
-    )
-    initial_segments = ContextPayloadSegments(
-        prefix=(),
-        committed_units=tuple(_unit(index, 2, prefix="old-") for index in range(1, 5)),
-        current_anchor=(),
-        active_batches=(active, active),
-    )
-    provider = _SentinelProvider(context_window=10)
-    compactor = ContextCompactor(
-        provider=provider,
-        scope_id="same-turn",
-        payload_segments=initial_segments,
-        max_output_tokens=100,
-        ledger_parent_generation=0,
-        next_generation=1,
-        keep_recent_tokens=1,
-    )
-    first_messages = initial_segments.flatten()
-    first = _run(
-        compactor.prepare(
-            first_messages,
-            pending_start=len(first_messages),
-            tools=[],
-            force=True,
-        )
-    )
-    assert first.checkpoint is not None
-    assert first.checkpoint.generation == 1
-    assert len(provider.calls) == 2
-
-    compactor.acknowledge_committed_checkpoint(1)
-    next_units = tuple(_unit(index, 2, prefix="next-") for index in range(10, 12))
-    compactor._committed_units = list(next_units)
-    compactor._completed_batches = []
-    compactor._segments = ContextPayloadSegments(
-        prefix=compactor._segments.prefix,
-        committed_units=next_units,
-        current_anchor=(),
-        temporary_summary=compactor._segments.temporary_summary,
-    )
-    second_messages = compactor._segments.flatten()
-    second = _run(
-        compactor.prepare(
-            second_messages,
-            pending_start=len(second_messages),
-            tools=[],
-            force=True,
-        )
-    )
-    assert second.checkpoint is not None
-    assert second.checkpoint.generation == 2
-    assert len(provider.calls) == 4
-    temporary_prompt = _call_message_content(provider.calls[3])
-    assert "C3" in temporary_prompt
-    assert "C2" in temporary_prompt
-    blocks = [
-        message
-        for message in second_messages
-        if message.get("role") == "system"
-        and "<session-context-compaction>" in str(message.get("content"))
-    ]
-    assert len(blocks) == 1
-    assert "C4" in str(blocks[0]["content"])
-    assert "C2" not in str(blocks[0]["content"])
+    provider = model(store, complete, window=1000)
+    original = message(0, Output((ContentPart("text", "long original" * 1000),), "complete"))
+    with pytest.raises(SummaryError, match="完整消息组"):
+        await summarize(((original,),), previous="", model=provider, fallback=provider)
+    assert original.body.parts[0].value == "long original" * 1000
