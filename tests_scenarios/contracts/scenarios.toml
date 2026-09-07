@@ -485,7 +485,7 @@ observes = [
   "message_push_receipt",
   "crash_recovery",
   "summary_archive_reopens",
-  "message_compaction_replaces_legacy_ledger_suppression",
+  "summary_use_committed",
 ]
 mutants = [
   "recursive_stable_misbinding",
