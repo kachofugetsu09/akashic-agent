@@ -316,8 +316,8 @@ class RestartWatcher:
         if gate is None:
             raise RuntimeError("agent_restart watcher 缺少 RestartGate")
         claim = self._frames.claim_for(request.session_id, request.call_ref)
-        gate.prepare(request.request_id)
         try:
+            gate.prepare(request.request_id)
             async with asyncio.timeout(15.0):
                 async for _message in reader.follow():
                     turn = _find_turn(reader, projection, request)

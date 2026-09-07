@@ -385,10 +385,7 @@ class FrameBook:
         if self._routes.get(key) is route:
             self._routes.pop(key)
         self._stages = {stage for stage in self._stages if stage._route is not route}
-        for claim in route.claims:
-            claim_key = (route.key.session_id, claim.call_ref)
-            if self._claims.get(claim_key) is claim:
-                self._claims.pop(claim_key)
+        # claim 仍由 watcher 消费原始错误；直到 consume/abort 才移除索引。
         route.error = error
         for waiter in route.waiters:
             if not waiter.done():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -15,16 +16,18 @@ import pytest
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
-from agent.control.protocol.method import RequestTransport
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot, lease_runtime_snapshot
 from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
 from bus.event_bus import EventBus
-from agent.control.frame_book import FrameBook, FrameReservation
+from agent.control.frame_book import FrameBook
+from bootstrap.app_server import build_control_service
+from infra.control.connection import NdjsonConnection
 from plugins.agent_restart.plugin import PendingRestart, RestartTool
 from plugins.tools.api import CallSource, ContentPart, Denied, MessageReply, durable_call_key
+from plugins.content.plugin import check_text
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
@@ -348,15 +351,6 @@ def _pending(source: CallSource) -> PendingRestart:
         durable_call_key(source.call_ref),
         cast(Mapping[str, object], arguments),
     )
-
-
-class _FrameTransport(RequestTransport):
-    """用真实 frame reservation 证明 programmatic provider 等待 writer drain。"""
-
-    def __init__(self, frames: FrameBook) -> None:
-        self.connection_id = "fixture-connection"
-        self.frames = frames
-        self.reservation: FrameReservation | None = None
 
 
 @pytest.mark.asyncio
@@ -978,45 +972,258 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
     )
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:restart"
-        transport = _FrameTransport(host._control_frames)  # type: ignore[attr-defined]
-        ending: list[str | None] = [None]
-        transport.reservation = transport.frames.route_input(
-            session, "input", transport.connection_id, lambda: ending[0],
+        frames = host._control_frames  # type: ignore[attr-defined]
+        core = SimpleNamespace(
+            plugin_manager=host,
+            workspace=tmp_path / "workspace",
+            message_log=log,
+            control_frames=frames,
+            channel_attachment_store=SimpleNamespace(resolve_refs=lambda _ids: ()),
         )
+        service = build_control_service(core)
+        endpoint = tmp_path / "control.sock"
+        connection_done = asyncio.Event()
+        drain_entered = asyncio.Event()
+        drain_release = asyncio.Event()
+        writer_state: dict[str, bytes] = {}
+
+        async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            original_write = writer.write
+            original_drain = writer.drain
+
+            def write(payload: bytes) -> None:
+                writer_state["payload"] = payload
+                original_write(payload)
+
+            async def drain() -> None:
+                payload = writer_state.get("payload", b"")
+                if (
+                    b'"kind":"output"' in payload
+                    and b'"finish":"complete"' in payload
+                    and not drain_release.is_set()
+                ):
+                    drain_entered.set()
+                    await drain_release.wait()
+                await original_drain()
+
+            writer.write = write  # type: ignore[method-assign]
+            writer.drain = drain  # type: ignore[method-assign]
+            connection = NdjsonConnection(
+                reader,
+                writer,
+                service,
+                max_message_bytes=2 * 1024 * 1024,
+                max_pending_requests=128,
+                outbound_queue_size=512,
+                control_frames=frames,
+            )
+            try:
+                await connection.run()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                connection_done.set()
+
+        server = await asyncio.start_unix_server(accept, path=str(endpoint))
+        request_id = 0
+
+        async def request(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+            method: str,
+            params: dict[str, object],
+        ) -> dict[str, object]:
+            nonlocal request_id
+            request_id += 1
+            current = request_id
+            writer.write((json.dumps({
+                "jsonrpc": "2.0", "id": current, "method": method, "params": params,
+            }) + "\n").encode())
+            await writer.drain()
+            while True:
+                line = await reader.readline()
+                assert line
+                frame = json.loads(line)
+                if frame.get("id") == current:
+                    return frame
+
+        reader, writer = await asyncio.open_unix_connection(str(endpoint))
+        try:
+            assert (await request(reader, writer, "initialize", {
+                "protocolVersion": "2.0", "clientInfo": {"name": "fixture", "version": "1"},
+            })) ["result"]
+            writer.write(b'{"jsonrpc":"2.0","method":"initialized"}\n')
+            await writer.drain()
+            admit = await request(reader, writer, "programmatic/session/admit", {
+                "session_id": session,
+            })
+            assert admit["result"]["session_id"] == session  # type: ignore[index]
+            follow = await request(reader, writer, "session/follow", {
+                "session_id": session, "subscription_id": "restart", "after_seq": -1,
+            })
+            assert follow["result"]["session_id"] == session  # type: ignore[index]
+            send = await request(reader, writer, "programmatic/message/send", {
+                "session_id": session, "message_id": "input", "text": "restart now",
+            })
+            assert send["result"]["message_id"] == "input"  # type: ignore[index]
+
+            async with asyncio.timeout(5):
+                await drain_entered.wait()
+            assert not commits
+            drain_release.set()
+
+            final_event = False
+            while not final_event:
+                line = await asyncio.wait_for(reader.readline(), 5)
+                assert line
+                frame = json.loads(line)
+                event = frame.get("params", {}).get("event", {})
+                for item in event.get("items", []):
+                    body = item.get("body", {})
+                    if body.get("kind") == "output" and body.get("finish") == "complete":
+                        final_event = True
+                        break
+
+            page = await request(reader, writer, "message/read", {
+                "session_id": session, "after_seq": -1, "limit": 50,
+            })
+            items = page["result"]["items"]  # type: ignore[index]
+            assert items[-1]["body"]["finish"] == "complete"  # type: ignore[index]
+            await asyncio.wait_for(committed.wait(), 2)
+            assert len(commits) == 1
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            server.close()
+            await server.wait_closed()
+            await asyncio.wait_for(connection_done.wait(), 2)
+            await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_programmatic_restart_watcher_aborts_preclaim_after_disconnect(
+    tmp_path: Path,
+) -> None:
+    """真实 programmatic ToolResult 的 pre-claim 在连接断开后由 watcher 消费失败。"""
+    commits: list[str] = []
+    gate = RestartGate(
+        boot_id="fixture-boot", supervised=True,
+        commit=commits.append,
+    )
+    async with _restart_application(tmp_path, gate, channel=False) as (log, host):
+        session = "programmatic:disconnect"
+        frames = host._control_frames  # type: ignore[attr-defined]
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            api = snapshot.composition_root.context.require(PROGRAMMATIC)
+            context = snapshot.composition_root.context
+            api = context.require(PROGRAMMATIC)
             await api.call("programmatic/session/admit", AdmitParams(session_id=session))
             await api.call(
                 "programmatic/message/send",
                 SendParams(session_id=session, message_id="input", text="restart now"),
-                transport,
+                SimpleNamespace(connection_id="fixture-connection"),
             )
 
-        final: Message | None = None
+        call_ref: CallRef | None = None
+        async def wait_for_preclaim() -> None:
+            nonlocal call_ref
+            while call_ref is None or frames.claim_for(session, call_ref) is None:
+                for row in log.reader(session).snapshot():
+                    if not isinstance(row.body, ToolResult) or row.body.outcome != "success":
+                        continue
+                    call_message = log.reader(session).get(row.body.call_ref.message_id)
+                    if (
+                        call_message is not None
+                        and isinstance(call_message.body, Output)
+                        and row.body.call_ref.part_index < len(call_message.body.parts)
+                        and isinstance(
+                            call_message.body.parts[row.body.call_ref.part_index], ToolCall,
+                        )
+                        and call_message.body.parts[row.body.call_ref.part_index].arguments.get(
+                            "reason"
+                        ) == "fixture"
+                    ):
+                        call_ref = row.body.call_ref
+                        break
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_preclaim(), 5)
+        assert call_ref is not None
+        frames.fail_connection(
+            "fixture-connection", ConnectionError("client disconnected"),
+        )
+        resolved_call_ref = call_ref
+
+        async def wait_for_claim_abort() -> None:
+            while frames.claim_for(session, resolved_call_ref) is not None:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_claim_abort(), 2)
+        assert gate.accepting
+        assert commits == []
+
+
+@pytest.mark.asyncio
+async def test_programmatic_restart_rejection_keeps_other_gate_request_and_aborts_claim(
+    tmp_path: Path,
+) -> None:
+    """watcher 的重复 gate prepare 只清理自己的 pre-claim。"""
+
+    class SettingsHoldingGate(RestartGate):
+        def prepare(self, request_id: str) -> None:
+            if request_id.startswith("restart_"):
+                super().prepare("settings-request")
+            super().prepare(request_id)
+
+    commits: list[str] = []
+    gate = SettingsHoldingGate(
+        boot_id="fixture-boot", supervised=True,
+        commit=commits.append,
+    )
+    async with _restart_application(tmp_path, gate, channel=False) as (log, host):
+        session = "programmatic:settings"
+        frames = host._control_frames  # type: ignore[attr-defined]
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            context = snapshot.composition_root.context
+            api = context.require(PROGRAMMATIC)
+            await api.call("programmatic/session/admit", AdmitParams(session_id=session))
+            await api.call(
+                "programmatic/message/send",
+                SendParams(session_id=session, message_id="input", text="restart now"),
+                SimpleNamespace(connection_id="fixture-connection"),
+            )
+
+        call_ref: CallRef | None = None
         async with asyncio.timeout(5):
             async for message in log.reader(session).follow():
                 rows = log.reader(session).snapshot()
-                if (
-                    isinstance(message.body, Output)
-                    and message.body.finish == "complete"
-                    and any(isinstance(row.body, ToolResult) and row.body.outcome == "success" for row in rows)
-                ):
-                    final = message
+                for row in rows:
+                    if isinstance(row.body, ToolResult) and row.body.outcome == "success":
+                        call_message = log.reader(session).get(row.body.call_ref.message_id)
+                        if (
+                            call_message is not None
+                            and isinstance(call_message.body, Output)
+                            and row.body.call_ref.part_index < len(call_message.body.parts)
+                            and isinstance(
+                                call_message.body.parts[row.body.call_ref.part_index], ToolCall,
+                            )
+                            and call_message.body.parts[row.body.call_ref.part_index].arguments.get(
+                                "reason"
+                            ) == "fixture"
+                        ):
+                            call_ref = row.body.call_ref
+                            break
+                if call_ref is not None:
                     break
-        assert final is not None
-        ending[0] = final.message_id
-        written = asyncio.get_running_loop().create_future()
-        page = {
-            "items": [{
-                "id": final.message_id,
-                "session_id": session,
-                "body": {"kind": "output", "finish": "complete", "parts": []},
-            }],
-        }
-        tracked = transport.frames.resolve_page(transport.connection_id, page)
-        transport.frames.attach_page(tracked, written)
-        await asyncio.sleep(0.05)
-        assert not commits
-        written.set_result(None)
-        await asyncio.wait_for(committed.wait(), 2)
-        assert len(commits) == 1
+        assert call_ref is not None
+        resolved_call_ref = call_ref
+
+        async def wait_for_claim_abort() -> None:
+            while frames.claim_for(session, resolved_call_ref) is not None:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_claim_abort(), 2)
+        assert not gate.accepting
+        with pytest.raises(RestartRejectedError, match="已有重启请求"):
+            gate.prepare("another-settings-request")
+        assert commits == []
+        gate.abort("settings-request")

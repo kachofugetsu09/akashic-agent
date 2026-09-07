@@ -161,9 +161,11 @@ async def test_frame_book_claim_keeps_disconnect_error_after_route_is_removed() 
     error = ConnectionError("connection closed")
     book.fail_connection("connection:a", error)
     assert not book._routes  # type: ignore[attr-defined]
+    assert book.claim_for("session:a", CallRef("call", 0)) is claim
     with pytest.raises(ConnectionError, match="connection closed"):
         await claim.wait_output()
     claim.abort()
+    assert book.claim_for("session:a", CallRef("call", 0)) is None
 
 
 @pytest.mark.asyncio
