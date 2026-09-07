@@ -30,9 +30,12 @@ always_full_paths = [
 priority = "p0"
 requirements = ["CTX-001", "CTX-002", "SES-003", "SES-005", "TST-001", "TST-003"]
 paths = [
-  "agent/core/passive_turn.py",
   "agent/prompting/**",
-  "agent/retrieval/**",
+  "agent/plugin_composition/session_read.py",
+  "plugins/context/**",
+  "plugins/conversation/**",
+  "plugins/reply/**",
+  "plugins/sources/**",
 ]
 deleted_paths = ["agent/policies/history_route.py"]
 depends_on = ["session_persistence"]
@@ -52,19 +55,18 @@ paths = [
   "infra/mobile_realtime/**",
   "agent/plugins/**",
   "agent/turns/outbound.py",
-  "agent/lifecycle/phases/after_reasoning.py",
-  "agent/lifecycle/phases/after_turn.py",
-  "agent/lifecycle/phases/before_turn.py",
   "bootstrap/app.py",
   "bootstrap/app_server.py",
   "bootstrap/channel_host.py",
   "bootstrap/channels.py",
   "bootstrap/chat_api.py",
-  "bootstrap/control_execution.py",
-  "bootstrap/passive_worker.py",
   "bus/events.py",
   "bus/events_lifecycle.py",
+  "agent/turn_events/**",
   "plugins/akasha/**",
+  "plugins/conversation/**",
+  "plugins/reply/**",
+  "plugins/sources/**",
   "plugins/wake/**",
   "schema/mobile-realtime-v1.json",
   "schema/archive/mobile-realtime-v1-mobile-pr6.json",
@@ -114,7 +116,6 @@ priority = "p0"
 requirements = ["PLG-004", "PLG-008", "PLG-009", "TST-001", "TST-003"]
 paths = [
   "agent/mcp/**",
-  "bootstrap/toolsets/protocol.py",
 ]
 depends_on = ["plugin", "lifecycle"]
 scenarios = ["mcp_call_finality", "mcp_process_lifecycle"]
@@ -134,7 +135,6 @@ paths = [
   "plugins/**",
   "scripts/plugin_composition_experiment.py",
   "bootstrap/tools.py",
-  "bootstrap/wiring.py",
   "tests/test_plugin_*.py",
 ]
 deleted_paths = [
@@ -148,12 +148,10 @@ priority = "p0"
 requirements = ["RUN-005", "RUN-009", "RUN-010", "RUN-011", "RUN-012", "TST-001", "TST-003"]
 paths = [
   "agent/plugin_composition/*model*.py",
+  "agent/plugin_composition/models.py",
   "agent/plugin_composition/__init__.py",
   "agent/plugins/model_*.py",
   "agent/plugins/snapshot.py",
-  "agent/plugins/generation_job_host.py",
-  "agent/looping/core.py",
-  "agent/core/passive_turn.py",
   "agent/tools/filesystem.py",
   "agent/tools/vision.py",
   "agent/migrations/akasha_*.py",
@@ -182,7 +180,6 @@ paths = [
   "migrations/yoyo/*model*.py",
   "tests/model_plugin_fakes.py",
   "tests/test_*model*.py",
-  "tests/test_plugin_generation_job_host.py",
   "tests/semantic/test_model_owner_contract.py",
 ]
 deleted_paths = ["agent/provider.py", "bootstrap/providers.py"]
@@ -193,12 +190,14 @@ scenarios = ["model_owner_contract"]
 priority = "p0"
 requirements = ["RUN-007", "OUT-004", "PLG-013", "CTRL-003", "TST-001", "TST-002", "TST-003", "TST-005", "TST-006"]
 paths = [
-  "agent/context.py",
   "agent/control/**",
   "agent/looping/**",
+  "agent/plugin_composition/events.py",
+  "agent/plugin_composition/runtime_lifecycle.py",
+  "agent/plugin_composition/session_read.py",
+  "agent/plugin_composition/tasks.py",
   "agent/plugins/**",
   "agent/tools/message_push.py",
-  "bootstrap/control_execution.py",
   "bootstrap/tools.py",
   "bus/queue.py",
   "infra/control/**",
@@ -216,7 +215,13 @@ scenarios = ["recursive_plugin_self_validation_contract"]
 [groups.lifecycle]
 priority = "p1"
 requirements = ["RUN-001", "RUN-002", "PLG-001"]
-paths = ["agent/lifecycle/**", "agent/turn_events/**", "bootstrap/runtime_readiness.py"]
+paths = [
+  "agent/plugin_composition/events.py",
+  "agent/plugin_composition/runtime_lifecycle.py",
+  "agent/plugin_composition/tasks.py",
+  "agent/turn_events/**",
+  "bootstrap/runtime_readiness.py",
+]
 depends_on = ["events"]
 scenarios = ["contract_catalog", "plugin_generation_contract", "plugin_domain_observe_events"]
 
@@ -265,10 +270,10 @@ scenarios = ["memory_persistence_contract", "plugin_domain_observe_events"]
 priority = "p1"
 requirements = ["SCH-001", "SCH-002"]
 paths = [
-  "agent/scheduler.py",
-  "agent/plugin_composition/background_jobs.py",
-  "agent/plugins/generation_job_host.py",
-  "agent/plugins/job_outcome_ledger.py",
+  "plugins/scheduler/**",
+  "agent/plugin_composition/timers.py",
+  "tests/test_job_store.py",
+  "tests/test_scheduler_*.py",
 ]
 deleted_paths = ["agent/tools/schedule.py", "bootstrap/toolsets/schedule.py"]
 depends_on = ["plugin"]
@@ -282,7 +287,6 @@ paths = [
   "agent/looping/**",
   "agent/turns/**",
   "bootstrap/app_server.py",
-  "bootstrap/control_execution.py",
   "infra/control/**",
   "tests/control/**",
 ]
@@ -297,8 +301,8 @@ paths = [
   "agent/background/**",
   "agent/config.py",
   "agent/config_models.py",
-  "agent/context.py",
   "agent/core/**",
+  "agent/plugin_composition/runtime_lifecycle.py",
   "agent/llm_json.py",
   "agent/model_runtime/**",
   "agent/persona.py",
@@ -336,12 +340,9 @@ priority = "p0"
 requirements = ["SH-002", "RUN-003", "OUT-001", "ERR-001", "TST-001", "TST-003"]
 paths = [
   "agent/background/boot_guardian.py",
-  "agent/looping/core.py",
   "agent/supervisor.py",
   "agent/tools/shell.py",
   "agent/tools/unified_exec.py",
-  "bootstrap/control_execution.py",
-  "agent/control/runtime.py",
 ]
 depends_on = ["events", "session_persistence"]
 scenarios = ["shell_privileged_cleanup_contract", "shell_turn_finality_contract"]
@@ -388,7 +389,19 @@ scenarios = ["contract_catalog"]
 [groups.companion_tool_context]
 priority = "p0"
 requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py", "agent/tools/registry.py", "agent/tools/base.py", "agent/tools/meta/register.py", "agent/tool_runtime.py", "agent/context.py", "agent/turns/outbound.py", "agent/lifecycle/phases/before_reasoning.py"]
+paths = [
+  "agent/tools/memorize.py",
+  "agent/tools/recall_memory.py",
+  "agent/tools/message_push.py",
+  "agent/tools/registry.py",
+  "agent/tools/base.py",
+  "agent/tool_runtime.py",
+  "agent/plugin_composition/session_read.py",
+  "agent/plugin_composition/tasks.py",
+  "plugins/context/**",
+  "plugins/reply/**",
+  "agent/turns/outbound.py",
+]
 deleted_paths = ["agent/looping/handlers.py"]
 depends_on = ["memory", "channel"]
 scenarios = ["companion_tool_context_contract"]
@@ -403,7 +416,7 @@ scenarios = ["companion_external_io_contract"]
 [groups.companion_peer_removal]
 priority = "p0"
 requirements = ["SEC-003", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/config.py", "bootstrap/tools.py", "bootstrap/wiring.py"]
+paths = ["agent/config.py", "bootstrap/tools.py"]
 deleted_paths = ["agent/peer_agent/**"]
 depends_on = ["runtime"]
 scenarios = ["companion_peer_removal_contract"]
@@ -411,7 +424,7 @@ scenarios = ["companion_peer_removal_contract"]
 [groups.companion_schedule]
 priority = "p0"
 requirements = ["SEC-005", "SCH-001", "SCH-002", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/scheduler.py", "plugins/scheduler/**"]
+paths = ["plugins/scheduler/**"]
 deleted_paths = ["agent/tools/schedule.py"]
 depends_on = ["jobs"]
 scenarios = ["companion_schedule_capacity_contract"]
@@ -419,7 +432,7 @@ scenarios = ["companion_schedule_capacity_contract"]
 [groups.companion_mobile]
 priority = "p0"
 requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001", "TST-003"]
-paths = ["infra/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/passive_worker.py", "bootstrap/app.py", "session/store.py"]
+paths = ["infra/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/app.py", "session/store.py"]
 depends_on = ["mobile_realtime", "plugin"]
 scenarios = ["companion_mobile_receipt_contract"]
 
