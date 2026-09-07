@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -651,7 +652,7 @@ def _model_call_records(database: Path, call_ids: Sequence[str]) -> list[dict[st
     placeholders = ",".join("?" for _ in call_ids)
     uri = f"file:{database}?mode=ro"
     try:
-        with sqlite3.connect(uri, uri=True) as connection:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 "SELECT id, state, binding_json, usage_json FROM model_calls "
@@ -841,6 +842,27 @@ def _create_barrier(model_url: str, name: str, script: dict[str, object]) -> Non
     _http_json("PUT", f"{model_url}/control/script", {**script, "barrier": name})
 
 
+def _create_chunk_barrier(
+    model_url: str,
+    name: str,
+    scripts: list[dict[str, object]],
+    *,
+    script_index: int,
+    after_chunk: int,
+) -> None:
+    """为指定 stream script 创建可控的 chunk 后 barrier。"""
+
+    if not 0 <= script_index < len(scripts):
+        raise ValueError("chunk barrier script_index 超出脚本范围")
+    configured = [dict(script) for script in scripts]
+    configured[script_index]["chunk_barrier"] = {
+        "name": name,
+        "after_chunk": after_chunk,
+    }
+    _http_json("PUT", f"{model_url}/control/barriers/{name}")
+    _http_json("PUT", f"{model_url}/control/script", configured)
+
+
 def _wait_barrier(model_url: str, name: str) -> None:
     result = _http_json(
         "GET",
@@ -1014,41 +1036,44 @@ def _inside_smoke(report_dir: Path) -> int:
         pc04_session = "programmatic:pc04-smoke"
         client.admit_programmatic(pc04_session)
         follow_ack = client.follow_session(pc04_session, "pc04-follow")
-        _http_json(
-            "PUT",
-            f"{model_url}/control/script",
-            [
-                {
-                    "mode": "stream",
-                    "deltas": [],
-                    "tool_calls": [
-                        {
-                            "id": "call_pc04",
-                            "name": "tool_search",
-                            "arguments": {"query": "no-match-pc04"},
-                        }
-                    ],
-                    "usage": {
-                        "prompt_tokens": 7,
-                        "completion_tokens": 3,
-                        "total_tokens": 10,
-                        "prompt_tokens_details": {"cached_tokens": 0},
-                        "completion_tokens_details": {"reasoning_tokens": 0},
-                    },
+        pc04_stream_barrier = f"pc04-stream-{uuid.uuid4().hex}"
+        pc04_scripts = [
+            {
+                "mode": "stream",
+                "deltas": [],
+                "tool_calls": [
+                    {
+                        "id": "call_pc04",
+                        "name": "tool_search",
+                        "arguments": {"query": "no-match-pc04"},
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3,
+                    "total_tokens": 10,
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                    "completion_tokens_details": {"reasoning_tokens": 0},
                 },
-                {
-                    "mode": "stream",
-                    "deltas": ["stream ", "complete"],
-                    "delay_ms": 150,
-                    "usage": {
-                        "prompt_tokens": 5,
-                        "completion_tokens": 2,
-                        "total_tokens": 7,
-                        "prompt_tokens_details": {"cached_tokens": 0},
-                        "completion_tokens_details": {"reasoning_tokens": 0},
-                    },
+            },
+            {
+                "mode": "stream",
+                "deltas": ["stream ", "complete"],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 2,
+                    "total_tokens": 7,
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                    "completion_tokens_details": {"reasoning_tokens": 0},
                 },
-            ],
+            },
+        ]
+        _create_chunk_barrier(
+            model_url,
+            pc04_stream_barrier,
+            pc04_scripts,
+            script_index=1,
+            after_chunk=0,
         )
         pc04_before = len(_model_requests(_http_json("GET", f"{model_url}/control/requests")))
         pc04_ack = client.send_programmatic(pc04_session, "pc04-input", "stream tool usage")
@@ -1075,10 +1100,16 @@ def _inside_smoke(report_dir: Path) -> int:
                     intermediate_texts.append(preview["text"])
             if any(text and text != "stream complete" for text in intermediate_texts):
                 intermediate_reply = event
+                _release_barrier(model_url, pc04_stream_barrier)
                 break
+        if intermediate_reply is None:
+            raise GateFailure("未观察到 chunk barrier 之前的中间 reply.status")
         pc04_result = _wait_programmatic_result(client, pc04_session, "pc04-input")
         pc04_page = client.read_messages(pc04_session)
         pc04_requests = _model_requests(_http_json("GET", f"{model_url}/control/requests"))[pc04_before:]
+        pc04_barrier_status = _http_json(
+            "GET", f"{model_url}/control/barriers/{pc04_stream_barrier}"
+        )
         pc04_rows = pc04_page.get("items")
         tool_rows = [item for item in pc04_rows if isinstance(item, dict) and item.get("body", {}).get("kind") == "tool_result"] if isinstance(pc04_rows, list) else []
         output_rows = [item for item in pc04_rows if isinstance(item, dict) and item.get("body", {}).get("kind") == "output"] if isinstance(pc04_rows, list) else []
@@ -1132,6 +1163,52 @@ def _inside_smoke(report_dir: Path) -> int:
         model_calls = _model_call_records(
             Path("/sandbox/workspace/model-registry.sqlite3"), call_ids
         )
+        model_calls_by_id = {
+            str(record.get("id")): record for record in model_calls
+        }
+        actual_usage = [
+            model_calls_by_id.get(call_id, {}).get("usage") for call_id in call_ids
+        ]
+        expected_usage = [
+            {
+                "cache_write_input_tokens": None,
+                "cached_input_tokens": 0,
+                "coverage": "exact",
+                "covered_request_count": 1,
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "reasoning_output_tokens": 0,
+                "request_count": 1,
+            },
+            {
+                "cache_write_input_tokens": None,
+                "cached_input_tokens": 0,
+                "coverage": "exact",
+                "covered_request_count": 1,
+                "input_tokens": 5,
+                "output_tokens": 2,
+                "reasoning_output_tokens": 0,
+                "request_count": 1,
+            },
+        ]
+        usage_totals: dict[str, int | None] = {}
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "request_count",
+            "covered_request_count",
+        ):
+            values = [
+                usage.get(field)
+                for usage in actual_usage
+                if isinstance(usage, dict)
+            ]
+            usage_totals[field] = (
+                sum(cast(int, value) for value in values)
+                if len(values) == len(actual_usage)
+                and all(type(value) is int for value in values)
+                else None
+            )
         message_events: list[dict[str, Any]] = []
         event_rows: list[dict[str, Any]] = []
         event_deadline = time.monotonic() + SCENARIO_DEADLINE_S
@@ -1182,9 +1259,16 @@ def _inside_smoke(report_dir: Path) -> int:
                 isinstance(record.get("binding"), dict)
                 and record["binding"].get("model") == "model-gate"
                 and record.get("state") == "success"
-                and isinstance(record.get("usage"), dict)
                 for record in model_calls
             )
+            and actual_usage == expected_usage
+            and usage_totals
+            == {
+                "input_tokens": 12,
+                "output_tokens": 5,
+                "request_count": 2,
+                "covered_request_count": 2,
+            }
         )
         checks.append(
             CheckResult(
@@ -1202,6 +1286,9 @@ def _inside_smoke(report_dir: Path) -> int:
                 and valid_model_calls
                 and page_pairs == event_pairs
                 and continuous_seqs
+                and isinstance(pc04_barrier_status, dict)
+                and pc04_barrier_status.get("reached") is True
+                and pc04_barrier_status.get("released") is True
                 and intermediate_reply is not None,
                 {
                     "follow": follow_ack,
@@ -1211,12 +1298,18 @@ def _inside_smoke(report_dir: Path) -> int:
                     "messageEvents": message_events,
                     "intermediateReply": intermediate_reply,
                     "intermediateTexts": intermediate_texts,
+                    "chunkBarrier": {
+                        "name": pc04_stream_barrier,
+                        "status": pc04_barrier_status,
+                    },
                     "providerRequestCount": len(pc04_requests),
                     "outputText": final_text,
                     "toolCalls": tool_calls,
                     "toolResultRefs": result_refs,
                     "modelCallIds": call_ids,
                     "modelCalls": model_calls,
+                    "usage": actual_usage,
+                    "usageTotals": usage_totals,
                 },
             )
         )
@@ -2552,35 +2645,64 @@ bot_uin = ""
 
 
 def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:
-    """按当前 workspace 初始化合同准备隔离资产。"""
+    """在候选源码进程中调用 workspace 初始化 owner。"""
 
-    # 1. Gate fixture 必须使用候选源码中的版本化默认值。
-    template = source_root / "prompts/VEDA.md"
+    config_path = workspace.parent / "config.toml"
+    script = """
+import sys
+import sqlite3
+from pathlib import Path
+
+source_root = Path(sys.argv[1]).resolve()
+config_path = Path(sys.argv[2]).resolve()
+workspace = Path(sys.argv[3]).resolve()
+sys.path.insert(0, str(source_root))
+from bootstrap import init_workspace as init_module
+
+module_path = Path(init_module.__file__).resolve()
+if source_root not in module_path.parents:
+    raise RuntimeError(f"workspace init imported outside candidate source: {module_path}")
+init_module.init_workspace(config_path=config_path, workspace=workspace, force=False)
+
+# Fresh MessageLog owns the first SQLite schema, while startup Yoyo owns its
+# migration lineage. Keep the owner call observable, then discard only its
+# newly-created empty DB so Yoyo can create the accepted lineage.
+sessions_db = workspace / "sessions.db"
+with sqlite3.connect(sessions_db) as connection:
+    tables = [
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    ]
+    for table in tables:
+        count = connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        if count != 0:
+            raise RuntimeError(f"workspace init produced non-empty table: {table}")
+sessions_db.unlink()
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(source_root)
     try:
-        payload = template.read_bytes()
-        content = payload.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise GateFailure(f"无法读取 Gate Veda 模板: {template}") from exc
-    if not content.strip():
-        raise GateFailure(f"Gate Veda 模板为空: {template}")
-
-    # 2. 人格、Context 配置和目录由当前 workspace owner 一次准备。
-    target = workspace / "memory/VEDA.md"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(payload)
-    context_config = workspace / "plugin-data/context-builtin/config.local.toml"
-    context_config.parent.mkdir(parents=True, exist_ok=True)
-    context_config.write_text(
-        'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory"}\n'
-        'summary_source = ["compaction", "compaction"]\n',
-        encoding="utf-8",
-    )
-    (workspace / "memes/manifest.json").parent.mkdir(parents=True, exist_ok=True)
-    (workspace / "memes/manifest.json").write_text(
-        json.dumps({"categories": {}}, ensure_ascii=False), encoding="utf-8"
-    )
-    for relative in ("observe", "skills", "drift/skills"):
-        (workspace / relative).mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(source_root),
+                str(config_path),
+                str(workspace),
+            ],
+            cwd=source_root,
+            env=environment,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        details = (error.stderr or error.stdout or "").strip()
+        raise GateFailure(f"候选 workspace 初始化失败: {details}") from error
 
 
 def _prepare_host_sandbox(
@@ -2618,7 +2740,6 @@ def _prepare_host_sandbox(
 
     # 2. 所有运行时写入均归外部 sandbox，不依赖仓库 ignored 目录。
     (sandbox / "workspace").mkdir(parents=True)
-    _initialize_current_workspace(sandbox / "workspace", sandbox / "app")
     (sandbox / "home").mkdir()
     (sandbox / "reports").mkdir()
     (sandbox / "static/dashboard").mkdir(parents=True)
@@ -2626,6 +2747,7 @@ def _prepare_host_sandbox(
 
     # 3. 配置只引用同一 sandbox 内的路径。
     _write_config(sandbox, max_iterations=max_iterations)
+    _initialize_current_workspace(sandbox / "workspace", sandbox / "app")
 
 
 def _install_control_failure_plugin(sandbox: Path) -> None:
