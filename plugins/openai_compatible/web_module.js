@@ -48,11 +48,11 @@ export function activate(ctx) {
         <form class="settings-dialog-form"><div class="settings-dialog-body"><div class="settings-form-grid">
           <label class="is-wide"><span>连接名称</span><input name="name" aria-label="连接名称" required autocomplete="organization" placeholder="${isDeepSeek ? "例如：DeepSeek 官方" : "例如：公司网关"}"></label>
           <label class="is-wide"><span>Base URL${existing ? "（留空则保持不变）" : ""}</span><input name="endpoint" aria-label="Base URL" ${existing ? "" : "required"} type="url" placeholder="https://api.example.com/v1"></label>
-          <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="sk-…"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
+          <label class="settings-secret is-wide"><span>API Key</span><input name="apiKey" aria-label="API Key" type="password" ${existing ? "" : "required"} autocomplete="off" placeholder="${existing ? "留空保留现有密钥" : "sk-…"}"><button type="button" data-show-key aria-label="显示 API Key">${EYE_ICON}</button></label>
         </div>
         ${existing ? "" : `<details class="settings-advanced"><summary>高级设置</summary><p>Provider ID 仅用于补充模型能力；通常无需修改。</p><div class="settings-form-grid"><label class="is-wide"><span>Provider ID</span><input name="provider" aria-label="Provider ID" required placeholder="例如：openai"></label></div></details>`}
         <p class="settings-credential-note">${SHIELD_ICON}<span>API Key 保存后不会显示在页面中</span></p>
-        <section class="settings-model-discovery"><header><div><h3>模型</h3><p>${existing ? "可随时重新检测目录与已知能力。" : "从服务目录选择一个默认模型，不必手填名称。"}</p></div></header>
+        <section class="settings-model-discovery"><header><div><h3>模型</h3><p>${existing ? "检测使用已保存的地址和密钥；修改后请先保存连接。" : "从服务目录选择一个默认模型，不必手填名称。"}</p></div></header>
           ${existing ? `<p class="settings-discovery-summary">当前已保存 ${props.state.models.length} 个模型。</p>` : `<div class="settings-discovery-empty" data-discovery-empty>
             <button type="button" class="settings-primary-button" data-discover>检测可用模型</button>
             <button type="button" class="settings-text-button" data-manual>无法检测？手动填写模型名</button>
@@ -61,7 +61,7 @@ export function activate(ctx) {
           <div class="settings-discovery-manual" data-discovery-manual hidden><label><span>模型名称</span><input name="manualModel" aria-label="模型名称" placeholder="${isDeepSeek ? "例如：deepseek-chat" : "例如：your-model-name"}"></label><p>手动添加时图片等能力保持待识别，保存后仍可重新检测。</p><label class="settings-manual-confirm"><input type="checkbox" name="manualConfirm"><span>我知道模型目录未经验证，仍要保存这个连接。</span></label></div>
           <p class="settings-discovery-status" data-status role="status" aria-live="polite" hidden></p>`}
         </section><p class="settings-inline-error" data-error role="alert" hidden></p></div>
-        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}连接信息会在保存前验证</span><div class="settings-dialog-actions"><button type="button" class="settings-secondary-button" data-rescan>${existing ? "重新检测模型" : "重新检测"}</button><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
+        <footer class="settings-dialog-footer" data-footer ${existing ? "" : "hidden"}><span class="settings-dialog-footer-note" data-footer-note>${SHIELD_ICON}连接信息会在保存前验证</span><div class="settings-dialog-actions"><button type="button" class="settings-secondary-button" data-rescan>${existing ? "检测已保存连接" : "重新检测"}</button><button type="submit" class="settings-primary-button">保存连接</button></div></footer></form>`;
       const form = host.querySelector("form");
       form.elements.name.value = existing?.name ?? defaults.name ?? "";
       form.elements.endpoint.value = defaults.endpoint ?? "";

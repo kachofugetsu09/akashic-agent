@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -10,6 +11,17 @@ from session.message import CallRef, ContentPart, Message, Output, ToolCall, Too
 
 
 Outcome = Literal["success", "denied", "error", "unknown"]
+
+
+def durable_call_key(call_ref: CallRef) -> str:
+    """Return the stable effect key already used by a submitted ToolCall."""
+    if not isinstance(call_ref, CallRef):
+        raise TypeError("工具调用引用无效")
+    return "message:" + json.dumps(
+        [call_ref.message_id, call_ref.part_index],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 @dataclass(frozen=True, slots=True)

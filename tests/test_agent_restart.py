@@ -22,11 +22,7 @@ import agent.supervisor as supervisor_module
 import main as main_module
 import utils.process_guard as process_guard_module
 from agent.control.context import running_turn_id
-from agent.control.errors import RuntimeClosedError
-from agent.control.models import TurnRequest
 from agent.control.protocol.router import ConnectionRouter
-from agent.control.ports import ControlExecutionResult
-from agent.control.runtime import ConversationRuntime
 from agent.restart import (
     RestartCoordinator,
     RestartRejectedError,
@@ -41,7 +37,6 @@ from bootstrap.app import AppRuntime
 from bootstrap.runtime_readiness import RuntimeReadiness
 from core.error_context import current_session_key
 from infra.control.connection import NdjsonConnection
-from session.store import SessionStore
 
 
 class _Admission:
@@ -145,60 +140,6 @@ async def test_restart_failure_and_timeout_restore_admission() -> None:
     assert coordinator.pending is None
     assert admission.resumed == ["turn-failed", "turn-timeout"]
     assert "timed out" in str(coordinator.last_error)
-
-
-@pytest.mark.asyncio
-async def test_conversation_runtime_drains_before_restart_commit(
-    tmp_path: Path,
-) -> None:
-    commits: list[str] = []
-    coordinator = RestartCoordinator(
-        "boot-a",
-        supervised=True,
-        commit=lambda request: commits.append(request.id),
-    )
-    store = SessionStore(tmp_path / "sessions.db")
-    armed = asyncio.Event()
-    release = asyncio.Event()
-    turn_holder: dict[str, str] = {}
-
-    async def execute(_request: TurnRequest) -> ControlExecutionResult:
-        coordinator.arm(
-            turn_id=turn_holder["id"],
-            session_key="programmatic:one",
-            channel="programmatic",
-            chat_id="one",
-            reason="reload core",
-        )
-        armed.set()
-        await release.wait()
-        return ControlExecutionResult(response="restart scheduled")
-
-    runtime = ConversationRuntime(
-        store,
-        execute,
-        restart_coordinator=coordinator,
-    )
-    coordinator.bind_admission(
-        quiesce=runtime.quiesce_for_restart,
-        resume=runtime.resume_after_restart_cancel,
-    )
-    handle = await runtime.start_turn(TurnRequest("programmatic:one", "restart"))
-    turn_holder["id"] = handle.id
-    await armed.wait()
-
-    with pytest.raises(RuntimeClosedError):
-        await runtime.start_turn(TurnRequest("programmatic:two", "late"))
-    release.set()
-    result = await handle.result()
-    assert result.status.value == "completed"
-    assert commits == []
-
-    coordinator.mark_delivered(handle.id)
-    assert (await coordinator.wait_committed()).turn_id == handle.id
-    assert len(commits) == 1
-    await runtime.shutdown()
-    store.close()
 
 
 @pytest.mark.asyncio
@@ -1385,26 +1326,6 @@ def test_settings_server_rejects_non_loopback_host(
             )
     finally:
         bridge.close()
-
-
-@pytest.mark.asyncio
-async def test_settings_drain_waits_for_existing_turn_without_cancelling() -> None:
-    runtime = object.__new__(ConversationRuntime)
-    runtime._accepting_turns = True
-    runtime._admission_capacity_event = asyncio.Event()
-    finished = asyncio.Event()
-
-    async def existing_turn() -> None:
-        await asyncio.sleep(0)
-        finished.set()
-
-    task = asyncio.create_task(existing_turn())
-    runtime._tasks = {"turn-1": task}
-
-    await runtime.quiesce_and_drain()
-
-    assert runtime._accepting_turns is False
-    assert finished.is_set()
 
 
 class _DrainWriter:

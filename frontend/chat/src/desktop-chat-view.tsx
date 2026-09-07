@@ -11,6 +11,7 @@ import {
 import { ChatProductBand } from "./chat-product-band";
 import { DesktopAutoScroll } from "./desktop-auto-scroll";
 import { ComposerStatsLine } from "./composer-stats-line";
+import { ThinkingPlaceholder } from "./thinking-placeholder";
 import { DesktopComposer } from "./desktop-composer";
 import { DesktopConversationMessages, DesktopTimelineMessages } from "./desktop-conversation";
 import { ReplyActivityView } from "./message-view";
@@ -85,6 +86,9 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
             <LazyRuntimeDashboard />
           </Suspense>
         ) : <section className="chat-main">
+        <header className="conversation-heading">
+          <h1 title={sidebarSessions.find((s) => s.active)?.title || "新会话"}>{sidebarSessions.find((session) => session.active)?.title || "新会话"}</h1>
+        </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
             {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} /> : (
@@ -108,6 +112,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
                   activity={activity} committed={committed} onError={reportError} />)}
               </MessageRendererErrorBoundary>
             )}
+            {status === "submitted" ? <ThinkingPlaceholder /> : null}
           </ConversationContent>
           <DesktopAutoScroll messages={messages} status={status} streamStore={streamStore}
             timelineMessages={timelineMessages} replyActivities={replyActivities} />

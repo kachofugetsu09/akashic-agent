@@ -125,10 +125,15 @@ async def apply(ctx: Context, config: Config) -> None:
 
     inspector: RecallInspector | None = None
 
+    def get_inspector() -> RecallInspector:
+        """返回正式 runtime 绑定的只读查询投影。"""
+        if not running or inspector is None:
+            raise MobileUiRpcInvalidRequest("Akasha 查询读取尚未启动")
+        return inspector
+
     def query(method: str, payload: dict[str, object], *, session_id: str | None,
               turn_id: str | None) -> dict[str, object]:
-        if inspector is None:
-            raise MobileUiRpcInvalidRequest("Akasha 查询读取尚未启动")
+        inspector = get_inspector()
         if method == "inspector.recent":
             try:
                 page = InspectorPage.model_validate(payload)
@@ -282,7 +287,7 @@ async def apply(ctx: Context, config: Config) -> None:
 
     async def start_if_available() -> bool:
         """模型设置后在首次实际使用时启用；同一 Root 只取得一个学习 writer。"""
-        nonlocal memory, memory_rule, inspector
+        nonlocal memory, memory_rule
         async with start_lock:
             # 1. 未配置或空间变化只停用记忆；其他数据损坏仍明确失败。
             try:
@@ -315,8 +320,6 @@ async def apply(ctx: Context, config: Config) -> None:
                 await prepared.close()
                 raise
             memory, memory_rule = prepared, rule
-            inspector = RecallInspector(read=runtime_records.read, list_records=runtime_records.list,
-                                        catalog=ctx.require(MESSAGE_CATALOG))
             health.recover()
             return True
 
@@ -329,11 +332,15 @@ async def apply(ctx: Context, config: Config) -> None:
                     _ = await memory.consume()
 
     async def start(_event: object) -> None:
-        nonlocal watcher, running
+        nonlocal watcher, running, inspector
         if running:
             raise RuntimeError("Akasha 消息运行重复启动")
         running = True
         async with ctx.runtime_scope():
+            # Inspector 只读已保存查询和 Message；它不需要 embedding 或学习 writer。
+            runtime_records = records()
+            inspector = RecallInspector(read=runtime_records.read, list_records=runtime_records.list,
+                                        catalog=ctx.require(MESSAGE_CATALOG))
             _ = await start_if_available()
         watcher = await ctx.spawn(follow(), name="akasha-messages")
 

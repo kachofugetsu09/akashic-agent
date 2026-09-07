@@ -1,0 +1,7 @@
+**
+!docker/
+!docker/computer/
+!docker/computer/**
+docker/computer/node_modules/
+docker/computer/native/target/
+docker/computer/test/

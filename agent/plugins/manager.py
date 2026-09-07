@@ -52,12 +52,10 @@ from agent.plugin_composition import (
     MCP_SERVERS,
     SESSION_READ,
     SESSION_COMPACTION_STORAGE,
-    SCOPED_TURNS,
     CONTINUATIONS,
     DELIVERIES,
     DURABLE_DELIVERIES,
     TIMERS,
-    BACKGROUND_JOBS,
     TOOL_CATALOG,
     UI_SLOTS,
     CompositionOverlay,
@@ -69,14 +67,12 @@ from agent.plugin_composition import (
     PluginUiSlots,
     PluginCommands,
     InteractionUndoService,
-    PluginBackgroundJobs,
     PluginToolBinding,
     PluginToolCatalog,
     PluginTools,
     PluginRuntime,
     SessionReadService,
     SessionCompactionStorage,
-    PluginScopedTurns,
     PluginContinuations,
     PluginDeliveries,
     PluginDurableDeliveries,
@@ -182,11 +178,6 @@ from agent.plugins.reload_journal import (
 from agent.plugins.skill_host import PluginSkillHost
 from agent.plugins.web_ui import resolve_web_module
 from agent.workloads.client import UnixWorkloadController, WorkloadController
-from agent.plugins.generation_activity_host import (
-    ActivityCatalog,
-    ActivityHost,
-    ActivityTransaction,
-)
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotLease,
@@ -247,6 +238,22 @@ async def _complete_critical(awaitable: Awaitable[U]) -> tuple[U, bool]:
     # 3. 读取操作结果，保留其真实异常
     result = await task
     return result, cancelled
+
+
+def _reject_retired_activity_recovery(action: ReloadRecoveryAction) -> None:
+    """拒绝依赖已删除 Activity owner 的旧恢复记录。"""
+
+    resource = action.failure_resource or ""
+    if "activity-publication" not in {
+        item.strip() for item in resource.split(",") if item.strip()
+    }:
+        return
+    raise RuntimeError(
+        "runtime recovery blocked: durable action retains retired "
+        "activity-publication owner; migrate or resolve it manually before "
+        f"recovery (tx={action.tx_id}, plugin={action.plugin_id}, "
+        f"resource={resource!r}); journal remains pending"
+    )
 
 
 @dataclass(frozen=True)
@@ -335,9 +342,6 @@ class PluginManager:
             if session_manager is not None
             else None
         )
-        self._conversation_runtime: object | None = None
-        self._programmatic_session_creator: Callable[..., object] | None = None
-        self._programmatic_session_reader: Callable[[str], object] | None = None
         self._installed_cache_root = installed_cache_root
         self._disabled_builtin_plugins = disabled_builtin_plugins
         self._dashboard_preparer: Callable[[RuntimeSnapshot], None] | None = None
@@ -420,7 +424,6 @@ class PluginManager:
         self._active_channel_catalog_identity: str | None = None
         self._core_channel_definitions: tuple[CoreChannelDefinition, ...] = ()
         self._channel_boot_transactions: set[str] = set()
-        self._activity_host: ActivityHost | None = None
         self._drain_transactions: dict[str, str] = {}
         self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
@@ -434,21 +437,6 @@ class PluginManager:
     @property
     def loaded_count(self) -> int:
         return len(self._loaded)
-
-    def bind_conversation_runtime(
-        self,
-        runtime: object,
-        *,
-        programmatic_session_creator: Callable[..., object],
-        programmatic_session_reader: Callable[[str], object] | None = None,
-    ) -> None:
-        """Bind formal scoped Turn admission before plugin topology is loaded."""
-
-        if self._conversation_runtime is not None:
-            raise RuntimeError("PluginManager ConversationRuntime 已绑定")
-        self._conversation_runtime = runtime
-        self._programmatic_session_creator = programmatic_session_creator
-        self._programmatic_session_reader = programmatic_session_reader
 
     def bind_continuation_publisher(
         self,
@@ -693,37 +681,6 @@ class PluginManager:
         if not callable(resolver):
             raise TypeError("channel provider factory resolver 必须可调用")
         self._channel_provider_factory_resolver = resolver
-
-    def bind_activity_host(self, host: ActivityHost) -> None:
-        """Bind the single Core owner for background activity."""
-
-        if self._activity_host is not None:
-            raise RuntimeError("ActivityHost 已绑定")
-        self._activity_host = host
-
-    @staticmethod
-    def _activity_catalog_identity(snapshot: RuntimeSnapshot | None) -> str | None:
-        if snapshot is None:
-            return None
-        jobs = snapshot.background_job_catalog
-        if jobs is None:
-            return None
-        descriptors = jobs.descriptors
-        owners = sorted({descriptor.owner for descriptor in descriptors})
-        bindings: list[str] = []
-        for owner in owners:
-            generation = snapshot.generations.get(owner)
-            if generation is None:
-                raise RuntimeError(f"Activity catalog owner generation 缺失: {owner}")
-            bindings.append(
-                f"{owner}:{generation.generation_id}:{generation.source_revision}"
-            )
-        return "|".join(
-            (
-                "jobs:" + jobs.identity,
-                "bindings:" + ",".join(bindings),
-            )
-        )
 
     def _resolve_channel_identity(self, channel: str, provider_identity: str) -> str | None:
         if self._channel_identities is None:
@@ -1358,6 +1315,8 @@ class PluginManager:
 
         if not actions:
             return {}
+        for action in actions:
+            _reject_retired_activity_recovery(action)
         current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
         if os.environ.get("AKASHIC_SUPERVISED") != "1" or not current_boot_id:
             raise RuntimeError("v3 runtime recovery 需要 supervised boot identity")
@@ -1452,6 +1411,8 @@ class PluginManager:
     ) -> None:
         """Seal boot reconciliation only after the authoritative stable Root is live."""
 
+        for action in actions:
+            _reject_retired_activity_recovery(action)
         snapshot = self.current_snapshot
         for action in actions:
             generation = self._active_generations.get(action.plugin_id)
@@ -1520,24 +1481,6 @@ class PluginManager:
                         raise RuntimeError(
                             "boot runtime recovery stable Channel Host 未就绪"
                         )
-            if "activity-publication" in (action.failure_resource or ""):
-                if snapshot is None or self._activity_host is None:
-                    raise RuntimeError(
-                        "boot runtime recovery 缺少 stable Activity owner"
-                    )
-                activity = self._activity_host.active
-                expected_activity = ActivityCatalog(
-                    background_jobs=snapshot.background_job_catalog,
-                ).identity
-                if (
-                    activity is None
-                    or activity.snapshot_id != snapshot.snapshot_id
-                    or activity.catalog_identity != expected_activity
-                    or not activity.admission_open
-                ):
-                    raise RuntimeError(
-                        "boot runtime recovery stable Activity Host 未就绪"
-                    )
             receipt = receipts.get(action.tx_id)
             if receipt is None:
                 raise RuntimeError("boot runtime recovery receipt 缺失")
@@ -2659,27 +2602,9 @@ class PluginManager:
             transaction.previous,
             transaction.candidate,
         )
-        previous_activity_identity = self._activity_catalog_identity(
-            transaction.previous
-        )
-        candidate_activity_identity = self._activity_catalog_identity(
-            transaction.candidate
-        )
-        activity_catalog_changed = (
-            previous_activity_identity != candidate_activity_identity
-            or (
-                candidate_activity_identity is not None
-                and (
-                    transaction.previous is None
-                    or transaction.previous.snapshot_id
-                    != transaction.candidate.snapshot_id
-                )
-            )
-        )
         if (
             not endpoints_changed
             and not channel_binding_changed
-            and not activity_catalog_changed
             and not force_provisional
             and not provisional_started
         ):
@@ -2707,23 +2632,9 @@ class PluginManager:
                 await self._snapshot_store.commit_provisional(provisional)
 
         channel_state: _ChannelPublicationState | None = None
-        activity_transaction: ActivityTransaction | None = None
         participants_switch_attempted = False
         forward_error: BaseException | None = None
         try:
-            if activity_catalog_changed:
-                activity_host = self._activity_host
-                if activity_host is None:
-                    raise RuntimeError(
-                        "v3 Activity catalog 已声明但 ActivityHost 尚未绑定"
-                    )
-                target_lease = self._snapshot_store.retain_publication_target(
-                    provisional
-                )
-                activity_transaction = await activity_host.prepare_transaction(
-                    target_lease
-                )
-                await activity_host.pause_and_drain(activity_transaction)
             channel_state = self._prepare_channel_publication(
                 provisional.previous,
                 provisional.candidate,
@@ -2740,16 +2651,9 @@ class PluginManager:
                     forward_error = error
                     raise
             await self._start_channel_publication(channel_state)
-            if activity_transaction is not None:
-                assert self._activity_host is not None
-                await self._activity_host.materialize_closed(activity_transaction)
-
             def open_participants() -> None:
                 if after_open is not None:
                     after_open()
-                if activity_transaction is not None:
-                    assert self._activity_host is not None
-                    self._activity_host.finalize(activity_transaction)
                 assert channel_state is not None
                 self._open_channel_publication(channel_state)
 
@@ -2758,32 +2662,10 @@ class PluginManager:
                 before_open=before_open,
                 after_open=open_participants,
             )
-            if activity_transaction is not None:
-                assert self._activity_host is not None
-                await self._activity_host.open(activity_transaction)
         except BaseException as publication_error:
-            if (
-                activity_transaction is not None
-                and activity_transaction.finalized
-                and not activity_transaction.settled
-                and self.current_snapshot is provisional.candidate
-            ):
-                provisional.candidate.accepting_leases = False
-                raise _PublicationParticipantRestoreError(
-                    "Activity 新 owner 已提交，但旧 child cleanup 尚未完成",
-                    resources=("activity-publication",),
-                ) from publication_error
             rollback_errors: list[BaseException] = []
             channel_cleanup_failed = False
-            activity_cleanup_failed = False
             endpoint_restore_failed = False
-            if activity_transaction is not None and not activity_transaction.settled:
-                assert self._activity_host is not None
-                try:
-                    await self._activity_host.rollback(activity_transaction)
-                except BaseException as caught:
-                    rollback_errors.append(caught)
-                    activity_cleanup_failed = True
             if channel_state is not None:
                 old_snapshot_id = (
                     None
@@ -2836,8 +2718,6 @@ class PluginManager:
             )
             if rollback_errors:
                 resources: list[str] = []
-                if activity_cleanup_failed:
-                    resources.append("activity-publication")
                 if channel_cleanup_failed:
                     resources.extend(("plugin-endpoint", "channel-publication"))
                 elif endpoint_restore_failed:
@@ -3245,11 +3125,6 @@ class PluginManager:
                             recovery_effects.append("endpoint_restore_uncertain")
                         if "channel-publication" in participant_restore_error.resources:
                             recovery_effects.append("stable_channel_restore_uncertain")
-                        if (
-                            "activity-publication"
-                            in participant_restore_error.resources
-                        ):
-                            recovery_effects.append("stable_activity_restore_uncertain")
                     if skill_error is not None:
                         recovery_resources.append("plugin-skill-projection")
                         recovery_effects.append("stable_skill_restore_uncertain")
@@ -3355,6 +3230,7 @@ class PluginManager:
             if len(actions) != 1:
                 raise RuntimeError("插件没有待执行的 runtime recovery")
             action = actions[0]
+            _reject_retired_activity_recovery(action)
             ready = self._ready_candidate
             if ready is not None and (
                 ready.plugin_id != plugin_id
@@ -3371,12 +3247,6 @@ class PluginManager:
             if "runtime-snapshot-drain" in resource:
                 await self._snapshot_store.retry_drains()
                 receipts.append("runtime-snapshot-drain-complete")
-            if "activity-publication" in resource:
-                activity_host = self._activity_host
-                if activity_host is None:
-                    raise RuntimeError("Activity recovery 缺少 ActivityHost owner")
-                await activity_host.retry_recovery()
-                receipts.append("stable-activity-runtime-restored")
             channel_tokens = tuple(
                 item.removeprefix("channel-binding:")
                 for item in resource.split(",")
@@ -3533,7 +3403,6 @@ class PluginManager:
             participant_only_recovery = all(
                 item.startswith("channel-binding:")
                 or item.startswith("channel-publication:")
-                or item.startswith("activity-publication")
                 for item in resource.split(",")
                 if item
             )
@@ -5816,14 +5685,6 @@ class PluginManager:
                 PluginWorkloads(root.instance_token),
             )
         if any(
-            BACKGROUND_JOBS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                BACKGROUND_JOBS,
-                PluginBackgroundJobs(root.instance_token),
-            )
-        if any(
             TOOL_CATALOG in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
         ):
@@ -5940,25 +5801,6 @@ class PluginManager:
                 SESSION_COMPACTION_STORAGE,
                 compaction_storage,
             )
-        if any(
-            SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-
-            async def acquire_root_scope() -> RuntimeSnapshotLease:
-                return await root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
-
-            scoped_turns = (
-                PluginScopedTurns(
-                    self._conversation_runtime,
-                    self._programmatic_session_creator,
-                    self._programmatic_session_reader,
-                    acquire_root_scope,
-                )
-                if not candidate
-                else PluginScopedTurns.candidate_validation()
-            )
-            _ = await root.context.provide(SCOPED_TURNS, scoped_turns)
         if any(
             CONTINUATIONS in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
@@ -6101,16 +5943,6 @@ class PluginManager:
         """冻结静态 v3 声明可读取的 Core service 输入。"""
 
         values: dict[Any, object] = {}
-        values[SCOPED_TURNS] = (
-            PluginScopedTurns(
-                self._conversation_runtime,
-                self._programmatic_session_creator,
-                self._programmatic_session_reader,
-            )
-            if self._conversation_runtime is not None
-            and self._programmatic_session_creator is not None
-            else PluginScopedTurns.candidate_validation()
-        )
         values[CONTINUATIONS] = (
             PluginContinuations(self._continuation_publisher)
             if self._continuation_publisher is not None
@@ -7140,23 +6972,6 @@ class PluginManager:
             else:
                 self._active_channel_generation = None
                 self._active_channel_catalog_identity = None
-        activity_host = self._activity_host
-        if activity_host is not None and activity_host.active is not None:
-            _ = self._snapshot_store.pause_admission()
-            try:
-                _, cancelled = await _complete_critical(activity_host.close())
-                externally_cancelled = externally_cancelled or cancelled
-            except BaseException as error:
-                self._cleanup_failures.append(
-                    CleanupFailure(
-                        resource="activity-host",
-                        error=str(error) or type(error).__name__,
-                    )
-                )
-                raise RuntimeError(
-                    "Activity runtime cleanup 未完成，generation owner 已保留"
-                ) from error
-
         # 2. 关闭当前 generation admission，再完成快照回收。
         for generation in self._active_generations.values():
             self._retire_generation(generation)
@@ -7858,8 +7673,6 @@ def _replace_snapshot_payload(
         "tool_registry",
         "plugin_skill_index",
         "command_registry",
-        "background_job_catalog",
-        "background_job_catalog_identity",
         "plugin_tool_catalog",
         "plugin_tool_catalog_identity",
         "composition_root",

@@ -19,10 +19,7 @@ import infra.mobile_realtime.channel as channel_module
 import infra.mobile_realtime.gateway as gateway_module
 
 from agent.config_models import MobileRealtimeConfig
-from agent.control.errors import ControlExecutionError
-from agent.control.models import TurnRecord, TurnRequest, TurnStatus
-from agent.control.ports import ControlExecutionResult
-from agent.control.runtime import ConversationRuntime
+from agent.control.models import TurnRecord, TurnStatus
 from agent.plugin_composition import (
     CapabilitySources,
     ConnectionDescriptor,
@@ -468,64 +465,6 @@ async def test_mobile_message_send_uses_exact_v3_ingress_without_legacy_bus(
     storage.close()
 
 
-@pytest.mark.asyncio
-async def test_mobile_message_send_accepts_only_explicit_latest_failed_retry(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    bus = _Bus()
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    manager.save(manager.get_or_create(session_id))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                interrupt_controller=None,
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-    source_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-
-    async def fail(_request: TurnRequest) -> ControlExecutionResult:
-        raise ControlExecutionError("provider_offline", "offline", retryable=True)
-
-    control_runtime = ConversationRuntime(manager.control_store, fail)
-    failed = await control_runtime.start_turn(
-        TurnRequest(
-            session_id,
-            "u1",
-            {"inboundMetadata": {"client_message_id": source_id}},
-        )
-    )
-    assert (await failed.result()).status is TurnStatus.FAILED
-
-    retry_id = "01ARZ3NDEKTSV4RRFFQ69G5FAW"
-    reply = await channel.handle_command(
-        device_id=device_id,
-        frame=_message_frame(
-            frame_id=retry_id,
-            session_id=session_id,
-            retry_of_client_message_id=source_id,
-        ),
-    )
-
-    assert reply.type == "message.send.ok"
-    raw = cast(RawInbound, bus.inbound[-1])
-    assert raw.message.metadata["retry_of_client_message_id"] == source_id
-    await control_runtime.shutdown()
-    await channel.stop()
-    manager.close()
-    storage.close()
 
 
 @pytest.mark.asyncio

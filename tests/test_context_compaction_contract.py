@@ -12,7 +12,6 @@ from plugins.compaction.engine import (
     ContextCompactionError,
     ContextCompactor,
     ContextPayloadSegments,
-    _summary_output_limit,
 )
 from agent.plugin_composition import (
     BoundModelDescriptor,
@@ -233,8 +232,8 @@ class _UsageProvider(_Provider):
 
 def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
     active_batch = (
-        {"role": "assistant", "tool_calls": [{"id": "c1"}], "tokens": 15},
-        {"role": "tool", "tool_call_id": "c1", "content": "r", "tokens": 15},
+        {"role": "assistant", "tool_calls": [{"id": "c1"}], "tokens": 20},
+        {"role": "tool", "tool_call_id": "c1", "content": "r", "tokens": 20},
     )
     segments = ContextPayloadSegments(
         prefix=(),
@@ -271,6 +270,54 @@ def test_committed_and_temporary_summary_usage_are_aggregated() -> None:
     assert result.checkpoint.summary_usage is not None
     assert result.checkpoint.summary_usage.input_tokens == 10
     assert result.checkpoint.summary_usage.output_tokens == 1
+
+
+@pytest.mark.parametrize("tool_count, expected_calls", [(0, 1), (12, 2)])
+def test_history_summary_keeps_active_originals_when_full_request_fits(
+    tool_count: int, expected_calls: int,
+) -> None:
+    """旧历史摘要后按完整请求复查，只有仍超限才摘要当前工具批次。"""
+
+    batches = tuple(
+        (
+            {"role": "assistant", "content": "", "tool_calls": [{"id": call_id}], "tokens": 15},
+            {"role": "tool", "tool_call_id": call_id, "content": call_id, "tokens": 15},
+        )
+        for call_id in ("sent", "reply")
+    )
+    segments = ContextPayloadSegments(
+        prefix=({"role": "system", "content": "rules", "tokens": 1},),
+        committed_units=(_unit(1, 30), _unit(2, 30)),
+        current_anchor=({"role": "user", "content": "continue", "tokens": 1},),
+        active_batches=batches,
+        pending=({"role": "assistant", "content": "pending", "tokens": 1},),
+    )
+    provider = _UsageProvider()
+    compactor = ContextCompactor(
+        provider=provider, scope_id="restore-active", payload_segments=segments,
+        max_output_tokens=10, next_generation=1, keep_recent_tokens=20,
+    )
+    messages = segments.flatten()
+    original = segments.flatten()
+    tools = [{"type": "function", "function": {"name": f"tool_{i}"}} for i in range(tool_count)]
+
+    result = _run(compactor.prepare(messages, pending_start=8, tools=tools))
+
+    assert len(provider.calls) == expected_calls
+    assert result.checkpoint.source_message_ids == ("m1", "m2")
+    assert result.summary_usage.request_count == expected_calls
+    assert result.estimated_tokens == provider.estimate_context_tokens(messages, tools)
+    assert result.estimated_tokens < 74
+    assert segments.flatten() == original
+    if expected_calls == 1:
+        assert messages[2:] == [*segments.current_anchor, *batches[0], *batches[1], *segments.pending]
+        assert result.pending_start == len(messages) - 1
+        assert compactor._segments.active_batches == batches
+        assert not compactor._segments.temporary_summary
+        assert "sent" not in _call_message_content(provider.calls[0])
+    else:
+        assert "sent" in _call_message_content(provider.calls[1])
+        assert compactor._segments.active_batches == (batches[1],)
 
 
 def test_single_interaction_remains_atomic_after_closed_tool_batches() -> None:
@@ -508,7 +555,8 @@ def test_summary_uses_current_once_then_distinct_fallback_once_with_own_budget()
     assert len(fallback.calls) == 1
     assert current.calls[0]["model"] == "selected-model"
     assert fallback.calls[0]["model"] == "default-model"
-    assert _call_int(fallback.calls[0], "max_tokens") == 8_192
+    assert _call_int(current.calls[0], "max_tokens") == 0
+    assert _call_int(fallback.calls[0], "max_tokens") == 0
     assert result.checkpoint is not None
     assert result.checkpoint.model_runtime_id == "main"
     assert result.checkpoint.model == "default-model"
@@ -671,20 +719,29 @@ def test_logical_interaction_inputs_only_enter_temporary_summary() -> None:
     assert all(value not in committed_prompt for value in ("U1", "U2", "U3"))
 
 
-def test_summary_output_limit_keeps_input_and_output_limits_independent() -> None:
-    summary_input = [{"role": "user", "content": "summary", "tokens": 2}]
-    assert (
-        _summary_output_limit(_Provider(context_window=8_193), summary_input) == 8_192
-    )
-    assert (
-        _summary_output_limit(_Provider(context_window=8_192), summary_input) == 8_192
-    )
-    with pytest.raises(ContextCompactionError, match="summary_input_exceeds_window"):
-        _summary_output_limit(_Provider(context_window=1), summary_input)
+@pytest.mark.parametrize("through_callback", [False, True])
+@pytest.mark.parametrize("model_output_limit", [None, 123])
+def test_summary_request_leaves_output_limit_to_provider(
+    through_callback: bool, model_output_limit: int | None,
+) -> None:
+    """两条摘要调用入口都不把模型能力或历史常量变成输出截断参数。"""
 
-    capped = _Provider(context_window=8_193)
-    capped.max_output_tokens = 123
-    assert _summary_output_limit(capped, summary_input) == 123
+    provider = _Provider()
+    provider.max_output_tokens = model_output_limit
+    segments = ContextPayloadSegments(
+        prefix=(), committed_units=(_unit(1, 30), _unit(2, 30)), current_anchor=(),
+    )
+    compactor = ContextCompactor(
+        provider=provider, scope_id="summary-output", payload_segments=segments,
+        max_output_tokens=100, next_generation=1, keep_recent_tokens=20,
+        chat_call=provider.chat if through_callback else None,
+    )
+
+    result = _run(compactor.prepare(segments.flatten(), pending_start=2, tools=[], force=True))
+
+    assert result.compacted
+    assert len(provider.calls) == 1
+    assert _call_int(provider.calls[0], "max_tokens") == 0
 
 
 def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
@@ -730,7 +787,7 @@ def test_summary_reduces_oversized_history_in_bounded_unit_chunks() -> None:
     assert result.compacted
     assert len(provider.calls) == 3
     assert "[Previous compaction summary]" in _call_message_content(provider.calls[1])
-    assert all(_call_int(call, "max_tokens") > 0 for call in provider.calls)
+    assert all(_call_int(call, "max_tokens") == 0 for call in provider.calls)
 
 
 def test_summary_shrinks_complete_unit_chunk_after_provider_overflow() -> None:
@@ -953,7 +1010,7 @@ def test_same_turn_temporary_summary_replaces_previous_projection() -> None:
         current_anchor=(),
         active_batches=(active, active),
     )
-    provider = _SentinelProvider()
+    provider = _SentinelProvider(context_window=10)
     compactor = ContextCompactor(
         provider=provider,
         scope_id="same-turn",

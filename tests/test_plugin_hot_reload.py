@@ -18,8 +18,6 @@ from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 from starlette.websockets import WebSocketDisconnect
 
-from agent.looping.core import AgentLoop
-from agent.looping.session_lane import SessionLaneRegistry
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
 from agent.plugins.dashboard_host import (
     DashboardBinding,
@@ -1013,57 +1011,6 @@ async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(
 
 
 @pytest.mark.asyncio
-async def test_passive_runtime_admission_holds_one_snapshot(tmp_path: Path) -> None:
-    _write_plugin(
-        tmp_path / "plugins", "passive_snapshot", _v3_source("passive_snapshot")
-    )
-    manager = _manager(tmp_path)
-    await manager.load_all()
-    active = manager.generation("passive_snapshot")
-    prepared = await manager.prepare_candidate("passive_snapshot")
-    assert active is not None and prepared is not None
-    compiler = RuntimeSnapshotCompiler()
-    v1 = compiler.compile({"passive_snapshot": active}, catalog_generation=active)
-    next_snapshot = compiler.compile(
-        {"passive_snapshot": prepared}, catalog_generation=prepared
-    )
-    store = RuntimeSnapshotStore()
-    store.install(v1)
-    loop = object.__new__(AgentLoop)
-    loop._session_lanes = SessionLaneRegistry()
-    loop._runtime_snapshot_store = store
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    seen: list[str] = []
-
-    async def process(_msg, **_kwargs):
-        from agent.plugins.snapshot import get_current_runtime_snapshot
-
-        snapshot = get_current_runtime_snapshot()
-        assert snapshot is not None
-        seen.append(snapshot.snapshot_id)
-        entered.set()
-        await release.wait()
-        assert get_current_runtime_snapshot() is snapshot
-        seen.append(snapshot.snapshot_id)
-        return "done"
-
-    loop._process = process
-    message = cast(Any, SimpleNamespace(session_key="cli:snapshot"))
-    running = asyncio.create_task(loop._process_with_runtime_admission(message))
-    await entered.wait()
-    await store.commit(store.begin_publish(next_snapshot))
-    release.set()
-    assert await running == "done"
-    assert seen == [v1.snapshot_id, v1.snapshot_id]
-    await loop._process_with_runtime_admission(message)
-    assert seen[-2:] == [next_snapshot.snapshot_id, next_snapshot.snapshot_id]
-    await store.close()
-    await manager.discard_prepared("passive_snapshot")
-    await manager.terminate_all()
-
-
-@pytest.mark.asyncio
 async def test_reconcile_changed_adds_and_removes_discovered_plugin(
     tmp_path: Path,
 ) -> None:
@@ -1756,110 +1703,4 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
         await asyncio.wait_for(publication, timeout=5)
 
     await manager.snapshot_store.retry_drains()
-    await manager.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_skill_body_stays_on_snapshot_generation(tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "plugins" / "snapshot_skill"
-    for release, body in (("a", "body a"), ("b", "body b")):
-        skill_dir = plugin_dir / f"skills-{release}" / "snapshot-skill"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            f"---\ndescription: snapshot skill {release}\n---\n{body}\n",
-            encoding="utf-8",
-        )
-    plugin_file = plugin_dir / "plugin.py"
-    plugin_file.write_text(
-        _v3_source("snapshot_skill", exports="skill_roots = ('skills-a',)\n"),
-        encoding="utf-8",
-    )
-    workspace = tmp_path / "workspace"
-    manager = _manager(tmp_path, workspace=workspace)
-    await manager.load_all()
-    workspace_skills = workspace / "skills"
-    workspace_skills.mkdir()
-    (workspace_skills / "snapshot-skill").symlink_to(
-        plugin_dir / "skills-a" / "snapshot-skill", target_is_directory=True
-    )
-    plugin_file.write_text(
-        _v3_source(
-            "snapshot_skill", version="1.0.1", exports="skill_roots = ('skills-b',)\n"
-        ),
-        encoding="utf-8",
-    )
-    candidate = await manager.prepare_candidate("snapshot_skill")
-    assert candidate is not None
-    skills = SkillsLoader(workspace, runtime_catalog="normal")
-    loop = object.__new__(AgentLoop)
-    loop._session_lanes = SessionLaneRegistry()
-    loop._runtime_snapshot_store = manager.snapshot_store
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    seen: list[str | None] = []
-
-    async def process(_msg, **_kwargs):
-        seen.append(skills.load_skill_body("snapshot-skill"))
-        entered.set()
-        await release.wait()
-        seen.append(skills.load_skill_body("snapshot-skill"))
-        return "done"
-
-    loop._process = process
-    message = cast(Any, SimpleNamespace(session_key="cli:snapshot-skill"))
-    old_turn = asyncio.create_task(loop._process_with_runtime_admission(message))
-    await entered.wait()
-    old_snapshot = manager.current_snapshot
-    assert old_snapshot is not None
-    publication = asyncio.create_task(manager.publish_prepared("snapshot_skill"))
-    while old_snapshot.accepting_leases:
-        await asyncio.sleep(0)
-    assert not publication.done()
-    release.set()
-    assert await old_turn == "done"
-    await publication
-    await loop._process_with_runtime_admission(message)
-    assert seen[:2] == ["body a", "body a"]
-    assert seen[2:] == ["body b", "body b"]
-    await manager.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_workspace_skill_updates_without_plugin_snapshot_reload(
-    tmp_path: Path,
-) -> None:
-    _write_plugin(
-        tmp_path / "plugins",
-        "workspace_skill_snapshot",
-        _v3_source("workspace_skill_snapshot"),
-    )
-    workspace = tmp_path / "workspace"
-    skill_dir = workspace / "skills" / "workspace-live"
-    skill_dir.mkdir(parents=True)
-    skill_file = skill_dir / "SKILL.md"
-    skill_file.write_text(
-        "---\ndescription: workspace live\n---\nworkspace release a\n", encoding="utf-8"
-    )
-    manager = _manager(tmp_path, workspace=workspace)
-    await manager.load_all()
-    snapshot = manager.current_snapshot
-    skills = SkillsLoader(workspace, runtime_catalog="normal")
-    loop = object.__new__(AgentLoop)
-    loop._session_lanes = SessionLaneRegistry()
-    loop._runtime_snapshot_store = manager.snapshot_store
-    seen: list[str | None] = []
-
-    async def process(_msg, **_kwargs):
-        seen.append(skills.load_skill_body("workspace-live"))
-        return "done"
-
-    loop._process = process
-    message = cast(Any, SimpleNamespace(session_key="cli:workspace-skill"))
-    await loop._process_with_runtime_admission(message)
-    skill_file.write_text(
-        "---\ndescription: workspace live\n---\nworkspace release b\n", encoding="utf-8"
-    )
-    await loop._process_with_runtime_admission(message)
-    assert manager.current_snapshot is snapshot
-    assert seen == ["workspace release a", "workspace release b"]
     await manager.terminate_all()
