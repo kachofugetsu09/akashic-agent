@@ -669,7 +669,7 @@ class WakeState:
         if not self.path.exists():
             yield None
             return
-        connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+        connection = sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)
         try:
             connection.execute("PRAGMA query_only = ON")
             self._validate_tables(

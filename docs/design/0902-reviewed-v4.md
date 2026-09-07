@@ -1882,3 +1882,49 @@ Mobile WebUI 停止生成必须调用 `sendSessionCommand(session_id, "/stop")`�
 另外在一次性源码副本中做破坏实验：把文件写入正文改成 `BROKEN_WRITE`，完整 App 测试在磁盘原文断言失败；删除重启 `wait_output()`，真实 writer drain 测试在“最终输出仍被阻塞，重启不得提交”断言失败。生产 worktree 未应用这些破坏。原有全测试基线合计 1654 passed、6 skipped；首次归档副本中 3 项 Gate 自检依赖 `.git` 失败，回到真实 worktree 运行这 3 项均通过。
 
 恢复点：`backup/pr558-before-strong-fixtures-20260907` 与 `/mnt/data/akasic-agent-backups/pr558-strong-fixtures-20260907/`。本轮结果不是全绿验收；上述 Dashboard 生产问题仍待修复，不据此批准合并或部署。
+
+### 第 10 层系统 fixture 与日常验收（2026-09-07）
+
+后续实现补齐真实 App 链路，并修复上一节发现的两个 Dashboard 问题。Wake 用正确编码的只读文件 URI 打开原库；Akasha 先筛 session、再分页展开正文，带搜索词时仍按原显示正文搜索。
+
+日常内置功能回归使用统一入口：
+
+```bash
+.venv/bin/python -m tests.fixtures.builtin_suite -q --junitxml=/tmp/builtin-fixtures.xml
+```
+
+默认同时运行真实系统场景和既有提交故障、热更新、取消与恢复测试。`--system-only` 只重放独立 App 场景，不能代表完整验收。pytest 的失败状态原样返回；临时目录保留 `process.log`、真实模型请求 `system-model.jsonl`、连接地址与一次性 workspace，便于定位失败层。
+
+新增系统场景使用真实模型设置 HTTP 路由完成连接、模型与默认角色配置，随后实际执行：
+
+- Schedule 和 Spawn 从父工具调用开始，子任务实际写入并读取自己的目录，调度实际执行并通知目标；杀进程后逐条重读原记录，完成后续任务。
+- 工具参数错误和 provider 401 保存可见失败，同一会话下一输入继续完成，原历史前缀保持不变。
+- 阻塞旧 endpoint 的请求时更新模型连接，原工具链继续走旧 endpoint，下一输入走新 endpoint。
+- 实际 HTTP embedding 学习原消息，换进程后真实召回并在 Dashboard 验证原文出处。
+- 长对话实际触发上下文压缩与 Markdown 记忆写入，重开后保留每条原消息、摘要引用与长期偏好。
+- 在工具结果提交前后分别 SIGKILL；磁盘效果保持一次，重开不重复执行。提交前的未知效果继续阻止原会话自动推进，独立会话可用；提交后的成功结果允许原会话继续。测试没有自行批准未知效果。
+- Drift、Alert、Content 从业务生产者输入开始，由真实 Wake 执行私有决定工具并通过 Akashic 投递；Content 包括实际初筛、调查及原链接。重开后核对非空 Dashboard、原通知和不重复模型调用。输入符合原评分规则，未修改 Content 触发阈值。
+
+这些链路发现另一个实际问题：归档的工具和内部程序能找到模型服务，却没有带上动态注册的模型 driver 和 Prompt 材料。服务现在可在原 `provide` Effect 上声明实际注册 Context；固定 binding 时，与静态 `inject` 一起遍历同一闭包。Models 与 Materials 各自拥有自己的注册事实，Core 不识别插件名称。旧 binding descriptor 与已保存消息不改写；跨 Root 或伪造 Context 拒绝，provider 清理同时结束该声明。
+
+```text
+┌─────────────────────────────┐
+│ SDK / HTTP / 生产者业务输入   │
+└──────────────┬──────────────┘
+               ▼
+┌─────────────────────────────┐
+│ 真实 App、内置插件、归档绑定  │
+│ HTTP 模型 → 工具 → 提交/投递 │
+└──────────────┬──────────────┘
+               ▼
+┌─────────────────────────────┐
+│ 文件、SDK 原文、非空 Dashboard│
+│ 崩溃 → 新 PID → 原事实/新工作 │
+└─────────────────────────────┘
+```
+
+可移植边界：系统场景不导入生产实现。通过 `AKASHIC_FIXTURE_COMMAND` 指定 JSON argv，使用 `{root}` 和 `{model_endpoint}` 替换启动位置；替代服务须发布同样的 readiness JSON，并提供 SDK、Web bootstrap 和模型设置协议。Python 启动器的测试 seam 单独负责初始插件配置、生产者 stdin 输入以及精确提交点崩溃注入；迁移到其他语言需要实现这些测试适配，不能把内部故障注入宣称为纯黑盒。外部模型只替换决策与 embedding 返回值，真实工具、状态、归档和投递不替换。
+
+日常内置行为修改可用这些自动化结果取代重复的手动走流程。它们不能证明真实模型的决策质量、浏览器视觉与交互、手机生命周期、Computer/宿主权限、外部插件、真实网络认证或正式 workspace 升级。改到这些边界或发布时仍须保留对应的小范围真实验收；本轮没有运行设备、正式部署或外部插件 E2E。
+
+恢复点：`backup/pr558-before-system-fixtures-20260907` 与 `/mnt/data/akasic-agent-backups/pr558-system-fixtures-20260907/`。所有运行写入只在测试临时目录；最终测试、独立概念 Gate 与 change-impact Gate 结果记录在 PR。

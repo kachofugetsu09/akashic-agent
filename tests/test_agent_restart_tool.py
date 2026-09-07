@@ -1046,7 +1046,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
                 writer.close()
                 try:
                     await writer.wait_closed()
-                except ConnectionResetError:
+                except (ConnectionResetError, BrokenPipeError):
                     # 断言失败时客户端可能带着未读帧关闭；仍需完成连接清理。
                     pass
                 finally:

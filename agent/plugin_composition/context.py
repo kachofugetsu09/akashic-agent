@@ -101,6 +101,7 @@ class _Provider:
     value: object
     owner: Fiber
     revision: int
+    binding_contributors: Callable[[], tuple[Context, ...]] | None = None
 
 
 @dataclass(slots=True)
@@ -289,7 +290,9 @@ class Context:
             required_for_readiness=False,
         )
 
-    async def provide(self, key: ServiceKey[T], value: T) -> Effect:
+    async def provide(self, key: ServiceKey[T], value: T, *,
+                      binding_contributors: Callable[[], tuple[Context, ...]] | None = None) -> Effect:
+        """服务 owner 可声明归档时实际需要的动态注册 Context，生命周期随同一 Effect。"""
         reject_executor_context_access()
 
         async def setup() -> Callable[[], Awaitable[None]]:
@@ -297,6 +300,7 @@ class Context:
                 cast(ServiceKey[object], key),
                 value,
                 self._fiber,
+                binding_contributors=binding_contributors,
             )
 
             async def cleanup() -> None:
@@ -1189,6 +1193,13 @@ class CompositionRoot:
             if (runtime := provider.owner.runtime) is not None
         }
 
+    def binding_contributors(self, key: ServiceKey[object]) -> tuple[Context, ...]:
+        """归档依赖来自当前服务 provider，不另存动态注册状态。"""
+        provider = self._active_provider(key)
+        if provider is None:
+            raise RuntimeError(f"归档服务已失效: {key.name}")
+        return () if provider.binding_contributors is None else provider.binding_contributors()
+
     def context_owner(self, context: Context) -> str | None:
         """只识别本 Root 实际存活的插件 Context，不接受重建的身份字段。"""
         for fiber in self._fibers.values():
@@ -1322,6 +1333,7 @@ class CompositionRoot:
         key: ServiceKey[object],
         value: object,
         owner: Fiber,
+        *, binding_contributors: Callable[[], tuple[Context, ...]] | None = None,
     ) -> None:
         existing = self._providers.get(key)
         if existing is not None:
@@ -1334,6 +1346,7 @@ class CompositionRoot:
             value=value,
             owner=owner,
             revision=self._next_provider_revision,
+            binding_contributors=binding_contributors,
         )
         self._next_provider_revision += 1
         self._bump_composition_revision()

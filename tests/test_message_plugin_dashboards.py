@@ -385,6 +385,14 @@ async def test_akasha_dashboard_filters_pages_and_returns_original_detail(tmp_pa
                 assert detail.status_code == 200
                 original = log.reader(message["session_id"]).get(message["message_id"])
                 assert detail.json()["hits"][0]["messages"][0]["text"] == original.body.parts[0].value
+            # 保留原搜索合同：搜索展示正文，且与 session 过滤取交集。
+            for query, session, expected in [("sTaRt-6", "session-0", ["recall-06"]),
+                                             ("START-6", "session-1", []), ("END-6", "session-0", [])]:
+                search = await client.get("/api/dashboard/akasha-inspector/turns",
+                                          params={"q": query, "session_key": session, "page_size": 1})
+                assert search.status_code == 200
+                assert [row["query_id"] for row in search.json()["items"]] == expected
+                assert search.json()["total"] == len(expected)
         with closing(sqlite3.connect(tmp_path / "sessions.db")) as database:
             assert tuple(database.iterdump()) == before
 

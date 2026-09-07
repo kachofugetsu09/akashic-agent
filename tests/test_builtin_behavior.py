@@ -6,18 +6,16 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import json
-import os
 from pathlib import Path
 import re
 import socket
-import sys
 
 from aiohttp import web
 from akashic_sdk import AsyncAkashic
 import pytest
 
+from tests.fixtures.builtin_runtime import runtime
 
-ROOT = Path(__file__).parents[1]
 
 
 class WireModel:
@@ -102,46 +100,6 @@ class WireModel:
             await runner.cleanup()
 
 
-@asynccontextmanager
-async def runtime(root: Path, model_endpoint: str) -> AsyncIterator[tuple[asyncio.subprocess.Process, str]]:
-    """启动独立 App 进程，保留 stderr，并只清理本次进程。"""
-    root.mkdir(parents=True, exist_ok=True)
-    environment = {key: value for key, value in os.environ.items() if not key.startswith("AKASHIC_")}
-    environment.update({
-        "AKASHIC_PLUGIN_HOME": str(root / "plugin-home"),
-        "HOME": str(root / "home"),
-        "XDG_CONFIG_HOME": str(root / "home/config"),
-        "XDG_CACHE_HOME": str(root / "home/cache"),
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": str(ROOT),
-    })
-    with (root / "process.log").open("ab") as errors:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "tests.fixtures.builtin_process", str(root), model_endpoint,
-            cwd=ROOT, env=environment, stdout=asyncio.subprocess.PIPE, stderr=errors,
-        )
-        try:
-            assert process.stdout is not None
-            async with asyncio.timeout(40):
-                while True:
-                    line = await process.stdout.readline()
-                    if not line:
-                        await process.wait()
-                        raise AssertionError((root / "process.log").read_text(errors="replace"))
-                    if line.startswith(b'{"fixture_ready":'):
-                        ready = json.loads(line)
-                        assert ready["pid"] == process.pid
-                        break
-            yield process, ready["endpoint"]
-        finally:
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), 20)
-                except TimeoutError:
-                    process.kill()
-                    await process.wait()
-                    raise AssertionError("App 未能正常结束，已保留 process.log")
 
 
 async def finish(client: AsyncAkashic, session: str, label: str) -> list[dict]:

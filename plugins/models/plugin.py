@@ -58,7 +58,7 @@ async def apply(ctx: Context, config: object) -> None:
         label="model-auth-attempts",
     )
     _ = await ctx.provide(MODEL_DRIVERS, state.drivers)
-    _ = await ctx.provide(CHAT_MODELS, state.chat_models)
+    _ = await ctx.provide(CHAT_MODELS, state.chat_models, binding_contributors=state.chat_contributors)
     _ = await ctx.provide(EMBEDDINGS, state.embeddings)
     _ = await ctx.provide(MODEL_CATALOG, state.catalog)
     _ = await ctx.provide(MODEL_SETTINGS, state.settings)

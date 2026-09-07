@@ -75,6 +75,13 @@ async def apply(ctx: Context, config: object) -> None:
 
 双方各自声明同名、同结构的 key，通过 `inject` 和 `ctx.require()` 连接，不能 import 对方源码。
 
+服务若依赖动态注册者，使用 `await ctx.provide(KEY, value, binding_contributors=read_contexts)`
+声明归档依赖。`read_contexts()` 同步返回当前实际注册者的 `tuple[Context, ...]`，只读原注册状态；
+固定 binding 时，这些 Context 与静态 `inject` 一起进入同一依赖闭包。伪造或其他 Root 的 Context
+会被拒绝，声明随该 Service 的 Effect 清理。普通服务不传此参数。固定 binding 时已知目标子集的
+目录（如工具）继续传已有的 `contributors`，只归档该目标；恢复后才选择目标的服务（如材料）
+声明其可用注册者，具体调用仍由原 `bind` 合同选择。
+
 ## 3. Typed events
 
 插件通过明确的 typed key 注册 listener；同一事件名只能绑定一种 dispatch 合同，注册顺序就是 listener

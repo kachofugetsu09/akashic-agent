@@ -78,26 +78,41 @@ class Bindings:
         owners = root.plugin_service_owners()
         dependencies = root.plugin_dependencies()
         selected: set[str] = set()
-        for context in contributors:
+        pending: list[str] = []
+        services: set[ServiceKey[object]] = set()
+
+        def include_context(context: Context) -> None:
             contributor = root.context_owner(context)
             if contributor is None:
                 raise ValueError("注册 Context 不属于当前 scope")
-            selected.add(contributor)
-        owner = owners.get(service)
-        if owner is not None:
-            selected.add(owner)
+            include_owner(contributor)
+
+        def include_owner(plugin_id: str) -> None:
+            if plugin_id not in selected:
+                selected.add(plugin_id)
+                pending.append(plugin_id)
+
+        def include_service(key: ServiceKey[object]) -> None:
+            if key in services:
+                return
+            services.add(key)
+            owner = owners.get(key)
+            if owner is not None:
+                include_owner(owner)
+                for context in root.binding_contributors(key):
+                    include_context(context)
+
+        for context in contributors:
+            include_context(context)
+        include_service(service)
         if not selected:
             raise ValueError("Core 服务绑定需要实际目标注册 owner")
-        pending = list(selected)
         while pending:
             plugin_id = pending.pop()
             if plugin_id not in lease.snapshot.generations:
                 raise ValueError(f"注册 owner 不属于当前 scope: {plugin_id}")
             for key in dependencies[plugin_id]:
-                provider = owners.get(key)
-                if provider is not None and provider not in selected:
-                    selected.add(provider)
-                    pending.append(provider)
+                include_service(key)
         components: list[str] = []
         for plugin_id in sorted(selected):
             generation = lease.snapshot.generations[plugin_id]

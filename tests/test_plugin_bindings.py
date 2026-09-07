@@ -326,14 +326,21 @@ async def apply(ctx, config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("dynamic", [False, True])
 async def test_capture_registry_contributor_uses_actual_live_context(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, dynamic
 ):
     from agent.plugin_composition import Context
 
     monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
     plugins = tmp_path / "plugins"
     write_plugins(plugins)
+    if dynamic:
+        consumer = plugins / "consumer/plugin.py"
+        consumer.write_text(consumer.read_text().replace(
+            'ctx.provide(ServiceKey("archive.test.result"), ctx.require(inject[0]))',
+            'ctx.provide(ServiceKey("archive.test.result"), ctx.require(inject[0]), '
+            'binding_contributors=lambda: (ctx.require(inject[0])["registration"],))'))
     addon = plugins / "addon"
     addon.mkdir()
     (addon / "plugin.py").write_text("""
@@ -363,9 +370,14 @@ async def apply(ctx, config):
         async with lease_runtime_snapshot(host.snapshot_store):
             for invalid in (foreign, Context(context._root, context._fiber)):
                 with pytest.raises(ValueError, match="不属于"):
-                    binding.bind(RESULT, {}, contributors=(invalid,))
+                    if dynamic:
+                        host.current_snapshot.composition_root.context.require(RESULT)["registration"] = invalid
+                        binding.bind(RESULT, {})
+                    else:
+                        binding.bind(RESULT, {}, contributors=(invalid,))
+            host.current_snapshot.composition_root.context.require(RESULT)["registration"] = context
             identity = binding.bind(
-                RESULT, {"target": "extra"}, contributors=(context,)
+                RESULT, {"target": "extra"}, contributors=() if dynamic else (context,)
             )
         async with binding.open(identity, RESULT) as (state, _):
             assert state["extra"] == "registered A"

@@ -256,6 +256,12 @@ class CompositionOverlay:
                 return owner
         return None
 
+    def binding_contributors(self, key: ServiceKey[object]) -> tuple[Context, ...]:
+        """与服务取值共用 stable/candidate 的精确 owner 选择。"""
+        owner = self.plugin_service_owners()[key]
+        root = self.candidate if owner in self.replaced_plugin_ids else self.stable
+        return root.binding_contributors(key)
+
     def plugin_dependencies(self) -> dict[str, frozenset[ServiceKey[object]]]:
         """使用与 Overlay provider 相同的 generation 选择。"""
         return {

@@ -135,17 +135,23 @@ def register(app: FastAPI, context: DashboardContext) -> None:
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, object]:
-        rows = [_row(identity, recall, full_text=False) for identity, recall in _records().list()]
+        # 1. 会话过滤只读召回出处，普通翻页不展开页外消息正文。
+        records = [(identity, recall) for identity, recall in _records().list()
+                   if not session_key or _source_fields(recall)[1] == session_key]
         query = q.strip().casefold()
-        rows = [
-            row for row in rows
-            if (not session_key or row["session_key"] == session_key)
-            and (not query or query in json.dumps(row, ensure_ascii=False).casefold())
-        ]
         start = (page - 1) * page_size
+        if query:
+            # 文本搜索仍包含展示正文；只展开已经通过会话过滤的记录。
+            rows = [_row(identity, recall, full_text=False) for identity, recall in records]
+            rows = [row for row in rows if query in json.dumps(row, ensure_ascii=False).casefold()]
+            items, total = rows[start:start + page_size], len(rows)
+        else:
+            items = [_row(identity, recall, full_text=False)
+                     for identity, recall in records[start:start + page_size]]
+            total = len(records)
         return {
-            "items": rows[start:start + page_size],
-            "total": len(rows),
+            "items": items,
+            "total": total,
             "page": page,
             "page_size": page_size,
         }

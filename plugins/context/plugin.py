@@ -164,4 +164,5 @@ CONTEXT = ServiceKey[ContextBuilder]("context.v1")
 async def apply(ctx: Context, config: Config | None) -> None:
     config = Config() if config is None else config
     _ = await ctx.provide(CONTEXT, ContextBuilder())
-    _ = await ctx.provide(MATERIALS, ContextMaterials(ctx, prompt_sources=config.prompt_sources, summary_source=config.summary_source or None))
+    materials = ContextMaterials(ctx, prompt_sources=config.prompt_sources, summary_source=config.summary_source or None)
+    _ = await ctx.provide(MATERIALS, materials, binding_contributors=materials.binding_contributors)

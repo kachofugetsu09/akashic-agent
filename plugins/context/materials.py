@@ -21,8 +21,12 @@ class _Source:
     after: tuple[str, ...]
     prompt: bool
     summary: bool
-    plugin_id: str
+    context: Context
     reduce: SummaryReducer | None
+
+    @property
+    def plugin_id(self) -> str:
+        return self.context.runtime.plugin_id
 
 
 class MaterialView:
@@ -140,10 +144,14 @@ class ContextMaterials:
         def setup():
             if name in self._sources:
                 raise ValueError(f"材料 owner 重复: {name}")
-            self._sources[name] = _Source(prepare, after, prompt, summary, plugin_id, reduce)
+            self._sources[name] = _Source(prepare, after, prompt, summary, ctx, reduce)
             return lambda: self._sources.pop(name)
 
         return await ctx.effect(setup, label=f"materials:{name}")
+
+    def binding_contributors(self) -> tuple[Context, ...]:
+        """材料目录的实际注册者随同服务归档；来源仍在 bind 时选择排除项。"""
+        return tuple(source.context for source in self._sources.values())
 
     @asynccontextmanager
     async def bind(self, *, exclude: frozenset[str] = frozenset()) -> AsyncIterator[MaterialView]:

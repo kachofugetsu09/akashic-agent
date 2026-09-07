@@ -572,6 +572,13 @@ class ModelsState:
         finally:
             await lease.release()
 
+    def chat_contributors(self) -> tuple[Context, ...]:
+        """只归档可选聊天模型所需的实际 driver，不夹带独立 embedding 或未配置的 driver。"""
+        snapshot = self._snapshot_or_empty()
+        drivers = {snapshot.connections[model.connection_id].driver_id for model in snapshot.models.values()
+                   if model.kind == ModelKind.CHAT and model.enabled and snapshot.connections[model.connection_id].enabled}
+        return tuple(context for driver, context in self._driver_contexts.items() if driver in drivers)
+
     def save_embedding_binding(self, bindings: Bindings, model_id: str | None) -> str:
         """由实际注册表选择 driver owner，调用者不能自己拼归档闭包。"""
         from agent.plugin_composition.models import SavedEmbedding
