@@ -12,6 +12,7 @@ from agent.plugin_composition import (
     Bail,
     CompositionError,
     CompositionRoot,
+    EmitEventKey,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
 )
@@ -23,13 +24,12 @@ from agent.plugins.snapshot import (
     reset_runtime_snapshot,
 )
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
-from agent.turn_events.observe import MEMORY_WRITTEN_EVENT, RETRIEVAL_COMPLETED_EVENT
 from bus.event_bus import EventBus
 from bus.events_lifecycle import TurnCommitted
-from core.memory.engine import MemoryQueryResult, MemoryRecord
-from core.memory.events import MemoryWritten, RetrievalCompleted
-from agent.retrieval.events import build_retrieval_completed
-from agent.retrieval.protocol import RetrievalRequest
+from core.memory.events import MemoryWritten
+
+
+_MEMORY_WRITTEN_EVENT = EmitEventKey[MemoryWritten]("test.memory.written")
 
 
 @asynccontextmanager
@@ -223,45 +223,19 @@ async def test_runtime_start_ignores_snapshot_replaced_before_start(
 
 
 @pytest.mark.asyncio
-async def test_after_turn_committed_event_runs_after_core_fanout() -> None:
-    order: list[str] = []
-    observed: list[TurnCommitted] = []
-    root = CompositionRoot("after-turn-committed")
+async def test_emit_event_listener_failure_is_fail_loud() -> None:
+    root = CompositionRoot("emit-event-failure")
 
-    def on_committed(event: TurnCommitted) -> None:
-        order.append("composition")
-        observed.append(event)
-
-    async def plugin(ctx) -> None:
-        await ctx.on(AFTER_TURN_COMMITTED, on_committed)
-
-    await root.mount(plugin, name="observe-plugin")
-    committed = _committed_event()
-    bus = EventBus()
-    bus.on(TurnCommitted, lambda _: order.append("event-bus"))
-
-    async with _bound_root(root):
-        await bus.fanout(committed)
-        root.context.emit(AFTER_TURN_COMMITTED, committed)
-
-    assert order == ["event-bus", "composition"]
-    assert observed == [committed]
-
-
-@pytest.mark.asyncio
-async def test_after_turn_committed_event_propagates_listener_failure() -> None:
-    root = CompositionRoot("after-turn-committed-failure")
-
-    def fail(_: TurnCommitted) -> None:
+    def fail(_: object) -> None:
         raise RuntimeError("observe failed")
 
     async def plugin(ctx) -> None:
-        await ctx.on(AFTER_TURN_COMMITTED, fail)
+        await ctx.on(EmitEventKey[object]("test.emit.failure"), fail)
 
-    await root.mount(plugin, name="failing-observe-plugin")
+    await root.mount(plugin, name="failing-emit-plugin")
     async with _bound_root(root):
         with pytest.raises(RuntimeError, match="observe failed"):
-            root.context.emit(AFTER_TURN_COMMITTED, _committed_event())
+            root.context.emit(EmitEventKey[object]("test.emit.failure"), object())
 
 
 def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
@@ -281,51 +255,14 @@ def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_after_turn_committed_event_keeps_core_path_without_root() -> None:
-    observed: list[TurnCommitted] = []
-    bus = EventBus()
-    bus.on(TurnCommitted, observed.append)
-    event = _committed_event()
-    result = await bus.fanout(event)
-
-    assert result is None
-    assert observed == [event]
-
-
-
-
-@pytest.mark.asyncio
-async def test_domain_observe_event_uses_bound_candidate_root() -> None:
-    observed: list[str] = []
-    first = CompositionRoot("domain-observe-first")
-    second = CompositionRoot("domain-observe-second")
-
-    async def first_plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, lambda _: observed.append("first"))
-
-    async def second_plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, lambda _: observed.append("second"))
-
-    await first.mount(first_plugin, name="first-observer")
-    await second.mount(second_plugin, name="second-observer")
-    event = _memory_written_event()
-    async with _bound_root(first):
-        await first.context.observe(MEMORY_WRITTEN_EVENT, event)
-    async with _bound_root(second):
-        await second.context.observe(MEMORY_WRITTEN_EVENT, event)
-
-    assert observed == ["first", "second"]
-
-
-@pytest.mark.asyncio
 async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
     observed: list[MemoryWritten] = []
     root = CompositionRoot("event-bus-is-core-only")
 
     async def plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, observed.append)
+        await ctx.on(_MEMORY_WRITTEN_EVENT, observed.append)
 
-    await root.mount(plugin, name="domain-observer")
+    await root.mount(plugin, name="composition-observer")
     async with _bound_root(root):
         await EventBus().fanout(_memory_written_event())
 
@@ -333,10 +270,10 @@ async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
 
 
 @pytest.mark.asyncio
-async def test_domain_observe_event_rejects_inherited_wrong_task_binding() -> None:
+async def test_runtime_snapshot_rejects_inherited_wrong_task_binding() -> None:
     from agent.plugins.snapshot import get_lifecycle_runtime_snapshot
 
-    root = CompositionRoot("domain-observe-wrong-task")
+    root = CompositionRoot("runtime-snapshot-wrong-task")
     store = RuntimeSnapshotStore()
     store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
     lease = store.lease()
@@ -365,9 +302,9 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
     root = CompositionRoot(f"event-bus-wrong-task-{operation}")
 
     async def plugin(ctx) -> None:
-        await ctx.on(MEMORY_WRITTEN_EVENT, lambda _: None)
+        await ctx.on(_MEMORY_WRITTEN_EVENT, lambda _: None)
 
-    await root.mount(plugin, name="domain-observer")
+    await root.mount(plugin, name="composition-observer")
     store = RuntimeSnapshotStore()
     store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
     bus = EventBus()
@@ -393,78 +330,6 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
         await root.dispose()
 
     assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
-
-
-@pytest.mark.asyncio
-async def test_retrieval_completed_event_payload() -> None:
-    observed: list[RetrievalCompleted] = []
-    root = CompositionRoot("retrieval-completed")
-
-    async def plugin(ctx) -> None:
-        await ctx.on(RETRIEVAL_COMPLETED_EVENT, lambda event: observed.append(event))
-
-    await root.mount(plugin, name="retrieval-observer")
-
-    request = RetrievalRequest(
-        message="original",
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        history=[],
-        session_metadata={},
-    )
-    result = MemoryQueryResult(
-        text_block="memory block",
-        records=[
-            MemoryRecord(
-                id="memory-1",
-                kind="event",
-                summary="a long enough memory summary",
-                score=0.91,
-                engine_kind="fake",
-                signals={"confidence_label": "certain", "forced": True},
-                injected=True,
-            )
-        ],
-        trace={"route_decision": "RETRIEVE", "hyde_hypotheses": ["aux query"]},
-        raw={"rewritten_query": "rewritten"},
-    )
-
-    async with _bound_root(root):
-        await root.context.observe(
-            RETRIEVAL_COMPLETED_EVENT,
-            build_retrieval_completed(request, result),
-        )
-
-    assert len(observed) == 1
-    event = observed[0]
-    assert event.query == "rewritten"
-    assert event.orig_query == "original"
-    assert event.route_decision == "RETRIEVE"
-    assert event.aux_queries == ["aux query"]
-    assert event.injected_count == 1
-    assert event.hits[0].item_id == "memory-1"
-    assert event.hits[0].confidence_label == "certain"
-    assert event.hits[0].forced is True
-    assert event.hits[0].metadata["forced"] is True
-
-
-def test_domain_event_contract_imports_without_phase_runtime() -> None:
-    code = (
-        "from agent.turn_events.observe import ("
-        "RETRIEVAL_COMPLETED_EVENT, MEMORY_WRITTEN_EVENT); "
-        "import sys; "
-        "assert 'agent.lifecycle.phases.after_turn' not in sys.modules; "
-        "assert RETRIEVAL_COMPLETED_EVENT.name == 'memory.retrieval.completed'; "
-        "assert MEMORY_WRITTEN_EVENT.name == 'memory.written'"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 def _committed_event() -> TurnCommitted:
