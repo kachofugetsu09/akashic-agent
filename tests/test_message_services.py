@@ -212,6 +212,8 @@ async def test_actual_conversation_plugin_accepts_without_model_or_reply_and_sha
     sources = tmp_path / "plugins"
     shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / "conversation", sources / "conversation",
                     ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / "sources", sources / "sources",
+                    ignore=shutil.ignore_patterns("__pycache__"))
     log = MessageLog(tmp_path / "sessions.db")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
