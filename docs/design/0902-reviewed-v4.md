@@ -1,11 +1,12 @@
 # Akashic v4：消息日志与可组合的 Agent 链路
 
-- 状态：设计已批准（2026-09-05 用户确认）；按 stacked PR 实施；本文件包含线上插件功能复核，生产实现尚未切换。
+- 状态：设计已批准（2026-09-05 用户确认）；按 stacked PR 实施。新 MessageLog 的完整启动验收已在当前 Core 候选中开始，正式 workspace、客户端配套和正式切换仍未完成。
 - 修订日期：2026-09-05。
 - 源码与原提案基线：`51f1467456881e7302abf76a931e9dfe698fef6c`。
 - DSH 参考基线：`49a606bc5b5934603f22a26957a07dc799ab0291`。
 - 实施基线：`6a15444009c807994d33691e0b756167880fad5d`，worktree `message-plugins-stack`。实施按第 16 节分层；当前已实现边界见第 18 节，业务全量切换尚未完成。
 - 已批准执行原则：回复业务由 100% 非特权插件组合；非灰度、非 shadow；可删除经核实不必要或冗余的功能，但逐项记录依据、影响、承接职责、验证与恢复点。开发可分批，正式运行采用完整新链路。
+- 当前实现合同：programmatic Session 的 learning 属性在首次 admission 时固定；显式 `persist_memory=true` 取得 `eligible`，省略或传 `false` 取得 `excluded`，后续输入不能改写该属性。完整 MessageLog 启动仍须通过最终 clean-head Gate。
 - 前版概念复核：独立 reviewer `/root/design_concept_review`，调用请求配置 `gpt-5.6-terra / xhigh`，2026-09-05 设计层 PASS；首轮九项 must-fix 已闭合。被审正文 SHA256 为 `64c30bf568ff66fc50a79c73e73cac9af156bacf73dfb5c2da9fa612ac3b03a4`。本次进一步明确 Core/普通插件边界与切换方式，前版结论不自动覆盖本次修订。
 - 上次概念复核（不覆盖本次功能合同修订）：同一独立 reviewer 于 2026-09-05 对正文 SHA256 `2f06db73a347dd8f08b6292d6ae07caea8cc01cca5036cb828010140428967ff`（不含本条记录）给出设计层 PASS，无新增 P0/P1；可以开始实施准备，第 14.3 节合同与正式迁移/恢复验收仍未完成。
 
@@ -598,10 +599,13 @@ Turn projection / Akasha 只读消费 MessageLog
 - `Message` 的 `message_id + seq`、SessionDB schema/yoyo lineage、附件与 plugin-data 恢复材料继续由原 owner 管理；删除代码不减少既有消息、学习、附件或插件数据。
 - `plugins.tools` 的 `TOOLS`、`CallSource`、`MessageReply`、`Result`、`BoundTool` 和 `plugins.delivery` 的 `DELIVERY` / `DELIVERY_READ` 是当前插件边界。manager/snapshot 中仍可见的 `TOOL_CATALOG`、旧 delivery 导出与兼容类型只表示保留内部图，不能写成新的插件入口。
 - `RUNTIME_STARTING`、`RUNTIME_STARTED`、`RUNTIME_STOPPING` 和 `SNAPSHOT_SEALING` 仍是当前生命周期信号；旧 `AFTER_TURN_COMMITTED`、旧 retrieval/observe 名称和测试残留不证明新 Core 会发布这些事实。新来源变化使用来源插件自己的 typed signal。
+- `agent/control/frame_book.py` 是 control frame 的唯一 owner：它按 `(session_id, input_id)` 定位唯一短命 route，并保存 `connection_id` 作为 owner；依据已提交 Message 页识别 complete Output，并等待该 Output 的实际 writer drain。`FrameClaim` 只为一个精确 `CallRef` 延长这段 drain；连接失败时 active route 被移除，原始异常保留在 claim 直到 watcher `consume` 或 `abort`，它不是新的 Turn、Delivery 或 supervisor 状态。
+- programmatic 来源的 ACK 只表示 Input/Control 已由 Message writer 提交；`programmatic/message/result` 从同一日志快照读取 `complete`、`pause`、`failure` 或 `open`。回复完成、渠道送达、完整 frame drain 和 restart claim 是四个独立事实。
 - Mobile 已移除旧的 stop/interrupt 注入和 `_Bus` 生产假设；生产 `MobileRealtimeChannel` 通过真实 MessageCatalog、MessageBus recoverer 与 `ChannelRuntimePorts` 接线。旧测试辅助对象不构成新的运行时 API。
+- Web 新实时链路只由 Message log 的 `session.follow`、`messages.appended` 和 `reply.status` 提供。`messages.appended` 是可按 seq 重读的持久事实，`reply.status` 是当前 generation 的短命只读活动；旧 `message.final` 不属于当前 Web API 合同。
 - 旧 Memory2/Memory plugin 组合入口和已删除的 runtime helper 不再进入当前插件路由；`plugins/compaction`、`plugins/markdown_memory` 和 `plugins/akasha` 的 owner 与持久化合同继续保留。
 
-这次清理不宣称正式 workspace、Android 原生配套、外部插件源码迁移、历史摘要账转换、旧未确认外部效果恢复或完整 MessageLog 启动切换已经完成；这些仍由本节前述退出条件和 `NOW.md` 接手。receipt API 未合入前也不写入已实现公共合同。清理前恢复点见 [测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md) 的 2026-09-07 条目。
+这次清理不宣称正式 workspace、Android 原生配套、外部插件源码迁移、旧 workspace 转换、历史摘要账转换、旧未确认外部效果恢复或完整 MessageLog 正式切换已经完成。当前候选已进入完整启动验收，最终 Gate 和正式切换仍由 `NOW.md` 接手；receipt API 只能按当前真实实现记录。清理前恢复点见 [测试与 Gate 清理账本](../refactor/test-gate-cleanup-ledger.md) 的 2026-09-07 条目。
 
 ## 11. 验收：证明变化互不牵连
 
@@ -870,6 +874,42 @@ Turn 成员、消费次数、引用、特征、权重与恢复差异报告
 - 迁移覆盖生产副本、干净空库、已知历史 schema、重复执行与中途进程退出。检查正文、ID、seq、附件、embedding、旧学习状态与迁移 receipt；未知 schema 或未决副作用明确阻止切换，不忽略或重新执行。
 - 端到端覆盖接纳 ACK、预览与持久消息同步、命令、ReAct、内容、附件、工具授权/恢复、Delivery、Wake ACK、Scheduler/Subagent、Akasha/compaction 与插件卸载/热更。组合测试使用真实存储和普通插件；受控 Model/Tool/渠道用于确定性故障注入，实际 provider 验收单独标明。
 - 每张 PR 提交前由 `gpt-5.6-terra`、`xhigh` 独立审查相邻 diff；最终再审累计行为。测试通过、独立审查、历史重放和生产验证分别报告，不互相替代。
+
+### 18.0 第 10 层当前合同与 Gate 边界
+
+第 10 层把完成事实、控制连接排水和 supervisor 提交分开拥有；完整 MessageLog 启动仍必须通过最终 clean-head Gate，分范围检查不能替代该 Gate。
+
+programmatic admission 的学习资格只在 Session 创建时确定：MC01 显式传 `persist_memory=true`，G5 使用默认值 `false`。Input、Control 和 Output 仍写入同一 MessageLog；该属性不由后续输入、重试或结果投影改写。
+
+重启等待按以下合同执行：`RestartWatcher` 先调用 `gate.prepare` 关闭新 Root 接纳，再等待所属 Turn complete；随后只有 programmatic 走 `FrameBook` 的 claim drain，普通来源走 `FinalOutputDelivery`，两条分支都汇入 `gate.commit`。programmatic claim 只有在 commit 成功后才 `consume`，失败则 `abort` 并恢复 gate。
+
+```text
+┌──────────────────────┐
+│ successful ToolResult│
+└──────────┬───────────┘
+           ▼
+┌────────────────────────────┐
+│ RestartWatcher: prepare    │ 关闭新 Root 接纳
+│ 等待所属 Turn complete      │
+└──────────┬─────────────────┘
+           │
+     ┌─────┴─────┐
+     ▼           ▼
+┌───────────┐ ┌────────────────────┐
+│ claim.wait│ │ FinalOutputDelivery│
+│ (program) │ │ (ordinary source)  │
+└─────┬─────┘ └──────────┬─────────┘
+      └──────────┬───────┘
+                 ▼
+┌────────────────────────────────────┐
+│ gate.commit → permit drain →        │
+│ supervisor lifecycle commit         │
+└──────────────────┬─────────────────┘
+                   ▼
+          programmatic claim.consume
+```
+
+连接失败时，FrameBook 移除 active route，把原始 `ConnectionError` 留给 live claim；watcher 随后通过 `abort` 清理 claim 索引。断线不能把另一连接的 Output 或 restart claim 接管。
 
 
 ### 18.1 第 04 层可观察边界
@@ -1610,7 +1650,7 @@ Timer 到期先记录 attempt，再读邮件水位。到期检查和五分钟池
 
 ### 2026-09-07 · Programmatic 接入选择（实施中）
 
-维护者已授权记录方案并采用推荐项，醒后统一审阅。程序调用采用普通来源插件，保存完整 Input/Output/Control；创建时固定内部展示和默认排除学习属性，`persist_memory=true` 只在新 Session 创建边界选择学习资格，不恢复旧 Turn effects。学习仍同时服从各学习插件的来源配置。
+维护者已授权记录方案并采用推荐项，醒后统一审阅。程序调用采用普通来源插件，保存完整 Input/Output/Control；创建时固定内部展示和 learning 属性，`persist_memory=true` 取得 `eligible`，省略或传 `false` 取得 `excluded`，只在新 Session 创建边界选择学习资格，不恢复旧 Turn effects。学习仍同时服从各学习插件的来源配置。
 
 | 选择 | 备选 | 采用及理由 |
 |---|---|---|

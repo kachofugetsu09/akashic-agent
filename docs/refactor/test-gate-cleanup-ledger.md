@@ -110,6 +110,14 @@
 
 ### 写入集与恢复
 
-本次文档修正未修改数据库、yoyo、workspace、plugin-data、Android 源码、外部插件 checkout、安装 cache 或生成 bundle。此前 stacked code commits 可能包含各自 owner 的 yoyo 迁移；本句只描述本次文档写入集。删除代码不减少既有 Message、学习、附件、receipt 或 plugin-data；正式 MessageLog 启动、Android 配套、外部插件迁移和第 10 层完整切换仍未验收。
+本次文档修正未修改数据库、yoyo、workspace、plugin-data、Android 源码、外部插件 checkout、安装 cache 或生成 bundle。此前 stacked code commits 可能包含各自 owner 的 yoyo 迁移；本句只描述本次文档写入集。删除代码不减少既有 Message、学习、附件、receipt 或 plugin-data。第 10 层已有分范围的 programmatic smoke、MC01 和 G5 证据；完整 MessageLog 启动的最终 Gate、Android 配套、外部插件迁移和正式切换仍未验收，见下方当前条目。
 
 代码清理的实际历史是：`1492ce5f` 为 `7340e5a0` 的父提交，`7340e5a0` 删除旧 lifecycle/passive graph，随后 `576e8add` 删除旧 event/retrieval leaves。`5e1b1b93` 是 Message 行为与 Gate 元数据的候选基线，不是这些代码删除的恢复点；如需回放文档/行为候选，可将其作为参考提交，不能据此恢复已删除代码。文档修改前的逐文件恢复副本位于 `/tmp/akasic-agent-backups/docs-cleanup-20260907-before-edit/`，包含本批次涉及的六份文档。恢复时先停用候选运行时，再按 Git worktree 和文档副本逐项回放，不能触碰正式 workspace。验证至少包括 `git diff --check`、相对链接检查、旧入口搜索，以及与当前实现直接相关的文档/API路径核对。
+
+## 2026-09-07：MessageLog 第 10 层 Gate 分层
+
+- 当前候选已分别完成 programmatic control smoke、MC01 memory-context 和 G5 programmatic Message soak。它们各自验证来源接纳、MessageLog 追加/投影和受控失败边界；这些分范围 Gate 不等于完整 MessageLog 启动验收。
+- MC01 在 admission 时显式传 `persist_memory=true`，并核对 `learning=eligible`；G5 soak 使用默认 `persist_memory=false`，并核对 `learning=excluded`。两种 Session 资格是有意分开的合同，不能把 G5 的默认排除写成 MC01 结果。
+- `agent/plugin_composition/tool_catalog.py` 的 `core.tool_catalog` 仍被 manager、snapshot generation、freeze、activation 和 lease 消费；active `content-source-interop.lock` 的 `emotion` revision `2bb332b7` 仍以该边界验收，公开插件/工具合同是 `tools.v1`，因此该 leaf 不能按名称相似或局部无调用就删除。
+- FrameBook 断线时移除 active route，将原始 `ConnectionError` 留给 live claim；RestartWatcher 先 `gate.prepare`，等待 Turn complete 后在 claim drain 与普通 delivery 之间分支，`gate.commit` 成功后才消费 programmatic claim。详细 owner 合同见 [消息日志设计](../design/0902-reviewed-v4.md) 与 [Linux 自重启设计](../design/linux-supervisor-safe-self-restart.md)。
+- 最终 clean-head 启动 Gate、每周 lifecycle/restart probe 的正式迁移、Android 原生配套、外部插件源码迁移、旧 workspace/历史效果转换和正式 workspace 演练仍是未完成事项；部署前提未被上述分范围证据替代。
