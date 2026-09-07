@@ -590,6 +590,16 @@ listener 与 Dashboard 读写同一副本，discard 不改正式素材，promoti
 
 **G-005：** 诊断证据的最低保留期、隐私边界和容量上限尚未形成项目级合同。确认前不能把它们提升为永久记忆，也不能在事故调查中默认它们一定存在。
 
+### 12.1 Observe 的投影回执
+
+Message 重构后的 Observe 从 Turn、Models、Akasha 和 Markdown 的窄读取口建立诊断投影。
+`observe.db/projection_receipts(domain, identity)` 由 Observe 单一 SQLite writer 与对应诊断行同事务追加；
+旧的 keyed 诊断行在打开数据库时补齐回执。回执不原位改写、不逻辑失效，也不随 trace retention 删除；
+目前没有自动减少协议。它证明该来源事实已经消费，避免旧 Akasha trace 在 90 天清理后被重扫写回。
+Markdown `memory_writes` 保持无自动 retention。回执与 trace 一起包含在 Observe 数据库备份中；
+恢复需核对 SQLite 完整性、旧行回执回填，以及 trace 清理后重扫不复活。
+投影提交必须等到事务确认；写入失败向提交方报告，后续重扫重试，同一 writer 继续处理其余任务。
+
 ## 13. 当前恢复机制与缺口
 
 ### 13.1 已存在的局部机制

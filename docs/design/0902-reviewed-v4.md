@@ -1990,3 +1990,9 @@ Mobile WebUI 停止生成必须调用 `sendSessionCommand(session_id, "/stop")`�
 配置：新 workspace 默认授予 `skills=skills` Prompt 权。yoyo 只升级与旧内置默认配置原始字节完全相同的文件，先保存 `config.before-skill-prompt-grant.toml`；自定义授权原样保留，操作者需显式加入 Skills 授权或移除该贡献插件。旧迁移文件不改写。正式 workspace、外部插件 cache、部署和发送均不在本次执行范围。
 
 验证：真实材料组合、请求包裹/排序/冲突/超限、后台空闲汇报与抢占、实际 Akasha 出处、摘要后 Markdown 来源过滤和恢复；相关类型检查、change-impact Gate、独立 Terra xhigh 概念评审。恢复点为基线 `05a6521c` 与 `/tmp/context-reminder-memory-boundaries-backup-20260907/base-05a6521c.tar`，代码可回退本 PR；配置恢复使用迁移前备份，不回退或删除已保存消息。
+
+### 工具显示名的诊断读取
+
+Tools 提供 `TOOL_DISPLAY_NAME` 窄读取口：输入已保存的 Tool binding ID，返回该 binding 归档描述中的工具名。
+它不打开归档工具、不执行外部效果，也不以当前插件的同名工具替换旧绑定。Observe 用它显示历史工具调用；
+缺少或损坏的绑定沿既有 binding 错误语义报告，不用哈希或当前 catalog 猜测名称。
