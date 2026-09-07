@@ -28,6 +28,7 @@ desc = "声明工具并固定实际实现；一次调用的回执独立于会话
 inject = ()
 
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
+BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[None]]
 Candidates = Mapping[str, Mapping[str, object]]
 OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[BoundTool]]
 Capture = Callable[[Mapping[str, object]], Mapping[str, object]]
@@ -46,6 +47,13 @@ class _Preparation:
     context: Context
     name: str
     prepare: Prepare
+
+
+@dataclass(frozen=True, slots=True)
+class _Authorization:
+    context: Context
+    name: str
+    authorize: BindingAuthorize
 
 
 class _ToolView:
@@ -94,6 +102,7 @@ class ToolCatalog:
         self._ctx = ctx
         self._tools: dict[str, _Registration] = {}
         self._preparations: dict[str, _Preparation] = {}
+        self._authorizations: dict[str, _Authorization] = {}
 
     async def register(
         self,
@@ -189,6 +198,26 @@ class ToolCatalog:
 
         return await ctx.effect(setup, label=f"tool-prepare:{name}")
 
+    async def register_authorize(
+        self, ctx: Context, *, tool: str, name: str, authorize: BindingAuthorize
+    ) -> Effect:
+        """每个工具的独立限制只有一个 owner，并随 binding 固定。"""
+        self._check_context(ctx)
+        if not name or not tool:
+            raise ValueError("工具限制必须有工具名与贡献名")
+
+        def setup() -> Callable[[], None]:
+            if tool in self._authorizations:
+                raise ValueError(f"工具限制已有 owner: {tool}")
+            self._authorizations[tool] = _Authorization(ctx, name, authorize)
+
+            def cleanup() -> None:
+                del self._authorizations[tool]
+
+            return cleanup
+
+        return await ctx.effect(setup, label=f"tool-authorize:{name}")
+
     def _check_context(self, ctx: Context) -> None:
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("工具注册不能跨 composition Root")
@@ -198,11 +227,19 @@ class ToolCatalog:
     ) -> ToolExecution:
         """正式调用取得工具 owner 的回执与任务；归档发现不打开这些能力。"""
         bindings = self._ctx.require(BINDINGS)
+
+        async def authorize_binding(
+            binding_id: str, arguments: Mapping[str, object]
+        ) -> Mapping[str, object]:
+            async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
+                await catalog.authorize(metadata, arguments)
+            return await authorize(binding_id, arguments)
+
         return ToolExecution(
             self._ctx.require(OWNER_STATE).open(self._ctx),
             self._ctx.require(TASKS).open(self._ctx),
             lambda identity: open_tool(bindings, identity),
-            authorize,
+            authorize_binding,
             task_key="effects",
             child_permit=child_permit,
         )
@@ -233,6 +270,7 @@ class ToolCatalog:
         """从真实注册 Context 固定闭包，不让调用者省略准备贡献或重选目标。"""
         registration = self._tools[name]
         preparation = self._preparations.get(name)
+        authorization = self._authorizations.get(name)
         discovery = registration.description["discovery"]
         if discovery and candidates is None:
             raise ValueError("固定发现工具需要来源允许的候选快照")
@@ -245,8 +283,10 @@ class ToolCatalog:
             for item in candidates.values():
                 if bindings.describe(cast(str, item["binding_id"]), TOOLS)["tool"] != item["tool"]:
                     raise ValueError("候选描述不属于指定 binding")
-        contributors = (registration.context,) + (
-            () if preparation is None else (preparation.context,)
+        contributors = (
+            registration.context,
+            *(() if preparation is None else (preparation.context,)),
+            *(() if authorization is None else (authorization.context,)),
         )
         state: Mapping[str, object] | None = None
         if registration.capture is not None:
@@ -263,6 +303,7 @@ class ToolCatalog:
             {
                 "tool": registration.description,
                 "prepare": None if preparation is None else preparation.name,
+                **({"authorize": authorization.name} if authorization is not None else {}),
                 **({"candidates": candidates} if discovery else {}),
                 **({"state": state} if state is not None else {}),
             },
@@ -285,6 +326,11 @@ class ToolCatalog:
         ):
             raise ValueError("归档工具描述或参数准备与 binding 不一致")
         expected: set[str] = {"tool", "prepare"}
+        if "authorize" in metadata:
+            authorization = self._authorizations.get(name)
+            if authorization is None or metadata["authorize"] != authorization.name:
+                raise ValueError("归档工具限制与 binding 不一致")
+            expected.add("authorize")
         if description["discovery"]:
             expected.add("candidates")
         if registration.capture is not None:
@@ -307,6 +353,21 @@ class ToolCatalog:
                     yield view
                 finally:
                     view.close()
+
+    async def authorize(
+        self, metadata: Mapping[str, object], arguments: Mapping[str, object]
+    ) -> None:
+        """只执行 binding 固定的独立限制；旧无字段 binding 不追附当前限制。"""
+        if "authorize" not in metadata:
+            return
+        description = metadata.get("tool")
+        if not isinstance(description, Mapping) or not isinstance(description.get("name"), str):
+            raise ValueError("工具 binding 描述无效")
+        authorization = self._authorizations.get(cast(str, description["name"]))
+        if authorization is None or metadata["authorize"] != authorization.name:
+            raise ValueError("归档工具限制与 binding 不一致")
+        async with self._ctx.runtime_scope():
+            await authorization.authorize(arguments)
 
 
 def check_candidates(value: object) -> Candidates:

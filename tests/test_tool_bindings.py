@@ -76,12 +76,33 @@ async def apply(ctx, config):
 """)
 
 
-def manager(tmp_path, sources):
+def add_authorize(path):
+    policy = path / "authorize"
+    policy.mkdir()
+    (policy / "plugin.py").write_text("""
+from agent.plugin_composition import ServiceKey
+from plugins.tools.api import Denied
+api_version = 3
+name = "authorize"
+version = "1.0.0"
+inject = (ServiceKey("tools.v1"),)
+async def apply(ctx, config):
+    async def authorize(arguments):
+        if arguments["value"] == "restore:blocked":
+            raise Denied("blocked by fixed policy")
+    await ctx.require(inject[0]).register_authorize(
+        ctx, tool="example", name="fixed-policy", authorize=authorize,
+    )
+""")
+
+
+def manager(tmp_path, sources, log=None):
     return PluginManager(
         plugin_dirs=sources,
         event_bus=EventBus(),
         workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
+        message_log=log,
     )
 
 
@@ -175,6 +196,57 @@ async def test_tool_configuration_is_owned_frozen_and_restored_without_recapture
         async with open_tool(bindings, identity) as target:
             result = await target.invoke("fixed", await target.prepare({"value": "input"}))
             assert result.parts[0].value == "job-a:restore:input"
+    finally:
+        await host.terminate_all()
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_binding_authorize_checks_final_arguments_and_old_binding_keeps_old_policy(tmp_path):
+    sources = tmp_path / "plugins"
+    write_plugins(sources)
+    log = MessageLog(tmp_path / "sessions.db")
+    host = manager(tmp_path, [sources], log)
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            old_binding = catalog.bind("example", bindings)
+        await host.terminate_all()
+
+        add_authorize(sources)
+        host = manager(tmp_path, [sources], log)
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        caller_checks = []
+
+        async def caller_authorize(binding, arguments):
+            caller_checks.append((binding, arguments))
+            return {"permission": "caller"}
+
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            new_binding = catalog.bind("example", bindings)
+            execution = catalog.execution(caller_authorize)
+            old_result = await execution.execute("old", old_binding, {"value": "blocked"})
+            denied = await execution.execute("new", new_binding, {"value": "blocked"})
+            safe = await execution.execute("safe", new_binding, {"value": "ok"})
+
+        assert old_result.outcome == "success"
+        assert denied.outcome == "denied"
+        assert denied.parts[0].value == "blocked by fixed policy"
+        assert safe.outcome == "success"
+        assert caller_checks == [
+            (old_binding, {"value": "restore:blocked"}),
+            (new_binding, {"value": "restore:ok"}),
+        ]
+        effects = sorted(
+            line
+            for path in (tmp_path / "workspace").rglob("effects.txt")
+            for line in path.read_text().splitlines()
+        )
+        assert effects == ["program:old", "program:safe"]
     finally:
         await host.terminate_all()
         log.close()
