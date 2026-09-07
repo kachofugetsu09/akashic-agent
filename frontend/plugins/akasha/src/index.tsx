@@ -27,59 +27,51 @@ function encodePath(value: string): string {
   return value.split("/").map(encodeURIComponent).join("/");
 }
 
-interface InspectorItem {
-  query_id: string;
-  session_key: string;
-  ts: string;
-  user_text: string;
-  assistant_preview: string;
-  score?: number;
-  value?: number;
-  seed_score?: number;
-  completion_mass?: number;
-  graph_only?: boolean;
-  first_relation?: string | null;
-  sources?: string[];
-  relation_path?: string[];
+interface MessageEvidence {
+  message_id: string;
+  session_id: string;
+  seq: number;
+  recorded_at: string;
+  author: string;
+  source: string;
+  lane: "dense" | "completion";
+  presented: boolean;
+  text: string;
+  text_truncated: boolean;
 }
 
-interface InspectorRow {
+interface RecallHit {
+  lane: "dense" | "completion";
+  score: number;
+  sources: string[];
+  basin_ids: string[];
+  messages: MessageEvidence[];
+}
+
+interface RecallRow {
   query_id: string;
   session_key: string;
   seq: number;
   ts: string;
   query_text: string;
-  seed_count: number;
-  activation_capture_available: boolean;
-  recall_capture_available: boolean;
-  activation_count: number;
+  source: Record<string, unknown>;
+  graph_version: number;
+  hit_count: number;
+  presented_count: number;
+  dense_count: number;
   completion_count: number;
+  active_basin_count: number;
   pushes: number;
   residual_l1: number;
+  hits: RecallHit[];
 }
 
-interface InspectorDetail extends InspectorRow {
-  assistant_text: string;
-  graph_only_count: number;
-  basin_count: number;
-  surprise?: number | null;
-  observed_mass?: number | null;
-  recurrent_mass?: number | null;
-  reactivated_mass?: number | null;
-  potentiated_mass?: number | null;
-  inhibited_mass?: number | null;
-  seeds: InspectorItem[];
-  activation_items: InspectorItem[];
-  left: InspectorItem[];
-  right: InspectorItem[];
-  tool_left: InspectorItem[];
-  tool_right: InspectorItem[];
-  left_count: number;
-  right_count: number;
-  tool_left_count: number;
-  tool_right_count: number;
-  inject_chars: number;
-  text_block_preview: string;
+interface RecallDetail extends RecallRow {
+  learning_binding: string;
+  limit: number;
+  max_chars: number;
+  strong: boolean;
+  presented_message_ids: string[];
 }
 
 interface InspectorOverview {
@@ -92,11 +84,7 @@ function shortTime(value: unknown): string {
   const parsed = new Date(String(value));
   if (Number.isNaN(parsed.getTime())) return String(value);
   return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
   }).format(parsed);
 }
 
@@ -106,102 +94,60 @@ function fixed(value: unknown, digits = 3): string {
   return Number.isFinite(number) ? number.toFixed(digits) : "—";
 }
 
-function sourceText(item: InspectorItem): string {
-  const sources = item.sources ?? [];
-  if (sources.length) return sources.join(" · ");
-  if (item.first_relation) return item.first_relation;
-  return item.graph_only ? "仅由关系补全" : "外部线索";
+function sourceLabel(source: Record<string, unknown>): string {
+  if (source.kind === "context") return `上下文 · ${String(source.source ?? "")}`;
+  if (source.kind === "tool") return `工具 · ${String(source.call_ref ?? "")}`;
+  return `程序 · ${String(source.key ?? "")}`;
 }
 
-function renderItems(items: InspectorItem[], empty: string): string {
-  if (!items.length) {
-    return `<p class="akasha-empty">${escapeHtml(empty)}</p>`;
-  }
+function renderMessages(messages: MessageEvidence[], empty: string): string {
+  if (!messages.length) return `<p class="akasha-empty">${escapeHtml(empty)}</p>`;
   return `
     <ol class="akasha-evidence-list">
-      ${items.map((item, index) => {
-        const score = item.score ?? item.value ?? item.completion_mass ?? item.seed_score;
-        const path = item.relation_path?.length
-          ? `<span class="akasha-path" title="${escapeHtml(item.relation_path.join(" → "))}">${escapeHtml(item.relation_path.join(" → "))}</span>`
-          : "";
-        return `
-          <li class="akasha-evidence">
-            <span class="akasha-evidence-rank" aria-hidden="true">${index + 1}</span>
-            <div class="akasha-evidence-main">
-              <p>${escapeHtml(item.user_text || "（空消息）")}</p>
-              ${item.assistant_preview
-                ? `<p class="akasha-assistant">${escapeHtml(item.assistant_preview)}</p>`
-                : ""}
-            </div>
-            <div class="akasha-evidence-meta">
-              <time class="akasha-chip akasha-chip--time">${escapeHtml(shortTime(item.ts))}</time>
-              <span class="akasha-chip">${escapeHtml(sourceText(item))}</span>
-              ${score == null ? "" : `<b class="akasha-chip akasha-chip--score">${fixed(score)}</b>`}
-            </div>
-            ${path}
-          </li>
-        `;
-      }).join("")}
+      ${messages.map((message, index) => `
+        <li class="akasha-evidence">
+          <span class="akasha-evidence-rank" aria-hidden="true">${index + 1}</span>
+          <div class="akasha-evidence-main">
+            <p>${escapeHtml(message.text || "（空消息）")}${message.text_truncated ? " …" : ""}</p>
+          </div>
+          <div class="akasha-evidence-meta">
+            <span class="akasha-chip">${escapeHtml(message.author)} · ${escapeHtml(message.source)}</span>
+            <span class="akasha-chip">#${escapeHtml(message.seq)}</span>
+            <time class="akasha-chip akasha-chip--time">${escapeHtml(shortTime(message.recorded_at))}</time>
+            <span class="akasha-chip">${message.presented ? "已呈现" : "命中"}</span>
+            <code>${escapeHtml(message.message_id)}</code>
+          </div>
+        </li>
+      `).join("")}
     </ol>
   `;
 }
 
-function evidenceLane(
-  title: string,
-  description: string,
-  lane: string,
-  items: InspectorItem[],
-  count: number | string,
-  empty: string,
-  open = false,
-): string {
+function evidenceLane(title: string, description: string, hit: RecallHit | undefined): string {
+  const messages = hit?.messages ?? [];
   return `
-    <details class="akasha-section akasha-lane akasha-lane--${escapeHtml(lane)}" ${open ? "open" : ""}>
+    <details class="akasha-section akasha-lane akasha-lane--${escapeHtml(hit?.lane ?? "empty")}">
       <summary>
-        <span class="akasha-lane-copy">
-          <strong>${escapeHtml(title)}</strong>
-          <small>${escapeHtml(description)}</small>
-        </span>
-        <span class="akasha-lane-count">${escapeHtml(String(count))}</span>
+        <span class="akasha-lane-copy"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(description)}</small></span>
+        <span class="akasha-lane-count">${messages.length}</span>
       </summary>
-      ${renderItems(items, empty)}
+      ${renderMessages(messages, "这一条通道没有命中消息。")}
     </details>
   `;
 }
 
 function metric(label: string, value: unknown, detail: string): string {
-  return `
-    <div class="akasha-metric">
-      <dt>${escapeHtml(label)}</dt>
-      <dd>${escapeHtml(String(value))}</dd>
-      <p>${escapeHtml(detail)}</p>
-    </div>
-  `;
+  return `<div class="akasha-metric"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd><p>${escapeHtml(detail)}</p></div>`;
 }
 
 function renderFilters(container: HTMLElement, dispatch: PluginDispatch): WebUiDisposer | void {
   const value = dispatch.filters["q"] ?? "";
   const existing = container.querySelector<HTMLInputElement>("[data-akasha-search]");
   if (existing) {
-    if (document.activeElement !== existing && existing.value !== value) {
-      existing.value = value;
-    }
+    if (document.activeElement !== existing && existing.value !== value) existing.value = value;
     return;
   }
-  container.innerHTML = `
-    <div class="akasha-filter">
-      <label>
-        <span>搜索检索记录</span>
-        <input
-          type="search"
-          value="${escapeHtml(value)}"
-          placeholder="Query、回复或 Session"
-          data-akasha-search
-        />
-      </label>
-      <md-text-button data-akasha-clear ${value ? "" : "disabled"}>清空</md-text-button>
-    </div>
-  `;
+  container.innerHTML = `<div class="akasha-filter"><label><span>搜索检索记录</span><input type="search" value="${escapeHtml(value)}" placeholder="Query、消息或 Session" data-akasha-search /></label><md-text-button data-akasha-clear ${value ? "" : "disabled"}>清空</md-text-button></div>`;
   const input = container.querySelector<HTMLInputElement>("[data-akasha-search]")!;
   const clear = container.querySelector<HTMLElement>("[data-akasha-clear]")!;
   let timer = 0;
@@ -209,94 +155,31 @@ function renderFilters(container: HTMLElement, dispatch: PluginDispatch): WebUiD
     window.clearTimeout(timer);
     timer = window.setTimeout(() => {
       const query = input.value.trim();
-      if (query) dispatch.setFilter("q", query);
-      else dispatch.clearFilter("q");
+      if (query) dispatch.setFilter("q", query); else dispatch.clearFilter("q");
     }, 200);
   };
-  const onClear = (): void => {
-    input.value = "";
-    dispatch.clearFilter("q");
-  };
+  const onClear = (): void => { input.value = ""; dispatch.clearFilter("q"); };
   input.addEventListener("input", onInput);
   clear.addEventListener("click", onClear);
-  return () => {
-    window.clearTimeout(timer);
-    input.removeEventListener("input", onInput);
-    clear.removeEventListener("click", onClear);
-  };
+  return () => { window.clearTimeout(timer); input.removeEventListener("input", onInput); clear.removeEventListener("click", onClear); };
 }
 
-function renderDetail(item: InspectorDetail, closePane?: () => void): string {
-  const recallCount = item.recall_capture_available
-    ? item.left_count + item.right_count
-    : item.left_count;
+function renderDetail(item: RecallDetail, closePane?: () => void): string {
+  const dense = item.hits.filter((hit) => hit.lane === "dense");
+  const completion = item.hits.filter((hit) => hit.lane === "completion");
   return `
     <article class="akasha-inspector">
-      <header class="akasha-query">
-        <div>
-          <h2>${escapeHtml(item.query_text)}</h2>
-          <p class="akasha-query-meta">${escapeHtml(shortTime(item.ts))} · seq ${item.seq}<span>${escapeHtml(item.session_key)}</span></p>
-        </div>
-        ${closePane ? '<md-icon-button class="akasha-close" data-akasha-close aria-label="关闭详情"><span aria-hidden="true">×</span></md-icon-button>' : ""}
-      </header>
-
-      <section class="akasha-overview" aria-labelledby="akasha-overview-title">
-        <div class="akasha-overview-heading">
-          <div>
-            <h3 id="akasha-overview-title">${recallCount} 条记忆参与回答</h3>
-          </div>
-          <p>${item.inject_chars > 0 ? `已写入 ${item.inject_chars} 字上下文` : "没有写入 Prompt"}</p>
-        </div>
-        <dl class="akasha-metrics">
-          ${metric("直接线索", item.seed_count, "Dense、BM25 与时序")}
-          ${metric("精确回忆", item.left_count, "语义最接近的历史")}
-          ${metric("模式联想", item.recall_capture_available ? item.right_count : "—", item.recall_capture_available ? `${item.basin_count} 个情景簇` : "本轮未记录")}
-        </dl>
-      </section>
-
-      <details class="akasha-answer">
-        <summary>
-          <span><strong>助手回复</strong><small>查看这一轮的完整回答</small></span>
-          <span class="akasha-answer-action">展开</span>
-        </summary>
-        <div class="akasha-answer-body">${escapeHtml(item.assistant_text || "（助手没有文本回复）")}</div>
-      </details>
-
-      <section class="akasha-evidence-group" aria-labelledby="akasha-evidence-title">
-        <div class="akasha-section-heading">
-          <h3 id="akasha-evidence-title">记忆证据</h3>
-          <small>选择一组展开查看</small>
-        </div>
-        <div class="akasha-lanes">
-        ${evidenceLane("直接线索", "最初命中的消息", "seed", item.seeds, item.seeds.length, "这一轮没有形成可持久化线索。")}
-        ${item.activation_capture_available
-          ? evidenceLane("图扩散候选", "由关系网络补入的候选", "activation", item.activation_items, item.activation_items.length, "图扩散没有增加候选。")
-          : ""}
-        ${evidenceLane("精确回忆", "语义最接近的历史消息", "precise", item.left, item.left_count, "没有精确命中。")}
-        ${evidenceLane("模式联想", "跨关系补全且已与精确结果去重", "completion", item.right, item.recall_capture_available ? item.right_count : "未记录", "没有产生模式联想。")}
-        ${item.tool_left_count
-          ? evidenceLane("工具精确回忆", "recall_memory 的语义命中", "precise", item.tool_left, item.tool_left_count, "工具没有产生精确命中。")
-          : ""}
-        ${item.tool_right_count
-          ? evidenceLane("工具模式联想", "recall_memory 的图关系结果", "completion", item.tool_right, item.tool_right_count, "工具没有产生模式联想。")
-          : ""}
-        </div>
-      </section>
-
-      <details class="akasha-learning">
-        <summary><span><strong>学习变化与技术指标</strong><small>${item.activation_count} 条扩散候选 · ${item.pushes} 次扩散</small></span></summary>
-        <dl>
-          ${metric("惊喜度", fixed(item.surprise), "当前 cue 与已有模式的差异")}
-          ${metric("观察质量", fixed(item.observed_mass), "由外部证据支持的学习质量")}
-          ${metric("再激活", fixed(item.reactivated_mass), "已有关系重新获得的活性")}
-          ${metric("增强 / 抑制", `${fixed(item.potentiated_mass)} / ${fixed(item.inhibited_mass)}`, "连接预算内的竞争结果")}
-        </dl>
-      </details>
-
-      <details class="akasha-prompt">
-        <summary><span><strong>写入 Prompt 的记忆</strong><small>${item.inject_chars} 字 · 原始上下文预览</small></span></summary>
-        <pre>${escapeHtml(item.text_block_preview || "这一轮没有注入记忆。")}</pre>
-      </details>
+      <header class="akasha-query"><div><h2>${escapeHtml(item.query_text)}</h2><p class="akasha-query-meta">${escapeHtml(shortTime(item.ts))} · seq ${escapeHtml(item.seq)} · ${escapeHtml(item.session_key || "程序查询")}</p><p class="akasha-query-meta">${escapeHtml(sourceLabel(item.source))}</p></div>${closePane ? '<md-icon-button class="akasha-close" data-akasha-close aria-label="关闭详情"><span aria-hidden="true">×</span></md-icon-button>' : ""}</header>
+      <section class="akasha-overview" aria-labelledby="akasha-overview-title"><div class="akasha-overview-heading"><div><h3 id="akasha-overview-title">${item.presented_count} 条消息实际呈现</h3></div><p>图版本 ${item.graph_version} · 查询上限 ${item.limit}</p></div><dl class="akasha-metrics">
+        ${metric("命中消息", item.hit_count, "Recall 记录中的原始 Message 引用")}
+        ${metric("活跃情景簇", item.active_basin_count, "Recall 记录的真实 completion 指标")}
+        ${metric("扩散次数", item.pushes, "查询完成时记录的 pushes")}
+        ${metric("残余质量", fixed(item.residual_l1), "查询完成时记录的 residual_l1")}
+      </dl></section>
+      <section class="akasha-evidence-group" aria-labelledby="akasha-evidence-title"><div class="akasha-section-heading"><h3 id="akasha-evidence-title">原始 Message 证据</h3><small>正文来自 MessageReader；列表页只显示 240 字预览</small></div><div class="akasha-lanes">
+        ${dense.map((hit) => evidenceLane("Dense 通道", hit.sources.join(" · "), hit)).join("")}
+        ${completion.map((hit) => evidenceLane("Completion 通道", hit.sources.join(" · "), hit)).join("")}
+      </div></section>
     </article>
   `;
 }
@@ -307,94 +190,44 @@ const panel = {
   viewLabel: "Akasha 检索",
   pageSize: 25,
   rowKey: "query_id",
-
-  countTitle(total: number): string {
-    return `${total} 轮检索`;
-  },
-
+  countTitle(total: number): string { return `${total} 轮检索`; },
   columns: [
     { key: "session_key", label: "会话", width: 120, fmt: "mono-session", cellClass: "mono cell-session", rawTitle: true },
-    {
-      key: "ts",
-      label: "时间",
-      width: 110,
-      cellClass: "mono cell-time",
-      rawTitle: true,
-      renderCell(value) { return escapeHtml(shortTime(value)); },
-    },
-    { key: "query_text", label: "用户问题", flex: true, fmt: "text-preview", cellClass: "content-preview" },
-    { key: "seed_count", label: "线索", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
-    { key: "completion_count", label: "召回", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "seq", label: "Seq", width: 64, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "query_text", label: "查询", flex: true, fmt: "text-preview", cellClass: "content-preview" },
+    { key: "dense_count", label: "Dense", width: 70, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "completion_count", label: "Completion", width: 96, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "presented_count", label: "已呈现", width: 78, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "active_basin_count", label: "情景簇", width: 78, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
+    { key: "pushes", label: "Pushes", width: 78, fmt: "metric", cellClass: "mono cell-metric", align: "right" },
   ],
-
   renderFilters,
-
   async getCount({ signal }: { signal: AbortSignal }): Promise<number | null> {
-    try {
-      const result = await api<InspectorOverview>("/api/dashboard/akasha-inspector/overview", { signal });
-      return result.available ? result.total : null;
-    } catch (error) {
-      if (signal.aborted) throw error;
-      return null;
-    }
+    const result = await api<InspectorOverview>("/api/dashboard/akasha-inspector/overview", { signal });
+    return result.available ? result.total : null;
   },
-
   async fetchPage({ page, pageSize, filters, signal }: FetchPageOpts): Promise<FetchPageResult> {
-    const params = new URLSearchParams({
-      page: String(page),
-      page_size: String(pageSize),
-    });
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
     if (filters?.["session_key"]) params.set("session_key", filters["session_key"]);
     if (filters?.["q"]) params.set("q", filters["q"]);
-    const result = await api<{ items: Record<string, unknown>[]; total: number }>(
-      `/api/dashboard/akasha-inspector/turns?${params.toString()}`,
-      { signal },
-    );
+    const result = await api<{ items: Record<string, unknown>[]; total: number }>(`/api/dashboard/akasha-inspector/turns?${params.toString()}`, { signal });
     return { items: result.items, total: result.total };
   },
-
   async fetchDetail(item: Record<string, unknown>, { signal }: { signal: AbortSignal }): Promise<Record<string, unknown>> {
-    return api(
-      `/api/dashboard/akasha-inspector/turns/${encodePath(String(item["query_id"] ?? ""))}`,
-      { signal },
-    );
+    return api(`/api/dashboard/akasha-inspector/turns/${encodePath(String(item["query_id"] ?? ""))}`, { signal });
   },
-
   renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch: PluginDispatch): void {
     if (!item) {
-      container.innerHTML = `
-        <div class="akasha-detail-empty">
-          <div class="akasha-detail-empty__title">Akasha Inspector</div>
-          <div class="akasha-detail-empty__text">选择一轮检索，查看它从哪些线索开始、扩散到哪里，以及最终进入 Prompt 的内容。</div>
-        </div>
-      `;
+      container.innerHTML = '<div class="akasha-detail-empty"><div class="akasha-detail-empty__title">Akasha Inspector</div><div class="akasha-detail-empty__text">选择一轮检索，查看实际 Recall 与原始 Message。</div></div>';
       return;
     }
-    container.innerHTML = renderDetail(
-      item as unknown as InspectorDetail,
-      dispatch.closePane,
-    );
-    container.querySelector("[data-akasha-close]")?.addEventListener(
-      "click",
-      () => dispatch.closePane(),
-    );
-    const lanes = Array.from(container.querySelectorAll<HTMLDetailsElement>(".akasha-lane"));
-    for (const lane of lanes) {
-      lane.addEventListener("toggle", () => {
-        if (!lane.open) return;
-        for (const sibling of lanes) {
-          if (sibling !== lane) sibling.open = false;
-        }
-      });
-    }
+    container.innerHTML = renderDetail(item as unknown as RecallDetail, dispatch.closePane);
+    container.querySelector("[data-akasha-close]")?.addEventListener("click", () => dispatch.closePane());
   },
 } satisfies WorkbenchPanelEntry;
 
 export function activate(ctx: WebHostContextV1): WebUiDisposer {
   dashboardRequest = ctx.http.request;
   const release = ctx.ui.inject("workbench.panels.v2", (mount) => mount.register(panel));
-  return () => {
-    release();
-    dashboardRequest = null;
-  };
+  return () => { release(); dashboardRequest = null; };
 }

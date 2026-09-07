@@ -56,6 +56,30 @@ class DeliveryHistory:
         state = self._state()
         return state.snapshot(lambda: self._recent(state, start, stop, limit, excluded_sources, visibility))
 
+    def status(self, message_id: str, sink: str) -> dict[str, object] | None:
+        """Read one real delivery phase without acquiring send authority."""
+        if not message_id or not sink:
+            raise ValueError("送达查询需要非空 message_id 和 sink")
+        # Import locally because DeliveryRecords owns the write-side models and
+        # already imports the history index types above.
+        from .records import Delivery, delivery_key
+
+        row = self._state().read(delivery_key(message_id, sink))
+        if row is None:
+            return None
+        if row.version < 0:
+            raise ValueError("送达记录版本无效")
+        delivery = Delivery.model_validate_json(json.dumps(json_value(row.value)))
+        if delivery.sink.name != sink:
+            raise ValueError("送达记录目的地与查询身份不一致")
+        return {
+            "message_id": message_id,
+            "channel": delivery.sink.name,
+            "recipient": delivery.sink.address,
+            "status": delivery.phase,
+            "receipt": None if delivery.receipt is None else delivery.receipt.model_dump(mode="json"),
+        }
+
     def _recent(self, state: OwnerStore, start: str, stop: str, limit: int,
                 excluded_sources: frozenset[str],
                 visibility: Literal["listed", "internal"] | None) -> tuple[DeliveredMessage, ...]:

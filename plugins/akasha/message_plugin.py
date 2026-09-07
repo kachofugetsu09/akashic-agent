@@ -31,7 +31,7 @@ from .inspector import RecallInspector
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .interest import SEMANTIC_INTEREST, Embed, SemanticInterest
 from .recall_tool import RecallArguments, RecallTool, check_recall
-from .recalls import Recall, RecallRecords
+from .recalls import Recall, RecallRecords, RecallRecordsRead
 from .runtime import MessageMemory, prepare_materials
 from .application.snapshot import read_memory
 from agent.plugin_composition.models import open_embedding as open_saved_embedding, read_embedding_binding
@@ -95,7 +95,7 @@ class RecallBinding(BaseModel):
 
 
 AKASHA_RECORDS = ServiceKey[Callable[[str], Recall | None]]("akasha.recalls.v1")
-AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecords]]("akasha.recall-records.v1")
+AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]]("akasha.recall-records.v1")
 
 
 async def apply(ctx: Context, config: Config) -> None:
@@ -126,11 +126,14 @@ async def apply(ctx: Context, config: Config) -> None:
     def records() -> RecallRecords:
         return RecallRecords(ctx.require(OWNER_STATE).open(ctx))
 
+    def records_read() -> RecallRecordsRead:
+        return RecallRecordsRead(ctx.require(OWNER_STATE).open(ctx))
+
     # 公开读取函数不暴露 owner transaction；归档 apply 也不会读取正式数据库。
     def read_recall(identity: str) -> Recall | None:
         return records().read(identity)
     _ = await ctx.provide(AKASHA_RECORDS, read_recall)
-    _ = await ctx.provide(AKASHA_RECORDS_VIEW, records)
+    _ = await ctx.provide(AKASHA_RECORDS_VIEW, records_read)
 
     inspector: RecallInspector | None = None
 

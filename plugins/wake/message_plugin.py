@@ -78,7 +78,7 @@ async def apply(ctx: Context, config: Config) -> None:
     async def start(_event: object) -> None:
         nonlocal runtime, dashboard, watcher
         runtime = Runtime(ctx, config)
-        dashboard = DashboardView(runtime)
+        dashboard = runtime.dashboard_view()
         watcher = await ctx.spawn(runtime.follow(), name="wake")
 
     async def stop(_event: object) -> None:
