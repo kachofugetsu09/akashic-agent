@@ -1,8 +1,8 @@
 import asyncio
+from collections.abc import AsyncIterator
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -10,7 +10,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
-    ModelRole, ToolCall as ModelToolCall,
+    ModelExecution, ModelRole, ToolCall as ModelToolCall,
 )
 from agent.plugin_composition.tasks import TASKS
 from agent.plugins.manager import PluginManager
@@ -112,8 +112,10 @@ async def apply(ctx, config):
     server = await asyncio.start_unix_server(serve, path=tmp_path / "tool.sock")
     class Driver:
         max_tool_schemas = None
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(self, messages, tools=()):
             return 50
+        def estimate_appended_message_tokens(self, messages):
+            return 0
         async def complete(self, request):
             requests.append(request)
             if len(requests) == 1:
@@ -135,10 +137,18 @@ async def apply(ctx, config):
         capability_sources=CapabilitySources(), capability_digest="test",
     )
     model = _BoundChat(descriptor, Driver(), store)
+    class Execution:
+        def chat(self, role: ModelRole) -> _BoundChat:
+            assert role in ModelRole
+            return model
+
     class Models:
         @asynccontextmanager
-        async def execution(self, *, model_id=None, reasoning_effort=None):
-            yield SimpleNamespace(chat=lambda role: model)
+        async def execution(self, *, model_id=None, reasoning_effort=None) -> AsyncIterator[ModelExecution]:
+            del model_id, reasoning_effort
+            yield Execution()
+
+        independent_execution = execution
     async def authorize(binding, arguments):
         if case == "input_before_effect":
             authorizing.set()

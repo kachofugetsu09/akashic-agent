@@ -1,7 +1,9 @@
 from session.message import ContentReferences
 import json
 import re
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
+from typing import cast
 
 import pytest
 
@@ -199,11 +201,11 @@ async def test_meme_and_citation_are_independent_of_registration_order():
     )
     assert first == second
     assert visible(first) == "回答。   <other:literal>"
-    citations = [part.value for part in first if part.kind == "citation"]
+    citations = [cast(Mapping[str, object], part.value) for part in first if part.kind == "citation"]
     assert citations[0]["declared"] is True
     assert citations[0]["resolved_ref"] == "memory@revision"
     assert citations[1]["resolved_ref"] is None
-    assert [part.value["artifact_id"] for part in first if part.kind == "meme"] == [
+    assert [cast(Mapping[str, object], part.value)["artifact_id"] for part in first if part.kind == "meme"] == [
         "image-0"
     ]
 
@@ -231,7 +233,7 @@ async def test_literal_markers_are_preserved_and_do_not_suppress_retrieval_fallb
     )
     assert visible(parts) == raw
     assert picks == []
-    citations = [part.value for part in parts if part.kind == "citation"]
+    citations = [cast(Mapping[str, object], part.value) for part in parts if part.kind == "citation"]
     assert [(item["ref"], item["declared"]) for item in citations] == [
         ("actual", False)
     ]
