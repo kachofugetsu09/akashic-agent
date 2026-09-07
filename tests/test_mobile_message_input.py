@@ -86,7 +86,6 @@ async def runtime(tmp_path, *, device=None, store_type=InboundHandoffStore):
         event_bus=event_bus,
         attachment_store=AttachmentStore(tmp_path / 'uploads'),
         http_resources=http_resources,
-        interrupt_controller=None,
         log=logging.getLogger(__name__),
     )
     try:

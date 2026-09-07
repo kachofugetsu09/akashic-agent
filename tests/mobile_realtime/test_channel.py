@@ -380,7 +380,6 @@ async def _started_native_mobile_channel(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -455,7 +454,6 @@ async def test_mobile_message_send_uses_exact_v3_ingress_without_legacy_bus(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -499,7 +497,6 @@ async def test_mobile_captured_callback_blocks_drain_through_preprocessing(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -557,7 +554,6 @@ async def test_mobile_exact_ingress_false_never_commits_success_receipt(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -699,7 +695,6 @@ async def test_native_v3_mobile_adapter_reports_unknown_if_durable_call_raises(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -1702,7 +1697,6 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
             session_manager=manager,
             event_bus=_EventBus(),
             push_tool=_PushTool(),
-            interrupt_controller=None,
             attachment_store=legacy_store,
         ),
     )
@@ -1756,7 +1750,6 @@ async def test_message_send_keeps_unknown_outcome_without_persisted_user(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -1855,7 +1848,6 @@ async def test_message_send_keeps_current_owner_when_receipt_completion_fails(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -1914,7 +1906,6 @@ async def test_remote_outbound_media_keeps_response_filename(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=store,
             ),
         )
@@ -1963,7 +1954,6 @@ async def test_remote_media_failure_keeps_final_text(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -2137,7 +2127,6 @@ async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) ->
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -2200,7 +2189,6 @@ async def test_resume_reconciles_recovered_terminal_turn_for_mobile_device(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -2254,7 +2242,6 @@ async def test_command_list_uses_active_channel_catalog_without_stop(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
                 command_catalog_provider=lambda: tuple(active_catalog),
             ),
@@ -2312,7 +2299,6 @@ async def test_message_send_preserves_mobile_slash_command_for_bus(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
                 command_catalog_provider=lambda: (("undo", "撤销上一轮对话"),),
             ),
@@ -2692,7 +2678,6 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -2867,7 +2852,6 @@ async def test_first_delta_orders_received_then_publish_then_published(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -2976,7 +2960,6 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -3121,7 +3104,6 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -3263,7 +3245,6 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -3437,7 +3418,6 @@ async def test_terminal_and_late_delta_queued_on_same_lock_release_terminal_then
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -3541,7 +3521,6 @@ async def _race_channel(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -3992,7 +3971,6 @@ async def test_late_a_final_keeps_b_active_and_identity(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4262,7 +4240,6 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4368,7 +4345,6 @@ async def test_terminal_final_publish_fail_once_is_retryable_without_fake_succes
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4479,7 +4455,6 @@ async def test_terminal_failure_after_batch_flush_retry_does_not_duplicate_delta
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4586,7 +4561,6 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4708,7 +4682,6 @@ async def test_interrupted_terminal_publish_fail_once_is_retryable(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
@@ -4881,7 +4854,6 @@ async def _fail_delta_channel(
                 session_manager=manager,
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )

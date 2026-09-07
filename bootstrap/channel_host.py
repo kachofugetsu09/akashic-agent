@@ -154,7 +154,6 @@ class _ChannelResources:
             event_bus=_ScopedEventBus(context.event_bus, self._closeables),  # type: ignore[arg-type]
             attachment_store=context.attachment_store,
             http_resources=context.http_resources,
-            interrupt_controller=context.interrupt_controller,
             log=context.log,
             command_catalog_provider=context.command_catalog_provider,
         )

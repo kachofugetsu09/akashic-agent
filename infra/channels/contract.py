@@ -5,7 +5,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from agent.looping.interrupt import InterruptController
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from core.net.http import SharedHttpResources
@@ -30,6 +29,5 @@ class ChannelContext:
     event_bus: EventBus
     attachment_store: AttachmentStore
     http_resources: SharedHttpResources
-    interrupt_controller: InterruptController | None
     log: logging.Logger
     command_catalog_provider: Callable[[], tuple[tuple[str, str], ...]] | None = None

@@ -1059,7 +1059,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
     )
     resources = SharedHttpResources()
     event_bus = EventBus()
-    controller = object()
     host = await start_channels(
         config,
         bus=cast(Any, object()),
@@ -1068,7 +1067,6 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         http_resources=resources,
         event_bus=event_bus,
         command_catalog_provider=lambda: (("shared", "统一目录"),),
-        interrupt_controller=cast(Any, controller),
         extra_channels=[cast(Any, _PluginChannel())],
     )
     try:
@@ -1077,11 +1075,11 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         telegram, qq, plugin = host.channels
         assert starts == ["telegram", "qq", "plugin"]
         assert telegram.kwargs["event_bus"] is event_bus
-        assert telegram.kwargs["interrupt_controller"] is controller
+        assert "interrupt_controller" not in telegram.kwargs
         assert telegram.kwargs["command_catalog_provider"]() == (
             ("shared", "统一目录"),
         )
-        assert qq.kwargs["interrupt_controller"] is controller
+        assert "interrupt_controller" not in qq.kwargs
         assert plugin.name == "plugin"
         assert attachment_roots == [tmp_path / "uploads"]
         assert mobile_catalogs == [[("shared", "统一目录")]]
