@@ -2028,4 +2028,65 @@ version 0 记录保存完整旧行、原 JSON 字符串与 SHA-256；未记录�
 
 2026-09-08 演练确认：正式源版本 `6429c806` 中 `dev_mode/dev_model` 只有 config 解析、模型字段和 setup 初值，没有运行时或当前十四个插件消费者。实际配置的 `dev_mode=true` 不对应需要迁移的功能。修订本批尚未部署的 `20260907_02_retire_legacy_agent_config` 候选迁移，严格校验布尔类型后，沿既有完整原配置备份移除 true/false 两种值；不新增开发模式 owner，也不把无效标记变成迁移阻塞。原配置字节与权限可从该迁移备份恢复，正式配置未修改。
 
-2026-09-08 演练决策：实际 `agent.tools.search_enabled=true` 在旧正式版本有运行时消费者，必须保留发现行为。当前 `reply.tools` 默认包含全部已安装目录，`tool_search` 提供 discovery，`ToolMenu` 只初始公开 always_on 工具并从搜索结果投影选择，因此严格布尔 true 可在保留原配置备份后移除。显式 reply 目录必须仍包含 tool_search；false、类型错误及冲突均阻断，不默默改成启用。其余 agent.tools 字段原样保留。这个映射保留启用意图，新的搜索算法与 Message 选择事实沿当前已批准重写合同执行；不声称旧算法逐字等价。
+2026-09-08 演练决策：实际 `agent.tools.search_enabled=true` 在旧正式版本有运行时消费者，必须保留发现行为。当前 `reply.tools` 默认包含全部已安装目录，`tool_search` 提供 discovery，`ToolMenu` 只初始公开 always_on 工具并从搜索结果投影选择，因此严格布尔 true 可在保留原配置备份后移除。显式 reply 目录必须仍包含 tool_search，且 disabled_builtin 不得禁用它；false、类型错误及冲突均阻断，不默默改成启用。其余 agent.tools 字段原样保留。这个映射保留启用意图，新的搜索算法与 Message 选择事实沿当前已批准重写合同执行；不声称旧算法逐字等价。
+
+
+## 2026-09-08 · 真实副本与联合验收
+
+本批运行代码固定为 `80a1a0738c79041ef282f8e97e3fa3e066d95fa2`，由 Core Draft PR #563 集成；十四个插件源码各自交付 PR，再由 Fleet Draft PR #1 固定 gitlink。所有已有 Core checkout workflow 固定该提交，Meme 的 Citation 检查固定同批候选。GitHub Watch 没有该 workflow，不为本次验证额外增加 CI。
+
+#### 自动迁移与持久事实
+
+hua-home 正式源为 `6429c806`，未停止或切换服务。SQLite 原生备份与稳定文件副本写入新的服务器备份目录，再完整传至本机 `akashic-rewrite-20260908/server-baseline`。136,964 个 manifest 项逐项核对；其中 64 个 SQLite 库全部通过完整性及表计数检查。该基线保持只读，另建 `server-working` 进行禁网迁移。快照保证每个 SQLite 备份自身一致，不宣称在线多个数据库具有同一事务时点。
+
+自动迁移在 `6012ebe4` 完成，后续 `58538b06`、`5115c691`、`80a1a073` 只增加未知执行状态、链内活动状态及搜索配置冲突的阻断。真实 2,371 行旧执行只有 completed/failed/interrupted/cancelled，disabled_builtin 为空；这三项检查不改变本次真实数据的结果。
+
+| 对象 | 观察结果与变化 |
+| --- | --- |
+| 原 Message | 14,655 条 ID、Session、seq、正文、原 extra 和工具轨迹逐项保全；author 保持 legacy-attribution-unknown |
+| 旧执行 | 2,371 行原样保留，另追加 2,371 条 history.record；38 条停止工具链完整归档不续跑，其他 49 条缺独立接纳证据的链沿原规则只归档 |
+| 旧副作用 | 677 条 post_commit=suppress 保持有效，不升级为普通学习输入 |
+| 附件与向量 | 8 条附件、6 条关系、11,272 条向量原值保持；关系的 direction 列已按批准合同由原 role 可恢复地移除 |
+| 摘要 | 5 条旧 session_compactions 原行保留；两个有效 head 分别是 v0 generation 1/4，累计覆盖 277/2,239 条来源消息，SummaryLookup 精确读取原文 |
+| Session | 306 条均保留；原列只有追加历史所需的 next_seq、updated_at 改变，另增加 attributes |
+| 其他数据库 | 没有减少原行；Mobile 29,106 条回执保留并新增 handoff_pending，Akasha 只增加迁移 metadata，模型与安装账本只增加新表，yoyo 追加 18 项记录 |
+| 调度 | 1 个原任务按 JobStore 解码后完全相等，只增加 version/jobs/operations/fires 容器 |
+| 文件 | 136,824 个原文件再次逐个 SHA-256 比较，仅 9 个已解释路径变化；原 MEMORY/SELF、附件文件和所有原插件数据文件未改 |
+
+主 Message 表移除的旧列已完整进入新 body/provenance；可重建的 messages_fts 及其内部表按批准合同退役，不把它们描述为权威事实丢失。第二次 MigrationRunner 返回 current，未追加迁移。原配置、SQLite 与调度原字节均有独立恢复点。原消息保全证据与新增历史条数分开记录，不把新增归档误算成原消息增加。
+
+#### 行为验收
+
+1. 十四个插件从正式 install_git_plugin 安装到独立 workspace，固定 Core `4bf091a7`；11 个联合场景通过，包括四路真实 stdio MCP、两个管理端口、Message→tool_search→GitHub 工具→Skill→Citation/Meme 附件、Shell 安全与删除恢复、命令、EventMail、Mobile、SQLite 完整性及同 workspace 重启。使用受控端点和禁网运行，没有外部发送。
+2. 最终 Core `80a1a073` 复用上述不可变 artifact，完成 14 个组合挂载、Content 解码、四库完整性及端口启动/回收的受影响链复验。13 个插件末次提交只改 CI workflow，GitHub Watch 运行提交不变，运行树相等性单独核对。
+3. 真实迁入消息进入 PluginManager、ModelsStore、Compaction、Context 与 Markdown。独立 v0 场景复制实际 generation 4 head、generation 3 parent 及 2,239 条累计来源消息；Context 读取原摘要，新 Output 引用其 binding，Markdown 沿同一父链生成 8 类 receipt。eligible 旧用户输入参与，真实 suppress 输出被排除；MEMORY/SELF before-image 与服务器副本一致。重启后 receipt 不变，模型调用保持一次 success。所有来源行逐列相等，作者未重写。
+本次原 `memory/markdown-profile-writes.db` 为 0 行，latest_applied=None；v0 场景因此复制真实 MEMORY/SELF 后从空 Markdown receipt 开始。另一个旧库中的 4 条 session_compaction_receipt 是总结生成账本，不能伪装成 Markdown 已应用进度。本次证据不覆盖其他 workspace 中非空旧 Markdown receipt 的引用迁移。
+
+4. 独立概念 Gate 固定 `80a1a073`，无 P0/P1。早期 Core 完整回归为 1,721 passed、6 skipped，后续摘要/迁移边界 71 项通过；后续按维护者要求转向 E2E，未重复 pytest，新增最后几项阻断 fixture 未运行。最新两个迁移模块 Pyright 为 0 errors、23 warnings。完整 change-impact Gate 在重复回归阶段按维护者要求中止，不能称该 Gate 已通过。
+
+证据根为本机 `/mnt/data/coding/akashic-rewrite-20260908/`：`snapshot-verification.json`、`server-working/migration-report.json`、`migration-file-audit.json`、`migration-database-diff.json`、`profile-e2e/E2E_REPORT.md`、`fleet-e2e/runs/20260907T171108Z/scenario-report.json`、`fleet-e2e/runs/final-core-80a1a073/final-core-revalidation.json` 和 `final-concept-gate.md`。报告只给计数、摘要与边界，不发布私人消息、凭据或旧总结正文。
+
+#### 外部插件收敛与真实 supervised 启动
+
+GitHub Watch 移除运行时 `turn_id` 读写，并以明确的停机配置迁移退役 `turn_timeout_seconds`；旧数据库列只保留恢复证据。Proactive Feedback 使用 schema 0→1 的一次迁移补足有序 Message IDs，迁移前创建完整私有 SQLite 副本；新版读取拒绝空、重复、尾项不符和无效 JSON，不保留每次读取的兼容修补。原 Feed 待交付内容、ACK 和各插件数据迁移仍是业务事实，不能按“旧代码”删除。
+
+固定 Core `80a1a073` 的真实 Controller、Host Bridge 和 Computer workload 在 `server-working` 启动，Computer 原 `degraded` transaction row 89 由真实 owner 推进为 `recovered`。随后有意重启，boot ID 从 `310c9432` 改为 `2aeea12c`，两次 readiness 均绑定同一提交；row 89 的恢复时间不变，没有重复恢复。14 个正式安装 artifact 的 commit 与该轮 Fleet pins 逐项相等；306 个 Session、2,371 个旧执行和 14,655 个原 Message 均保留，工作库因追加归档为 17,026 个 Message。Feedback 迁移前的 events 800、inbox 225、cursor 1、catalog 68 条按主键及全部旧列比较，missing/changed 均为 0。
+
+首轮在 2.3 GB 配额下发生 cgroup OOM（exit 137），不能计为成功；完整 inspect 与日志保留。Core 配额改为 3.2 GB 后正常启动与重启。两个 Docker internal 网络阻断真实外发；容器内和容器 IP 的 health 均为 ready，但该配置没有建立宿主 loopback 发布监听，因此不声称验证了宿主发布路径。
+
+这一轮还真实发现 Observe `0ab8ad5d` 的后台投影缺少 runtime scope。Observe `f60fab88` 改为每轮取得短 scope，在等待下一轮前释放。真实 OwnerState/RecallRecords 的 PluginManager 回归先复现相同授权错误，再通过完整投影和重启；该版本经正式安装链装回旧数据副本，连续 78 秒多轮投影错误为 0，919 条原 rag_queries 可读且数据库完整。副本没有 Akasha recall owner record，因此新增投影由上述真实 owner 用例证明，不伪造旧数据输入。最终 Fleet `daf6dbb` 固定此版本，14 个远端 PR head 与 gitlink 再次核对一致。
+
+每轮结束均清理本次 Core、Controller、Computer workload、网络与 Bridge；原失败证据与成功补验分开保存。新增证据入口为 `supervised-e2e/SUPERVISED_E2E_REPORT.md`、`supervised-e2e/OBSERVE_F60_SUPPLEMENTAL_E2E.md`、`external-cleanup/final-review.md` 和 `published-plugin-verification.json`。正式部署及真实服务切换未执行；Android 原生配套由独立移动端 PR 交付。不等待远端 CI，不合并任何 PR。
+
+
+#### Android 正式包配套
+
+[Mobile PR #90](https://github.com/kachofugetsu09/akashic-mobile/pull/90) 固定源码 `bf71b0e8df84c7c1bf98c45b88e95f6970aa3393`，配套 Core 运行代码仍为 `80a1a073`。Message v2 协议、内置 WebUI 与 runtime lock 固定相同 Core 来源。正式 [0.8.37](https://github.com/kachofugetsu09/akashic-mobile/releases/tag/v0.8.37)（versionCode 75）与旧 Core 不兼容，正式切换必须配套升级。
+
+Android 以 Message timeline 替换旧 Turn/attempt 投影，发送 Message、COMMAND 和 outbox 共用一个 ID；Input 接纳结算由本地投影 owner 执行。Room 16→17 重建旧服务端缓存并保留待发工作，17→18 一次迁移本地发送/重试身份及引用；旧 Core 已接纳 ID 原样保留，完整 Input 结算旧待发，下载中的正文保留 manifest 与进度，不删除附件文件。旧 15→16 迁移保持原批准边界。
+
+同签名正式 APK 已在 Pixel 7 执行真实 Room 17→18 升级；迁移前一致备份为 47 Message、2 outbox，迁移后 46 Message、2 outbox，合并一条重复本地投影，外键与身份检查通过。最终 APK 验证新发送、跨安装离线排队/重连补发及单次接纳、三个真实工具结果与完整调用引用、旧已接纳消息结算、104,026 字节长消息全文相等和在线/离线末尾搜索。模型响应受控，工具和本地发送由真实 Core 执行；没有真实外部发送。
+
+214 JVM 测试、生产/AndroidTest 编译、lint 与正式签名构建通过。仓库 AndroidTest 仅编译，同签名只读数据库探针实际执行；不将探针称为完整设备 Gate。构建两核/4 GiB 上限，耗时 6m30s，峰值 2.68 GiB。源码、旧 APK 和 Room 17 私有数据库恢复点保留，Keystore 未导出。探针已卸载、ADB reverse 清除、手机设置恢复、fixture 端口关闭；正式 APK 留在手机，其他 profile 的待发工作保留。
+
+APK SHA-256 为 `415aa40634dbd3e63d8364797a078dcf3bc835eb92c850f4743fc0b0e88440c7`。本地证据入口：`/home/huashen/akashic-message-mobile-artifacts/device-e2e/FINAL_E2E.md`。本次没有合并 PR 或切换 hua-home 正式服务。
