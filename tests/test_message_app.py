@@ -1,7 +1,9 @@
 """临时 workspace 中运行真正 App 装配和控制 socket。"""
 import shutil
 from pathlib import Path
+from typing import cast
 
+from fastapi import FastAPI
 import httpx
 import pytest
 
@@ -31,7 +33,7 @@ async def test_app_starts_web_and_control_with_message_owners(tmp_path, monkeypa
             assert page["items"][0]["id"] == "app-input"
         assert app.web_chat_channel is not None
         assert app.channel_host.channels
-        chat_app = app.chat_server.config.app
+        chat_app = cast(FastAPI, app.chat_server.config.app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=chat_app),
             base_url="http://testserver",
