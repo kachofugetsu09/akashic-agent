@@ -2650,7 +2650,6 @@ def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:
     config_path = workspace.parent / "config.toml"
     script = """
 import sys
-import sqlite3
 from pathlib import Path
 
 source_root = Path(sys.argv[1]).resolve()
@@ -2663,23 +2662,6 @@ module_path = Path(init_module.__file__).resolve()
 if source_root not in module_path.parents:
     raise RuntimeError(f"workspace init imported outside candidate source: {module_path}")
 init_module.init_workspace(config_path=config_path, workspace=workspace, force=False)
-
-# Fresh MessageLog owns the first SQLite schema, while startup Yoyo owns its
-# migration lineage. Keep the owner call observable, then discard only its
-# newly-created empty DB so Yoyo can create the accepted lineage.
-sessions_db = workspace / "sessions.db"
-with sqlite3.connect(sessions_db) as connection:
-    tables = [
-        row[0]
-        for row in connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )
-    ]
-    for table in tables:
-        count = connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
-        if count != 0:
-            raise RuntimeError(f"workspace init produced non-empty table: {table}")
-sessions_db.unlink()
 """
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(source_root)
