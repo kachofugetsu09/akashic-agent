@@ -29,6 +29,8 @@ def model(store, complete, *, identity="main", window=10000):
         max_tool_schemas = None
         def estimate_context_tokens(self, messages, tools=()):
             return len(str(messages)) // 4
+        def estimate_appended_message_tokens(self, messages):
+            return len(str(messages)) // 4
         async def complete(self, request):
             return await complete(request)
     return _BoundChat(descriptor, Driver(), store)

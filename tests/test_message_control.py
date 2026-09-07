@@ -7,6 +7,7 @@ import shutil
 import pytest
 
 from agent.config_models import Config
+from agent.control.service import ControlService
 from agent.control.protocol.router import ConnectionRouter
 from bootstrap import tools as bootstrap
 from bootstrap.app_server import build_control_service
@@ -86,28 +87,45 @@ async def test_control_v2_uses_real_message_input_and_cancellable_read_subscript
 @pytest.mark.asyncio
 async def test_connection_eof_releases_full_queue_and_blocked_writer():
     from infra.control.connection import NdjsonConnection
-    from types import SimpleNamespace
+    class BlockedTransport(asyncio.WriteTransport):
+        def __init__(self, closed: asyncio.Event) -> None:
+            self.closed = closed
 
-    class BlockedWriter:
-        def __init__(self):
+        def abort(self) -> None:
+            self.closed.set()
+
+        def close(self) -> None:
+            self.abort()
+
+        def is_closing(self) -> bool:
+            return self.closed.is_set()
+
+    class BlockedWriter(asyncio.StreamWriter):
+        def __init__(self, closed: asyncio.Event) -> None:
             self.draining = asyncio.Event()
-            self.closed = asyncio.Event()
-            self.transport = self
-        def write(self, payload):
+            self._closed = closed
+            super().__init__(
+                BlockedTransport(closed),
+                asyncio.Protocol(),
+                None,
+                asyncio.get_running_loop(),
+            )
+
+        def write(self, payload: bytes) -> None:
             pass
         async def drain(self):
             self.draining.set()
             await asyncio.Event().wait()
-        def abort(self):
-            self.closed.set()
-        def close(self):
-            self.abort()
         async def wait_closed(self):
-            await self.closed.wait()
+            await self._closed.wait()
 
     reader = asyncio.StreamReader()
-    writer = BlockedWriter()
-    connection = NdjsonConnection(reader, writer, SimpleNamespace(methods={}), max_message_bytes=1024,
+    closed = asyncio.Event()
+    writer = BlockedWriter(closed)
+    service = ControlService.__new__(ControlService)
+    service.methods = {}
+
+    connection = NdjsonConnection(reader, writer, service, max_message_bytes=1024,
                                   max_pending_requests=2, outbound_queue_size=1)
     task = asyncio.create_task(connection.run())
     try:
@@ -116,7 +134,7 @@ async def test_connection_eof_releases_full_queue_and_blocked_writer():
         await connection.send({"jsonrpc": "2.0", "id": 2, "result": "two"})
         reader.feed_eof()
         await asyncio.wait_for(task, 2)
-        assert writer.closed.is_set()
+        assert closed.is_set()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

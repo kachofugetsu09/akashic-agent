@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from contextlib import closing
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -97,11 +98,14 @@ def test_open_chain_preserves_originals_maps_every_input_and_pauses_atomically(t
         archives = [row for row in rows if isinstance(row.body, Output)]
         assert all(row.source == 'history' and row.body.finish == 'quiet' for row in archives)
         for index, archive in enumerate(archives):
+            assert isinstance(archive.body.parts[0].value, Mapping)
             value = archive.body.parts[0].value['row']
+            assert isinstance(value, Mapping)
             assert tuple(value[key] for key in ('id','session_key','status','input_json','items_json','usage_json','error_json','final_response','created_at','started_at','completed_at')) == before[index]
         if not all_mapped:
             from agent.turn_effects import PostCommitEffect
             imported = reader.get(receipt['input_mapping'][1]['message_id'])
+            assert imported is not None
             assert legacy_post_commit_effect(imported) == PostCommitEffect.SUPPRESS
         first_snapshot = rows
     assert migrate_turn_messages(root) == receipt
@@ -163,6 +167,8 @@ def test_archive_never_enters_default_model_content(tmp_path):
     migrate_turn_messages(root)
     with closing(MessageLog(root / 'sessions.db')) as log:
         archive = log.reader('probe:room').snapshot()[0]
+        assert isinstance(archive.body, Output)
+        assert isinstance(archive.body.parts[0], ContentPart)
         assert render_content(archive.body.parts[0], artifacts={}) == ()
 
 
@@ -175,19 +181,21 @@ def test_crash_keeps_transaction_atomic_and_retry_uses_same_message_identities(t
     handoff(root, item)
     if stage == 'before_receipt':
         save = OwnerTransaction.save
-        def interrupted(tx, key, value, **kwargs):
+        def interrupt_save(tx, key, value, **kwargs):
             if key == 'manifest':
                 raise OSError('crash before receipt')
             return save(tx, key, value, **kwargs)
         target, method = OwnerTransaction, 'save'
+        replacement = interrupt_save
     else:
         transact = OwnerStore.transact
-        def interrupted(store, callback):
+        def interrupt_transact(store, callback):
             transact(store, callback)
             raise OSError('crash after commit before yoyo ledger')
         target, method = OwnerStore, 'transact'
+        replacement = interrupt_transact
     with monkeypatch.context() as patch:
-        patch.setattr(target, method, interrupted)
+        patch.setattr(target, method, replacement)
         with pytest.raises(OSError, match='crash'):
             migrate_turn_messages(root)
     with closing(MessageLog(root / 'sessions.db')) as log:

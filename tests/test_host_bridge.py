@@ -578,6 +578,7 @@ async def test_shutdown_failure_keeps_bridge_owner_for_confirmed_retry(tmp_path,
             max_output_tokens=100, hard_timeout_s=30, owner_session_key="job",
         )
         assert running.execution_id is not None
+        execution_id = running.execution_id
         pid = int(running.output)
         lease = service._managers[("boot-retry", manager._manager_id)]
         backend = lease.manager
@@ -588,8 +589,8 @@ async def test_shutdown_failure_keeps_bridge_owner_for_confirmed_retry(tmp_path,
             nonlocal calls
             calls += 1
             if calls == 1:
-                return ExecutionCleanupReport((running.execution_id,), (), (
-                    ExecutionCleanupFailure(running.execution_id, "OSError", "controlled cleanup failure"),))
+                return ExecutionCleanupReport((execution_id,), (), (
+                    ExecutionCleanupFailure(execution_id, "OSError", "controlled cleanup failure"),))
             return await shutdown()
 
         monkeypatch.setattr(backend, "shutdown", fail_once)

@@ -1,4 +1,5 @@
 import os
+import operator
 import shutil
 from datetime import date, datetime, time, timezone
 from pathlib import Path
@@ -117,11 +118,12 @@ def test_descriptor_freezes_toml_and_opaque_credentials(tmp_path):
     read = archive.read_descriptor(identity)
     assert decode_config(read["config"]) == config
     config["day"] = date(2026, 9, 6)
-    assert decode_config(archive.read_descriptor(identity)["config"])["day"] == date(
-        2026, 9, 5
-    )
+    decoded = decode_config(archive.read_descriptor(identity)["config"])
+    assert isinstance(decoded, dict)
+    assert decoded["day"] == date(2026, 9, 5)
     with pytest.raises(TypeError):
-        read["config"] = {}
+        operator_setitem = getattr(operator, "setitem")
+        operator_setitem(read, "config", {})
     target = archive.path / f"{identity}.json"
     target.write_text("{}")
     with pytest.raises(RuntimeError, match="损坏"):

@@ -118,12 +118,13 @@ async def test_process_shutdown_failure_retains_original_backend_until_cleanup(t
             processes = root.require(PROCESSES)
             started = await launch(processes, context, "job", tmp_path)
             assert started.execution_id is not None
+            execution_id = started.execution_id
             pid = int(started.output)
             backend = processes._manager
 
             async def fail():
-                return ExecutionCleanupReport((started.execution_id,), (), (
-                    ExecutionCleanupFailure(started.execution_id, "OSError", "controlled failure"),))
+                return ExecutionCleanupReport((execution_id,), (), (
+                    ExecutionCleanupFailure(execution_id, "OSError", "controlled failure"),))
 
             with monkeypatch.context() as patch:
                 patch.setattr(backend, "shutdown", fail)

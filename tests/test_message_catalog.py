@@ -1,5 +1,6 @@
 from contextlib import closing
 import sqlite3
+from typing import Literal
 
 import pytest
 
@@ -18,7 +19,11 @@ def append(log, session, identity, body, call_ref=None):
 def test_directory_filters_counts_gaps_and_keeps_recent_live_order(tmp_path):
     path = tmp_path / "sessions.db"
     with closing(MessageLog(path)) as log:
-        for key, visibility in (("a_:one", "listed"), ("a_:two", "listed"), ("a_:hidden", "internal"), ("ab:other", "listed")):
+        entries: tuple[tuple[str, Literal["listed", "internal"]], ...] = (
+            ("a_:one", "listed"), ("a_:two", "listed"),
+            ("a_:hidden", "internal"), ("ab:other", "listed"),
+        )
+        for key, visibility in entries:
             log.ensure_session(key, SessionAttributes(visibility=visibility))
             append(log, key, key, Input((ContentPart("text", key),)))
         with closing(sqlite3.connect(path)) as connection, connection:
