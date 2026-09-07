@@ -76,6 +76,7 @@ class LLMResponse:
     finish_reason: str | None = None
     continuation: ModelContinuation | None = None
     usage: ModelUsage | None = None
+    call_record_id: str | None = None
 
 
 StreamCallback: TypeAlias = Callable[[dict[str, str]], Awaitable[None]]
@@ -92,6 +93,19 @@ class ModelRequest:
     on_delta: StreamCallback | None = None
     continuation: ModelContinuation | None = None
     disable_reasoning: bool = False
+
+    def __post_init__(self) -> None:
+        """在唯一调用边界冻结请求，adapter 和并行调用不能改写彼此输入。"""
+        object.__setattr__(
+            self, "messages", tuple(_freeze_json_mapping(row) for row in self.messages)
+        )
+        object.__setattr__(
+            self, "tools", tuple(_freeze_json_mapping(row) for row in self.tools)
+        )
+        if isinstance(self.tool_choice, Mapping):
+            object.__setattr__(
+                self, "tool_choice", _freeze_json_mapping(self.tool_choice)
+            )
 
 
 @dataclass(frozen=True, slots=True)

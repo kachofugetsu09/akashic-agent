@@ -78,9 +78,11 @@ class _BoundChat:
         self,
         descriptor: BoundModelDescriptor,
         driver: DriverChatModel,
+        store: ModelsStore,
     ) -> None:
         self._descriptor = descriptor
         self._driver = driver
+        self._store = store
 
     @property
     def descriptor(self) -> BoundModelDescriptor:
@@ -93,7 +95,21 @@ class _BoundChat:
             and continuation.binding_id != self._descriptor.binding_id
         ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
-        return await self._driver.complete(request)
+        call_id = self._store.start_call(self._descriptor, request)
+        try:
+            response = await self._driver.complete(request)
+        except BaseException as failure:
+            # 网络请求可能已经到达 provider；本地异常不证明没有计费。
+            try:
+                self._store.finish_call(
+                    call_id, usage=None, failure=type(failure).__name__
+                )
+            except Exception as record_failure:
+                raise failure from record_failure
+            raise
+        self._store.finish_call(call_id, usage=response.usage, failure=None)
+        response.call_record_id = call_id
+        return response
 
     def estimate_context_tokens(
         self,
@@ -639,6 +655,7 @@ class ModelsState:
         return _BoundChat(
             descriptor,
             driver.bind_chat(descriptor, model.driver_config),
+            self.store,
         )
 
     async def _bind_embedding(

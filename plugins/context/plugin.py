@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ModelRequest
@@ -13,7 +13,6 @@ from session.message import (
     Output,
     ToolCall,
     ToolResult,
-    freeze_json,
 )
 from session.message_codec import json_value
 
@@ -191,8 +190,8 @@ class ContextBuilder:
             )
         request = replace(
             rendered,
-            messages=cast(Sequence[Mapping[str, Any]], freeze_json(rows)),
-            tools=cast(Sequence[Mapping[str, Any]], freeze_json(list(tools))),
+            messages=rows,
+            tools=tools,
             system_prompt="",
             max_output_tokens=max_output_tokens,
         )

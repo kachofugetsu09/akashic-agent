@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import sqlite3
@@ -28,6 +29,11 @@ from agent.plugin_composition import (
 )
 
 from .credentials import StoredCredentialHandle, encode_credential
+from agent.plugin_composition.models import (
+    BoundModelDescriptor,
+    ModelRequest,
+    ModelUsage,
+)
 
 MODEL_ROLES = ("default", "fast", "agent", "vision")
 _LEGACY_OPENAI_DRIVER_IDS = ("openai", "deepseek", "qwen")
@@ -242,6 +248,73 @@ class ModelsStore:
             role_reasoning_efforts=efforts,
             default_embedding_model_id=default_embedding,
         )
+
+    def start_call(
+        self, descriptor: BoundModelDescriptor, request: ModelRequest
+    ) -> str:
+        """先耐久记录一次真实请求；不把诊断输入或凭据复制进会话历史。"""
+        if not self.writable:
+            raise RuntimeError("只读 Model store 不能开始外部调用")
+        payload: dict[str, Any] = {
+            "messages": request.messages,
+            "tools": request.tools,
+            "max_output_tokens": request.max_output_tokens,
+            "system_prompt": request.system_prompt,
+            "tool_choice": request.tool_choice,
+            "prompt_cache_key": request.prompt_cache_key,
+            "disable_reasoning": request.disable_reasoning,
+            "continuation": (
+                None
+                if request.continuation is None
+                else {
+                    "binding_id": request.continuation.binding_id,
+                    "payload": request.continuation.payload,
+                }
+            ),
+        }
+        digest = hashlib.sha256(
+            _strict_json(payload, "model request").encode()
+        ).hexdigest()
+        binding = _strict_json(asdict(descriptor), "model binding")
+        call_id = uuid.uuid4().hex
+        with self._connect() as connection, connection:
+            require_model_calls_schema(connection)
+            _ = connection.execute(
+                "INSERT INTO model_calls (id,binding_json,request_digest,state) VALUES (?,?,?,'started')",
+                (call_id, binding, digest),
+            )
+        return call_id
+
+    def finish_call(
+        self, call_id: str, *, usage: ModelUsage | None, failure: str | None
+    ) -> None:
+        """只结算同一 started 记录；失败或取消不把未知 usage 记成零。"""
+        if not self.writable:
+            raise RuntimeError("只读 Model store 不能结算外部调用")
+        state = "success" if failure is None else "unknown"
+        encoded = None if usage is None else _strict_json(asdict(usage), "model usage")
+        with self._connect() as connection, connection:
+            cursor = connection.execute(
+                "UPDATE model_calls SET state=?,usage_json=?,failure=?,finished_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND state='started'",
+                (state, encoded, failure, call_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("Model 调用不存在或已经结算")
+
+    def read_call(self, call_id: str) -> Mapping[str, Any]:
+        """读取一次调用的事实；started 无终态时仍表示可能发生了费用。"""
+        with self._connect(read_only=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM model_calls WHERE id=?", (call_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(call_id)
+        record = dict(row)
+        record["binding"] = json.loads(record.pop("binding_json"))
+        usage = record.pop("usage_json")
+        record["usage"] = None if usage is None else json.loads(usage)
+        return _freeze_json(record)
 
     def add_connection(self, command: AddConnection) -> int:
         """Add one connection and credential as one revision."""
@@ -1304,7 +1377,32 @@ ON CONFLICT(id) DO UPDATE SET
 """
 
 
-_SCHEMA = """
+MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
+    id TEXT PRIMARY KEY NOT NULL,
+    binding_json TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('started','success','unknown')),
+    usage_json TEXT,
+    failure TEXT,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT
+)"""
+
+
+def require_model_calls_schema(connection: sqlite3.Connection) -> None:
+    """未迁移或同名异构的调用表必须在 provider I/O 前明确失败。"""
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='model_calls'"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("model_calls 缺失，请先运行对应 yoyo 迁移")
+    if "".join(str(row[0]).lower().split()) != "".join(
+        MODEL_CALLS_SCHEMA.lower().split()
+    ):
+        raise RuntimeError("model_calls schema 不匹配")
+
+
+_SCHEMA = MODEL_CALLS_SCHEMA + ";\n" + """
 CREATE TABLE model_registry_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     revision INTEGER NOT NULL CHECK (revision >= 0),

@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import inspect
 import re
 import sqlite3
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
+from dataclasses import dataclass
+from typing import TypeVar, cast
 from pathlib import Path
 
 from session.message import (
@@ -26,7 +29,13 @@ from session.message import (
 )
 from session.message_codec import decode_body, encode_body, json_value
 
+_T = TypeVar("_T")
+
 _SCHEMA = {
+    "owner_records": """CREATE TABLE IF NOT EXISTS owner_records (
+        owner TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL,
+        value TEXT NOT NULL, PRIMARY KEY(owner, key)
+    );""",
     "sessions": """CREATE TABLE IF NOT EXISTS sessions (
                         key TEXT PRIMARY KEY,
                         created_at TEXT NOT NULL,
@@ -118,12 +127,51 @@ class MessageLog:
         _ = self._connection.execute("PRAGMA foreign_keys=ON")
         try:
             _check_schema(self._connection)
+            fresh = (
+                self._connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='messages'"
+                ).fetchone()
+                is None
+            )
             with self._connection:
-                for statement in _SCHEMA.values():
+                for name, statement in _SCHEMA.items():
+                    # 新库由 owner 初始化；已有库的新持久能力只能由 yoyo 接纳。
+                    if name == "owner_records" and not fresh:
+                        continue
                     _ = self._connection.execute(statement)
         except BaseException:
             self._connection.close()
             raise
+
+    def owner(self, name: str) -> OwnerStore:
+        """组合只向 owner 授予自身的记录空间，不授予 SQL 或其他空间。"""
+        if not isinstance(name, str) or not name:
+            raise ValueError("状态 owner 不能为空")
+        with self._lock:
+            if (
+                self._connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='owner_records'"
+                ).fetchone()
+                is None
+            ):
+                raise RuntimeError("owner_records 缺失，请先运行对应 yoyo 迁移")
+        return OwnerStore(self, name)
+
+    def _write(self, callback: Callable[[], _T]) -> _T:
+        """同步事务不跨 await；全部权威写成功后才通知日志读者。"""
+        with self._lock:
+            if self._connection.in_transaction:
+                raise RuntimeError("事务内写入必须使用当前 transaction 接口")
+            with self._connection:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                result = callback()
+                if inspect.isawaitable(result):
+                    if inspect.iscoroutine(result):
+                        result.close()
+                    raise TypeError("存储事务回调必须同步，不能跨 await")
+            for event, loop in self._listeners.items():
+                _ = loop.call_soon_threadsafe(event.set)
+            return result
 
     def reader(self, session_id: str) -> MessageReader:
         return MessageReader(self, session_id)
@@ -284,6 +332,15 @@ class MessageWriter:
         self, message_id: str, body: Body, *, expected_source_head: int | None = None
     ) -> Message:
         """先处理同 ID 重放，再条件提交一条消息与其耐久资源引用。"""
+        return self._log._write(
+            lambda: self._append(
+                message_id, body, expected_source_head=expected_source_head
+            )
+        )
+
+    def _append(
+        self, message_id: str, body: Body, *, expected_source_head: int | None = None
+    ) -> Message:
         # 1. 固定 writer 的能力范围；内容 schema 由其注册 owner 验证。
         if type(body) not in self._body_types:
             raise PermissionError("writer 未获授该消息类型")
@@ -291,73 +348,65 @@ class MessageWriter:
             raise PermissionError("工具结果不属于 writer 获授的调用")
         payload = encode_body(body)
         connection = self._log._connection
-        with self._log._lock, connection:
-            _ = connection.execute("BEGIN IMMEDIATE")
-            old = connection.execute(
-                "SELECT * FROM messages WHERE id=?", (message_id,)
-            ).fetchone()
-            if old is not None:
-                if (old["session_key"], old["author"], old["source"], old["body"]) != (
-                    self._session_id,
-                    self._author,
-                    self._source,
-                    payload,
-                ):
-                    raise MessageConflict("message_id 已用于不同的不可变内容")
-                return _message(old)
-            if not self._active:
-                raise WriterExpired("writer 已失效")
-            head = connection.execute(
-                "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=? AND source=?",
-                (self._session_id, self._source),
-            ).fetchone()[0]
-            if expected_source_head is not None and head != expected_source_head:
-                raise MessageConflict(
-                    f"来源 head 已变化: {head} != {expected_source_head}"
-                )
-            binding_ids = self._check_parts(body)
-            if isinstance(body, ToolResult):
-                self._check_call_result(body)
+        old = connection.execute(
+            "SELECT * FROM messages WHERE id=?", (message_id,)
+        ).fetchone()
+        if old is not None:
+            if (old["session_key"], old["author"], old["source"], old["body"]) != (
+                self._session_id,
+                self._author,
+                self._source,
+                payload,
+            ):
+                raise MessageConflict("message_id 已用于不同的不可变内容")
+            return _message(old)
+        if not self._active:
+            raise WriterExpired("writer 已失效")
+        head = connection.execute(
+            "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=? AND source=?",
+            (self._session_id, self._source),
+        ).fetchone()[0]
+        if expected_source_head is not None and head != expected_source_head:
+            raise MessageConflict(f"来源 head 已变化: {head} != {expected_source_head}")
+        binding_ids = self._check_parts(body)
+        if isinstance(body, ToolResult):
+            self._check_call_result(body)
 
-            # 2. Session 自己分配不复用的序号；Control 不得指向尚未接纳的前缀。
-            now = datetime.now(UTC)
-            stamp = now.isoformat()
+        # 2. Session 自己分配不复用的序号；Control 不得指向尚未接纳的前缀。
+        now = datetime.now(UTC)
+        stamp = now.isoformat()
+        _ = connection.execute(
+            "INSERT OR IGNORE INTO sessions (key, created_at, updated_at, next_seq) VALUES (?, ?, ?, 0)",
+            (self._session_id, stamp, stamp),
+        )
+        seq = connection.execute(
+            "SELECT next_seq FROM sessions WHERE key=?", (self._session_id,)
+        ).fetchone()[0]
+        message = Message(
+            message_id, self._session_id, seq, now, self._author, self._source, body
+        )
+        _ = connection.execute(
+            "INSERT INTO messages (id,session_key,seq,ts,author,source,body) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                message_id,
+                self._session_id,
+                seq,
+                stamp,
+                self._author,
+                self._source,
+                payload,
+            ),
+        )
+        for binding_id in binding_ids:
             _ = connection.execute(
-                "INSERT OR IGNORE INTO sessions (key, created_at, updated_at, next_seq) VALUES (?, ?, ?, 0)",
-                (self._session_id, stamp, stamp),
+                "INSERT INTO message_bindings VALUES (?, ?)",
+                (message_id, binding_id),
             )
-            seq = connection.execute(
-                "SELECT next_seq FROM sessions WHERE key=?", (self._session_id,)
-            ).fetchone()[0]
-            message = Message(
-                message_id, self._session_id, seq, now, self._author, self._source, body
-            )
-            _ = connection.execute(
-                "INSERT INTO messages (id,session_key,seq,ts,author,source,body) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    message_id,
-                    self._session_id,
-                    seq,
-                    stamp,
-                    self._author,
-                    self._source,
-                    payload,
-                ),
-            )
-            for binding_id in binding_ids:
-                _ = connection.execute(
-                    "INSERT INTO message_bindings VALUES (?, ?)",
-                    (message_id, binding_id),
-                )
-            _ = connection.execute(
-                "UPDATE sessions SET next_seq=?, updated_at=? WHERE key=?",
-                (seq + 1, stamp, self._session_id),
-            )
+        _ = connection.execute(
+            "UPDATE sessions SET next_seq=?, updated_at=? WHERE key=?",
+            (seq + 1, stamp, self._session_id),
+        )
 
-        # 3. commit 后才唤醒读者；丢失此通知仍能从日志重新追赶。
-        with self._log._lock:
-            for event, loop in self._log._listeners.items():
-                _ = loop.call_soon_threadsafe(event.set)
         return message
 
     def _check_parts(self, body: Body) -> set[str]:
@@ -414,6 +463,139 @@ class MessageWriter:
         ).fetchone()
         if previous is not None:
             raise MessageConflict("该工具调用已经有结果消息")
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerRecord:
+    version: int
+    value: Mapping[str, object]
+
+
+class OwnerStore:
+    """一个 owner 的窄持久接口；结果正文仍由 Message 独占。"""
+
+    def __init__(self, log: MessageLog, owner: str):
+        self._log = log
+        self._owner = owner
+
+    def read(self, key: str) -> OwnerRecord | None:
+        with self._log._lock:
+            row = self._log._connection.execute(
+                "SELECT version,value FROM owner_records WHERE owner=? AND key=?",
+                (self._owner, key),
+            ).fetchone()
+        return None if row is None else _owner_record(row)
+
+    def list(self) -> tuple[tuple[str, OwnerRecord], ...]:
+        with self._log._lock:
+            rows = self._log._connection.execute(
+                "SELECT key,version,value FROM owner_records WHERE owner=? ORDER BY key",
+                (self._owner,),
+            ).fetchall()
+        return tuple((row["key"], _owner_record(row)) for row in rows)
+
+    def transact(self, callback: Callable[[OwnerTransaction], _T]) -> _T:
+        """把自身状态与已获授的 Message 写入放在一个同步事务内。"""
+        transaction = OwnerTransaction(self)
+
+        def invoke() -> _T:
+            value = callback(transaction)
+            transaction._check_active()
+            return value
+
+        try:
+            return self._log._write(invoke)
+        finally:
+            transaction._active = False
+
+
+class OwnerTransaction:
+    def __init__(self, store: OwnerStore):
+        self._store = store
+        self._active = True
+        self._failed = False
+
+    def _check_active(self) -> None:
+        if not self._active:
+            raise RuntimeError("存储 transaction 已结束")
+        if self._failed:
+            raise RuntimeError("存储 transaction 已失败，必须回滚")
+
+    def _perform(self, operation: Callable[[], _T]) -> _T:
+        self._check_active()
+        try:
+            return operation()
+        except BaseException:
+            # 即使调用方捕获了部分 INSERT 后的错误，外层事务也必须整体回滚。
+            self._failed = True
+            raise
+
+    def read(self, key: str) -> OwnerRecord | None:
+        self._check_active()
+        return self._store.read(key)
+
+    def save(
+        self, key: str, value: Mapping[str, object], *, expected_version: int | None
+    ) -> OwnerRecord:
+        """由 owner 校验领域状态；存储只拥有版本 CAS 和 JSON 边界。"""
+        return self._perform(
+            lambda: self._save(key, value, expected_version=expected_version)
+        )
+
+    def _save(
+        self, key: str, value: Mapping[str, object], *, expected_version: int | None
+    ) -> OwnerRecord:
+        self._check_active()
+        if not isinstance(key, str) or not key:
+            raise ValueError("状态 key 不能为空")
+        if expected_version is not None and (
+            type(expected_version) is not int or expected_version < 0
+        ):
+            raise ValueError("状态版本必须是非负整数或 None")
+        frozen = freeze_json(value)
+        if not isinstance(frozen, Mapping):
+            raise TypeError("owner 状态必须是 JSON 对象")
+        current = self.read(key)
+        if (None if current is None else current.version) != expected_version:
+            raise MessageConflict("owner 记录版本已变化")
+        version = 0 if current is None else current.version + 1
+        payload = json.dumps(
+            json_value(cast(Mapping[str, object], frozen)),
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        _ = self._store._log._connection.execute(
+            "INSERT INTO owner_records VALUES (?,?,?,?) ON CONFLICT(owner,key) DO UPDATE SET version=excluded.version,value=excluded.value",
+            (self._store._owner, key, version, payload),
+        )
+        return OwnerRecord(version, cast(Mapping[str, object], frozen))
+
+    def append(
+        self,
+        writer: MessageWriter,
+        message_id: str,
+        body: Body,
+        *,
+        expected_source_head: int | None = None,
+    ) -> Message:
+        self._check_active()
+        if writer._log is not self._store._log:
+            raise ValueError("原子提交不能跨存储 authority")
+        return self._perform(
+            lambda: writer._append(
+                message_id, body, expected_source_head=expected_source_head
+            )
+        )
+
+
+def _owner_record(row: sqlite3.Row) -> OwnerRecord:
+    if type(row["version"]) is not int or row["version"] < 0:
+        raise ValueError("owner 记录版本无效")
+    value = freeze_json(json.loads(row["value"]))
+    if not isinstance(value, Mapping):
+        raise ValueError("owner 记录不是 JSON 对象")
+    return OwnerRecord(row["version"], cast(Mapping[str, object], value))
 
 
 def _message(row: sqlite3.Row) -> Message:
