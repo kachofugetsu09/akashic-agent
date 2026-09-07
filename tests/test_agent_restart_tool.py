@@ -15,14 +15,14 @@ import pytest
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
-from agent.control.protocol.method import OutputReservation, RequestTransport
+from agent.control.protocol.method import RequestTransport
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import RuntimeSnapshot, lease_runtime_snapshot
 from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
 from bus.event_bus import EventBus
-from infra.control.connection import _FrameReservation
+from agent.control.frame_book import FrameBook, FrameReservation
 from plugins.agent_restart.plugin import PendingRestart, RestartTool
 from plugins.tools.api import CallSource, ContentPart, Denied, MessageReply, durable_call_key
 from plugins.tools.plugin import TOOLS
@@ -353,19 +353,17 @@ def _pending(source: CallSource) -> PendingRestart:
 class _FrameTransport(RequestTransport):
     """用真实 frame reservation 证明 programmatic provider 等待 writer drain。"""
 
-    def __init__(self) -> None:
+    def __init__(self, frames: FrameBook) -> None:
         self.connection_id = "fixture-connection"
-        self.reservation: OutputReservation | None = None
-
-    def reserve_input(self, session_id: str, input_id: str) -> OutputReservation:
-        reservation = _FrameReservation(session_id, input_id)
-        self.reservation = reservation
-        return reservation
+        self.frames = frames
+        self.reservation: FrameReservation | None = None
 
 
 @pytest.mark.asyncio
 async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
-    tool = RestartTool(RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None))
+    tool = RestartTool(
+        RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None), FrameBook(),
+    )
     source = _source()
     with pytest.raises(ValueError, match="只能包含 reason"):
         await tool.prepare({"reason": "reload", "extra": True}, source)
@@ -389,7 +387,9 @@ async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
 
 @pytest.mark.asyncio
 async def test_restart_prepare_is_idempotent_only_for_same_call_and_arguments() -> None:
-    tool = RestartTool(RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None))
+    tool = RestartTool(
+        RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None), FrameBook(),
+    )
     source = _source()
     await tool.prepare({"reason": "reload"}, source)
     first = tool._prepared
@@ -406,7 +406,9 @@ async def test_restart_prepare_is_idempotent_only_for_same_call_and_arguments() 
 
 @pytest.mark.asyncio
 async def test_restart_requires_prepare_and_query_is_unknown() -> None:
-    tool = RestartTool(RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None))
+    tool = RestartTool(
+        RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None), FrameBook(),
+    )
     assert tool.idempotent is False
     assert await tool.query("message:[\"call-a\",0]") is None
     with pytest.raises(RestartRejectedError, match="prepare"):
@@ -914,6 +916,8 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             "emit:runtime.starting:reply",
             "serial:runtime.started:reply",
             "serial:runtime.stopping:reply",
+            "serial:runtime.started:programmatic",
+            "serial:runtime.stopping:programmatic",
         }
         if supervised:
             expected_listeners |= {
@@ -935,7 +939,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             assert new_watchers[-1] is not old_watcher
             assert old_watcher is not None and old_watcher.done()
 
-        candidate_tool = RestartTool(candidate_gate)
+        candidate_tool = RestartTool(candidate_gate, FrameBook())
         with pytest.raises(RestartRejectedError, match="正式 supervisor"):
             await candidate_tool.prepare({"reason": "candidate"}, _source())
     finally:
@@ -974,7 +978,11 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
     )
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:restart"
-        transport = _FrameTransport()
+        transport = _FrameTransport(host._control_frames)  # type: ignore[attr-defined]
+        ending: list[str | None] = [None]
+        transport.reservation = transport.frames.route_input(
+            session, "input", transport.connection_id, lambda: ending[0],
+        )
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             api = snapshot.composition_root.context.require(PROGRAMMATIC)
             await api.call("programmatic/session/admit", AdmitParams(session_id=session))
@@ -996,18 +1004,17 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
                     final = message
                     break
         assert final is not None
-        assert transport.reservation is not None
+        ending[0] = final.message_id
         written = asyncio.get_running_loop().create_future()
-        transport.reservation.observe(
-            {
-                "items": [{
-                    "id": final.message_id,
-                    "session_id": session,
-                    "body": {"kind": "output", "finish": "complete", "parts": []},
-                }],
-            },
-            written,
-        )
+        page = {
+            "items": [{
+                "id": final.message_id,
+                "session_id": session,
+                "body": {"kind": "output", "finish": "complete", "parts": []},
+            }],
+        }
+        tracked = transport.frames.resolve_page(transport.connection_id, page)
+        transport.frames.attach_page(tracked, written)
         await asyncio.sleep(0.05)
         assert not commits
         written.set_result(None)

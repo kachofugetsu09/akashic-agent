@@ -91,6 +91,7 @@ def build_control_service(
         plugin_promote=promote, plugin_discard=discard, plugin_drain=drain,
         plugin_uninstall=uninstall, workspace_token=workspace_token,
         boot_id=boot_id, ready=ready,
+        control_frames=core.control_frames,
         methods={name: programmatic_method(name, params) for name, params in PROGRAMMATIC_PARAMS.items()},
     )
 

@@ -10,7 +10,7 @@ from akashic_sdk import AsyncAkashic, RemoteError
 from infra.control.socket import SocketAppServer
 from plugins.content.plugin import check_text
 from session.log import SessionAttributes
-from session.message import ContentPart, Input, Output
+from session.message import CallRef, ContentPart, Input, Output
 from tests.test_message_control import runtime
 
 
@@ -68,6 +68,25 @@ async def test_programmatic_admission_is_immutable_and_ack_retries_recover_same_
 
 
 @pytest.mark.asyncio
+async def test_programmatic_committed_output_releases_route_without_result_read(tmp_path, monkeypatch):
+    async with endpoint(tmp_path, monkeypatch) as (address, core):
+        session = "programmatic:route-settle"
+        async with await AsyncAkashic.connect(address) as client:
+            await client.request("programmatic/session/admit", {"session_id": session})
+            await client.request("programmatic/message/send", {
+                "session_id": session, "message_id": "input", "text": "finish without read",
+            })
+        writer = core.message_log.writer(
+            session, author="assistant", source="programmatic",
+            body_types=(Output,), content={"text": check_text},
+        )
+        writer.append("final", Output((ContentPart("text", "done"),), "complete"))
+        async with asyncio.timeout(3):
+            while core.control_frames._routes:  # type: ignore[attr-defined]
+                await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
 async def test_programmatic_resume_rebinds_output_to_new_connection_after_disconnect(
     tmp_path, monkeypatch,
 ):
@@ -91,6 +110,7 @@ async def test_programmatic_resume_rebinds_output_to_new_connection_after_discon
             await second.request("programmatic/message/resume", {
                 "session_id": session, "message_id": "resume", "input_id": "input",
             })
+            claim = core.control_frames.arm_claim(session, "input", CallRef("resume-call", 0))
             writer = core.message_log.writer(
                 session, author="assistant", source="programmatic",
                 body_types=(Output,), content={"text": check_text},
@@ -107,6 +127,7 @@ async def test_programmatic_resume_rebinds_output_to_new_connection_after_discon
                 )
             page = await second.message_read(session)
             await asyncio.wait_for(waiter, 3)
+            claim.consume()
 
             assert [item["id"] for item in page["items"]][-1] == "final"
 

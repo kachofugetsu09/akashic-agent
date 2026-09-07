@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import cast
 
 import pytest
 
-from agent.control.protocol.method import OutputReservation
+from agent.control.frame_book import FrameBook
 from agent.plugin_composition.tasks import Task, TaskSlot, Tasks
 from agent.restart import RestartGate
-from infra.control.connection import _FrameReservation
-from plugins.programmatic.control import Programmatic
+from session.message import CallRef
 
 
 def _output(session_id: str, message_id: str) -> dict[str, object]:
@@ -39,9 +37,11 @@ def _page(rows: list[dict[str, object]]) -> dict[str, object]:
 
 @pytest.mark.asyncio
 async def test_frame_seen_before_expect_waits_for_drain() -> None:
-    reservation = _FrameReservation("session:a", "input:a")
+    book = FrameBook()
+    reservation = book.route_input("session:a", "input:a", "connection:a", lambda: "output:a")
     written = asyncio.get_running_loop().create_future()
-    reservation.observe(_page([_output("session:a", "output:a")]), written)
+    tracked = book.resolve_page("connection:a", _page([_output("session:a", "output:a")]))
+    book.attach_page(tracked, written)
 
     waiter = asyncio.create_task(reservation.wait_output("output:a"))
     await asyncio.sleep(0)
@@ -53,9 +53,11 @@ async def test_frame_seen_before_expect_waits_for_drain() -> None:
 
 @pytest.mark.asyncio
 async def test_frame_drain_failure_rejects_delivery() -> None:
-    reservation = _FrameReservation("session:a", "input:a")
+    book = FrameBook()
+    reservation = book.route_input("session:a", "input:a", "connection:a", lambda: "output:a")
     written = asyncio.get_running_loop().create_future()
-    reservation.observe(_page([_output("session:a", "output:a")]), written)
+    tracked = book.resolve_page("connection:a", _page([_output("session:a", "output:a")]))
+    book.attach_page(tracked, written)
     error = ConnectionError("writer failed")
     written.set_exception(error)
 
@@ -64,10 +66,200 @@ async def test_frame_drain_failure_rejects_delivery() -> None:
 
 
 @pytest.mark.asyncio
+async def test_frame_book_releases_normal_route_after_exact_frame_drain() -> None:
+    book = FrameBook()
+    ending = "output:a"
+    reservation = book.route_input(
+        "session:a", "input:a", "connection:a", lambda: ending,
+    )
+    page = _page([_output("session:a", ending)])
+    tracked = book.resolve_page("connection:a", page)
+    assert tracked
+    written = asyncio.get_running_loop().create_future()
+    book.attach_page(tracked, written)
+    waiter = asyncio.create_task(reservation.wait_output(ending))
+    await asyncio.sleep(0)
+    assert book._routes  # type: ignore[attr-defined]
+    written.set_result(None)
+    await waiter
+    assert not book._routes  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_frame_book_ignores_wrong_connection_and_releases_result_only_route() -> None:
+    book = FrameBook()
+    book.route_input("session:a", "input:a", "connection:a", lambda: "output:a")
+    page = _page([_output("session:a", "output:a")])
+    assert not book.resolve_page("connection:b", page)
+    assert book._routes  # type: ignore[attr-defined]
+    book.release_input("session:a", "input:a")
+    assert not book._routes  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_frame_book_disconnect_fails_and_releases_route() -> None:
+    book = FrameBook()
+    reservation = book.route_input("session:a", "input:a", "connection:a", lambda: "output:a")
+    waiter = asyncio.create_task(reservation.wait_output("output:a"))
+    await asyncio.sleep(0)
+    error = ConnectionError("connection closed")
+    book.fail_connection("connection:a", error)
+    with pytest.raises(ConnectionError, match="connection closed"):
+        await waiter
+    assert not book._routes  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_frame_book_settle_releases_completed_route_without_a_read() -> None:
+    book = FrameBook()
+    reservation = book.route_input("session:a", "input:a", "connection:a", lambda: "output:a")
+    book.settle_input("session:a", "input:a")
+    assert not book._routes  # type: ignore[attr-defined]
+    with pytest.raises(RuntimeError, match="没有最终 Output"):
+        await reservation.wait_output("output:a")
+
+
+def test_frame_book_resume_stage_preserves_old_owner_until_commit() -> None:
+    book = FrameBook()
+    old = book.route_input("session:a", "input:a", "connection:a", lambda: "old")
+    stage = book.stage_input("session:a", "input:a", "connection:b", lambda: "new")
+    stage.abort()
+    assert book.route_input("session:a", "input:a", "connection:c", lambda: "old") is old
+    committed = book.stage_input("session:a", "input:a", "connection:b", lambda: "new")
+    new = committed.commit()
+    assert new is not old
+    assert not book.resolve_page("connection:a", _page([_output("session:a", "old")]))
+    assert book.resolve_page("connection:b", _page([_output("session:a", "new")]))
+
+
+@pytest.mark.asyncio
+async def test_frame_book_claim_binds_ending_on_page_and_survives_until_consume() -> None:
+    book = FrameBook()
+    book.route_input("session:a", "input:a", "connection:a", lambda: "output:a")
+    claim = book.arm_claim("session:a", "input:a", CallRef("call", 0))
+    assert claim.ending_message_id is None
+    page = _page([_output("session:a", "output:a")])
+    tracked = book.resolve_page("connection:a", page)
+    written = asyncio.get_running_loop().create_future()
+    book.attach_page(tracked, written)
+    waiter = asyncio.create_task(claim.wait_output())
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    written.set_result(None)
+    await waiter
+    assert claim.ending_message_id == "output:a"
+    assert book._routes  # type: ignore[attr-defined]
+    claim.consume()
+    assert not book._routes  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_frame_book_claim_keeps_disconnect_error_after_route_is_removed() -> None:
+    book = FrameBook()
+    book.route_input("session:a", "input:a", "connection:a", lambda: "output:a")
+    claim = book.arm_claim("session:a", "input:a", CallRef("call", 0))
+    error = ConnectionError("connection closed")
+    book.fail_connection("connection:a", error)
+    assert not book._routes  # type: ignore[attr-defined]
+    with pytest.raises(ConnectionError, match="connection closed"):
+        await claim.wait_output()
+    claim.abort()
+
+
+@pytest.mark.asyncio
+async def test_frame_book_stage_old_drain_cannot_complete_new_route() -> None:
+    book = FrameBook()
+    old = book.route_input("session:a", "input:a", "connection:a", lambda: "old")
+    old_tracked = book.resolve_page("connection:a", _page([_output("session:a", "old")]))
+    old_written = asyncio.get_running_loop().create_future()
+    book.attach_page(old_tracked, old_written)
+    stage = book.stage_input("session:a", "input:a", "connection:b", lambda: "new")
+    new = stage.commit()
+    new_tracked = book.resolve_page("connection:b", _page([_output("session:a", "new")]))
+    new_written = asyncio.get_running_loop().create_future()
+    book.attach_page(new_tracked, new_written)
+    waiter = asyncio.create_task(new.wait_output("new"))
+    await asyncio.sleep(0)
+    old_written.set_result(None)
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    new_written.set_result(None)
+    await waiter
+    assert old is not new
+
+
+@pytest.mark.asyncio
+async def test_frame_book_old_failed_drain_cannot_fail_new_route() -> None:
+    book = FrameBook()
+    book.route_input("session:a", "input:a", "connection:a", lambda: "old")
+    old_tracked = book.resolve_page("connection:a", _page([_output("session:a", "old")]))
+    old_written = asyncio.get_running_loop().create_future()
+    book.attach_page(old_tracked, old_written)
+    stage = book.stage_input("session:a", "input:a", "connection:b", lambda: "new")
+    new = stage.commit()
+    new_tracked = book.resolve_page("connection:b", _page([_output("session:a", "new")]))
+    new_written = asyncio.get_running_loop().create_future()
+    book.attach_page(new_tracked, new_written)
+    waiter = asyncio.create_task(new.wait_output("new"))
+    await asyncio.sleep(0)
+    old_written.set_exception(ConnectionError("old writer failed"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    new_written.set_result(None)
+    await waiter
+
+
+@pytest.mark.asyncio
+async def test_frame_book_stage_drains_before_resume_commit_without_losing_new_owner() -> None:
+    book = FrameBook()
+    book.route_input("session:a", "input:a", "connection:a", lambda: "old")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    stage = book.stage_input("session:a", "input:a", "connection:b", lambda: "new")
+
+    async def resume() -> None:
+        entered.set()
+        await release.wait()
+        stage.commit()
+
+    task = asyncio.create_task(resume())
+    await entered.wait()
+    tracked = book.resolve_page("connection:b", _page([_output("session:a", "new")]))
+    written = asyncio.get_running_loop().create_future()
+    book.attach_page(tracked, written)
+    written.set_result(None)
+    await asyncio.sleep(0)
+    release.set()
+    await task
+    await stage.reservation.wait_output("new")
+
+
+@pytest.mark.asyncio
+async def test_frame_book_aborted_stage_drain_cannot_release_old_owner() -> None:
+    book = FrameBook()
+    old = book.route_input("session:a", "input:a", "connection:a", lambda: "old")
+    stage = book.stage_input("session:a", "input:a", "connection:b", lambda: "new")
+    tracked = book.resolve_page("connection:b", _page([_output("session:a", "new")]))
+    staged_written = asyncio.get_running_loop().create_future()
+    book.attach_page(tracked, staged_written)
+    stage.abort()
+    old_tracked = book.resolve_page("connection:a", _page([_output("session:a", "old")]))
+    old_written = asyncio.get_running_loop().create_future()
+    book.attach_page(old_tracked, old_written)
+    staged_written.set_result(None)
+    waiter = asyncio.create_task(old.wait_output("old"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    old_written.set_result(None)
+    await waiter
+
+
+@pytest.mark.asyncio
 async def test_same_message_id_from_another_session_is_ignored() -> None:
-    reservation = _FrameReservation("session:a", "input:a")
+    book = FrameBook()
+    reservation = book.route_input("session:a", "input:a", "connection:a", lambda: "same")
     other = asyncio.get_running_loop().create_future()
-    reservation.observe(_page([_output("session:b", "same")]), other)
+    assert not book.resolve_page("connection:a", _page([_output("session:b", "same")]))
     other.set_result(None)
 
     waiter = asyncio.create_task(reservation.wait_output("same"))
@@ -76,35 +268,19 @@ async def test_same_message_id_from_another_session_is_ignored() -> None:
     assert not waiter.done()
 
     current = asyncio.get_running_loop().create_future()
-    reservation.observe(_page([_output("session:a", "same")]), current)
+    tracked = book.resolve_page("connection:a", _page([_output("session:a", "same")]))
+    book.attach_page(tracked, current)
     current.set_result(None)
     await waiter
 
 
-class _Transport:
-    def __init__(self, connection_id: str) -> None:
-        self.connection_id = connection_id
-        self.calls = 0
-        self.reservation = cast(OutputReservation, object())
-
-    def reserve_input(self, session_id: str, input_id: str) -> OutputReservation:
-        self.calls += 1
-        return self.reservation
-
-
 @pytest.mark.asyncio
 async def test_duplicate_input_on_second_connection_keeps_first_owner() -> None:
-    programmatic = object.__new__(Programmatic)
-    programmatic._reservations = {}
-    first = _Transport("first")
-    second = _Transport("second")
-
-    owned = programmatic.reserve_input("session:a", "input:a", first)
-    duplicate = programmatic.reserve_input("session:a", "input:a", second)
+    book = FrameBook()
+    owned = book.route_input("session:a", "input:a", "first", lambda: "output:a")
+    duplicate = book.route_input("session:a", "input:a", "second", lambda: "output:a")
 
     assert duplicate is owned
-    assert first.calls == 1
-    assert second.calls == 0
 
 
 @pytest.mark.asyncio

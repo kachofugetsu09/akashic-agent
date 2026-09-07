@@ -6,13 +6,14 @@ from pydantic import Field
 
 from agent.control.protocol.models import StrictModel, SessionIdParams
 from agent.plugin_composition import Context, ServiceKey
-from agent.control.protocol.method import OutputReservation, RequestTransport
+from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResolver
+from agent.control.protocol.method import RequestTransport
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
-from plugins.turn_projection.plugin import TURN_PROJECTION, Turn
+from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import MessageReader, SessionAttributes
 from session.message import ContentPart, Input
 
-from .result import read_result
+from .result import read_result, read_result_snapshot
 
 
 class AdmitParams(SessionIdParams):
@@ -50,48 +51,79 @@ def check_session(session_id: str) -> None:
         raise ValueError("程序调用需要 programmatic Session")
 
 
+def resolve_completed_output(
+    reader: MessageReader, projection: TurnProjection, input_id: str,
+) -> str | None:
+    """Resolve one completed Output from a read-only Session prefix."""
+    messages = reader.snapshot()
+    target = next((message for message in messages if message.message_id == input_id), None)
+    if target is None or target.source != "programmatic" or not isinstance(target.body, Input):
+        return None
+    turn = next(
+        (turn for turn in projection.project(messages, target.source) if input_id in turn.message_ids),
+        None,
+    )
+    if turn is None or turn.status != "complete":
+        return None
+    return turn.ending_message_id
+
+
 class Programmatic:
     """程序来源拥有固定身份和创建属性；读取与回复各用既有能力。"""
 
     def __init__(self, ctx: Context):
         self.ctx = ctx
-        self._reservations: dict[tuple[str, str], tuple[str, OutputReservation]] = {}
+        self._frames = ctx.require(CONTROL_FRAMES)
 
-    def reserve_input(self, session_id: str, input_id: str, transport: RequestTransport) -> OutputReservation:
-        """保存 Input 所属连接，最终 Output 只能从同一连接确认。"""
-        key = (session_id, input_id)
-        existing = self._reservations.get(key)
-        if existing is not None:
-            return existing[1]
-        reservation = transport.reserve_input(session_id, input_id)
-        self._reservations[key] = (transport.connection_id, reservation)
-        return reservation
+    def _resolver(self, session_id: str, input_id: str) -> FrameResolver:
+        """Capture only the reader, pure projection and Input identity."""
+        reader = self.ctx.require(MESSAGE_CATALOG).reader(session_id)
+        projection = self.ctx.require(TURN_PROJECTION)
+        return lambda: resolve_completed_output(reader, projection, input_id)
+
+    def settle_changed(self, reader: MessageReader, source: str) -> None:
+        """随来源终态回收无 claim route，避免长连接积累已结束输入。"""
+        if source != "programmatic":
+            return
+        input_ids = self._frames.active_input_ids(reader.session_id)
+        if not input_ids:
+            return
+        messages = reader.snapshot()
+        projection = self.ctx.require(TURN_PROJECTION)
+        turns = projection.project(messages, source)
+        for input_id in input_ids:
+            result = read_result_snapshot(reader, input_id, projection, messages, turns)
+            if result["status"] == "open":
+                continue
+            status = result["status"]
+            if not isinstance(status, str):
+                raise TypeError("programmatic result status 必须是字符串")
+            error = None if status == "complete" else RuntimeError(
+                f"programmatic input 已结束: {status}",
+            )
+            self._frames.settle_input(reader.session_id, input_id, error)
 
     def _reserve_before_accept(
         self, session_id: str, input_id: str, transport: RequestTransport | None,
-        *, replace: bool = False,
     ) -> bool:
         """在触发来源 watcher 前登记当前请求连接的 reservation。"""
         if transport is None:
             return False
-        key = (session_id, input_id)
-        if not replace and key in self._reservations:
-            return False
-        self._reservations[key] = (
-            transport.connection_id, transport.reserve_input(session_id, input_id),
+        resolver = self._resolver(session_id, input_id)
+        _reservation, created = self._frames.route_input_with_owner(
+            session_id, input_id, transport.connection_id, resolver,
         )
-        return True
+        return created
 
-    def _drop_reservation(
+    def _stage_before_resume(
         self, session_id: str, input_id: str, transport: RequestTransport | None,
-    ) -> None:
-        """只回收本次接纳创建且仍由同一连接拥有的 reservation。"""
+    ) -> FrameRouteStage | None:
         if transport is None:
-            return
-        key = (session_id, input_id)
-        owner = self._reservations.get(key)
-        if owner is not None and owner[0] == transport.connection_id:
-            del self._reservations[key]
+            return None
+        return self._frames.stage_input(
+            session_id, input_id, transport.connection_id,
+            self._resolver(session_id, input_id),
+        )
 
     async def wait(self, reader: MessageReader, turn: Turn) -> None:
         """等待同连接完整最终 Output frame 的 writer flush。"""
@@ -104,10 +136,9 @@ class Programmatic:
             if message is not None and isinstance(message.body, Input):
                 input_id = identity
                 break
-        reservation = self._reservations.get((reader.session_id, input_id or ""))
-        if reservation is None:
+        if input_id is None:
             raise ValueError("程序最终 Output 没有同连接 Input reservation")
-        await reservation[1].wait_output(ending)
+        await self._frames.wait_input(reader.session_id, input_id, ending)
 
     async def call(
         self, method: str, params: StrictModel,
@@ -133,8 +164,12 @@ class Programmatic:
             reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
             if reader.attributes.visibility != "internal":
                 raise ValueError("程序调用 Session 尚未通过内部来源准入")
-            return read_result(reader,
+            result = read_result(reader,
                 cast(ResultParams, params).input_id, ctx.require(TURN_PROJECTION))
+            if result["status"] != "open":
+                input_id = cast(ResultParams, params).input_id
+                self._frames.release_input(session_id, input_id)
+            return result
         source = open_source(ctx, session_id)
         if method == "programmatic/message/send":
             send = cast(SendParams, params)
@@ -149,21 +184,21 @@ class Programmatic:
                 )))
             except BaseException:
                 if created:
-                    self._drop_reservation(session_id, send.message_id, transport)
+                    self._frames.release_input(session_id, send.message_id)
                 raise
         elif method == "programmatic/message/pause":
             message = await source.pause(cast(PauseParams, params).message_id)
         elif method == "programmatic/message/resume":
             resume = cast(ResumeParams, params)
-            created = self._reserve_before_accept(
-                session_id, resume.input_id, transport, replace=True,
-            )
+            stage = self._stage_before_resume(session_id, resume.input_id, transport)
             try:
                 message = await source.resume(resume.message_id, resume.input_id)
             except BaseException:
-                if created:
-                    self._drop_reservation(session_id, resume.input_id, transport)
+                if stage is not None:
+                    stage.abort()
                 raise
+            if stage is not None:
+                _ = stage.commit()
         else:
             raise AssertionError("未声明的程序调用方法: " + method)
         return {"version": 2, "session_id": message.session_id,

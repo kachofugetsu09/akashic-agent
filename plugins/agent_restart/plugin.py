@@ -16,13 +16,14 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.control.frame_book import CONTROL_FRAMES, FrameBook, FrameClaim, FrameRouteReleased
 from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
 from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durable_call_key
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import Message, MessageCatalog, MessageReader
-from session.message import CallRef, Output, ToolCall, ToolResult, freeze_json
+from session.message import CallRef, Input, Output, ToolCall, ToolResult, freeze_json
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ inject = (
     TURN_PROJECTION,
     FINAL_OUTPUT_DELIVERY,
     RESTART_GATE,
+    CONTROL_FRAMES,
 )
 
 
@@ -62,9 +64,12 @@ class RestartTool(BoundTool):
     def idempotent(self) -> bool:
         return False
 
-    def __init__(self, gate: RestartGate) -> None:
+    def __init__(self, gate: RestartGate, frames: FrameBook) -> None:
         self._gate = gate
+        self._frames = frames
         self._prepared: PendingRestart | None = None
+        self._claim: FrameClaim | None = None
+        self._claim_session_id: str | None = None
 
     def _require_supervised(self) -> None:
         if not self._gate.supervised or not self._gate.execution_enabled:
@@ -105,6 +110,24 @@ class RestartTool(BoundTool):
         if current is None:
             self._prepared = pending
             current = pending
+        input_message = next(
+            (
+                message
+                for message in reversed(source.messages)
+                if message.source == call_message.source and isinstance(message.body, Input)
+            ),
+            None,
+        )
+        if input_message is not None:
+            try:
+                self._claim = self._frames.arm_claim(
+                    input_message.session_id, input_message.message_id, pending.call_ref,
+                )
+                self._claim_session_id = input_message.session_id
+            except FrameRouteReleased:
+                # Channel sources and internal calls have no control frame route.
+                self._claim = None
+                self._claim_session_id = None
         return current.arguments
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
@@ -118,6 +141,26 @@ class RestartTool(BoundTool):
         if not isinstance(final_arguments, Mapping) or final_arguments != pending.arguments:
             raise RestartRejectedError("agent_restart 参数不属于当前 ToolCall")
         return Result("success", (ContentPart("text", "已安排在本轮最终回复送达后重启。"),))
+
+    def finalize(self, catalog: MessageCatalog) -> None:
+        """Keep a pre-claim only when the durable ToolResult really succeeded."""
+        claim = self._claim
+        if claim is None:
+            return
+        session_id = self._claim_session_id
+        pending = self._prepared
+        succeeded = False
+        if session_id is not None and pending is not None:
+            succeeded = any(
+                isinstance(message.body, ToolResult)
+                and message.body.call_ref == pending.call_ref
+                and message.body.outcome == "success"
+                for message in catalog.reader(session_id).snapshot()
+            )
+        if not succeeded:
+            claim.abort()
+        self._claim = None
+        self._claim_session_id = None
 
     async def query(self, key: str) -> Result | None:
         return None
@@ -134,6 +177,7 @@ class RestartWatcher:
         self._plugin_id: str | None = None
         self._watcher: asyncio.Task[None] | None = None
         self._active: str | None = None
+        self._frames = ctx.require(CONTROL_FRAMES)
 
     def prepare(self, _event: object) -> None:
         """在正式接纳开放前固定旧消息 heads，避免启动窗口吞掉新结果。"""
@@ -271,6 +315,7 @@ class RestartWatcher:
         gate = self._gate
         if gate is None:
             raise RuntimeError("agent_restart watcher 缺少 RestartGate")
+        claim = self._frames.claim_for(request.session_id, request.call_ref)
         gate.prepare(request.request_id)
         try:
             async with asyncio.timeout(15.0):
@@ -280,11 +325,27 @@ class RestartWatcher:
                         continue
                     if turn.status != "complete" or turn.ending_message_id is None:
                         raise RestartRejectedError("restart ToolCall 所属 Turn 未正常完成")
-                    await delivery.wait(reader, turn)
+                    if request.source == "programmatic":
+                        if claim is None:
+                            raise RestartRejectedError(
+                                "programmatic agent_restart 缺少精确 frame claim",
+                            )
+                        await claim.wait_output()
+                    else:
+                        await delivery.wait(reader, turn)
                     await gate.commit(request.request_id)
+                    if claim is not None:
+                        claim.consume()
                     return
             raise RestartRejectedError("等待最终 Output 超时")
+        except FrameRouteReleased as error:
+            if claim is not None:
+                claim.abort()
+            gate.abort(request.request_id)
+            raise RestartRejectedError(str(error)) from error
         except BaseException:
+            if claim is not None:
+                claim.abort()
             gate.abort(request.request_id)
             raise
 
@@ -312,7 +373,11 @@ async def apply(ctx: Context, config: object) -> None:
 
     @asynccontextmanager
     async def open_tool(_state: Mapping[str, object]) -> AsyncGenerator[BoundTool, None]:
-        yield RestartTool(gate)
+        tool = RestartTool(gate, ctx.require(CONTROL_FRAMES))
+        try:
+            yield tool
+        finally:
+            tool.finalize(ctx.require(MESSAGE_CATALOG))
 
     _ = await ctx.require(TOOLS).register(
         ctx,
