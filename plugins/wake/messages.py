@@ -25,7 +25,9 @@ def recent_context(catalog: MessageCatalog, history: DeliveryHistory, *, target:
     if target is not None:
         messages = catalog.reader(target).snapshot()
         for message in reversed(messages):
-            if message.recorded_at > now or message.source != "conversation" or not isinstance(message.body, (Input, Output)):
+            if (message.recorded_at > now
+                    or message.source not in {"conversation", "legacy-unattributed"}
+                    or not isinstance(message.body, (Input, Output))):
                 continue
             text = "\n".join(cast(str, part.value) for part in message.body.parts
                              if isinstance(part, ContentPart) and part.kind == "text")

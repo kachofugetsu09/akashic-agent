@@ -156,6 +156,42 @@ def request(ctx, owner, now, *, proposals=(), alert_ref=None):
         rules="", history="")
 
 
+def test_recent_context_keeps_legacy_dialogue_without_provenance(tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    from plugins.content.plugin import check_text
+    from plugins.wake.messages import recent_context
+    from session.log import MessageCatalog, MessageLog
+    from session.message import ContentPart, ContentReferences
+
+    log = MessageLog(tmp_path / "sessions.db")
+    legacy = log.writer("s", author="legacy-attribution-unknown", source="legacy-unattributed",
+                        body_types=(Input, Output), content={"text": check_text,
+                            "history.provenance": lambda part: ContentReferences()})
+    legacy.append("old-user", Input((ContentPart("text", "旧用户问题"), ContentPart(
+        "history.provenance", {"schema": "sessions.messages.v0", "role": "user"}))))
+    legacy.append("old-assistant", Output((ContentPart("text", "旧助手回答"), ContentPart(
+        "history.provenance", {"schema": "sessions.messages.v0", "role": "assistant"})), "complete"))
+    other = log.writer("s", author="fixture", source="eventmail", body_types=(Input,),
+                       content={"text": check_text})
+    other.append("other", Input((ContentPart("text", "其他来源正文"),)))
+    before = log.reader("s").snapshot()
+    now = datetime.now(timezone.utc)
+    history = SimpleNamespace(recent=lambda **kwargs: ())
+
+    result = json.loads(recent_context(MessageCatalog(log), history, target="s", now=now))
+
+    assert [(row["role"], row["text"]) for row in result["recent_conversation"]] == [
+        ("user", "旧用户问题"),
+        ("assistant", "旧助手回答"),
+    ]
+    assert "history.provenance" not in json.dumps(result, ensure_ascii=False)
+    assert "其他来源正文" not in json.dumps(result, ensure_ascii=False)
+    assert log.reader("s").snapshot() == before
+    log.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["share_content", "skip_content"])
 async def test_drift_runs_actual_private_tool_and_settles_once(tmp_path, action):
