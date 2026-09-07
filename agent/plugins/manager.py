@@ -5933,13 +5933,12 @@ class PluginManager:
         generations: Mapping[str, PluginGeneration],
         selected_plugin_ids: frozenset[str],
     ) -> frozenset[str]:
-        """Find stable owners needed by the real candidate composition."""
+        """找出真实候选组合需要的 stable owner。"""
 
         available = frozenset(generations)
         additional: set[str] = set()
 
-        # 1. Candidate declarations may expose a provider or dependency that
-        # was absent from the stable Root. Use the actual mounted Root first.
+        # 1. 候选声明可能新增 stable Root 没有的 provider 或依赖，先看实际 Root。
         stable_services = stable.plugin_service_owners()
         candidate_services = candidate.plugin_service_owners()
         stable_dependencies = stable.plugin_dependencies()
@@ -5959,9 +5958,7 @@ class PluginManager:
                     if service in dependencies:
                         additional.add(owner)
 
-        # 2. An ordered event is one Root-owned sequence. If the tentative
-        # candidate touched it, bring every remaining stable participant into
-        # the candidate and let a fresh Root establish the real order.
+        # 2. 有序事件属于一个 Root；候选触及时，把 stable participant 一并纳入重建。
         candidate_events = candidate._events.registration_event_groups()  # pyright: ignore[reportPrivateUsage]
         stable_events = stable._events.registration_event_groups()  # pyright: ignore[reportPrivateUsage]
         candidate_names = {
@@ -5969,9 +5966,8 @@ class PluginManager:
             for key, owners in candidate_events
             if owners
         }
-        touched_names = candidate_names
         for key, owners in stable_events:
-            if key.name not in touched_names:
+            if key.name not in candidate_names:
                 continue
             additional.update(
                 owner

@@ -122,7 +122,7 @@ async def test_overlay_keeps_candidate_event_order_and_duplicate_owner_listeners
         await ctx.on(event, listener("z"))
 
     try:
-        # The candidate Root registration order is B -> Z -> A -> A.
+        # 候选 Root 的注册顺序是 B -> Z -> A -> A。
         await stable.mount(
             stable_b,
             name="b",

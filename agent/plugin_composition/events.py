@@ -411,7 +411,7 @@ class EventRegistry:
         *,
         plugin_ids: Collection[str] | None = None,
     ) -> tuple[str, ...]:
-        """Freeze registration groups in a stable descriptor order."""
+        """按稳定 descriptor 顺序冻结注册组。"""
 
         groups = sorted(
             self.registration_groups(plugin_ids=plugin_ids),
@@ -428,7 +428,7 @@ class EventRegistry:
         *,
         plugin_ids: Collection[str] | None = None,
     ) -> tuple[tuple[EventKey, tuple[str, ...]], ...]:
-        """Return event keys and plugin owners in Root registration order."""
+        """按 Root 注册顺序返回事件键和插件 owner。"""
 
         return tuple(
             (
