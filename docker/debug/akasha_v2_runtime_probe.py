@@ -854,6 +854,7 @@ def _run_controller(
     compose_cleanup_error: str | None = None
     compose_override_cleanup_error: str | None = None
     fixture_cleanup_error: str | None = None
+    formal_workspace_provided = formal_workspace is not None
     sandbox_preserved = False
     sandbox_path = ""
     env: dict[str, str] = {}
@@ -1113,7 +1114,7 @@ def _run_controller(
                 compose_cleanup_error = f"{type(error).__name__}: {error}"
                 controller_error = controller_error or compose_cleanup_error
             try:
-                residual = subprocess.run(
+                residual_probe = subprocess.run(
                     [*compose, "ps", "-aq"],
                     cwd=repo,
                     env=env,
@@ -1121,7 +1122,15 @@ def _run_controller(
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     check=False,
-                ).stdout.split()
+                )
+                residual = residual_probe.stdout.split()
+                if residual_probe.returncode != 0:
+                    compose_cleanup_error = compose_cleanup_error or (
+                        "compose ps failed: "
+                        f"returncode={residual_probe.returncode} "
+                        f"stderr={residual_probe.stderr[-1000:]}"
+                    )
+                    controller_error = controller_error or compose_cleanup_error
             except Exception as error:
                 compose_cleanup_error = compose_cleanup_error or f"{type(error).__name__}: {error}"
                 controller_error = controller_error or compose_cleanup_error
@@ -1165,7 +1174,10 @@ def _run_controller(
                 "AKV2-06",
                 cleanup_returncode == 0
                 and not residual
-                and formal_before == formal_after
+                and (
+                    not formal_workspace_provided
+                    or formal_before == formal_after
+                )
                 and source_before == source_after
                 and sandbox_app_before == sandbox_app_after
                 and sandbox_cleanup_error is None
@@ -1175,7 +1187,12 @@ def _run_controller(
                 {
                     "cleanupReturncode": cleanup_returncode,
                     "residualContainers": residual,
-                    "formalWorkspaceUnchanged": formal_before == formal_after,
+                    "formalWorkspaceProvided": formal_workspace_provided,
+                    "formalWorkspaceUnchanged": (
+                        formal_before == formal_after
+                        if formal_workspace_provided
+                        else None
+                    ),
                     "sourceBefore": source_before,
                     "sourceAfter": source_after,
                     "sourceUnchanged": source_before == source_after,
