@@ -3,15 +3,19 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import array
+import fcntl
 import hashlib
 import json
 import os
 import shutil
+import select
 import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
 import uuid
@@ -67,7 +71,7 @@ _MEMORY_CONTEXT_PROFILE_RESPONSE = json.dumps(
     {"memory": "", "self": _DEFAULT_SELF_MD},
     ensure_ascii=False,
 )
-_MEMORY_CONTEXT_TOKEN_REPEAT = 5_000
+_MEMORY_CONTEXT_TOKEN_REPEAT = 4_500
 
 
 @dataclass(frozen=True)
@@ -686,43 +690,44 @@ def _memory_context_seed_content(role: str, index: int) -> str:
     return (f"seed {role} {index} " + "token " * _MEMORY_CONTEXT_TOKEN_REPEAT).strip()
 
 
-def _memory_context_seed_rows(session_key: str) -> list[tuple[str, str, str]]:
-    """Return expected seed IDs, roles, and bodies in durable seq order."""
+def _memory_context_seed_rows() -> list[tuple[str, str]]:
+    """Return the expected historical role and text pairs in durable order."""
 
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str]] = []
     for index in range(4):
         for role in ("user", "assistant"):
-            seq = len(rows)
-            rows.append(
-                (
-                    f"{session_key}:{seq}",
-                    role,
-                    _memory_context_seed_content(role, index),
-                )
-            )
+            rows.append((role, _memory_context_seed_content(role, index)))
     return rows
 
 
-def _memory_context_source_plan_digest(session_key: str) -> str:
-    """Hash the three selected complete units exactly as ContextCompactor does."""
+def _memory_context_source_plan_digest(
+    rows: Sequence[sqlite3.Row], source_ids: Sequence[str]
+) -> str:
+    """Hash selected Message identity and complete encoded body facts."""
 
+    by_id = {str(row["id"]): row for row in rows}
+    if not source_ids:
+        raise GateFailure("memory-context source digest 缺少 source IDs")
+    try:
+        selected_rows = [by_id[message_id] for message_id in source_ids]
+    except KeyError as error:
+        raise GateFailure(f"memory-context source digest 缺少 Message：{error}") from error
     selected: list[dict[str, object]] = []
-    for unit_index in range(3):
-        source_from_seq = unit_index * 2
-        through_seq = source_from_seq + 1
-        for offset, role in enumerate(("user", "assistant")):
-            seq = source_from_seq + offset
-            selected.append(
-                {
-                    "id": f"{session_key}:{seq}",
-                    "seq": seq,
-                    "unit_ref": f"{source_from_seq}:{through_seq}:{unit_index}",
-                    "message": {
-                        "role": role,
-                        "content": _memory_context_seed_content(role, unit_index),
-                    },
-                }
-            )
+    for row in selected_rows:
+        body = json.loads(str(row["body"]))
+        if not isinstance(body, dict):
+            raise GateFailure("memory-context source body 不是 object")
+        selected.append(
+            {
+                "id": str(row["id"]),
+                "session_key": str(row["session_key"]),
+                "seq": int(row["seq"]),
+                "ts": str(row["ts"]),
+                "author": str(row["author"]),
+                "source": str(row["source"]),
+                "body": body,
+            }
+        )
     encoded = json.dumps(
         selected,
         ensure_ascii=False,
@@ -732,10 +737,100 @@ def _memory_context_source_plan_digest(session_key: str) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
-    """Classify the exact three model requests and reject tool-boundary drift."""
+def _memory_context_summary_source(requests: Sequence[object]) -> list[dict[str, object]]:
+    """Extract the exact source rows submitted to the summary provider."""
 
-    if len(requests) != 3:
+    for raw_request in requests:
+        if not isinstance(raw_request, dict):
+            continue
+        payload = raw_request.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or len(messages) != 1:
+            continue
+        content = messages[0].get("content") if isinstance(messages[0], dict) else None
+        if not isinstance(content, str) or "\n[Source messages]\n" not in content:
+            continue
+        source_text = content.split("\n[Source messages]\n", 1)[1]
+        source_rows = json.loads(source_text)
+        if not isinstance(source_rows, list) or not all(
+            isinstance(row, dict) for row in source_rows
+        ):
+            raise GateFailure("摘要 provider source rows 不是 object 列表")
+        return source_rows
+    raise GateFailure("缺少摘要 provider 的 Source messages 输入")
+
+
+def _memory_context_summary_body(body: object) -> object:
+    """Remove private model replay parts exactly as summary source_text does."""
+
+    if not isinstance(body, dict) or body.get("kind") == "control":
+        return body
+    normalized = dict(body)
+    parts = normalized.get("parts")
+    if isinstance(parts, list):
+        normalized["parts"] = [
+            part
+            for part in parts
+            if not isinstance(part, dict)
+            or part.get("kind") not in {
+                "model.facts", "context.summary", "model.selection", "tool.selection",
+            }
+        ]
+    return normalized
+
+
+def _memory_context_business_tail(
+    messages: object, expected_rows: Sequence[sqlite3.Row], stop_text: str
+) -> tuple[dict[str, object], list[tuple[str, str]], list[str]]:
+    """Return the summary object, projected raw tail, and source text leaks."""
+
+    if not isinstance(messages, list):
+        raise GateFailure("业务 provider payload messages 不是 list")
+    summary_object: dict[str, object] | None = None
+    tail: list[tuple[str, str]] = []
+    source_texts: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            try:
+                value = json.loads(content)
+            except json.JSONDecodeError:
+                value = None
+            if isinstance(value, dict) and "summary" in value and "reference" in value:
+                summary_object = value
+                continue
+        if summary_object is None:
+            continue
+        if not isinstance(content, list):
+            continue
+        text_values = [
+            str(part["text"])
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+        if text_values and text_values[0] == stop_text:
+            break
+        if text_values:
+            tail.append((str(message.get("role")), text_values[0]))
+    for row in expected_rows:
+        body = json.loads(str(row["body"]))
+        parts = body.get("parts", []) if isinstance(body, dict) else []
+        source_texts.extend(
+            str(part["value"])
+            for part in parts
+            if isinstance(part, dict) and part.get("kind") == "text"
+        )
+    return summary_object or {}, tail, source_texts
+
+
+def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
+    """Classify four seed replies and the three expected memory requests."""
+
+    if len(requests) != 7:
         raise GateFailure(f"memory-context 模型请求数量异常：{len(requests)}")
     kinds: list[str] = []
     for raw_request in requests:
@@ -745,12 +840,17 @@ def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
         if not isinstance(payload, dict):
             raise GateFailure("memory-context 模型请求缺少 payload")
         serialized = json.dumps(payload.get("messages", []), ensure_ascii=False)
-        if "Closed history to consolidate" in serialized:
+        if (
+            "更新当前长任务的上下文压缩摘要" in serialized
+            and "[Source messages]" in serialized
+        ):
             kind = "summary"
         elif "你维护两个长期 Markdown 档案" in serialized:
             kind = "markdown"
         elif _MEMORY_CONTEXT_INPUT in serialized:
             kind = "business"
+        elif "seed user" in serialized:
+            kind = "seed"
         else:
             raise GateFailure("memory-context 模型请求无法归类")
         if kind in {"summary", "markdown"} and payload.get("tools", []) not in (
@@ -760,7 +860,7 @@ def _memory_context_request_kinds(requests: Sequence[object]) -> list[str]:
             raise GateFailure(f"memory-context {kind} 请求不得携带 tools")
         kinds.append(kind)
     # Committed fact 在 business response settle 后消费，顺序固定。
-    if kinds != ["summary", "business", "markdown"]:
+    if kinds != ["seed", "seed", "seed", "seed", "summary", "business", "markdown"]:
         raise GateFailure(f"memory-context 模型请求顺序异常：{kinds!r}")
     return kinds
 
@@ -912,6 +1012,120 @@ def _terminal_status(event: dict[str, Any]) -> str:
     if not isinstance(status, str):
         raise GateFailure(f"terminal event 缺少 status：{event!r}")
     return status
+
+
+def _message_text(item: object) -> str:
+    """Extract text parts from one wire Message row."""
+    if not isinstance(item, dict):
+        return ""
+    body = item.get("body")
+    if not isinstance(body, dict):
+        return ""
+    parts = body.get("parts")
+    if not isinstance(parts, list):
+        return ""
+    return "".join(
+        str(part.get("value", ""))
+        for part in parts
+        if isinstance(part, dict) and part.get("kind") == "text"
+    )
+
+
+def _execution_payload(item: object) -> dict[str, Any]:
+    """Decode one standard shell ToolResult envelope."""
+
+    try:
+        payload = json.loads(_message_text(item))
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise GateFailure(f"shell ToolResult payload 不是 JSON：{item!r}") from error
+    if not isinstance(payload, dict):
+        raise GateFailure(f"shell ToolResult payload 不是 object：{item!r}")
+    return payload
+
+
+def _execution_last_json(item: object) -> dict[str, Any]:
+    """Decode the last JSON line emitted by one standard shell execution."""
+
+    payload = _execution_payload(item)
+    output = payload.get("output")
+    if not isinstance(output, str):
+        raise GateFailure(f"shell ToolResult 缺少 output：{item!r}")
+    try:
+        value = json.loads(output.strip().splitlines()[-1])
+    except (IndexError, TypeError, ValueError) as error:
+        raise GateFailure(f"shell ToolResult output 不是 JSON：{item!r}") from error
+    if not isinstance(value, dict):
+        raise GateFailure(f"shell ToolResult output JSON 不是 object：{item!r}")
+    return value
+
+
+def _message_items(page: object, kind: str) -> list[dict[str, Any]]:
+    """Return wire rows of one body kind from a message page."""
+
+    if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+        return []
+    return [
+        item
+        for item in page["items"]
+        if isinstance(item, dict)
+        and isinstance(item.get("body"), dict)
+        and item["body"].get("kind") == kind
+    ]
+
+
+def _wait_for_message_items(
+    client: JsonRpcSocketClient,
+    session_id: str,
+    kind: str,
+    *,
+    minimum: int = 1,
+    timeout: float = SCENARIO_DEADLINE_S,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Poll the durable page until it contains the requested body rows."""
+
+    deadline = time.monotonic() + timeout
+    page: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        page = client.read_messages(session_id)
+        rows = _message_items(page, kind)
+        if len(rows) >= minimum:
+            return page, rows
+        threading.Event().wait(0.05)
+    raise GateFailure(
+        f"{session_id} 未在 deadline 内得到 {minimum} 个 {kind}：{page!r}"
+    )
+
+
+def _socket_pending_bytes(connection: socket.socket) -> int:
+    """Read queued bytes without consuming the slow subscriber's socket."""
+
+    pending = array.array("I", [0])
+    fcntl.ioctl(connection.fileno(), termios.FIONREAD, pending, True)
+    return int(pending[0])
+
+
+def _drain_socket_until_eof(
+    connection: socket.socket, *, timeout: float = SCENARIO_DEADLINE_S
+) -> tuple[bool, int]:
+    """Drain buffered frames before checking the peer's EOF."""
+
+    connection.setblocking(False)
+    deadline = time.monotonic() + timeout
+    drained = 0
+    while time.monotonic() < deadline:
+        try:
+            chunk = connection.recv(65_536)
+        except BlockingIOError:
+            readable, _, _ = select.select(
+                [connection], [], [], min(0.1, max(0.0, deadline - time.monotonic()))
+            )
+            if not readable:
+                continue
+            continue
+        if not chunk:
+            return True, drained
+        drained += len(chunk)
+    return False, drained
 
 
 def _wait_programmatic_result(
@@ -1338,7 +1552,7 @@ def _inside_smoke(report_dir: Path) -> int:
     return 0 if passed else 1
 
 def _inside_memory_context(report_dir: Path) -> int:
-    """验证真实 session compaction ledger、Markdown side effects 和 append-only 语义。"""
+    """验证显式 eligible 程序 Session 的 Message compaction 和 Markdown 投影。"""
 
     report_dir.mkdir(parents=True, exist_ok=True)
     events_path = report_dir / "events.jsonl"
@@ -1347,18 +1561,17 @@ def _inside_memory_context(report_dir: Path) -> int:
     checks: list[CheckResult] = []
     client: JsonRpcSocketClient | None = None
     try:
-        # 1. 按固定顺序提供 summary、业务响应和 Markdown profile projection。
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
         _configure_model_gate(context_window=100_000)
-        _wait_socket(endpoint, READINESS_DEADLINE_S)
-        _http_json(
-            "PUT",
-            f"{model_url}/control/script",
+        seed_rows = _memory_context_seed_rows()
+        scripts = [
+            {"mode": "complete", "content": content}
+            for role, content in seed_rows
+            if role == "assistant"
+        ]
+        scripts.extend(
             [
-                {
-                    "mode": "complete",
-                    "content": _PC09_COMPACTION_SUMMARY,
-                },
+                {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY},
                 {
                     "mode": "complete",
                     "content": (
@@ -1366,201 +1579,557 @@ def _inside_memory_context(report_dir: Path) -> int:
                         f"{_MEMORY_CONTEXT_RESPONSE}"
                     ),
                 },
-                {
-                    "mode": "complete",
-                    "content": _MEMORY_CONTEXT_PROFILE_RESPONSE,
-                },
-            ],
+                {"mode": "complete", "content": _MEMORY_CONTEXT_PROFILE_RESPONSE},
+            ]
         )
+        _http_json("PUT", f"{model_url}/control/script", scripts)
+        _wait_socket(endpoint, READINESS_DEADLINE_S)
         client = _connect_client(endpoint, events_path)
-        turn_id = _start_turn(client, _MEMORY_CONTEXT_SESSION, _MEMORY_CONTEXT_INPUT)
-        terminal = client.wait_terminal(turn_id)
-        payload = _event_turn(terminal)
+        admission = client.admit_programmatic(
+            _MEMORY_CONTEXT_SESSION, persist_memory=True
+        )
+        if admission.get("learning") != "eligible":
+            raise GateFailure(f"memory-context Session 未取得 eligible 准入：{admission!r}")
         database = Path("/sandbox/workspace/sessions.db")
-        seed_rows = _memory_context_seed_rows(_MEMORY_CONTEXT_SESSION)
-        expected_seed_hashes = {
-            message_id: hashlib.sha256(content.encode("utf-8")).hexdigest()
-            for message_id, _, content in seed_rows
-        }
-        connection = sqlite3.connect(database)
-        try:
+        # 1. 通过正式程序来源显式声明 eligible，再追加四个已结算历史 Turn。
+        seed_results: list[dict[str, Any]] = []
+        for index in range(4):
+            user_text = seed_rows[index * 2][1]
+            assistant_text = seed_rows[index * 2 + 1][1]
+            input_id = f"mc01-seed-{index}"
+            ack = client.send_programmatic(
+                _MEMORY_CONTEXT_SESSION, input_id, user_text
+            )
+            result = _wait_programmatic_result(
+                client, _MEMORY_CONTEXT_SESSION, input_id
+            )
+            if (
+                ack.get("message_id") != input_id
+                or result.get("status") != "complete"
+            ):
+                raise GateFailure(
+                    f"memory-context seed turn {index} 未完成：ack={ack!r} result={result!r}"
+                )
+            seed_results.append({"ack": ack, "result": result, "text": assistant_text})
+
+        with sqlite3.connect(database) as connection:
             connection.row_factory = sqlite3.Row
-            session_row = connection.execute(
-                "SELECT last_consolidated FROM sessions WHERE key = ?",
-                (_MEMORY_CONTEXT_SESSION,),
-            ).fetchone()
-            message_rows = connection.execute(
-                "SELECT id, seq, role, content FROM messages "
+            seed_message_rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body FROM messages "
                 "WHERE session_key = ? ORDER BY seq",
                 (_MEMORY_CONTEXT_SESSION,),
             ).fetchall()
-            compaction_row = connection.execute(
-                "SELECT * FROM session_compactions "
-                "WHERE session_key = ? AND generation = 1",
+        if len(seed_message_rows) != 8:
+            raise GateFailure(
+                f"memory-context seed Message 数量异常：{len(seed_message_rows)}"
+            )
+        # 2. 最终业务 Input 继续走同一程序来源，触发 compaction 后完成 Reply。
+        business_id = "mc01-business"
+        business_ack = client.send_programmatic(
+            _MEMORY_CONTEXT_SESSION, business_id, _MEMORY_CONTEXT_INPUT
+        )
+        business_result = _wait_programmatic_result(
+            client, _MEMORY_CONTEXT_SESSION, business_id
+        )
+        if business_ack.get("message_id") != business_id:
+            raise GateFailure(f"memory-context business ACK 异常：{business_ack!r}")
+        if business_result.get("status") != "complete":
+            raise GateFailure(
+                f"memory-context business turn 未完成：{business_result!r}"
+            )
+
+        # Markdown 投影由已提交 SummaryRecord 的普通插件任务完成；等待其
+        # 可观察的 provider 请求，避免把 programmatic result 的完成 ACK 当成
+        # 所有 post-commit side effect 已经落盘。
+        final_requests: list[object] = []
+        request_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        while time.monotonic() < request_deadline:
+            final_requests = _model_requests(
+                _http_json("GET", f"{model_url}/control/requests")
+            )
+            if len(final_requests) == len(scripts):
+                break
+            threading.Event().wait(0.05)
+        if len(final_requests) != len(scripts):
+            raise GateFailure(
+                f"memory-context Markdown 请求未完成：{len(final_requests)}/{len(scripts)}"
+            )
+
+        with sqlite3.connect(database) as connection:
+            connection.row_factory = sqlite3.Row
+            session_row = connection.execute(
+                "SELECT attributes, next_seq FROM sessions WHERE key = ?",
                 (_MEMORY_CONTEXT_SESSION,),
             ).fetchone()
-            prepare_count = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM session_compaction_prepares "
-                    "WHERE session_key = ?",
-                    (_MEMORY_CONTEXT_SESSION,),
-                ).fetchone()[0]
-            )
-        finally:
-            connection.close()
+            message_rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body FROM messages "
+                "WHERE session_key = ? ORDER BY seq",
+                (_MEMORY_CONTEXT_SESSION,),
+            ).fetchall()
+            owner_rows = connection.execute(
+                "SELECT key, value FROM owner_records "
+                "WHERE owner = 'plugin:compaction' ORDER BY key"
+            ).fetchall()
+            integrity_rows = connection.execute("PRAGMA integrity_check").fetchall()
+            owner_records = {
+                str(row["key"]): json.loads(str(row["value"])) for row in owner_rows
+            }
+        integrity_ok = [tuple(row) for row in integrity_rows] == [("ok",)]
+        if session_row is None or not integrity_ok:
+            raise GateFailure("memory-context Message ledger 缺失或完整性检查失败")
+        head_record = owner_records.get(f"head:{_MEMORY_CONTEXT_SESSION}")
+        summary_reference = (
+            head_record.get("reference") if isinstance(head_record, dict) else None
+        )
+        summary_record = (
+            owner_records.get(f"summary:{summary_reference}")
+            if isinstance(summary_reference, str)
+            else None
+        )
+        if not isinstance(summary_reference, str) or not isinstance(summary_record, dict):
+            raise GateFailure("memory-context SummaryRecord/head 缺失")
 
-        if session_row is None or compaction_row is None:
-            raise GateFailure("memory-context ledger row 缺失")
-        actual_hashes = {
-            str(row["id"]): hashlib.sha256(
-                str(row["content"]).encode("utf-8")
-            ).hexdigest()
+        source_ids = summary_record.get("source_message_ids")
+        source_ids = list(source_ids) if isinstance(source_ids, (list, tuple)) else []
+        source_ids = [str(item) for item in source_ids]
+        message_ids = {str(row["id"]) for row in message_rows}
+        summary_record_valid = (
+            summary_record.get("reference") == summary_reference
+            and summary_record.get("session_id") == _MEMORY_CONTEXT_SESSION
+            and summary_record.get("generation") == 1
+            and summary_record.get("parent") is None
+            and bool(source_ids)
+            and len(source_ids) == len(set(source_ids))
+            and set(source_ids) <= message_ids
+            and summary_record.get("content") == _PC09_COMPACTION_SUMMARY.strip()
+            and isinstance(summary_record.get("model_call_ids"), list)
+            and bool(summary_record.get("model_call_ids"))
+        )
+
+        seed_pairs_match = True
+        seed_full_shape: list[dict[str, object]] = []
+        for row, (expected_role, expected_text) in zip(message_rows[:8], seed_rows):
+            body = json.loads(str(row["body"]))
+            parts = body.get("parts") if isinstance(body, dict) else None
+            text_values = [
+                part.get("value")
+                for part in parts or ()
+                if isinstance(part, dict) and part.get("kind") == "text"
+            ]
+            shape_ok = (
+                isinstance(body, dict)
+                and body.get("kind") == ("input" if expected_role == "user" else "output")
+                and int(row["seq"]) == len(seed_full_shape)
+                and str(row["author"]) == expected_role
+                and str(row["source"]) == "programmatic"
+                and text_values == [expected_text]
+            )
+            seed_pairs_match = seed_pairs_match and shape_ok
+            seed_full_shape.append({
+                "id": str(row["id"]), "session_key": str(row["session_key"]),
+                "seq": int(row["seq"]), "ts": str(row["ts"]),
+                "author": str(row["author"]), "source": str(row["source"]),
+                "body": body,
+            })
+        seed_snapshot = [
+            (str(row["id"]), str(row["session_key"]), int(row["seq"]),
+             str(row["ts"]), str(row["author"]), str(row["source"]),
+             str(row["body"]))
+            for row in seed_message_rows
+        ]
+        final_snapshot = [
+            (str(row["id"]), str(row["session_key"]), int(row["seq"]),
+             str(row["ts"]), str(row["author"]), str(row["source"]),
+             str(row["body"]))
             for row in message_rows
-            if int(row["seq"]) < 8
-        }
-        seed_hashes_unchanged = actual_hashes == expected_seed_hashes
-        source_ids = json.loads(compaction_row["source_message_ids_json"])
-        retained_tail = json.loads(compaction_row["retained_tail_json"])
-        source_digest = str(compaction_row["source_plan_digest"])
-        expected_source_ids = [message_id for message_id, _, _ in seed_rows[:6]]
-        expected_retained_ids = [message_id for message_id, _, _ in seed_rows[6:]]
-        retained_ids = [str(item.get("id")) for item in retained_tail]
+        ]
+        seed_immutable = (
+            len(seed_snapshot) == 8
+            and final_snapshot[:8] == seed_snapshot
+            and [int(row["seq"]) for row in message_rows] == list(range(10))
+        )
         final_messages_only_append = (
             len(message_rows) == 10
-            and [str(row["id"]) for row in message_rows[:8]]
-            == [message_id for message_id, _, _ in seed_rows]
-            and [str(row["role"]) for row in message_rows[8:]] == ["user", "assistant"]
-            and str(message_rows[8]["content"]) == _MEMORY_CONTEXT_INPUT
-            and str(message_rows[9]["content"]) == _MEMORY_CONTEXT_RESPONSE
+            and [str(row["author"]) for row in message_rows[8:]] == ["user", "assistant"]
+            and [str(row["source"]) for row in message_rows[8:]]
+            == ["programmatic", "programmatic"]
         )
-        retained_tail_exact = (
-            retained_ids == expected_retained_ids
-            and [str(item.get("unit_ref")) for item in retained_tail]
-            == ["6:7:0", "6:7:0"]
-            and [str(item.get("message", {}).get("content")) for item in retained_tail]
-            == [content for _, _, content in seed_rows[6:]]
+        final_texts = []
+        for row in message_rows[8:]:
+            body = json.loads(str(row["body"]))
+            final_texts.append([
+                part.get("value") for part in body.get("parts", [])
+                if isinstance(part, dict) and part.get("kind") == "text"
+            ])
+        final_messages_only_append = final_messages_only_append and (
+            final_texts == [[_MEMORY_CONTEXT_INPUT], [_MEMORY_CONTEXT_RESPONSE]]
         )
-        ledger_passed = (
-            session_row["last_consolidated"] == 1
-            and compaction_row["context_window"] == 100_000
-            and compaction_row["threshold_tokens"] == 74_000
-            and source_ids == expected_source_ids
-            and retained_tail_exact
-            and source_digest
-            == _memory_context_source_plan_digest(_MEMORY_CONTEXT_SESSION)
-            and prepare_count == 0
-            and seed_hashes_unchanged
-            and final_messages_only_append
-        )
-        receipt_connection = sqlite3.connect(
-            "/sandbox/workspace/memory/consolidation_writes.db"
-        )
-        try:
-            receipt_row = receipt_connection.execute(
-                "SELECT payload FROM consolidation_writes "
-                "WHERE source_ref = ? AND kind = 'session_compaction_receipt'",
-                (str(compaction_row["source_ref"]),),
-            ).fetchone()
-        finally:
-            receipt_connection.close()
+
+        final_output_body = json.loads(str(message_rows[9]["body"])) if len(message_rows) > 9 else {}
+        final_output_facts = [
+            part.get("value")
+            for part in final_output_body.get("parts", [])
+            if isinstance(part, dict) and part.get("kind") == "model.facts"
+        ] if isinstance(final_output_body, dict) else []
+        final_output_text = [
+            part.get("value")
+            for part in final_output_body.get("parts", [])
+            if isinstance(part, dict) and part.get("kind") == "text"
+        ] if isinstance(final_output_body, dict) else []
+
+        memory_path = Path("/sandbox/workspace/memory/MEMORY.md")
+        self_path = Path("/sandbox/workspace/memory/SELF.md")
+        receipt_payloads: dict[str, dict[str, object]] = {}
+        receipt_inventory: list[dict[str, object]] = []
+        receipt_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        while time.monotonic() < receipt_deadline:
+            with sqlite3.connect(
+                "/sandbox/workspace/memory/markdown-profile-writes.db"
+            ) as connection:
+                receipt_rows = connection.execute(
+                    "SELECT source_ref, kind, payload FROM consolidation_writes "
+                    "WHERE kind IN ('markdown_memory_applied_v1', 'markdown_self_applied_v1') "
+                    "ORDER BY source_ref, kind"
+                ).fetchall()
+            receipt_inventory = [
+                {"sourceRef": str(source_ref), "kind": str(kind)}
+                for source_ref, kind, _payload in receipt_rows
+            ]
+            candidate: dict[str, dict[str, object]] = {}
+            for source_ref, kind, payload in receipt_rows:
+                if str(source_ref) != summary_reference:
+                    continue
+                value = json.loads(str(payload))
+                if not isinstance(value, dict):
+                    raise GateFailure(f"Markdown receipt 不是 object：{kind}")
+                candidate[str(kind)] = value
+            memory_content = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+            self_content = self_path.read_text(encoding="utf-8") if self_path.exists() else ""
+            if (
+                set(candidate) == {
+                    "markdown_memory_applied_v1",
+                    "markdown_self_applied_v1",
+                }
+                and memory_path.exists()
+                and self_path.exists()
+                and candidate["markdown_memory_applied_v1"].get("digest")
+                == hashlib.sha256(memory_content.encode("utf-8")).hexdigest()
+                and candidate["markdown_self_applied_v1"].get("digest")
+                == hashlib.sha256(self_content.encode("utf-8")).hexdigest()
+            ):
+                receipt_payloads = candidate
+                break
+            threading.Event().wait(0.05)
+        if len(receipt_payloads) != 2:
+            raise GateFailure(
+                "Markdown receipt 或目标文件未收敛："
+                f"{sorted(receipt_payloads)} inventory={receipt_inventory!r} "
+                f"summaryReference={summary_reference!r}"
+            )
+
         pending_path = Path("/sandbox/workspace/memory/PENDING.md")
         pending_retired = (
             not pending_path.exists()
             or not pending_path.read_text(encoding="utf-8").strip()
         )
-        receipt_connection = sqlite3.connect(
+        memory_applied = receipt_payloads.get("markdown_memory_applied_v1")
+        self_applied = receipt_payloads.get("markdown_self_applied_v1")
+
+        request_kinds = _memory_context_request_kinds(final_requests)
+        source_positions = [
+            index for index, row in enumerate(message_rows)
+            if str(row["id"]) in source_ids
+        ]
+        if len(source_positions) != len(source_ids):
+            raise GateFailure("SummaryRecord 引用了不存在的 Message")
+        source_contiguous = (
+            bool(source_positions)
+            and source_positions == list(range(source_positions[0], source_positions[-1] + 1))
+            and source_positions[0] % 2 == 0
+            and (source_positions[-1] - source_positions[0] + 1) % 2 == 0
+        )
+        source_digest = _memory_context_source_plan_digest(message_rows, source_ids)
+
+        summary_source_rows = _memory_context_summary_source(final_requests)
+        expected_summary_source = []
+        for position in source_positions:
+            row = message_rows[position]
+            expected_summary_source.append(
+                {
+                    "message_id": str(row["id"]),
+                    "source": str(row["source"]),
+                    "seq": int(row["seq"]),
+                    "body": _memory_context_summary_body(
+                        json.loads(str(row["body"]))
+                    ),
+                }
+            )
+        summary_source_matches = summary_source_rows == expected_summary_source
+
+        business_request = next(
+            request for request in final_requests
+            if isinstance(request, dict)
+            and isinstance(request.get("payload"), dict)
+            and _MEMORY_CONTEXT_INPUT in json.dumps(
+                request["payload"].get("messages", []), ensure_ascii=False
+            )
+        )
+        business_serialized = json.dumps(
+            business_request["payload"].get("messages", []), ensure_ascii=False
+        )
+        summary_payload, business_tail, source_contents = _memory_context_business_tail(
+            business_request["payload"].get("messages"),
+            [message_rows[position] for position in source_positions],
+            _MEMORY_CONTEXT_INPUT,
+        )
+        source_end = source_positions[-1] + 1
+        expected_business_tail = []
+        for row in message_rows[source_end:8]:
+            body = json.loads(str(row["body"]))
+            parts = body.get("parts", []) if isinstance(body, dict) else []
+            text_values = [
+                str(part["value"])
+                for part in parts
+                if isinstance(part, dict) and part.get("kind") == "text"
+            ]
+            if len(text_values) != 1:
+                raise GateFailure("业务保留尾部 Message 缺少唯一原文 text")
+            expected_business_tail.append((str(row["author"]), text_values[0]))
+        summary_binding_ids = [
+            str(part["value"]["reference"])
+            for part in final_output_body.get("parts", [])
+            if (
+                isinstance(part, dict)
+                and part.get("kind") == "context.summary"
+                and isinstance(part.get("value"), dict)
+                and isinstance(part["value"].get("reference"), str)
+            )
+        ] if isinstance(final_output_body, dict) else []
+        if len(summary_binding_ids) != 1:
+            raise GateFailure(
+                "业务 Output 缺少唯一 context.summary binding："
+                f"{summary_binding_ids!r}"
+            )
+        summary_binding_id = summary_binding_ids[0]
+        with sqlite3.connect(database) as connection:
+            binding_row = connection.execute(
+                "SELECT descriptor FROM bindings WHERE binding_id = ?",
+                (summary_binding_id,),
+            ).fetchone()
+        binding_descriptor = (
+            json.loads(str(binding_row[0])) if binding_row is not None else None
+        )
+        binding_metadata = (
+            binding_descriptor.get("metadata")
+            if isinstance(binding_descriptor, dict)
+            else None
+        )
+        summary_binding_metadata_valid = (
+            isinstance(binding_descriptor, dict)
+            and binding_descriptor.get("version") == 1
+            and binding_descriptor.get("service") == "compaction.summaries.v1"
+            and isinstance(binding_metadata, dict)
+            and binding_metadata.get("record_ref") == summary_reference
+            and binding_metadata.get("session_id") == _MEMORY_CONTEXT_SESSION
+        )
+        business_summary_replaced = (
+            summary_payload.get("summary") == summary_record.get("content")
+            and summary_payload.get("reference") == summary_binding_id
+            and summary_binding_metadata_valid
+            and business_tail == expected_business_tail
+            and all(str(message_id) not in business_serialized for message_id in source_ids)
+            and all(content not in business_serialized for content in source_contents)
+        )
+
+        owner_snapshot = [
+            (str(row["key"]), str(row["value"])) for row in owner_rows
+        ]
+        receipts_database = Path(
             "/sandbox/workspace/memory/markdown-profile-writes.db"
         )
-        try:
-            memory_applied = receipt_connection.execute(
-                "SELECT 1 FROM consolidation_writes "
-                "WHERE source_ref = ? AND kind = 'markdown_memory_applied_v1'",
-                (str(compaction_row["source_ref"]),),
-            ).fetchone()
-            self_applied = receipt_connection.execute(
-                "SELECT 1 FROM consolidation_writes "
-                "WHERE source_ref = ? AND kind = 'markdown_self_applied_v1'",
-                (str(compaction_row["source_ref"]),),
-            ).fetchone()
-        finally:
-            receipt_connection.close()
-        final_requests = _model_requests(
+        with sqlite3.connect(receipts_database) as connection:
+            receipt_snapshot = [
+                tuple(str(value) for value in row)
+                for row in connection.execute(
+                    "SELECT source_ref, kind, payload, trailing_blank_line, done_at "
+                    "FROM consolidation_writes ORDER BY source_ref, kind"
+                ).fetchall()
+            ]
+        target_snapshot = {
+            "memory": memory_path.read_text(encoding="utf-8"),
+            "self": self_path.read_text(encoding="utf-8"),
+        }
+        pending_snapshot = (
+            pending_path.read_text(encoding="utf-8")
+            if pending_path.exists()
+            else None
+        )
+
+        # 3. 断开原连接，再用同一 message_id/text 重试持久 send/result。
+        client.close()
+        client = None
+        _wait_socket(endpoint, READINESS_DEADLINE_S)
+        client = _connect_client(endpoint, events_path)
+        retry_ack = client.send_programmatic(
+            _MEMORY_CONTEXT_SESSION, business_id, _MEMORY_CONTEXT_INPUT
+        )
+        retry_result = _wait_programmatic_result(
+            client, _MEMORY_CONTEXT_SESSION, business_id
+        )
+        retry_requests = _model_requests(
             _http_json("GET", f"{model_url}/control/requests")
         )
-        if len(final_requests) != 3:
-            capabilities = _http_json(
-                "GET",
-                "http://akashic-control-gate:2236/api/chat/runtime/capabilities",
-            )
-            markdown_incidents = next(
-                (
-                    plugin.get("composition", {}).get("recent_incidents", [])
-                    for plugin in capabilities.get("plugins", [])
-                    if plugin.get("id") == "markdown_memory"
-                ),
-                [],
-            )
-            raise GateFailure(
-                "memory-context 模型请求数量异常："
-                f"{len(final_requests)} markdownIncidents="
-                f"{json.dumps(markdown_incidents, ensure_ascii=False, sort_keys=True)}"
-            )
-        request_kinds = _memory_context_request_kinds(final_requests)
-        scripts = [
-            request.get("script")
-            for request in final_requests
-            if isinstance(request, dict)
+        with sqlite3.connect(database) as connection:
+            connection.row_factory = sqlite3.Row
+            retry_message_rows = connection.execute(
+                "SELECT id, session_key, seq, ts, author, source, body "
+                "FROM messages WHERE session_key = ? ORDER BY seq",
+                (_MEMORY_CONTEXT_SESSION,),
+            ).fetchall()
+            retry_owner_rows = connection.execute(
+                "SELECT key, value FROM owner_records "
+                "WHERE owner = 'plugin:compaction' ORDER BY key"
+            ).fetchall()
+        retry_message_snapshot = [
+            (str(row["id"]), str(row["session_key"]), int(row["seq"]),
+             str(row["ts"]), str(row["author"]), str(row["source"]),
+             str(row["body"]))
+            for row in retry_message_rows
         ]
-        scripts_boundary = (
-            scripts[0] == {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY}
-            and isinstance(scripts[1], dict)
-            and "<think>" in str(scripts[1].get("content"))
-            and scripts[2] == {"mode": "complete", "content": _MEMORY_CONTEXT_PROFILE_RESPONSE}
+        retry_owner_snapshot = [
+            (str(row["key"]), str(row["value"])) for row in retry_owner_rows
+        ]
+        with sqlite3.connect(receipts_database) as connection:
+            retry_receipt_snapshot = [
+                tuple(str(value) for value in row)
+                for row in connection.execute(
+                    "SELECT source_ref, kind, payload, trailing_blank_line, done_at "
+                    "FROM consolidation_writes ORDER BY source_ref, kind"
+                ).fetchall()
+            ]
+        retry_target_snapshot = {
+            "memory": memory_path.read_text(encoding="utf-8"),
+            "self": self_path.read_text(encoding="utf-8"),
+        }
+        retry_pending_snapshot = (
+            pending_path.read_text(encoding="utf-8")
+            if pending_path.exists()
+            else None
         )
-        projected = _turn_projection(payload)
-        assistant_items = [
-            item
-            for item in projected["items"]
-            if item.get("type") == "assistantMessage"
-        ]
+        retry_ack_same = retry_ack == business_ack
+        retry_result_same = retry_result == business_result
+        retry_messages_unchanged = retry_message_snapshot == final_snapshot
+        retry_owner_unchanged = retry_owner_snapshot == owner_snapshot
+        retry_receipts_unchanged = retry_receipt_snapshot == receipt_snapshot
+        retry_targets_unchanged = retry_target_snapshot == target_snapshot
+        retry_pending_unchanged = retry_pending_snapshot == pending_snapshot
+        retry_transport_recovery = (
+            retry_ack_same
+            and retry_result_same
+            and len(retry_message_snapshot) == 10
+            and retry_messages_unchanged
+            and retry_owner_unchanged
+            and retry_receipts_unchanged
+            and retry_targets_unchanged
+            and retry_pending_unchanged
+            and len(retry_requests) == len(scripts) == 7
+        )
+        scripts_boundary = (
+            [request.get("script") for request in final_requests
+             if isinstance(request, dict)] == scripts
+        )
         thinking_boundary = (
-            len(assistant_items) == 1
-            and assistant_items[0]["data"].get("thinking") == _MEMORY_CONTEXT_THINKING
-            and not any(item.get("type") == "toolCall" for item in projected["items"])
+            len(final_output_facts) == 1
+            and isinstance(final_output_facts[0], dict)
+            and final_output_facts[0].get("thinking") == _MEMORY_CONTEXT_THINKING
+            and final_output_body.get("finish") == "complete"
+        )
+        attributes = json.loads(str(session_row["attributes"]))
+        attributes_valid = (
+            isinstance(attributes, dict)
+            and attributes.get("visibility") == "internal"
+            and attributes.get("learning") == "eligible"
         )
         checks.append(
             CheckResult(
                 "MC-01",
-                payload.get("status") == "completed"
-                and payload.get("finalResponse") == _MEMORY_CONTEXT_RESPONSE
-                and request_kinds == ["summary", "business", "markdown"]
+                business_result.get("status") == "complete"
+                and final_output_text == [_MEMORY_CONTEXT_RESPONSE]
+                and request_kinds == ["seed", "seed", "seed", "seed", "summary", "business", "markdown"]
                 and scripts_boundary
                 and thinking_boundary
-                and ledger_passed
-                and receipt_row is not None
+                and attributes_valid
+                and session_row["next_seq"] == 10
+                and seed_pairs_match
+                and seed_immutable
+                and summary_record_valid
+                and summary_source_matches
+                and source_contiguous
+                and final_messages_only_append
+                and summary_binding_metadata_valid
+                and business_summary_replaced
+                and retry_transport_recovery
                 and pending_retired
                 and memory_applied is not None
                 and self_applied is not None,
                 {
-                    "terminal": payload,
+                    "admission": admission,
+                    "seedResults": seed_results,
+                    "businessAck": business_ack,
+                    "businessResult": business_result,
                     "requestKinds": request_kinds,
                     "ledger": {
-                        "lastConsolidated": session_row["last_consolidated"],
+                        "sessionAttributes": attributes,
+                        "nextSeq": session_row["next_seq"],
+                        "summaryReference": summary_reference,
                         "sourceIds": source_ids,
-                        "retainedIds": retained_ids,
-                        "sourceDigest": source_digest,
-                        "seedHashesUnchanged": seed_hashes_unchanged,
+                        "sourcePlanDigest": source_digest,
+                        "sourcePositions": source_positions,
+                        "sourceContiguous": source_contiguous,
+                        "summarySourceMatches": summary_source_matches,
+                        "summarySourceRows": summary_source_rows,
+                        "summaryBinding": {
+                            "bindingId": summary_binding_id,
+                            "metadata": binding_metadata,
+                            "metadataValid": summary_binding_metadata_valid,
+                        },
+                        "businessSummaryReplaced": business_summary_replaced,
+                        "businessTail": business_tail,
+                        "expectedBusinessTail": expected_business_tail,
+                        "summaryRecordValid": summary_record_valid,
+                        "seedPairsMatch": seed_pairs_match,
+                        "seedImmutable": seed_immutable,
                         "finalMessagesOnlyAppend": final_messages_only_append,
-                        "prepareCount": prepare_count,
-                        "retainedTailExact": retained_tail_exact,
                     },
-                    "receiptExists": receipt_row is not None,
+                    "transportRetry": {
+                        "disconnected": True,
+                        "newConnection": True,
+                        "ack": retry_ack,
+                        "result": retry_result,
+                        "ackSameIdSeq": retry_ack_same,
+                        "resultUnchanged": retry_result_same,
+                        "messageCount": len(retry_message_snapshot),
+                        "messagesUnchanged": retry_messages_unchanged,
+                        "summaryOwnerCount": len(owner_snapshot),
+                        "summaryOwnerUnchanged": retry_owner_unchanged,
+                        "receiptCount": len(receipt_snapshot),
+                        "receiptsUnchanged": retry_receipts_unchanged,
+                        "targetsUnchanged": retry_targets_unchanged,
+                        "pendingUnchanged": retry_pending_unchanged,
+                        "providerRequestCount": len(retry_requests),
+                    },
                     "pendingRetired": pending_retired,
                     "memoryApplied": memory_applied is not None,
                     "selfApplied": self_applied is not None,
+                    "markdownTargets": {
+                        "memory": memory_path.read_text(encoding="utf-8"),
+                        "self": self_path.read_text(encoding="utf-8"),
+                    },
                     "scriptsBoundary": scripts_boundary,
                     "thinkingBoundary": thinking_boundary,
                     "modelRequestCount": len(final_requests),
+                    "seedFullShape": seed_full_shape,
+                    "finalOutputFacts": final_output_facts,
                 },
             )
         )
@@ -1587,7 +2156,6 @@ def _inside_memory_context(report_dir: Path) -> int:
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if passed else 1
 
-
 def _inside_failure_matrix(report_dir: Path) -> int:
     """以真实 barrier 和多连接驱动 PR 必选故障矩阵。"""
 
@@ -1600,423 +2168,863 @@ def _inside_failure_matrix(report_dir: Path) -> int:
     restart_state: dict[str, str] = {}
     try:
         _wait_http_ready(f"{model_url}/readyz", READINESS_DEADLINE_S)
-        _configure_model_gate()
+        _configure_model_gate(context_window=1_000_000)
         _wait_socket(endpoint, READINESS_DEADLINE_S)
         first = _connect_client(endpoint, events_path)
         second = _connect_client(endpoint, events_path)
         clients.extend((first, second))
 
-        # 1. 两连接两 thread：第二个 turn 保持 queued，释放后事件不串线。
-        _create_barrier(
-            model_url,
-            "isolation-first",
-            {"mode": "complete", "content": "isolation first"},
+        # 1. 两个独立 programmatic Session 必须同时进入同一 provider barrier。
+        pc05_a = "programmatic:pc05-a"
+        pc05_b = "programmatic:pc05-b"
+        first.admit_programmatic(pc05_a)
+        second.admit_programmatic(pc05_b)
+        pc05_a_barrier = "pc05-provider-a"
+        pc05_b_barrier = "pc05-provider-b"
+        _http_json(
+            "PUT", f"{model_url}/control/barriers/{pc05_a_barrier}"
         )
-        _create_barrier(
-            model_url,
-            "isolation-second",
-            {"mode": "complete", "content": "isolation second"},
+        _http_json(
+            "PUT", f"{model_url}/control/barriers/{pc05_b_barrier}"
         )
-        thread_a = _start_thread(first, "PC-05")
-        thread_b = _start_thread(second, "PC-05")
-        turn_a = _start_turn(first, thread_a, "isolation first")
-        _wait_barrier(model_url, "isolation-first")
-        turn_b = _start_turn(second, thread_b, "isolation second")
-        queued_b = second.wait_notification("turn/queued", turn_id=turn_b)
-        before_release = _http_json("GET", f"{model_url}/control/requests")
-        before_requests = _model_requests(before_release)
-        _release_barrier(model_url, "isolation-first")
-        terminal_a = first.wait_terminal(turn_a)
-        _wait_barrier(model_url, "isolation-second")
-        _release_barrier(model_url, "isolation-second")
-        terminal_b = second.wait_terminal(turn_b)
-        isolated = (
-            len(before_requests) == 1
-            and _terminal_status(terminal_a) == "completed"
-            and _terminal_status(terminal_b) == "completed"
-            and queued_b.get("params", {}).get("threadId") == thread_b
-            and terminal_a.get("params", {}).get("threadId") == thread_a
-            and terminal_b.get("params", {}).get("threadId") == thread_b
-        )
-        checks.append(
-            CheckResult(
-                "PC-05",
-                isolated,
-                {
-                    "requestsBeforeFirstRelease": len(before_requests),
-                    "threadA": thread_a,
-                    "threadB": thread_b,
-                    "turnA": turn_a,
-                    "turnB": turn_b,
-                },
-            )
-        )
-
-        # 2. 同 thread 的第二个 start 必须明确 busy，不能注入 owner turn。
-        _create_barrier(
-            model_url,
-            "thread-conflict",
-            {"mode": "complete", "content": "intermediate candidate"},
-        )
-        conflict_thread = _start_thread(first, "PC-06")
-        conflict_turn = _start_turn(first, conflict_thread, "conflict owner")
-        _wait_barrier(model_url, "thread-conflict")
-        rejected = first.request_raw(
-            "turn/start",
-            {
-                "threadId": conflict_thread,
-                "input": "must conflict",
-                "metadata": {},
-            },
-        )
-        _release_barrier(model_url, "thread-conflict")
-        conflict_terminal = first.wait_terminal(conflict_turn)
-        rejected_error = rejected.get("error")
-        terminal_turn = _event_turn(conflict_terminal)
-        user_inputs = [
-            item.get("data", {}).get("content")
-            for item in terminal_turn.get("items", [])
-            if isinstance(item, dict) and item.get("type") == "userMessage"
-        ]
-        checks.append(
-            CheckResult(
-                "PC-06",
-                isinstance(rejected_error, dict)
-                and rejected_error.get("code") == -32011
-                and rejected_error.get("data") == {"retryable": True}
-                and _terminal_status(conflict_terminal) == "completed"
-                and terminal_turn.get("finalResponse") == "intermediate candidate"
-                and user_inputs == ["conflict owner"],
-                {
-                    "rejected": rejected_error,
-                    "ownerTerminal": conflict_terminal,
-                    "userInputs": user_inputs,
-                },
-            )
-        )
-
-        # 3. 工具已 started 后精确 interrupt，owner 必须闭合同 ID item。
         _http_json(
             "PUT",
             f"{model_url}/control/script",
             [
                 {
-                    "mode": "stream",
-                    "deltas": [],
-                    "tool_calls": [
-                        {
-                            "id": "call_pc07_unlock",
-                            "name": "tool_search",
-                            "arguments": {"query": "select:shell"},
-                        }
-                    ],
+                    "mode": "complete",
+                    "content": "pc05 first complete",
+                    "barrier": pc05_a_barrier,
                 },
                 {
-                    "mode": "stream",
-                    "deltas": [],
+                    "mode": "complete",
+                    "content": "pc05 second complete",
+                    "barrier": pc05_b_barrier,
+                },
+            ],
+        )
+        pc05_a_ack = first.send_programmatic(pc05_a, "pc05-input-a", "pc05 first")
+        _wait_barrier(model_url, pc05_a_barrier)
+        pc05_b_ack = second.send_programmatic(pc05_b, "pc05-input-b", "pc05 second")
+        _wait_barrier(model_url, pc05_b_barrier)
+        pc05_requests = _model_requests(
+            _http_json("GET", f"{model_url}/control/requests")
+        )
+        pc05_blocked = [
+            request
+            for request in pc05_requests
+            if isinstance(request, dict)
+            and request.get("state") == "blocked"
+            and isinstance(request.get("payload"), dict)
+            and any(
+                text in json.dumps(request["payload"], ensure_ascii=False)
+                for text in ("pc05 first", "pc05 second")
+            )
+        ]
+        _release_barrier(model_url, pc05_a_barrier)
+        _release_barrier(model_url, pc05_b_barrier)
+        pc05_a_result = _wait_programmatic_result(first, pc05_a, "pc05-input-a")
+        pc05_b_result = _wait_programmatic_result(second, pc05_b, "pc05-input-b")
+        pc05_a_page = first.read_messages(pc05_a)
+        pc05_b_page = second.read_messages(pc05_b)
+        pc05_a_output = next(
+            (item for item in pc05_a_page.get("items", [])
+             if isinstance(item, dict) and item.get("body", {}).get("kind") == "output"),
+            None,
+        )
+        pc05_b_output = next(
+            (item for item in pc05_b_page.get("items", [])
+             if isinstance(item, dict) and item.get("body", {}).get("kind") == "output"),
+            None,
+        )
+        pc05_input_rows = [
+            item for page in (pc05_a_page, pc05_b_page)
+            for item in page.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "input"
+        ]
+        pc05_passed = (
+            pc05_a_ack.get("seq") == 0
+            and pc05_b_ack.get("seq") == 0
+            and len(pc05_blocked) == 2
+            and pc05_a_result.get("status") == "complete"
+            and pc05_b_result.get("status") == "complete"
+            and pc05_a_output is not None
+            and pc05_b_output is not None
+            and _message_text(pc05_a_output) == "pc05 first complete"
+            and _message_text(pc05_b_output) == "pc05 second complete"
+            and len(pc05_input_rows) == 2
+            and {item.get("session_id") for item in pc05_input_rows}
+            == {pc05_a, pc05_b}
+            and all(item.get("source") == "programmatic" for item in pc05_input_rows)
+        )
+        checks.append(
+            CheckResult(
+                "PC-05",
+                pc05_passed,
+                {
+                    "sessions": [pc05_a, pc05_b],
+                    "acks": [pc05_a_ack, pc05_b_ack],
+                    "blockedProviderRequests": pc05_blocked,
+                    "results": [pc05_a_result, pc05_b_result],
+                    "messagePages": [pc05_a_page, pc05_b_page],
+                },
+            )
+        )
+
+        # 2. 同一来源再次提交时只追加新的 Input，并按 source head 撤掉旧回复。
+        pc06 = "programmatic:pc06-source-head"
+        first.admit_programmatic(pc06)
+        pc06_barrier = "pc06-old-provider"
+        _http_json("PUT", f"{model_url}/control/barriers/{pc06_barrier}")
+        _http_json(
+            "PUT",
+            f"{model_url}/control/script",
+            [
+                {
+                    "mode": "complete",
+                    "content": "pc06 stale response",
+                    "barrier": pc06_barrier,
+                },
+                {"mode": "complete", "content": "pc06 latest response"},
+            ],
+        )
+        pc06_first_ack = first.send_programmatic(pc06, "pc06-first", "pc06 first input")
+        _wait_barrier(model_url, pc06_barrier)
+        pc06_request_start = len(
+            _model_requests(_http_json("GET", f"{model_url}/control/requests"))
+        ) - 1
+        pc06_second_ack = first.send_programmatic(
+            pc06, "pc06-second", "pc06 same-source replacement"
+        )
+        pc06_before_release = first.read_messages(pc06)
+        pc06_inputs_before = [
+            item for item in pc06_before_release.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "input"
+        ]
+        _release_barrier(model_url, pc06_barrier)
+        pc06_result = _wait_programmatic_result(first, pc06, "pc06-second")
+        pc06_page = first.read_messages(pc06)
+        pc06_inputs = [
+            item for item in pc06_page.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "input"
+        ]
+        pc06_outputs = [
+            item for item in pc06_page.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "output"
+        ]
+        pc06_requests = _model_requests(
+            _http_json("GET", f"{model_url}/control/requests")
+        )[max(0, pc06_request_start):]
+        pc06_second_payload = next(
+            (
+                request.get("payload")
+                for request in pc06_requests
+                if isinstance(request, dict)
+                and isinstance(request.get("payload"), dict)
+                and "pc06 same-source replacement"
+                in json.dumps(request["payload"], ensure_ascii=False)
+            ),
+            None,
+        )
+        pc06_second_messages = (
+            pc06_second_payload.get("messages", [])
+            if isinstance(pc06_second_payload, dict)
+            else []
+        )
+        pc06_second_prompt = json.dumps(pc06_second_messages, ensure_ascii=False)
+        pc06_passed = (
+            pc06_first_ack.get("seq") == 0
+            and pc06_second_ack.get("seq") == 1
+            and len(pc06_inputs_before) == 2
+            and [item.get("id") for item in pc06_inputs_before] == [
+                "pc06-first", "pc06-second"
+            ]
+            and all(item.get("session_id") == pc06 for item in pc06_inputs_before)
+            and all(item.get("source") == "programmatic" for item in pc06_inputs_before)
+            and pc06_result.get("status") == "complete"
+            and len(pc06_inputs) == 2
+            and [item.get("id") for item in pc06_inputs] == [
+                "pc06-first", "pc06-second"
+            ]
+            and len(pc06_outputs) == 1
+            and _message_text(pc06_outputs[0]) == "pc06 latest response"
+            and "pc06 first input" in pc06_second_prompt
+            and "pc06 same-source replacement" in pc06_second_prompt
+        )
+        checks.append(
+            CheckResult(
+                "PC-06",
+                pc06_passed,
+                {
+                    "firstAck": pc06_first_ack,
+                    "secondAck": pc06_second_ack,
+                    "inputsBeforeRelease": pc06_inputs_before,
+                    "result": pc06_result,
+                    "messagePage": pc06_page,
+                    "providerRequests": pc06_requests,
+                    "secondProviderPayload": pc06_second_payload,
+                },
+            )
+        )
+
+        # 3. 真实 shell 已 started 后暂停；清理物理进程，ToolResult 仍引用原 CallRef。
+        pc07 = "programmatic:pc07-control"
+        first.admit_programmatic(pc07)
+        pc07_pause_barrier = "pc07-pause-provider"
+        pc07_identity_command = (
+            "pid=$(cat /sandbox/workspace/pc07-shell.pid) || "
+            "{ printf 'PC07 identity: cannot read pid\\n' >&2; exit 43; }; "
+            "expected=$(cat /sandbox/workspace/pc07-shell.starttime) || "
+            "{ printf 'PC07 identity: cannot read expected starttime\\n' >&2; exit 43; }; "
+            "stat_path=/proc/$pid/stat; alive=false; status=42; actual=null; "
+            "if [ -e \"$stat_path\" ]; then "
+            "actual=$(awk '{print $22}' \"$stat_path\") || "
+            "{ printf 'PC07 identity: cannot read %s\\n' \"$stat_path\" >&2; exit 43; }; "
+            "if [ -z \"$actual\" ]; then "
+            "printf 'PC07 identity: empty starttime from %s\\n' \"$stat_path\" >&2; exit 43; fi; "
+            "if [ \"$actual\" = \"$expected\" ]; then "
+            "if kill -0 \"$pid\" 2>/dev/null; then alive=true; status=0; "
+            "elif [ ! -e \"$stat_path\" ]; then actual=null; "
+            "else printf 'PC07 identity: cannot verify pid %s\\n' \"$pid\" >&2; exit 43; fi; "
+            "fi; fi; "
+            "printf '{\"alive\":%s,\"pid\":%s,' \"$alive\" \"$pid\"; "
+            "printf '\"expected_starttime\":%s,\"actual_starttime\":%s}\\n' "
+            "\"$expected\" \"$actual\"; exit \"$status\""
+        )
+        _http_json("PUT", f"{model_url}/control/barriers/{pc07_pause_barrier}")
+        _http_json(
+            "PUT",
+            f"{model_url}/control/script",
+            [
+                {
+                    "mode": "complete",
                     "tool_calls": [
                         {
                             "id": "call_pc07_shell",
                             "name": "shell",
                             "arguments": {
-                                "command": "sleep 300",
-                                "description": "阻塞中断探针",
+                                "command": (
+                                    "pid_file=/sandbox/workspace/pc07-shell.pid; "
+                                    "start_file=/sandbox/workspace/pc07-shell.starttime; "
+                                    "printf '%s\\n' \"$$\" > \"$pid_file\"; "
+                                    "awk '{print $22}' /proc/$$/stat > \"$start_file\"; "
+                                    "printf '{\"pid\":%s,\"starttime\":%s}\\n' "
+                                    "\"$(cat \"$pid_file\")\" \"$(cat \"$start_file\")\"; "
+                                    "exec sleep 300"
+                                ),
+                                "description": "PC07 long running cleanup probe",
+                                "yield_time_ms": 250,
                                 "timeout": 300,
-                                "yield_time_ms": 30_000,
                             },
                         }
                     ],
                 },
+                {
+                    "mode": "complete",
+                    "tool_calls": [
+                        {
+                            "id": "call_pc07_shell_identity_before_pause",
+                            "name": "shell",
+                            "arguments": {
+                                "command": pc07_identity_command,
+                                "description": "PC07 verify shell PID identity before pause",
+                                "yield_time_ms": 250,
+                                "timeout": 30,
+                            },
+                        }
+                    ],
+                },
+                {"mode": "timeout", "barrier": pc07_pause_barrier},
             ],
         )
-        interrupt_thread = _start_thread(first, "PC-07")
-        interrupted_turn = _start_turn(first, interrupt_thread, "interrupt me")
-        shell_started = _wait_tool_started(first, interrupted_turn, "shell")
-        interrupt_started = time.monotonic()
-        interrupt_result = first.request(
-            "turn/interrupt",
-            {"threadId": interrupt_thread, "turnId": interrupted_turn},
+        pc07_input_ack = first.send_programmatic(
+            pc07, "pc07-input", "pc07 start controllable shell"
         )
-        interrupted_terminal = first.wait_terminal(interrupted_turn, timeout=2.0)
-        interrupt_duration = time.monotonic() - interrupt_started
-        interrupted_payload = _event_turn(interrupted_terminal)
-        interrupted_read = first.request(
-            "turn/read",
-            {"threadId": interrupt_thread, "turnId": interrupted_turn},
+        pc07_page_with_tool, pc07_tool_rows = _wait_for_message_items(
+            first, pc07, "tool_result", minimum=2
         )
-        _ = first.request("server/status", {})
-        interrupted_events = _recorded_turn_notifications(events_path, interrupted_turn)
-        interrupted_terminal_count = sum(
-            event.get("method") == "turn/completed" for event in interrupted_events
+        pc07_provider_count = len(
+            _model_requests(_http_json("GET", f"{model_url}/control/requests"))
         )
-        _, shell_completed = _tool_lifecycle(interrupted_events, "shell")
-        persisted_shell = next(
+        _wait_barrier(model_url, pc07_pause_barrier)
+        _release_barrier(model_url, pc07_pause_barrier)
+        pc07_outputs_with_tool = _message_items(pc07_page_with_tool, "output")
+        pc07_tool_payloads = [
+            _execution_payload(item)
+            for item in pc07_tool_rows
+        ]
+        pc07_tool_result = next(
             (
                 item
-                for item in interrupted_payload.get("items", [])
-                if isinstance(item, dict) and item.get("id") == shell_started.get("id")
+                for item, payload in zip(pc07_tool_rows, pc07_tool_payloads)
+                if isinstance(payload, dict) and isinstance(payload.get("execution_id"), int)
             ),
             None,
         )
+        pc07_pre_identity_result = next(
+            (
+                item
+                for item, payload in zip(pc07_tool_rows, pc07_tool_payloads)
+                if isinstance(payload, dict)
+                and isinstance(payload.get("output"), str)
+                and '"alive":true' in payload["output"].replace(" ", "")
+            ),
+            None,
+        )
+        if pc07_tool_result is None or pc07_pre_identity_result is None:
+            raise GateFailure(
+                f"PC07 shell identity ToolResult 缺失：{pc07_tool_rows!r}"
+            )
+        pc07_tool_ref = pc07_tool_result.get("body", {}).get("call_ref", {})
+        try:
+            pc07_tool_payload = _execution_payload(pc07_tool_result)
+            pc07_execution_id = int(pc07_tool_payload["execution_id"])
+            pc07_shell_identity = _execution_last_json(pc07_tool_result)
+            pc07_pre_identity = _execution_last_json(pc07_pre_identity_result)
+        except (KeyError, TypeError, ValueError) as error:
+            raise GateFailure(
+                f"PC07 shell 未返回可核验 PID identity：{pc07_tool_rows!r}"
+            ) from error
+        if not (
+            isinstance(pc07_shell_identity, dict)
+            and isinstance(pc07_pre_identity, dict)
+            and pc07_shell_identity.get("pid") == pc07_pre_identity.get("pid")
+            and pc07_shell_identity.get("starttime")
+            == pc07_pre_identity.get("expected_starttime")
+            and pc07_pre_identity.get("expected_starttime")
+            == pc07_pre_identity.get("actual_starttime")
+            and pc07_pre_identity.get("alive") is True
+        ):
+            raise GateFailure(
+                f"PC07 pause 前 shell identity 未确认存活："
+                f"{pc07_shell_identity!r} / {pc07_pre_identity!r}"
+            )
+        pc07_tool_call: dict[str, Any] | None = None
+        for output in pc07_outputs_with_tool:
+            if output.get("id") != pc07_tool_ref.get("message_id"):
+                continue
+            parts = output.get("body", {}).get("parts", [])
+            if not isinstance(parts, list):
+                continue
+            part_index = pc07_tool_ref.get("part_index")
+            if (
+                type(part_index) is int
+                and 0 <= part_index < len(parts)
+                and isinstance(parts[part_index], dict)
+                and parts[part_index].get("kind") == "tool_call"
+                and parts[part_index].get("name") == "shell"
+            ):
+                pc07_tool_call = {
+                    "message_id": output.get("id"),
+                    "part_index": part_index,
+                    "part": parts[part_index],
+                }
+                break
+        if pc07_tool_call is None:
+            raise GateFailure(f"PC07 shell ToolCall 缺失：{pc07_tool_ref!r}")
 
-        _create_barrier(
-            model_url,
-            "interrupt-fresh",
-            {"mode": "complete", "content": "fresh survives"},
+        # 后续 provider 调用故意等待客户端断开，使 pause 发生在工具回执之后。
+        pc07_pause_ack = first.request_result(
+            "programmatic/message/pause",
+            {"session_id": pc07, "message_id": "pc07-pause"},
         )
-        fresh_turn = _start_turn(first, interrupt_thread, "fresh turn")
-        _wait_barrier(model_url, "interrupt-fresh")
-        stale_interrupt = first.request_raw(
-            "turn/interrupt",
-            {"threadId": interrupt_thread, "turnId": interrupted_turn},
+        pc07_paused_result = first.programmatic_result(pc07, "pc07-input")
+        pc07_cancel_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        while time.monotonic() < pc07_cancel_deadline:
+            pc07_after_pause_requests = _model_requests(
+                _http_json("GET", f"{model_url}/control/requests")
+            )
+            if any(
+                isinstance(request, dict)
+                and int(request.get("index", 0)) >= pc07_provider_count
+                and request.get("state") == "client_disconnected"
+                for request in pc07_after_pause_requests
+            ):
+                break
+            threading.Event().wait(0.05)
+        else:
+            raise GateFailure("PC07 pause 后 provider 请求未确认断开")
+        _http_json("PUT", f"{model_url}/control/barriers/pc07-new-input")
+        _http_json(
+            "PUT",
+            f"{model_url}/control/script",
+            [
+                {
+                    "mode": "complete",
+                    "tool_calls": [
+                        {
+                            "id": "call_pc07_after_cleanup",
+                            "name": "write_stdin",
+                            "arguments": {
+                                "execution_id": pc07_execution_id,
+                                "yield_time_ms": 250,
+                            },
+                        },
+                        {
+                            "id": "call_pc07_shell_identity_after_pause",
+                            "name": "shell",
+                            "arguments": {
+                                "command": pc07_identity_command,
+                                "description": "PC07 verify shell PID identity after pause",
+                                "yield_time_ms": 250,
+                                "timeout": 30,
+                            },
+                        },
+                    ],
+                },
+                {
+                    "mode": "complete",
+                    "content": "pc07 new input response",
+                    "barrier": "pc07-new-input",
+                },
+            ],
         )
-        fresh_before_release = first.request(
-            "turn/read",
-            {"threadId": interrupt_thread, "turnId": fresh_turn},
+        pc07_new_ack = first.send_programmatic(
+            pc07, "pc07-new-input", "pc07 new input after resume"
         )
-        _release_barrier(model_url, "interrupt-fresh")
-        fresh_terminal = first.wait_terminal(fresh_turn)
-        stale_error = stale_interrupt.get("error")
-        stale_result = stale_interrupt.get("result")
-        stale_safe = (
-            isinstance(stale_error, dict) and stale_error.get("code") == -32012
-        ) or (
-            isinstance(stale_result, dict)
-            and stale_result.get("id") == interrupted_turn
-            and stale_result.get("status") == "interrupted"
+        _wait_barrier(model_url, "pc07-new-input")
+        pc07_page_before_release = first.read_messages(pc07)
+        pc07_result_before_release = first.programmatic_result(pc07, "pc07-input")
+        pc07_stale_pause_ack = first.request_result(
+            "programmatic/message/pause",
+            {"session_id": pc07, "message_id": "pc07-pause"},
+        )
+        pc07_pre_release_tool_results = _message_items(
+            pc07_page_before_release, "tool_result"
+        )
+        pc07_post_identity_result: dict[str, Any] | None = None
+        for item in pc07_pre_release_tool_results:
+            try:
+                identity = _execution_last_json(item)
+            except GateFailure:
+                continue
+            if identity.get("alive") is False:
+                pc07_post_identity_result = item
+                break
+        pc07_write_stdin_result = next(
+            (
+                item
+                for item in pc07_pre_release_tool_results
+                if "未知 execution_id" in _message_text(item)
+            ),
+            None,
+        )
+        try:
+            if pc07_post_identity_result is None:
+                raise GateFailure("PC07 pause 后 shell identity ToolResult 缺失")
+            pc07_post_identity = _execution_last_json(pc07_post_identity_result)
+        except (GateFailure, KeyError, TypeError, ValueError) as error:
+            raise GateFailure(
+                f"PC07 pause 后 shell identity 未返回："
+                f"{pc07_pre_release_tool_results!r}"
+            ) from error
+        _release_barrier(model_url, "pc07-new-input")
+        pc07_result = first.programmatic_result(pc07, "pc07-input")
+        pc07_new_result = _wait_programmatic_result(first, pc07, "pc07-new-input")
+        pc07_page = first.read_messages(pc07)
+        pc07_controls = _message_items(pc07_page, "control")
+        pc07_inputs = _message_items(pc07_page, "input")
+        pc07_outputs = _message_items(pc07_page, "output")
+        pc07_tool_results = _message_items(pc07_page, "tool_result")
+        pc07_cleanup_tool_result = pc07_write_stdin_result
+        pc07_post_identity_ref = (
+            pc07_post_identity_result.get("body", {}).get("call_ref", {})
+            if pc07_post_identity_result is not None
+            else {}
+        )
+        pc07_post_identity_call = any(
+            output.get("id") == pc07_post_identity_ref.get("message_id")
+            and isinstance(output.get("body", {}).get("parts"), list)
+            and type(pc07_post_identity_ref.get("part_index")) is int
+            and 0 <= pc07_post_identity_ref["part_index"]
+            < len(output["body"]["parts"])
+            and isinstance(output["body"]["parts"][pc07_post_identity_ref["part_index"]], dict)
+            and output["body"]["parts"][pc07_post_identity_ref["part_index"]].get("kind")
+            == "tool_call"
+            and output["body"]["parts"][pc07_post_identity_ref["part_index"]].get("name")
+            == "shell"
+            for output in pc07_outputs
+        )
+        pc07_shell_gone = (
+            pc07_post_identity.get("pid") == pc07_shell_identity.get("pid")
+            and pc07_post_identity.get("expected_starttime")
+            == pc07_shell_identity.get("starttime")
+            and pc07_post_identity.get("actual_starttime") is None
+            and pc07_post_identity.get("alive") is False
+            and pc07_post_identity_call
+            and pc07_cleanup_tool_result is not None
+            and pc07_cleanup_tool_result.get("body", {}).get("outcome") == "error"
+            and "未知 execution_id"
+            in _message_text(pc07_cleanup_tool_result)
+        )
+        pc07_passed = (
+            pc07_input_ack.get("seq") == 0
+            and pc07_tool_call is not None
+            and pc07_tool_ref == {
+                "message_id": pc07_tool_call.get("message_id"),
+                "part_index": pc07_tool_call.get("part_index"),
+            }
+            and pc07_tool_result.get("body", {}).get("outcome") == "success"
+            and pc07_pause_ack.get("seq") == pc07_pre_identity_result.get("seq", -1) + 1
+            and pc07_paused_result.get("status") == "pause"
+            # Once a newer Input is appended, the old Input is open again;
+            # the durable result before that append remains the pause proof.
+            and pc07_result_before_release.get("status") == "open"
+            and pc07_page_before_release.get("items") is not None
+            and pc07_post_identity_result is not None
+            and pc07_shell_gone
+            and pc07_new_ack.get("seq") > pc07_pause_ack.get("seq", -1)
+            # Repeating the same pause identity is idempotent: it returns the
+            # original Control row and must not cancel the newer Input.
+            and pc07_stale_pause_ack == pc07_pause_ack
+            and pc07_new_result.get("status") == "complete"
+            and [item.get("id") for item in pc07_inputs]
+            == ["pc07-input", "pc07-new-input"]
+            and [item.get("body", {}).get("action") for item in pc07_controls]
+            == ["pause"]
+            and pc07_controls[0].get("body", {}).get("through_seq")
+            == pc07_pre_identity_result.get("seq")
+            and len(pc07_tool_results) == 4
+            and pc07_cleanup_tool_result is not None
+            and pc07_cleanup_tool_result.get("body", {}).get("call_ref", {}).get(
+                "part_index"
+            )
+            == next(
+                (
+                    index
+                    for output in pc07_outputs
+                    for index, part in enumerate(output.get("body", {}).get("parts", []))
+                    if isinstance(part, dict)
+                    and part.get("kind") == "tool_call"
+                    and part.get("name") == "write_stdin"
+                ),
+                None,
+            )
+            and any(
+                _message_text(output) == "pc07 new input response"
+                for output in pc07_outputs
+            )
         )
         checks.append(
             CheckResult(
                 "PC-07",
-                _terminal_status(interrupted_terminal) == "interrupted"
-                and interrupt_duration <= 2.0
-                and shell_completed.get("id") == shell_started.get("id")
-                and shell_completed.get("data", {}).get("status") == "interrupted"
-                and persisted_shell == shell_completed
-                and interrupted_terminal_count == 1
-                and interrupted_read.get("result") == interrupted_payload
-                and stale_safe
-                and fresh_before_release.get("result", {}).get("status")
-                == "in_progress"
-                and _terminal_status(fresh_terminal) == "completed",
+                pc07_passed,
                 {
-                    "interrupt": interrupt_result,
-                    "durationSeconds": interrupt_duration,
-                    "toolStarted": shell_started,
-                    "toolCompleted": shell_completed,
-                    "terminalEqualsRead": interrupted_read.get("result")
-                    == interrupted_payload,
-                    "terminalEventCount": interrupted_terminal_count,
-                    "staleError": stale_error,
-                    "staleResult": stale_result,
-                    "freshBeforeRelease": fresh_before_release,
+                    "inputAck": pc07_input_ack,
+                    "pauseAck": pc07_pause_ack,
+                    "newInputAck": pc07_new_ack,
+                    "stalePauseAck": pc07_stale_pause_ack,
+                    "pausedResult": pc07_paused_result,
+                    "resultBeforeNewInputRelease": pc07_result_before_release,
+                    "result": pc07_result,
+                    "newInputResult": pc07_new_result,
+                    "controls": pc07_controls,
+                    "toolCall": pc07_tool_call,
+                    "toolResult": pc07_tool_result,
+                    "prePauseShellIdentity": pc07_pre_identity,
+                    "postPauseShellIdentity": pc07_post_identity,
+                    "shellPid": pc07_shell_identity.get("pid"),
+                    "shellPidGone": pc07_post_identity.get("actual_starttime") is None,
+                    "shellGone": pc07_shell_gone,
+                    "messagePage": pc07_page,
                 },
             )
         )
 
-        # 4. 显式 detached turn 在连接断开后继续；重连后读取持久终态。
+        # 4. 连接断开只丢传输；重连后用 Input/result 读取同一持久前缀。
+        pc08 = "programmatic:pc08-reconnect"
         disconnecting = _connect_client(endpoint, events_path)
         clients.append(disconnecting)
-        _create_barrier(
-            model_url,
-            "disconnect-held",
-            {"mode": "complete", "content": "survived disconnect"},
+        disconnecting.admit_programmatic(pc08)
+        pc08_barrier = "pc08-disconnect-provider"
+        _http_json("PUT", f"{model_url}/control/barriers/{pc08_barrier}")
+        _http_json(
+            "PUT", f"{model_url}/control/script",
+            {"mode": "complete", "content": "pc08 survived disconnect", "barrier": pc08_barrier},
         )
-        recovery_thread = _start_thread(disconnecting, "PC-08")
-        recovery_turn = _start_turn(
-            disconnecting,
-            recovery_thread,
-            "disconnect me",
-            detached=True,
-        )
-        _wait_barrier(model_url, "disconnect-held")
+        pc08_ack = disconnecting.send_programmatic(pc08, "pc08-input", "pc08 disconnect")
+        _wait_barrier(model_url, pc08_barrier)
         disconnecting.close()
         clients.remove(disconnecting)
-        _release_barrier(model_url, "disconnect-held")
+        _release_barrier(model_url, pc08_barrier)
         resumed = _connect_client(endpoint, events_path)
         clients.append(resumed)
-        deadline = time.monotonic() + SCENARIO_DEADLINE_S
-        recovery_read: dict[str, Any] = {}
-        while time.monotonic() < deadline:
-            recovery_read = resumed.request(
-                "turn/read",
-                {"threadId": recovery_thread, "turnId": recovery_turn},
-            )
-            if recovery_read.get("result", {}).get("status") == "completed":
-                break
-            threading.Event().wait(0.02)
+        resumed_result = _wait_programmatic_result(resumed, pc08, "pc08-input")
+        resumed_page = resumed.read_messages(pc08)
+        pc08_inputs = [
+            item for item in resumed_page.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "input"
+        ]
+        pc08_outputs = [
+            item for item in resumed_page.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "output"
+        ]
         checks.append(
             CheckResult(
                 "PC-08",
-                recovery_read.get("result", {}).get("finalResponse")
-                == "survived disconnect",
-                recovery_read,
+                pc08_ack.get("seq") == 0
+                and resumed_result.get("status") == "complete"
+                and len(pc08_inputs) == 1
+                and pc08_inputs[0].get("id") == "pc08-input"
+                and len(pc08_outputs) == 1
+                and _message_text(pc08_outputs[0]) == "pc08 survived disconnect",
+                {"ack": pc08_ack, "result": resumed_result, "messagePage": resumed_page},
             )
         )
-        restart_state = {"threadId": recovery_thread, "turnId": recovery_turn}
+        restart_state = {"sessionId": pc08, "inputId": "pc08-input"}
 
-        # 5. 不读取事件的客户端只能影响自身，另一连接仍须在 deadline 内完成。
+        # 5. 慢读者先制造有界队列压力；压力持续时健康 Session 仍须完成。
+        pc09 = "programmatic:pc09-slow"
+        pc09_healthy = "programmatic:pc09-healthy"
+        first.admit_programmatic(pc09)
         slow = _connect_client(endpoint, events_path)
         clients.append(slow)
-        slow._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-        overflow_calls = [
-            {
-                "id": f"call_pc09_{index}",
-                "name": "tool_search",
-                "arguments": {"query": f"no-match-pc09-{index}-" + "x" * (1024)},
-            }
-            for index in range(80)
-        ]
+        slow._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256)
+        slow.follow_session(pc09, "pc09-slow-follow")
+        producer_count = 8
+        burst_count = 4
+        slow_content = "pc09 slow " + ("x" * (256 * 1024))
         _http_json(
             "PUT",
             f"{model_url}/control/script",
-            [
-                {
-                    "mode": "stream",
-                    "deltas": [],
-                    "tool_calls": [
-                        {
-                            "id": "call_pc09_seed",
-                            "name": "tool_search",
-                            "arguments": {"query": "no-match-pc09-seed"},
-                        }
-                    ],
-                },
-                {
-                    "mode": "stream",
-                    "deltas": [],
-                    "tool_calls": [
-                        {
-                            "id": "call_pc09_seed_2",
-                            "name": "shell",
-                            "arguments": {
-                                "command": "python -c 'print(\"x\" * 80000)'",
-                                "description": "生成可压缩的已闭合工具上下文",
-                                "timeout": 5,
-                                "yield_time_ms": 1000,
-                            },
-                        }
-                    ],
-                },
-                # 保留两个已闭合批次；默认 keep_recent_tokens=20k 需要从首个
-                # 批次切出可压缩前缀，不能只放一个很小的 seed。
-                {
-                    "mode": "stream",
-                    "deltas": [],
-                    "tool_calls": overflow_calls,
-                },
-                # 大 batch 闭合后下一次 business payload 过 compaction gate；
-                # 先放合法摘要，避免把业务响应消费到 summary 请求。
-                {"mode": "complete", "content": _PC09_COMPACTION_SUMMARY},
-                {"mode": "stream", "deltas": ["overflow complete"]},
-                {"mode": "complete", "content": "healthy after overflow"},
-            ],
+            ([{"mode": "complete", "content": slow_content} for _ in range(burst_count)]
+             + [{"mode": "complete", "content": "pc09 healthy response"}]
+             + [{"mode": "complete", "content": slow_content}
+                for _ in range(producer_count - burst_count)]),
         )
-        slow_thread = _start_thread(slow, "PC-09-slow")
-        slow_turn = _start_turn(slow, slow_thread, "overflow this connection")
-        slow_deadline = time.monotonic() + SCENARIO_DEADLINE_S
-        slow_read: dict[str, Any] = {}
-        while time.monotonic() < slow_deadline:
-            slow_read = second.request(
-                "turn/read", {"threadId": slow_thread, "turnId": slow_turn}
-            )
-            if slow_read.get("result", {}).get("status") == "completed":
-                break
-            threading.Event().wait(0.02)
-        healthy_thread = _start_thread(second, "PC-09-healthy")
-        healthy_turn = _start_turn(second, healthy_thread, "healthy connection")
-        healthy_terminal = second.wait_terminal(healthy_turn, timeout=5.0)
+        producer_errors: list[str] = []
+        producer_sent = 0
+        burst_ready = threading.Event()
+        continue_tail = threading.Event()
+        producer_stop = threading.Event()
+        producer_done = threading.Event()
+        producer_client: JsonRpcSocketClient | None = None
+        producer: threading.Thread | None = None
+        pressure_pending_bytes = 0
+        pressure_min_pending_bytes = 0
+        pressure_observed_at: float | None = None
+        healthy_started_at: float | None = None
+        healthy_completed_at: float | None = None
+        producer_tail_released_at: float | None = None
+        slow_eof_at: float | None = None
         slow_closed = False
-        close_deadline = time.monotonic() + SCENARIO_DEADLINE_S
-        slow._socket.settimeout(0.25)
-        while time.monotonic() < close_deadline:
-            try:
-                chunk = slow._socket.recv(256 * 1024)
-            except TimeoutError:
-                continue
-            if not chunk:
-                slow_closed = True
-                break
-        checks.append(
-            CheckResult(
-                "PC-09",
-                slow_read.get("result", {}).get("status") == "completed"
-                and _terminal_status(healthy_terminal) == "completed"
-                and _event_turn(healthy_terminal).get("finalResponse")
-                == "healthy after overflow",
-                {
-                    "slowConnectionClosed": slow_closed,
-                    "slowTurnStatus": slow_read.get("result", {}).get("status"),
-                    "overflowToolCalls": len(overflow_calls),
-                    "healthyTurn": _event_turn(healthy_terminal),
-                },
-            )
-        )
-        slow.close()
-        clients.remove(slow)
+        drained_bytes = 0
 
-        # 6. 可达 gate failure 发生在 tool started 后，owner 闭合 failed item。
+        def produce_slow_tail() -> None:
+            """Append a bounded tail and expose all producer failures to the gate."""
+
+            nonlocal producer_sent
+            try:
+                for index in range(producer_count):
+                    if producer_stop.is_set():
+                        return
+                    assert producer_client is not None
+                    producer_client.send_programmatic(
+                        pc09,
+                        f"pc09-input-{index}",
+                        f"pc09 slow input {index}",
+                    )
+                    result = _wait_programmatic_result(
+                        producer_client, pc09, f"pc09-input-{index}"
+                    )
+                    if result.get("status") != "complete":
+                        raise GateFailure(
+                            f"PC09 slow input {index} 未完成：{result!r}"
+                        )
+                    producer_sent = index + 1
+                    if producer_sent == burst_count:
+                        burst_ready.set()
+                        while not continue_tail.wait(0.05):
+                            if producer_stop.is_set():
+                                return
+            except BaseException as error:
+                if not producer_stop.is_set():
+                    producer_errors.append(f"{type(error).__name__}: {error}")
+            finally:
+                burst_ready.set()
+                producer_done.set()
+
+        try:
+            producer_client = _connect_client(endpoint, events_path)
+            clients.append(producer_client)
+            producer = threading.Thread(
+                target=produce_slow_tail, name="pc09-slow-producer", daemon=False
+            )
+            producer.start()
+            if not burst_ready.wait(SCENARIO_DEADLINE_S):
+                raise GateFailure("PC09 slow producer 未建立第一段压力")
+            slow_receive_buffer = slow._socket.getsockopt(
+                socket.SOL_SOCKET, socket.SO_RCVBUF
+            )
+            pressure_min_pending_bytes = max(64 * 1024, slow_receive_buffer * 2)
+            pressure_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+            while time.monotonic() < pressure_deadline:
+                pressure_pending_bytes = _socket_pending_bytes(slow._socket)
+                if pressure_pending_bytes >= pressure_min_pending_bytes:
+                    break
+                if producer_done.is_set() and producer_sent < burst_count:
+                    raise GateFailure(
+                        f"PC09 slow producer 在 burst 内结束：{producer_sent}/{burst_count}"
+                    )
+                threading.Event().wait(0.05)
+            pressure_pending_bytes = _socket_pending_bytes(slow._socket)
+            pressure_observed_at = time.monotonic()
+            if pressure_pending_bytes < pressure_min_pending_bytes:
+                raise GateFailure(
+                    "PC09 慢订阅未达到可观测 socket backlog："
+                    f"{pressure_pending_bytes} < {pressure_min_pending_bytes}"
+                )
+            second.admit_programmatic(pc09_healthy)
+            healthy_started_at = time.monotonic()
+            second.send_programmatic(
+                pc09_healthy, "pc09-healthy-input", "pc09 healthy input"
+            )
+            pc09_healthy_result = _wait_programmatic_result(
+                second, pc09_healthy, "pc09-healthy-input"
+            )
+            healthy_completed_at = time.monotonic()
+            continue_tail.set()
+            producer_tail_released_at = time.monotonic()
+            if not producer_done.wait(SCENARIO_DEADLINE_S):
+                raise GateFailure("PC09 slow producer 未在 deadline 内完成")
+            assert producer is not None
+            producer.join(timeout=SCENARIO_DEADLINE_S)
+            if producer.is_alive():
+                raise GateFailure("PC09 slow producer join 超时")
+            slow_closed, drained_bytes = _drain_socket_until_eof(slow._socket)
+            slow_eof_at = time.monotonic()
+            checks.append(
+                CheckResult(
+                    "PC-09",
+                    not producer_errors
+                    and producer_sent == producer_count
+                    and pressure_pending_bytes >= pressure_min_pending_bytes
+                    and slow_closed
+                    and pc09_healthy_result.get("status") == "complete"
+                    and pressure_observed_at < healthy_completed_at
+                    and healthy_completed_at <= producer_tail_released_at
+                    and producer_tail_released_at <= slow_eof_at,
+                    {
+                        "slowConnectionClosed": slow_closed,
+                        "healthyResult": pc09_healthy_result,
+                        "producerSent": producer_sent,
+                        "producerCount": producer_count,
+                        "producerErrors": producer_errors,
+                        "producerJoined": not producer.is_alive(),
+                        "pressurePending": pressure_pending_bytes >= pressure_min_pending_bytes,
+                        "pressurePendingBytesBeforeHealthy": pressure_pending_bytes,
+                        "pressureMinimumPendingBytes": pressure_min_pending_bytes,
+                        "drainedBytesBeforeEof": drained_bytes,
+                        "healthyIsolation": pc09_healthy_result.get("status") == "complete",
+                        "healthyStartedAt": healthy_started_at,
+                        "healthyCompletedAt": healthy_completed_at,
+                        "pressureObservedAt": pressure_observed_at,
+                        "producerTailReleasedAt": producer_tail_released_at,
+                        "slowEofAt": slow_eof_at,
+                        "pressureObservedBeforeHealthy": pressure_observed_at < healthy_completed_at,
+                        "healthyCompletedBeforeTailRelease": healthy_completed_at <= producer_tail_released_at,
+                        "tailReleasedBeforeSlowEof": producer_tail_released_at <= slow_eof_at,
+                        "slowReceiveBuffer": slow_receive_buffer,
+                    },
+                )
+            )
+        finally:
+            continue_tail.set()
+            producer_stop.set()
+            if producer is not None and producer.is_alive() and producer_client is not None:
+                try:
+                    producer_client.close()
+                except OSError:
+                    pass
+            if producer is not None:
+                producer.join(timeout=SCENARIO_DEADLINE_S)
+                if producer.is_alive():
+                    raise GateFailure("PC09 slow producer cleanup join 超时")
+            if producer_client is not None:
+                producer_client.close()
+                if producer_client in clients:
+                    clients.remove(producer_client)
+            slow.close()
+            if slow in clients:
+                clients.remove(slow)
+
+        # 6. 真实 TOOLS BoundTool 在 started 后失败，日志必须保留 ToolResult。
+        pc10 = "programmatic:pc10-tool-failure"
+        second.admit_programmatic(pc10)
         _http_json(
-            "PUT",
-            f"{model_url}/control/script",
-            [
-                {
-                    "mode": "stream",
-                    "deltas": [],
-                    "tool_calls": [
-                        {
-                            "id": "call_pc10_open",
-                            "name": "pc10_failure_probe",
-                            "arguments": {"probe": True},
-                        }
-                    ],
-                },
-                {"mode": "complete", "content": "unreachable pc10 reply"},
-            ],
+            "PUT", f"{model_url}/control/script",
+            {
+                "mode": "stream",
+                "deltas": [],
+                "tool_calls": [
+                    {
+                        "id": "call_pc10_failure",
+                        "name": "pc10_failure_probe",
+                        "arguments": {"probe": True},
+                    }
+                ],
+            },
         )
-        failed_thread = _start_thread(second, "PC-10")
-        failed_turn = _start_turn(second, failed_thread, "pc10 fail after tool started")
-        failed_terminal = second.wait_terminal(failed_turn)
-        failed_read = second.request(
-            "turn/read", {"threadId": failed_thread, "turnId": failed_turn}
-        )
-        _ = second.request("server/status", {})
-        failed_payload = _event_turn(failed_terminal)
-        failed_events = _recorded_turn_notifications(events_path, failed_turn)
-        failed_terminal_count = sum(
-            event.get("method") == "turn/completed" for event in failed_events
-        )
-        failed_error = failed_payload.get("error")
-        pc10_started, pc10_completed = _tool_lifecycle(
-            failed_events, "pc10_failure_probe"
-        )
-        persisted_failed_item = next(
-            (
-                item
-                for item in failed_payload.get("items", [])
-                if isinstance(item, dict) and item.get("id") == pc10_started.get("id")
-            ),
-            None,
+        pc10_ack = second.send_programmatic(pc10, "pc10-input", "pc10 invoke failing tool")
+        pc10_result = _wait_programmatic_result(second, pc10, "pc10-input")
+        pc10_page = second.read_messages(pc10)
+        pc10_outputs = [
+            item for item in pc10_page.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "output"
+        ]
+        pc10_tools = [
+            item for item in pc10_page.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "tool_result"
+        ]
+        pc10_controls = [
+            item for item in pc10_page.get("items", [])
+            if isinstance(item, dict) and item.get("body", {}).get("kind") == "control"
+        ]
+        pc10_passed = (
+            pc10_ack.get("seq") == 0
+            and pc10_result.get("status") == "failure"
+            and len(pc10_outputs) == 1
+            and len(pc10_tools) == 1
+            and pc10_tools[0].get("body", {}).get("outcome") == "unknown"
+            and pc10_tools[0].get("body", {}).get("call_ref", {}).get("message_id")
+            == pc10_outputs[0].get("id")
+            and pc10_tools[0].get("body", {}).get("call_ref", {}).get("part_index")
+            == next(
+                (
+                    index
+                    for index, part in enumerate(
+                        pc10_outputs[0].get("body", {}).get("parts", [])
+                    )
+                    if isinstance(part, dict)
+                    and part.get("kind") == "tool_call"
+                    and part.get("name") == "pc10_failure_probe"
+                ),
+                None,
+            )
+            and any(
+                isinstance(part, dict)
+                and part.get("kind") == "tool_call"
+                and part.get("name") == "pc10_failure_probe"
+                and isinstance(part.get("binding_id"), str)
+                and bool(part.get("binding_id"))
+                for part in pc10_outputs[0].get("body", {}).get("parts", [])
+            )
+            and len(pc10_controls) == 1
+            and pc10_controls[0].get("body", {}).get("action") == "failure"
+            and "pc10 tool handler failure"
+            in str(pc10_controls[0].get("body", {}).get("reason", ""))
         )
         checks.append(
             CheckResult(
                 "PC-10",
-                failed_payload.get("status") == "failed"
-                and isinstance(failed_error, dict)
-                and failed_error.get("type") == "RuntimeError"
-                and failed_error.get("retryable") is False
-                and pc10_completed.get("id") == pc10_started.get("id")
-                and pc10_completed.get("data", {}).get("status") == "error"
-                and persisted_failed_item == pc10_completed
-                and failed_terminal_count == 1
-                and failed_read.get("result") == failed_payload,
+                pc10_passed,
                 {
-                    "terminal": failed_terminal,
-                    "read": failed_read,
-                    "terminalEventCount": failed_terminal_count,
-                    "toolStarted": pc10_started,
-                    "toolCompleted": pc10_completed,
-                    "failureSource": "pc10 tool handler",
+                    "ack": pc10_ack,
+                    "result": pc10_result,
+                    "outputs": pc10_outputs,
+                    "toolResults": pc10_tools,
+                    "controls": pc10_controls,
+                    "messagePage": pc10_page,
                 },
             )
         )
@@ -2610,10 +3618,11 @@ def _write_config(
     *,
     context_window: int = 64_000,
     max_iterations: int = 2,
+    outbound_queue_size: int = 64,
 ) -> None:
     """渲染只连接 compose 私网 model-gate 的隔离配置。"""
 
-    config = """[agent.plugins]
+    config = f"""[agent.plugins]
 disabled_builtin = ["subagent"]
 
 [app_server]
@@ -2621,7 +3630,7 @@ enabled = true
 listen = "/sandbox/akashic.sock"
 max_connections = 8
 ingress_queue_size = 32
-outbound_queue_size = 64
+outbound_queue_size = {outbound_queue_size}
 
 [channels.chat]
 enabled = true
@@ -2692,6 +3701,7 @@ def _prepare_host_sandbox(
     source_root: Path,
     *,
     max_iterations: int = 2,
+    outbound_queue_size: int = 64,
 ) -> None:
     """创建 control gate 独占的运行目录和可写静态目录。"""
 
@@ -2728,34 +3738,47 @@ def _prepare_host_sandbox(
     (sandbox / "static/chat").mkdir()
 
     # 3. 配置只引用同一 sandbox 内的路径。
-    _write_config(sandbox, max_iterations=max_iterations)
+    _write_config(
+        sandbox,
+        max_iterations=max_iterations,
+        outbound_queue_size=outbound_queue_size,
+    )
     _initialize_current_workspace(sandbox / "workspace", sandbox / "app")
 
 
 def _install_control_failure_plugin(sandbox: Path) -> None:
-    """安装只为 PC10 构造工具 handler failure 的隔离插件。"""
+    """安装只为 PC10 构造真实 BoundTool handler failure 的隔离插件。"""
 
     plugin_base = sandbox / "home/.akashic-plugin/cache/gate/control_failure"
     cache = plugin_base / ".artifacts/1.0.0"
     manifest = sandbox / "home/.akashic-plugin/manifest.toml"
     cache.mkdir(parents=True, exist_ok=True)
     _ = (cache / "plugin.py").write_text(
-        "from agent.plugin_composition import TOOL_CATALOG, PluginToolDefinition\n"
+        "from contextlib import asynccontextmanager\n"
+        "from plugins.tools.api import BoundTool, Result\n"
+        "from plugins.tools.plugin import TOOLS\n"
         "api_version = 3\n"
         "name = 'control_failure'\n"
         "version = '1.0.0'\n"
-        "inject = (TOOL_CATALOG,)\n"
-        "async def pc10_failure_probe(_context, _arguments):\n"
-        "    raise RuntimeError('pc10 tool handler failure')\n"
+        "inject = (TOOLS,)\n"
+        "class FailureTool:\n"
+        "    idempotent = False\n"
+        "    async def prepare(self, arguments, source=None):\n"
+        "        return arguments\n"
+        "    async def invoke(self, key, arguments):\n"
+        "        raise RuntimeError('pc10 tool handler failure')\n"
+        "    async def query(self, key):\n"
+        "        return None\n"
+        "@asynccontextmanager\n"
+        "async def open(_state):\n"
+        "    yield FailureTool()\n"
         "async def apply(ctx, config):\n"
-        "    await ctx.require(TOOL_CATALOG).register(ctx, PluginToolDefinition(\n"
-        "        name='pc10_failure_probe',\n"
+        "    await ctx.require(TOOLS).register(\n"
+        "        ctx, name='pc10_failure_probe',\n"
         "        description='Fail inside the PC10 tool handler.',\n"
-        "        parameters={'type': 'object', 'properties': {\n"
-        "            'probe': {'type': 'boolean'}}, 'required': ['probe'],\n"
-        "            'additionalProperties': False},\n"
-        "        handler_export='pc10_failure_probe', risk='read-only',\n"
-        "        always_on=True))\n",
+        "        parameters={'type': 'object', 'properties': {'probe': {'type': 'boolean'}},\n"
+        "                     'required': ['probe'], 'additionalProperties': False},\n"
+        "        open=open, risk='read-only', always_on=True, preloadable=True)\n",
         encoding="utf-8",
     )
     _ = (cache / "akashic.plugin.toml").write_text(
@@ -2768,10 +3791,7 @@ def _install_control_failure_plugin(sandbox: Path) -> None:
     )
     _ = (plugin_base / ".pointers.json").write_text(
         json.dumps(
-            {
-                "stable": ".artifacts/1.0.0",
-                "latest": ".artifacts/1.0.0",
-            },
+            {"stable": ".artifacts/1.0.0", "latest": ".artifacts/1.0.0"},
             sort_keys=True,
         ),
         encoding="utf-8",
@@ -2788,28 +3808,15 @@ def _seed_memory_context_fixture(
     repo: Path,
     env: dict[str, str],
 ) -> None:
-    """在 gateway 启动前用生产 SessionManager 写入分页测试会话。"""
+    """只完成生产迁移；历史消息由真实程序化 ingress 追加。"""
 
     script = """
 from pathlib import Path
-from session.manager import SessionManager
+from agent.migrations import migrate_installation
 
-manager = SessionManager(Path("/sandbox/workspace"))
-session = manager.get_or_create("programmatic:context-ledger")
-for index in range(4):
-    control_turn_id = f"memory-gate-seed-{index}"
-    session.add_message(
-        "user",
-        (f"seed user {index} " + "token " * 5000).strip(),
-        control_turn_id=control_turn_id,
-    )
-    session.add_message(
-        "assistant",
-        (f"seed assistant {index} " + "token " * 5000).strip(),
-        control_turn_id=control_turn_id,
-    )
-manager.save(session)
-manager.close()
+config = Path("/sandbox/config.toml")
+workspace = Path("/sandbox/workspace")
+migrate_installation(config, workspace)
 """
     seeded = subprocess.run(
         [
@@ -3165,7 +4172,8 @@ def _run_host(gate: str) -> int:
     _prepare_host_sandbox(
         sandbox,
         repo,
-        max_iterations=3 if gate == "failure-matrix" else 2,
+        max_iterations=4 if gate == "failure-matrix" else 2,
+        outbound_queue_size=4 if gate == "failure-matrix" else 64,
     )
     if gate == "failure-matrix":
         _install_control_failure_plugin(sandbox)

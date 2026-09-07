@@ -91,3 +91,25 @@
 清理前恢复点：`/mnt/data/akasic-agent-backups/test-gate-one-third-20260902-before-clean/pre-hard-budget-71b27f5b.bundle`，SHA-256 `78c213310dc94c8ee5a16da65f8dd25c4dc0078aab7bb965cb772b91001ed7f5`。更早的完整测试归档为同目录 `test-and-gate-surface.tar.gz`。
 
 本地验证：预算检查为 `python_files=72 python_tests=1080 node_files=4`；最终等额交换后的 Python 全量为 `1075 passed, 5 skipped`（155.87 秒），Node 为 `62 passed`。Python/测试/SDK Pyright、TypeScript、control schema、Yoyo append-only、SDK 11 项测试、workflow YAML、Gate audit 和 `git diff --check` 均通过；受保护合同变化触发的 27 个公开场景也通过。Terra xhigh 独立复审提出的 fleet coverage、pairing/credential swap、full-process lifecycle owner 和活跃文档悬空引用均已修正，代码与文档 P0/P1 清零。提交后仍需远端 CI 对精确 head 验证。
+
+## 2026-09-07：旧执行图与插件文档清理
+
+### 清理范围与保留结果
+
+本批次只清理当前候选中已无生产消费者的旧执行图和与其绑定的文档入口：
+
+| 删除或退役的图 | 原因 | 当前承接 |
+|---|---|---|
+| `agent/core/passive_turn.py`、`agent/core/passive_support.py`、`agent/core/prompt_block.py`、`agent/core/response_parser.py`、`agent/core/runtime_support.py` | 被 Message → source → reply/react 的插件链替代，旧固定 Passive Turn 编排已无当前调用入口 | `plugins/sources/`、`plugins/conversation/`、`plugins/reply/`、`plugins/react/`、`plugins/context/`、`plugins/content/` |
+| `agent/lifecycle/` composition/facade/phase/types 及 `agent/plugin_composition/turn_lifecycle.py` | 删除固定 Before/After lifecycle 与 Turn 业务身份，避免第二套执行控制流 | `agent/plugin_composition/` 的 Context/Fiber/Task/Effect 与插件自身 Service |
+| `agent/retrieval/events.py`、`agent/retrieval/protocol.py`、旧 `agent/turn_events/observe.py` 接入 | retrieval/observe 旧事件不是当前 Message/Turn owner，也没有新 Core 发布证据 | `plugins/turn_projection/`、`plugins/akasha/` 及各自 typed signal |
+| Mobile 旧 stop/interrupt 注入、生产 `_Bus` 假设及其过渡辅助 | 真实 ChannelRuntimePorts、MessageCatalog 和 recoverer 已承接输入与恢复；旧队列模型会误导新入口 | `infra/mobile_realtime/`、`session/`、Channel/来源插件 |
+| 旧 Memory2/runtime helper 路由 | 退役能力不再进入当前插件组合；其历史数据仍按状态地图和恢复合同保留 | `plugins/compaction/`、`plugins/markdown_memory/`、`plugins/akasha/` |
+
+`agent/plugins/manager.py`、snapshot 和兼容导出中仍存在的 `TOOL_CATALOG`、旧 delivery 导出及 `AFTER_TURN_COMMITTED` 残留没有被误写成当前公共能力：它们保留在兼容/历史图中，等待后续正式迁移或明确删除。当前工具入口是 `plugins.tools` 的 `TOOLS` 与 `plugins.tools.api`，当前出站入口是 `plugins.delivery` 的 `DELIVERY` / `DELIVERY_READ`。旧事件和测试残留不能证明新 Core 会发布对应业务事实。
+
+### 写入集与恢复
+
+本次文档修正未修改数据库、yoyo、workspace、plugin-data、Android 源码、外部插件 checkout、安装 cache 或生成 bundle。此前 stacked code commits 可能包含各自 owner 的 yoyo 迁移；本句只描述本次文档写入集。删除代码不减少既有 Message、学习、附件、receipt 或 plugin-data；正式 MessageLog 启动、Android 配套、外部插件迁移和第 10 层完整切换仍未验收。
+
+代码清理的实际历史是：`1492ce5f` 为 `7340e5a0` 的父提交，`7340e5a0` 删除旧 lifecycle/passive graph，随后 `576e8add` 删除旧 event/retrieval leaves。`5e1b1b93` 是 Message 行为与 Gate 元数据的候选基线，不是这些代码删除的恢复点；如需回放文档/行为候选，可将其作为参考提交，不能据此恢复已删除代码。文档修改前的逐文件恢复副本位于 `/tmp/akasic-agent-backups/docs-cleanup-20260907-before-edit/`，包含本批次涉及的六份文档。恢复时先停用候选运行时，再按 Git worktree 和文档副本逐项回放，不能触碰正式 workspace。验证至少包括 `git diff --check`、相对链接检查、旧入口搜索，以及与当前实现直接相关的文档/API路径核对。
