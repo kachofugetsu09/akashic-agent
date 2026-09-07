@@ -91,3 +91,11 @@ Core atoms                         ordinary plugins
 - `source_ref` 重放不重复写；同 ref 内容漂移 fail-loud；崩溃点不会丢 Session 消息或覆盖
   MEMORY/SELF 的最近成功版本。
 - Wake、Subagent、QQ、Mobile inspection 与 Akasha 逐项通过迁移清单中的行为 oracle。
+
+## 2026-09-07：请求材料与新事实的来源
+
+维护者确认以更新频率决定请求位置：SELF/MEMORY、技能和渠道规则保留 system，时间、Akasha 召回和本次后台结果进入末尾的临时提醒。低频档案没有必要因为可变而迁出前缀；异步档案发布也不保证与 compaction 合并为一次 provider 缓存失效。
+
+材料显示优先级不改变准备顺序、权限或持久资格。Compaction 保留来源与作者；Markdown 从摘要覆盖的真实 Message 读取原文，新增用户事实必须引用用户 Input，助手或后台转述不能成为唯一证据。这样保留工作连续性与既有恢复协议，同时收紧新事实的准入；引用存在与合格不等于自动证明语义正确。
+
+现行合同由 [CTX-004、MEM-012](../projectneed.md) 拥有，接口、配置迁移和验收见 [Message/plugins 分层合同](../design/0902-reviewed-v4.md)。既有档案与草稿不批量改写或删除。
