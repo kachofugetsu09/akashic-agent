@@ -117,7 +117,7 @@ class JsonRpcSocketClient:
         *,
         timeout: float = SCENARIO_DEADLINE_S,
     ) -> dict[str, Any]:
-        """Return a v2 result object while retaining raw request for old cases."""
+        """返回 v2 result，并保留旧场景需要的原始响应。"""
 
         response = self.request(method, params, timeout=timeout)
         result = response.get("result")
@@ -128,7 +128,7 @@ class JsonRpcSocketClient:
     def admit_programmatic(
         self, session_id: str, *, persist_memory: bool = False
     ) -> dict[str, Any]:
-        """Admit one immutable programmatic Session identity."""
+        """接纳一个属性不可变的程序 Session。"""
 
         return self.request_result(
             "programmatic/session/admit",
@@ -138,7 +138,7 @@ class JsonRpcSocketClient:
     def send_programmatic(
         self, session_id: str, message_id: str, text: str
     ) -> dict[str, Any]:
-        """Append one programmatic Input and return its durable ACK."""
+        """追加一个程序 Input，并返回持久 ACK。"""
 
         return self.request_result(
             "programmatic/message/send",
@@ -148,7 +148,7 @@ class JsonRpcSocketClient:
     def read_messages(
         self, session_id: str, *, after_seq: int = -1, limit: int = 200
     ) -> dict[str, Any]:
-        """Read the append-only Message page for a Session."""
+        """读取 Session 的追加式 Message 页面。"""
 
         return self.request_result(
             "message/read",
@@ -158,7 +158,7 @@ class JsonRpcSocketClient:
     def programmatic_result(
         self, session_id: str, input_id: str
     ) -> dict[str, Any]:
-        """Read the result projection for one programmatic Input."""
+        """读取一个程序 Input 的结果投影。"""
 
         return self.request_result(
             "programmatic/message/result",
@@ -168,7 +168,7 @@ class JsonRpcSocketClient:
     def follow_session(
         self, session_id: str, subscription_id: str, *, after_seq: int = -1
     ) -> dict[str, Any]:
-        """Register a bounded v2 Session subscription and return its ACK."""
+        """注册有界 v2 Session 订阅，并返回 ACK。"""
 
         return self.request_result(
             "session/follow",
@@ -250,7 +250,7 @@ class JsonRpcSocketClient:
         subscription_id: str | None = None,
         timeout: float = SCENARIO_DEADLINE_S,
     ) -> dict[str, Any]:
-        """Wait for a v2 session event without dropping unrelated notifications."""
+        """等待 v2 Session 事件，同时保留无关通知。"""
 
         deadline = time.monotonic() + timeout
 
@@ -643,6 +643,40 @@ def _model_requests(payload: object) -> list[object]:
     return list(requests)
 
 
+def _model_call_records(database: Path, call_ids: Sequence[str]) -> list[dict[str, Any]]:
+    """从 Models owner 读取指定调用的结算事实。"""
+
+    if not call_ids:
+        return []
+    placeholders = ",".join("?" for _ in call_ids)
+    uri = f"file:{database}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT id, state, binding_json, usage_json FROM model_calls "
+                f"WHERE id IN ({placeholders}) ORDER BY rowid",
+                tuple(call_ids),
+            ).fetchall()
+    except sqlite3.Error as error:
+        raise GateFailure(f"读取 Models 调用账失败：{database}") from error
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        records.append(
+            {
+                "id": row["id"],
+                "state": row["state"],
+                "binding": json.loads(row["binding_json"]),
+                "usage": (
+                    None
+                    if row["usage_json"] is None
+                    else json.loads(row["usage_json"])
+                ),
+            }
+        )
+    return records
+
+
 def _memory_context_seed_content(role: str, index: int) -> str:
     """Return one deterministic large seed message for the ledger gate."""
 
@@ -865,7 +899,7 @@ def _wait_programmatic_result(
     *,
     timeout: float = SCENARIO_DEADLINE_S,
 ) -> dict[str, Any]:
-    """Poll the durable programmatic projection until it leaves open."""
+    """轮询持久程序结果，直到状态离开 open。"""
 
     deadline = time.monotonic() + timeout
     result: dict[str, Any] = {}
@@ -918,7 +952,7 @@ def _inside_smoke(report_dir: Path) -> int:
             )
         )
 
-        # 2. A programmatic Input crosses the provider and is read from the log.
+        # 2. 程序 Input 穿过 provider，并从 Message 日志读取。
         pc03_session = "programmatic:pc03-smoke"
         admission = client.admit_programmatic(pc03_session)
         _http_json(
@@ -934,12 +968,26 @@ def _inside_smoke(report_dir: Path) -> int:
         rows = page.get("items")
         input_rows = [item for item in rows if isinstance(item, dict) and item.get("id") == "pc03-input"] if isinstance(rows, list) else []
         output_rows = [item for item in rows if isinstance(item, dict) and item.get("body", {}).get("kind") == "output"] if isinstance(rows, list) else []
+        ending_id = result.get("ending_message_id")
+        ending_seq = result.get("ending_seq")
+        final_outputs = [
+            item for item in output_rows
+            if isinstance(item, dict)
+            and item.get("id") == ending_id
+            and isinstance(item.get("body"), dict)
+            and item["body"].get("finish") == "complete"
+        ]
+        final_output = final_outputs[0] if len(final_outputs) == 1 else None
         checks.append(
             CheckResult(
                 "PC-03",
                 admission.get("session_id") == pc03_session
                 and ack.get("message_id") == "pc03-input"
                 and result.get("status") == "complete"
+                and isinstance(ending_id, str)
+                and type(ending_seq) is int
+                and final_output is not None
+                and final_output.get("seq") == ending_seq
                 and len(pc03_requests) == 1
                 and len(input_rows) == 1
                 and any(
@@ -956,14 +1004,16 @@ def _inside_smoke(report_dir: Path) -> int:
                     "ack": ack,
                     "result": result,
                     "messagePage": page,
+                    "endingOutput": final_output,
                     "providerRequestCount": len(pc03_requests),
                 },
             )
         )
 
-        # 3. Tool calls and streamed output are durable Message body kinds.
+        # 3. follow 与 provider stream 同时打开，先观察真实中间预览。
         pc04_session = "programmatic:pc04-smoke"
         client.admit_programmatic(pc04_session)
+        follow_ack = client.follow_session(pc04_session, "pc04-follow")
         _http_json(
             "PUT",
             f"{model_url}/control/script",
@@ -989,6 +1039,7 @@ def _inside_smoke(report_dir: Path) -> int:
                 {
                     "mode": "stream",
                     "deltas": ["stream ", "complete"],
+                    "delay_ms": 150,
                     "usage": {
                         "prompt_tokens": 5,
                         "completion_tokens": 2,
@@ -1001,33 +1052,171 @@ def _inside_smoke(report_dir: Path) -> int:
         )
         pc04_before = len(_model_requests(_http_json("GET", f"{model_url}/control/requests")))
         pc04_ack = client.send_programmatic(pc04_session, "pc04-input", "stream tool usage")
+        intermediate_reply: dict[str, Any] | None = None
+        intermediate_texts: list[str] = []
+        reply_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        while time.monotonic() < reply_deadline:
+            event = client.wait_session_event(
+                "reply.status",
+                subscription_id="pc04-follow",
+                timeout=reply_deadline - time.monotonic(),
+            )
+            payload = event.get("params", {}).get("event", {})
+            if not isinstance(payload, dict) or payload.get("available") is not True:
+                continue
+            items = payload.get("items")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                preview = item.get("preview")
+                if isinstance(preview, dict) and isinstance(preview.get("text"), str):
+                    intermediate_texts.append(preview["text"])
+            if any(text and text != "stream complete" for text in intermediate_texts):
+                intermediate_reply = event
+                break
         pc04_result = _wait_programmatic_result(client, pc04_session, "pc04-input")
         pc04_page = client.read_messages(pc04_session)
         pc04_requests = _model_requests(_http_json("GET", f"{model_url}/control/requests"))[pc04_before:]
         pc04_rows = pc04_page.get("items")
         tool_rows = [item for item in pc04_rows if isinstance(item, dict) and item.get("body", {}).get("kind") == "tool_result"] if isinstance(pc04_rows, list) else []
         output_rows = [item for item in pc04_rows if isinstance(item, dict) and item.get("body", {}).get("kind") == "output"] if isinstance(pc04_rows, list) else []
-        output_text = "".join(
+        final_id = pc04_result.get("ending_message_id")
+        final_seq = pc04_result.get("ending_seq")
+        final_output = next(
+            (
+                item for item in output_rows
+                if isinstance(item, dict)
+                and item.get("id") == final_id
+                and isinstance(item.get("body"), dict)
+                and item["body"].get("finish") == "complete"
+            ),
+            None,
+        )
+        final_text = "".join(
             str(part.get("value", ""))
-            for item in output_rows
-            if isinstance(item.get("body"), dict)
-            for part in item["body"].get("parts", [])
+            for part in final_output.get("body", {}).get("parts", [])
             if isinstance(part, dict) and part.get("kind") == "text"
+        ) if isinstance(final_output, dict) else ""
+        tool_calls: list[tuple[str, int, str, str]] = []
+        for item in output_rows:
+            if not isinstance(item, dict) or not isinstance(item.get("body"), dict):
+                continue
+            for index, part in enumerate(item["body"].get("parts", [])):
+                if isinstance(part, dict) and part.get("kind") == "tool_call":
+                    binding_id = part.get("binding_id")
+                    name = part.get("name")
+                    if isinstance(binding_id, str) and isinstance(name, str):
+                        tool_calls.append((str(item.get("id")), index, binding_id, name))
+        result_refs = [
+            (
+                cast(dict[str, Any], item["body"])["call_ref"].get("message_id"),
+                cast(dict[str, Any], item["body"])["call_ref"].get("part_index"),
+            )
+            for item in tool_rows
+            if isinstance(item, dict)
+            and isinstance(item.get("body"), dict)
+            and isinstance(item["body"].get("call_ref"), dict)
+        ]
+        call_ids = [
+            cast(str, value["value"].get("call_record_id"))
+            for item in output_rows
+            if isinstance(item, dict) and isinstance(item.get("body"), dict)
+            for value in item["body"].get("parts", [])
+            if isinstance(value, dict)
+            and value.get("kind") == "model.facts"
+            and isinstance(value.get("value"), dict)
+            and isinstance(value["value"].get("call_record_id"), str)
+        ]
+        model_calls = _model_call_records(
+            Path("/sandbox/workspace/model-registry.sqlite3"), call_ids
+        )
+        message_events: list[dict[str, Any]] = []
+        event_rows: list[dict[str, Any]] = []
+        event_deadline = time.monotonic() + SCENARIO_DEADLINE_S
+        while time.monotonic() < event_deadline:
+            event = client.wait_session_event(
+                "messages.appended",
+                subscription_id="pc04-follow",
+                timeout=event_deadline - time.monotonic(),
+            )
+            message_events.append(event)
+            payload = event.get("params", {}).get("event", {})
+            items = payload.get("items") if isinstance(payload, dict) else None
+            if isinstance(items, list):
+                event_rows.extend(item for item in items if isinstance(item, dict))
+            if any(item.get("id") == final_id for item in event_rows):
+                break
+        page_pairs = [
+            (item.get("id"), item.get("seq"))
+            for item in pc04_rows
+            if isinstance(item, dict)
+        ] if isinstance(pc04_rows, list) else []
+        event_pairs = [(item.get("id"), item.get("seq")) for item in event_rows]
+        seqs = [seq for _, seq in page_pairs]
+        continuous_seqs = (
+            bool(seqs)
+            and all(type(seq) is int for seq in seqs)
+            and seqs
+            == list(
+                range(
+                    cast(int, seqs[0]),
+                    cast(int, seqs[-1]) + 1,
+                )
+            )
+        )
+        valid_tool_ref = (
+            len(tool_rows) == 1
+            and len(tool_calls) == 1
+            and len(result_refs) == 1
+            and result_refs[0][:2] == tool_calls[0][:2]
+            and tool_calls[0][2] != ""
+            and tool_calls[0][3] == "tool_search"
+        )
+        valid_model_calls = (
+            len(call_ids) == 2
+            and len(set(call_ids)) == 2
+            and len(model_calls) == 2
+            and all(
+                isinstance(record.get("binding"), dict)
+                and record["binding"].get("model") == "model-gate"
+                and record.get("state") == "success"
+                and isinstance(record.get("usage"), dict)
+                for record in model_calls
+            )
         )
         checks.append(
             CheckResult(
                 "PC-04",
-                pc04_ack.get("message_id") == "pc04-input"
+                follow_ack.get("subscription_id") == "pc04-follow"
+                and pc04_ack.get("message_id") == "pc04-input"
                 and pc04_result.get("status") == "complete"
                 and len(pc04_requests) == 2
-                and len(tool_rows) >= 1
-                and "stream complete" in output_text,
+                and isinstance(final_id, str)
+                and type(final_seq) is int
+                and isinstance(final_output, dict)
+                and final_output.get("seq") == final_seq
+                and final_text == "stream complete"
+                and valid_tool_ref
+                and valid_model_calls
+                and page_pairs == event_pairs
+                and continuous_seqs
+                and intermediate_reply is not None,
                 {
+                    "follow": follow_ack,
                     "ack": pc04_ack,
                     "result": pc04_result,
                     "messagePage": pc04_page,
+                    "messageEvents": message_events,
+                    "intermediateReply": intermediate_reply,
+                    "intermediateTexts": intermediate_texts,
                     "providerRequestCount": len(pc04_requests),
-                    "outputText": output_text,
+                    "outputText": final_text,
+                    "toolCalls": tool_calls,
+                    "toolResultRefs": result_refs,
+                    "modelCallIds": call_ids,
+                    "modelCalls": model_calls,
                 },
             )
         )
@@ -2331,15 +2520,8 @@ def _write_config(
 ) -> None:
     """渲染只连接 compose 私网 model-gate 的隔离配置。"""
 
-    config = f"""[agent]
-max_iterations = {max_iterations}
-
-[agent.plugins]
+    config = """[agent.plugins]
 disabled_builtin = ["subagent"]
-
-[agent.context]
-[agent.context.compaction]
-keep_recent_tokens = 20000
 
 [app_server]
 enabled = true
@@ -2361,10 +2543,16 @@ bot_uin = ""
 
 """
     (sandbox / "config.toml").write_text(config, encoding="utf-8")
+    reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
+    reply_config.parent.mkdir(parents=True, exist_ok=True)
+    reply_config.write_text(f"max_steps = {max_iterations}\n", encoding="utf-8")
+    compaction_config = sandbox / "workspace/plugin-data/compaction-builtin/config.local.toml"
+    compaction_config.parent.mkdir(parents=True, exist_ok=True)
+    compaction_config.write_text("keep_recent_tokens = 20000\n", encoding="utf-8")
 
 
 def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:
-    """为已标记 current 的 Gate workspace 写入当前版本必需资产。"""
+    """按当前 workspace 初始化合同准备隔离资产。"""
 
     # 1. Gate fixture 必须使用候选源码中的版本化默认值。
     template = source_root / "prompts/VEDA.md"
@@ -2376,10 +2564,23 @@ def _initialize_current_workspace(workspace: Path, source_root: Path) -> None:
     if not content.strip():
         raise GateFailure(f"Gate Veda 模板为空: {template}")
 
-    # 2. current cursor 禁止依赖 migration 补齐当前格式资产。
+    # 2. 人格、Context 配置和目录由当前 workspace owner 一次准备。
     target = workspace / "memory/VEDA.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
+    context_config = workspace / "plugin-data/context-builtin/config.local.toml"
+    context_config.parent.mkdir(parents=True, exist_ok=True)
+    context_config.write_text(
+        'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory"}\n'
+        'summary_source = ["compaction", "compaction"]\n',
+        encoding="utf-8",
+    )
+    (workspace / "memes/manifest.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / "memes/manifest.json").write_text(
+        json.dumps({"categories": {}}, ensure_ascii=False), encoding="utf-8"
+    )
+    for relative in ("observe", "skills", "drift/skills"):
+        (workspace / relative).mkdir(parents=True, exist_ok=True)
 
 
 def _prepare_host_sandbox(
