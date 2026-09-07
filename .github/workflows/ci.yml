@@ -36,6 +36,9 @@ jobs:
           .venv/bin/python -m pip install -r requirements-dev.txt
           .venv/bin/python -m pip install -e sdk/python
 
+      - name: Add project virtualenv to PATH
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
       - name: Check Host Bridge generated protocol
         run: |
           python -m venv /tmp/akashic-protoc
