@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 import json
 from pathlib import Path
@@ -13,6 +14,9 @@ from bootstrap import tools as bootstrap
 from bootstrap.app_server import build_control_service
 from core.net.http import SharedHttpResources
 from session.message import Input
+from session.artifacts import AttachmentRef
+from session.log import MessageCatalog, MessageLog
+from session.message import Message
 
 
 @asynccontextmanager
@@ -85,8 +89,28 @@ async def test_control_v2_uses_real_message_input_and_cancellable_read_subscript
 
 
 @pytest.mark.asyncio
-async def test_connection_eof_releases_full_queue_and_blocked_writer():
+async def test_connection_eof_releases_full_queue_and_blocked_writer(tmp_path):
     from infra.control.connection import NdjsonConnection
+
+    async def reject_accept(_session_id: str, _message_id: str, _incoming: object) -> Message:
+        raise AssertionError("EOF 测试不应接纳控制输入")
+
+    async def reject_reply_status(_session_id: str) -> AsyncGenerator[dict[str, object], None]:
+        raise AssertionError("EOF 测试不应读取回复状态")
+        yield {}
+
+    def reject_attachments(_ids: tuple[str, ...]) -> tuple[AttachmentRef, ...]:
+        raise AssertionError("EOF 测试不应读取附件")
+
+    log = MessageLog(tmp_path / "sessions.db")
+    service = ControlService(
+        MessageCatalog(log),
+        tmp_path,
+        accept=reject_accept,
+        reply_status=reject_reply_status,
+        attachments=reject_attachments,
+    )
+
     class BlockedTransport(asyncio.WriteTransport):
         def __init__(self, closed: asyncio.Event) -> None:
             self.closed = closed
@@ -122,9 +146,6 @@ async def test_connection_eof_releases_full_queue_and_blocked_writer():
     reader = asyncio.StreamReader()
     closed = asyncio.Event()
     writer = BlockedWriter(closed)
-    service = ControlService.__new__(ControlService)
-    service.methods = {}
-
     connection = NdjsonConnection(reader, writer, service, max_message_bytes=1024,
                                   max_pending_requests=2, outbound_queue_size=1)
     task = asyncio.create_task(connection.run())
@@ -138,3 +159,5 @@ async def test_connection_eof_releases_full_queue_and_blocked_writer():
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        await service.shutdown()
+        log.close()

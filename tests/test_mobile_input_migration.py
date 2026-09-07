@@ -74,7 +74,8 @@ def test_old_mobile_state_requires_yoyo_then_preserves_data_and_rejects_durably(
             reply_payload_json=json.dumps({'code': 'message_conflict'}), session_id='akashic:chat-1', turn_id=None,
             completed_at=datetime.now(UTC))
         mapping, = storage.list_attachment_imports(session_id='akashic:chat-1', client_message_id='client-1')
-        assert mapping.phase == 'rejected' and 'message_conflict' in mapping.error
+        assert mapping.phase == 'rejected'
+        assert mapping.error is not None and 'message_conflict' in mapping.error
         assert not storage.list_incomplete_attachment_imports()
         assert storage.cleanup_command_receipts(device_id='device-1', now=datetime.now(UTC) + timedelta(days=20)) == 0
         storage.complete_rejected_message_handoff(device_id='device-1', command_id='client-1')
