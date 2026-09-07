@@ -289,19 +289,19 @@ def _check_safe_defaults(data: Mapping[str, object], agent: Mapping[str, object]
         else:
             raise RuntimeError(f"{field} 有自定义值且没有当前 owner；原配置保持不变")
 
-    search_fields = []
+    search_values = {}
     if "tool_search_enabled" in data:
-        search_fields.append("tool_search_enabled")
+        search_values["tool_search_enabled"] = data["tool_search_enabled"]
     tools = agent.get("tools")
     if isinstance(tools, Mapping) and "search_enabled" in tools:
-        search_fields.append("agent.tools.search_enabled")
-    if search_fields:
-        raise RuntimeError(
-            "旧工具搜索布尔值无法无损映射: "
-            + ", ".join(search_fields)
-            + "; reply.tools 只接受插件明确的工具名，工具 discovery 负责候选与选择；"
-            "请由这两个 owner 决定后再移除旧布尔值，原配置保持不变"
-        )
+        search_values["agent.tools.search_enabled"] = tools["search_enabled"]
+    for field, value in search_values.items():
+        if type(value) is not bool:
+            raise RuntimeError(f"{field} 必须是布尔值；原配置保持不变")
+        if value is not True:
+            raise RuntimeError(
+                f"{field}=false 无法自动映射到 reply.tools；原配置保持不变"
+            )
 
 
 def _render_config(content: bytes, max_steps: int | None) -> bytes | None:
@@ -313,7 +313,7 @@ def _render_config(content: bytes, max_steps: int | None) -> bytes | None:
     discovered = _legacy_values(parsed)
     document = tomlkit.parse(content.decode("utf-8"))
     changed = False
-    for key in ("system_prompt", "max_iterations", "dev_mode", "dev_model"):
+    for key in ("system_prompt", "max_iterations", "dev_mode", "dev_model", "tool_search_enabled"):
         if key in document:
             del document[key]
             changed = True
@@ -323,6 +323,12 @@ def _render_config(content: bytes, max_steps: int | None) -> bytes | None:
             if key in agent_document:
                 del agent_document[key]
                 changed = True
+        tools_document = agent_document.get("tools")
+        if isinstance(tools_document, dict) and "search_enabled" in tools_document:
+            del tools_document["search_enabled"]
+            changed = True
+            if not tools_document:
+                del agent_document["tools"]
         wiring = agent_document.get("wiring")
         if wiring is not None:
             del agent_document["wiring"]
@@ -392,6 +398,17 @@ def _plan(config_path: Path, workspace: Path) -> _Plan | None:
     config_bytes = _render_config(config.content, max_steps)
     reply_path = builtin_plugin_data_dir("reply", workspace) / "config.local.toml"
     reply, reply_bytes = _reply_config(reply_path, max_steps, workspace)
+    # 旧启用配置对应当前默认发现目录；不能覆盖显式关闭发现的 reply 组合。
+    legacy_agent = _mapping(data.get("agent", {}), "agent")
+    legacy_tools = legacy_agent.get("tools")
+    search_enabled = data.get("tool_search_enabled") is True or (
+        isinstance(legacy_tools, Mapping) and legacy_tools.get("search_enabled") is True
+    )
+    if search_enabled and reply.content is not None:
+        reply_data = tomllib.loads(reply.content.decode("utf-8"))
+        names = reply_data.get("tools")
+        if names is not None and "tool_search" not in names:
+            raise RuntimeError("旧工具搜索已启用，但 reply.tools 未包含 tool_search；原配置保持不变")
     if reply.content is not None and reply.target == config.target:
         raise RuntimeError("主配置与 reply 插件配置解析到同一文件；拒绝双重发布")
     if reply.content is not None and _same_existing_target(reply.target, config.target):

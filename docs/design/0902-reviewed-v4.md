@@ -2027,3 +2027,5 @@ version 0 记录保存完整旧行、原 JSON 字符串与 SHA-256；未记录�
 ### 真实副本发现的无效开发标记
 
 2026-09-08 演练确认：正式源版本 `6429c806` 中 `dev_mode/dev_model` 只有 config 解析、模型字段和 setup 初值，没有运行时或当前十四个插件消费者。实际配置的 `dev_mode=true` 不对应需要迁移的功能。修订本批尚未部署的 `20260907_02_retire_legacy_agent_config` 候选迁移，严格校验布尔类型后，沿既有完整原配置备份移除 true/false 两种值；不新增开发模式 owner，也不把无效标记变成迁移阻塞。原配置字节与权限可从该迁移备份恢复，正式配置未修改。
+
+2026-09-08 演练决策：实际 `agent.tools.search_enabled=true` 在旧正式版本有运行时消费者，必须保留发现行为。当前 `reply.tools` 默认包含全部已安装目录，`tool_search` 提供 discovery，`ToolMenu` 只初始公开 always_on 工具并从搜索结果投影选择，因此严格布尔 true 可在保留原配置备份后移除。显式 reply 目录必须仍包含 tool_search；false、类型错误及冲突均阻断，不默默改成启用。其余 agent.tools 字段原样保留。这个映射保留启用意图，新的搜索算法与 Message 选择事实沿当前已批准重写合同执行；不声称旧算法逐字等价。

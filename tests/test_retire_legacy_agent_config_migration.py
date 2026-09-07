@@ -177,7 +177,7 @@ def test_custom_prompt_and_search_boolean_stop_before_any_write(tmp_path: Path) 
     assert not (workspace / "plugin-data").exists()
 
     config.write_text(
-        "[agent]\nmax_iterations = 7\n[agent.tools]\nsearch_enabled = true\n",
+        "[agent]\nmax_iterations = 7\n[agent.tools]\nsearch_enabled = false\n",
         encoding="utf-8",
     )
     before = config.read_bytes()
