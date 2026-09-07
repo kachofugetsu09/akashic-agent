@@ -92,7 +92,6 @@ from infra.mobile_realtime.protocol import (
     AttachmentFinishCommand,
     ClientCommand,
     GenericCommand,
-    MessageReplyReference,
     MessageSendCommand,
     MAX_JSON_FRAME_BYTES,
     TURN_OUTPUT_COMPLETED_CAPABILITY,
@@ -175,14 +174,6 @@ class CommandReply:
     turn_id: str | None = None
     binary: AttachmentChunk | None = None
     replayed: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _ResolvedReply:
-    message_id: str
-    role: str
-    content: str
-    preview: str
 
 
 @dataclass(slots=True)
@@ -1944,23 +1935,6 @@ class MobileRealtimeChannel:
             raise MobileCommandError("invalid_pagination", "after_seq 超过会话当前 head")
         return reader, after_seq
 
-    def _mobile_session_title(self, session_id: str) -> tuple[str, int]:
-        """Return one Core-owned title projection and the message count."""
-
-        (
-            messages,
-            total,
-        ) = self._require_ctx().session_manager.control_store.list_messages_for_dashboard(
-            session_key=session_id,
-            page=1,
-            page_size=1,
-            sort_by="seq",
-            sort_order="asc",
-        )
-        first_content = str(messages[0]["content"]).strip() if messages else ""
-        title = first_content.splitlines()[0][:32] if first_content else "新对话"
-        return title, total
-
     async def _send_message(
         self,
         device_id: str,
@@ -2218,47 +2192,6 @@ class MobileRealtimeChannel:
                 )
             refs.append(ref)
         return tuple(refs)
-
-    def _resolve_reply(
-        self,
-        session_id: str,
-        reference: MessageReplyReference | None,
-    ) -> _ResolvedReply | None:
-        """把客户端引用解析为同会话的 canonical 消息摘要。"""
-
-        if reference is None:
-            return None
-        store = self._require_ctx().session_manager.control_store
-        if reference.message_id is not None:
-            target = store.get_message(reference.message_id)
-        elif reference.client_message_id is not None:
-            target = store.get_message_by_client_id(
-                session_id,
-                reference.client_message_id,
-            )
-        else:
-            target = store.get_message_by_delivery_id(
-                session_id,
-                cast(str, reference.delivery_id),
-            )
-        if target is None:
-            raise MobileCommandError(
-                "reply_target_missing", "被引用的消息不存在或尚未同步"
-            )
-        if target["session_key"] != session_id:
-            raise MobileCommandError(
-                "reply_target_session_mismatch", "不能引用其他会话的消息"
-            )
-        role = str(target["role"])
-        if role not in {"user", "assistant"}:
-            raise RuntimeError(f"被引用消息角色无效: {target['id']} {role}")
-        content = _reply_source_text(target)
-        return _ResolvedReply(
-            message_id=str(target["id"]),
-            role=role,
-            content=content,
-            preview=_reply_preview(content),
-        )
 
     async def _on_turn_started(self, event: TurnStarted) -> None:
         self._raise_delta_failure()
@@ -3366,8 +3299,12 @@ class MobileRealtimeChannel:
 
     def _require_mobile_session(self, value: str | None) -> str:
         session_id = self._normalize_session_id(value)
-        if not self._require_ctx().session_manager.session_exists(session_id):
-            raise MobileCommandError("session_not_found", f"会话不存在: {session_id}")
+        try:
+            _ = self._require_messages().reader(session_id).read_page(limit=1)
+        except KeyError as error:
+            raise MobileCommandError(
+                "session_not_found", f"会话不存在: {session_id}"
+            ) from error
         return session_id
 
     def _normalize_session_id(self, value: object) -> str:
@@ -3797,20 +3734,6 @@ def _mobile_history_item(item: Mapping[str, object]) -> dict[str, object]:
         if isinstance(value, str) and value:
             result[field] = value
     return result
-
-
-def _reply_preview(content: str) -> str:
-    return " ".join(content.split())[:512] or "[无文字消息]"
-
-
-def _reply_source_text(target: Mapping[str, object]) -> str:
-    content = str(target["content"])
-    if content.strip():
-        return content
-    media = target.get("media")
-    if isinstance(media, list) and media:
-        return "[附件]"
-    return "[无文字消息]"
 
 
 def _mobile_tool_chain(value: object) -> list[dict[str, object]] | None:
