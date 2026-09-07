@@ -3367,10 +3367,8 @@ class MobileRealtimeChannel:
     def _require_mobile_session(self, value: str | None) -> str:
         session_id = self._normalize_session_id(value)
         try:
-            _ = self._require_messages().reader(session_id).attributes
-        except ValueError as error:
-            if str(error) != "Session 尚未接纳":
-                raise
+            _ = self._require_messages().reader(session_id).read_page(limit=1)
+        except KeyError as error:
             raise MobileCommandError(
                 "session_not_found", f"会话不存在: {session_id}"
             ) from error
