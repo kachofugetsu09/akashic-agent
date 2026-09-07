@@ -132,6 +132,7 @@ async def apply(ctx, config):
         await manager.load_all()
         await manager.start_runtime()
         snapshot = manager.snapshot_store.pause_admission()
+        assert snapshot is not None
         await manager.snapshot_store.wait_for_no_leases(snapshot)
         old_root = snapshot.composition_root
         await manager._stop_runtime_snapshot(snapshot)
@@ -782,7 +783,9 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
             assert snapshot.lease_count == 0
             assert events == ["prepare", "stop"]
             assert root.instance_token not in manager._runtime_starting_roots
-            await manager.snapshot_store.abort(manager.snapshot_store.pending_transaction)
+            transaction = manager.snapshot_store.pending_transaction
+            assert transaction is not None
+            await manager.snapshot_store.abort(transaction)
         else:
             await manager._publish_committed_snapshot(snapshot)
             assert events == ["prepare"]
@@ -803,7 +806,9 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
                 await manager._publish_committed_snapshot(replacement)
                 await manager.start_runtime()
                 assert events == ["prepare", "start"]
-                await manager._stop_runtime_snapshot(manager.current_snapshot)
+                current = manager.current_snapshot
+                assert current is not None
+                await manager._stop_runtime_snapshot(current)
                 assert events == ["prepare", "start", "stop"]
         async with asyncio.timeout(2):
             await tasks.close()

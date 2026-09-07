@@ -187,11 +187,7 @@ class Source:
                 value = decision(reader, request, "investigate")
                 if isinstance(value, Share):
                     try:
-                        chosen = _selected_content_refs(
-                            selected,
-                            value.items,
-                            allow_legacy_single=selected.get("decision_format") == "legacy_single",
-                        )
+                        chosen = _selected_content_refs(selected, value.items)
                     except ValueError:
                         self._record(request, "defer", "调查分享引用了原批次之外的候选")
                         self._change_content(token, "defer")

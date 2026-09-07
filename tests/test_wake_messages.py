@@ -1,6 +1,5 @@
 import asyncio
-import sqlite3
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
@@ -100,7 +99,7 @@ async def apply(ctx, config):
                     "candidate_id": control["candidate"], "initial_interest": "relevant", "question": "verify this"}]})])
             name = control["tool"]
             args = {"reason": "nothing useful"} if name == "skip_content" else {"message": "useful notification"}
-            if name == "share_content" and not control.get("legacy"):
+            if name == "share_content":
                 args["items"] = [control["candidate"]] if control.get("content") else []
             return LLMResponse(None, [ToolCall("decision", name, args)])
     descriptor = BoundModelDescriptor(binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
@@ -128,7 +127,7 @@ async def apply(ctx, config):
     await ctx.require(DELIVERY_SENDERS).register(ctx, name="test", idempotent=True, open=sender)
 '''.replace("CONTROL_PATH", repr(str(tmp_path))))
     control = {"calls": [], "sent": [], "entered": asyncio.Queue(), "release": asyncio.Event(),
-               "tool": "share_content", "failure": None, "due_read": asyncio.Event(), "legacy": False}
+               "tool": "share_content", "failure": None, "due_read": asyncio.Event()}
     control["release"].set()
     CONTROLS[str(tmp_path)] = control
     try:
@@ -309,65 +308,6 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
 
 
 @pytest.mark.asyncio
-async def test_v1_ready_selection_replays_legacy_single_decision_once(tmp_path):
-    """A migrated single-item selection still completes through Source and Delivery."""
-
-    from plugins.eventmail.plugin import EVENTMAIL_CONTENT_SOURCE
-    from plugins.wake.api import EVENTMAIL_DELIVERY
-    from plugins.wake.content import _candidate_id
-
-    async with application(tmp_path) as (host, log, ctx, source, control):
-        now = datetime.now(timezone.utc)
-        producer = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("feed")
-        producer.submit(
-            "legacy",
-            [{"item_id": "one", "revision": "1", "not_before": now,
-              "requires_ack": False, "payload": {"title": "legacy"}}],
-        )
-        domain = ctx.require(EVENTMAIL_WAKE)
-        snapshot = domain.snapshot(now)
-        control["content"] = True
-        control["legacy"] = True
-        control["candidate"] = _candidate_id(snapshot["items"][0]["ref"])
-        original = request(ctx, "content", now).model_copy(update={
-            "snapshot_seq": snapshot["snapshot_seq"],
-            "items": tuple(dict(item) for item in snapshot["items"]),
-        })
-        selected = domain.select(
-            snapshot["items"][0]["ref"], snapshot["snapshot_seq"], original.accepted, now,
-        )
-        assert selected["selected"] is True
-
-        database = tmp_path / "workspace/plugin-data/eventmail-builtin/eventmail.sqlite3"
-        with closing(sqlite3.connect(database)) as connection, connection:
-            connection.executescript(
-                """
-                DROP INDEX content_selection_members_order_idx;
-                DROP INDEX content_selection_status_idx;
-                DROP INDEX context_projection_expiry_idx;
-                DROP INDEX alert_projection_due_idx;
-                DROP INDEX mail_transitions_mail_seq_idx;
-                DROP INDEX mail_envelopes_kind_seq_idx;
-                DROP TABLE context_projection;
-                DROP TABLE alert_projection;
-                DROP TABLE mail_transitions;
-                DROP TABLE mail_envelopes;
-                DROP TABLE content_selection_members;
-                DROP TABLE content_selections;
-                PRAGMA user_version = 1;
-                """
-            )
-
-        source.accept(original)
-        task = await source.start(original.flow_id)
-        assert task is not None
-        assert await asyncio.wait_for(task.join(), 10) == "shared"
-        assert len(control["sent"]) == 1
-        assert ctx.require(EVENTMAIL_DELIVERY).lookup(original.accepted)["status"] == "settled"
-        assert await source.start(original.flow_id) is None
-
-
-@pytest.mark.asyncio
 async def test_runtime_timer_captures_original_drift_and_records_real_completion(tmp_path, monkeypatch):
     from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
@@ -438,6 +378,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         ctx.require(DRIFT_PROPOSALS).propose("duty", "1", {"summary": "my interests"}, now)
         runtime = Runtime(ctx, Config(delivery=DeliveryTarget(channel="test", recipient="room", session_id="test:room")))
         original = runtime.capture("b" * 32, await runtime.duties.check(now), now)
+        assert original is not None
         assert original.model_id == "chosen-original"
         source.accept(original)
         select("new", "changed-later")
@@ -445,6 +386,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         assert await asyncio.wait_for(task.join(), 10) == "shared"
         assert control["models"] == [("chosen-original", "high")]
         phase = log.reader(original.session_id).get(original.phase_id("drift"))
+        assert phase is not None
         cue = Learning(ctx.require(TURN_PROJECTION), owner="akasha").text(phase)
         assert "my interests" in cue
         assert str(control["calls"][0].messages).count("my interests") == 1
@@ -630,6 +572,7 @@ async def test_missing_target_only_maintains_pool_then_reload_can_admit_original
                 await running
         enabled = Runtime(ctx, Config(delivery=DeliveryTarget(channel="test", recipient="room", session_id="test:room")))
         original = enabled.capture("c" * 32, await enabled.duties.check(now), now)
+        assert original is not None
         enabled.source.accept(original)
         assert await enabled._run(original.flow_id) == "shared"
         assert len(control["calls"]) == 1
