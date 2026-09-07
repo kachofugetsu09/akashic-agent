@@ -1841,3 +1841,44 @@ Delivery 恢复 unknown 且 query 无新证据时保留原 receipt，防止丢�
 ### Web/Mobile 停止命令交接前置条件（2026-09-07）
 
 Mobile WebUI 停止生成必须调用 `sendSessionCommand(session_id, "/stop")`，bridge 严格要求两个参数；Android 原生实现必须按显式 `session_id` 投递普通 `message.send`，不携带或消费草稿附件，也不能退回读取当前选中会话的 `sendCommand`。旧 APK 不支持该方法，不能作为已验证运行时，必须先完成配套发布。
+
+
+### 第 10 层强行为 fixture（2026-09-07）
+
+验证基线为 `667d73e4e4c2779a7d2a65331c369ae746b7fe05`。本轮只补测试与证据，不修改生产实现；下列失败保留为真实回归，不加 skip 或 xfail。
+
+先按用户可观察结果列场景，再由局部边界连接到完整 App：
+
+| 自然语言场景 | 验证入口与层级 |
+|---|---|
+| 两个会话交错执行工具，各自拿到自己的正文和发送结果 | 新增 `test_builtin_behavior.py`：独立 App 进程、真实 SDK/Unix socket、HTTP SSE、文件工具和 message_push；阻塞 A 时 B 完成 |
+| 停止后迟到回复不能执行工具，新输入仍能完成；失败不得伪装成功 | 新增同文件 stop 场景；已有 `test_wake_messages.py` 模型失败分类与取消清理场景 |
+| 重启必须等真实输出 drain，失败后恢复接纳 | `test_agent_restart_tool.py`；修正失败时清理，避免连接超时盖住原断言 |
+| 热重载后旧工作继续使用原 generation，新工作使用新配置 | 复用 `test_plugin_hot_reload.py` 与 `test_akasha_message_plugin.py` 归档后删除原源码、切换配置场景 |
+| Scheduler/Wake/Drift 重开后不重复工作或通知，保留原引用 | 复用 `test_scheduler_messages.py` 和 `test_wake_messages.py` 的实际插件、持久化提交故障与恢复场景 |
+| 记忆和压缩引用原始消息，不改写历史正文 | 复用 `test_message_markdown_memory.py`、`test_message_compaction_records.py`、`test_message_compaction_summary.py`；新增跨进程完整历史比较 |
+| Dashboard 在非空、多会话和特殊路径下正确分页，只读请求不改权威事实 | 新增 `test_message_plugin_dashboards.py`：12 条交错召回、原文详情、SQL dump、真实 SQLite 查询观察；Wake 特殊路径与有效诱饵库 |
+| 进程被杀后原消息完整、重放不重复发送，后续工作可继续 | 新增完整 App 场景：SIGKILL 后更换 PID、逐条比较 SDK 历史、同 ID 重放，再完成第三个会话 |
+
+```text
+┌────────────────────────────────────────────┐
+│ 非空数据库、原文、精确引用、提交故障与 drain │
+└─────────────────────┬──────────────────────┘
+                      ▼
+┌────────────────────────────────────────────┐
+│ 实际插件 + Dashboard / Sender / MessageLog  │
+└─────────────────────┬──────────────────────┘
+                      ▼
+┌────────────────────────────────────────────┐
+│ 独立 App → SDK → HTTP 模型 → 真实工具/发送   │
+│          → 杀进程 → 重开 → 历史与后续工作    │
+└────────────────────────────────────────────┘
+```
+
+外部模型是本地受控 HTTP fixture，不调用付费模型；它按收到的真实工具结果推进并保存协议请求。断言独立观察文件完整正文、SDK 消息序号和 CallRef、实际 sink、原始 SQL dump，不使用 fixture 自己计算的成功标记。完整 App 使用默认内置插件清单，但没有配置 embedding，也没有 WorkloadController；该场景不证明 Akasha 学习或 Computer 可用，更不覆盖外部插件和正式 workspace。
+
+两个完整 App 场景通过。新增 Dashboard 场景复现两类问题、共 7 个失败参数：Wake 数据库路径含 `#`/`?` 时 URI 被截断，可能生成错误主库、返回 500，或在截断位置已有有效数据库时静默读错记录；Akasha 小页和空筛选均读取全部 24 条引用正文，实际只需 2 条或 0 条。正常路径、分页结果与完整详情的正向对照通过。
+
+另外在一次性源码副本中做破坏实验：把文件写入正文改成 `BROKEN_WRITE`，完整 App 测试在磁盘原文断言失败；删除重启 `wait_output()`，真实 writer drain 测试在“最终输出仍被阻塞，重启不得提交”断言失败。生产 worktree 未应用这些破坏。原有全测试基线合计 1654 passed、6 skipped；首次归档副本中 3 项 Gate 自检依赖 `.git` 失败，回到真实 worktree 运行这 3 项均通过。
+
+恢复点：`backup/pr558-before-strong-fixtures-20260907` 与 `/mnt/data/akasic-agent-backups/pr558-strong-fixtures-20260907/`。本轮结果不是全绿验收；上述 Dashboard 生产问题仍待修复，不据此批准合并或部署。

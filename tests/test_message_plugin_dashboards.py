@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import textwrap
@@ -24,6 +24,7 @@ from plugins.delivery.history import DELIVERY_READ
 from plugins.drift.plugin import DRIFT_PROPOSALS
 from plugins.wake.api import DRIFT_WAKE
 from plugins.wake.runtime import Runtime
+from plugins.wake.state import WakeState
 from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Input, Output
 
@@ -277,3 +278,139 @@ async def test_wake_dashboard_get_missing_state_does_not_create_database(tmp_pat
         assert attempts.json()["items"] == [] and attempts.json()["total"] == 0
         assert runs.json()["items"] == [] and runs.json()["total"] == 0
         assert not state_path.exists()
+
+
+@pytest.mark.parametrize("directory", ["ordinary", "资料#one", "资料?one"])
+@pytest.mark.parametrize("decoy", [False, True])
+def test_wake_reader_uses_exact_database_and_never_creates_another_file(
+    tmp_path: Path, directory: str, decoy: bool,
+) -> None:
+    """合法特殊路径仍读取原库；旁边放另一份有效库，防止只检查不报错。"""
+    now = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    state = WakeState(tmp_path / directory / "wake.sqlite3")
+    state.record_screen(run_id="expected-run", owner="content", candidates_seen=0,
+                        screening=(), started_at=now)
+    if decoy and directory != "ordinary":
+        wrong = WakeState(tmp_path / "资料")
+        wrong.record_screen(run_id="wrong-database", owner="drift", candidates_seen=0,
+                            screening=(), started_at=now)
+    before = {str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*") if path.is_file()}
+    with closing(sqlite3.connect(state.path)) as connection:
+        original = tuple(connection.iterdump())
+    reader = state.read_only()
+    try:
+        rows = reader.list_runs(10)
+        assert [row["run_id"] for row in rows] == ["expected-run"], "只读接口打开了另一个有效数据库"
+        assert reader.get_run("expected-run") is not None
+        assert reader.get_run("wrong-database") is None
+    finally:
+        # WAL/SHM 是 SQLite 协调文件；截断路径产生的新主库不是协调文件。
+        after = {str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")
+                 if path.is_file() and not path.name.endswith(("-wal", "-shm"))}
+        assert after <= before, "查看操作创建了非预期文件"
+        with closing(sqlite3.connect(state.path)) as connection:
+            assert tuple(connection.iterdump()) == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("directory", ["ordinary", "资料#one"])
+async def test_wake_dashboard_reads_nonempty_state_at_exact_workspace(
+    tmp_path: Path, directory: str,
+) -> None:
+    """从真实 Dashboard 路由读取非空 Wake 记录，特殊目录不能变成 500。"""
+    from tests.test_wake_messages import application
+
+    root = tmp_path / directory
+    async with application(root) as (host, _log, _ctx, _source, control):
+        await host.start_runtime()
+        state = control["runtime"].state
+        state.record_screen(run_id="visible-run", owner="content", candidates_seen=0,
+                            screening=(), started_at=datetime(2026, 9, 7, tzinfo=timezone.utc))
+        snapshot = host.current_snapshot
+        assert snapshot is not None
+        _, headers = _web_headers(snapshot, "wake")
+        app = create_dashboard_app(root / "workspace", plugin_manager=host)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test", headers=headers,
+        ) as client:
+            response = await client.get("/api/dashboard/wake/runs")
+        assert response.status_code == 200, response.text
+        assert [item["run_id"] for item in response.json()["items"]] == ["visible-run"]
+
+
+def _seed_recall_pages(log: MessageLog, _host: PluginManager) -> None:
+    """交错两组会话、时间和不同正文，过滤与分页不能靠单条 fixture 蒙混过关。"""
+    records = RecallRecords(log.owner("plugin:akasha"))
+    checks = {"text": lambda _part: ContentReferences()}
+    for index in range(12):
+        session = f"session-{index % 2}"
+        inputs = log.writer(session, author="user", source="conversation", body_types=(Input,), content=checks)
+        outputs = log.writer(session, author="assistant", source="conversation", body_types=(Output,), content=checks)
+        question = inputs.append(f"question-{index}", Input((ContentPart("text", f"START-{index}" + "汉字🧪" * 200 + f"END-{index}"),)))
+        answer = outputs.append(f"answer-{index}", Output((ContentPart("text", f"ANSWER-{index}"),), "complete"))
+        records.save(f"recall-{index:02}", Recall(
+            learning_binding="saved-binding", graph_version=1,
+            source=ContextSource(session_id=session, source="conversation", through_seq=answer.seq),
+            timestamp=datetime(2026, 9, 7, tzinfo=timezone.utc) + timedelta(seconds=index), limit=1,
+            hits=(Hit(node_id=0, session_id=session, message_ids=(question.message_id, answer.message_id),
+                      score=0.9, lane="dense", sources=("dense",)),),
+            presented_message_ids=(question.message_id,), active_basin_count=0, pushes=0, residual_l1=0,
+        ))
+
+
+@pytest.mark.asyncio
+async def test_akasha_dashboard_filters_pages_and_returns_original_detail(tmp_path: Path) -> None:
+    """第二页不得混入另一会话；详情恢复列表截断的完整正文，读取不改变 SQL 事实。"""
+    from tests.test_akasha_message_plugin import application
+
+    async with application(tmp_path, embedding_available=False, before_start=_seed_recall_pages) as (log, host):
+        snapshot = host.current_snapshot
+        assert snapshot is not None
+        _, headers = _web_headers(snapshot, "akasha")
+        app = create_dashboard_app(tmp_path / "workspace", plugin_manager=host)
+        with closing(sqlite3.connect(tmp_path / "sessions.db")) as database:
+            before = tuple(database.iterdump())
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers) as client:
+            response = await client.get("/api/dashboard/akasha-inspector/turns",
+                                        params={"session_key": "session-0", "page": 2, "page_size": 2})
+            assert response.status_code == 200
+            page = response.json()
+            assert page["total"] == 6
+            assert [row["query_id"] for row in page["items"]] == ["recall-06", "recall-04"]
+            for row in page["items"]:
+                message = row["hits"][0]["messages"][0]
+                assert message["text_truncated"] and len(message["text"]) == 240
+                detail = await client.get(f"/api/dashboard/akasha-inspector/turns/{row['query_id']}")
+                assert detail.status_code == 200
+                original = log.reader(message["session_id"]).get(message["message_id"])
+                assert detail.json()["hits"][0]["messages"][0]["text"] == original.body.parts[0].value
+        with closing(sqlite3.connect(tmp_path / "sessions.db")) as database:
+            assert tuple(database.iterdump()) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session", ["session-0", "missing-session"])
+async def test_akasha_page_does_not_read_bodies_outside_its_results(tmp_path: Path, session: str) -> None:
+    """小页和空筛选不应展开全部历史正文；观察真实 SQLite 查询而非自己造的统计。"""
+    from tests.test_akasha_message_plugin import application
+
+    async with application(tmp_path, embedding_available=False, before_start=_seed_recall_pages) as (log, host):
+        snapshot = host.current_snapshot
+        assert snapshot is not None
+        _, headers = _web_headers(snapshot, "akasha")
+        app = create_dashboard_app(tmp_path / "workspace", plugin_manager=host)
+        queries: list[str] = []
+        log._connection.set_trace_callback(queries.append)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers) as client:
+                response = await client.get("/api/dashboard/akasha-inspector/turns",
+                                            params={"session_key": session, "page_size": 1})
+        finally:
+            log._connection.set_trace_callback(None)
+        assert response.status_code == 200
+        page = response.json()
+        reads = [sql for sql in queries if "FROM messages WHERE id=" in sql]
+        expected = 2 if session == "session-0" else 0
+        assert len(page["items"]) == (1 if expected else 0)
+        assert len(reads) <= expected, f"页面最多需要 {expected} 条正文，实际读取 {len(reads)} 条"

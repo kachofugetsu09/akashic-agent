@@ -1044,8 +1044,13 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
                 await connection.run()
             finally:
                 writer.close()
-                await writer.wait_closed()
-                connection_done.set()
+                try:
+                    await writer.wait_closed()
+                except ConnectionResetError:
+                    # 断言失败时客户端可能带着未读帧关闭；仍需完成连接清理。
+                    pass
+                finally:
+                    connection_done.set()
 
         server = await asyncio.start_unix_server(accept, path=str(endpoint))
         request_id = 0
@@ -1092,7 +1097,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
 
             async with asyncio.timeout(5):
                 await drain_entered.wait()
-            assert not commits
+            assert not commits, "最终输出仍被真实 writer 阻塞，重启不得提交"
             drain_release.set()
 
             final_event = False
@@ -1115,6 +1120,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
             await asyncio.wait_for(committed.wait(), 2)
             assert len(commits) == 1
         finally:
+            drain_release.set()
             writer.close()
             await writer.wait_closed()
             server.close()
