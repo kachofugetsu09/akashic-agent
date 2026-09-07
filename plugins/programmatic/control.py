@@ -67,6 +67,26 @@ class Programmatic:
         self._reservations[key] = (transport.connection_id, reservation)
         return reservation
 
+    def _reserve_before_accept(
+        self, session_id: str, input_id: str, transport: RequestTransport | None,
+    ) -> bool:
+        """在触发来源 watcher 前登记 reservation；返回是否由本次调用新建。"""
+        if transport is None or (session_id, input_id) in self._reservations:
+            return False
+        self.reserve_input(session_id, input_id, transport)
+        return True
+
+    def _drop_reservation(
+        self, session_id: str, input_id: str, transport: RequestTransport | None,
+    ) -> None:
+        """只回收本次接纳创建且仍由同一连接拥有的 reservation。"""
+        if transport is None:
+            return
+        key = (session_id, input_id)
+        owner = self._reservations.get(key)
+        if owner is not None and owner[0] == transport.connection_id:
+            del self._reservations[key]
+
     async def wait(self, reader: MessageReader, turn: Turn) -> None:
         """等待同连接完整最终 Output frame 的 writer flush。"""
         ending = turn.ending_message_id
@@ -114,20 +134,28 @@ class Programmatic:
             send = cast(SendParams, params)
             if not send.text.strip():
                 raise ValueError("程序输入不能为空白")
-            message = await source.accept(send.message_id, Input((
-                ContentPart("text", send.text),
-                ContentPart("channel.origin", {"channel": "programmatic", "chat_id": session_id[13:],
-                                                "sender": "control"}),
-            )))
-            if transport is not None:
-                self.reserve_input(session_id, send.message_id, transport)
+            created = self._reserve_before_accept(session_id, send.message_id, transport)
+            try:
+                message = await source.accept(send.message_id, Input((
+                    ContentPart("text", send.text),
+                    ContentPart("channel.origin", {"channel": "programmatic", "chat_id": session_id[13:],
+                                                    "sender": "control"}),
+                )))
+            except BaseException:
+                if created:
+                    self._drop_reservation(session_id, send.message_id, transport)
+                raise
         elif method == "programmatic/message/pause":
             message = await source.pause(cast(PauseParams, params).message_id)
         elif method == "programmatic/message/resume":
             resume = cast(ResumeParams, params)
-            message = await source.resume(resume.message_id, resume.input_id)
-            if transport is not None:
-                self.reserve_input(session_id, resume.input_id, transport)
+            created = self._reserve_before_accept(session_id, resume.input_id, transport)
+            try:
+                message = await source.resume(resume.message_id, resume.input_id)
+            except BaseException:
+                if created:
+                    self._drop_reservation(session_id, resume.input_id, transport)
+                raise
         else:
             raise AssertionError("未声明的程序调用方法: " + method)
         return {"version": 2, "session_id": message.session_id,

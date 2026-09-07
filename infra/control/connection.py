@@ -14,7 +14,7 @@ from agent.control.service import ControlService
 @dataclass(frozen=True)
 class _PendingFrame:
     payload: bytes
-    written: asyncio.Future[None]
+    written: asyncio.Future[None] | None
 
 
 class _FrameReservation:
@@ -46,9 +46,15 @@ class _FrameReservation:
         waiter = self._waiters.setdefault(message_id, loop.create_future())
         await asyncio.shield(waiter)
 
-    def observe(self, message: Mapping[str, object], written: asyncio.Future[None]) -> bool:
+    def observe(self, page: Mapping[str, object], written: asyncio.Future[None]) -> bool:
+        """观察 Router 已确认的 message page，不从普通 RPC 猜测消息。"""
+        rows = page.get("items")
+        if not isinstance(rows, list):
+            raise TypeError("message page items 必须是列表")
         tracked = False
-        for row in _output_rows(message):
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise TypeError("message page item 必须是对象")
             if row.get("session_id") != self.session_id or not _complete_output(row):
                 continue
             tracked = True
@@ -82,22 +88,6 @@ class _FrameReservation:
         self._waiters.clear()
 
 
-def _output_rows(message: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
-    """提取允许证明最终 Output 的 message/read 或 session/event 行。"""
-    rows: object = None
-    result = message.get("result")
-    if isinstance(result, Mapping):
-        rows = result.get("items")
-    params = message.get("params")
-    if isinstance(params, Mapping):
-        event = params.get("event")
-        if isinstance(event, Mapping) and event.get("type") == "messages.appended":
-            rows = event.get("items")
-    if not isinstance(rows, list):
-        return ()
-    return tuple(row for row in rows if isinstance(row, Mapping))
-
-
 def _complete_output(row: Mapping[str, object]) -> bool:
     body = row.get("body")
     return (
@@ -106,6 +96,22 @@ def _complete_output(row: Mapping[str, object]) -> bool:
         and body.get("kind") == "output"
         and body.get("finish") == "complete"
         and isinstance(body.get("parts"), list)
+    )
+
+
+def _needs_delivery_receipt(
+    page: Mapping[str, object], reservations: Mapping[tuple[str, str], _FrameReservation],
+) -> bool:
+    """只为 Router 标记的 message page 创建 writer future。"""
+    rows = page.get("items")
+    if not isinstance(rows, list):
+        raise TypeError("message page items 必须是列表")
+    sessions = {reservation.session_id for reservation in reservations.values()}
+    return any(
+        isinstance(row, Mapping)
+        and _complete_output(row)
+        and row.get("session_id") in sessions
+        for row in rows
     )
 
 
@@ -133,6 +139,7 @@ class NdjsonConnection(RequestTransport):
             self.send,
             max_pending_requests=max_pending_requests,
             transport=self,
+            send_message_page=self.send_message_page,
         )
         self._request_tasks: set[asyncio.Task[None]] = set()
         self.connection_id = f"ndjson:{uuid4().hex}"
@@ -148,18 +155,31 @@ class NdjsonConnection(RequestTransport):
         return reservation
 
     async def send(self, message: dict[str, object]) -> None:
+        await self._send(message, page=None)
+
+    async def send_message_page(
+        self, message: dict[str, object], page: Mapping[str, object]
+    ) -> None:
+        """写入 Router 已确认的 message/read 或 messages.appended 页面。"""
+        await self._send(message, page=page)
+
+    async def _send(
+        self, message: dict[str, object], *, page: Mapping[str, object] | None
+    ) -> None:
         encoded = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-        written = asyncio.get_running_loop().create_future()
-        observed = False
-        for reservation in self._reservations.values():
-            observed = reservation.observe(message, written) or observed
+        written = (
+            asyncio.get_running_loop().create_future()
+            if page is not None and _needs_delivery_receipt(page, self._reservations)
+            else None
+        )
+        if page is not None and written is not None:
+            for reservation in self._reservations.values():
+                reservation.observe(page, written)
         try:
             self._queue.put_nowait(_PendingFrame(encoded, written))
         except asyncio.QueueFull as exc:
-            if observed:
+            if written is not None:
                 written.set_exception(exc)
-            else:
-                written.cancel()
             self._writer.close()
             raise ConnectionError("client outbound queue is full") from exc
 

@@ -184,14 +184,14 @@ async def test_programmatic_requests_keep_exact_snapshot_while_follow_does_not_p
         entered, release = asyncio.Event(), asyncio.Event()
         observed = []
 
-        async def blocked(method, params):
+        async def blocked(method, params, transport=None):
             snapshot = get_current_runtime_snapshot()
             observed.append(snapshot.snapshot_id)
             if params.session_id == "programmatic:old":
                 entered.set()
                 await release.wait()
                 assert get_current_runtime_snapshot() is snapshot
-            return await original(method, params)
+            return await original(method, params, transport)
 
         monkeypatch.setattr(api, "call", blocked)
         async with await AsyncAkashic.connect(address) as client:

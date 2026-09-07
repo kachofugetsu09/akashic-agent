@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS
@@ -46,6 +48,20 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.require(SOURCES).register(ctx, Source("programmatic", lambda session: open_source(ctx, session)))
     programmatic = Programmatic(ctx)
     _ = await ctx.provide(PROGRAMMATIC, programmatic)
-    delivery = ctx.get(FINAL_OUTPUT_DELIVERY)
-    if delivery is not None:
-        delivery.register("programmatic", programmatic)
+
+    async def attach_delivery(child: Context) -> None:
+        """在 Delivery 可用期间登记同一 programmatic provider，并随 child 释放。"""
+        delivery = child.require(FINAL_OUTPUT_DELIVERY)
+
+        def setup() -> Callable[[], None]:
+            delivery.register("programmatic", programmatic)
+
+            def cleanup() -> None:
+                delivery.unregister("programmatic", programmatic)
+
+            return cleanup
+
+        _ = await child.effect(setup, label="programmatic-final-output")
+
+    _ = await ctx.inject((FINAL_OUTPUT_DELIVERY,), attach_delivery,
+                         name="programmatic-final-output-provider")

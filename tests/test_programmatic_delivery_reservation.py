@@ -16,7 +16,24 @@ def _output(session_id: str, message_id: str) -> dict[str, object]:
     return {
         "id": message_id,
         "session_id": session_id,
+        "seq": 0,
+        "timestamp": "2026-09-07T00:00:00+00:00",
+        "author": "assistant",
+        "source": "conversation",
+        "attachments": [],
         "body": {"kind": "output", "finish": "complete", "parts": []},
+    }
+
+
+def _page(rows: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "version": 2,
+        "session_id": rows[0]["session_id"] if rows else "session:a",
+        "items": rows,
+        "after_seq": -1,
+        "through_seq": 0,
+        "next_after_seq": 0,
+        "has_more": False,
     }
 
 
@@ -24,7 +41,7 @@ def _output(session_id: str, message_id: str) -> dict[str, object]:
 async def test_frame_seen_before_expect_waits_for_drain() -> None:
     reservation = _FrameReservation("session:a", "input:a")
     written = asyncio.get_running_loop().create_future()
-    reservation.observe({"result": {"items": [_output("session:a", "output:a")]}}, written)
+    reservation.observe(_page([_output("session:a", "output:a")]), written)
 
     waiter = asyncio.create_task(reservation.wait_output("output:a"))
     await asyncio.sleep(0)
@@ -38,7 +55,7 @@ async def test_frame_seen_before_expect_waits_for_drain() -> None:
 async def test_frame_drain_failure_rejects_delivery() -> None:
     reservation = _FrameReservation("session:a", "input:a")
     written = asyncio.get_running_loop().create_future()
-    reservation.observe({"result": {"items": [_output("session:a", "output:a")]}}, written)
+    reservation.observe(_page([_output("session:a", "output:a")]), written)
     error = ConnectionError("writer failed")
     written.set_exception(error)
 
@@ -50,7 +67,7 @@ async def test_frame_drain_failure_rejects_delivery() -> None:
 async def test_same_message_id_from_another_session_is_ignored() -> None:
     reservation = _FrameReservation("session:a", "input:a")
     other = asyncio.get_running_loop().create_future()
-    reservation.observe({"result": {"items": [_output("session:b", "same")]}}, other)
+    reservation.observe(_page([_output("session:b", "same")]), other)
     other.set_result(None)
 
     waiter = asyncio.create_task(reservation.wait_output("same"))
@@ -59,7 +76,7 @@ async def test_same_message_id_from_another_session_is_ignored() -> None:
     assert not waiter.done()
 
     current = asyncio.get_running_loop().create_future()
-    reservation.observe({"result": {"items": [_output("session:a", "same")]}}, current)
+    reservation.observe(_page([_output("session:a", "same")]), current)
     current.set_result(None)
     await waiter
 

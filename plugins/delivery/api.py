@@ -62,6 +62,11 @@ class FinalOutputDelivery:
             raise ValueError("最终 Output provider 已有 owner")
         self._providers[source] = provider
 
+    def unregister(self, source: str, provider: FinalOutputWaiter) -> None:
+        """只移除仍由同一 optional child owner 登记的 provider。"""
+        if self._providers.get(source) is provider:
+            del self._providers[source]
+
     async def wait(self, reader: MessageReader, turn: Turn) -> None:
         provider = self._providers.get(turn.source)
         if provider is None:

@@ -10,11 +10,11 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.restart import RESTART_GATE, RestartRejectedError
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.tools.api import BoundTool, CallSource, ContentPart, Result
+from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durable_call_key
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import MessageReader
-from session.message import Output, ToolCall, CallRef
+from session.message import Output, ToolCall, CallRef, freeze_json
 
 
 api_version = 3
@@ -30,19 +30,25 @@ class PendingRestart:
     request_id: str
     session_id: str
     source: str
+    effect_key: str
+    arguments: Mapping[str, object]
 
 
 class RestartTool(BoundTool):
     @property
     def idempotent(self) -> bool:
-        return True
+        # pending 只在本 boot 内存中存在；跨 boot 没有可查询的 commit 回执。
+        return False
 
     def __init__(self, runtime: "RestartRuntime") -> None:
         self._runtime = runtime
+        self._prepared: PendingRestart | None = None
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
         if source is None:
             raise ValueError("agent_restart 必须引用当前 Turn 的 ToolCall")
+        if set(arguments) != {"reason"}:
+            raise ValueError("agent_restart 参数只能包含 reason")
         reason = arguments.get("reason")
         if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 300:
             raise ValueError("reason 长度必须为 1..300")
@@ -52,19 +58,35 @@ class RestartTool(BoundTool):
         )
         if call_message is None:
             raise ValueError("agent_restart CallRef 不在当前消息前缀")
+        final_arguments = freeze_json({"reason": reason.strip()})
+        if not isinstance(final_arguments, Mapping):
+            raise TypeError("agent_restart 参数必须是对象")
         pending = PendingRestart(
             source.call_ref,
             "restart_" + uuid4().hex,
             call_message.session_id,
             call_message.source,
+            durable_call_key(source.call_ref),
+            final_arguments,
         )
-        self._runtime.prepare(pending)
-        return {"reason": reason.strip()}
+        current = self._prepared
+        if current is not None and (
+            current.call_ref != pending.call_ref
+            or current.effect_key != pending.effect_key
+            or current.arguments != pending.arguments
+        ):
+            if current.call_ref == pending.call_ref:
+                raise RestartRejectedError("同一 restart ToolCall 的 binding 或参数不一致")
+            raise RestartRejectedError("同一工具 binding 不能准备多个 restart ToolCall")
+        self._prepared = pending if current is None else current
+        return self._prepared.arguments
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        pending = self._runtime.pending
+        pending = self._prepared
         if pending is None:
-            raise RestartRejectedError("agent_restart 没有待处理的 ToolCall")
+            raise RestartRejectedError("agent_restart 当前 boot 没有可恢复的 prepare")
+        self._runtime.prepare(pending)
+        pending = self._runtime.match(key, arguments)
         await self._runtime.start(pending)
         return Result("success", (ContentPart("text", "已安排在本轮最终回复送达后重启。"),))
 
@@ -81,19 +103,43 @@ class RestartRuntime:
         self._task: asyncio.Task[None] | None = None
 
     def prepare(self, pending: PendingRestart) -> None:
-        if self.pending is not None and self.pending.call_ref != pending.call_ref:
+        current = self.pending
+        if current is None:
+            self.pending = pending
+            return
+        if current.call_ref != pending.call_ref:
             raise RestartRejectedError("已有另一个 restart ToolCall")
-        self.pending = pending
+        if current.effect_key != pending.effect_key or current.arguments != pending.arguments:
+            raise RestartRejectedError("同一 restart ToolCall 的 binding 或参数不一致")
+
+    def match(self, key: str, arguments: Mapping[str, object]) -> PendingRestart:
+        """只把 invoke 绑定到 prepare 已接纳的同一调用和最终参数。"""
+        pending = self.pending
+        if pending is None:
+            raise RestartRejectedError("agent_restart 没有当前 boot 的待处理 ToolCall")
+        if key != pending.effect_key:
+            raise RestartRejectedError("agent_restart durable key 不属于当前 ToolCall")
+        final_arguments = freeze_json(arguments)
+        if not isinstance(final_arguments, Mapping) or final_arguments != pending.arguments:
+            raise RestartRejectedError("agent_restart 参数不属于当前 ToolCall")
+        return pending
 
     async def start(self, pending: PendingRestart) -> None:
+        if self.pending is not pending:
+            raise RestartRejectedError("agent_restart pending 已失效")
         if self._task is not None and not self._task.done():
             return
         gate = self.ctx.require(RESTART_GATE)
-        gate.prepare(pending.request_id)
-        self._task = await self.ctx.spawn(
-            self._wait_for_final_output(pending),
-            name="agent-restart-final-output",
-        )
+        try:
+            gate.prepare(pending.request_id)
+            self._task = await self.ctx.spawn(
+                self._wait_for_final_output(pending),
+                name="agent-restart-final-output",
+            )
+        except BaseException:
+            gate.abort(pending.request_id)
+            self._clear_pending(pending)
+            raise
 
     async def _wait_for_final_output(self, pending: PendingRestart) -> None:
         gate = self.ctx.require(RESTART_GATE)
@@ -118,6 +164,13 @@ class RestartRuntime:
         except BaseException:
             gate.abort(pending.request_id)
             raise
+        finally:
+            self._clear_pending(pending)
+
+    def _clear_pending(self, pending: PendingRestart) -> None:
+        """只清理仍属于本 owner 的 pending，避免旧任务抹掉新调用。"""
+        if self.pending is pending:
+            self.pending = None
 
 
 def _find_turn(reader: MessageReader, projection: TurnProjection, pending: PendingRestart) -> Turn | None:
