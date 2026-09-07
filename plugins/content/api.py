@@ -10,7 +10,7 @@ from typing import cast
 
 from agent.turn_effects import PostCommitEffect, post_commit_effect
 from session.artifacts import check_artifact_id
-from session.message import ContentPart, ContentReferences, Control, Message
+from session.message import ContentPart, ContentReferences, Control, Input, Message
 
 
 def _history_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -84,6 +84,22 @@ def legacy_post_commit_effect(message: Message) -> PostCommitEffect | None:
         raise ValueError("历史记忆排除尚未完成 effects 迁移")
     # 2. 只解释迁移已确认的 effects 原语；新来源的权限由其自身合同拥有。
     return post_commit_effect(extra)
+
+
+def is_user_input(message: Message) -> bool:
+    """从当前作者或已校验的迁移出处确认用户 Input，不改写历史身份。"""
+    if not isinstance(message.body, Input):
+        return False
+    if message.author == "user":
+        return True
+    if message.source != "legacy-unattributed":
+        return False
+    _ = legacy_post_commit_effect(message)
+    return any(
+        isinstance(part, ContentPart) and part.kind == "history.provenance"
+        and cast(Mapping[str, object], part.value)["role"] == "user"
+        for part in message.body.parts
+    )
 
 
 @dataclass(frozen=True, slots=True)

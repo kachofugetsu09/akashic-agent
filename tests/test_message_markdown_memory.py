@@ -66,13 +66,17 @@ async def apply(ctx, config):
             if not memory:
                 memory = "# 用户长期记忆\\n\\n## 用户事实\\n\\n## 用户偏好\\n\\n## 用户明确要求长期记住的关键内容\\n"
             source = json.loads(request.messages[0]["content"].split("本次精确来源：\\n", 1)[1])
+            def user_input(row):
+                return row["body"]["kind"] == "input" and (
+                    row["author"] == "user" or row["source"] == "legacy-unattributed" and any(
+                        part.get("kind") == "history.provenance" and part["value"]["role"] == "user"
+                        for part in row["body"]["parts"]))
             for fact in ("fact-one", "fact-two", "fact-three"):
-                if any(row["author"] == "user" and row["body"]["kind"] == "input"
+                if any(user_input(row)
                        and fact in json.dumps(row) for row in source) and fact not in memory:
                     memory += "- " + fact + "\\n"
             previous = (root / "workspace/memory/MEMORY.md").read_text()
-            evidence = {line: [row["message_id"] for row in source if row["author"] == "user"
-                              and row["body"]["kind"] == "input" and line[2:] in json.dumps(row)]
+            evidence = {line: [row["message_id"] for row in source if user_input(row) and line[2:] in json.dumps(row)]
                         for line in memory.splitlines() if line.startswith("- ") and line not in previous.splitlines()}
             completed.set()
             return LLMResponse(json.dumps({"memory": memory, "self": (root / "workspace/memory/SELF.md").read_text(),
@@ -143,10 +147,10 @@ async def test_excluded_session_never_reaches_markdown_even_when_source_is_allow
 
 @pytest.mark.asyncio
 async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts(tmp_path):
-    from plugins.markdown_memory.message_plugin import project
+    from plugins.markdown_memory.message_plugin import Config, project
     from session.message import ContentReferences
     async with application(tmp_path) as (log, host):
-        writer = log.writer("s", author="user", source="legacy-unattributed", body_types=(Input, Output),
+        writer = log.writer("s", author="legacy-attribution-unknown", source="legacy-unattributed", body_types=(Input, Output),
             content={"text": check_text, "history.provenance": lambda part: ContentReferences()})
         writer.append("excluded-input", Input((ContentPart("text", "fact-one"),
             legacy_part('{"effects":{"post_commit":"suppress"}}'))))
@@ -159,7 +163,7 @@ async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts
             async def consume(message):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=("conversation", "legacy-unattributed"), projection=ctx.require(TURN_PROJECTION))
+                    sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
             await consume(use)
             assert not (tmp_path / "requests.jsonl").exists()
             assert not store.is_applied(suppressed.reference)
