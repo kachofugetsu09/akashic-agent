@@ -690,3 +690,16 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 7. 是否同意下一步把本地图转成机器可读 manifest，并补目录快照与隔离 restore smoke？
 
 确认后的结论再进入 `projectneed.md` 或新的 accepted 决策。不同意的条目保留在本文件并标记 rejected/更正理由，不用删除历史推理。
+
+
+## Message 插件栈第 06 层：代码归档与耐久绑定
+
+此节是 `0902-reviewed-v4.md` 第 06 层的新增事实边界；最终业务消费者在后续层一次切换。
+
+| 对象 | 正常增加及 owner | 原位更新 / 逻辑失效 | 物理减少与恢复证据 |
+|---|---|---|---|
+| `runtime/plugin-archives/<hash>/` 与 `<hash>.json` | PluginArchive 在导入前固定代码树；随后增加配置/依赖闭包 descriptor。发布前校验复制内容并 fsync，内容 hash 同时是身份 | 已发布文件不原位改写；open 重算 hash，缺失或损坏明确失败。当前 generation 退役不使归档失效 | 没有自动 GC。只清理本次尚未发布的 `.pending-*`；整目录备份保留代码、manifest、requirements、配置投影及文件索引，不包含运行环境或 plugin-data |
+| `sessions.db/bindings` | Bindings 在真实 lease 内追加不可变 descriptor；表由第 03 层 yoyo 创建 | 同 ID 同内容幂等，不允许覆盖；它不拥有业务执行终态 | 提交 Message/receipt 失败可留下未引用 row，作为恢复材料保留。无自动减少；使用 Session DB 原生备份恢复 |
+| `sessions.db/message_bindings` | Message writer 在正文同一事务追加引用 | 引用不可原位替换；正常日志只追加 | 只能随明确的消息/会话管理减少，不级联删除归档或 binding descriptor |
+
+装配历史 Root 不调用正式启动事件，也不接入当前会话、调度或发送 owner。归档只有代码恢复权，不拥有迁移、删除或回滚正式 plugin-data 的权限。第 06 层使用新增文件目录和既有 SQL schema，没有新增 yoyo；本任务的正式 workspace 未被改写。

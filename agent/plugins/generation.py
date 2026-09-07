@@ -111,3 +111,17 @@ class PluginGeneration:
     publication_created_data_dir: bool = False
     validation_workspace: Path | None = None
     validation_data_inventory: tuple[str, ...] = ()
+    archive_ref: str | None = None
+
+    @property
+    def code_dir(self) -> Path:
+        """代码和资源沿实际入口定位；plugin_dir 只记录安装来源。"""
+        import sys
+
+        module = sys.modules[self.module_path]
+        if module.__file__ is None:
+            raise RuntimeError("插件入口缺少文件路径")
+        path = Path(module.__file__).resolve()
+        for _ in Path(self.entrypoint).parts:
+            path = path.parent
+        return path

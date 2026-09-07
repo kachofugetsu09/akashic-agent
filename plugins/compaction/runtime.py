@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, Sequence, cast
 
-from plugins.compaction.engine import (
+from .engine import (
     ActiveCompaction,
     CommittedContextUnit,
     ContextCompaction,

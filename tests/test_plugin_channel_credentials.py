@@ -50,3 +50,30 @@ async def test_core_provider_factory_rejects_raw_config_drift_before_resolution(
 
     with pytest.raises(RuntimeError, match="revision 已漂移"):
         await factory.create({"token": CredentialRef(("token",))})
+
+
+@pytest.mark.asyncio
+async def test_config_change_after_read_does_not_change_leased_credential(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "config.local.toml"
+    path.write_text("token = 'A'\n")
+    factory = CoreProviderClientFactory(path, ("token",), _revision(path))
+    original = Path.read_bytes
+    reads = []
+
+    def read_then_change(current):
+        content = original(current)
+        if current == path:
+            reads.append(content)
+            path.write_text("token = 'B'\n")
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_change)
+    ref = CredentialRef(("token",))
+    client = await factory.create({"token": ref})
+    assert client.credential(ref) == "A"
+    assert len(reads) == 1
+    with pytest.raises(RuntimeError, match="漂移"):
+        await factory.create({"token": ref})
+    await factory.aclose()

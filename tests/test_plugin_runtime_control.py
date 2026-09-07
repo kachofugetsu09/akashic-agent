@@ -287,7 +287,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
                 "workspace",
             )
         } == {
-            "artifact": str(old_artifact),
+            "artifact": str(old_generation.code_dir),
             "ca_bundle": str(_runtime_ca_bundle(old_artifact)),
             "ca_certificates": old_probe["ca_certificates"],
             "data_dir": str(
@@ -298,7 +298,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         }
         assert int(old_probe["ca_certificates"]) > 0
         assert isinstance(old_probe["pid"], int)
-        assert latest_probe["artifact"] == str(new_artifact)
+        assert latest_probe["artifact"] == str(latest_generation.code_dir)
         assert "runtime/plugin-validation" in str(latest_probe["data_dir"])
         assert latest_probe["pid"] != old_probe["pid"]
         assert latest_probe["runtime_version"] == "v2"
@@ -575,7 +575,7 @@ async def _start_runtime_mcp(
 
 
 def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
-    """写入在每次工具调用时解析 artifact 内 CA bundle 的 MCP 插件。"""
+    """写入每次调用都读取实际 Python 环境 CA 的 MCP 插件。"""
 
     # 1. 插件版本保持不变，用 server 内容变化制造同版本新 revision。
     source.mkdir(parents=True, exist_ok=True)
@@ -614,7 +614,7 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
 
     # 2. server 不缓存文件内容，确保更新后的调用会触发旧绝对路径读取。
     _ = (source / "mcp" / "server.py").write_text(
-        "import json, os, ssl, sys\n"
+        "import certifi, json, os, ssl, sys\n"
         "from pathlib import Path\n"
         f"RUNTIME_VERSION = {runtime_version!r}\n"
         "ARTIFACT = Path(__file__).resolve().parent.parent\n"
@@ -640,9 +640,7 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "        elif method == 'tools/list':\n"
         "            result = {'tools': TOOLS}\n"
         "        elif method == 'tools/call':\n"
-        "            py_version = f'python{sys.version_info.major}.{sys.version_info.minor}'\n"
-        "            ca_bundle = ARTIFACT / 'mcp' / '.venv' / 'lib' / py_version / "
-        "'site-packages' / 'certifi' / 'cacert.pem'\n"
+        "            ca_bundle = Path(certifi.where())\n"
         "            context = ssl.create_default_context(cafile=str(ca_bundle))\n"
         "            probe = {'artifact': str(ARTIFACT), 'ca_bundle': str(ca_bundle), "
         "'data_dir': os.environ.get('AKA_PLUGIN_DATA_DIR', ''), "

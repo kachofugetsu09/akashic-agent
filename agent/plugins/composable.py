@@ -146,7 +146,7 @@ class ComposablePlugin:
     def bind_static_services(self, services: ServiceView) -> None:
         """使用冻结的 Core services 计算静态贡献准入。"""
 
-        if self._service_view is not None:
+        if self._service_view is not None or self._static_active is not None:
             raise RuntimeError("v3 插件 static services 不能重复绑定")
         self._service_view = services
         provider = getattr(self.module, "is_active", None)
@@ -171,6 +171,14 @@ class ComposablePlugin:
         if self._static_active is None:
             raise RuntimeError("v3 插件 is_active 尚未绑定 Core static services")
         return self._static_active
+
+    def bind_archived_active(self, active: bool) -> None:
+        """恢复已捕获的发布选择，不用当前 Core services 重算历史选择。"""
+        if self._static_active is not None or self._service_view is not None:
+            raise RuntimeError("插件静态状态已绑定")
+        if type(active) is not bool:
+            raise TypeError("归档静态状态必须是 bool")
+        self._static_active = active
 
     @property
     def static_active(self) -> bool:

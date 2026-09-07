@@ -14,12 +14,18 @@ import sqlite3
 import sys
 import tomllib
 from dataclasses import dataclass, replace
+from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType, UnionType
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
 
 from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
+
+from agent.plugins.archive import PluginArchive, decode_config, encode_config
+from agent.plugins.config import read_config_source
+from agent.plugin_composition.bindings import BindingScope
+from agent.plugin_composition.context import RuntimeScope
 
 from agent.plugin_composition import (
     CHANNELS,
@@ -289,6 +295,7 @@ class PluginManager:
         self._event_bus = event_bus
         self._tool_registry = tool_registry
         self._workspace = workspace
+        self._archive = PluginArchive(workspace / "runtime" / "plugin-archives")
         self._session_manager = session_manager
         self._interaction_undo = (
             InteractionUndoCoordinator(session_manager)
@@ -1003,7 +1010,7 @@ class PluginManager:
         generation = self._channel_generation(record.plugin_id, record.generation_id)
         if str(generation.plugin_dir) != record.artifact_pointer:
             raise RuntimeError("channel artifact pointer 已漂移")
-        current_revision = _file_revision(generation.data_dir / "config.local.toml")
+        _, current_revision = read_config_source(generation.data_dir / "config.local.toml")
         if current_revision != record.raw_config_revision:
             raise RuntimeError("channel credential config revision 已漂移")
 
@@ -4089,7 +4096,7 @@ class PluginManager:
 
         # 先完成可能失败的查找，再替换 stable import alias。
         self._remove_module_tree(stable_alias)
-        self._fresh_importer.register(stable_alias, plugin_dir)
+        self._fresh_importer.register(stable_alias, generation.code_dir)
         sys.modules[stable_alias] = published_module
         if previous is not None:
             _ = self._stable_aliases.pop(previous.module_path, None)
@@ -4350,7 +4357,7 @@ class PluginManager:
             plugin_dir = Path(mod["plugin_root"])
             try:
                 source_revision = _source_revision(plugin_dir)
-                config_revision = _file_revision(
+                _, config_revision = read_config_source(
                     _resolve_plugin_data_dir(
                         mod["name"],
                         mod,
@@ -4543,7 +4550,7 @@ class PluginManager:
             self._workspace,
         )
         validate_workspace_plugin_data_path(data_dir, self._workspace)
-        config_revision = _file_revision(data_dir / "config.local.toml")
+        config_source, config_revision = read_config_source(data_dir / "config.local.toml")
         generation_id = (
             f"{initial_plugin_id}:{source_revision[:12]}:{generation_sequence}"
         )
@@ -4578,7 +4585,21 @@ class PluginManager:
             raise RuntimeError(error_text)
         # Builtin v3 may omit a manifest; installed artifacts were rejected above.
         try:
-            self._import_plugin(mp, Path(module_path))
+            code_archive = self._archive.save(
+                plugin_dir, exclude=frozenset({".venv", "node_modules"})
+            )
+            archived_dir = self._archive.open(code_archive)
+            if _source_revision(archived_dir) != source_revision:
+                raise RuntimeError("插件源码在加载前发生变化")
+            archived_manifest = (
+                load_static_plugin_manifest(archived_dir)
+                if (archived_dir / "akashic.plugin.toml").exists() else None
+            )
+            if archived_manifest != static_manifest:
+                raise RuntimeError("插件 manifest 在加载前发生变化")
+            self._import_plugin(
+                mp, archived_dir / Path(module_path).relative_to(plugin_dir)
+            )
         except Exception as error:
             error_text = str(error) or type(error).__name__
             self._record_failed_gate(
@@ -4602,7 +4623,7 @@ class PluginManager:
                 validate_module_exports(
                     static_manifest,
                     loaded_module,
-                    plugin_root=plugin_dir,
+                    plugin_root=archived_dir,
                 )
             except Exception as error:
                 self._remove_module_tree(mp)
@@ -4662,7 +4683,7 @@ class PluginManager:
                 else ()
             )
             config_projection = _read_plugin_config_projection(
-                data_dir,
+                config_source,
                 credential_paths=credential_paths,
                 credential_alias_groups=credential_alias_groups,
             )
@@ -4718,7 +4739,7 @@ class PluginManager:
             contributions = self._collect_candidate_contributions(
                 instance=instance,
                 plugin_id=plugin_id,
-                plugin_dir=plugin_dir,
+                plugin_dir=archived_dir,
             )
             gate_result = self._validate_candidate(
                 instance=instance,
@@ -4728,6 +4749,19 @@ class PluginManager:
             self._gate_results[plugin_id] = gate_result
             if gate_result.status == "failed":
                 raise _CandidateRejected(gate_result)
+            archive_ref = self._archive.save_descriptor({
+                "version": 1,
+                "code": code_archive,
+                "plugin_id": plugin_id,
+                "source_revision": source_revision,
+                "config_revision": config_revision,
+                "config": encode_config(config_projection),
+                "static_active": instance.static_active,
+                "entrypoint": static_manifest.entrypoint if static_manifest else "plugin.py",
+                "source_type": mod["source_type"],
+                "data_dir": data_dir.resolve().relative_to(self._workspace.resolve()).as_posix(),
+                "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": 1},
+            })
             generation = PluginGeneration(
                 plugin_id=plugin_id,
                 generation_id=generation_id,
@@ -4738,6 +4772,7 @@ class PluginManager:
                 data_dir=data_dir,
                 config=plugin_config,
                 config_projection=config_projection,
+                archive_ref=archive_ref,
                 instance=instance,
                 scope=scope,
                 contributions=contributions,
@@ -4913,7 +4948,7 @@ class PluginManager:
         self._active_generations[plugin_id] = generation
         self._stable_aliases[mp] = stable_module_path
         self._remove_module_tree(stable_module_path)
-        self._fresh_importer.register(stable_module_path, plugin_dir)
+        self._fresh_importer.register(stable_module_path, generation.code_dir)
         sys.modules[stable_module_path] = sys.modules[mp]
         assert generation.runtime_snapshot is not None
         await self._publish_committed_snapshot(generation.runtime_snapshot)
@@ -4975,6 +5010,116 @@ class PluginManager:
             generation.gate_result = gate
             self._gate_results[generation.plugin_id] = gate
             raise _CandidateRejected(gate) from error
+
+    @asynccontextmanager
+    async def open_binding(self, components: tuple[str, ...]) -> AsyncIterator[BindingScope]:
+        """从归档重建独立 Root；不发布或启动正式 runtime。"""
+        # 1. 每次打开都有自己的模块空间、Root 和 lease store。
+        namespace = secrets.token_hex(12)
+        root = CompositionRoot(f"archive:{namespace}")
+
+        async def drained(_snapshot: RuntimeSnapshot) -> None:
+            await root.dispose()
+
+        store = RuntimeSnapshotStore(drained)
+        root._bind_runtime_scope_acquirer(lambda: store.acquire_composition_root(root))  # pyright: ignore[reportPrivateUsage]
+        modules: list[str] = []
+        generations: dict[str, PluginGeneration] = {}
+        scope: BindingScope | None = None
+        installed = False
+        try:
+            for index, ref in enumerate(components):
+                record = self._archive.read_descriptor(ref)
+                if record["version"] != 1 or record["runtime"] != {
+                    "python_tag": sys.implementation.cache_tag, "binding_api": 1,
+                }:
+                    raise RuntimeError("插件归档运行合同不兼容")
+                plugin_dir = self._archive.open(cast(str, record["code"]))
+                revision = cast(str, record["source_revision"])
+                if _source_revision(plugin_dir) != revision:
+                    raise RuntimeError("插件归档源码身份不一致")
+                plugin_id = cast(str, record["plugin_id"])
+                if plugin_id in generations:
+                    raise ValueError(f"归档重复包含插件: {plugin_id}")
+                data_dir = self._workspace / cast(str, record["data_dir"])
+                validate_workspace_plugin_data_path(data_dir, self._workspace)
+                entrypoint = cast(str, record["entrypoint"])
+                _require_plugin_path(plugin_dir, (plugin_dir / entrypoint).resolve(), "归档入口")
+                module_path = f"_akashic_archive_{namespace}_{index}"
+                self._import_plugin(module_path, plugin_dir / entrypoint)
+                modules.append(module_path)
+                module = sys.modules[module_path]
+                manifest = (
+                    load_static_plugin_manifest(plugin_dir)
+                    if (plugin_dir / "akashic.plugin.toml").exists() else None
+                )
+                if manifest is not None:
+                    validate_module_exports(manifest, module, plugin_root=plugin_dir)
+                plugin = ComposablePlugin.from_module(module)
+                if plugin.name != plugin_id.split("@", 1)[0]:
+                    raise ValueError("归档插件身份不一致")
+                plugin.bind_archived_active(cast(bool, record["static_active"]))
+                projection = decode_config(record["config"])
+                if not isinstance(projection, dict):
+                    raise ValueError("归档插件配置必须是对象")
+                config = _validate_plugin_config_projection(
+                    cast(dict[str, object], projection), cast(type[BaseModel] | None, plugin.ConfigModel),
+                )
+                gate = self._validate_candidate(instance=plugin, plugin_id=plugin_id, revision=revision)
+                if gate.status != "passed":
+                    raise RuntimeError(f"归档插件检查失败: {gate.failure_reason}")
+                generation_id = f"archive:{namespace}:{index}"
+                generations[plugin_id] = PluginGeneration(
+                    plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
+                    source_revision=revision, config_revision=cast(str, record["config_revision"]),
+                    plugin_dir=plugin_dir, data_dir=data_dir, config=config,
+                    config_projection=cast(dict[str, object], projection), instance=plugin,
+                    scope=PluginScope(plugin_id, generation_id=generation_id),
+                    contributions=self._collect_candidate_contributions(
+                        instance=plugin, plugin_id=plugin_id, plugin_dir=plugin_dir,
+                    ),
+                    gate_result=gate, static_manifest=manifest, entrypoint=entrypoint,
+                    source_type=cast(Literal["builtin", "installed"], record["source_type"]),
+                    archive_ref=ref,
+                )
+
+            # 2. 使用同一 Core 能力装配，依赖只能来自这些归档组件。
+            ordered = tuple(generations[key] for key in sorted(generations))
+            await self._provide_root_registries(root, ordered)
+            for generation in ordered:
+                await self._mount_generation_composition(root, generation)
+            if not root.receipt().ready:
+                raise RuntimeError(f"归档 provider 闭包不完整: {root.receipt().required_pending}")
+            result = await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
+            if result is not None:
+                raise RuntimeError("归档 snapshot.sealing 不接受 Bail")
+            snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
+            store.install(snapshot)
+            installed = True
+            scope = BindingScope(root)
+            async with RuntimeScope(await store.acquire()):
+                yield scope
+        finally:
+            # 3. 先撤销读取并排空 exact leases，成功后才释放模块空间。
+            if scope is not None:
+                scope._expire()  # pyright: ignore[reportPrivateUsage]
+            async def close_scope() -> None:
+                if installed:
+                    snapshot = store.pause_admission()
+                    assert snapshot is not None
+                    await store.wait_for_no_leases(snapshot)
+                try:
+                    if installed:
+                        await store.close()
+                    else:
+                        await root.dispose()
+                finally:
+                    for module_path in modules:
+                        self._remove_module_tree(module_path)
+
+            _, cancelled = await _complete_critical(close_scope())
+            if cancelled:
+                raise asyncio.CancelledError
 
     def _read_existing_session_compaction(self, session_key: str):
         """读取同一 Session 的消息与 active compaction 语义。"""
@@ -5062,155 +5207,9 @@ class PluginManager:
             lambda: self._snapshot_store.acquire_composition_root(root)
         )
         try:
-            _ = await root.context.provide(COMMANDS, PluginCommands())
-            if any(
-                CHANNELS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                _ = await root.context.provide(
-                    CHANNELS,
-                    PluginChannels(root.instance_token),
-                )
-            if any(
-                MCP_SERVERS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                _ = await root.context.provide(
-                    MCP_SERVERS,
-                    PluginMcpServers(root.instance_token),
-                )
-            if any(
-                MANAGED_PROCESSES in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                _ = await root.context.provide(
-                    MANAGED_PROCESSES,
-                    PluginManagedProcesses(root.instance_token),
-                )
-            if any(
-                WORKLOADS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                _ = await root.context.provide(
-                    WORKLOADS,
-                    PluginWorkloads(root.instance_token),
-                )
-            if any(
-                BACKGROUND_JOBS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                _ = await root.context.provide(
-                    BACKGROUND_JOBS,
-                    PluginBackgroundJobs(root.instance_token),
-                )
-            if any(
-                TOOL_CATALOG in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                _ = await root.context.provide(
-                    TOOL_CATALOG,
-                    PluginTools(root.instance_token),
-                )
-            if any(
-                UI_SLOTS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                _ = await root.context.provide(UI_SLOTS, PluginUiSlots())
-            if self._session_manager is not None and any(
-                SESSION_READ in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                session_read = (
-                    SessionReadService(self._read_existing_session_compaction)
-                    if candidate_owner is None
-                    else SessionReadService.candidate_validation()
-                )
-                _ = await root.context.provide(SESSION_READ, session_read)
-            if self._session_manager is not None and any(
-                SESSION_COMPACTION_STORAGE
-                in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                compaction_storage = (
-                    SessionCompactionStorage(self._session_manager)
-                    if candidate_owner is None
-                    else SessionCompactionStorage.candidate_validation()
-                )
-                _ = await root.context.provide(
-                    SESSION_COMPACTION_STORAGE,
-                    compaction_storage,
-                )
-            if any(
-                SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-
-                async def acquire_root_scope() -> RuntimeSnapshotLease:
-                    return await self._snapshot_store.acquire_composition_root(root)
-
-                scoped_turns = (
-                    PluginScopedTurns(
-                        self._conversation_runtime,
-                        self._programmatic_session_creator,
-                        self._programmatic_session_reader,
-                        acquire_root_scope,
-                    )
-                    if candidate_owner is None
-                    else PluginScopedTurns.candidate_validation()
-                )
-                _ = await root.context.provide(SCOPED_TURNS, scoped_turns)
-            if any(
-                CONTINUATIONS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                continuations = (
-                    PluginContinuations(self._continuation_publisher)
-                    if candidate_owner is None
-                    else PluginContinuations.candidate_validation()
-                )
-                _ = await root.context.provide(CONTINUATIONS, continuations)
-            if any(
-                TIMERS in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                timers = (
-                    PluginTimers(AsyncioOneShotTimer())
-                    if candidate_owner is None
-                    else PluginTimers.candidate_validation()
-                )
-                _ = await root.context.provide(TIMERS, timers)
-            if any(
-                DELIVERIES in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                deliveries = (
-                    PluginDeliveries(self._delivery_sender)
-                    if candidate_owner is None
-                    else PluginDeliveries.candidate_validation()
-                )
-                _ = await root.context.provide(DELIVERIES, deliveries)
-            if any(
-                DURABLE_DELIVERIES in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                durable_deliveries = (
-                    self._formal_durable_deliveries()
-                    if candidate_owner is None
-                    else PluginDurableDeliveries.candidate_validation()
-                )
-                _ = await root.context.provide(DURABLE_DELIVERIES, durable_deliveries)
-            if any(
-                INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
-                for item in mount_order
-            ):
-                if candidate_owner is None and self._interaction_undo is None:
-                    raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
-                interaction_undo = (
-                    InteractionUndoService(self._interaction_undo.undo_latest)
-                    if candidate_owner is None and self._interaction_undo is not None
-                    else InteractionUndoService.candidate_validation()
-                )
-                _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
+            await self._provide_composition_services(
+                root, mount_order, candidate=candidate_owner is not None,
+            )
             if candidate_owner is None:
                 for item in ordered:
                     await self._mount_generation_composition(root, item)
@@ -5282,6 +5281,171 @@ class PluginManager:
             await root.dispose()
             raise
         return resolved_root, True
+
+    async def _provide_root_registries(
+        self, root: CompositionRoot, mount_order: tuple[PluginGeneration, ...],
+    ) -> None:
+        """注册表只属于当前 Root，不接入正式执行 owner。"""
+        _ = await root.context.provide(COMMANDS, PluginCommands())
+        if any(
+            CHANNELS in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            _ = await root.context.provide(
+                CHANNELS,
+                PluginChannels(root.instance_token),
+            )
+        if any(
+            MCP_SERVERS in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            _ = await root.context.provide(
+                MCP_SERVERS,
+                PluginMcpServers(root.instance_token),
+            )
+        if any(
+            MANAGED_PROCESSES in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            _ = await root.context.provide(
+                MANAGED_PROCESSES,
+                PluginManagedProcesses(root.instance_token),
+            )
+        if any(
+            WORKLOADS in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            _ = await root.context.provide(
+                WORKLOADS,
+                PluginWorkloads(root.instance_token),
+            )
+        if any(
+            BACKGROUND_JOBS in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            _ = await root.context.provide(
+                BACKGROUND_JOBS,
+                PluginBackgroundJobs(root.instance_token),
+            )
+        if any(
+            TOOL_CATALOG in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            _ = await root.context.provide(
+                TOOL_CATALOG,
+                PluginTools(root.instance_token),
+            )
+        if any(
+            UI_SLOTS in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            _ = await root.context.provide(UI_SLOTS, PluginUiSlots())
+
+    async def _provide_composition_services(
+        self,
+        root: CompositionRoot,
+        mount_order: tuple[PluginGeneration, ...],
+        *,
+        candidate: bool,
+    ) -> None:
+        """向独立 Root 提供同一组 Core 能力，不选择或发布插件 generation。"""
+
+        await self._provide_root_registries(root, mount_order)
+        if self._session_manager is not None and any(
+            SESSION_READ in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            session_read = (
+                SessionReadService(self._read_existing_session_compaction)
+                if not candidate
+                else SessionReadService.candidate_validation()
+            )
+            _ = await root.context.provide(SESSION_READ, session_read)
+        if self._session_manager is not None and any(
+            SESSION_COMPACTION_STORAGE
+            in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            compaction_storage = (
+                SessionCompactionStorage(self._session_manager)
+                if not candidate
+                else SessionCompactionStorage.candidate_validation()
+            )
+            _ = await root.context.provide(
+                SESSION_COMPACTION_STORAGE,
+                compaction_storage,
+            )
+        if any(
+            SCOPED_TURNS in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+
+            async def acquire_root_scope() -> RuntimeSnapshotLease:
+                return await root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
+
+            scoped_turns = (
+                PluginScopedTurns(
+                    self._conversation_runtime,
+                    self._programmatic_session_creator,
+                    self._programmatic_session_reader,
+                    acquire_root_scope,
+                )
+                if not candidate
+                else PluginScopedTurns.candidate_validation()
+            )
+            _ = await root.context.provide(SCOPED_TURNS, scoped_turns)
+        if any(
+            CONTINUATIONS in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            continuations = (
+                PluginContinuations(self._continuation_publisher)
+                if not candidate
+                else PluginContinuations.candidate_validation()
+            )
+            _ = await root.context.provide(CONTINUATIONS, continuations)
+        if any(
+            TIMERS in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            timers = (
+                PluginTimers(AsyncioOneShotTimer())
+                if not candidate
+                else PluginTimers.candidate_validation()
+            )
+            _ = await root.context.provide(TIMERS, timers)
+        if any(
+            DELIVERIES in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            deliveries = (
+                PluginDeliveries(self._delivery_sender)
+                if not candidate
+                else PluginDeliveries.candidate_validation()
+            )
+            _ = await root.context.provide(DELIVERIES, deliveries)
+        if any(
+            DURABLE_DELIVERIES in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            durable_deliveries = (
+                self._formal_durable_deliveries()
+                if not candidate
+                else PluginDurableDeliveries.candidate_validation()
+            )
+            _ = await root.context.provide(DURABLE_DELIVERIES, durable_deliveries)
+        if any(
+            INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
+            for item in mount_order
+        ):
+            if not candidate and self._interaction_undo is None:
+                raise RuntimeError("INTERACTION_UNDO 需要 Session owner")
+            interaction_undo = (
+                InteractionUndoService(self._interaction_undo.undo_latest)
+                if not candidate and self._interaction_undo is not None
+                else InteractionUndoService.candidate_validation()
+            )
+            _ = await root.context.provide(INTERACTION_UNDO, interaction_undo)
 
     def _candidate_dependency_closure(
         self,
@@ -5439,7 +5603,7 @@ class PluginManager:
             runtime=PluginRuntime(
                 plugin_id=generation.plugin_id,
                 generation_id=generation.generation_id,
-                plugin_dir=generation.plugin_dir,
+                plugin_dir=generation.code_dir,
                 data_dir=generation.data_dir,
                 workspace=self._workspace,
                 config=generation.config,
@@ -5509,7 +5673,7 @@ class PluginManager:
                 runtime=PluginRuntime(
                     plugin_id=generation.plugin_id,
                     generation_id=generation.generation_id,
-                    plugin_dir=generation.plugin_dir,
+                    plugin_dir=generation.code_dir,
                     data_dir=data_dir,
                     workspace=attempt_workspace,
                     config=config,
@@ -5562,7 +5726,10 @@ class PluginManager:
     ) -> tuple[ComposablePlugin, str, Path, object]:
         """重新导入一个 stable v3 插件并绑定 candidate 临时数据。"""
 
-        plugin_dir = generation.plugin_dir
+        if generation.archive_ref is None:
+            raise RuntimeError(f"插件缺少加载时归档: {generation.plugin_id}")
+        record = self._archive.read_descriptor(generation.archive_ref)
+        plugin_dir = self._archive.open(cast(str, record["code"]))
         data_dir = attempt_workspace / "plugin-data" / generation.data_dir.name
         _ = data_dir.parent.mkdir(parents=True, exist_ok=True)
         inventory = _copy_validation_data(
@@ -5601,7 +5768,7 @@ class PluginManager:
                 generation.config_projection,
                 cast(type[BaseModel] | None, clone.ConfigModel),
             )
-            clone.bind_static_services(self._composition_service_view())
+            clone.bind_archived_active(cast(bool, record["static_active"]))
             return clone, module_path, data_dir, config
         except BaseException:
             self._remove_module_tree(module_path)
@@ -6482,7 +6649,7 @@ def _with_gate_check(
 
 
 def _read_plugin_config_projection(
-    data_dir: Path,
+    config_source: bytes | None,
     *,
     credential_paths: tuple[str, ...] = (),
     credential_alias_groups: tuple[tuple[str, ...], ...] = (),
@@ -6490,12 +6657,11 @@ def _read_plugin_config_projection(
     """Read plugin config and replace declared secret values with opaque refs."""
 
     # 1. Core alone reads the formal file before plugin config validation.
-    config_path = data_dir / "config.local.toml"
     raw_config: dict[str, Any] = {}
-    if config_path.exists():
+    if config_source is not None:
         try:
-            raw_config = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as e:
+            raw_config = tomllib.loads(config_source.decode("utf-8"))
+        except (UnicodeError, tomllib.TOMLDecodeError) as e:
             raise _PluginConfigError(str(e)) from e
     for aliases in credential_alias_groups:
         present = tuple(
@@ -7127,9 +7293,10 @@ def _validate_static_manifest_runtime(
                     (
                         f"{kind}:{declaration.name}",
                         materialize_static_command(
-                            generation.plugin_dir,
+                            generation.code_dir,
                             manifest,
                             declaration,
+                            environment_root=generation.plugin_dir,
                         ),
                     )
                 )
@@ -7411,16 +7578,6 @@ def _build_v3_plugin_tool(
     return tool_class()
 
 
-def _file_revision(path: Path) -> str:
-    digest = hashlib.sha256()
-    digest.update(str(path.resolve(strict=False)).encode())
-    if path.is_file():
-        digest.update(path.read_bytes())
-    else:
-        digest.update(b"<missing>")
-    return digest.hexdigest()
-
-
 def _source_revision(plugin_dir: Path) -> str:
     digest = hashlib.sha256()
     root = plugin_dir.resolve(strict=False)
@@ -7437,6 +7594,8 @@ def _source_revision(plugin_dir: Path) -> str:
         directories[:] = sorted(name for name in directories if name not in excluded)
         current_path = Path(current)
         for name in [*directories, *sorted(filenames)]:
+            if name in excluded:
+                continue
             path = current_path / name
             relative = path.relative_to(plugin_dir)
             if path.is_symlink():
@@ -7471,6 +7630,8 @@ def _source_metadata_revision(plugin_dir: Path) -> bytes:
         directories[:] = sorted(name for name in directories if name not in excluded)
         current_path = Path(current)
         for name in [*directories, *sorted(filenames)]:
+            if name in excluded:
+                continue
             path = current_path / name
             relative = path.relative_to(plugin_dir)
             try:
