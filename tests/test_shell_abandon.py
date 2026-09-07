@@ -7,16 +7,66 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.tasks import TASKS, Tasks
 from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugins.manager import PluginManager
 from agent.restart import RestartGate
+from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall
+from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
 from tests.model_plugin_fakes import build_test_chat_models
 from tests.test_standard_tools import environment, start_shell_call, _UnusedModelProvider, _unexpected_call_read
+
+
+@pytest.mark.asyncio
+async def test_real_tools_watcher_restarts_and_settles_offline_abandon_once(tmp_path):
+    host, store, log, artifacts, source = environment(tmp_path)
+    try:
+        await host.load_all()
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            binding = ctx.require(TOOLS).bind("shell", Bindings(log, host._archive, host.open_binding))
+        inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content={})
+        outputs = log.writer("s", author="agent", source="conversation", body_types=(Output,),
+                             content={}, check_call=lambda call: None)
+        controls = log.writer("s", author="user", source="conversation", body_types=(Control,), content={})
+
+        def append(index):
+            inputs.append(f"input-{index}", Input(()))
+            call = outputs.append(f"call-{index}", Output((ToolCall(binding, {
+                "command": "printf 'must not run'", "description": "offline abandon",
+            }),), "continue"))
+            controls.append(f"abandon-{index}", Control("abandon", call.seq))
+
+        async def result(index):
+            async for message in log.reader("s").follow():
+                if message.message_id == f"tool-result:call-{index}:0":
+                    return message
+            raise AssertionError("工具结果订阅提前结束")
+
+        append(1)
+        await host.start_runtime()
+        first = await asyncio.wait_for(result(1), 2)
+        assert first.body.outcome == "denied"
+        await host.terminate_all()
+        append(2)
+        host = PluginManager([source], event_bus=EventBus(), workspace=tmp_path / "workspace",
+                             installed_cache_root=tmp_path / "cache", message_log=log,
+                             channel_attachment_store=artifacts)
+        await host.load_all()
+        await host.start_runtime()
+        second = await asyncio.wait_for(result(2), 2)
+        assert second.body.outcome == "denied"
+        assert log.reader("s").get(first.message_id) == first
+        assert [m for m in log.reader("s").snapshot() if isinstance(m.body, ToolResult)] == [first, second]
+        assert host._plugin_processes._manager is None
+    finally:
+        await host.terminate_all()
+        log.close()
+        store.close()
 
 
 @pytest.mark.asyncio

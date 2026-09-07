@@ -77,6 +77,7 @@ class ToolExecution:
             if record is None:
                 record = self._save(key, None, {
                     "version": 1, "request": fingerprint, "binding": call.binding_id,
+                    "reply_id": reply.message_id,
                     "phase": "prepared", "arguments": call.arguments,
                 })
             outcome: Outcome = "unknown" if record.value["phase"] == "started" else "denied"

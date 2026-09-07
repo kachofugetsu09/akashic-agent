@@ -478,7 +478,7 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
     cleanup_release = asyncio.Event()
 
     @asynccontextmanager
-    async def controlled_cleanup(*_args):
+    async def controlled_cleanup(*_args, task, drain):
         try:
             yield
         finally:
@@ -927,6 +927,8 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             == formal.composition_root.plugin_service_owners()
         )
         expected_listeners = {
+            "serial:runtime.started:tools",
+            "serial:runtime.stopping:tools",
             "emit:runtime.starting:reply",
             "emit:runtime.starting:restart_provider@fixture",
             "serial:runtime.started:reply",
