@@ -437,6 +437,8 @@ class AppRuntime:
                     web_ui_provider=web_ui_provider,
                     model_catalog_reader=model_catalog_reader,
                     model_control=model_control,
+                    messages=messages,
+                    reply_status=reply_status,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),
