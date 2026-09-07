@@ -31,7 +31,7 @@ from .inspector import RecallInspector
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .interest import SEMANTIC_INTEREST, Embed, SemanticInterest
 from .recall_tool import RecallArguments, RecallTool, check_recall
-from .recalls import Recall, RecallRecords
+from .recalls import Recall, RecallRecords, RecallRecordsRead
 from .runtime import MessageMemory, prepare_materials
 from .application.snapshot import read_memory
 from agent.plugin_composition.models import open_embedding as open_saved_embedding, read_embedding_binding
@@ -41,6 +41,13 @@ api_version = 3
 name = "akasha"
 version = "4.0.0"
 desc = "从消息学习并提供普通 Context 材料与记忆工具"
+dashboard_module = "dashboard.py"
+web_module = "web_module.js"
+web_requires = ("workbench.panels.v2",)
+web_provides = ()
+web_contract_digests = {
+    "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
+}
 inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
           BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, UI_SLOTS, COMMANDS)
 workspace_roots = ("memory",)
@@ -88,6 +95,7 @@ class RecallBinding(BaseModel):
 
 
 AKASHA_RECORDS = ServiceKey[Callable[[str], Recall | None]]("akasha.recalls.v1")
+AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]]("akasha.recall-records.v1")
 
 
 async def apply(ctx: Context, config: Config) -> None:
@@ -118,10 +126,14 @@ async def apply(ctx: Context, config: Config) -> None:
     def records() -> RecallRecords:
         return RecallRecords(ctx.require(OWNER_STATE).open(ctx))
 
+    def records_read() -> RecallRecordsRead:
+        return RecallRecordsRead(ctx.require(OWNER_STATE).open(ctx))
+
     # 公开读取函数不暴露 owner transaction；归档 apply 也不会读取正式数据库。
     def read_recall(identity: str) -> Recall | None:
         return records().read(identity)
     _ = await ctx.provide(AKASHA_RECORDS, read_recall)
+    _ = await ctx.provide(AKASHA_RECORDS_VIEW, records_read)
 
     inspector: RecallInspector | None = None
 

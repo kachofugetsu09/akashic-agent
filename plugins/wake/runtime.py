@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -17,14 +18,113 @@ from plugins.delivery.api import Sink
 from plugins.delivery.history import DELIVERY_READ
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.tools.plugin import TOOLS
+from session.log import MessageReader, OwnerRecord
+from session.message import Message
+from session.message_codec import encode_body
 
 from .admission import Admission, Duties
 from .api import Config, DRIFT_WAKE, EVENTMAIL_WAKE
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
 from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
-from .source import Source
-from .state import WakeState
+from .source import Pointer, Source
+from .state import WakeState, WakeStateReader
+
+
+class DashboardView:
+    """Expose Wake's durable rows and original Message flow as a read-only view."""
+
+    def __init__(
+        self,
+        state: WakeStateReader,
+        read_flow: Callable[[str], tuple[OwnerRecord, Request, MessageReader] | None],
+        read_message: Callable[[str, str], Message | None],
+        delivery_status: Callable[[str, str], Mapping[str, object] | None],
+    ) -> None:
+        self._state = state
+        self._read_flow = read_flow
+        self._read_message = read_message
+        self._delivery_status = delivery_status
+
+    def list_attempts(self, limit: int, *, offset: int = 0) -> tuple[Mapping[str, object], ...]:
+        return self._state.list_attempts(limit, offset=offset)
+
+    def count_attempts(self) -> int:
+        return self._state.count_attempts()
+
+    def get_attempt(self, attempt_id: str) -> Mapping[str, object] | None:
+        row = self._state.get_attempt(attempt_id)
+        if row is None:
+            return None
+        return {**row, "flow": self.flow(attempt_id)}
+
+    def list_runs(self, limit: int, *, offset: int = 0) -> tuple[Mapping[str, object], ...]:
+        return self._state.list_runs(limit, offset=offset)
+
+    def count_runs(self) -> int:
+        return self._state.count_runs()
+
+    def get_run(self, run_id: str) -> Mapping[str, object] | None:
+        row = self._state.get_run(run_id)
+        if row is None:
+            return None
+        return {**row, "flow": self.flow(run_id)}
+
+    def flow(self, flow_id: str) -> Mapping[str, object] | None:
+        found = self._read_flow(flow_id)
+        if found is None:
+            return None
+        pointer_row, request, reader = found
+        pointer = Pointer.model_validate(dict(pointer_row.value))
+        messages = tuple(self._message(message) for message in reader.snapshot())
+        # Wake's request lives in an internal session. The notification is
+        # deliberately written to the target session, so read that catalog.
+        notification = self._read_message(request.target.session_id, request.notification_id)
+        delivery: dict[str, object] = {
+            "message_id": request.notification_id,
+            "channel": request.target.channel,
+            "recipient": request.target.recipient,
+            "status": "not_published",
+            "receipt": None,
+        }
+        if notification is not None:
+            status = self._delivery_status(notification.message_id, request.target.channel)
+            if status is None:
+                delivery["status"] = "not_prepared"
+            else:
+                delivery.update(status)
+        return {
+            "flow_id": flow_id,
+            "pointer": {"version": pointer_row.version, **pointer.model_dump(mode="json")},
+            "request": {
+                **request.model_dump(mode="json", exclude={"program_binding", "tools", "rules", "history", "events"}),
+                "session_id": request.session_id,
+                "input_id": request.input_id,
+                "notification_id": request.notification_id,
+            },
+            "messages": list(messages),
+            "delivery": delivery,
+        }
+
+    @staticmethod
+    def _message(message: Message) -> Mapping[str, object]:
+        body = json.loads(encode_body(message.body))
+        parts = body.get("parts", ()) if isinstance(body, dict) else ()
+        text = "\n".join(
+            str(part.get("value"))
+            for part in parts
+            if isinstance(part, dict) and part.get("kind") == "text" and isinstance(part.get("value"), str)
+        ) if isinstance(parts, list) else ""
+        return {
+            "message_id": message.message_id,
+            "session_id": message.session_id,
+            "seq": message.seq,
+            "recorded_at": message.recorded_at.isoformat(),
+            "author": message.author,
+            "source": message.source,
+            "body": body,
+            "text": text,
+        }
 
 
 class Runtime:
@@ -33,9 +133,24 @@ class Runtime:
     def __init__(self, ctx: Context, config: Config, *, now: Callable[[], datetime] = lambda: datetime.now(UTC)):
         self.ctx, self.config, self.now = ctx, config, now
         self.state = WakeState(ctx.data_root / "wake.sqlite3")
+        # Runtime owns creation and schema validation. Dashboard readers only
+        # open this already-initialized file read-only.
+        self.state.initialize()
         self.source = Source(ctx, self.state, now=now)
         self.duties = Duties(ctx.require(EVENTMAIL_WAKE), ctx.require(DRIFT_WAKE), self.state, ctx.require(SEMANTIC_INTEREST))
         self.changed = asyncio.Event()
+
+    def dashboard_view(self) -> DashboardView:
+        """Build a dashboard view from narrow read-only callbacks."""
+        catalog = self.ctx.require(MESSAGE_CATALOG)
+        history = self.ctx.require(DELIVERY_READ)
+
+        def read_message(session_id: str, message_id: str) -> Message | None:
+            return catalog.reader(session_id).get(message_id)
+
+        return DashboardView(
+            self.state.read_only(), self.source.read, read_message, history.status,
+        )
 
     def capture(self, flow_id: str, admission: Admission, now: datetime) -> Request | None:
         """先固定归档程序、工具、出站目标与上下文，随后才允许领取领域条目。"""

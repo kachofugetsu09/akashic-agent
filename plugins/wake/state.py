@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping, Sequence
-from contextlib import closing
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -77,6 +77,10 @@ class WakeState:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+
+    def read_only(self) -> WakeStateReader:
+        """Return the narrow row reader used by non-owning observers."""
+        return WakeStateReader(self)
 
     def initialize(self) -> None:
         """Create and validate the singleton admission ledger."""
@@ -556,8 +560,9 @@ class WakeState:
             raise ValueError("Wake attempt limit 必须是 1..500")
         if offset < 0:
             raise ValueError("Wake attempt offset 不能为负数")
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return ()
             rows = connection.execute(
                 "SELECT attempt_id, timer_id, scheduled_for, fired_at, "
                 "mail_watermark, outcome, owner, detail, completed_at "
@@ -567,15 +572,17 @@ class WakeState:
         return tuple(_attempt_summary(row) for row in rows)
 
     def count_attempts(self) -> int:
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return 0
             row = connection.execute("SELECT count(*) FROM wake_attempts").fetchone()
         return int(row[0])
 
     def get_attempt(self, attempt_id: str) -> Mapping[str, object] | None:
         identity = _identity_part(attempt_id, "attempt_id")
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return None
             row = connection.execute(
                 "SELECT attempt_id, timer_id, scheduled_for, fired_at, "
                 "mail_watermark, outcome, owner, detail, completed_at "
@@ -618,8 +625,9 @@ class WakeState:
             raise ValueError("Wake run limit 必须是 1..500")
         if offset < 0:
             raise ValueError("Wake run offset 不能为负数")
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return ()
             rows = connection.execute(
                 "SELECT run_id, owner, started_at, candidates_seen, "
                 "candidates_selected, decision, decision_detail, completed_at "
@@ -629,15 +637,17 @@ class WakeState:
         return tuple(_run_summary(row) for row in rows)
 
     def count_runs(self) -> int:
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return 0
             row = connection.execute("SELECT count(*) FROM wake_runs").fetchone()
         return int(row[0])
 
     def get_run(self, run_id: str) -> Mapping[str, object] | None:
         identity = _identity_part(run_id, "run_id")
-        self.initialize()
-        with closing(sqlite3.connect(self.path)) as connection:
+        with self._read_connection() as connection:
+            if connection is None:
+                return None
             row = connection.execute(
                 "SELECT run_id, owner, started_at, candidates_seen, "
                 "candidates_selected, decision, decision_detail, completed_at, "
@@ -652,6 +662,23 @@ class WakeState:
             raise RuntimeError("Wake run screening 不是 JSON array")
         summary["screening"] = screening
         return summary
+
+    @contextmanager
+    def _read_connection(self) -> Iterator[sqlite3.Connection | None]:
+        """Open an existing state database read-only without creating its schema."""
+        if not self.path.exists():
+            yield None
+            return
+        connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            self._validate_tables(
+                connection,
+                {"admission_state", "seen_content", "content_scores", "wake_runs", "wake_attempts"},
+            )
+            yield connection
+        finally:
+            connection.close()
 
     def _scores(
         self, identities: set[tuple[str, str, str]]
@@ -836,4 +863,29 @@ def _stored_int(value: object, field: str) -> int:
     return value
 
 
-__all__ = ["WakeState"]
+class WakeStateReader:
+    """The dashboard's read-only view of Wake's durable rows."""
+
+    def __init__(self, state: WakeState) -> None:
+        self._state = state
+
+    def list_attempts(self, limit: int, *, offset: int = 0) -> tuple[Mapping[str, object], ...]:
+        return self._state.list_attempts(limit, offset=offset)
+
+    def count_attempts(self) -> int:
+        return self._state.count_attempts()
+
+    def get_attempt(self, attempt_id: str) -> Mapping[str, object] | None:
+        return self._state.get_attempt(attempt_id)
+
+    def list_runs(self, limit: int, *, offset: int = 0) -> tuple[Mapping[str, object], ...]:
+        return self._state.list_runs(limit, offset=offset)
+
+    def count_runs(self) -> int:
+        return self._state.count_runs()
+
+    def get_run(self, run_id: str) -> Mapping[str, object] | None:
+        return self._state.get_run(run_id)
+
+
+__all__ = ["WakeState", "WakeStateReader"]
