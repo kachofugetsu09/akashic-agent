@@ -9,6 +9,7 @@ from .execution import Deliveries
 from .history import DELIVERY_READ, DeliveryHistory
 from .records import DeliveryRecords
 from .senders import DELIVERY_SENDERS, Senders, open_sender
+from .api import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
 
 api_version = 3
 name = "delivery"
@@ -39,6 +40,7 @@ async def apply(ctx: Context, config: object) -> None:
     """注册出站能力；只有正式调用才取得发送 owner 的状态和 Task。"""
     _ = await ctx.provide(DELIVERY_SENDERS, Senders(ctx))
     _ = await ctx.provide(DELIVERY, DeliveryAdmission(ctx))
+    _ = await ctx.provide(FINAL_OUTPUT_DELIVERY, FinalOutputDelivery())
     # 状态能力在正式生命周期中才打开，候选加载期不触碰运行库。
     _ = await ctx.provide(DELIVERY_READ, DeliveryHistory(
         lambda: ctx.require(OWNER_STATE).open(ctx), ctx.require(MESSAGE_CATALOG),

@@ -21,222 +21,12 @@ import agent.background.boot_guardian as boot_guardian_module
 import agent.supervisor as supervisor_module
 import main as main_module
 import utils.process_guard as process_guard_module
-from agent.control.context import running_turn_id
 from agent.control.protocol.router import ConnectionRouter
-from agent.restart import (
-    RestartCoordinator,
-    RestartRejectedError,
-    RestartState,
-    SupervisorCommitChannel,
-)
+from agent.restart import SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, _wait_child, run_supervisor
-from agent.tools.agent_restart import AgentRestartTool
-from agent.tools.registry import ToolRegistry
-from agent.tools.tool_search import ToolSearchTool
 from bootstrap.app import AppRuntime
 from bootstrap.runtime_readiness import RuntimeReadiness
-from core.error_context import current_session_key
 from infra.control.connection import NdjsonConnection
-
-
-class _Admission:
-    def __init__(self) -> None:
-        self.quiesced: list[str] = []
-        self.resumed: list[str] = []
-
-    def quiesce(self, turn_id: str) -> None:
-        self.quiesced.append(turn_id)
-
-    def resume(self, turn_id: str) -> None:
-        self.resumed.append(turn_id)
-
-
-def _coordinator(
-    *,
-    timeout: float = 1.0,
-) -> tuple[RestartCoordinator, _Admission, list[str]]:
-    admission = _Admission()
-    commits: list[str] = []
-    coordinator = RestartCoordinator(
-        "boot-a",
-        supervised=True,
-        commit=lambda request: commits.append(request.id),
-        delivery_timeout_s=timeout,
-    )
-    coordinator.bind_admission(
-        quiesce=admission.quiesce,
-        resume=admission.resume,
-    )
-    return coordinator, admission, commits
-
-
-@pytest.mark.asyncio
-async def test_restart_commits_only_after_terminal_and_delivery() -> None:
-    coordinator, admission, commits = _coordinator()
-
-    request = coordinator.arm(
-        turn_id="turn-a",
-        session_key="programmatic:one",
-        channel="programmatic",
-        chat_id="one",
-        reason="reload core",
-    )
-    same_request = coordinator.arm(
-        turn_id="turn-a",
-        session_key="programmatic:one",
-        channel="programmatic",
-        chat_id="one",
-        reason="ignored by idempotency",
-    )
-    with pytest.raises(RestartRejectedError):
-        coordinator.arm(
-            turn_id="turn-b",
-            session_key="programmatic:two",
-            channel="programmatic",
-            chat_id="two",
-            reason="competing request",
-        )
-
-    assert same_request is request
-    assert admission.quiesced == ["turn-a"]
-    coordinator.mark_delivered("turn-a")
-    assert commits == []
-    coordinator.mark_turn_terminal("turn-a", "completed")
-
-    assert await coordinator.wait_committed() is request
-    assert commits == [request.id]
-    assert coordinator.state is RestartState.COMMITTED
-
-    coordinator.mark_turn_terminal("turn-a", "completed")
-    coordinator.mark_delivered("turn-a")
-    assert commits == [request.id]
-
-
-@pytest.mark.asyncio
-async def test_restart_failure_and_timeout_restore_admission() -> None:
-    coordinator, admission, _ = _coordinator(timeout=0.01)
-    coordinator.arm(
-        turn_id="turn-failed",
-        session_key="telegram:1",
-        channel="telegram",
-        chat_id="1",
-        reason="reload core",
-    )
-    coordinator.mark_turn_terminal("turn-failed", "failed")
-
-    assert coordinator.pending is None
-    assert admission.resumed == ["turn-failed"]
-
-    coordinator.arm(
-        turn_id="turn-timeout",
-        session_key="telegram:1",
-        channel="telegram",
-        chat_id="1",
-        reason="reload core",
-    )
-    coordinator.mark_turn_terminal("turn-timeout", "completed")
-    await asyncio.sleep(0.03)
-
-    assert coordinator.pending is None
-    assert admission.resumed == ["turn-failed", "turn-timeout"]
-    assert "timed out" in str(coordinator.last_error)
-
-
-@pytest.mark.asyncio
-async def test_router_disconnect_restores_admission_immediately() -> None:
-    coordinator, admission, _ = _coordinator(timeout=60)
-    coordinator.arm(
-        turn_id="turn-disconnect",
-        session_key="programmatic:one",
-        channel="programmatic",
-        chat_id="one",
-        reason="reload core",
-    )
-    coordinator.mark_turn_terminal("turn-disconnect", "completed")
-    entered = asyncio.Event()
-
-    class _Handle:
-        id = "turn-disconnect"
-
-        def record(self) -> dict[str, str]:
-            return {"status": "completed"}
-
-        async def events(self):
-            entered.set()
-            await asyncio.Event().wait()
-            yield None
-
-    class _Service:
-        def notify_turn_delivery_failed(self, turn_id: str, reason: str) -> None:
-            coordinator.mark_delivery_failed(turn_id, reason)
-
-    async def send(_message: dict[str, object]) -> None:
-        raise AssertionError("terminal frame must not be sent")
-
-    router = ConnectionRouter(cast(Any, _Service()), send)
-    task = asyncio.create_task(router._forward_events(_Handle()))
-    await entered.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert coordinator.pending is None
-    assert admission.resumed == ["turn-disconnect"]
-    assert "connection closed" in str(coordinator.last_error)
-
-
-@pytest.mark.asyncio
-async def test_agent_restart_requires_current_attempt_search_grant() -> None:
-    coordinator, _, _ = _coordinator()
-    registry = ToolRegistry()
-    registry.register(ToolSearchTool(registry), always_on=True)
-    registry.register(
-        AgentRestartTool(coordinator),
-        risk="external-side-effect",
-        preloadable=False,
-        requires_turn_search=True,
-    )
-    turn_token = running_turn_id.set("turn-a")
-    session_token = current_session_key.set("programmatic:one")
-    registry.set_context(
-        channel="programmatic",
-        chat_id="one",
-        session_key="programmatic:one",
-        turn_id="turn-a",
-    )
-    scope = registry.begin_turn_search_scope(
-        turn_id="turn-a",
-        session_key="programmatic:one",
-        attempt=0,
-    )
-    try:
-        denied = await registry.execute("agent_restart", {"reason": "reload"})
-        assert "必须在当前 turn" in str(denied)
-
-        _ = await registry.execute(
-            "tool_search",
-            {"query": "select:agent_restart"},
-            raise_errors=True,
-        )
-        with pytest.raises(ValueError, match="不允许额外字段"):
-            await registry.execute(
-                "agent_restart",
-                {"reason": "reload", "command": "rm -rf /"},
-                raise_errors=True,
-            )
-        scheduled = await registry.execute(
-            "agent_restart",
-            {"reason": "reload"},
-            raise_errors=True,
-        )
-        assert json.loads(str(scheduled))["status"] == "scheduled"
-    finally:
-        registry.end_turn_search_scope(scope)
-        current_session_key.reset(session_token)
-        running_turn_id.reset(turn_token)
-
-    assert "agent_restart" in registry.get_non_preloadable_names()
-    assert "agent_restart" not in registry.get_always_on_names()
 
 
 def test_supervisor_commit_channel_uses_inherited_fd(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -273,7 +63,7 @@ workspace = pathlib.Path(sys.argv[1])
 boot_id, nonce, write_fd, frame_count, exit_code = sys.argv[2:]
 ready = {'type': 'ready', 'bootId': boot_id, 'pid': os.getpid()}
 os.write(int(write_fd), (json.dumps(ready) + '\\n').encode())
-frame = {'type': 'commit', 'bootId': boot_id, 'nonce': nonce, 'requestId': 'restart_test'}
+frame = {'type': 'commit', 'bootId': boot_id, 'nonce': nonce, 'requestId': 'opaque_test'}
 for _ in range(int(frame_count)):
     os.write(int(write_fd), (json.dumps(frame) + '\\n').encode())
 time.sleep(0.05)
@@ -1347,23 +1137,6 @@ class _DrainWriter:
         self.closed = True
 
 
-@pytest.mark.asyncio
-async def test_ndjson_send_receipt_waits_for_writer_drain() -> None:
-    connection = object.__new__(NdjsonConnection)
-    connection._queue = asyncio.Queue(2)
-    gate = asyncio.Event()
-    connection._writer = _DrainWriter(gate)
-    writer_task = asyncio.create_task(connection._write_loop())
-    send_task = asyncio.create_task(connection.send({"method": "turn/completed"}))
-    await asyncio.sleep(0)
-
-    assert send_task.done() is False
-    gate.set()
-    await send_task
-    await connection._queue.put(None)
-    await writer_task
-    assert connection._writer.frames == [b'{"method":"turn/completed"}\n']
-
 
 @pytest.mark.asyncio
 async def test_ndjson_stream_frame_does_not_wait_for_writer_drain() -> None:
@@ -1371,6 +1144,7 @@ async def test_ndjson_stream_frame_does_not_wait_for_writer_drain() -> None:
     connection._queue = asyncio.Queue(2)
     gate = asyncio.Event()
     connection._writer = _DrainWriter(gate)
+    connection._reservations = {}
     writer_task = asyncio.create_task(connection._write_loop())
 
     await connection.send({"method": "item/completed"})
@@ -1388,6 +1162,7 @@ async def test_ndjson_outbound_queue_overflow_closes_only_its_writer() -> None:
     connection._queue = asyncio.Queue(1)
     writer = _DrainWriter(asyncio.Event())
     connection._writer = writer
+    connection._reservations = {}
 
     await connection.send({"method": "item/completed", "params": {"index": 1}})
     with pytest.raises(ConnectionError, match="outbound queue is full"):
@@ -1396,20 +1171,3 @@ async def test_ndjson_outbound_queue_overflow_closes_only_its_writer() -> None:
         )
 
     assert writer.closed is True
-
-
-@pytest.mark.asyncio
-async def test_ndjson_disconnect_fails_delivery_receipt() -> None:
-    connection = object.__new__(NdjsonConnection)
-    connection._queue = asyncio.Queue(2)
-    gate = asyncio.Event()
-    connection._writer = _DrainWriter(gate, fail=True)
-    writer_task = asyncio.create_task(connection._write_loop())
-    send_task = asyncio.create_task(connection.send({"method": "turn/completed"}))
-    await asyncio.sleep(0)
-    gate.set()
-
-    with pytest.raises(ConnectionError, match="disconnected"):
-        await send_task
-    with pytest.raises(ConnectionError, match="disconnected"):
-        await writer_task

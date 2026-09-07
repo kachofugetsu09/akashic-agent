@@ -11,6 +11,7 @@ from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTING, RUNTIME_STAR
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.tasks import Task
+from agent.restart import RESTART_GATE
 from plugins.content.plugin import CONTENT
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
@@ -36,7 +37,7 @@ api_version = 3
 name = "reply"
 version = "1.0.0"
 desc = "跟随日志并组合默认回复；接纳、材料、模型与工具各有独立 owner"
-inject = (SOURCES, CONVERSATION_COMMANDS, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, TOOLS, REACT, MODEL_CALLS, TURN_PROJECTION)
+inject = (SOURCES, CONVERSATION_COMMANDS, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, TOOLS, REACT, MODEL_CALLS, TURN_PROJECTION, RESTART_GATE)
 
 
 class Config(BaseModel):
@@ -89,7 +90,10 @@ async def apply(ctx: Context, config: Config) -> None:
 
     async def program(task: Task, reader: MessageReader, source: str) -> Message:
         completion = ctx.get(REPLY_COMPLETION)
-        async with completion(reader, source) if completion is not None else nullcontext():
+        async with (
+            completion(reader, source, child_permit=task.child_permit)
+            if completion is not None else nullcontext()
+        ):
             # 运行活动已取得后再释放输入占位，中间没有空闲窗口。
             release(reader, source)
             with status.open(task, reader.session_id, source) as preview:
@@ -150,7 +154,10 @@ async def apply(ctx: Context, config: Config) -> None:
         nonlocal watcher
         _ = choose_tools()
         catalog = ctx.require(MESSAGE_CATALOG)
-        watcher = await ctx.spawn(follow(ctx, catalog, ctx.require(SOURCES), program), name="reply")
+        watcher = await ctx.spawn(
+            follow(ctx, catalog, ctx.require(SOURCES), program, ctx.require(RESTART_GATE)),
+            name="reply",
+        )
 
     async def stop(_event: object) -> None:
         try:

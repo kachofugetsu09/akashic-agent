@@ -177,7 +177,8 @@ class _LifecycleState:
             not self.ready
             or self.commit_valid
             or not isinstance(request_id, str)
-            or not request_id.startswith(("restart_", "settings_"))
+            or not request_id
+            or request_id.strip() != request_id
             or not secrets.compare_digest(nonce, self.nonce)
         ):
             self.protocol_error = "lifecycle commit frame 无效或重复"

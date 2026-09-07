@@ -8,6 +8,7 @@ from typing import cast
 
 from agent.model_runtime.session_selection import SessionModelSelection, write_session_model_selection
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
+from agent.restart import RestartGate
 from session.log import MessageConflict, MessageReader, MessageWriter
 from session.message import Body, Control, Input, Message, Output
 
@@ -67,6 +68,7 @@ class Conversation:
         controls: MessageWriter,
         tasks: TaskAdmission,
         changed: Changed | None = None,
+        restart_gate: RestartGate | None = None,
     ):
         if inputs.session_id != reader.session_id or (
             controls.session_id, controls.source
@@ -78,6 +80,7 @@ class Conversation:
         self._controls = controls
         self._tasks = tasks
         self._on_changed = changed
+        self._restart_gate = restart_gate
         self._key = (reader.session_id, self._source)
 
     def _changed(self, message: Message) -> Message:
@@ -90,6 +93,8 @@ class Conversation:
         """先持久接纳，再使旧回复失效；ACK 不等待回复或旧工具排空。"""
         def admit(slot: TaskSlot) -> Message:
             existing = self._reader.get(message_id)
+            if existing is None and self._restart_gate is not None:
+                self._restart_gate.check_open()
             message = self._inputs.append(message_id, body)
             if existing is not None:
                 return message
@@ -223,6 +228,9 @@ class Conversation:
             if slot.current is not None and slot.current.active:
                 raise MessageConflict("不能重试仍在运行的来源")
 
+            if self._restart_gate is not None:
+                self._restart_gate.check_open()
+
             # 2. resume 只记录恢复意图；未知外部效果仍由 Tool owner 拒绝自动重跑。
             head = messages[-1].seq
             return self._changed(self._controls.append(
@@ -294,6 +302,10 @@ class Conversation:
             if not needs_reply(self._reader.snapshot(), self._source):
                 return None
 
+            if self._restart_gate is not None and not self._restart_gate.accepting:
+                return None
+            permit = None if self._restart_gate is None else self._restart_gate.acquire()
+
             async def run(task: Task) -> object:
                 try:
                     return await program(task, self._reader, self._source)
@@ -310,6 +322,17 @@ class Conversation:
                     await self._tasks.admit(self._key, failed)
                     raise
 
-            return slot.start(run)
+            try:
+                task = slot.start(
+                    run,
+                    child_permit=None if permit is None else permit.child,
+                )
+            except BaseException:
+                if permit is not None:
+                    permit.release()
+                raise
+            if permit is not None:
+                task.on_done(permit.release)
+            return task
 
         return await self._tasks.admit(self._key, admit)

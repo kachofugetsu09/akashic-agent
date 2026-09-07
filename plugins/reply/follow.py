@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.tasks import Task
+from agent.restart import RestartGate
 from plugins.sources.plugin import Source, Sources
 from session.log import MessageCatalog, MessageReader
 
@@ -21,7 +22,7 @@ class _Wake:
 
 async def follow(
     ctx: Context, catalog: MessageCatalog,
-    sources: Sources, program: Program,
+    sources: Sources, program: Program, restart_gate: RestartGate | None = None,
 ) -> None:
     """从日志追赶可回复来源；空闲不保留 scope，不保存 cursor 或回复队列。"""
     active: dict[tuple[str, str], _Wake] = {}
@@ -35,6 +36,9 @@ async def follow(
                 async with ctx.runtime_scope():
                     task = await source.open(session_id).start(program)
                 if task is None:
+                    if restart_gate is not None and not restart_gate.accepting:
+                        await restart_gate.wait_until_open()
+                        wake.changed = True
                     continue
                 try:
                     _ = await task.join()

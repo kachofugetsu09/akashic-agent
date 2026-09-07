@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
+from agent.restart import RestartGate
+from agent.control.frame_book import FrameBook
+
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
-    from agent.restart import RestartCoordinator
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -350,6 +352,8 @@ class CoreRuntime:
     channel_attachment_store: ChannelAttachmentArtifactStore
     plugin_manager: PluginManager
     plugin_publication_lock: PluginPublicationLock
+    restart_gate: "RestartGate"
+    control_frames: FrameBook
     _plugin_publication_locked: bool = False
 
     def _lock_plugin_publication(self) -> None:
@@ -386,6 +390,9 @@ class CoreRuntime:
 
     async def stop(self) -> None:
         """先排空插件资源，再关闭各自拥有的数据库连接。"""
+        async def close_control_frames() -> None:
+            self.control_frames.close()
+
         async def close_storage() -> None:
             # 每个连接都尝试关闭；前一项失败不能泄漏后续 owner。
             errors: list[Exception] = []
@@ -400,6 +407,7 @@ class CoreRuntime:
 
         await run_cleanup_steps(
             ("plugin_manager.terminate_all", self.plugin_manager.terminate_all),
+            ("control_frames.close", close_control_frames),
             ("event_bus.aclose", self.event_bus.aclose),
             ("plugin_publication_lock.release", self._release_plugin_publication),
             ("storage.close", close_storage),
@@ -415,7 +423,7 @@ def build_core_runtime(
     config: Config,
     workspace: Path,
     http_resources: SharedHttpResources,
-    restart_coordinator: "RestartCoordinator | None" = None,
+    restart_gate: RestartGate | None = None,
     *,
     clear_stale_session_admissions: bool = False,
 ) -> CoreRuntime:
@@ -446,12 +454,17 @@ def build_core_runtime(
             workspace=workspace, metadata_store=artifact_metadata,
         )
         # 2. PluginManager 分配日志、归档和资源能力，不持有旧 SessionManager。
+        if restart_gate is None:
+            restart_gate = RestartGate(boot_id="unmanaged", supervised=False)
+        control_frames = FrameBook()
         manager = PluginManager(
             plugin_dirs=_resolve_plugin_dirs(workspace), event_bus=event_bus,
             workspace=workspace, message_log=message_log, channel_identities=identities,
             installed_cache_root=plugins_root() / "cache",
             channel_attachment_store=attachments,
             disabled_builtin_plugins=_disabled_builtin_plugins_for_runtime(config),
+            restart_gate=restart_gate,
+            control_frames=control_frames,
         )
         manager.channel_generation_host.bind_input_custody(bus)
         bus.bind_channel_outbound_dispatcher(manager.channel_generation_host.dispatch_outbound)
@@ -461,6 +474,8 @@ def build_core_runtime(
             admissions=admissions, identities=identities, inbound_store=inbound_store,
             artifact_metadata=artifact_metadata, channel_attachment_store=attachments,
             plugin_manager=manager, plugin_publication_lock=PluginPublicationLock(plugins_root()),
+            restart_gate=restart_gate,
+            control_frames=control_frames,
         )
         _ = cleanup.pop_all()
         return runtime

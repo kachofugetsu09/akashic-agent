@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from uuid import uuid4
 
 from agent.control.protocol.router import ConnectionRouter
+from agent.control.protocol.method import RequestTransport
 from agent.control.service import ControlService
+from agent.control.frame_book import FrameBook
 
 
 @dataclass(frozen=True)
@@ -14,7 +18,7 @@ class _PendingFrame:
     written: asyncio.Future[None] | None
 
 
-class NdjsonConnection:
+class NdjsonConnection(RequestTransport):
     """在有界 writer queue 上运行一条 JSON-RPC NDJSON 连接。"""
 
     def __init__(
@@ -26,6 +30,7 @@ class NdjsonConnection:
         max_message_bytes: int,
         max_pending_requests: int,
         outbound_queue_size: int,
+        control_frames: FrameBook | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
@@ -37,19 +42,37 @@ class NdjsonConnection:
             service,
             self.send,
             max_pending_requests=max_pending_requests,
+            transport=self,
+            send_message_page=self.send_message_page,
         )
         self._request_tasks: set[asyncio.Task[None]] = set()
+        self.connection_id = f"ndjson:{uuid4().hex}"
+        self._frames = control_frames or service.control_frames
 
     async def send(self, message: dict[str, object]) -> None:
+        await self._send(message, page=None)
+
+    async def send_message_page(
+        self, message: dict[str, object], page: Mapping[str, object]
+    ) -> None:
+        """写入 Router 已确认的 message/read 或 messages.appended 页面。"""
+        await self._send(message, page=page)
+
+    async def _send(
+        self, message: dict[str, object], *, page: Mapping[str, object] | None
+    ) -> None:
         encoded = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-        written = None
+        tracked = () if page is None else self._frames.resolve_page(self.connection_id, page)
+        written = asyncio.get_running_loop().create_future() if tracked else None
+        if written is not None:
+            self._frames.attach_page(tracked, written)
         try:
             self._queue.put_nowait(_PendingFrame(encoded, written))
         except asyncio.QueueFull as exc:
+            if written is not None:
+                written.set_exception(exc)
             self._writer.close()
             raise ConnectionError("client outbound queue is full") from exc
-        if written is not None:
-            await asyncio.shield(written)
 
     async def run(self) -> None:
         writer_task = asyncio.create_task(self._write_loop(), name="control-writer")
@@ -81,6 +104,8 @@ class NdjsonConnection:
             self._writer.transport.abort()
             results = await asyncio.gather(writer_task, return_exceptions=True)
             self._fail_pending_frames(ConnectionError("control connection closed"))
+            error = ConnectionError("control connection closed")
+            self._frames.fail_connection(self.connection_id, error)
             await self._writer.wait_closed()
             for result in results:
                 if isinstance(result, Exception):

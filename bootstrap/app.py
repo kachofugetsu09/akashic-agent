@@ -12,7 +12,7 @@ from agent.config import resolve_app_server_endpoint
 from agent.control.service import ControlService
 from agent.host_bridge.monitor import build_host_bridge_monitor
 from agent.host_bridge.monitor import claim_host_bridge_boot
-from agent.restart import RestartCoordinator
+from agent.restart import RestartGate
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
@@ -171,12 +171,12 @@ class AppRuntime:
         config: Config,
         workspace: Path,
         *,
-        restart_coordinator: RestartCoordinator | None = None,
+        restart_gate: RestartGate | None = None,
         readiness: RuntimeReadiness | None = None,
     ) -> None:
         self.config = config
         self.workspace = workspace
-        self.restart_coordinator = restart_coordinator
+        self.restart_gate = restart_gate
         self.readiness = readiness
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
@@ -216,11 +216,7 @@ class AppRuntime:
             if claim is not None and self.readiness is not None:
                 self.readiness.mark_stage("host_bridge.owner")
             configure_default_shared_http_resources(self.http_resources)
-            core_kwargs = (
-                {"restart_coordinator": self.restart_coordinator}
-                if self.restart_coordinator is not None
-                else {}
-            )
+            core_kwargs = {"restart_gate": self.restart_gate} if self.restart_gate is not None else {}
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
@@ -899,12 +895,12 @@ def build_app_runtime(
     config: Config,
     workspace: Path,
     *,
-    restart_coordinator: RestartCoordinator | None = None,
+    restart_gate: RestartGate | None = None,
     readiness: RuntimeReadiness | None = None,
 ) -> AppRuntime:
     return AppRuntime(
         config,
         workspace,
-        restart_coordinator=restart_coordinator,
+        restart_gate=restart_gate,
         readiness=readiness,
     )
