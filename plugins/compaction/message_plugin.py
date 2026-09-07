@@ -17,7 +17,7 @@ from plugins.context.materials import MATERIALS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import Message
 
-from .records import COMPACTION_SUMMARIES, SummaryLookup, SummaryRecord, SummaryRecords
+from .records import COMPACTION_SUMMARIES, StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, closed_groups, summarize, summary_groups, window_starts
 
 api_version = 3
@@ -37,13 +37,13 @@ async def apply(ctx: Context, config: Config) -> None:
     def records() -> SummaryRecords:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
 
-    def read(reference: str) -> SummaryRecord | None:
+    def read(reference: str) -> StoredSummary | None:
         return records().read(reference)
 
     # 状态查询在线程执行；启动时取得窄读取口，不在线程中重新申请 owner 写权限。
-    read_current: Callable[[str], SummaryRecord | None] | None = None
+    read_current: Callable[[str], StoredSummary | None] | None = None
 
-    def head(session_id: str) -> SummaryRecord | None:
+    def head(session_id: str) -> StoredSummary | None:
         if read_current is None:
             raise RuntimeError("摘要状态读取口尚未启动")
         return read_current(session_id)
@@ -61,15 +61,13 @@ async def apply(ctx: Context, config: Config) -> None:
     lookup = SummaryLookup(read, head)
     _ = await ctx.provide(COMPACTION_SUMMARIES, lookup)
 
-    def material(record: SummaryRecord) -> Summary:
+    def material(record: StoredSummary) -> Summary:
         reference = ctx.require(BINDINGS).bind(COMPACTION_SUMMARIES, {
             "record_ref": record.reference, "session_id": record.session_id,
         })
         return Summary(reference, record.source_message_ids, record.content)
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
-        # TODO(v4-legacy-summary): 旧 ledger/prepare/receipt 缺少新调用及使用出处；
-        # 保留旧恢复资料，待明确转换合同后接入，不能补造 Summary head。
         if not snapshot:
             return Materials("")
         record = records().head(snapshot[0].session_id)

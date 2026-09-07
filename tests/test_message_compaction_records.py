@@ -1,8 +1,10 @@
+import hashlib
+import json
 from contextlib import closing
 
 import pytest
 
-from plugins.compaction.records import SummaryRecord, SummaryRecords
+from plugins.compaction.records import ImportedSummaryRecord, SummaryLookup, SummaryRecord, SummaryRecords
 from plugins.content.plugin import check_text
 from session.log import MessageConflict, MessageLog, OwnerTransaction
 from session.message import ContentPart, Input
@@ -22,6 +24,39 @@ def inputs(log):
     writer = log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
     writer.append("u1", Input((ContentPart("text", "first original input"),)))
     writer.append("u2", Input((ContentPart("text", "second original input"),)))
+
+
+def imported(reference, *, generation, parent, cumulative_ids, own_ids):
+    row = {
+        "session_key": "s", "generation": generation,
+        "parent_generation": 0 if parent is None else parent.generation,
+        "created_at": "2026-09-01T00:00:00+08:00", "trigger": "soft_limit",
+        "summary_format_version": 3, "summary": "legacy " + reference,
+        "source_ref": "old:" + reference, "source_plan_digest": "a" * 64,
+        "source_from_seq": 0, "consolidated_through_seq": len(cumulative_ids) - 1,
+        "source_message_ids_json": json.dumps(list(own_ids), separators=(",", ":")),
+        "retained_tail_json": "[]", "model_runtime_id": "legacy-model",
+        "model": "legacy", "context_window": 32000, "threshold_tokens": 24000,
+        "hard_input_tokens": 28000, "keep_recent_tokens": 20000,
+        "tokens_before": 27000, "tokens_after": 18000, "summary_usage_json": "{}",
+        "invalidated_at": None, "invalidated_reason": None,
+    }
+    raw = json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return ImportedSummaryRecord(
+        version=0, reference=reference, session_id="s", generation=generation,
+        parent=None if parent is None else parent.reference,
+        source_message_ids=cumulative_ids, content=row["summary"],
+        legacy={"schema": "sessions.session_compactions.v1", "row": row,
+                "sha256": hashlib.sha256(raw.encode()).hexdigest()},
+    )
+
+
+def save_imported(records, *values):
+    def commit(tx):
+        for value in values:
+            tx.save("summary:" + value.reference, value.model_dump(mode="json"), expected_version=None)
+        tx.save("head:s", {"reference": values[-1].reference}, expected_version=None)
+    records._state.transact(commit)
 
 
 def test_summary_publication_is_create_only_and_stale_parent_cannot_win_after_restart(tmp_path):
@@ -44,6 +79,39 @@ def test_summary_publication_is_create_only_and_stale_parent_cannot_win_after_re
         assert records.read("loser") is None
         assert records.head("s") == second and records.read("first") == first
         assert log.reader("s").snapshot() == original
+
+
+def test_imported_head_keeps_exact_legacy_row_and_accepts_native_child(tmp_path):
+    with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        inputs(log)
+        records = SummaryRecords(log.owner("compaction"))
+        root = imported("old-3", generation=3, parent=None, cumulative_ids=("u1",), own_ids=("u1",))
+        head = imported("old-4", generation=4, parent=root,
+                        cumulative_ids=("u1", "u2"), own_ids=("u2",))
+        save_imported(records, root, head)
+        assert records.head("s") == head
+        assert records.read("old-3") == root
+        assert SummaryLookup(records.read, records.head).resolve(
+            {"record_ref": "old-4", "session_id": "s"}, session_id="s",
+        ) == head
+        writer = log.writer("s", author="user", source="conversation", body_types=(Input,),
+                            content={"text": check_text})
+        writer.append("u3", Input((ContentPart("text", "third input"),)))
+        native = records.publish(record("new-5", parent=head, ids=("u1", "u2", "u3")),
+                                 log.reader("s"), parent=head)
+        assert native.generation == 5
+        assert records.head("s") == native
+
+
+def test_imported_reader_rejects_changed_row_or_non_suffix_sources(tmp_path):
+    root = imported("old-3", generation=3, parent=None, cumulative_ids=("u1",), own_ids=("u1",))
+    payload = root.model_dump(mode="json")
+    payload["legacy"]["row"]["summary"] = "changed"
+    with pytest.raises(ValueError, match="digest"):
+        ImportedSummaryRecord.model_validate(payload)
+    with pytest.raises(ValueError, match="末尾"):
+        imported("bad", generation=3, parent=None,
+                 cumulative_ids=("u1", "u2"), own_ids=("u1",))
 
 
 def test_failed_head_update_rolls_back_new_summary_and_rejects_wrong_source(tmp_path, monkeypatch):
@@ -125,7 +193,9 @@ async def apply(ctx, config):
         inputs(log)
         original = log.reader("s").snapshot()
         records = SummaryRecords(log.owner("plugin:compaction"))
-        first = records.publish(record("first"), log.reader("s"), parent=None)
+        first = imported("first", generation=3, parent=None,
+                         cumulative_ids=("u1",), own_ids=("u1",))
+        save_imported(records, first)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
             async with ctx.require(MATERIALS).bind() as view:
