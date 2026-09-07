@@ -42,6 +42,34 @@ def _manager(tmp_path, sources, log):
     )
 
 
+_ALWAYS_ON = tuple(f"always_on_{index}" for index in range(9))
+
+
+def _add_always_on_tools(sources, names=_ALWAYS_ON):
+    """在真实 target 插件中增加固定工具，保持 discovery 走生产注册路径。"""
+    target = sources / "target/plugin.py"
+    source = target.read_text()
+    marker = "        open=open_target,\n    )\n"
+    registrations = "".join(
+        "    await ctx.require(inject[0]).register(\n"
+        f"        ctx, name={name!r}, description={name!r},\n"
+        '        parameters={"type": "object"}, open=open_target, always_on=True,\n'
+        "    )\n"
+        for name in names
+    )
+    assert source.count(marker) == 1
+    target.write_text(source.replace(marker, marker + registrations))
+
+
+def _discovery_sources(tmp_path, *, always_on=()):
+    sources = tmp_path / "plugins"
+    write_plugins(sources)
+    _add_always_on_tools(sources, always_on)
+    shutil.copytree(Path(__file__).parents[1] / "plugins/tool_search", sources / "tool_search",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    return sources
+
+
 @pytest.mark.asyncio
 async def test_discovery_archive_and_log_restore_keep_exact_candidates_without_full_fleet(tmp_path):
     sources = tmp_path / "plugins"
@@ -103,6 +131,119 @@ async def test_discovery_archive_and_log_restore_keep_exact_candidates_without_f
             assert result.parts[0].value == "A:restore:value"
         with pytest.raises(ValueError, match="原调用"):
             menu.check_selection(ref, ContentPart("tool.selection", (search_id,)))
+    finally:
+        await host.terminate_all()
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_discovery_menu_keeps_fixed_tools_above_legacy_default_and_selects_candidate(tmp_path):
+    sources = _discovery_sources(tmp_path, always_on=_ALWAYS_ON)
+    log = MessageLog(tmp_path / "sessions.db")
+    host = _manager(tmp_path, [sources], log)
+    names = (*_ALWAYS_ON, "example", "tool_search")
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            execution = catalog.execution(_reject_authorize)
+            menu = ToolMenu(catalog, bindings, execution, _unexpected_reply, names=names,
+                            reader=log.reader("s"), source="chat")
+            assert [item["function"]["name"] for item in menu.schemas] == [*_ALWAYS_ON, "tool_search"]
+            search_id = menu.bind("tool_search")
+            candidate = _candidate(bindings.describe(search_id, TOOLS), "example")
+            async with open_tool(bindings, search_id) as search:
+                result = await search.invoke(
+                    "search", await search.prepare({"query": "select:example", "allowed_risk": ["read-write"]})
+                )
+            assert result.parts[-1].value == (candidate,)
+        log.writer("s", author="user", source="chat", body_types=(Input,), content={}).append(
+            "u", Input(())
+        )
+        log.writer("s", author="assistant", source="chat", body_types=(Output,), content={},
+                   check_call=menu.check_call).append(
+                       "search", Output((ToolCall(search_id, {}),), "continue")
+                   )
+        ref = CallRef("search", 0)
+        log.writer("s", author="tool", source="chat", body_types=(ToolResult,), call_ref=ref,
+                   content={"tool.selection": lambda part: menu.check_selection(ref, part)}).append(
+                       "selected", ToolResult(ref, "success", (result.parts[-1],))
+                   )
+        assert [item["function"]["name"] for item in menu.schemas] == [*_ALWAYS_ON, "tool_search", "example"]
+        assert menu.bind("example") == candidate
+    finally:
+        await host.terminate_all()
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_discovery_menu_capacity_counts_fixed_tools_and_rejects_evicted_candidate(tmp_path):
+    sources = _discovery_sources(tmp_path, always_on=_ALWAYS_ON)
+    log = MessageLog(tmp_path / "sessions.db")
+    host = _manager(tmp_path, [sources], log)
+    names = (*_ALWAYS_ON, "example", "tool_search")
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            execution = catalog.execution(_reject_authorize)
+            source_menu = ToolMenu(catalog, bindings, execution, _unexpected_reply, names=names,
+                                   reader=log.reader("s"), source="chat")
+            _ = source_menu.schemas
+            search_id = source_menu.bind("tool_search")
+            candidate = _candidate(bindings.describe(search_id, TOOLS), "example")
+            async with open_tool(bindings, search_id) as search:
+                result = await search.invoke(
+                    "search", await search.prepare({"query": "select:example", "allowed_risk": ["read-write"]})
+                )
+        log.writer("s", author="user", source="chat", body_types=(Input,), content={}).append(
+            "u", Input(())
+        )
+        log.writer("s", author="assistant", source="chat", body_types=(Output,), content={},
+                   check_call=source_menu.check_call).append(
+                       "search", Output((ToolCall(search_id, {}),), "continue")
+                   )
+        ref = CallRef("search", 0)
+        log.writer("s", author="tool", source="chat", body_types=(ToolResult,), call_ref=ref,
+                   content={"tool.selection": lambda part: source_menu.check_selection(ref, part)}).append(
+                       "selected", ToolResult(ref, "success", (result.parts[-1],))
+                   )
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            execution = catalog.execution(_reject_authorize)
+            fits = ToolMenu(catalog, bindings, execution, _unexpected_reply, names=names,
+                            reader=log.reader("s"), source="chat", limit=len(_ALWAYS_ON) + 2)
+            assert [item["function"]["name"] for item in fits.schemas] == [*_ALWAYS_ON, "tool_search", "example"]
+            assert fits.bind("example") == candidate
+            full = ToolMenu(catalog, bindings, execution, _unexpected_reply, names=names,
+                            reader=log.reader("s"), source="chat", limit=len(_ALWAYS_ON) + 1)
+            assert [item["function"]["name"] for item in full.schemas] == [*_ALWAYS_ON, "tool_search"]
+            with pytest.raises(PermissionError, match="未获授工具"):
+                full.bind("example")
+    finally:
+        await host.terminate_all()
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_discovery_menu_rejects_fixed_tools_over_model_capacity(tmp_path):
+    sources = _discovery_sources(tmp_path, always_on=_ALWAYS_ON)
+    log = MessageLog(tmp_path / "sessions.db")
+    host = _manager(tmp_path, [sources], log)
+    names = (*_ALWAYS_ON, "example", "tool_search")
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            menu = ToolMenu(
+                catalog, bindings, catalog.execution(_reject_authorize), _unexpected_reply,
+                names=names, reader=log.reader("s"), source="chat", limit=len(_ALWAYS_ON)
+            )
+            with pytest.raises(ValueError, match=r"required=10 limit=9"):
+                _ = menu.schemas
     finally:
         await host.terminate_all()
         log.close()
