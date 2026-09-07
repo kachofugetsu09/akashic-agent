@@ -323,7 +323,6 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
@@ -580,7 +579,6 @@ async def test_web_chat_message_send_can_create_session_without_persisting_empty
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
@@ -716,7 +714,6 @@ async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
@@ -931,7 +928,6 @@ async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: P
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     image = tmp_path / "meme.png"
     image.write_bytes(b"image")
@@ -1261,7 +1257,6 @@ async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
             event_bus=_EventBus(),
             push_tool=_PushTool(),
             attachment_store=AttachmentStore(tmp_path / "uploads"),
-            interrupt_controller=None,
         )))
         app = create_chat_app(workspace=tmp_path, channel=channel)
 
@@ -1346,7 +1341,6 @@ async def test_web_v3_closed_admission_rejects_message_without_legacy_bus_call(
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     socket = _WebSocket()
     channel._connections["akashic:abc"] = {cast(Any, socket)}
@@ -1381,7 +1375,6 @@ async def test_web_v3_adapter_stop_drains_old_callback_before_unregistering(
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     old = await _open_inbound_adapter(channel, ingress, binding_token="old-binding")
     socket = _WebSocket()
@@ -1414,7 +1407,6 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     old = await _open_inbound_adapter(
         channel,
@@ -1616,7 +1608,6 @@ async def test_web_rejects_invalid_external_ids_before_ingress_or_session_write(
         event_bus=_EventBus(),
         push_tool=_PushTool(),
         attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
     )))
     adapter = await _open_inbound_adapter(channel, ingress)
     socket = _WebSocket()

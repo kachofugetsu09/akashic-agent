@@ -1031,7 +1031,6 @@ async def run_harness(args: argparse.Namespace) -> None:
                 session_manager=manager,
                 event_bus=EventBus(),
                 push_tool=PushTool(),
-                interrupt_controller=None,
                 attachment_store=AttachmentStore(root / "attachments"),
                 command_catalog_provider=lambda: (
                     ("memorystatus", "查看隔离命令入口"),

@@ -163,7 +163,6 @@ async def serve(port: int, workspace: Path) -> None:
         event_bus=events,
         push_tool=FixturePushTool(),
         attachment_store=AttachmentStore(workspace / "uploads"),
-        interrupt_controller=None,
     ))
     app = create_chat_app(
         workspace=workspace,

@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from agent.config_models import QQGroupConfig
-from agent.looping.interrupt import InterruptController
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
@@ -442,7 +441,6 @@ class QQChannel:
         group_filter: GroupMessageFilter | None = None,
         http_requester: HttpRequester | None = None,
         event_bus: EventBus | None = None,
-        interrupt_controller: InterruptController | None = None,
     ) -> None:
         from ncatbot.core import BotClient
         from ncatbot.utils import ncatbot_config
