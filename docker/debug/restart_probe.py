@@ -244,7 +244,15 @@ def _wait_page_event(
 
     deadline = time.monotonic() + timeout
     events: list[dict[str, Any]] = []
-    page: dict[str, Any] = {}
+    page: dict[str, Any] = {
+        "version": 2,
+        "session_id": session_id,
+        "items": [],
+        "after_seq": -1,
+        "through_seq": -1,
+        "next_after_seq": -1,
+        "has_more": False,
+    }
     check = cast(Any, predicate)
     while time.monotonic() < deadline:
         event = client.wait_session_event(
@@ -253,7 +261,25 @@ def _wait_page_event(
             timeout=max(0.01, deadline - time.monotonic()),
         )
         events.append(event)
-        page = client.read_messages(session_id)
+        params = event.get("params")
+        payload = params.get("event") if isinstance(params, dict) else None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if isinstance(items, list):
+            by_id = {
+                str(item.get("id")): item
+                for item in page["items"]
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            for item in items:
+                if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    by_id[str(item["id"])] = item
+            page["items"] = sorted(
+                by_id.values(), key=lambda item: int(item.get("seq", -1))
+            )
+        if isinstance(payload, dict):
+            for key in ("after_seq", "through_seq", "next_after_seq", "has_more"):
+                if key in payload:
+                    page[key] = payload[key]
         if check(page):
             return page, events
     raise GateFailure(f"{session_id} Message drain 超时：{page!r}")
@@ -725,13 +751,26 @@ def _run_restart_iteration(
     finally:
         concurrent.close()
 
-    # 3. Release the model Output barrier and let the supervisor restart.
+    # 3. Release the model Output barrier and drain the complete Output on the
+    # same follow connection before allowing the old runtime to disappear.
     _http_json("POST", f"{MODEL_URL}/control/barriers/{barrier}/release")
-    old_child_alive_at_gate = _identity_alive(old_identity)
+    terminal_page, terminal_events = _wait_page_event(
+        client,
+        session_id,
+        subscription_id,
+        lambda value: any(
+            _body_kind(item, "output")
+            and isinstance(item.get("body"), dict)
+            and item["body"].get("finish") == "complete"
+            and _output_text(item) == f"restart-complete-{index}"
+            for item in _page_items(value)
+        ),
+    )
+    old_child_alive_at_terminal = _identity_alive(old_identity)
     client.close()
     new_client, ready_after = _connect_new_boot(
         str(ready_before["bootId"]),
-        report_dir / f"events-{index}-after.jsonl",
+            report_dir / f"events-{index}-after.jsonl",
     )
     stop_sampling.set()
     sampler.join(timeout=2)
@@ -774,7 +813,7 @@ def _run_restart_iteration(
         and projection["wireMatchesRaw"]
         and projection["turnProjection"]
         and projection["turnProjection"][-1].get("status") == "complete"
-        and old_child_alive_at_gate
+        and old_child_alive_at_terminal
         and ready_after["bootId"] != ready_before["bootId"]
         and new_identity != old_identity
         and int((WORKSPACE / ".supervisor.pid").read_text()) == supervisor_pid
@@ -798,7 +837,9 @@ def _run_restart_iteration(
             "maxConcurrentChild": max_concurrent_child,
             "restartCount": 1,
             "stableAfterRestart": stable_ready,
-            "oldChildAliveAtGatePrepare": old_child_alive_at_gate,
+            "oldChildAliveAtTerminal": old_child_alive_at_terminal,
+            "terminalPage": terminal_page,
+            "terminalEvents": terminal_events,
             "follow": follow,
             "ack": ack,
             "toolEvents": tool_events,
@@ -1695,7 +1736,6 @@ def _configure_restart_gate(sandbox: Path) -> None:
     config = sandbox / "config.toml"
     text = config.read_text(encoding="utf-8")
     text = text.replace("max_iterations = 2", "max_iterations = 5")
-    text += "\n[agent.tools]\nsearch_enabled = true\n"
     config.write_text(text, encoding="utf-8")
     _write_mcp_plugin(
         "bootstrap",
