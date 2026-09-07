@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import shutil
@@ -286,19 +287,58 @@ class _EmbeddingFixtureServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, state: _EmbeddingFixtureState) -> None:
-        super().__init__(("0.0.0.0", 0), _EmbeddingFixtureHandler)
+    def __init__(self, state: _EmbeddingFixtureState, gateway: str) -> None:
+        super().__init__((gateway, 0), _EmbeddingFixtureHandler)
         self.state = state
 
 
-def _start_embedding_fixture() -> tuple[_EmbeddingFixtureServer, threading.Thread, str]:
+def _docker_bridge_gateway() -> str:
+    """Read the Docker bridge IPAM gateway; never fall back to a wildcard bind."""
+
+    completed = subprocess.run(
+        ["docker", "network", "inspect", "bridge", "--format", "{{json .IPAM.Config}}"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        raise GateFailure(
+            "Docker bridge gateway lookup failed: "
+            f"returncode={completed.returncode} stderr={completed.stderr[-1000:]}"
+        )
+    try:
+        configs = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise GateFailure("Docker bridge gateway lookup returned invalid JSON") from error
+    if not isinstance(configs, list):
+        raise GateFailure(f"Docker bridge IPAM Config is not a list: {configs!r}")
+    gateways = [
+        item.get("Gateway")
+        for item in configs
+        if isinstance(item, dict) and isinstance(item.get("Gateway"), str)
+    ]
+    if len(gateways) != 1:
+        raise GateFailure(f"Docker bridge must expose one IPAM Gateway: {configs!r}")
+    gateway = gateways[0]
+    try:
+        address = ipaddress.ip_address(gateway)
+    except ValueError as error:
+        raise GateFailure(f"Docker bridge IPAM Gateway is not an IP address: {gateway!r}") from error
+    if address.version != 4 or address.is_unspecified:
+        raise GateFailure(f"Docker bridge IPAM Gateway must be a specific IPv4 address: {gateway!r}")
+    return gateway
+
+
+def _start_embedding_fixture() -> tuple[_EmbeddingFixtureServer, threading.Thread, str, str]:
     """Start a host listener reachable from the Docker bridge."""
 
+    gateway = _docker_bridge_gateway()
     state = _EmbeddingFixtureState("akasha-local-embedding")
-    server = _EmbeddingFixtureServer(state)
+    server = _EmbeddingFixtureServer(state, gateway)
     thread = threading.Thread(target=server.serve_forever, name="akasha-embedding-fixture")
     thread.start()
-    return server, thread, f"http://host.docker.internal:{server.server_port}/v1"
+    return server, thread, f"http://host.docker.internal:{server.server_port}/v1", gateway
 
 
 def _stop_embedding_fixture(server: _EmbeddingFixtureServer, thread: threading.Thread) -> None:
@@ -829,12 +869,13 @@ def _run_controller(
     formal_before = _formal_identity(formal_workspace) if formal_workspace else None
     source_before = _source_identity(repo)
     if local_fixture:
-        embedding_server, embedding_thread, embedding_url = _start_embedding_fixture()
+        embedding_server, embedding_thread, embedding_url, embedding_gateway = _start_embedding_fixture()
         embedding_observation = {
             "scope": "local-fixture",
             "provider": "local",
             "externalProvider": "unverified",
             "url": embedding_url,
+            "gateway": embedding_gateway,
         }
     else:
         _embedding_environment()
@@ -899,10 +940,10 @@ def _run_controller(
                 "services:\n"
                 "  akashic-control-gate:\n"
                 "    extra_hosts:\n"
-                "      - host.docker.internal:host-gateway\n"
+                f"      - host.docker.internal:{embedding_gateway}\n"
                 "  control-probe:\n"
                 "    extra_hosts:\n"
-                "      - host.docker.internal:host-gateway\n",
+                f"      - host.docker.internal:{embedding_gateway}\n",
                 encoding="utf-8",
             )
             compose.extend(["-f", str(compose_override)])
