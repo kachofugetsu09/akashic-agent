@@ -2129,24 +2129,6 @@ class MobileRealtimeChannel:
         finally:
             self._v3_inbound_runtime.release_capture(callback_task)
 
-    def _validate_retry_source(self, session_id: str, client_message_id: str) -> None:
-        """Accept an explicit retry only for the latest retryable failed interaction."""
-
-        store = self._require_ctx().session_manager.control_store
-        source = store.find_turn_by_client_message_id(session_id, client_message_id)
-        latest_page = store.list_turns(session_id, limit=1)
-        latest = latest_page[0] if latest_page else None
-        if source is None or latest is None:
-            raise MobileCommandError("turn_not_retryable", "找不到可重试的失败消息")
-        interaction_id = latest.metadata.get("interactionId", latest.id)
-        if (
-            latest.status is not TurnStatus.FAILED
-            or latest.error is None
-            or latest.error.retryable is not True
-            or interaction_id != source.id
-        ):
-            raise MobileCommandError("turn_not_retryable", "这条消息现在不能重试")
-
     async def _prepare_message_attachment_refs(
         self,
         *,

@@ -13,11 +13,7 @@ from agent.plugin_composition.overlay import (
 )
 from agent.control.turn_scope import ToolGrant, TurnExecutionScope
 from agent.control.models import TurnItem, TurnItemKind, TurnStatus
-from agent.control.scoped_turn import (
-    DurableTurnView,
-    ScopedTurnHandle,
-    TurnAcceptedReceipt,
-)
+from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.control.timer import TimerHandle, TimerStatus
 from agent.tools.base import ToolExecutionContext
 from agent.turn_effects import PostCommitEffect, TurnStorage
@@ -102,7 +98,6 @@ from agent.plugin_composition.semantic_interest import (
     CONVERSATION_SEMANTIC_INTEREST,
     ConversationSemanticInterest,
 )
-from agent.plugin_composition.scoped_turns import PluginScopedTurns, SCOPED_TURNS
 from agent.plugin_composition.continuations import (
     CONTINUATIONS,
     PluginContinuations,
@@ -491,8 +486,6 @@ __all__ = [
     "SessionHistoryUnit",
     "ServiceKey",
     "ServiceView",
-    "PluginScopedTurns",
-    "SCOPED_TURNS",
     "CONTINUATIONS",
     "PluginContinuations",
     "DELIVERIES",
@@ -501,7 +494,6 @@ __all__ = [
     "DurableBindingAttempt",
     "DurableDeliveryRequest",
     "DurableDeliveryView",
-    "DurableTurnView",
     "PluginDurableDeliveries",
     "PostCommitEffect",
     "TIMERS",
@@ -524,7 +516,6 @@ __all__ = [
     "TopologyView",
     "ToolGrant",
     "ToolExecutionContext",
-    "ScopedTurnHandle",
     "TurnAcceptedReceipt",
     "TurnExecutionScope",
     "TurnItem",

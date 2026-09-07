@@ -9,21 +9,10 @@ import pytest
 
 import agent.migrations.session_db_backup as session_db_backup
 from agent.migrations.runner import MigrationRunner
+from tests.test_migration_runner import _create_sessions
 
 
 _PROJECT_ROOT = Path(__file__).parents[1]
-
-
-def _create_sessions(path: Path) -> None:
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute(
-            "CREATE TABLE sessions ("
-            "key TEXT PRIMARY KEY, last_consolidated INTEGER NOT NULL)"
-        )
-        connection.commit()
-    finally:
-        connection.close()
 
 
 _DELETE_AUDIT_TABLE = """
@@ -59,6 +48,7 @@ def test_audit_migration_publishes_manifest_schema_and_indexes(tmp_path: Path) -
     root = tmp_path / "state"
     workspace = root / "workspace"
     workspace.mkdir(parents=True)
+    (root / "config.toml").write_text("", encoding="utf-8")
     _create_sessions(workspace / "sessions.db")
 
     outcome = MigrationRunner(

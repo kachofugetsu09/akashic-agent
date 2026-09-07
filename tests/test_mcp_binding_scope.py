@@ -1,5 +1,7 @@
 import asyncio
 import shutil
+from collections.abc import Mapping
+from typing import cast
 
 import pytest
 
@@ -121,16 +123,22 @@ async def apply(ctx, config):
             data = generation.data_dir
         assert (data / "first.count").read_text() == "2"
         assert (data / "second.count").read_text() == "1"
-        record = first._archive.read_descriptor(generation.archive_ref)
+        archive_ref = generation.archive_ref
+        assert archive_ref is not None
+        record = first._archive.read_descriptor(archive_ref)
         old_component = first._archive.save_descriptor({**record, "version": 1})
         with pytest.raises(RuntimeError, match="运行合同不兼容"):
             async with first.open_binding((old_component,)):
                 pytest.fail("old component descriptor opened")
-        env_refs = record["python_environments"]
-        unused_env = first._archive.read_descriptor(env_refs["second"])
+        env_refs = cast(Mapping[str, object], record["python_environments"])
+        unused_ref = env_refs["second"]
+        assert isinstance(unused_ref, str)
+        unused_env = first._archive.read_descriptor(unused_ref)
         environment_root = tmp_path / "workspace/runtime/plugin-python-environments"
         await first.terminate_all()
-        shutil.rmtree(environment_root / unused_env["location"])
+        location = unused_env["location"]
+        assert isinstance(location, str)
+        shutil.rmtree(environment_root / location)
         shutil.rmtree(plugins)
         second = manager(tmp_path, [])
         try:
@@ -182,6 +190,7 @@ async def test_runtime_command_failure_releases_root_before_scope_disposal(tmp_p
     try:
         await owner.load_all()
         snapshot = owner.current_snapshot
+        assert snapshot is not None
         generation = snapshot.generations["probe"]
         with pytest.raises(FileNotFoundError, match="fixed environment"):
             await failed.start(generation, snapshot, mode="formal")
@@ -232,6 +241,7 @@ async def test_scoped_cleanup_failure_retains_resources_without_plugin_reload(
                     async with server.route() as route:
                         assert (await route.call("ping", {})).output == "fixed A"
         assert failed
+        assert selected is not None
         assert returned == []
         failures = owner.resource_failures()
         assert len(failures) == 1 and failures[0].generation_id == selected
@@ -284,6 +294,7 @@ async def test_shutdown_waits_for_admitted_mcp_start_and_closes_new_admission(tm
     try:
         await owner.load_all()
         snapshot = owner.current_snapshot
+        assert snapshot is not None
         bindings = Bindings(log, owner._archive, owner.open_binding)
         async with lease_runtime_snapshot(owner.snapshot_store):
             identity = bindings.bind(SERVICE, {})
@@ -305,6 +316,7 @@ async def test_shutdown_waits_for_admitted_mcp_start_and_closes_new_admission(tm
                 pytest.fail("shutdown admitted another MCP")
         release.set()
         await shutdown
+        assert selected is not None
         assert host.get(selected) is None
         assert selected not in host._bridges
         assert host._mcp_host.get(selected) is None
@@ -392,6 +404,7 @@ async def test_candidate_scoped_mcp_uses_candidate_environment_and_tool_permissi
     try:
         await owner.load_all()
         snapshot = owner.current_snapshot
+        assert snapshot is not None
         host = owner._composition_generation_host
         formal = host.get(snapshot.generations["probe"].generation_id)
         async with formal.mcp.server("first").route() as route:

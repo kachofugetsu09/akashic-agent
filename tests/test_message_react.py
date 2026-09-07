@@ -1,17 +1,20 @@
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from agent.plugin_composition.models import (
-    BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
+    BoundChatModel, BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
+    ModelRequest,
     ModelRole, ToolCall as ModelToolCall,
 )
-from agent.plugin_composition.tasks import Tasks
+from agent.plugin_composition.tasks import Task, Tasks
 from plugins.content.plugin import _decode_text, check_text
-from plugins.context.api import Materials, check_summary
+from plugins.context.api import ContextModel, Materials, Summary, check_summary
 from plugins.context.plugin import ContextBuilder
 from plugins.conversation.source import Conversation, needs_reply
 from plugins.models.content import render_content
@@ -20,8 +23,12 @@ from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.react.plugin import react, UnknownToolEffect, StepLimit
 from plugins.tools.execution import ToolExecution, MessageReply, Result
+from plugins.tools.menu import ToolMenu
 from session.log import MessageConflict, MessageLog
-from session.message import Input, Output, ContentPart, ToolResult, CallRef, Control
+from session.message import (
+    CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall,
+    ToolResult,
+)
 
 
 @asynccontextmanager
@@ -41,8 +48,10 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
     class Driver:
         async def complete(self, request):
             return await complete(request)
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(self, messages, tools=()):
             return 100 if estimate is None else estimate(messages, tools)
+        def estimate_appended_message_tokens(self, messages):
+            return 0
         max_tool_schemas = None
     model = _BoundChat(descriptor, Driver(), store)
     log.save_binding("tool", {"target": "test-file-effect"})
@@ -69,25 +78,43 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             await authorize_hook()
         return {"decision": "allowed"}
     execution = ToolExecution(log.owner("tools"), tasks, open_tool, authorize, task_key="tools")
-    class Menu:
-        def __init__(self, task):
+    class Menu(ToolMenu):
+        def __init__(self, task: Task) -> None:
             self.task = task
-        schemas = ({"type": "function", "function": {"name": "example", "parameters": {"type": "object"}}},)
-        def bind(self, name):
+
+        @property
+        def schemas(self) -> tuple[Mapping[str, Any], ...]:
+            return ({"type": "function", "function": {
+                "name": "example", "parameters": {"type": "object"},
+            }},)
+
+        def bind(self, name: str) -> str:
             assert name == "example"
             return "tool"
-        def name(self, binding):
+
+        def name(self, binding: str) -> str:
             assert binding == "tool"
             return "example"
-        async def execute(self, ref):
+
+        async def execute(self, ref: CallRef) -> Result:
             return await execution.execute_call(MessageReply(
                 "result:" + ref.message_id + ":" + str(ref.part_index), ref,
                 log.reader("s"), writer(ToolResult, ref), self.check_start,
             ))
-        def check_start(self):
+
+        def check_start(self) -> None:
             if not self.task.active:
                 raise asyncio.CancelledError
+
+        def check_call(self, call: ToolCall) -> None:
+            raise AssertionError(f"controlled menu unexpectedly checked {call}")
+
+        def check_selection(self, ref: CallRef, part: ContentPart) -> ContentReferences:
+            raise AssertionError(f"controlled menu unexpectedly checked selection {ref}: {part}")
+
     class Content:
+        prompts = ()
+        checks = {}
         async def decode(self, text, references=()):
             return await _decode_text(text, (), references)
     projection = MessageProjection(model, source="conversation",
@@ -133,8 +160,10 @@ async def test_react_commits_each_real_model_call_tool_request_and_result(tmp_pa
         assert result == messages[-1]
         assert (tmp_path / "effect.txt").read_text() == "written"
         for message in (messages[1], messages[-1]):
-            facts = message.body.parts[-1].value
-            assert store.read_call(facts["call_record_id"])["state"] == "success"
+            facts = cast(Mapping[str, object], message.body.parts[-1].value)
+            call_id = facts["call_record_id"]
+            assert isinstance(call_id, str)
+            assert store.read_call(call_id)["state"] == "success"
         assert await conversation.start(run) is None
 
 
@@ -361,7 +390,10 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
         prepared_count += 1
         return Materials("fixed prompt", (ContentPart("retrieval", "actual query result"),))
 
-    async def reduce(snapshot, materials, request, model, projection, *, source, force):
+    async def reduce(
+        snapshot: tuple[Message, ...], materials: Materials, request: ModelRequest,
+        model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
+    ) -> Summary | None:
         assert source == "conversation"
         assert model.descriptor.binding_id == "model"
         assert request.tools and request.max_output_tokens == 100

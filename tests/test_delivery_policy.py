@@ -3,10 +3,12 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 import shutil
+from typing import cast
 
 import pytest
 
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.plugin_composition.context import Context
 from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.tasks import Tasks
 from plugins.delivery.api import Sink
@@ -58,7 +60,11 @@ async def test_real_input_reply_and_archived_delivery_are_independent_consumers(
         assert records.cursor("test:room") == final[0].seq
 
 
-class Scope:
+class Scope(Context):
+    def __init__(self) -> None:
+        # follow only needs the scope boundary; any other Context operation is unavailable here.
+        pass
+
     @asynccontextmanager
     async def runtime_scope(self):
         yield
