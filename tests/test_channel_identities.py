@@ -173,6 +173,7 @@ def test_explicit_session_delete_keeps_identity_in_same_audit_backup(tmp_path):
         assert audit.result == "committed"
         assert manager.identities.load("probe") == {"two": "other"}
         assert manager.identities.migration_completed("probe")
+        assert audit.backup_path is not None
         with closing(sqlite3.connect(audit.backup_path)) as backup:
             assert backup.execute("SELECT identity,chat_id FROM channel_identities ORDER BY identity").fetchall() == [("one", "room"), ("two", "other")]
 

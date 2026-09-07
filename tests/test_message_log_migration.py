@@ -4,6 +4,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
 
@@ -22,6 +23,7 @@ def migration(monkeypatch):
     monkeypatch.setattr(yoyo, "step", lambda callback: callback)
     path = Path(__file__).parents[1] / "migrations/yoyo/20260905_01_message_log.py"
     spec = importlib.util.spec_from_file_location("message_log_migration_test", path)
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -118,6 +120,7 @@ def test_upgrade_preserves_raw_facts_references_sequences_and_backup(
         ]
         assert isinstance(messages[0].body, Input)
         assert messages[0].body.parts[0].value == "不要改这段正文\n"
+        assert isinstance(messages[0].body.parts[1].value, Mapping)
         assert (
             messages[0].body.parts[1].value["extra"]
             == '{ "client_message_id": "client", "media": ["old.png"] }'
@@ -125,12 +128,15 @@ def test_upgrade_preserves_raw_facts_references_sequences_and_backup(
         assert all(m.source == "legacy-unattributed" for m in messages)
         assert isinstance(messages[1].body, Output)
         assert not any(isinstance(part, ToolCall) for part in messages[1].body.parts)
+        assert isinstance(messages[1].body.parts[2].value, Mapping)
         transcript = messages[1].body.parts[2].value
         assert (
             hashlib.sha256(transcript["raw"].encode()).hexdigest()
             == transcript["sha256"]
         )
         assert transcript["completeness"] == "unknown"
+        assert isinstance(messages[2].body, Output)
+        assert isinstance(messages[2].body.parts[0].value, Mapping)
         assert messages[2].body.parts[0].value["content_was_null"] is True
         writer = log.writer(
             "s", author="user", source="conversation", body_types=(Input,), content={}

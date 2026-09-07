@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 import shutil
@@ -1532,7 +1533,9 @@ async def test_web_v3_ingress_persists_unprefixed_identity_for_exact_session(tmp
             {"session_id": session, "text": "hello", "media": []})
         message = log.reader(session).get("request-1")
         assert isinstance(message.body, Input)
-        assert message.body.parts[0].value["chat_id"] == session.removeprefix("akashic:")
+        value = message.body.parts[0].value
+        assert isinstance(value, Mapping)
+        assert value["chat_id"] == session.removeprefix("akashic:")
         assert identities.load("akashic") == {session.removeprefix("akashic:"): session.removeprefix("akashic:")}
         assert bus.inbound_size == 0 and manager.current_snapshot.lease_count == 0
 
@@ -1572,7 +1575,9 @@ async def test_web_reply_uses_real_message_target_and_reports_source_conflicts(t
         reader = log.reader("akashic:abc")
         message = reader.get("reply")
         assert message.body.parts[1:] == (ContentPart("text", "继续"), ContentPart("reply_ref", "target"))
-        rendered = render_content(message.body.parts[-1], artifacts={}, read_message=reader.get)
+        part = message.body.parts[-1]
+        assert isinstance(part, ContentPart)
+        rendered = render_content(part, artifacts={}, read_message=reader.get)
         assert "原始引用全文" in rendered[0]["text"]
         before = reader.snapshot()
         for target in ("missing", "other", "control"):

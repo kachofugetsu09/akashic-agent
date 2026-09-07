@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,11 @@ def test_final_environment_survives_cache_removal_and_rejects_damage(
     ref = store.prepare(code, manifest.python[0])
     assert store.prepare(code, manifest.python[0]) == ref
     record = store.archive.read_descriptor(ref)
-    archived_code = store.archive.open(record["input"]["code"])
+    input_data = record.get("input")
+    assert isinstance(input_data, Mapping)
+    code_ref = input_data.get("code")
+    assert isinstance(code_ref, str)
+    archived_code = store.archive.open(code_ref)
     root = store.open(ref, archived_code, manifest.python[0])
     command = materialize_static_command(
         archived_code, manifest, manifest.mcp_servers[0], environment_root=root
@@ -70,9 +75,11 @@ def test_environment_rejects_different_code_and_absent_recovery_material(tmp_pat
     (code / "probe.py").write_text("print('new')\n")
     with pytest.raises(RuntimeError, match="安装输入"):
         store.open(ref, code, manifest.python[0])
-    archived_code = store.archive.open(
-        store.archive.read_descriptor(ref)["input"]["code"]
-    )
+    input_data = store.archive.read_descriptor(ref).get("input")
+    assert isinstance(input_data, Mapping)
+    code_ref = input_data.get("code")
+    assert isinstance(code_ref, str)
+    archived_code = store.archive.open(code_ref)
     shutil.rmtree(root)
     with pytest.raises(ValueError, match="实际目录"):
         store.open(ref, archived_code, manifest.python[0])
@@ -104,7 +111,11 @@ def test_environment_keeps_real_console_script_prefix_and_local_wheel(tmp_path):
     store = PythonEnvironments(tmp_path / "workspace")
     ref = store.prepare(code, manifest.python[0])
     root = store.open(ref, code, manifest.python[0])
-    archived = store.archive.open(store.archive.read_descriptor(ref)["input"]["code"])
+    input_data = store.archive.read_descriptor(ref).get("input")
+    assert isinstance(input_data, Mapping)
+    code_ref = input_data.get("code")
+    assert isinstance(code_ref, str)
+    archived = store.archive.open(code_ref)
     shutil.rmtree(code)
     script = root / ".venv/bin/fixture-echo"
     assert (

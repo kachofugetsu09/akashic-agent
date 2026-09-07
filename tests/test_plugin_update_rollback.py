@@ -154,6 +154,7 @@ async def test_publication_returns_to_caller_before_waiting_for_its_generation(t
             assert read_pointers(old.installed_path.parents[1]).stable == update.previous.stable
             if finish == "pointer_failure":
                 assert update.phase == "rolled_back"
+                assert update.reload_tx_id is not None
                 assert host._reload_journal.get(update.reload_tx_id).phase == "aborted"
                 assert read_pointers(old.installed_path.parents[1]).latest == update.previous.latest
                 assert host.current_snapshot.composition_root.context.require(ServiceKey("version.probe"))() == "old"

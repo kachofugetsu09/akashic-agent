@@ -1,12 +1,13 @@
-from types import SimpleNamespace
 import asyncio
 import json
 import hashlib
+import logging
 import shutil
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -17,10 +18,13 @@ from bootstrap.core_channel_adapter import build_core_channel_definition
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore
+from infra.channels.contract import ChannelContext
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
+from core.net.http import SharedHttpResources
 from infra.mobile_realtime.attachments import AttachmentChunk
 from session.artifact_store import ArtifactStore
 from infra.mobile_realtime.channel import MobileRealtimeChannel, _command_hash
+from infra.mobile_realtime.gateway import MobileGatewayRuntime
 from infra.mobile_realtime.protocol import MessageSendCommand
 from infra.mobile_realtime.storage import MobileRealtimeStorage
 from session.admissions import SessionAdmissions
@@ -31,7 +35,7 @@ from session.message import ContentPart, ContentReferences, Control, Input, Outp
 from tests.mobile_realtime.test_channel import _Runtime, _register_device
 
 
-def command(session, number=0, **payload):
+def command(session: str, number: int = 0, **payload: object) -> MessageSendCommand:
     identity = f'01ARZ3NDEKTSV4RRFFQ69G5{number:03d}'
     return MessageSendCommand.model_validate({
         'v': 1, 'kind': 'command', 'type': 'message.send', 'id': identity,
@@ -68,14 +72,25 @@ async def runtime(tmp_path, *, device=None, store_type=InboundHandoffStore):
     bus = MessageBus()
     bus.bind_durable_inbound_store(handoffs)
     bus.bind_mobile_session_admission_owner(admissions)
-    channel = MobileRealtimeChannel(_Runtime(storage))
+    gateway_runtime = _Runtime(storage)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, gateway_runtime))
     channel.bind_messages(log.catalog())
     channel.bind_channel_attachment_store(physical)
-    manager = PluginManager([source], event_bus=EventBus(), workspace=workspace,
+    event_bus = EventBus()
+    manager = PluginManager([source], event_bus=event_bus, workspace=workspace,
         message_log=log, channel_identities=identities, channel_attachment_store=physical, installed_cache_root=tmp_path / 'cache')
     manager.channel_generation_host.bind_input_custody(bus)
+    http_resources = SharedHttpResources()
+    context = ChannelContext(
+        bus=bus,
+        event_bus=event_bus,
+        attachment_store=AttachmentStore(tmp_path / 'uploads'),
+        http_resources=http_resources,
+        interrupt_controller=None,
+        log=logging.getLogger(__name__),
+    )
     try:
-        await channel.start(SimpleNamespace(bus=bus, attachment_store=AttachmentStore(tmp_path / 'uploads')))
+        await channel.start(context)
         await manager.load_all()
         await manager.bind_core_channel_definitions((build_core_channel_definition(channel),))
         yield log, identities, manager, bus, channel, storage, device, handoffs
@@ -83,6 +98,8 @@ async def runtime(tmp_path, *, device=None, store_type=InboundHandoffStore):
         await manager.terminate_all()
         await channel.stop()
         await bus.aclose()
+        await event_bus.aclose()
+        await http_resources.aclose()
         for store in (log, identities, admissions, handoffs, storage, artifacts):
             store.close()
 
@@ -221,7 +238,8 @@ async def test_rejected_first_input_has_no_session_or_claim_and_retains_attachme
         assert not storage.list_incomplete_attachment_imports()
         if attachment:
             mapping, = storage.list_attachment_imports(session_id=session, client_message_id=frame.id)
-            assert mapping.phase == 'rejected' and 'message_conflict' in mapping.error
+            assert mapping.phase == 'rejected'
+            assert mapping.error is not None and 'message_conflict' in mapping.error
             assert Path(storage.read_attachment(upload_id).local_path).read_bytes() == data
             ref = channel._channel_attachment_store._metadata_store.get_attachment(mapping.artifact_id).ref
             lease = await channel._channel_attachment_store.acquire(ref)

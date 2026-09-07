@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
@@ -11,6 +12,12 @@ from plugins.content.plugin import check_text
 from session.log import SessionAttributes
 from session.message import ContentPart, Input, Output
 from tests.test_message_control import runtime
+
+
+def response_data(value: object) -> Mapping[str, object]:
+    """Narrow one JSON-RPC result before asserting its protocol fields."""
+    assert isinstance(value, Mapping)
+    return value
 
 
 @asynccontextmanager
@@ -31,7 +38,7 @@ async def test_programmatic_admission_is_immutable_and_ack_retries_recover_same_
         async with await AsyncAkashic.connect(address) as client:
             for _ in range(2):
                 admission = await client.request("programmatic/session/admit", {"session_id": session})
-                assert admission["learning"] == "excluded"
+                assert response_data(admission)["learning"] == "excluded"
             with pytest.raises(RemoteError):
                 await client.request("programmatic/session/admit", {"session_id": session, "persist_memory": True})
             with pytest.raises(RemoteError):
@@ -50,12 +57,12 @@ async def test_programmatic_admission_is_immutable_and_ack_retries_recover_same_
                 await client.request("programmatic/message/send", {
                     "session_id": session, "message_id": "one", "text": "changed",
                 })
-            query = {"session_id": session, "input_id": "one"}
-            assert (await client.request("programmatic/message/result", query))["status"] == "open"
+            query: dict[str, object] = {"session_id": session, "input_id": "one"}
+            assert response_data(await client.request("programmatic/message/result", query))["status"] == "open"
             await client.request("programmatic/message/pause", {"session_id": session, "message_id": "pause"})
-            assert (await client.request("programmatic/message/result", query))["status"] == "pause"
+            assert response_data(await client.request("programmatic/message/result", query))["status"] == "pause"
             await client.request("programmatic/message/resume", {**query, "message_id": "resume"})
-            assert (await client.request("programmatic/message/result", query))["status"] == "open"
+            assert response_data(await client.request("programmatic/message/result", query))["status"] == "open"
         assert core.message_log.catalog().attributes(session) == SessionAttributes("internal", "excluded")
         assert sum(isinstance(row.body, Input) for row in core.message_log.reader(session).snapshot()) == 1
 
@@ -179,6 +186,7 @@ async def test_programmatic_requests_keep_exact_snapshot_while_follow_does_not_p
     async with endpoint(tmp_path, monkeypatch) as (address, core):
         manager = core.plugin_manager
         old = manager.current_snapshot
+        assert old is not None
         api = old.composition_root.context.require(PROGRAMMATIC)
         original = api.call
         entered, release = asyncio.Event(), asyncio.Event()

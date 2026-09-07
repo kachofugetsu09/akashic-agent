@@ -506,8 +506,11 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
             reference = snapshot.composition_root.context.require(BINDINGS).bind(ServiceKey("test.history"), {})
         attachment = await physical.import_bytes(b"historical attachment bytes", kind=AttachmentKind.FILE,
                                                 filename="history.txt", media_type="text/plain")
+        def check_file(part):
+            assert isinstance(part.value, str)
+            return ContentReferences(artifact_ids=(part.value,))
         log.writer("past", author="user", source="conversation", body_types=(Input,),
-            content={"file": lambda part: ContentReferences(artifact_ids=(part.value,))}).append(
+            content={"file": check_file}).append(
             "past-input", Input((ContentPart("file", attachment.artifact_id),)))
         assert (workspace / "sessions.db-wal").stat().st_size > 0
         (source / "plugin.py").write_text(MODULE)

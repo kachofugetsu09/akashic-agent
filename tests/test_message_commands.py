@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,6 +13,11 @@ from plugins.conversation.plugin import CONVERSATION
 from session.log import MessageWriter
 from session.message import Control, Output
 from tests.test_channel_input import raw, runtime
+
+
+def input_id(value: object) -> object:
+    assert isinstance(value, Mapping)
+    return value["input_id"]
 
 
 def command_plugin(tmp_path, *, read_only=False, recover=True, quiet=False, blocked=False):
@@ -150,6 +156,7 @@ async def test_new_input_cancels_command_and_recovery_cannot_close_newer_input(t
             rows = log.reader("probe:room").snapshot()
             assert len(rows) == 3
             assert rows[-1].body.finish == "continue"
+            assert isinstance(rows[-1].body.parts[0].value, Mapping)
             assert rows[-1].body.parts[0].value["input_id"] == "first"
             from plugins.conversation.source import needs_reply
             assert needs_reply(rows, "conversation")
@@ -174,6 +181,7 @@ async def test_default_reply_short_circuits_command_before_model_or_tool(tmp_pat
                 if any(isinstance(row.body, Output) for row in rows):
                     return rows
         rows = await asyncio.wait_for(finished(), 3)
+        assert rows is not None
         assert len(rows) == 2 and rows[-1].body.finish == "complete"
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             assert snapshot.composition_root.context.require(ServiceKey("fixture.calls")) == []
@@ -236,6 +244,8 @@ async def test_multiple_pending_commands_publish_in_input_order_not_receipt_key_
         assert [row.value["input_id"] for _, row in intents] == ["a_second", "z_first"]
         result = await run(host, resume="a_second")
         outputs = [m for m in log.reader("probe:room").snapshot() if isinstance(m.body, Output)]
-        assert [m.body.parts[0].value["input_id"] for m in outputs] == ["z_first", "a_second"]
+        assert all(isinstance(m.body.parts[0].value, Mapping) for m in outputs)
+        values = [m.body.parts[0].value for m in outputs]
+        assert [input_id(value) for value in values] == ["z_first", "a_second"]
         assert [m.body.finish for m in outputs] == ["continue", "complete"]
         assert result == outputs[-1]

@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -37,6 +38,20 @@ class ModelControl:
 
 
 CONTROLS: dict[str, ModelControl] = {}
+
+
+def text_part(part: ContentPart | ToolCall) -> str:
+    """Read a fixture text part after checking the persisted part shape."""
+    assert isinstance(part, ContentPart)
+    assert isinstance(part.value, str)
+    return part.value
+
+
+def mapping_part(part: ContentPart | ToolCall) -> Mapping[str, object]:
+    """Read a fixture object part after checking its JSON shape."""
+    assert isinstance(part, ContentPart)
+    assert isinstance(part.value, Mapping)
+    return part.value
 
 
 @asynccontextmanager
@@ -159,14 +174,14 @@ async def test_sync_spawn_persists_internal_flow_and_replays_original_result(tmp
                 return original_open(path, mode, *args, **kwargs)
             monkeypatch.setattr(Path, "open", open_file)
         result = await asyncio.wait_for(execution.execute_call(reply), 15)
-        assert result.outcome == "success" and "child finished" in result.parts[0].value
+        assert result.outcome == "success" and "child finished" in text_part(result.parts[0])
         sessions = [key for key in log.catalog().snapshot_heads() if key.startswith("subagent:")]
         assert len(sessions) == 1
         reader = log.reader(sessions[0])
         assert reader.attributes.visibility == "internal" and reader.attributes.learning == "excluded"
         rows = reader.snapshot()
         assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output]
-        request = next(part.value for part in rows[0].body.parts if part.kind == "subagent.request")
+        request = next(mapping_part(part) for part in rows[0].body.parts if isinstance(part, ContentPart) and part.kind == "subagent.request")
         path = tmp_path / "workspace/subagent-runs" / request["job_id"] / "answer.txt"
         assert path.read_text() == "once"
         stamp = path.stat().st_mtime_ns
@@ -181,7 +196,7 @@ async def test_sync_spawn_persists_internal_flow_and_replays_original_result(tmp
 async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path):
     async with application(tmp_path, background=True) as (host, log, execution, reply):
         result = await asyncio.wait_for(execution.execute_call(reply), 15)
-        assert result.outcome == "success" and "已创建后台任务" in result.parts[0].value
+        assert result.outcome == "success" and "已创建后台任务" in text_part(result.parts[0])
         async def completed():
             async for _ in log.catalog().follow():
                 rows = log.reader("test:parent").snapshot()
@@ -190,8 +205,8 @@ async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path
                 if outputs:
                     return outputs[-1]
         message = await asyncio.wait_for(completed(), 15)
-        assert "child finished" in message.body.parts[0].value
-        assert "main summary" in message.body.parts[0].value
+        assert "child finished" in text_part(message.body.parts[0])
+        assert "main summary" in text_part(message.body.parts[0])
         _, address, sent = await asyncio.wait_for(CONTROLS[str(tmp_path)].sent.get(), 10)
         assert address == "parent" and sent == message
         assert CONTROLS[str(tmp_path)].main_calls == 1
@@ -222,15 +237,15 @@ async def test_capacity_and_cancel_hold_until_original_child_is_drained(tmp_path
             await asyncio.wait_for(control.entered.get(), 10)
         before = log.catalog().snapshot_heads()
         refused = await execution.execute_call(additional_call(log, reply, 3))
-        assert refused.outcome == "error" and "capacity reached" in refused.parts[0].value
+        assert refused.outcome == "error" and "capacity reached" in text_part(refused.parts[0])
         assert set(before) == set(log.catalog().snapshot_heads())
         children = [log.reader(key) for key in before if key.startswith("subagent:")]
-        request = next(part.value for part in children[0].snapshot()[0].body.parts if part.kind == "subagent.request")
+        request = next(mapping_part(part) for part in children[0].snapshot()[0].body.parts if isinstance(part, ContentPart) and part.kind == "subagent.request")
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
             manage = ctx.require(TOOLS).bind("spawn_manage", ctx.require(BINDINGS))
         cancelled = await asyncio.wait_for(execution.execute("cancel", manage, {"action": "cancel", "job_id": request["job_id"]}), 10)
-        assert cancelled.outcome == "success" and "cancel_requested" in cancelled.parts[0].value
+        assert cancelled.outcome == "success" and "cancel_requested" in text_part(cancelled.parts[0])
         assert all(not isinstance(row.body, Output) for row in children[0].snapshot())
         control.release.set()
         async def completed():
@@ -241,8 +256,9 @@ async def test_capacity_and_cancel_hold_until_original_child_is_drained(tmp_path
                 if len(outputs) == 3:
                     return outputs
         inputs = await asyncio.wait_for(completed(), 10)
-        assert sum("cancelled" in row.body.parts[0].value for row in inputs) == 1
-        assert sum("child finished" in row.body.parts[0].value for row in inputs) == 2
+        assert inputs is not None
+        assert sum("cancelled" in text_part(row.body.parts[0]) for row in inputs) == 1
+        assert sum("child finished" in text_part(row.body.parts[0]) for row in inputs) == 2
         assert control.calls == 5
 
 
@@ -297,19 +313,28 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                     if returned:
                         return returned
             returned = await asyncio.wait_for(completed(), 10)
-            assert len(returned) == 1 and "main summary: child finished" in returned[0].body.parts[0].value
+            assert returned is not None
+            assert len(returned) == 1 and "main summary: child finished" in text_part(returned[0].body.parts[0])
             _, address, sent = await asyncio.wait_for(CONTROLS[str(tmp_path)].sent.get(), 10)
             assert address == "parent" and sent == returned[0]
             assert CONTROLS[str(tmp_path)].main_calls == (2 if stage == "finished" else 1)
-            assert "new provider result" not in returned[0].body.parts[0].value
+            assert "new provider result" not in text_part(returned[0].body.parts[0])
             assert reopened.reader(session_id).snapshot()[0] == original[0]
             assert CONTROLS[str(tmp_path)].calls == 2
-            request = next(part.value for part in original[0].body.parts if part.kind == "subagent.request")
+            request = next(mapping_part(part) for part in original[0].body.parts if isinstance(part, ContentPart) and part.kind == "subagent.request")
             task_dir = workspace / "subagent-runs" / request["job_id"]
             assert (task_dir / "answer.txt").read_text() == "once"
             async with lease_runtime_snapshot(resumed.snapshot_store) as snapshot:
                 bindings = snapshot.composition_root.context.require(BINDINGS)
-                assert bindings.describe(request["tools"]["write_file"], TOOLS)["state"]["allowed_dir"] == str(task_dir)
+                tools_value = request.get("tools")
+                assert isinstance(tools_value, Mapping)
+                write_binding = tools_value.get("write_file")
+                assert isinstance(write_binding, str)
+                description = bindings.describe(write_binding, TOOLS)
+                assert isinstance(description, Mapping)
+                state = description.get("state")
+                assert isinstance(state, Mapping)
+                assert state.get("allowed_dir") == str(task_dir)
             await resumed.terminate_all()
             reopened.close()
             metadata.close()
@@ -330,8 +355,10 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                 manage = context.require(TOOLS).bind("spawn_manage", bindings)
                 async with open_tool(bindings, manage) as tool:
                     result = await tool.invoke("list", {"action": "list"})
-                    assert '"running_count": 0' in result.parts[0].value
-            assert len(await completed()) == 1 and CONTROLS[str(tmp_path)].calls == 2
+                    assert '"running_count": 0' in text_part(result.parts[0])
+            completed_messages = await completed()
+            assert completed_messages is not None
+            assert len(completed_messages) == 1 and CONTROLS[str(tmp_path)].calls == 2
         finally:
             await resumed.terminate_all()
             reopened.close()
@@ -354,7 +381,7 @@ async def test_background_main_program_keeps_tools_and_new_input_interrupts_it(t
             await conversation.accept("human-followup", Input((ContentPart("text", "[human followup]"),)))
         control.main_release.set()
         _, address, result = await asyncio.wait_for(control.sent.get(), 10)
-        assert address == "parent" and "main summary" in result.body.parts[0].value
+        assert address == "parent" and "main summary" in text_part(result.body.parts[0])
         rows = log.reader("test:parent").snapshot()
         assert [item.message_id for item in rows if isinstance(item.body, Input)] == ["parent-input", "human-followup"]
         assert any(item.source == "conversation" and isinstance(item.body, Output) and item.body.finish == "complete" for item in rows)

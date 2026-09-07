@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import Awaitable
+from typing import cast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import shutil
@@ -6,6 +8,8 @@ import shutil
 import pytest
 
 from agent.plugin_composition import ServiceKey
+from agent.plugin_composition import RUNTIME_STARTED
+from agent.plugin_composition.events import EventKey
 from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore, fire_key
@@ -223,7 +227,6 @@ async def test_restart_preclaims_passive_effect_before_scheduler_or_archive_can_
     """原回复丢失本地回执后重启，启动顺序与归档 Root 都不能绕过首次恢复查询。"""
     import sys
     from types import ModuleType
-    from agent.plugin_composition import RUNTIME_STARTED
     from agent.plugin_composition.bindings import Bindings
     from agent.plugin_composition.tasks import Tasks
     from agent.plugins.manager import PluginManager
@@ -300,14 +303,16 @@ async def test_restart_preclaims_passive_effect_before_scheduler_or_archive_can_
                 assert not archive_waiter.done()
                 waiting.clear()
                 # 受控顺序：真正 Scheduler 先启动并抵达 idle wait，策略此时还没启动 follower。
-                listeners = root._events._listeners[RUNTIME_STARTED]
+                listeners = root._events._listeners[cast(EventKey, RUNTIME_STARTED)]
                 scheduler = next(item for item in listeners if item.owner.runtime.plugin_id == "scheduler")
                 listeners.remove(scheduler)
                 listeners.insert(0, scheduler)
                 start = scheduler.callback
 
                 async def start_first(event):
-                    await start(event)
+                    result = start(event)
+                    assert isinstance(result, Awaitable)
+                    await result
                     await waiting.wait()
 
                 from dataclasses import replace

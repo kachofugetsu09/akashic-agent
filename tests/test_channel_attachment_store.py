@@ -618,6 +618,7 @@ async def test_model_image_budget_rejects_before_acquiring_any_lease(
     match: str,
 ) -> None:
     from plugins.models.content import load_artifacts
+    from session.artifacts import AttachmentReadLease
 
     refs = tuple(
         AttachmentRef(
@@ -635,7 +636,7 @@ async def test_model_image_budget_rejects_before_acquiring_any_lease(
         def __init__(self) -> None:
             self.acquire_calls = 0
 
-        async def acquire(self, _ref: AttachmentRef) -> object:
+        async def acquire(self, ref: AttachmentRef) -> AttachmentReadLease:
             self.acquire_calls += 1
             raise AssertionError("image budget must be checked before acquire")
 

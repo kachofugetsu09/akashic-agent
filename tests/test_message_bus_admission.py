@@ -89,9 +89,11 @@ def _v3_inbound(
     channel: str = "feishu",
 ) -> tuple[InboundEnvelope, _InboundLease]:
     lease = _InboundLease(close_gate, channel=channel)
+    session_key = (metadata or {}).get("session_key_override", f"{channel}:chat-1")
+    assert isinstance(session_key, str)
     envelope = InboundEnvelope(
         message_id=message_id,
-        session_key=(metadata or {}).get("session_key_override", f"{channel}:chat-1"),
+        session_key=session_key,
         snapshot_id=lease.snapshot_id,
         generation_id=lease.generation_id,
         binding_token=lease.binding_token,

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from collections.abc import Mapping
 
 from plugins.eventmail.store import EventMailStore
 
@@ -9,6 +10,7 @@ def test_exact_alert_claim_preserves_version_identity_and_completed_claims(tmp_p
     now = datetime.now(timezone.utc)
     store.report_alert(source_id="source", event_id="original", payload={"body": "original"}, observed_at=now)
     ref = store.peek_alert(now)
+    assert isinstance(ref, Mapping)
     accepted = {"session_id": "wake:flow", "turn_id": "input"}
     # 快照后出现更早的另一条目；原请求仍只能领取准确候选。
     store.report_alert(source_id="source", event_id="earlier", payload={"body": "earlier"}, observed_at=now - timedelta(seconds=1))
@@ -22,7 +24,9 @@ def test_exact_alert_claim_preserves_version_identity_and_completed_claims(tmp_p
     # 同一 logical identity 的更新产生新 envelope；旧 Input 不得领取或结算新版本。
     store.report_alert(source_id="source", event_id="original", payload={"body": "new revision"}, observed_at=now + timedelta(seconds=3))
     assert store.select_alert(accepted, now + timedelta(seconds=4), item_ref=ref) is None
-    assert store.alert_status("source", "original", mail_id=ref["mail_id"]) == "superseded"
+    mail_id = ref.get("mail_id")
+    assert isinstance(mail_id, str)
+    assert store.alert_status("source", "original", mail_id=mail_id) == "superseded"
     for action in ("deliver", "skip", "expire"):
         assert not store.change_alert(ref, accepted, action, now + timedelta(days=1))
     assert not store.change_alert(ref, accepted, "defer", now, not_before=now + timedelta(days=1))
@@ -37,6 +41,7 @@ def test_pending_expiration_never_removes_selected_alert_recovery_identity(tmp_p
     for identity in ("selected", "pending"):
         store.report_alert(source_id="source", event_id=identity, payload={"body": identity}, observed_at=now, expires_at=expiry)
     ref = store.peek_alert(now)
+    assert isinstance(ref, Mapping)
     accepted = {"session_id": "wake:flow", "turn_id": "input"}
     selected = store.select_alert(accepted, now, item_ref=ref)
     later = expiry + timedelta(seconds=1)
