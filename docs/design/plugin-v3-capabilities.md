@@ -114,15 +114,22 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 
 ### 4.2 Message、Session 与上下文
 
-| Key | 主要方法 | 用途 |
+当前生产组合中与 Message、Context 和 Turn projection 直接相关的能力如下：
+
+| Key | owner | 用途 |
 |---|---|---|
-| `MESSAGE_CATALOG` | 读取已提交 Message | 只读消息正文和稳定身份 |
-| `MESSAGE_WRITERS` | 使用已绑定 writer 追加消息 | 按权限追加 Input、Output 或 ToolResult |
-| `SESSION_ADMISSION` | 校验 Session 与来源准入 | 建立写入和控制边界 |
-| `SESSION_READ` | `read(session_key)` | 只读既有 Session 投影 |
-| `SESSION_COMPACTION_STORAGE` | `history_units()`、`prepare()`、`persist()` | Compaction 专用窄持久化边界 |
-| `PROVIDER_REQUEST_PROJECTION` | `open_turn(...)` | provider request 的冻结投影和 retry gate |
-| `CONTEXT_PROJECTION_FACTS` | `list_committed()`、`get_committed()` | 读取已提交上下文投影事实 |
+| `MESSAGE_CATALOG` | Core Message owner | 读取已提交 Message |
+| `MESSAGE_WRITERS` | Core Message owner | 按绑定权限追加 Input、Output 或 ToolResult |
+| `SESSION_ADMISSION` | Core Message owner | 校验 Session 与来源准入 |
+| `MESSAGE_EMBEDDINGS` | Core Message owner | 读取和追加 Message embedding |
+| `CONTEXT` | `plugins.context` | 用已选 Message 与材料组装 provider request |
+| `MATERIALS` | `plugins.context` | 注册并按来源选择 Prompt、摘要与其他 Context 材料 |
+| `COMPACTION_SUMMARIES` | `plugins.compaction` | 读取已发布摘要记录和父链 |
+| `TURN_PROJECTION` | `plugins.turn_projection` | 从 Message 日志读取无状态 Turn 投影 |
+
+`SESSION_READ`、`SESSION_COMPACTION_STORAGE`、`PROVIDER_REQUEST_PROJECTION` 和
+`CONTEXT_PROJECTION_FACTS` 仍可能出现在旧定义、导出或兼容分支中；它们不属于当前
+Context/Compaction 的生产 public capability 表。
 
 Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影，不是 Core Service 中的可变执行对象。
 消费者自行保存 cursor 和学习状态；投影不能授权消息写入、工具执行或外部发送。
@@ -184,7 +191,8 @@ committed snapshot ── stable/latest pointer ── request lease
 ```
 
 - Candidate 使用隔离 Root、plugin-data 副本、workspace 投影、端口和外部效果策略，不能
-  复用 stable Root 或正式 plugin-data 宣称通过。
+  作为 stable Root 执行，也不能复用 stable 的执行或数据效果。owner 不变时可以复用已批准的不可变 catalog，
+  但不能借此取得 stable 的运行状态或写入权。
 - Root 只生成能力，不能自行晋升。artifact、journal、stable/latest、parent Turn 授权和恢复由 Core
   publication plane 拥有。
 - Workspace path 是显式授予正式数据 owner 的高权限能力，不应替代窄 Service；candidate

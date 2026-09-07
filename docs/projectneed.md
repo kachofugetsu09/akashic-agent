@@ -391,7 +391,7 @@ subagent 的主循环、两种收束摘要和 mandatory exit 四个 provider 入
 ledger。插件 jobs、history route 和视觉短调用由各自 owner 管理，不进入此 Gate；超窗继续
 暴露既有 provider 错误或该 owner 已声明的 fail-open 语义。
 
-统一的 `ContextCompactor` 不拆分已提交的完整 Turn 投影；开放 source 段只把完整闭合的 tool-call/result batch 当作临时压缩单元。当前 user anchor、未闭合工具
+Compaction 插件不拆分已提交的完整 Turn 投影；开放 source 段只把完整闭合的 tool-call/result batch 当作临时压缩单元。当前 user anchor、未闭合工具
 和外部效果证据必须保留；raw tail 从后向前累计至少 20,000 token，
 跨过完整 Turn 单元可以略大于 20,000。若没有合法切点使重建 payload 同时低于软水位和
 硬边界，必须阻断本次调用。tool call 返回后先完整执行 batch，下一次 provider 调用
@@ -557,7 +557,7 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 同一 `session_key` 与 `source` 的 Message 接纳和回复按来源顺序处理；不同 source 可以并发。全局 active task、请求字节和 runtime object 上限只负责有界准入，不得以跨 session 的整轮互斥实现。Message、文件读取状态、工具 trace、取消信号和 runtime snapshot 绑定属于 task-local 状态；共享 runtime service 只能保留有明确 owner、可并发使用或受短事务保护的状态。
 
-### RUN-008 活动来源只接受控制并原子收束
+### RUN-008 来源内输入与控制按序收束
 
 来源 owner 在活动 Task scope 上按 source 顺序接纳普通 Input：Input 先追加到 Message 日志，再取消并替换旧 scope；旧 scope 的 Output writer 以旧 `expected_source_head` 提交时必须冲突。控制只接受 `pause`、`resume`、`abandon` 和 `failure`，通过明确 `source` 与 `through_seq` 追加到 Message 日志，再按 owner 规则取消并等待 scope；`/stop` 入口映射为 `pause`。Output 只允许 `continue`、`complete` 或 `quiet`，失败由 `Control.failure` 或 owner receipt 追加一次。下一条普通 Input 是否续接开放 Turn 由来源插件决定，不建立 Core 专属执行记录。
 
@@ -973,7 +973,7 @@ Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。
 
 ### SEC-007 Shell 与 Subagent 准入有界
 
-Shell 的 retained log、同步 subagent 和后台 subagent 共享真实 admission owner；MessageBus 只负责这些 Shell/subagent 操作的准入和 lane 顺序，不设置独立的全局 backpressure 或容量拒绝。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。Mobile 的崩溃恢复由持久 handoff owner 保证；控制 admission 只统计 queued/running Task 的数量、实际字节和 live runtime objects，不统计历史 Message 或 programmatic source。
+Shell 的 retained log、同步 subagent 和后台 subagent 保留各自既有 admission owner；同步路径不能绕过既有容量约束。MessageBus 不拥有 Shell/Subagent 的准入，也不设置独立的全局 backpressure 或容量拒绝，只负责 channel lane 顺序。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。Mobile 的崩溃恢复由持久 handoff owner 保证；控制 admission 只统计 queued/running Task 的数量、实际字节和 live runtime objects，不统计历史 Message 或 programmatic source。
 
 ### SEC-011 Subagent 与 Wake 的内部消息可恢复
 

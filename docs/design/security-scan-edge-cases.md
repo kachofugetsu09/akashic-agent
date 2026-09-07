@@ -84,9 +84,9 @@ Mutants：有效 receipt 被高水位删除、processing 被盲删重放、hando
 
 ## 9. Shell、Subagent 与 MessageBus（G7 / D7、G8 / D8）
 
-Shell retained log 由 execution owner 管理，达到 cap 只拒绝当前 execution。terminal cleanup 失败保留 execution/log owner 和诊断，并隔离同 owner 新 spawn；已经提交的 turn 不改回失败。同步 subagent 和后台 subagent 使用同一个 admission owner，不能由同步路径绕过容量。
+Shell retained log 由 execution owner 管理，达到 cap 只拒绝当前 execution。terminal cleanup 失败保留 execution/log owner 和诊断，并隔离同 owner 新 spawn；已经提交的 turn 不改回失败。同步 subagent 和后台 subagent 继续使用各自既有 admission owner，不能由同步路径绕过既有容量。
 
-MessageBus 只负责 Shell/subagent 操作的准入和 lane 顺序，不设置独立全局 backpressure 或容量拒绝；Mobile accepted 另由 durable handoff 保证崩溃恢复，直到 handoff 删除确认。控制 admission 只统计 queued/running Task 的数量、字节和 live runtime objects，不统计历史 Message 或 programmatic source。
+MessageBus 不拥有 Shell/Subagent 的准入，也不设置独立全局 backpressure 或容量拒绝，只负责 channel lane 顺序；Mobile accepted 由 durable handoff 保证崩溃恢复，直到 handoff 删除确认。控制 admission 只统计 queued/running Task 的数量、字节和 live runtime objects，不统计历史 Message 或 programmatic source。
 
 Mutants：cleanup 丢失 owner、sync spawn 绕过 admission、已接纳 Mobile handoff 静默丢失、历史 thread 阻止新 turn。
 
