@@ -6,10 +6,10 @@ import json
 import re
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
-from plugins.tools.api import BoundTool, CallSource, Result
+from plugins.tools.api import BoundTool, CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS
 from session.message import ContentPart
 from session.message_codec import json_value
@@ -78,7 +78,11 @@ class SearchTool:
         self._candidates = candidates
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
-        return Query.model_validate(json_value(arguments)).model_dump(mode="json")
+        """把模型输入校验失败交回工具结果，让本轮可以纠正参数。"""
+        try:
+            return Query.model_validate(json_value(arguments)).model_dump(mode="json")
+        except ValidationError as error:
+            raise InvalidArguments(str(error)) from error
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         query = Query.model_validate(json_value(arguments))

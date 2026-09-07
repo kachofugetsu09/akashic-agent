@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
 from agent.plugins.archive import PluginArchive
@@ -15,7 +15,7 @@ from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.skills import SkillRecord, skill_body
 from plugins.context.api import Materials
 from plugins.context.materials import MATERIALS
-from plugins.tools.api import CallSource, Result
+from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS
 from session.message import ContentPart, Message
 from session.message_codec import json_value
@@ -78,7 +78,11 @@ class SkillTool:
         self._state = state
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
-        return SkillQuery.model_validate(json_value(arguments)).model_dump()
+        """把模型输入校验失败交回工具结果，让本轮可以纠正参数。"""
+        try:
+            return SkillQuery.model_validate(json_value(arguments)).model_dump()
+        except ValidationError as error:
+            raise InvalidArguments(str(error)) from error
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         """只打开原绑定的文件树；失效路径不改读当前安装或 latest。"""

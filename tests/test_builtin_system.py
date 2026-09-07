@@ -282,6 +282,32 @@ async def test_failure_is_recorded_and_same_session_can_continue(tmp_path: Path,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tool,arguments", [
+    ("tool_search", {"query": "write_file", "select": "write_file"}),
+    ("load_skill", {"skill": 42}),
+])
+async def test_builtin_argument_error_allows_same_turn_to_continue(tmp_path: Path, tool: str, arguments: dict) -> None:
+    """模型参数错误作为工具结果保存，同轮纠正后仍能执行实际文件操作。"""
+    model = ScriptedModel(tmp_path)
+    effect = tmp_path / "recovered.txt"
+    model.steps["recover_arguments"] = [
+        (tool, arguments),
+        ("tool_search", {"query": "select:write_file"}),
+        ("write_file", {"path": str(effect), "content": "RECOVERED:参数错误"}),
+    ]
+    settings = {"plugins": {"reply": 'tools = ["tool_search", "load_skill", "write_file"]\n'}}
+    async with model.serve() as endpoint:
+        async with runtime(tmp_path, endpoint, settings=settings) as (_process, address):
+            async with await AsyncAkashic.connect(address) as client:
+                session = (await client.session_create())["session_id"]
+                rows = await complete(client, session, "recover_arguments")
+                assert tool_outcomes(rows) == ["error", "success", "success"], rows
+                assert rows[-1]["body"].get("finish") == "complete"
+                assert effect.read_text() == "RECOVERED:参数错误"
+                assert len(model.requests) == 4, "模型必须收到参数错误后在同轮继续"
+
+
+@pytest.mark.asyncio
 async def test_model_settings_switch_keeps_inflight_request_and_changes_next_input(tmp_path: Path) -> None:
     """真实 HTTP 设置切换后，旧请求仍由原 endpoint 完成，新输入只调用新 endpoint。"""
     old, new = ScriptedModel(tmp_path), ScriptedModel(tmp_path)
