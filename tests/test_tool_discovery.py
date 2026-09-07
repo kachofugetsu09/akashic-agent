@@ -10,10 +10,10 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tools.menu import ToolMenu
-from plugins.tools.api import MessageReply
+from plugins.tools.api import MessageReply, result_message_id
 from plugins.tools.plugin import TOOLS, open_tool
 from session.log import MessageLog
-from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
+from session.message import CallRef, ContentPart, ContentReferences, Input, Output, ToolCall, ToolResult
 from tests.test_tool_bindings import write_plugins
 
 
@@ -172,6 +172,51 @@ async def test_discovery_menu_keeps_fixed_tools_above_legacy_default_and_selects
                    )
         assert [item["function"]["name"] for item in menu.schemas] == [*_ALWAYS_ON, "tool_search", "example"]
         assert menu.bind("example") == candidate
+    finally:
+        await host.terminate_all()
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_search_invalid_call_returns_error_then_corrected_call_succeeds_in_same_output(tmp_path):
+    sources = _discovery_sources(tmp_path)
+    log = MessageLog(tmp_path / "sessions.db")
+    host = _manager(tmp_path, [sources], log)
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+
+            async def authorize(binding_id, arguments):
+                return {"policy": "test"}
+
+            execution = catalog.execution(authorize)
+            menu = ToolMenu(catalog, bindings, execution, _unexpected_reply,
+                            names=("example", "tool_search"), reader=log.reader("s"), source="chat")
+            _ = menu.schemas
+            search_id = menu.bind("tool_search")
+            output = log.writer("s", author="assistant", source="chat", body_types=(Output,),
+                                content={}, check_call=menu.check_call)
+            output.append("searches", Output((
+                ToolCall(search_id, {}),
+                ToolCall(search_id, {"query": "select:example"}),
+            ), "continue"))
+
+            def reply(index):
+                ref = CallRef("searches", index)
+                writer = log.writer("s", author="tool", source="chat", body_types=(ToolResult,),
+                                    content={"text": lambda part: ContentReferences(),
+                                             "tool.selection": lambda part: menu.check_selection(ref, part)},
+                                    call_ref=ref)
+                return MessageReply(result_message_id(ref), ref, log.reader("s"), writer, lambda: None)
+
+            invalid = await execution.execute_call(reply(0))
+            corrected = await execution.execute_call(reply(1))
+            assert invalid.outcome == "error"
+            assert "query" in invalid.parts[0].value
+            assert corrected.outcome == "success"
+            assert corrected.parts[-1].value == (_candidate(bindings.describe(search_id, TOOLS), "example"),)
     finally:
         await host.terminate_all()
         log.close()
