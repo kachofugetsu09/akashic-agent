@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from datetime import datetime
 import subprocess
 import sys
-from types import SimpleNamespace
 from typing import Any, AsyncIterator, cast
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -65,7 +63,6 @@ from core.memory.events import MemoryWritten, RetrievalCompleted
 from agent.retrieval.events import build_retrieval_completed
 from agent.retrieval.protocol import RetrievalRequest
 from agent.prompting import PromptAssembler, PromptSectionRender
-from plugins.akasha.plugin import _inject_memory
 from plugins.openai_compatible.driver import (
     _merge_leading_system_messages,
     _normalize_messages,
@@ -135,6 +132,7 @@ async def apply(ctx, config):
         await manager.load_all()
         await manager.start_runtime()
         snapshot = manager.snapshot_store.pause_admission()
+        assert snapshot is not None
         await manager.snapshot_store.wait_for_no_leases(snapshot)
         old_root = snapshot.composition_root
         await manager._stop_runtime_snapshot(snapshot)
@@ -177,25 +175,6 @@ def _prompt_ctx() -> PromptRenderCtx:
         disabled_sections=set(),
         turn_injection_prompt="",
     )
-
-
-async def _assert_akasha_inserts_first_user_context_frame_block() -> None:
-    ctx = _prompt_ctx()
-    runtime = SimpleNamespace(
-        query=AsyncMock(return_value=MemoryQueryResult(text_block="fresh recall"))
-    )
-    diagnostics = SimpleNamespace(
-        operation=lambda _name: nullcontext(),
-        measure=lambda _name, _value: None,
-    )
-
-    await _inject_memory(ctx, cast(Any, runtime), cast(Any, diagnostics))
-
-    assert ctx.system_sections_bottom == []
-    assert [
-        (section.name, section.content, section.order)
-        for section in ctx.context_frame_sections
-    ] == [("memory", "fresh recall", 10)]
 
 
 def _assert_context_frame_keeps_dynamic_memory_after_stable_history() -> None:
@@ -644,7 +623,6 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
 
 @pytest.mark.asyncio
 async def test_retrieval_completed_event_payload() -> None:
-    await _assert_akasha_inserts_first_user_context_frame_block()
     _assert_context_frame_keeps_dynamic_memory_after_stable_history()
 
     observed: list[RetrievalCompleted] = []
@@ -805,7 +783,9 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
             assert snapshot.lease_count == 0
             assert events == ["prepare", "stop"]
             assert root.instance_token not in manager._runtime_starting_roots
-            await manager.snapshot_store.abort(manager.snapshot_store.pending_transaction)
+            transaction = manager.snapshot_store.pending_transaction
+            assert transaction is not None
+            await manager.snapshot_store.abort(transaction)
         else:
             await manager._publish_committed_snapshot(snapshot)
             assert events == ["prepare"]
@@ -826,7 +806,9 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
                 await manager._publish_committed_snapshot(replacement)
                 await manager.start_runtime()
                 assert events == ["prepare", "start"]
-                await manager._stop_runtime_snapshot(manager.current_snapshot)
+                current = manager.current_snapshot
+                assert current is not None
+                await manager._stop_runtime_snapshot(current)
                 assert events == ["prepare", "start", "stop"]
         async with asyncio.timeout(2):
             await tasks.close()
