@@ -16,7 +16,7 @@ from .domain.model import Turn
 from .infrastructure.consumption import Consumption
 from .infrastructure.sparse_index.encoding import tokenize
 from session.log import MessageCatalog, OwnerStore
-from session.message import CallRef, ContentPart
+from session.message import CallRef
 from session.message_codec import json_value
 
 if TYPE_CHECKING:

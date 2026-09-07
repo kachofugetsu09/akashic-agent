@@ -10,7 +10,7 @@ from plugins.content.api import Reference
 from agent.plugin_composition.models import BoundChatModel, LLMResponse, ModelRequest
 from plugins.context.api import ContextModel, Materials, Reminder, Summary
 from plugins.context.materials import ContextMaterials
-from session.message import ContentPart, Message
+from session.message import Message
 
 
 class _UnreachedModel:
@@ -97,7 +97,7 @@ async def test_materials_fix_explicit_order_and_keep_retrieval_evidence_out_of_p
             assert result.system_prompt == "fixed persona"
             assert result.reminders == (Reminder("memory", "published profile", 300),)
             assert result.references == (Reference("memory:1", retrieval_ref="retrieval:1"),)
-            assert calls == ["persona", "memory"]
+            assert calls == ["memory", "persona"]
         with pytest.raises(RuntimeError, match="关闭"):
             await view.prepare((), "conversation")
 
@@ -245,3 +245,55 @@ async def test_duplicate_reminder_identity_rejects_different_priorities():
         async with service.bind() as view:
             with pytest.raises(ValueError, match="身份重复"):
                 await view.prepare((), "conversation")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("priority", [-100, 300])
+async def test_display_priority_cannot_move_a_write_before_a_failed_preparation(tmp_path, priority):
+    """优先级变化只改输出排列，不能让原本被前置错误阻止的写入发生。"""
+    import asyncio
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    artifact = tmp_path / "prepared"
+
+    async def fail(snapshot, source):
+        entered.set()
+        await release.wait()
+        raise OSError("source read failed")
+
+    async def write(snapshot, source):
+        artifact.write_text("prepared")
+        return Materials("")
+
+    async with catalog() as (ctx, service, _):
+        await service.register(ctx, name="a", prepare=fail, priority=100)
+        await service.register(ctx, name="z", prepare=write, priority=priority)
+        async with service.bind() as view:
+            task = asyncio.create_task(view.prepare((), "conversation"))
+            await entered.wait()
+            assert not artifact.exists()
+            release.set()
+            with pytest.raises(OSError, match="source read failed"):
+                await task
+        assert not artifact.exists()
+
+
+@pytest.mark.asyncio
+async def test_system_priority_sorts_output_without_reordering_preparation():
+    calls = []
+
+    async def first(snapshot, source):
+        calls.append("a")
+        return Materials("first")
+
+    async def second(snapshot, source):
+        calls.append("z")
+        return Materials("second")
+
+    async with catalog(prompt_sources={"a": "trusted", "z": "trusted"}) as (ctx, service, _):
+        await service.register(ctx, name="z", prepare=second, priority=-100, prompt=True)
+        await service.register(ctx, name="a", prepare=first, priority=100, prompt=True)
+        async with service.bind() as view:
+            result = await view.prepare((), "conversation")
+    assert calls == ["a", "z"]
+    assert result.system_prompt == "second\n\nfirst"

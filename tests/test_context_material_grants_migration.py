@@ -77,7 +77,7 @@ def test_force_init_backs_up_config_and_preserves_owned_assets(tmp_path):
     assert all(path.read_text() == "operator owned bytes\n" for path in assets)
 
 
-@pytest.mark.parametrize("custom", [False, True])
+@pytest.mark.parametrize("custom", ["default", "custom", "comment"])
 def test_skill_prompt_grant_backs_up_defaults_and_keeps_custom_choice(tmp_path, custom):
     directory = tmp_path / "migrations"
     directory.mkdir()
@@ -87,8 +87,10 @@ def test_skill_prompt_grant_backs_up_defaults_and_keeps_custom_choice(tmp_path, 
     workspace = tmp_path / "workspace"
     path = workspace / "plugin-data/context-builtin/config.local.toml"
     path.parent.mkdir(parents=True)
-    before = ('prompt_sources = {custom = "custom"}\n' if custom else
+    before = ('prompt_sources = {custom = "custom"}\n' if custom == "custom" else
               'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory"}\nsummary_source = ["compaction", "compaction"]\n')
+    if custom == "comment":
+        before += "# operator note\n"
     path.write_text(before)
     backend = get_backend(f"sqlite:///{tmp_path / 'ledger.db'}")
     migrations = read_migrations(str(directory))
@@ -96,7 +98,7 @@ def test_skill_prompt_grant_backs_up_defaults_and_keeps_custom_choice(tmp_path, 
         backend.apply_migrations(backend.to_apply(migrations))
         migrations[-1].module.grant_skills(None)
     backup = path.with_name("config.before-skill-prompt-grant.toml")
-    if custom:
+    if custom != "default":
         assert path.read_text() == before and not backup.exists()
     else:
         assert backup.read_text() == before

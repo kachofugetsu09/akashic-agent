@@ -31,7 +31,7 @@ class _Source:
 class MaterialView:
     """固定本次请求的贡献者；只收集材料，不调用模型或修改消息。"""
 
-    def __init__(self, ctx: Context, sources: tuple[_Source, ...]):
+    def __init__(self, ctx: Context, sources: tuple[tuple[str, _Source], ...]):
         self._ctx = ctx
         self._sources = sources
         self._active = True
@@ -49,7 +49,7 @@ class MaterialView:
     ) -> Materials:
         """按固定贡献者收集；同优先级按实际插件 ID 和块名称的 UTF-8 字节排序。"""
         self._check_active()
-        prompts: list[str] = []
+        prompts: list[tuple[int, bytes, bytes, str]] = []
         blocks: dict[tuple[str, str], Reminder] = {}
 
         def collect(plugin_id: str, items: tuple[Reminder, ...]) -> None:
@@ -65,7 +65,7 @@ class MaterialView:
             collect(caller.runtime.plugin_id, reminders)
         summary: Summary | None = None
         references: dict[str, Reference] = {}
-        for owner in self._sources:
+        for name, owner in self._sources:
             material = await owner.prepare(snapshot, source)
             self._check_active()
             if not isinstance(material, Materials):
@@ -73,7 +73,7 @@ class MaterialView:
             if material.system_prompt:
                 if not owner.prompt:
                     raise PermissionError("此材料 owner 没有 Prompt 贡献权")
-                prompts.append(material.system_prompt)
+                prompts.append((owner.priority, owner.plugin_id.encode("utf-8"), name.encode("utf-8"), material.system_prompt))
             collect(owner.plugin_id, material.reminders)
             if material.summary is not None:
                 if not owner.summary:
@@ -89,7 +89,7 @@ class MaterialView:
         ordered = tuple(block for _, block in sorted(
             blocks.items(), key=lambda item: (item[1].priority, item[0][0].encode("utf-8"), item[0][1].encode("utf-8")),
         ))
-        return Materials("\n\n".join(prompts), ordered, summary, tuple(references.values()))
+        return Materials("\n\n".join(item[3] for item in sorted(prompts)), ordered, summary, tuple(references.values()))
 
     async def reduce(
         self, snapshot: tuple[Message, ...], materials: Materials,
@@ -98,7 +98,7 @@ class MaterialView:
     ) -> Summary | None:
         """只有同一个摘要 owner 能缩减；其余已取得材料保持原样。"""
         self._check_active()
-        for owner in self._sources:
+        for _, owner in self._sources:
             if owner.reduce is not None:
                 summary = await owner.reduce(snapshot, materials, request, model, projection, source=source, force=force)
                 self._check_active()
@@ -188,9 +188,9 @@ class ContextMaterials:
                 if source is None or not source.summary or source.plugin_id != plugin_id:
                     raise ValueError(f"获授的摘要材料未就绪: {name}")
             order = sorted(sources, key=lambda key: (
-                sources[key].priority, sources[key].plugin_id.encode("utf-8"), key.encode("utf-8"),
+                sources[key].plugin_id.encode("utf-8"), key.encode("utf-8"),
             ))
-            view = MaterialView(self._ctx, tuple(sources[key] for key in order))
+            view = MaterialView(self._ctx, tuple((key, sources[key]) for key in order))
             try:
                 yield view
             finally:

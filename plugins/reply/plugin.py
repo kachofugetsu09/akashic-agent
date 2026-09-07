@@ -28,7 +28,7 @@ from plugins.tools.menu import check_menu
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
-from session.message import ContentPart, Message
+from session.message import Message
 
 from .api import REPLY_PROGRAM
 from .follow import follow

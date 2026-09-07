@@ -371,7 +371,7 @@ skills、长期记忆和检索结果必须带来源和信任级别，作为 syst
 请求使用“system → 已保存消息的模型投影（含当前输入与摘要）→ 一个末尾 user-role `<system-reminder>`”。
 VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则留在 system；时间、Akasha 召回和本次后台结果进入提醒。
 提醒不写入 Message 日志，不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
-块身份为实际贡献插件 ID 与局部名称，同一身份重复时报错；priority 升序，仅决定排列，同优先级按插件 ID、名称的 UTF-8 字节升序。
+提醒块身份为实际贡献插件 ID 与局部名称，同一身份重复时报错；priority 升序，仅决定排列，同优先级按插件 ID、名称的 UTF-8 字节升序。
 SELF/MEMORY 低频更新不要求迁出 system，也不承诺其异步发布与 compaction 只产生一次 provider 缓存失效。
 
 ### CTX-005 新设计不得使用无修饰的 history

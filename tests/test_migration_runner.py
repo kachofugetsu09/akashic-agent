@@ -468,7 +468,7 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
         _LEGACY_AGENT_CONFIG_ID,
-    _SKILL_PROMPT_GRANT_ID,
+        _SKILL_PROMPT_GRANT_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert "agent" not in migrated
@@ -628,7 +628,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
         _LEGACY_AGENT_CONFIG_ID,
-    _SKILL_PROMPT_GRANT_ID,
+        _SKILL_PROMPT_GRANT_ID,
     )
 
 
@@ -989,7 +989,7 @@ api_key = "secret"
     _MODEL_CALL_TIMING_ID,
         _CONTEXT_MATERIAL_GRANTS_ID,
         _LEGACY_AGENT_CONFIG_ID,
-    _SKILL_PROMPT_GRANT_ID,
+        _SKILL_PROMPT_GRANT_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

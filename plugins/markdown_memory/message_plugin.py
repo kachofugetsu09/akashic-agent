@@ -73,6 +73,7 @@ async def prepare_profile_draft(
     store: MarkdownProfileStore,
     chat_models: ChatModels,
 ) -> dict[str, object]:
+    """按真实消息准备完整档案及逐条证据，验证后才交给持久 writer。"""
     current_memory = store.read_memory()
     current_self = store.read_self()
     prompt = _profile_prompt(current_memory, current_self, source_text(messages))
@@ -530,6 +531,8 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
             draft = await prepare_profile_draft(selected, store, models)
         if draft.get("version") == 2:
             check_evidence(draft, selected)
+        elif draft.get("version") != 1:
+            raise ValueError("不支持的 Markdown 草稿版本")
         # model draft 后退出也可能缺 order；用实际摘要身份补齐整份准备再写文件。
         _ = store.write_draft(record.reference, draft, session_key=record.session_id, generation=record.generation)
         # 2. 取消前若已留下 draft，下一次沿同一恢复点继续，不重算 before-image。

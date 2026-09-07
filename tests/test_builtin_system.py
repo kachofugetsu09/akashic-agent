@@ -57,8 +57,14 @@ class ScriptedModel:
             if not existing.strip():
                 existing = "# 用户长期记忆\n## 用户事实\n## 用户偏好\n## 用户明确要求长期记住的关键内容\n"
             text = existing if "用户喜欢青绿色" in existing else existing + "\n- 用户喜欢青绿色。\n"
+            source = json.loads(messages[0]["content"].split("本次精确来源：\n", 1)[1])
+            evidence = {} if text == existing else {"- 用户喜欢青绿色。": [
+                row["message_id"] for row in source if row["author"] == "user"
+                and row["body"]["kind"] == "input" and "用户喜欢青绿色" in json.dumps(row, ensure_ascii=False)
+            ]}
             return self.text_response(body, json.dumps({"memory": text,
-                "self": (self.root / "workspace/memory/SELF.md").read_text()}, ensure_ascii=False))
+                "self": (self.root / "workspace/memory/SELF.md").read_text(),
+                "evidence": {"memory": evidence, "self": {}}}, ensure_ascii=False))
         for message in reversed(messages):
             if message["role"] != "user":
                 continue

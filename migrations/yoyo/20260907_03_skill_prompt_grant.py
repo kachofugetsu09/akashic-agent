@@ -1,6 +1,4 @@
 """为内置默认材料配置授权技能 Prompt；自定义授权保持原样。"""
-import tomllib
-
 from yoyo import step
 
 from agent.migrations.context import current_migration_context
@@ -16,9 +14,11 @@ def grant_skills(_ledger):
     if not path.exists():
         return
     before = path.read_text(encoding="utf-8")
-    config = tomllib.loads(before)
-    expected = {"default_prompt": "prompt", "markdown_memory": "markdown_memory"}
-    if config != {"prompt_sources": expected, "summary_source": ["compaction", "compaction"]}:
+    expected = (
+        'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory"}\n'
+        'summary_source = ["compaction", "compaction"]\n'
+    )
+    if before != expected:
         return
     backup = path.with_name("config.before-skill-prompt-grant.toml")
     if backup.exists():
