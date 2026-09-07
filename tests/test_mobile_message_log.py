@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from typing import cast
 from collections import deque
 from contextlib import closing
 from uuid import uuid4
@@ -33,7 +34,7 @@ def mobile(tmp_path):
         device = uuid4().hex
         _register_device(storage, device)
         runtime = _Runtime(storage)
-        channel = MobileRealtimeChannel(runtime)
+        channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
         channel.bind_messages(log.catalog())
         yield log, runtime, channel, device
 
