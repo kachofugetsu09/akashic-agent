@@ -1,8 +1,10 @@
 import asyncio
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+from collections.abc import Callable, Mapping
 from pathlib import Path
 import shutil
+from typing import Literal
 
 import pytest
 
@@ -16,11 +18,12 @@ from plugins.tools.api import MessageReply
 from plugins.tools.plugin import TOOLS
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageLog
-from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
+from session.message import CallRef, ContentPart, ContentReferences, Input, Output, ToolCall, ToolResult
 
 
 @asynccontextmanager
-async def application(tmp_path):
+async def application(tmp_path, *, embedding_available: bool = True,
+                      before_start: Callable[[MessageLog, PluginManager], None] | None = None):
     root = tmp_path / "plugins"
     for name in ("akasha", "turn_projection", "content", "context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
@@ -59,6 +62,9 @@ async def apply(ctx, config):
             return bindings.bind(EMBEDDINGS, SavedEmbedding(model_id=descriptor.model_id,
                 space_identity=descriptor.identity, dimensions=descriptor.dimensions).model_dump())
         def describe(self, *, model_id=None):
+            if not EMBEDDING_AVAILABLE:
+                from agent.plugin_composition.models import ModelUnavailableError
+                raise ModelUnavailableError("fixture embedding unavailable")
             return descriptor
         @asynccontextmanager
         async def bind(self, *, model_id=None):
@@ -68,12 +74,15 @@ async def apply(ctx, config):
     embeddings = Embeddings()
     await ctx.provide(EMBEDDINGS, embeddings)
     await ctx.provide(ServiceKey("fixture.embedded"), embedded)
-'''.replace("LOG_PATH", repr(str(tmp_path / "embedding-calls.txt"))))
+'''.replace("LOG_PATH", repr(str(tmp_path / "embedding-calls.txt")))
+      .replace("EMBEDDING_AVAILABLE", repr(embedding_available)))
     log = MessageLog(tmp_path / "sessions.db")
     host = PluginManager([root], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
         await host.load_all()
+        if before_start is not None:
+            before_start(log, host)
         await host.start_runtime()
         yield log, host
     finally:
@@ -113,7 +122,11 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 from plugins.akasha.infrastructure.persistence import logical_state_sha256
                 graph = tmp_path / "workspace/memory/akasha.db"
                 before_graph = logical_state_sha256(graph)
-                async with host.open_binding(tuple(item.archive_ref for item in snapshot.generations.values())) as archived:
+                archive_refs: list[str] = []
+                for generation in snapshot.generations.values():
+                    assert isinstance(generation.archive_ref, str)
+                    archive_refs.append(generation.archive_ref)
+                async with host.open_binding(tuple(archive_refs)) as archived:
                     async with archived.require(MATERIALS).bind() as view:
                         copied = await view.prepare(log.reader("s").snapshot(), "conversation")
                     assert [ref.ref for ref in copied.references] == ["u", "a"]
@@ -132,7 +145,11 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 assert result.outcome == "success"
                 marker = result.parts[-1]
                 assert marker.kind == "akasha.recall"
-                recalled = read_recall(marker.value["retrieval_ref"])
+                marker_value = marker.value
+                assert isinstance(marker_value, Mapping)
+                retrieval_ref = marker_value["retrieval_ref"]
+                assert isinstance(retrieval_ref, str)
+                recalled = read_recall(retrieval_ref)
                 assert recalled.source.session_id == "s"
                 assert recalled.source.call_ref == ref
                 assert recalled.graph_version == 1
@@ -144,7 +161,7 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 async with ctx.require(MATERIALS).bind() as materials:
                     after_tool = await materials.prepare(log.reader("s").snapshot(), "conversation")
                 assert [reference.ref for reference in after_tool.references] == ["u", "a"]
-                assert {reference.retrieval_ref for reference in after_tool.references} == {marker.value["retrieval_ref"]}
+                assert {reference.retrieval_ref for reference in after_tool.references} == {retrieval_ref}
                 # 同 owner 的另一条调用也不能借用先前 CallRef 的查询事实。
                 outputs.append("forged-request", Output((ToolCall(identity, {"query": "another query"}),), "continue"))
                 forged_ref = CallRef("forged-request", 0)
@@ -222,14 +239,80 @@ async def test_inspector_reads_actual_queries_through_the_mobile_provider(tmp_pa
             listing = await provider.query("akasha", revision, "inspector.recent", {},
                                            session_id=None, turn_id=None)
             assert listing["total"] == 1
-            query = listing["items"][0]
-            detail = await provider.query("akasha", revision, "inspector.detail", {"query_id": query["query_id"]},
+            items = listing["items"]
+            assert isinstance(items, list) and len(items) == 1
+            query = items[0]
+            assert isinstance(query, Mapping)
+            query_id = query["query_id"]
+            assert isinstance(query_id, str)
+            detail = await provider.query("akasha", revision, "inspector.detail", {"query_id": query_id},
                                           session_id=None, turn_id=None)
             assert detail["graph_version"] == 0
             assert detail["hits"] == []
             assert detail["presented_count"] == 0
             assert detail["source"] == {"kind": "context", "session_id": "s", "source": "conversation", "through_seq": 0}
             assert (tmp_path / "embedding-calls.txt").read_text() == before
+        finally:
+            provider._executor.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+async def test_inspector_reads_saved_queries_when_embedding_is_unavailable(tmp_path):
+    from agent.plugins.mobile_ui import PluginMobileUiProvider
+    from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
+
+    def seed(log, _host):
+        checks = {"text": lambda _part: ContentReferences()}
+        inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content=checks)
+        outputs = log.writer("s", author="assistant", source="conversation", body_types=(Output,), content=checks)
+        inputs.append("old-user", Input((ContentPart("text", "saved query"),)))
+        outputs.append("old-assistant", Output((ContentPart("text", "saved answer"),), "complete"))
+        RecallRecords(log.owner("plugin:akasha")).save(
+            "old-query",
+            Recall(
+                learning_binding="saved-binding",
+                graph_version=1,
+                source=ContextSource(session_id="s", source="conversation", through_seq=0),
+                timestamp=datetime(2026, 9, 7, tzinfo=timezone.utc),
+                limit=5,
+                hits=(Hit(node_id=0, session_id="s", message_ids=("old-user", "old-assistant"),
+                          score=0.9, lane="dense", sources=("direct_dense",)),),
+                presented_message_ids=("old-user", "old-assistant"),
+                active_basin_count=0,
+                pushes=0,
+                residual_l1=0.0,
+            ),
+        )
+
+    async with application(tmp_path, embedding_available=False, before_start=seed) as (log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            revision = snapshot.generations["akasha"].source_revision
+        provider = PluginMobileUiProvider(host)
+        try:
+            listing = await provider.query("akasha", revision, "inspector.recent", {},
+                                           session_id=None, turn_id=None)
+            assert listing["total"] == 1
+            items = listing["items"]
+            assert isinstance(items, list) and len(items) == 1
+            query = items[0]
+            assert isinstance(query, Mapping)
+            assert query["query_id"] == "old-query"
+            detail = await provider.query("akasha", revision, "inspector.detail", {"query_id": "old-query"},
+                                          session_id=None, turn_id=None)
+            hits = detail["hits"]
+            assert isinstance(hits, list) and len(hits) == 1
+            hit = hits[0]
+            assert isinstance(hit, Mapping)
+            messages = hit["messages"]
+            assert isinstance(messages, list)
+            message_rows = [message for message in messages if isinstance(message, Mapping)]
+            assert len(message_rows) == len(messages)
+            assert [message["message_id"] for message in message_rows] == [
+                "old-user", "old-assistant",
+            ]
+            assert [message["preview"] for message in message_rows] == [
+                "saved query", "saved answer",
+            ]
         finally:
             provider._executor.shutdown(wait=True)
 
@@ -258,12 +341,23 @@ async def test_mobile_inspector_bounds_long_messages_without_dropping_hit_member
             detail = await provider.query("akasha", revision, "inspector.detail", {"query_id": identity},
                                           session_id=None, turn_id=None)
             assert detail["schema"] == "akasha.queries.v1"
-            messages = detail["hits"][0]["messages"]
-            assert [message["message_id"] for message in messages] == ["long", "correction", "answer"]
-            assert messages[0]["preview"] == "长" * 240
-            assert [message["truncated"] for message in messages] == [True, False, False]
-            assert [message["presented"] for message in messages] == [False, True, True]
-            assert len(log.reader("s").get("long").body.parts[0].value) == 193 * 1024
+            hits = detail["hits"]
+            assert isinstance(hits, list) and len(hits) == 1
+            hit = hits[0]
+            assert isinstance(hit, Mapping)
+            messages = hit["messages"]
+            assert isinstance(messages, list)
+            message_rows = [message for message in messages if isinstance(message, Mapping)]
+            assert len(message_rows) == len(messages)
+            assert [message["message_id"] for message in message_rows] == ["long", "correction", "answer"]
+            assert message_rows[0]["preview"] == "长" * 240
+            assert [message["truncated"] for message in message_rows] == [True, False, False]
+            assert [message["presented"] for message in message_rows] == [False, True, True]
+            long_message = log.reader("s").get("long")
+            assert long_message is not None
+            assert isinstance(long_message.body, Input)
+            assert isinstance(long_message.body.parts[0].value, str)
+            assert len(long_message.body.parts[0].value) == 193 * 1024
         finally:
             provider._executor.shutdown(wait=True)
 
@@ -274,7 +368,11 @@ async def test_default_akasha_learns_only_explicitly_eligible_programmatic_sessi
     from session.log import SessionAttributes
 
     async with application(tmp_path) as (log, host):
-        for identity, learning in (("excluded", "excluded"), ("eligible", "eligible")):
+        cases: tuple[tuple[str, Literal["eligible", "excluded"]], ...] = (
+            ("excluded", "excluded"),
+            ("eligible", "eligible"),
+        )
+        for identity, learning in cases:
             session = "programmatic:" + identity
             log.ensure_session(session, SessionAttributes("internal", learning))
             writer = log.writer(session, author="fixture", source="programmatic", body_types=(Input, Output),

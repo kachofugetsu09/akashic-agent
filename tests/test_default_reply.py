@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 import shutil
+from collections.abc import Mapping
+from typing import cast
 
 import pytest
 
@@ -163,6 +165,7 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
                     if any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows):
                         return rows
             rows = await asyncio.wait_for(completed(), 5)
+            assert rows is not None
             assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output]
             assert (tmp_path / "effect.txt").read_text() == "once\n"
         else:
@@ -196,6 +199,7 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
                 if isinstance(rows[-1].body, Output) and rows[-1].body.finish == "complete":
                     return rows
         rows = await asyncio.wait_for(completed(), 5)
+        assert rows is not None
         assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output, ToolResult, Output]
         assert rows[2].body.parts[-1].kind == "tool.selection"
         assert (tmp_path / "effect.txt").read_text() == "once\n"
@@ -239,10 +243,12 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
         if not has_cut:
             assert record is None
             assert isinstance(rows[-1].body, Control) and rows[-1].body.action == "failure"
+            reason = rows[-1].body.reason
+            assert reason is not None
             if large_summary:
-                assert "摘要后的完整请求仍超过" in rows[-1].body.reason
+                assert "摘要后的完整请求仍超过" in reason
             elif soft_only:
-                assert "近期原文保留量内没有合法摘要切点" in rows[-1].body.reason
+                assert "近期原文保留量内没有合法摘要切点" in reason
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
                 assert len(calls) == (1 if large_summary else 0)
@@ -253,7 +259,7 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
         assert record.source_message_ids == tuple(row.message_id for row in original[4:6])
         outputs = [row for row in rows[len(original):] if isinstance(row.body, Output)]
         assert [row.body.finish for row in outputs] == ["continue", "complete"]
-        refs = [next(part.value["reference"] for part in row.body.parts
+        refs = [next(cast(Mapping[str, object], part.value)["reference"] for part in row.body.parts
                      if isinstance(part, ContentPart) and part.kind == "context.summary") for row in outputs]
         assert refs[0] == refs[1]
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:

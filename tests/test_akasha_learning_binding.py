@@ -2,8 +2,10 @@ import asyncio
 from pathlib import Path
 from dataclasses import asdict
 from contextlib import closing
+from collections.abc import Mapping
 import shutil
 import sqlite3
+from typing import Literal
 
 import pytest
 
@@ -13,7 +15,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.application.cycle import MemoryCycle
-from plugins.akasha.domain.model import MemoryConfig
+from plugins.akasha.domain.model import EmbeddingSpaceMismatchError, MemoryConfig
 from plugins.akasha.infrastructure.persistence import load_consumption, logical_state_sha256
 from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
 from plugins.akasha.projection import applied_source
@@ -166,12 +168,15 @@ async def test_archived_learning_restores_complete_interrupted_turn_and_feedback
                                call_ref=ref, content=view.checks), lambda: None)
                 result = await catalog.execution(authorize).execute_call(reply)
                 assert result.outcome == "success"
-                assert result.parts[-1].value["target_message_ids"] == ("u2",)
-                assert result.parts[-1].value["reason"] == ""
+                feedback = result.parts[-1].value
+                assert isinstance(feedback, Mapping)
+                assert feedback["target_message_ids"] == ("u2",)
+                assert feedback["reason"] == ""
         answer = write(Output, "answer", Output((ContentPart("text", "complete answer"),), "complete"))
         records.save(answer, model=rule.embedding_model, embedding=[0.8, 0.6])
         sample, = learning.samples(log.catalog(), rule, heads=log.catalog().snapshot_heads())
         turn = learning.make_turn(sample, rule, embeddings, previous=[], state=consumer.state, bindings=bindings)
+        assert turn is not None
         assert turn.user_text == "input 1\n\ninput 2\n\ninput 3"
         assert turn.feedback.remember_nodes == (0,)
         assert turn.feedback.remember_boost == 3.0
@@ -262,7 +267,12 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
         def write(kind, identity, body, source="chat"):
             return log.writer("s", author="test", source=source, body_types=(kind,),
                               content={"text": lambda part: ContentReferences()}).append(identity, body)
-        def utterance(kind, identity, source="chat", finish="complete"):
+        def utterance(
+            kind,
+            identity,
+            source="chat",
+            finish: Literal["continue", "complete", "quiet"] = "complete",
+        ):
             parts = (ContentPart("text", identity),)
             return write(kind, identity, Input(parts) if kind is Input else Output(parts, finish), source)
         u1 = utterance(Input, "u1")
@@ -292,7 +302,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
                     return []
                 return [[float("nan"), 0.0] for _ in texts]
             return [[0.6, 0.8] for _ in texts]
-        async def consume():
+        async def consume() -> int:
             return await consumer.consume(catalog=log.catalog(), learning_binding=identity,
                                           embeddings=embeddings, bindings=bindings, embed_batch=embed)
         if failure is not None:
@@ -325,9 +335,13 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
             changed_model = bindings.bind(AKASHA_LEARNING, {**rule.model_dump(), "embedding_model": "other-space"})
             changed_dimension = bindings.bind(AKASHA_LEARNING, {**rule.model_dump(), "dimension": 3})
         for changed in (changed_model, changed_dimension):
-            with pytest.raises(ValueError, match="空间|维度"):
+            before_changed = logical_state_sha256(memory)
+            calls_before_changed = len(calls)
+            with pytest.raises(EmbeddingSpaceMismatchError, match="空间|维度"):
                 await consumer.consume(catalog=log.catalog(), learning_binding=changed,
                                        embeddings=embeddings, bindings=bindings, embed_batch=embed)
+            assert len(calls) == calls_before_changed
+            assert logical_state_sha256(memory) == before_changed
         assert len(calls) == call_count
         assert logical_state_sha256(memory) == before
     finally:
@@ -390,7 +404,9 @@ async def test_feedback_uses_prepared_message_identity_after_interrupt_and_repor
                 results = [message for message in log.reader("s").snapshot() if isinstance(message.body, ToolResult)]
                 assert len(results) == 1
                 if expected == "success":
-                    assert result.parts[-1].value["target_message_ids"] == ("u2",)
+                    feedback = result.parts[-1].value
+                    assert isinstance(feedback, Mapping)
+                    assert feedback["target_message_ids"] == ("u2",)
                     assert permissions[0] == permissions[1]
                 else:
                     assert permissions == []

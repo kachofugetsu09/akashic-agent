@@ -111,8 +111,10 @@ async def test_explicit_switch_clear_and_replay_share_one_session_fact(tmp_path)
             first = inbound({"model_runtime_id": "saved", "model_reasoning_effort": "low"})
             message = await accept("test:room", "u1", first)
             await terminal(log, 1)
-            assert read_session_model_selection(log.reader("test:room").metadata()).reasoning_effort == "low"
-            assert "model_runtime_override" not in log.reader("test:room").metadata()
+            metadata = log.reader("test:room").metadata()
+            assert metadata is not None
+            assert read_session_model_selection(metadata).reasoning_effort == "low"
+            assert "model_runtime_override" not in metadata
             await accept("test:room", "u2", inbound({"model_runtime_id": ""}))
             await terminal(log, 2)
             before = log.reader("test:room").snapshot()
@@ -148,7 +150,9 @@ async def test_direct_conversation_uses_same_validation_and_atomic_metadata_writ
                 await conversation.accept("double", Input((part, part)))
             assert log.catalog().snapshot_heads() == {}
             await conversation.accept("u1", Input((part,)))
-            assert read_session_model_selection(log.reader("test:room").metadata()).model_ref == "saved"
+            metadata = log.reader("test:room").metadata()
+            assert metadata is not None
+            assert read_session_model_selection(metadata).model_ref == "saved"
             # SQLite 在真正 metadata UPDATE 处失败，整批正文与 Session 字段必须不变。
             with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
                 connection.execute("CREATE TRIGGER reject_selection BEFORE UPDATE OF metadata ON sessions BEGIN SELECT RAISE(ABORT, 'selection fault'); END")
@@ -193,7 +197,9 @@ async def test_saved_disabled_model_fails_reply_without_falling_back(tmp_path):
             control = await asyncio.wait_for(failed(), 5)
             assert control.action == "failure"
             assert context.require(ServiceKey("fixture.selected")) == []
-            assert read_session_model_selection(log.reader("test:room").metadata()).model_ref == "saved"
+            metadata = log.reader("test:room").metadata()
+            assert metadata is not None
+            assert read_session_model_selection(metadata).model_ref == "saved"
 
 
 @pytest.mark.parametrize("raw", ['[]', '{"x":1,"x":2}', '{"x":NaN}', '{broken'])

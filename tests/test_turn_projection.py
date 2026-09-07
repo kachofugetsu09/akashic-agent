@@ -1,4 +1,6 @@
 from datetime import UTC, datetime
+from collections.abc import Mapping
+from typing import cast
 
 import pytest
 
@@ -133,18 +135,20 @@ def test_message_content_cannot_change_through_caller_owned_objects():
     part = ContentPart("example.data", source)
     call = ToolCall("b", source)
     source["nested"][0]["value"] = "changed"
-    assert part.value["nested"][0]["value"] == "original"
-    assert call.arguments["nested"][0]["value"] == "original"
+    part_value = cast(Mapping[str, object], part.value)
+    call_arguments = cast(Mapping[str, object], call.arguments)
+    assert cast(tuple[Mapping[str, object], ...], part_value["nested"])[0]["value"] == "original"
+    assert cast(tuple[Mapping[str, object], ...], call_arguments["nested"])[0]["value"] == "original"
     with pytest.raises(TypeError):
-        part.value["nested"][0]["value"] = "mutated"
+        cast(dict[str, object], cast(tuple[Mapping[str, object], ...], part_value["nested"])[0])["value"] = "mutated"
 
 
 def test_body_parts_detach_mutable_input_sequences():
     parts = [ContentPart("text", "original")]
     bodies = (
-        Input(parts),
-        Output(parts, "complete"),
-        ToolResult(CallRef("m0", 0), "success", parts),
+        Input(tuple(parts)),
+        Output(tuple(parts), "complete"),
+        ToolResult(CallRef("m0", 0), "success", tuple(parts)),
     )
     parts.clear()
     assert all(body.parts[0].value == "original" for body in bodies)
@@ -166,11 +170,11 @@ def test_finished_outputs_cannot_contain_unstarted_calls():
 
 def test_invalid_body_values_fail_at_message_construction():
     with pytest.raises(TypeError, match="reason"):
-        Control("pause", 0, ["mutable"])
+        Control("pause", 0, cast(str, ["mutable"]))
     with pytest.raises(TypeError, match="JSON 对象"):
-        ToolCall("b", ["not an object"])
+        ToolCall("b", cast(Mapping[str, object], ["not an object"]))
     with pytest.raises(TypeError, match="Input"):
-        Input((ToolCall("b", {}),))
+        Input(cast(tuple[ContentPart, ...], (ToolCall("b", {}),)))
     with pytest.raises(TypeError, match="body"):
         message(0, {"kind": "input"})
 

@@ -1,8 +1,10 @@
 import asyncio
 import json
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -89,17 +91,18 @@ async def test_prompt_reads_veda_and_fixed_input_time_without_rewriting_messages
                 assert "唯一人格甲" in first.system_prompt
                 assert "load_skill" not in first.system_prompt
                 assert ("Telegram 渲染限制" in first.system_prompt) == (channel == "telegram_bot")
-                environment = next(part.value for part in first.context if part.kind == "environment")
+                environment = cast(Mapping[str, object], next(part.value for part in first.context if part.kind == "environment"))
                 assert environment["request_time"] == accepted.recorded_at.astimezone().isoformat()
                 assert environment["input_id"] == "input"
                 assert "time_basis" in environment
                 assert ("channel_origin" in environment) == (channel is not None)
                 assert "Client Surface" not in str(first)
-                catalog = next(part.value for part in first.context if part.kind == "skills")
-                assert [entry["name"] for entry in catalog["skills"]] == ["example"]
+                catalog = cast(Mapping[str, object], next(part.value for part in first.context if part.kind == "skills"))
+                skills = cast(tuple[Mapping[str, object], ...], catalog["skills"])
+                assert [entry["name"] for entry in skills] == ["example"]
                 assert "非插件技能" not in str(first)
-                active = catalog["active_skills"][0]
-                assert (Path(active["base_directory"]) / "resource.txt").read_text() == "resource-a"
+                active = cast(Mapping[str, object], cast(tuple[object, ...], catalog["active_skills"])[0])
+                assert (Path(cast(str, active["base_directory"])) / "resource.txt").read_text() == "resource-a"
                 assert "读取 resource.txt" not in first.system_prompt
                 (tmp_path / "workspace/memory/VEDA.md").write_text("唯一人格乙")
                 third = await view.prepare(original, source)
@@ -131,7 +134,8 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
             ctx = snapshot.composition_root.context
             reference = ctx.require(TOOLS).bind("load_skill", ctx.require(BINDINGS))
             metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
-            assert set(metadata["state"]["skills"]) == {"example"}
+            state = cast(Mapping[str, object], metadata["state"])
+            assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
             original_root = snapshot.plugin_skill_index.records["example"].root_dir
         # 原安装改变后，工具打开的是 capture 已归档的完整资源。
         (tmp_path / "plugins/fixture_skills/skills/example/resource.txt").write_text("resource-b")
@@ -158,17 +162,17 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
         async with bindings.open(replacement, TOOLS) as (tools, metadata):
             async with tools.open(metadata) as tool:
                 newer = await tool.invoke("new", await tool.prepare({"skill": "example"}))
-                current = json.loads(newer.parts[0].value)
+                current = cast(Mapping[str, object], json.loads(cast(str, newer.parts[0].value)))
                 assert current["instructions"] == "新版指令"
-                assert (Path(current["base_directory"]) / "resource.txt").read_text() == "resource-b"
+                assert (Path(cast(str, current["base_directory"])) / "resource.txt").read_text() == "resource-b"
         async with bindings.open(reference, TOOLS) as (tools, metadata):
             assert "fixture_skills" not in get_current_runtime_snapshot().generations
             async with tools.open(metadata) as tool:
                 arguments = await tool.prepare({"skill": "example"})
                 result = await tool.invoke("original", arguments)
                 assert result.outcome == "success"
-                value = json.loads(result.parts[0].value)
-                root = Path(value["base_directory"])
+                value = cast(Mapping[str, object], json.loads(cast(str, result.parts[0].value)))
+                root = Path(cast(str, value["base_directory"]))
                 assert (root / "resource.txt").read_text() == "resource-a"
                 assert value["source_id"] == "fixture_skills"
                 assert (await tool.invoke("unknown", await tool.prepare({"skill": "unmanaged"}))).outcome == "error"
@@ -218,6 +222,7 @@ async def test_default_reply_uses_prompt_and_real_skill_tool_with_menu_authority
                 if any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows):
                     return rows
         rows = await asyncio.wait_for(completed(), 10)
+        assert rows is not None
         assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output]
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
@@ -229,6 +234,6 @@ async def test_default_reply_uses_prompt_and_real_skill_tool_with_menu_authority
             assert "fixture task" in str(calls[0].messages)
             assert ("load_skill" in str(calls[0].tools)) != restricted
             if not restricted:
-                result = json.loads(rows[2].body.parts[0].value)
-                assert (Path(result["base_directory"]) / "resource.txt").read_text() == "resource-a"
+                result = cast(Mapping[str, object], json.loads(cast(str, rows[2].body.parts[0].value)))
+                assert (Path(cast(str, result["base_directory"])) / "resource.txt").read_text() == "resource-a"
                 assert result["instructions"] == "读取 resource.txt，保留原内容。"

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -6,9 +7,50 @@ import pytest
 from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, lease_runtime_snapshot
 from plugins.content.api import Reference
-from plugins.context.api import Materials, Summary
+from agent.plugin_composition.models import BoundChatModel, LLMResponse, ModelRequest
+from plugins.context.api import ContextModel, Materials, Summary
 from plugins.context.materials import ContextMaterials
-from session.message import ContentPart
+from session.message import ContentPart, Message
+
+
+class _UnreachedModel:
+    @property
+    def descriptor(self):
+        raise AssertionError("closed MaterialView must not use the model")
+
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        raise AssertionError("closed MaterialView must not complete")
+
+    def estimate_context_tokens(
+        self, messages: Sequence[Mapping[str, object]],
+        tools: Sequence[Mapping[str, object]] = (),
+    ) -> int:
+        raise AssertionError("closed MaterialView must not estimate")
+
+    def estimate_appended_message_tokens(
+        self, messages: Sequence[Mapping[str, object]],
+    ) -> int:
+        raise AssertionError("closed MaterialView must not estimate")
+
+    max_tool_schemas = None
+
+
+class _UnreachedProjection:
+    context_window = None
+    max_tool_schemas = None
+
+    def render(
+        self, messages: tuple[Message, ...], *, after_seq: int,
+        summary_reference: str | None = None, fresh: bool = False,
+    ) -> ModelRequest:
+        raise AssertionError("closed MaterialView must not render")
+
+    def estimate(self, request: ModelRequest) -> int:
+        raise AssertionError("closed MaterialView must not estimate")
+
+
+_UNREACHED_MODEL: BoundChatModel = _UnreachedModel()
+_UNREACHED_PROJECTION: ContextModel = _UnreachedProjection()
 
 
 @asynccontextmanager
@@ -141,7 +183,7 @@ async def test_only_summary_owner_can_reduce_and_closed_view_cannot_publish():
         await service.register(ctx, name="summary", prepare=prepare, reduce=reduce)
         async with service.bind() as view:
             material = await view.prepare((), "conversation")
-            operation = asyncio.create_task(view.reduce((), material, ModelRequest(messages=[]), None, None,
+            operation = asyncio.create_task(view.reduce((), material, ModelRequest(messages=[]), _UNREACHED_MODEL, _UNREACHED_PROJECTION,
                                                        source="conversation", force=True))
             await entered.wait()
         release.set()
@@ -171,8 +213,8 @@ async def test_reduction_preserves_durable_identity_and_recognizes_no_progress(c
             material = await view.prepare((), "conversation")
             if case in {"changed_same_ref", "lost_source"}:
                 with pytest.raises(ValueError, match="不能"):
-                    await view.reduce((), material, ModelRequest(messages=[]), None, None,
+                    await view.reduce((), material, ModelRequest(messages=[]), _UNREACHED_MODEL, _UNREACHED_PROJECTION,
                                       source="conversation", force=True)
             else:
-                assert await view.reduce((), material, ModelRequest(messages=[]), None, None,
+                assert await view.reduce((), material, ModelRequest(messages=[]), _UNREACHED_MODEL, _UNREACHED_PROJECTION,
                                          source="conversation", force=True) is previous

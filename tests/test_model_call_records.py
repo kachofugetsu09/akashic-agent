@@ -1,8 +1,10 @@
 import asyncio
 import importlib.util
 import sqlite3
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -21,6 +23,21 @@ from agent.plugin_composition.models import (
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from agent.migrations.context import bind_migration_context
+
+
+class _DriverContract:
+    max_tool_schemas = None
+
+    def estimate_context_tokens(
+        self, messages: Sequence[Mapping[str, object]],
+        tools: Sequence[Mapping[str, object]] = (),
+    ) -> int:
+        raise AssertionError("model call record tests must not estimate context")
+
+    def estimate_appended_message_tokens(
+        self, messages: Sequence[Mapping[str, object]],
+    ) -> int:
+        raise AssertionError("model call record tests must not estimate appended messages")
 
 
 @pytest.fixture
@@ -69,7 +86,7 @@ async def test_started_is_durable_before_io_and_usage_survives_without_message(
         coverage=UsageCoverage.EXACT,
     )
 
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             (call_id,) = call_ids(store)
             assert store.read_call(call_id)["state"] == "started"
@@ -83,6 +100,7 @@ async def test_started_is_durable_before_io_and_usage_survives_without_message(
     messages[0]["content"] = "later change"
     assert request.messages[0]["content"] == "input"
     response = await _BoundChat(descriptor, Driver(), store).complete(request)
+    assert response.call_record_id is not None
     record = ModelsStore(store.path, store.backup_dir).read_call(
         response.call_record_id
     )
@@ -103,7 +121,7 @@ async def test_failure_and_cancel_record_unknown_cost_without_retry(
 ):
     seen = []
 
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             seen.append(request)
             raise failure
@@ -121,7 +139,7 @@ async def test_failure_and_cancel_record_unknown_cost_without_retry(
 
 @pytest.mark.asyncio
 async def test_missing_migration_or_wrong_binding_stops_before_io(store, descriptor):
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             pytest.fail("provider I/O must not start")
 
@@ -143,7 +161,7 @@ async def test_missing_migration_or_wrong_binding_stops_before_io(store, descrip
 async def test_settlement_failure_keeps_provider_failure_and_durable_unknown(
     store, descriptor, failure, monkeypatch
 ):
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             raise failure
 
@@ -169,6 +187,7 @@ def migration(monkeypatch):
     monkeypatch.setattr(yoyo, "step", lambda callback: callback)
     path = Path(__file__).parents[1] / "migrations/yoyo/20260905_03_model_calls.py"
     spec = importlib.util.spec_from_file_location("model_calls_migration_test", path)
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -243,7 +262,7 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
         ToolResult,
     )
 
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             return LLMResponse(
                 "checking",
@@ -256,8 +275,9 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
     model = _BoundChat(descriptor, Driver(), store)
     response = await model.complete(ModelRequest(()))
     facts = response_facts(response, [1])
-    assert "usage" not in facts.value
-    assert "binding" not in facts.value
+    facts_value = cast(Mapping[str, object], facts.value)
+    assert "usage" not in facts_value
+    assert "binding" not in facts_value
 
     def message(seq, body):
         return Message(
@@ -336,7 +356,7 @@ async def test_message_projection_keeps_source_continuation_and_rejects_unsafe_s
     from plugins.models.projection import MessageProjection, response_facts
     from session.message import ContentPart, Message, Output
 
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             return LLMResponse(
                 "text",
@@ -488,7 +508,7 @@ async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned
     from plugins.models.projection import MessageProjection, response_facts
     from session.message import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             return LLMResponse('old work', tool_calls=[ModelToolCall('provider', 'tool', {})],
                                continuation=ModelContinuation('bound', {'old': True}))
@@ -538,9 +558,9 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
     from plugins.codex.responses import _continuation_items, _responses_input
     from session.message import ContentPart, Input, Message, Output
 
-    class Driver:
+    class Driver(_DriverContract):
         max_tool_schemas = None
-        def estimate_context_tokens(self, messages, tools):
+        def estimate_context_tokens(self, messages, tools=()):
             return 100
         async def complete(self, request):
             return LLMResponse("answer", continuation=ModelContinuation("bound", {
@@ -581,7 +601,8 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
     fresh = ContextBuilder().build(after, materials=Materials("", summary=changed),
                                    model=projection, max_output_tokens=100)
     assert fresh.continuation is None
-    assert response.continuation is not None and before[1].body.parts[-1].value["continuation"] is not None
+    facts = cast(Mapping[str, object], before[1].body.parts[-1].value)
+    assert response.continuation is not None and facts["continuation"] is not None
 
 
 @pytest.fixture
@@ -611,7 +632,7 @@ async def test_call_timing_survives_reopen_and_preserves_delta_and_usage(store, 
         if "call_record_id" in value:
             now[0] = 5_000_000_000
 
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             (call_id,) = call_ids(store)
             assert seen == [{"call_record_id": call_id}]
@@ -655,7 +676,7 @@ async def test_nonstreaming_call_does_not_enable_stream_or_invent_first_token(st
     now = [0]
     monkeypatch.setattr("plugins.models.state.monotonic_ns", lambda: now[0])
 
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             assert request.on_delta is None
             now[0] = 2_000_000_000
@@ -712,7 +733,7 @@ def test_timing_migration_rejects_unknown_schema_without_mutation(store, migrati
 
 @pytest.mark.asyncio
 async def test_failed_call_id_announcement_does_not_invent_provider_duration(store, descriptor):
-    class Driver:
+    class Driver(_DriverContract):
         async def complete(self, request):
             pytest.fail('provider must not start after a rejected preview')
 
