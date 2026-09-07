@@ -59,6 +59,10 @@ class Task:
             raise RuntimeError("当前 Task 不是 external Root，不能派生外部 permit")
         return self._child_permit()
 
+    @property
+    def has_external_permit(self) -> bool:
+        return self._child_permit is not None
+
     def on_done(self, callback: Callable[[], None]) -> None:
         """在内部 asyncio Task 完成并清理 scope 后执行一次 callback。"""
         if self._task.done():

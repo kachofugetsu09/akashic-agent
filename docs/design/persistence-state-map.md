@@ -777,6 +777,16 @@ Delivery provider 的 Core Tasks 按目标 key 持有活动计数和短发送排
 
 标准工具 File 读取的图片先按既有后端规则规范化，再由 Artifact owner 原子导入；其 Message 只增加附件引用，不反写原文件。Shell 当前程序结束只减少所属 `(plugin owner, session_id/source 或显式 job key)` 的短命进程；ToolCall、ToolResult、归档与 binding 保留。清理时从实际调用的原 Tool binding 派生原 `SHELL_OWNERS` binding，是已有不可变绑定的增加协议，没有删除或业务终态写权。清理失败保留物理进程表及诊断，不改完成的 Output；Host Bridge 的未确认清理隔离只活在当前 client manager 内，重启不持久化，实际宿主 boot 清理仍由 Bridge/Guardian 确认。
 
+### 明确 abandon 的工具结算（RUN-008）
+
+| 对象 | 正常增加及 owner | 原位更新 / 逻辑失效 | 物理减少与恢复证据 |
+|---|---|---|---|
+| `sessions.db/messages` 的 Control/ToolResult | 来源追加 abandon；Tools 按原 call_ref 追加唯一 denied/interrupted，已有结果不变 | 不原位改写。Control 仅关闭指定来源前缀；迟到返回不得追加第二结果 | 当前无自动减少；Session DB 原生备份保留控制、调用、结果与关联顺序 |
+| Tools 的 `owner_records` | prepare 前增加 requested，固定请求及结果消息身份；启动追赶可为未执行的被放弃调用增加 done | requested → prepared → started → done；abandon 可将前三者推进 done。结果正文与指针同事务提交，done 不覆盖 | 不删除或批量改写旧回执；旧 prepared/started/done 仍可读，完整 DB 及 binding/归档是恢复证据 |
+| Shell binding 与短命进程 | 新不可变 binding 增加按 abandon 分区的标记；实际调用从持久前缀固定进程 owner | 旧 binding 不改写；同段 PTY 续接不换 owner，放弃后新段不复用旧分区 | 清理只减少旧分区进程，不减少消息或归档。效果与清理 Task 保留 generation/重启许可到实际退出；失败保留原进程及诊断 |
+
+本轮只在一次性 fixture 中验证，没有写正式 workspace。没有新增 SQL schema 或自动迁移；旧版程序不认识 requested/interrupted 时不能直接作为已运行新版数据的恢复方案。完整语义见 [0059](../decisions/0059-abandon-settles-tool-calls.md)。
+
 ### Subagent / Wake 内部 Message（SEC-011）
 
 来源接纳独立内部工作时新增 Session、Input 和来源自己的恢复记录；回复程序只追加 Output、ToolResult，工具和 Delivery owner 原位推进各自回执。来源取消或失败只记录控制/业务终态，不删除消息。内部 Session 固定 `visibility=internal`、`learning=excluded`，默认投递策略排除它们。已有旧 Turn 记录保持原值，不回填猜测消息或自动重跑；正式迁移另走发布流程。当前没有自动减少条件。恢复证据包括同一 `sessions.db` 的完整消息、owner_records、binding 与业务插件数据备份；选择和 ACK 仍由 EventMail/Wake 原 owner 提交。见 [0057](../decisions/0057-internal-source-messages.md)。

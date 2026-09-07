@@ -259,7 +259,8 @@ docs/
 │   ├── 0055-host-bridge-uses-typed-protobuf.md
 │   ├── 0056-plugin-update-crashes-return-to-stable.md
 │   ├── 0057-internal-source-messages.md
-│   └── 0058-scheduler-keeps-internal-messages.md
+│   ├── 0058-scheduler-keeps-internal-messages.md
+│   └── 0059-abandon-settles-tool-calls.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-channel-client-adapters.md

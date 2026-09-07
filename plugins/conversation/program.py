@@ -17,7 +17,7 @@ from plugins.context.api import ContextModel, Materials, Summary, check_summary,
 from plugins.models.selection import selection
 from plugins.models.content import load_artifacts, render_content as render_model_content
 from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts
-from plugins.tools.api import Authorize, MessageReply
+from plugins.tools.api import Authorize, MessageReply, result_message_id
 from plugins.tools.menu import ToolMenu
 from plugins.standard_tools.shell import shell_cleanup
 from session.log import MessageReader
@@ -74,7 +74,7 @@ async def run_reply(
         chosen = ChatModelSelection(saved.model_ref or None, saved.reasoning_effort or None)
     from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
     async with (
-        shell_cleanup(ctx, reader, source, from_seq),
+        shell_cleanup(ctx, reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
         materials.bind(exclude=exclude_materials) as material_view,
@@ -88,7 +88,7 @@ async def run_reply(
         )
         def reply(ref: CallRef) -> MessageReply:
             return MessageReply(
-                f"tool-result:{ref.message_id}:{ref.part_index}", ref, reader,
+                result_message_id(ref), ref, reader,
                 writers.bind(
                     ctx, author="tool", source=source, body_types=(ToolResult,),
                     content={**view.checks, "tool.selection": lambda part: menu.check_selection(ref, part)},
@@ -96,7 +96,9 @@ async def run_reply(
                 lambda: check_source(task, reader, source, source_head),
             )
 
-        menu = ToolMenu(tools, bindings, tools.execution(authorize), reply,
+        menu = ToolMenu(tools, bindings, tools.execution(
+            authorize, child_permit=task.child_permit if task.has_external_permit else None,
+        ), reply,
                         names=tool_names, reader=reader, source=source,
                         limit=model.max_tool_schemas, fixed_bindings=fixed_bindings)
         output = writers.bind(

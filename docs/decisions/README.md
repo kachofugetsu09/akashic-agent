@@ -64,6 +64,7 @@
 | [0056](0056-plugin-update-crashes-return-to-stable.md) | accepted / implementing | 插件更新中进程死亡时恢复旧指针，不续跑候选 | PLG-010、PLG-013、RUN-007 |
 | [0057](0057-internal-source-messages.md) | accepted | Subagent 与 Wake 保留完整内部消息 | SES-003～SES-005、MEM-001～MEM-002 |
 | [0058](0058-scheduler-keeps-internal-messages.md) | accepted | Scheduler 保留可恢复的内部消息 | SCH-001～SCH-003、SES-003～SES-005、MEM-001～MEM-002 |
+| [0059](0059-abandon-settles-tool-calls.md) | accepted | 明确放弃结算工具调用，不等待物理清理 | RUN-003、RUN-008、SES-003～SES-005、SH-002 |
 
 ## 新增规则
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 import hashlib
@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.tools.shell import _log_shell_execution, _shell_env
 from agent.tools.shell_command import resolve_shell
 from agent.tools.shell_security import validate_command
@@ -24,13 +25,14 @@ from agent.tools.unified_exec import (
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS
 from session.log import MessageReader
-from session.message import ContentPart, Output, ToolCall
+from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall
 from session.message_codec import json_value
 
 
 class ShellSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     owner_key: str | None = None
+    owner_boundary: Literal["abandon"] = "abandon"
     working_dir: str | None = None
     restricted_dir: str | None = None
     allow_network: bool = True
@@ -99,8 +101,16 @@ class PreparedStop(Stop):
     owner_key: str
 
 
-def _owner_key(settings: ShellSettings, session_id: str, source: str) -> str:
-    return settings.owner_key or json.dumps((session_id, source), ensure_ascii=False, separators=(",", ":"))
+def _owner_key(settings: ShellSettings, session_id: str, source: str, abandon_id: str | None = None) -> str:
+    key = settings.owner_key or json.dumps((session_id, source), ensure_ascii=False, separators=(",", ":"))
+    return key if abandon_id is None else json.dumps((key, "abandon", abandon_id), ensure_ascii=False, separators=(",", ":"))
+
+
+def _abandon_before(messages: tuple[Message, ...], source: str, through_seq: int) -> str | None:
+    """只从已持久化边界区分新旧进程集合，暂停和新输入不改变 owner。"""
+    return next((message.message_id for message in reversed(messages)
+                 if message.source == source and message.seq <= through_seq
+                 and isinstance(message.body, Control) and message.body.action == "abandon"), None)
 
 
 class ShellOwners:
@@ -133,7 +143,10 @@ class ShellTool:
         """校验最终命令并固定进程 owner；恢复不重选目录、shell 或默认参数。"""
         owner = (
             self._settings.owner_key or "standalone" if source is None
-            else _owner_key(self._settings, source.messages[-1].session_id, source.messages[-1].source)
+            else _owner_key(
+                self._settings, source.messages[-1].session_id, source.messages[-1].source,
+                _abandon_before(source.messages, source.messages[-1].source, source.messages[-1].seq),
+            )
         )
         raw = json_value(arguments)
         try:
@@ -246,24 +259,35 @@ async def _register(ctx: Context, name: Literal["shell", "write_stdin", "task_st
 
 
 @asynccontextmanager
-async def shell_cleanup(ctx: Context, reader: MessageReader, source: str, from_seq: int) -> AsyncGenerator[None]:
-    """程序结束后清理本段实际 Shell 调用；清理失败不改已提交回复。"""
+async def shell_cleanup(
+    ctx: Context, reader: MessageReader, source: str, from_seq: int, *,
+    task: Task | None = None, drain: Callable[[tuple[CallRef, ...]], Awaitable[None]] | None = None,
+) -> AsyncGenerator[None]:
+    """放弃可停止等待；独立 Task 保留旧进程清理、generation 与重启许可。"""
     try:
         yield
     finally:
-        # 1. 原有调用也在本段内；完成 Output 不会使它们从清理集合消失。
-        calls = tuple(dict.fromkeys(
-            part.binding_id for message in reader.snapshot()
-            if message.source == source and message.seq >= from_seq and isinstance(message.body, Output)
-            for part in message.body.parts if isinstance(part, ToolCall)
-        ))
+        # 1. 放弃后到达的新输入与调用不属于旧程序的清理范围。
+        messages = reader.snapshot()
+        abandoned = next((message for message in messages
+                          if message.source == source and isinstance(message.body, Control)
+                          and message.body.action == "abandon" and message.body.through_seq >= from_seq), None)
+        end = reader.head() if abandoned is None else cast(Control, abandoned.body).through_seq
+        calls = tuple(
+            (CallRef(message.message_id, index), part.binding_id,
+             _abandon_before(messages, source, message.seq))
+            for message in messages
+            if message.source == source and from_seq <= message.seq <= end and isinstance(message.body, Output)
+            for index, part in enumerate(message.body.parts) if isinstance(part, ToolCall)
+        )
         if calls:
-            scope = ctx.capture_runtime_scope()
-
             async def cleanup() -> None:
-                async with scope:
+                try:
+                    if drain is not None:
+                        await drain(tuple(ref for ref, _, _ in calls))
+                finally:
                     bindings = ctx.require(BINDINGS)
-                    for identity in calls:
+                    for identity, boundary in dict.fromkeys((identity, boundary) for _, identity, boundary in calls):
                         try:
                             metadata = bindings.describe(identity, TOOLS)
                             description = cast(Mapping[str, object], metadata["tool"])
@@ -273,8 +297,13 @@ async def shell_cleanup(ctx: Context, reader: MessageReader, source: str, from_s
                             async with bindings.open(identity, TOOLS):
                                 owners_binding = bindings.bind(SHELL_OWNERS, {})
                             async with bindings.open(owners_binding, SHELL_OWNERS) as (owners, _):
+                                state = cast(Mapping[str, object], metadata["state"])
+                                # 老归档没有此标记，仍按原 owner 释放；新归档固定放弃前的分区。
+                                if "owner_boundary" in state:
+                                    settings = ShellSettings.model_validate(json_value(state))
+                                    state = {**state, "owner_key": _owner_key(settings, reader.session_id, source, boundary)}
                                 report = await owners.release_tool(
-                                    cast(Mapping[str, object], metadata["state"]), reader.session_id, source,
+                                    state, reader.session_id, source,
                                 )
                             if report.failures:
                                 _ = ctx.report_incident("shell_cleanup_failed", f"{identity}: {report.failures}")
@@ -282,14 +311,19 @@ async def shell_cleanup(ctx: Context, reader: MessageReader, source: str, from_s
                             # SH-002: 此处是独立清理边界，失败保留真实 owner 并明确报告。
                             _ = ctx.report_incident("shell_cleanup_failed", f"{identity}: {type(error).__name__}: {error}")
 
-            operation = cleanup()
-            try:
+            async def run(_task: Task | None) -> None:
+                """宿主停止也先排空真实清理，不能把撤权当作进程已退出。"""
+                scope = ctx.capture_runtime_scope()
+                async def scoped_cleanup() -> None:
+                    async with scope:
+                        await cleanup()
+                operation = scoped_cleanup()
                 try:
                     work = asyncio.create_task(operation)
                 except BaseException:
                     operation.close()
+                    await scope.close()
                     raise
-                # 3. 调用者取消只停止等待，不再次打断物理清理。
                 try:
                     await asyncio.shield(work)
                 except asyncio.CancelledError:
@@ -301,5 +335,56 @@ async def shell_cleanup(ctx: Context, reader: MessageReader, source: str, from_s
                     if not work.cancelled():
                         work.result()
                     raise
-            finally:
-                await scope.close()
+
+            # 2. Task 自己固定当前 scope；源程序结束不会释放它的资源或 permit。
+            def admit(slot: TaskSlot) -> Task:
+                permit = task.child_permit() if task is not None and task.has_external_permit else None
+                try:
+                    owned = slot.start(run)
+                except BaseException:
+                    if permit is not None:
+                        permit.release()
+                    raise
+                if permit is not None:
+                    owned.on_done(permit.release)
+                return owned
+
+            if task is None:
+                await run(None)
+            else:
+                owned = await ctx.require(TASKS).open(ctx).admit(
+                    ("shell-cleanup", reader.session_id, source, from_seq, end), admit,
+                )
+                if abandoned is None:
+                    await _wait_cleanup(owned, reader, source, from_seq)
+
+
+async def _wait_cleanup(task: Task, reader: MessageReader, source: str, from_seq: int) -> None:
+    """普通停止排空；若随后明确放弃，只释放等待者，原清理 Task 继续持有资源。"""
+    async def abandoned() -> None:
+        async for message in reader.follow():
+            if (message.source == source and isinstance(message.body, Control)
+                    and message.body.action == "abandon" and message.body.through_seq >= from_seq):
+                return
+        raise RuntimeError("Shell 清理订阅提前结束")
+
+    joined = asyncio.create_task(task.join())
+    stopped = asyncio.create_task(abandoned())
+    cancellation: asyncio.CancelledError | None = None
+    try:
+        while True:
+            try:
+                done, _ = await asyncio.wait((joined, stopped), return_when=asyncio.FIRST_COMPLETED)
+                break
+            except asyncio.CancelledError as error:
+                cancellation = error
+        if joined in done:
+            _ = joined.result()
+        else:
+            stopped.result()
+        if cancellation is not None:
+            raise cancellation
+    finally:
+        _ = joined.cancel()
+        _ = stopped.cancel()
+        _ = await asyncio.gather(joined, stopped, return_exceptions=True)

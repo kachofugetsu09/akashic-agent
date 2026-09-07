@@ -23,6 +23,7 @@ from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.react.plugin import react, UnknownToolEffect, StepLimit
 from plugins.tools.execution import ToolExecution, MessageReply, Result
+from plugins.tools.abandon import follow_abandon, reject_start
 from plugins.tools.menu import ToolMenu
 from session.log import MessageConflict, MessageLog
 from session.message import (
@@ -132,11 +133,62 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
                                max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools)
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
+    async def interrupted_reply(reader, source, ref):
+        return MessageReply("result:" + ref.message_id + ":" + str(ref.part_index), ref,
+                            reader, writer(ToolResult, ref), reject_start)
+    watcher = asyncio.create_task(follow_abandon(log.catalog(), log.owner("tools"), tasks,
+                                               interrupted_reply, task_key="tools"))
     try:
         yield conversation, log, store, run
     finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
         await tasks.close()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_abandon_starts_next_reply_before_uncooperative_tool_finishes(tmp_path):
+    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    requests, effects = [], []
+    async def complete(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return LLMResponse("old working text", [ModelToolCall("a", "example", {"call": 1}),
+                                                    ModelToolCall("b", "example", {"call": 2})])
+        assert all(row["role"] != "tool" and not row.get("tool_calls") for row in request.messages)
+        return LLMResponse("new answer")
+    async def invoke(key, arguments):
+        effects.append(arguments["call"])
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        return Result("success", (ContentPart("text", "late old output"),))
+
+    async with runtime(tmp_path, complete, invoke) as (conversation, log, store, run):
+        try:
+            await conversation.accept("old-input", Input((ContentPart("text", "old work"),)))
+            old = await conversation.start(run)
+            await asyncio.wait_for(entered.wait(), 1)
+            head = log.reader("s").head()
+            await asyncio.wait_for(conversation.control("abandon", Control("abandon", head),
+                                                       expected_head=head, handle=old.handle), 1)
+            await asyncio.wait_for(cancelled.wait(), 1)
+            await conversation.accept("new-input", Input((ContentPart("text", "new work"),)))
+            latest = await asyncio.wait_for(conversation.start(run), 1)
+            await asyncio.wait_for(latest.join(), 1)
+            assert not release.is_set()
+            with pytest.raises(asyncio.CancelledError):
+                await old.join()
+            results = [m.body for m in log.reader("s").snapshot() if isinstance(m.body, ToolResult)]
+            assert [r.outcome for r in results] == ["interrupted", "denied"]
+            assert effects == [1] and len(requests) == 2
+            release.set()
+        finally:
+            release.set()
 
 
 @pytest.mark.asyncio

@@ -112,7 +112,7 @@ def _terminal_result(messages: Sequence[Message], source: str, tools: ToolMenu,
 
 
 async def _settle(tools: ToolMenu, call: CallRef) -> None:
-    """来源取消只停止新决策；已开始的调用保持等待者直到真实结算结束。"""
+    """普通取消等待原调用；明确放弃由 Tools 提交终态并释放等待者。"""
     lease = get_current_runtime_lease()
     scope = None if lease is None else RuntimeScope(lease.fork())
 

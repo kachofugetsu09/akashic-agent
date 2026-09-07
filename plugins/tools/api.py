@@ -7,10 +7,15 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
 from session.log import MessageReader, MessageWriter, OwnerStore
-from session.message import CallRef, ContentPart, Message, Output, ToolCall, ToolResult
+from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
-Outcome = Literal["success", "denied", "error", "unknown"]
+Outcome = Literal["success", "denied", "error", "unknown", "interrupted"]
+
+
+def result_message_id(call_ref: CallRef) -> str:
+    """调用结果的默认消息身份；恢复消费者与普通程序共用。"""
+    return f"tool-result:{call_ref.message_id}:{call_ref.part_index}"
 
 
 def durable_call_key(call_ref: CallRef) -> str:
@@ -30,7 +35,7 @@ class Result:
     parts: tuple[ContentPart, ...]
 
     def __post_init__(self) -> None:
-        if self.outcome not in {"success", "denied", "error", "unknown"}:
+        if self.outcome not in {"success", "denied", "error", "unknown", "interrupted"}:
             raise ValueError("工具结果状态无效")
         parts = tuple(self.parts)
         if any(not isinstance(part, ContentPart) for part in parts):
@@ -86,6 +91,15 @@ class MessageReply:
     def check(self, state: OwnerStore) -> None:
         state.check_access(self.reader, self.writer)
         self.writer.check(ToolResult(self.call_ref, "unknown", ()))
+
+    def abandoned(self) -> bool:
+        """放弃由同来源的持久前缀决定，普通取消不代表放弃。"""
+        call = self.reader.get(self.call_ref.message_id)
+        if call is None:
+            raise ValueError("工具调用消息缺失")
+        return any(message.source == call.source and isinstance(message.body, Control)
+                   and message.body.action == "abandon" and message.body.through_seq >= call.seq
+                   for message in self.reader.snapshot())
 
     def read(self, pointer: object) -> Result:
         """按持久指针读取正文，不在工具回执中保留第二份结果。"""

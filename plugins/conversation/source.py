@@ -114,7 +114,7 @@ class Conversation:
         expected_head: int,
         handle: str | None,
     ) -> Message:
-        """原子接纳控制并撤权；停止返回前等待已开始的工作真实排空。"""
+        """原子接纳控制并撤权；abandon 不等待物理清理，其余停止仍排空。"""
         def admit(slot: TaskSlot) -> tuple[Message, Task | None]:
             if self._reader.get(message_id) is not None:
                 message = self._controls.append(message_id, body)
@@ -152,7 +152,7 @@ class Conversation:
             return message, current if body.action != "resume" else None
 
         message, pending = await self._tasks.admit(self._key, admit)
-        if pending is not None:
+        if pending is not None and body.action != "abandon":
             try:
                 _ = await pending.join()
             except asyncio.CancelledError:

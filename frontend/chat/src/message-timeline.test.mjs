@@ -12,14 +12,14 @@ const text = (value) => ({ kind: "text", value });
 const page = (items, through, more = false) => ({ version: 2, items, through_seq: through,
   has_more: more, before_seq: more ? items[0].seq : null });
 
-test("fixed history pages retain all four bodies, gaps, late results and raw archives", () => {
+for (const outcome of ["unknown", "interrupted"]) test(`fixed history pages retain ${outcome} results after abandon without changing archives`, () => {
   const archive = { raw: '[ {"result":null, "arguments": "old"} ]', completeness: "unknown" };
   const records = [
     row(0, { kind: "input", parts: [text("[后台任务完成] 保留原消息")] }),
     row(3, { kind: "output", finish: "continue", parts: [text("先说"),
       { kind: "tool_call", name: "OriginalTool", binding_id: "old-binding", arguments: { path: "file" } }, text("后说")] }),
     row(8, { kind: "control", action: "abandon", through_seq: 3, reason: "用户取消" }),
-    row(9, { kind: "tool_result", call_ref: { message_id: "message-3", part_index: 1 }, outcome: "unknown", parts: [text("晚到结果")] }),
+    row(9, { kind: "tool_result", call_ref: { message_id: "message-3", part_index: 1 }, outcome, parts: [text("工具结果")] }),
     row(12, { kind: "output", finish: "quiet", parts: [{ kind: "history.transcript", archive }, { kind: "private.kind", display: "unavailable" }] }),
   ];
   const snapshot = structuredClone(records);

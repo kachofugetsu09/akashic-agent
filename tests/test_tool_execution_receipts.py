@@ -528,7 +528,8 @@ async def test_invalid_arguments_result_and_receipt_roll_back_together(environme
             patch.setattr(OwnerTransaction, "save", fail_receipt)
             with pytest.raises(OSError, match="receipt disk failure"):
                 await execution.execute_call(reply)
-        assert state.read('message:["call",0]') is None
+        # prepare 前已固定请求身份；失败的结果事务不能把它推进到 done。
+        assert state.read('message:["call",0]').value["phase"] == "requested"
         assert log.reader("s").get("result") is None
         assert log.reader("s").head() == 0
         assert probe.calls == []

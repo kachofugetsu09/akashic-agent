@@ -139,6 +139,6 @@ def decode_body(payload: str) -> Body:
     call = _object(row["call_ref"], {"message_id", "part_index"})
     return ToolResult(
         CallRef(cast(str, call["message_id"]), cast(int, call["part_index"])),
-        cast(Literal["success", "denied", "error", "unknown"], row["outcome"]),
+        cast(Literal["success", "denied", "error", "unknown", "interrupted"], row["outcome"]),
         cast(tuple[ContentPart, ...], parts),
     )

@@ -132,7 +132,7 @@ Session 可拥有名称等独立元数据，但不拥有“当前 Turn”“当�
 ```text
 Input       { parts }
 Output      { parts, finish: continue | complete | quiet }
-ToolResult  { call_ref, outcome: success | denied | error | unknown, parts }
+ToolResult  { call_ref, outcome: success | denied | error | unknown | interrupted, parts }
 Control     { action: pause | resume | abandon | failure, through_seq, reason? }
 
 parts = text | artifact_ref | tool_call | citation | 其他已声明内容类型
@@ -194,7 +194,7 @@ Turn 主体    = 候选段中的 Input / Output
 
 Control 不充当用户正文或 Akasha 学习正文。没有结束点的尾段保持 open；暂停和一次 provider 失败不把它拆成多个 Turn。正常完成前需结算全部待等调用，因此普通对话仍等价于按相邻最终回答分段。
 
-被放弃调用的晚到结果继续保存并显示在时间线上，但不进入新 Turn、默认学习样本或当前 context 尾段；诊断按已有 call_ref 找到其原调用。例：`U1 → call1 → abandon(through=call1) → U2 → result1 → A2`，新段主体是 `{U2,A2}`，不能把 result1 当作 A2 的工具观察。这项关联是 call/result 已有的必要事实，不新增 TurnId。仅靠到达顺序无法同时处理这种交错；本设计不声称纯区间足以覆盖任意取消。
+被放弃调用的结果仍显示在时间线上，但不进入新 Turn、默认学习样本或当前 context 尾段；诊断按已有 call_ref 找到其原调用。新路径由 Tools 追加唯一的 denied/interrupted，迟到返回不再追加第二个结果；历史版本已保存的晚到结果继续可读。例：`U1 → call1 → abandon(through=call1) → U2 → result1 → A2`，新段主体是 `{U2,A2}`，不能把 result1 当作 A2 的工具观察。这项关联是 call/result 已有的必要事实，不新增 TurnId。仅靠到达顺序无法同时处理这种交错；本设计不声称纯区间足以覆盖任意取消。
 
 ```text
 全局日志                          默认投影
@@ -407,7 +407,7 @@ U2(conversation) → conversation head 变成 2
 
 这是通用来源版本检查，Core 不知道 Human、pending cause 或“回答了谁”。默认部署只有一个持有 workspace 排他锁的运行 authority；第二个独立 runtime 必须启动失败，外部进程通过该 authority 的接口接入。锁归 OS/进程生命周期，崩溃后可重新取得；本版不声称支持多个节点直接共写一个 workspace，也不增加分布式 lease 系统。
 
-来源插件用 `(session, source)` 作为通用 Task admission 的排他 key。authority 串行完成启动、scope 替换与控制接纳；旧 scope 退出/完成结算前，不启动同来源的新程序。回复 writer 同时绑定该活动 scope，提交事务先验证 writer 仍有效，再做来源 head CAS；scope 失去所有权后即使 head 没变也不能提交。ToolResult 使用 exact call 的结算 writer，不能因原 scope 结束而丢弃真实效果。Core 只理解排他 key、writer 生命周期与版本条件，不解释来源名称。
+来源插件用 `(session, source)` 作为通用 Task admission 的排他 key。authority 串行完成启动、scope 替换与控制接纳；旧来源 scope 退出后才启动同来源的新程序。普通取消继续等待效果结算；明确放弃时，Tools 结算调用并释放等待者，实际效果与清理保留独立 Task，不占新来源程序的槽位。回复 writer 同时绑定该活动 scope，提交事务先验证 writer 仍有效，再做来源 head CAS；scope 失去所有权后即使 head 没变也不能提交。ToolResult 使用 exact call 的结算 writer，终态提交后迟到返回只读既有结果。Core 只理解排他 key、writer 生命周期与版本条件，不解释来源名称。
 
 进程死掉不证明远端模型请求已停止。恢复先查询 Model 调用记录；没有可查询结果时明确记录 unknown，按实际调用预算决定是否准许新请求，不能承诺网络故障下绝无重复费用。cursor 只推进已完成接纳或已持久移交的进度，不能用“已读消息”代替工作完成。
 
@@ -428,6 +428,8 @@ U2(conversation) → conversation head 变成 2
 ```text
 call 已提交
     ▼
+requested（请求身份、结果消息身份）
+    ▼ prepare
 prepared（最终参数、exact binding）
     ▼ durable start intent
 started ── 外部调用 ──▶ result / unknown
@@ -438,7 +440,7 @@ started ── 外部调用 ──▶ result / unknown
 - 有 started 而无结果：优先 query；provider 支持相同幂等 key 才可重试；否则产生真实 unknown 并停止自动继续。
 - 工具异常只能由能解释它的边界转成 denied/error；内部不变量损坏 fail-loud。
 - 对话 result 追加与本地 receipt 的结果指针在同一存储事务完成；独立调用在其 receipt 提交结果。不同存储时必须有已验收的 outbox/handoff，不能默认跨库原子。
-- 取消与 effect start 由执行 owner 排序：取消先被接纳则不新发起；已开始则结算为真实结果或 unknown，不能假称没执行。
+- 取消与 effect start 由执行 owner 排序：普通取消先被接纳则不新发起；已开始则结算为真实结果或 unknown。明确 abandon 按第 7.4 节结算 interrupted，不能假称没执行。
 
 unknown 是自动执行路径的终止结果，不证明远端失败。人工核对后产生新的明确管理事实/新获授权调用；不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 持久引用其 exact generation，进程重启后按该引用打开所需目标。内存 lease 排空后释放资源，耐久归档没有自动 GC，也不另存 active claim 或 refcount。
 
@@ -453,11 +455,15 @@ Tool 与 Delivery 都需要外部效果记录，但各自拥有不同状态和�
 | pause | 暂停，正文保留 | 未开始的不发起；已开始的继续真实结算 | 可按来源策略唤醒，旧 pause 不覆盖新输入 |
 | failure | 记录失败并暂停 | 不把未知外部效果当失败重跑 | 与 pause 相同；具体错误仍归实际 owner |
 | resume | 恢复尚未 abandon 的输入 | 先处理原调用状态，不复制调用 | 不改写它们原有状态 |
-| abandon | 明确放弃，在 through_seq 关闭该前缀 | 未开始的结算 denied/cancelled-before-start；已开始的保留真实结果或 unknown | 保持独立，不能被并入放弃范围 |
+| abandon | 明确放弃，在 through_seq 关闭该前缀 | 保留已提交结果；未开始的结算 denied，已开始且未提交结果的结算 interrupted；不等待实际清理 | 保持独立，不能被并入放弃范围 |
 
 默认 conversation 的唤醒策略在本层明确为：`resume` 或新的 Input 都恢复该来源尚未关闭的工作，先按当前权限恢复原 prepared 调用，再读取全部输入继续推理。暂停期间只到达 ToolResult 不会唤醒；unknown 不因新 Input 获得重试授权。这保持来源有序，不建立“已经 final，却另有旧调用等 resume”的并行工作模型。后文“保留待 resume”也包括该默认来源由新 Input 明确唤醒后的恢复。
 
 pause/failure 后到达的 ToolResult 不解除暂停；abandon 后的 late result 不进入新段，按 4.1 的 call 归属规则处理。暂停尚未开始的调用可以保留待 resume；abandon 则必须明确拒绝再启动它。新输入不会自动授权重试 unknown 效果，解除该阻塞需要工具领域的明确核对结果或新授权。
+
+Tools 在正式启动后跟随日志消费 abandon，并在启动时追赶未处理控制；归档 Root 不启动该消费者。结算先在同一个 owner 事务中核对已有终态，再追加 ToolResult 和保存结果指针，随后协作取消原效果 Task。没有异步宽限窗口：先前已提交结果保留，尚未提交的 started 直接结算 interrupted。等待者可以从已提交结果与 Control 释放，不把实际工具的退出当作前置条件；同进程取消不是强杀或效果回滚。
+
+Shell 清理 Task 先排空相关效果，再使用原 binding 清理放弃前的进程集合。新 Shell binding 标明按最近 abandon 分区；同一段的 shell/write_stdin/task_stop 共用分区，旧清理不能命中新段。没有该标记的历史归档保持旧 owner 解释。独立效果与清理 Task 各自持有 generation lease；外部来源显式转交 child permit，真正退出后才释放。暂停后再放弃也可以停止等待已开始的清理。决策与验收见 [0059](../decisions/0059-abandon-settles-tool-calls.md)。
 
 UI 的 scope handle 和来源 head 前置条件在控制提交时一起核对；过期则返回 conflict，不落控制事实。旧 scope 在失去所有权后报告的失败只进入该调用诊断，不能再写当前来源的 failure。发生重启后，仅按已接纳 Control 的持久边界恢复。若产品以后需要“忽略所有后续输入，直到解除”的整个来源开关，它属于来源插件配置；不能把一次 /stop 偷换成这种模式。
 

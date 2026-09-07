@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 import re
 from typing import Literal, cast
 
-from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import Bindings
-from session.message import freeze_json
+from session.message import CallRef, ToolResult, freeze_json
+from session.log import MessageReader
+from agent.restart import ExternalRootPermit
+from plugins.content.plugin import check_text
 
-from plugins.tools.api import Authorize, BoundTool, CallSource, Result
+from plugins.tools.api import Authorize, BoundTool, CallSource, MessageReply, Result, result_message_id
+from plugins.tools.abandon import follow_abandon, reject_start
 from plugins.tools.execution import ToolExecution
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import OWNER_STATE
+from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import TASKS
 
 api_version = 3
@@ -188,7 +193,9 @@ class ToolCatalog:
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("工具注册不能跨 composition Root")
 
-    def execution(self, authorize: Authorize) -> ToolExecution:
+    def execution(
+        self, authorize: Authorize, *, child_permit: Callable[[], ExternalRootPermit] | None = None,
+    ) -> ToolExecution:
         """正式调用取得工具 owner 的回执与任务；归档发现不打开这些能力。"""
         bindings = self._ctx.require(BINDINGS)
         return ToolExecution(
@@ -197,11 +204,27 @@ class ToolCatalog:
             lambda identity: open_tool(bindings, identity),
             authorize,
             task_key="effects",
+            child_permit=child_permit,
         )
 
     def descriptions(self) -> tuple[Mapping[str, object], ...]:
         return tuple(self._tools[key].description for key in sorted(self._tools)
                      if self._tools[key].description["public"])
+
+    async def drain_calls(self, calls: tuple[CallRef, ...]) -> None:
+        """清理 owner 等待原效果退出；终态结果不等于资源已经释放。"""
+        from plugins.tools.api import durable_call_key
+
+        tasks = self._ctx.require(TASKS).open(self._ctx)
+        for ref in calls:
+            task = await tasks.admit(("effects", durable_call_key(ref)), lambda slot: slot.current)
+            if task is not None:
+                try:
+                    _ = await task.join()
+                except asyncio.CancelledError:
+                    caller = asyncio.current_task()
+                    if caller is not None and caller.cancelling():
+                        raise
 
     def bind(
         self, name: str, bindings: Bindings, *, candidates: Candidates | None = None,
@@ -318,3 +341,29 @@ async def open_tool(bindings: Bindings, binding_id: str) -> AsyncIterator[BoundT
 
 async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(TOOLS, ToolCatalog(ctx))
+    watcher: asyncio.Task[None] | None = None
+
+    async def start(_event: object) -> None:
+        nonlocal watcher
+        async def reply(reader: MessageReader, source: str, ref: CallRef) -> MessageReply:
+            async with ctx.runtime_scope():
+                writer = ctx.require(MESSAGE_WRITERS).bind(
+                    ctx, author="tool", source=source, body_types=(ToolResult,), content={"text": check_text},
+                )(reader.session_id, call_ref=ref)
+            return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+
+        watcher = await ctx.spawn(follow_abandon(
+            ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),
+            ctx.require(TASKS).open(ctx), reply, task_key="effects",
+        ), name="tools-abandon")
+
+    async def stop(_event: object) -> None:
+        if watcher is not None:
+            _ = watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+
+    _ = await ctx.on(RUNTIME_STARTED, start)
+    _ = await ctx.on(RUNTIME_STOPPING, stop)
