@@ -67,6 +67,7 @@ _CONTEXT_MATERIAL_GRANTS_ID = "20260907_01_context_material_grants"
 _LEGACY_AGENT_CONFIG_ID = "20260907_02_retire_legacy_agent_config"
 _MESSAGE_METADATA_ID = "20260907_03_message_metadata"
 _SKILL_PROMPT_GRANT_ID = "20260907_03_skill_prompt_grant"
+_LEGACY_SUMMARIES_ID = "20260908_01_legacy_summaries"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -113,6 +114,7 @@ _CURRENT_IDS = (
     _LEGACY_AGENT_CONFIG_ID,
     _MESSAGE_METADATA_ID,
     _SKILL_PROMPT_GRANT_ID,
+    _LEGACY_SUMMARIES_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -472,6 +474,7 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _LEGACY_AGENT_CONFIG_ID,
         _MESSAGE_METADATA_ID,
         _SKILL_PROMPT_GRANT_ID,
+        _LEGACY_SUMMARIES_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert "agent" not in migrated
@@ -540,7 +543,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
 
     outcome = _runner(root).run()
 
-    assert outcome.migrations == (_LEGACY_AGENT_CONFIG_ID, _MESSAGE_METADATA_ID, _SKILL_PROMPT_GRANT_ID)
+    assert outcome.migrations == (_LEGACY_AGENT_CONFIG_ID, _MESSAGE_METADATA_ID, _SKILL_PROMPT_GRANT_ID, _LEGACY_SUMMARIES_ID)
 
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -633,6 +636,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _LEGACY_AGENT_CONFIG_ID,
         _MESSAGE_METADATA_ID,
         _SKILL_PROMPT_GRANT_ID,
+        _LEGACY_SUMMARIES_ID,
     )
 
 
@@ -995,6 +999,7 @@ api_key = "secret"
         _LEGACY_AGENT_CONFIG_ID,
         _MESSAGE_METADATA_ID,
         _SKILL_PROMPT_GRANT_ID,
+        _LEGACY_SUMMARIES_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

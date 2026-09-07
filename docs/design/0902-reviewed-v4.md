@@ -1996,3 +1996,26 @@ Mobile WebUI 停止生成必须调用 `sendSessionCommand(session_id, "/stop")`�
 Tools 提供 `TOOL_DISPLAY_NAME` 窄读取口：输入已保存的 Tool binding ID，返回该 binding 归档描述中的工具名。
 它不打开归档工具、不执行外部效果，也不以当前插件的同名工具替换旧绑定。Observe 用它显示历史工具调用；
 缺少或损坏的绑定沿既有 binding 错误语义报告，不用哈希或当前 catalog 猜测名称。
+
+### 旧 workspace 的已提交摘要转换
+
+自动迁移 `20260908_01_legacy_summaries` 在完整 SQLite 备份后，只把 `last_consolidated` 指向的有效祖先链发布到 Compaction owner。
+旧 generation 可以在失效后重新起根；保留原 generation，并把每代的增量来源组合为新接口要求的连续累计消息范围。
+version 0 记录保存完整旧行、原 JSON 字符串与 SHA-256；未记录的 model call ID 和输出上限保持缺失。
+原生新摘要仍写 version 1，可在已导入 head 后正常追加；只读材料与归档查询使用同一个 SummaryLookup。
+
+```text
+┌ 旧 ledger + 当前游标 + 实际 Message 身份 ┐
+└──────────────────┬─────────────────────┘
+                   ▼ 核对 schema、有效父链与来源范围
+┌ 同一事务：只增 imported summary + head + 迁移回执 ┐
+└──────────────────┬──────────────────────────────┘
+                   ▼
+┌ Context / 状态命令读取原摘要；后续正常生成 version 1 ┐
+└───────────────────────────────────────────────────┘
+```
+
+旧 ledger、失效摘要、prepare、Markdown receipt、消息和外部效果证据全部保留。
+非空 prepare、未知 schema/格式、坏 JSON、缺失或不连续来源、冲突 head 均拒绝转换，失败事务不发布半条链。
+重试核对不可变导入记录，不倒退后来推进的 head；恢复点为 `backups/legacy-summaries-v1/<id>/` 的数据库与 manifest。
+该路径不运行模型、工具、发送或学习；旧工具 trace 没有领域回执时不补造 ToolResult，也不重新执行。

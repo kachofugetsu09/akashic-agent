@@ -18,7 +18,7 @@ Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
 class _SummaryIdentity(BaseModel):
-    """Fields shared by imported and native summary generations."""
+    """迁入摘要与新摘要共享的身份及来源。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     reference: Text
@@ -59,7 +59,7 @@ class SummaryRecord(_SummaryIdentity):
 
 
 class LegacySummaryRow(BaseModel):
-    """Exact scalar row retained from the retired compaction ledger."""
+    """完整保留旧摘要账本的标量字段。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     session_key: str
@@ -89,7 +89,7 @@ class LegacySummaryRow(BaseModel):
 
 
 class LegacySummarySource(BaseModel):
-    """Immutable old row and its canonical digest."""
+    """不可变旧行及其内容摘要。"""
 
     model_config = ConfigDict(
         extra="forbid", frozen=True, strict=True, serialize_by_alias=True,
@@ -111,7 +111,7 @@ class LegacySummarySource(BaseModel):
 
 
 class ImportedSummaryRecord(_SummaryIdentity):
-    """Readable summary imported without inventing missing call provenance."""
+    """读取迁入摘要，不补造缺失的模型调用出处。"""
 
     version: Literal[0]
     legacy: LegacySummarySource
@@ -136,7 +136,7 @@ class ImportedSummaryRecord(_SummaryIdentity):
         own_ids = tuple(cast(list[str], raw_items))
         if len(own_ids) > len(self.source_message_ids) or self.source_message_ids[-len(own_ids):] != own_ids:
             raise ValueError("旧摘要来源不是累计来源的末尾")
-        if self.parent is None and row.parent_generation != 0:
+        if self.parent is None and (row.parent_generation != 0 or own_ids != self.source_message_ids):
             raise ValueError("旧摘要根仍声明 parent generation")
         if self.parent is not None and row.parent_generation >= row.generation:
             raise ValueError("旧摘要 parent generation 无效")
