@@ -33,7 +33,9 @@ class Screen(BaseModel):
 class Share(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     message: str = Field(min_length=1)
-    items: list[str] = Field(max_length=5)
+    # V1 Content responses omitted ``items``; Source accepts that shape only
+    # when the migrated selection carries ``decision_format=legacy_single``.
+    items: list[str] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
     def unique(self) -> Self:

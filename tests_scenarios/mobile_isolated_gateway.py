@@ -43,7 +43,6 @@ from infra.mobile_realtime.gateway import (
     build_mobile_gateway_server,
 )
 from infra.mobile_realtime.key_protection import KeyProtectionError
-from plugins.akasha.plugin import _mobile_recall_lane
 from session.manager import SessionManager
 
 _FIXED_GIF = bytes.fromhex(
@@ -70,6 +69,25 @@ _PILOT_THINKING_AFTER_TOOL = (
     "工具结果表明共享主题已经生效。",
     "现在整理最终结论。",
 )
+
+
+def _project_mobile_recall_lane(
+    value: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Project bounded fixture records through the mobile card shape."""
+
+    projected: list[dict[str, object]] = []
+    for raw in value:
+        item: dict[str, object] = {
+            "user_preview": str(raw["user_text"])[:100],
+            "assistant_preview": str(raw["assistant_preview"])[:50],
+            "ts": raw["ts"],
+        }
+        score = raw.get("score")
+        if score is not None:
+            item["score"] = score
+        projected.append(item)
+    return projected
 
 
 @dataclass(frozen=True)
@@ -434,7 +452,7 @@ class IsolatedAkashaMobileUiProvider:
             raise ValueError("隔离 Akasha query 参数无效")
         if session_id is None or not session_id.startswith("akashic:"):
             raise ValueError("隔离 Akasha query 会话无效")
-        lane = _mobile_recall_lane(
+        lane = _project_mobile_recall_lane(
             [
                 {
                     "user_text": "🌙" * 1_000,

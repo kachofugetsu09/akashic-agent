@@ -1,5 +1,6 @@
 import asyncio
-from contextlib import asynccontextmanager
+import sqlite3
+from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
@@ -99,7 +100,7 @@ async def apply(ctx, config):
                     "candidate_id": control["candidate"], "initial_interest": "relevant", "question": "verify this"}]})])
             name = control["tool"]
             args = {"reason": "nothing useful"} if name == "skip_content" else {"message": "useful notification"}
-            if name == "share_content":
+            if name == "share_content" and not control.get("legacy"):
                 args["items"] = [control["candidate"]] if control.get("content") else []
             return LLMResponse(None, [ToolCall("decision", name, args)])
     descriptor = BoundModelDescriptor(binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
@@ -127,7 +128,7 @@ async def apply(ctx, config):
     await ctx.require(DELIVERY_SENDERS).register(ctx, name="test", idempotent=True, open=sender)
 '''.replace("CONTROL_PATH", repr(str(tmp_path))))
     control = {"calls": [], "sent": [], "entered": asyncio.Queue(), "release": asyncio.Event(),
-               "tool": "share_content", "failure": None, "due_read": asyncio.Event()}
+               "tool": "share_content", "failure": None, "due_read": asyncio.Event(), "legacy": False}
     control["release"].set()
     CONTROLS[str(tmp_path)] = control
     try:
@@ -305,6 +306,65 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
         assert ctx.require(EVENTMAIL_DELIVERY).lookup(original.accepted)["status"] == "settled"
         assert await source.start(original.flow_id) is None
         assert len(control["calls"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_v1_ready_selection_replays_legacy_single_decision_once(tmp_path):
+    """A migrated single-item selection still completes through Source and Delivery."""
+
+    from plugins.eventmail.plugin import EVENTMAIL_CONTENT_SOURCE
+    from plugins.wake.api import EVENTMAIL_DELIVERY
+    from plugins.wake.content import _candidate_id
+
+    async with application(tmp_path) as (host, log, ctx, source, control):
+        now = datetime.now(timezone.utc)
+        producer = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("feed")
+        producer.submit(
+            "legacy",
+            [{"item_id": "one", "revision": "1", "not_before": now,
+              "requires_ack": False, "payload": {"title": "legacy"}}],
+        )
+        domain = ctx.require(EVENTMAIL_WAKE)
+        snapshot = domain.snapshot(now)
+        control["content"] = True
+        control["legacy"] = True
+        control["candidate"] = _candidate_id(snapshot["items"][0]["ref"])
+        original = request(ctx, "content", now).model_copy(update={
+            "snapshot_seq": snapshot["snapshot_seq"],
+            "items": tuple(dict(item) for item in snapshot["items"]),
+        })
+        selected = domain.select(
+            snapshot["items"][0]["ref"], snapshot["snapshot_seq"], original.accepted, now,
+        )
+        assert selected["selected"] is True
+
+        database = tmp_path / "workspace/plugin-data/eventmail-builtin/eventmail.sqlite3"
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.executescript(
+                """
+                DROP INDEX content_selection_members_order_idx;
+                DROP INDEX content_selection_status_idx;
+                DROP INDEX context_projection_expiry_idx;
+                DROP INDEX alert_projection_due_idx;
+                DROP INDEX mail_transitions_mail_seq_idx;
+                DROP INDEX mail_envelopes_kind_seq_idx;
+                DROP TABLE context_projection;
+                DROP TABLE alert_projection;
+                DROP TABLE mail_transitions;
+                DROP TABLE mail_envelopes;
+                DROP TABLE content_selection_members;
+                DROP TABLE content_selections;
+                PRAGMA user_version = 1;
+                """
+            )
+
+        source.accept(original)
+        task = await source.start(original.flow_id)
+        assert task is not None
+        assert await asyncio.wait_for(task.join(), 10) == "shared"
+        assert len(control["sent"]) == 1
+        assert ctx.require(EVENTMAIL_DELIVERY).lookup(original.accepted)["status"] == "settled"
+        assert await source.start(original.flow_id) is None
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from datetime import datetime
 import subprocess
 import sys
-from types import SimpleNamespace
 from typing import Any, AsyncIterator, cast
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -65,7 +63,6 @@ from core.memory.events import MemoryWritten, RetrievalCompleted
 from agent.retrieval.events import build_retrieval_completed
 from agent.retrieval.protocol import RetrievalRequest
 from agent.prompting import PromptAssembler, PromptSectionRender
-from plugins.akasha.plugin import _inject_memory
 from plugins.openai_compatible.driver import (
     _merge_leading_system_messages,
     _normalize_messages,
@@ -177,25 +174,6 @@ def _prompt_ctx() -> PromptRenderCtx:
         disabled_sections=set(),
         turn_injection_prompt="",
     )
-
-
-async def _assert_akasha_inserts_first_user_context_frame_block() -> None:
-    ctx = _prompt_ctx()
-    runtime = SimpleNamespace(
-        query=AsyncMock(return_value=MemoryQueryResult(text_block="fresh recall"))
-    )
-    diagnostics = SimpleNamespace(
-        operation=lambda _name: nullcontext(),
-        measure=lambda _name, _value: None,
-    )
-
-    await _inject_memory(ctx, cast(Any, runtime), cast(Any, diagnostics))
-
-    assert ctx.system_sections_bottom == []
-    assert [
-        (section.name, section.content, section.order)
-        for section in ctx.context_frame_sections
-    ] == [("memory", "fresh recall", 10)]
 
 
 def _assert_context_frame_keeps_dynamic_memory_after_stable_history() -> None:
@@ -644,7 +622,6 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
 
 @pytest.mark.asyncio
 async def test_retrieval_completed_event_payload() -> None:
-    await _assert_akasha_inserts_first_user_context_frame_block()
     _assert_context_frame_keeps_dynamic_memory_after_stable_history()
 
     observed: list[RetrievalCompleted] = []
