@@ -75,21 +75,24 @@ async def apply(ctx: Context, config: object) -> None:
 
 双方各自声明同名、同结构的 key，通过 `inject` 和 `ctx.require()` 连接，不能 import 对方源码。
 
-## 3. Typed lifecycle and source signals
+## 3. Typed events
 
-插件通过明确的 typed key 注册监听；每个 key 只有一个 owner，发布者负责定义 payload 和失败语义。
+插件通过明确的 typed key 注册 listener；同一事件名只能绑定一种 dispatch 合同，注册顺序就是 listener
+顺序。事件 payload、返回值和失败处理由 key 的声明者定义，listener 的生命周期由其 Fiber owner 管理。
 
-| 当前合同 | 用途 | owner |
+| Key / API | 调度语义 | 顺序与失败 |
 |---|---|---|
-| `ctx.emit(KEY, payload)` | 发布来源或插件自己的已提交变更信号 | 定义该 key 的来源插件 |
-| `RUNTIME_STARTING` | 正式接纳开放前准备插件拥有的临时资源 | Runtime lifecycle |
-| `RUNTIME_STARTED` | 正式外部服务已就绪，启动插件工作 | Runtime lifecycle |
-| `RUNTIME_STOPPING` | 外部服务停止前收束插件工作 | Runtime lifecycle |
-| `SNAPSHOT_SEALING` | candidate catalog 冻结前完成插件自己的 seal | Snapshot owner |
+| `EmitEventKey[P]` / `ctx.emit(key, payload)` | 同步调用 listener | 按注册顺序；listener 必须同步，异常立即向调用者传播；返回 awaitable 是错误 |
+| `SerialEventKey[P, R]` / `await ctx.serial(...)` | 逐个等待 listener | 按注册顺序；`None` 继续，类型正确的 `Bail[R]` 立即短路；异常记录 owner failure 后传播 |
+| `ParallelEventKey[P]` / `await ctx.parallel(...)` | 为全部 listener 建立异步任务并等待 settle | listener 必须返回 awaitable；并发执行，异常聚合为 `BaseExceptionGroup`；调用取消会取消并 drain 子任务 |
+| `TransformEventKey[P]` / `await ctx.transform(...)` | 将当前 payload 依注册顺序交给下一 listener | 每步必须返回声明的同类型 payload；`None`、`Bail`、错误类型和异常都失败 |
+| `ObserveEventKey[P]` / `await ctx.observe(...)` | 调用全部 observer，再等待异步结果 | 全部 observer 都会被调用；普通 listener 失败隔离为 owner Incident，调用者继续；调用取消仍取消并 drain 未完成 observer |
 
-`SOURCE_CHANGED`、`EVENTMAIL_CHANGED` 和 `DRIFT_CHANGED` 等来源信号由各自插件声明和发布；它们不组成 Core
-全局事件表。`agent.plugin_composition.events` 中保留的通用 dispatch 实现仍服务 manager/snapshot 的兼容图，
-不属于新的插件能力目录。新插件应优先定义窄 `ServiceKey` 或 owner-specific signal，不依赖旧的 Core 业务事件名。
+Runtime lifecycle signal 使用同一 typed event 基础：`RUNTIME_STARTING` 在正式接纳开放前准备资源，
+`RUNTIME_STARTED` 在外部服务就绪后启动工作，`RUNTIME_STOPPING` 在服务停止前收束工作，
+`SNAPSHOT_SEALING` 在 candidate catalog 冻结前完成 seal。`SOURCE_CHANGED`、`EVENTMAIL_CHANGED` 和
+`DRIFT_CHANGED` 等来源 signal 由各自插件声明和发布；它们不组成 Core 业务事件表。新插件定义自己的
+typed key 或窄 `ServiceKey`，不依赖已退役的 Core 业务事件名。
 
 ## 4. Runtime Service 与插件能力
 

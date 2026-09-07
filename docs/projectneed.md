@@ -434,6 +434,10 @@ orphan recovery 可以清除 prepare。
 
 删除 session、messages 或随之级联的派生索引，必须来自用户主动发起的撤销或删除操作，并经过名称明确的管理命令。命令必须携带用户动作来源、精确目标集合、cascade 语义、备份和审计证据。Turn 投影、裁切、压缩、检索、展示、重放、保留期猜测和普通 refactor 不得调用这些接口；不得从角色邻接、来源顺序或临时 task 推导删除目标。当前 Message/Turn 设计的独立消息删除合同仍需在正式切换前另行批准。
 
+带显式 interaction identity 的 completed transcript 是不可拆分的删除单元。单消息或 generic batch 入口不得删除其中一部分，必须返回 interaction identity 供客户端向用户确认后转调整组原子撤销；整组撤销先创建可验证恢复快照，再同步删除逐消息 embedding、把位于该组内或组后的 consolidation 游标回退到组前边界，并由启用的派生记忆 owner 清除对应节点和所有基于旧图生成的 pending 引用。派生重建失败时不得继续提供撤销前的陈旧结果，删除期间已开始的迟到提交也不得重新写回被撤销 embedding。
+
+这项 interaction identity 只适用于 legacy completed transcript。新的 Message 独立删除协议尚未批准，本条不为单条 Message 建立删除入口。
+
 ### SES-004 损坏数据在存储边界失败
 
 存储层遇到持久化 JSON、列类型、tool chain、metadata、embedding BLOB 或维度损坏，必须带 session/message 上下文抛错。不得返回空列表、空对象或 cache miss。
@@ -448,15 +452,15 @@ orphan recovery 可以清除 prepare。
 
 ### SES-007 普通输入续接来源内开放 Turn
 
-同一 source 的普通 user input 直接追加到 Message 日志，并由 conversation source 读取该来源的开放段；不创建持久化执行身份。来源存在活动 Task scope 时，普通输入按 source owner 的准入规则等待或返回 busy；`/stop` 或等价控制追加明确 through_seq，再取消 scope。之后的输入是否继续开放段由来源插件决定，不能由 Core 猜测。
+同一 source 的普通 user input 在 source admission 中立即追加到 Message 日志，并由 conversation source 读取该来源的开放段；不创建持久化执行身份。来源存在活动 Task scope 时，新 Input 先按 source owner 的来源顺序提交，再取消并替换活动 scope；旧 Output writer 若在新 Input 后按原 `expected_source_head` 提交，必须收到 `MessageConflict`。之后的输入是否继续开放段由来源插件决定，不能由 Core 猜测。
 
 Mobile 的显式重试由来源插件使用原 `message_id` 和命令幂等身份定义；普通发送即使正文相同也追加新的 Input。容量等待、永久拒绝和真正追加必须使用同一份已校验请求，不能在拒绝路径补写第二条 Message。
 
 ### SES-008 Completed Turn 由消息投影得到
 
-一个 Turn 由同一 source 的 Message 投影得到，可以包含多个有序 Input、Output 中的 ToolCall 及其 ToolResult，并以一个 `Output.finish=complete|quiet` 作为结束点。每条事实在发生时分别追加到 Message 日志；不存在作为执行恢复或对话权威的 interaction/attempt transcript。被放弃的 Control 前缀仍可读，但默认不进入普通学习样本。
+一个 Turn 由同一 source 的 Message 投影得到，可以包含多个有序 Input、Output 中的 ToolCall 及其 ToolResult，并以一个 `Output.finish=complete|quiet` 作为结束点。每条事实在发生时分别追加到 Message 日志；不存在作为执行恢复或对话权威的持久 execution identity。`Control.pause`、`Control.resume`、`Control.abandon` 和 `Control.failure` 都是独立控制事实；pause 与 failure 不关闭 Turn，abandon 只关闭明确的 through_seq 前缀。失败由 `Control.failure` 和 owner receipt 表达，不把失败或取消写成 `Output.finish` 值。被放弃的 Control 前缀仍可读，但默认不进入普通学习样本。
 
-来源插件若支持 retry，必须以稳定的原 Input `message_id` 和新的命令身份保证传输幂等；普通发送不能按正文或相邻角色猜测重试关系。`failed`、`cancelled`、`interrupted` 等来源状态须按各自 Message/receipt 合同投影，不能合并成一个展示状态。
+来源插件若支持 retry，必须以稳定的原 Input `message_id` 和新的命令身份保证传输幂等；普通发送不能按正文或相邻角色猜测重试关系。`/stop` 由来源入口映射为 `Control.pause`，不引入 `stop` action；来源状态须按各自 Message/receipt 合同投影，不能合并成一个展示状态。
 
 ## 8. 记忆系统
 
@@ -513,7 +517,7 @@ session compaction ledger 的派生 checkpoint，不替代上述记忆状态；�
 
 ### MEM-010 Akasha 对同一 Turn 投影建立一个确定性样本
 
-Akasha 按固定版本的 Turn 投影取得全部 Input 与唯一完成 Output，建立一个学习样本。Control、未完成工具和失败开放段只按 Akasha 明确的来源规则处理，不从相邻角色推断归属；在线提交和离线 builder 必须共用相同 Message IDs、文本连接、向量聚合和 digest 规则。旧数据只能走名称明确的 legacy 兼容路径。
+Akasha 按固定版本的 Turn 投影取得全部 Input 与唯一完成 Output，且为每个参与的非空 user/assistant Message 使用已持久化的固定 embedding，建立一个学习样本。多条 Input 按固定版本的规范化文本连接和向量聚合规则处理；Control、未完成工具和失败开放段只按 Akasha 明确的来源规则处理，不从相邻角色推断归属。在线提交和离线 builder 必须共用相同 Message IDs、规范化文本、向量和 digest 规则。旧数据只能走名称明确的 legacy 兼容路径。
 
 ### MEM-011 历史投影按完整 Turn 和 token tail 保留
 
@@ -555,7 +559,7 @@ Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先�
 
 ### RUN-008 活动来源只接受控制并原子收束
 
-来源 owner 在活动 Task scope 上拒绝会改变同一来源顺序的普通控制外输入，只接受精确的 pause/abandon/stop 控制。控制通过明确 `source` 与 `through_seq` 追加到 Message 日志，再取消并等待 scope；Output 完成、失败或取消各自只追加一次。下一条普通 Input 是否续接开放 Turn 由来源插件决定，不建立 Core 专属执行记录。
+来源 owner 在活动 Task scope 上按 source 顺序接纳普通 Input：Input 先追加到 Message 日志，再取消并替换旧 scope；旧 scope 的 Output writer 以旧 `expected_source_head` 提交时必须冲突。控制只接受 `pause`、`resume`、`abandon` 和 `failure`，通过明确 `source` 与 `through_seq` 追加到 Message 日志，再按 owner 规则取消并等待 scope；`/stop` 入口映射为 `pause`。Output 只允许 `continue`、`complete` 或 `quiet`，失败由 `Control.failure` 或 owner receipt 追加一次。下一条普通 Input 是否续接开放 Turn 由来源插件决定，不建立 Core 专属执行记录。
 
 ### RUN-009 每个执行单元冻结模型执行绑定
 
@@ -969,7 +973,7 @@ Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。
 
 ### SEC-007 Shell 与 Subagent 准入有界
 
-Shell 的 retained log、同步 subagent 和后台 subagent 共享真实 admission owner。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。单人本地 Companion 不设置独立全局容量拒绝；来源插件只保持来源内顺序，Mobile 的崩溃恢复由持久 handoff owner 保证。
+Shell 的 retained log、同步 subagent 和后台 subagent 共享真实 admission owner；MessageBus 只负责这些 Shell/subagent 操作的准入和 lane 顺序，不设置独立的全局 backpressure 或容量拒绝。容量拒绝只影响当前操作；terminal cleanup 失败保留 execution owner 和诊断，不能把已提交 turn 改成失败。Mobile 的崩溃恢复由持久 handoff owner 保证；控制 admission 只统计 queued/running Task 的数量、实际字节和 live runtime objects，不统计历史 Message 或 programmatic source。
 
 ### SEC-011 Subagent 与 Wake 的内部消息可恢复
 
@@ -977,7 +981,7 @@ Subagent 与 Wake 每次独立工作保留完整输入、输出、工具调用�
 
 ### SEC-008 Control replay 是临时投影
 
-Control admission 只统计 queued/running Task 及其实际字节和 live runtime objects，不统计历史 Message 或 programmatic source。运行中 replay 只保存有界的临时事件/诊断视图；淘汰只影响晚到 replay 请求，当前 live subscriber 继续收到新变化。终态和历史正文从 Message catalog、来源 receipt 或 Delivery receipt 读取；replay 回收不得删除 `sessions.db/messages`，也不得把临时截断状态写回权威日志。
+Control admission 只统计 queued/running Task 及其实际字节和 live runtime objects，不统计历史 Message 或 programmatic source。订阅从 MessageLog 的 `seq` 读追赶并 `follow` 新增；临时 subscription queue 必须有界。慢读者、EOF、取消或 unfollow 都要取消并 drain 自己的订阅资源，不能阻塞其他 reader。终态和历史正文从 Message catalog、来源 receipt 或 Delivery receipt 读取；临时队列、游标和诊断视图不得修改 `sessions.db/messages`，也不能把临时截断状态写回权威日志。
 
 ### SEC-009 字段级外部值渲染
 

@@ -110,6 +110,6 @@
 
 ### 写入集与恢复
 
-本批次未修改数据库、yoyo、workspace、plugin-data、Android 源码、外部插件 checkout、安装 cache 或生成 bundle。删除代码不减少既有 Message、学习、附件、receipt 或 plugin-data；正式 MessageLog 启动、Android 配套、外部插件迁移和第 10 层完整切换仍未验收。
+本次文档修正未修改数据库、yoyo、workspace、plugin-data、Android 源码、外部插件 checkout、安装 cache 或生成 bundle。此前 stacked code commits 可能包含各自 owner 的 yoyo 迁移；本句只描述本次文档写入集。删除代码不减少既有 Message、学习、附件、receipt 或 plugin-data；正式 MessageLog 启动、Android 配套、外部插件迁移和第 10 层完整切换仍未验收。
 
-文档修改前的逐文件恢复副本位于 `/tmp/akasic-agent-backups/docs-cleanup-20260907-before-edit/`，包含本批次涉及的六份文档。代码清理可恢复到本 worktree 的父候选提交 `5e1b1b93764403b47ed73408784cf92ea8ac1276`；恢复时先停用候选运行时，再按 Git worktree 和文档副本逐项回放，不能触碰正式 workspace。验证至少包括 `git diff --check`、相对链接检查、旧入口搜索，以及与当前实现直接相关的文档/API路径核对。
+代码清理的实际历史是：`1492ce5f` 为 `7340e5a0` 的父提交，`7340e5a0` 删除旧 lifecycle/passive graph，随后 `576e8add` 删除旧 event/retrieval leaves。`5e1b1b93` 是 Message 行为与 Gate 元数据的候选基线，不是这些代码删除的恢复点；如需回放文档/行为候选，可将其作为参考提交，不能据此恢复已删除代码。文档修改前的逐文件恢复副本位于 `/tmp/akasic-agent-backups/docs-cleanup-20260907-before-edit/`，包含本批次涉及的六份文档。恢复时先停用候选运行时，再按 Git worktree 和文档副本逐项回放，不能触碰正式 workspace。验证至少包括 `git diff --check`、相对链接检查、旧入口搜索，以及与当前实现直接相关的文档/API路径核对。

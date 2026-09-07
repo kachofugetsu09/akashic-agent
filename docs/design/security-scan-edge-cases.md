@@ -86,17 +86,15 @@ Mutants：有效 receipt 被高水位删除、processing 被盲删重放、hando
 
 Shell retained log 由 execution owner 管理，达到 cap 只拒绝当前 execution。terminal cleanup 失败保留 execution/log owner 和诊断，并隔离同 owner 新 spawn；已经提交的 turn 不改回失败。同步 subagent 和后台 subagent 使用同一个 admission owner，不能由同步路径绕过容量。
 
-MessageBus 不设置独立全局 backpressure 或容量拒绝；它负责 lane 顺序，Mobile accepted 另由 durable handoff 保证崩溃恢复，直到 handoff 删除确认。控制 admission 只统计 queued/running turn 的数量、字节和 live runtime objects，不统计历史 programmatic thread/channel。
+MessageBus 只负责 Shell/subagent 操作的准入和 lane 顺序，不设置独立全局 backpressure 或容量拒绝；Mobile accepted 另由 durable handoff 保证崩溃恢复，直到 handoff 删除确认。控制 admission 只统计 queued/running Task 的数量、字节和 live runtime objects，不统计历史 Message 或 programmatic source。
 
 Mutants：cleanup 丢失 owner、sync spawn 绕过 admission、已接纳 Mobile handoff 静默丢失、历史 thread 阻止新 turn。
 
-## 10. Control replay（G8 / D8）
+## 10. Control follow（G8 / D8）
 
-运行中每 turn replay ring 最多 256 events/4 MiB，全局最多 32 MiB；eviction 只影响晚到 replay 请求，当前 live subscriber 继续获得新事件。晚到请求的起点已被淘汰时返回 `replay_truncated` 与当前 snapshot。terminal replay 最多保留 5 分钟；过期返回 `replay_expired`，并从 SessionStore 读取权威最终状态。
+控制订阅从 MessageLog 的 `seq` 读取既有前缀，再 follow 后续追加；订阅队列有界，消息正文和进度始终以 MessageLog 为准。慢读者、EOF、取消或 unfollow 必须取消并 drain 自己的订阅资源；不能让一个读者阻塞其他订阅，也不能用临时队列覆盖权威消息。终态和历史正文从 Message catalog、来源 receipt 或 Delivery receipt 读取；订阅回收不得删除 `sessions.db/messages`，不得更新既有 Message，也不得把临时截断状态写回权威日志。
 
-replay 回收不得删除 `sessions.db/messages` 或覆盖既有 terminal result。单一 runtime-owned reaper 按最早 expiry 唤醒，空闲时也必须在 wall-clock grace 后清除 replay/runtime objects；shutdown 取消并收束 reaper。history、sequence、global index 或字节计数不一致属于内部契约损坏，必须 `runtime_fatal`，不能降级成 `cleanup_degraded`。
-
-Mutants：ring 无界、淘汰导致 live subscriber 丢事件、过期返回静默空流、历史 replay 回收删除 SessionDB 消息、terminal object 永不回收。
+Mutants：订阅队列无界、慢读者阻塞其他订阅、取消后资源未 drain、follow 从错误 seq 追赶、临时队列回写或删除 SessionDB 消息。
 
 ## 11. Fitbit 字段安全（G9 / D9）
 
@@ -113,7 +111,7 @@ Mutant：`efficiency` 通过 `innerHTML` 进入 DOM。
 | MCP reservoir | source event、quarantine 记录 | score、ack、cursor、consumed/decayed 状态机 | 最小驻留期 + decay floor + ack/cursor 与删除同一可恢复事务 | Wake/MCP owner；cursor、accepted/quarantine 快照、提交证据 |
 | Schedule | 用户明确 add | reschedule/due metadata；完成或过期 one-shot → `enabled=false` | 用户明确 cancel | JobStore；candidate/commit 快照 |
 | Execution spill/log | execution 输出追加 | active → terminal / cleanup_degraded | execution 结束且删除确认；失败保留 owner | execution owner；registry、path/size、cleanup report |
-| Control replay | turn event 追加 | active bounded ring → terminal grace | ring 高水位或 terminal 超 5 分钟；不减 SessionStore | Control owner；SessionDB 不变、truncated/expired result |
+| Control subscription | MessageLog seq 读取与 follow | 临时 bounded queue、reader/follow 取消与 drain | 订阅关闭后仅回收临时队列和 reader；不减 MessageLog | Control owner；MessageLog 不变、cursor/EOF/取消证据 |
 
 `sessions.db/messages` 正常路径继续 append-only；本设计的容量和清理协议无权 UPDATE/DELETE 对话正文。所有物理减少都必须从 DB、文件、事件和诊断观察并可恢复。
 
