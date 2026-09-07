@@ -123,7 +123,10 @@ async def test_startup_consumer_settles_old_calls_after_new_turn_completed(envir
                             body_types=(ToolResult,), content={"text": check_text}, call_ref=ref)
         return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
 
-    watcher = asyncio.create_task(follow_abandon(log.catalog(), state, tasks, reply, task_key="tools"))
+    watcher = asyncio.create_task(follow_abandon(
+        log.catalog(), state, tasks, reply, task_key="tools",
+        report_incident=lambda kind, message: None,
+    ))
     try:
         async def settled():
             async for _ in first.reader.follow():

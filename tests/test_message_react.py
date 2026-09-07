@@ -138,8 +138,10 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
     async def interrupted_reply(reader, source, ref):
         return MessageReply("result:" + ref.message_id + ":" + str(ref.part_index), ref,
                             reader, writer(ToolResult, ref), reject_start)
-    watcher = asyncio.create_task(follow_abandon(log.catalog(), log.owner("tools"), tasks,
-                                               interrupted_reply, task_key="tools"))
+    watcher = asyncio.create_task(follow_abandon(
+        log.catalog(), log.owner("tools"), tasks, interrupted_reply, task_key="tools",
+        report_incident=lambda kind, message: None,
+    ))
     try:
         yield conversation, log, store, run
     finally:

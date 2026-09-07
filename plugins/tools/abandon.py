@@ -79,7 +79,7 @@ async def abandon_call(
 async def follow_abandon(
     catalog: MessageCatalog, state: OwnerStore, tasks: TaskAdmission,
     reply: Callable[[MessageReader, str, CallRef], Awaitable[MessageReply]], *, task_key: Hashable,
-    report_incident: Callable[[str, str], object] | None = None,
+    report_incident: Callable[[str, str], object],
 ) -> None:
     """只消费持久 abandon；启动追赶也结算未开始或进程中断后的调用。"""
     seen: dict[str, int] = {}
@@ -99,8 +99,7 @@ async def follow_abandon(
                         try:
                             _ = await abandon_call(state, tasks, target, task_key=task_key)
                         except LegacyReplyIdentityUnavailable as error:
-                            if report_incident is not None:
-                                _ = report_incident("legacy_tool_reply_identity", str(error))
+                            _ = report_incident("legacy_tool_reply_identity", str(error))
                     finally:
                         target.writer.expire()
             seen[session_id] = head
