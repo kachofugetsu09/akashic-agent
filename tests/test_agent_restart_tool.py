@@ -13,6 +13,7 @@ from typing import cast
 
 import pytest
 
+from agent.plugin_composition import CompositionOverlay
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
@@ -57,7 +58,8 @@ def _copy_plugin_sources(root: Path, names: tuple[str, ...]) -> None:
 
 
 def _write_restart_provider(
-    root: Path, *, reload_fixture: bool = False, state_root: Path | None = None,
+    root: Path, *, reload_fixture: bool = False, shared_event: bool = False,
+    state_root: Path | None = None,
 ) -> None:
     provider = root / "restart_provider"
     provider.mkdir()
@@ -68,10 +70,13 @@ def _write_restart_provider(
         "from pathlib import Path\n"
         "from agent.plugin_composition import RUNTIME_STARTING\n"
         "from plugins.delivery.api import FINAL_OUTPUT_DELIVERY\n"
-        if reload_fixture else ""
+        if reload_fixture or shared_event else ""
     )
     inject = "(FINAL_OUTPUT_DELIVERY,)" if reload_fixture else "()"
-    fixture_setup = f"""
+    fixture_setup = (
+        "    await ctx.on(RUNTIME_STARTING, lambda _event: None)\n"
+        if shared_event else ""
+    ) + (f"""
     delivery = ctx.require(FINAL_OUTPUT_DELIVERY)
 
     class Waiter:
@@ -94,7 +99,7 @@ def _write_restart_provider(
             )
 
     await ctx.on(RUNTIME_STARTING, prepared)
-""" if reload_fixture else ""
+""" if reload_fixture else "")
     (provider / "plugin.py").write_text(
         f"""
 from contextlib import asynccontextmanager
@@ -686,7 +691,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     # 1. 只替换一个已安装 provider generation。
     generated = tmp_path / "generated"
     generated.mkdir()
-    _write_restart_provider(generated)
+    _write_restart_provider(generated, shared_event=True)
     provider_repo = tmp_path / "restart-provider"
     provider_repo.mkdir()
     provider_source = generated / "restart_provider" / "plugin.py"
@@ -814,7 +819,14 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         assert changed == ["restart_provider@fixture"]
         assert latest.generations["agent_restart"].generation_id == stable_generation_ids["agent_restart"]
         assert latest.composition_root is not None
-        candidate_gate = latest.composition_root.context.require(RESTART_GATE)
+        candidate_overlay = latest.composition_root
+        assert isinstance(candidate_overlay, CompositionOverlay)
+        expected_replaced = {"reply", "restart_provider@fixture"}
+        if supervised:
+            expected_replaced.add("agent_restart")
+        assert expected_replaced <= candidate_overlay.replaced_plugin_ids
+        assert expected_replaced <= candidate_overlay.candidate.active_plugin_ids()
+        candidate_gate = candidate_overlay.context.require(RESTART_GATE)
         assert isinstance(candidate_gate, RestartGate)
         assert candidate_gate.supervised is supervised
         assert candidate_gate.execution_enabled is False
@@ -823,7 +835,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             candidate_gate.prepare("candidate-request")
         with pytest.raises(RestartRejectedError, match="不允许重启效果"):
             await candidate_gate.commit("candidate-request")
-        candidate_tools = latest.composition_root.context.require(TOOLS)
+        candidate_tools = candidate_overlay.context.require(TOOLS)
         candidate_tool_names = {
             str(description["name"]) for description in candidate_tools.descriptions()
         }
@@ -916,6 +928,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         )
         expected_listeners = {
             "emit:runtime.starting:reply",
+            "emit:runtime.starting:restart_provider@fixture",
             "serial:runtime.started:reply",
             "serial:runtime.stopping:reply",
             "serial:runtime.started:programmatic",

@@ -411,10 +411,47 @@ class EventRegistry:
         *,
         plugin_ids: Collection[str] | None = None,
     ) -> tuple[str, ...]:
+        """Freeze registration groups in a stable descriptor order."""
+
+        groups = sorted(
+            self.registration_groups(plugin_ids=plugin_ids),
+            key=lambda item: item[0],
+        )
         return tuple(
             f"{descriptor}:{owner}"
-            for descriptor, owners in self.registration_groups(plugin_ids=plugin_ids)
+            for descriptor, owners in groups
             for owner in owners
+        )
+
+    def registration_event_groups(
+        self,
+        *,
+        plugin_ids: Collection[str] | None = None,
+    ) -> tuple[tuple[EventKey, tuple[str, ...]], ...]:
+        """Return event keys and plugin owners in Root registration order."""
+
+        return tuple(
+            (
+                key,
+                tuple(
+                    listener.owner.runtime.plugin_id
+                    for listener in listeners
+                    if listener.owner.runtime is not None
+                    and (
+                        plugin_ids is None
+                        or listener.owner.runtime.plugin_id in plugin_ids
+                    )
+                ),
+            )
+            for key, listeners in self._listeners.items()
+            if any(
+                listener.owner.runtime is not None
+                and (
+                    plugin_ids is None
+                    or listener.owner.runtime.plugin_id in plugin_ids
+                )
+                for listener in listeners
+            )
         )
 
     def registration_groups(

@@ -368,23 +368,6 @@ def _admit_follow(
     return follow
 
 
-def _send_input(
-    client: JsonRpcSocketClient,
-    session_id: str,
-    message_id: str,
-    text: str,
-    subscription_id: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Follow before sending one Input, then return durable ACK and result."""
-
-    _admit_follow(client, session_id, subscription_id)
-    ack = client.send_programmatic(session_id, message_id, text)
-    if ack.get("message_id") != message_id or not isinstance(ack.get("seq"), int):
-        raise GateFailure(f"programmatic Input ACK 异常：{ack!r}")
-    result = _wait_programmatic_result(client, session_id, message_id)
-    return ack, result
-
-
 def _tool_names(request: dict[str, Any]) -> set[str]:
     payload = request.get("payload")
     if not isinstance(payload, dict):
@@ -1487,7 +1470,7 @@ def _inside(iterations: int, report_dir: Path, *, resource_gate: bool) -> int:
                     resume_result.get("status") == "complete"
                     and _output_text(_final_output(resume_page, resume_result))
                     == f"resume-{index}"
-                    and not any(item.get("name") == "agent_restart" for item in _tool_calls(resume_page))
+                    and "agent_restart" not in _tool_names(request)
                     and resume_projection["wireMatchesRaw"],
                     {
                         "sessionId": restart_session,
