@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from collections.abc import Callable
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, Context
+from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPPING, Context
 from agent.plugin_composition.models import BoundChatModel, ModelRequest, ModelRole
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
@@ -39,7 +40,25 @@ async def apply(ctx: Context, config: Config) -> None:
     def read(reference: str) -> SummaryRecord | None:
         return records().read(reference)
 
-    lookup = SummaryLookup(read)
+    # 状态查询在线程执行；启动时取得窄读取口，不在线程中重新申请 owner 写权限。
+    read_current: Callable[[str], SummaryRecord | None] | None = None
+
+    def head(session_id: str) -> SummaryRecord | None:
+        if read_current is None:
+            raise RuntimeError("摘要状态读取口尚未启动")
+        return read_current(session_id)
+
+    async def start(_event: object) -> None:
+        nonlocal read_current
+        read_current = records().head
+
+    async def stop(_event: object) -> None:
+        nonlocal read_current
+        read_current = None
+
+    _ = await ctx.on(RUNTIME_STARTED, start)
+    _ = await ctx.on(RUNTIME_STOPPING, stop)
+    lookup = SummaryLookup(read, head)
     _ = await ctx.provide(COMPACTION_SUMMARIES, lookup)
 
     def material(record: SummaryRecord) -> Summary:

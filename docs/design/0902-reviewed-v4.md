@@ -803,6 +803,16 @@ Meme 将类别及选择依据放入 `metadata.meme`，实际图片保留为通�
 
 Observe 不依靠最终 Turn 事件夹带整份 context/tool/model 状态。Model 记录每次请求的实际 usage，Tool 记录调用结果，Context 记录请求视图统计，Message 记录已提交输出；相关 owner 发布已有身份的诊断事实。诊断 request ID 可以存在，但不充当准入、恢复、学习或持久 Turn 身份。不能为了删除 Attempt 同时删除真实失败请求的可观测性。
 
+外部插件适配使用以下窄接口：
+
+- `Content.register(..., prepare=...)` 在每次 `bind()` 内一次性固定动态 TextProtocol 的提示与 decoder。prepare 不能改变协议名或内容 schema；归档声明不保存可变分类提示。分类与选图仍由协议插件拥有。
+- `Tools.register_authorize(...)` 为工具登记最终参数的限制 owner。工具 prepare 后依次执行固定 binding 中的限制和调用程序的 authorize；缺少已固定的限制时明确失败，旧 binding 不借用当前规则。
+- `COMPACTION_SUMMARIES.head(session_id)` 只读当前发布摘要，状态命令用其确切 source message IDs 计算覆盖，不获得发布或模型权限。
+- Models 的 `MODEL_CALL_HISTORY(after_id, limit)` 返回调用账分页快照，包括尚未结算和未产生 Message 的请求；原 `MODEL_CALLS(id)` 仍负责点读。分页按 ID 排列，每轮必须从头开始，不能把 ID 或秒级时间戳当作跨轮提交游标。`started` 后续可更新，`unknown` 不能展示为已知零费用。
+- Markdown Memory 的 `MEMORY_WRITES(after, limit)` 返回 `(source_ref, kind)` 排序的独立 receipt 副本，包含 payload 与 done_at。每轮重新扫描；消费者按双键去重。draft、backup、applied 分别陈述准备、恢复点和实际文件应用事实，不能把 draft 当作写入成功。
+
+分页上限为 1000。以上接口不授予 SQL、修改、删除或外部发送能力。Observe 自有幂等记录与统计在同一事务提交；无新 Message 的诊断通过定期读取 owner 记录发现。原 trace 历史继续由 Observe 保留，Core 不迁入第二份统计账。
+
 ### 15.3 无状态 Turn 的消费合同
 
 `turn_projection.project(messages, source)` 对一个明确、完整的日志前缀返回分段引用。返回值只有来源、边界、状态、Input/Output 成员 message IDs 和实际工具观察的 `(call_ref, result_message_id)` 引用；正文从 Message 读取。工具是否应当结算后才写 finish 由生产者保证，投影不复查执行授权或结算规则。插件没有数据库、后台 worker、订阅 cursor、学习队列或新的 Turn 身份。分段版本是算法合同，不是用户消息字段；它必须固定算法 artifact digest 和输入 schema，不能由可复用的显示版本号或 latest 指针代替。

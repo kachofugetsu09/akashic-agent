@@ -230,12 +230,17 @@ class _ContentView:
 class Content:
     def __init__(self, ctx: Context):
         self._ctx = ctx
-        self._definitions: dict[str, tuple[Context, ContentSchema]] = {}
+        self._definitions: dict[str, tuple[Context, ContentSchema, Callable[[], TextProtocol] | None]] = {}
 
-    async def register(self, ctx: Context, definition: ContentSchema) -> Effect:
-        """内容与协议共用普通 Effect 注册，schema 只有一个 owner。"""
+    async def register(
+        self, ctx: Context, definition: ContentSchema, *,
+        prepare: Callable[[], TextProtocol] | None = None,
+    ) -> Effect:
+        """登记固定 schema；动态协议在每次 bind 同时固定提示与解析器。"""
         if not isinstance(definition, ContentSchema):
             raise TypeError("内容声明必须是 ContentSchema 或 TextProtocol")
+        if prepare is not None and (not isinstance(definition, TextProtocol) or not callable(prepare)):
+            raise TypeError("动态准备只适用于 TextProtocol")
         if ctx.root_instance_token is not self._ctx.root_instance_token:
             raise ValueError("内容声明不能跨 composition generation 注册")
 
@@ -243,11 +248,11 @@ class Content:
             if definition.name in self._definitions:
                 raise ValueError(f"内容声明重复: {definition.name}")
             kinds = {"text", "artifact_ref"} | {
-                kind for _, item in self._definitions.values() for kind in item.content
+                kind for _, item, _ in self._definitions.values() for kind in item.content
             }
             if kinds.intersection(definition.content):
                 raise ValueError("内容 schema 必须有唯一 owner")
-            self._definitions[definition.name] = (ctx, definition)
+            self._definitions[definition.name] = (ctx, definition, prepare)
 
             def cleanup() -> None:
                 del self._definitions[definition.name]
@@ -261,10 +266,10 @@ class Content:
             name: {
                 "kinds": tuple(sorted(definition.content)),
                 "prompt": (
-                    definition.prompt if isinstance(definition, TextProtocol) else None
+                    definition.prompt if isinstance(definition, TextProtocol) and prepare is None else None
                 ),
             }
-            for name, (_, definition) in sorted(self._definitions.items())
+            for name, (_, definition, prepare) in sorted(self._definitions.items())
         }
 
     def save_binding(self, bindings: Bindings) -> str:
@@ -272,16 +277,24 @@ class Content:
         return bindings.bind(
             CONTENT,
             self.describe(),
-            contributors=tuple(ctx for ctx, _ in self._definitions.values()),
+            contributors=tuple(ctx for ctx, _, _ in self._definitions.values()),
         )
 
     @asynccontextmanager
     async def bind(self) -> AsyncGenerator[ContentView]:
         """调用方把 bind 保持到 append 完成，未提交结果不跨 lease 恢复。"""
         async with self._ctx.runtime_scope():
-            view = _ContentView(
-                self, tuple(self._definitions[key] for key in sorted(self._definitions))
-            )
+            definitions: list[tuple[Context, ContentSchema]] = []
+            for key in sorted(self._definitions):
+                owner, definition, prepare = self._definitions[key]
+                if prepare is not None:
+                    prepared = prepare()
+                    if (not isinstance(prepared, TextProtocol) or prepared.name != definition.name
+                            or prepared.content != definition.content):
+                        raise ValueError("动态协议不能更换名称或内容 schema")
+                    definition = prepared
+                definitions.append((owner, definition))
+            view = _ContentView(self, tuple(definitions))
             try:
                 yield view
             finally:

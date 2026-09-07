@@ -63,8 +63,16 @@ class SummaryRef(BaseModel):
 class SummaryLookup:
     """归档提供的窄读取口；不能发布摘要、推进 head 或启动模型。"""
 
-    def __init__(self, read: Callable[[str], SummaryRecord | None]):
+    def __init__(
+        self, read: Callable[[str], SummaryRecord | None],
+        head: Callable[[str], SummaryRecord | None],
+    ):
         self._read = read
+        self._head = head
+
+    def head(self, session_id: str) -> SummaryRecord | None:
+        """读取当前已发布摘要；状态面板不取得发布或模型调用权限。"""
+        return self._head(session_id)
 
     def resolve(self, metadata: Mapping[str, object], *, session_id: str) -> SummaryRecord:
         """只解析 binding 固定的原始记录，并核对完整父链。"""

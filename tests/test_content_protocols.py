@@ -344,3 +344,51 @@ async def test_inline_code_cannot_cross_paragraph_boundaries():
     parts, metadata = await decode_text("`<meme:happy>\n\n`", (meme_protocol([]),))
     assert metadata == {"meme": {"category": "happy"}}
     assert visible(parts) == "`\n\n`"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_protocol_freezes_prompt_and_decoder_until_next_bind(tmp_path):
+    root = CompositionRoot("dynamic-protocol")
+    store = RuntimeSnapshotStore()
+    current = ["first"]
+    prepared = []
+
+    def prepare():
+        value = current[0]
+        prepared.append(value)
+        async def decode(source, references):
+            return (), {"selected": value}
+        return TextProtocol(name="dynamic", prompt=value, decode=decode, content={})
+
+    async def provider(ctx):
+        await apply(ctx, None)
+
+    async def consumer(ctx):
+        await ctx.require(CONTENT).register(ctx, prepare(), prepare=prepare)
+
+    try:
+        await root.mount(provider, name="content-provider")
+        await root.mount(consumer, name="dynamic", inject=(CONTENT,), runtime=PluginRuntime(
+            "dynamic", "dynamic-test", tmp_path, tmp_path, tmp_path, {},
+        ))
+        store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
+        lease = store.lease()
+        token = bind_runtime_snapshot(lease)
+        try:
+            content = root.context.require(CONTENT)
+            async with content.bind() as first:
+                assert first.prompts == ("first",)
+                current[0] = "second"
+                assert first.prompts == ("first",)
+                assert (await first.decode("reply"))[1]["dynamic"]["selected"] == "first"
+                async with content.bind() as second:
+                    assert second.prompts == ("second",)
+                    assert (await second.decode("reply"))[1]["dynamic"]["selected"] == "second"
+                assert (await first.decode("reply"))[1]["dynamic"]["selected"] == "first"
+            assert prepared == ["first", "first", "second"]
+        finally:
+            reset_runtime_snapshot(token)
+            await lease.release()
+    finally:
+        await store.close()
+        await root.dispose()

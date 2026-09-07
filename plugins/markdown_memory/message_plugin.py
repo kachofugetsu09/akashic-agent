@@ -34,7 +34,7 @@ from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from session.log import MessageCatalog, MessageReader
 from session.message import ContentPart, Input, Message, Output
 
-from .store import DEFAULT_SELF_MD, MarkdownProfileStore, content_digest
+from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest
 
 api_version = 3
 name = "markdown_memory"
@@ -545,6 +545,13 @@ async def apply(ctx: Context, config: Config) -> None:
     store: MarkdownProfileStore | None = None
     watcher: asyncio.Task[None] | None = None
     lock_path = ctx.workspace_file("memory/markdown-profile.lock")
+
+    def read_writes(after: tuple[str, str] | None, limit: int) -> tuple[dict[str, object], ...]:
+        if store is None:
+            raise RuntimeError("Markdown 写入记录读取口尚未启动")
+        return store.read_writes(after, limit)
+
+    _ = await ctx.provide(MEMORY_WRITES, read_writes)
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
         # 完整初始态只投影 Store 的同一默认值；不创建文件或消费旧队列。

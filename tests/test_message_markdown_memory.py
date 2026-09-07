@@ -322,11 +322,25 @@ async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(t
         assert store.read_self() == before_self
         assert store.read_draft(record.reference) is not None
         assert store.read_backup(record.reference, "memory") == ""
+        partial = store.read_writes(None, 100)
+        assert "markdown_memory_applied_v1" in {row["kind"] for row in partial}
+        assert "markdown_self_applied_v1" not in {row["kind"] for row in partial}
         original = log.reader("s").snapshot()
     async with application(tmp_path, start=True) as (log, host):
         store = profile_store(tmp_path)
         assert store.is_applied(record.reference)
         assert store.read_backup(record.reference, "self") == before_self
+        from plugins.markdown_memory.store import MEMORY_WRITES
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            read = snapshot.composition_root.context.require(MEMORY_WRITES)
+            pages = []
+            after = None
+            while page := read(after, 2):
+                pages.extend(page)
+                after = (page[-1]["source_ref"], page[-1]["kind"])
+        assert len(pages) == len(store.read_writes(None, 100))
+        assert "markdown_self_applied_v1" in {row["kind"] for row in pages}
+        assert all(row in pages for row in partial)
         assert log.reader("s").snapshot() == original
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
 

@@ -29,6 +29,9 @@ from plugins.context.api import check_summary
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
 MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
+MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
+    "models.call-history.v1"
+)
 
 
 def response_facts(response: LLMResponse, call_indices: Sequence[int]) -> ContentPart:

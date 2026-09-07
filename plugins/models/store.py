@@ -333,6 +333,24 @@ class ModelsStore:
         record["usage"] = None if usage is None else json.loads(usage)
         return _freeze_json(record)
 
+    def read_calls(self, after_id: str, limit: int) -> tuple[Mapping[str, Any], ...]:
+        """按身份分页读取调用快照；每轮从头扫描，started 记录仍可能结算。"""
+        if not isinstance(after_id, str) or type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("Model 调用分页参数无效")
+        with self._connect(read_only=True) as connection:
+            require_model_calls_schema(connection)
+            rows = connection.execute(
+                "SELECT * FROM model_calls WHERE id>? ORDER BY id LIMIT ?", (after_id, limit)
+            ).fetchall()
+        result: list[Mapping[str, Any]] = []
+        for row in rows:
+            record = dict(row)
+            record["binding"] = json.loads(record.pop("binding_json"))
+            usage = record.pop("usage_json")
+            record["usage"] = None if usage is None else json.loads(usage)
+            result.append(_freeze_json(record))
+        return tuple(result)
+
     def read_call_stats(self, call_id: str) -> ModelCallStats:
         """从同一调用账选取公开字段，不把完整 binding 暴露给客户端。"""
         # 1. 在数据库边界校验持久字段；损坏记录不能误报成“调用不存在”。

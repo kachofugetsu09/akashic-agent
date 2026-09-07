@@ -75,6 +75,23 @@ def call_ids(store):
         ]
 
 
+def test_diagnostic_pages_keep_uncommitted_calls_and_later_settlement(store, descriptor):
+    first = store.start_call(descriptor, ModelRequest(()))
+    second = store.start_call(descriptor, ModelRequest(()))
+    initial = store.read_calls("", 1)
+    later = store.read_calls(initial[-1]["id"], 1)
+    assert {row["id"] for row in initial + later} == {first, second}
+    assert all(row["state"] == "started" for row in initial + later)
+    store.finish_call(first, usage=None, failure="OSError")
+    reopened = ModelsStore(store.path, store.backup_dir, writable=False)
+    records = reopened.read_calls("", 100)
+    assert next(row for row in records if row["id"] == first)["failure"] == "OSError"
+    assert next(row for row in records if row["id"] == first)["state"] == "unknown"
+    assert len(records) == 2
+    with pytest.raises(TypeError):
+        records[0]["state"] = "success"
+
+
 @pytest.mark.asyncio
 async def test_started_is_durable_before_io_and_usage_survives_without_message(
     store, descriptor
