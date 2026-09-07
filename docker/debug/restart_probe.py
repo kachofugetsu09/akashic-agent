@@ -1864,8 +1864,10 @@ def _inside_failures(report_dir: Path) -> int:
 def _configure_restart_gate(sandbox: Path) -> None:
     config = sandbox / "config.toml"
     text = config.read_text(encoding="utf-8")
-    text = text.replace("max_iterations = 2", "max_iterations = 5")
     config.write_text(text, encoding="utf-8")
+    reply_config = sandbox / "workspace/plugin-data/reply-builtin/config.local.toml"
+    reply_config.parent.mkdir(parents=True, exist_ok=True)
+    reply_config.write_text("max_steps = 5\n", encoding="utf-8")
     _write_mcp_plugin(
         "bootstrap",
         plugin_root=sandbox / "restart-plugins/restart_probe",
