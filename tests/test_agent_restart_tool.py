@@ -1,28 +1,179 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
-from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.tasks import Tasks
-from agent.restart import RESTART_GATE, RestartRejectedError
-from plugins.agent_restart.plugin import (
-    PendingRestart,
-    RestartRuntime,
-    RestartTool,
-)
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.tools.api import CallSource, ContentPart, Denied, MessageReply, Result, durable_call_key
-from plugins.tools.execution import ToolExecution
-from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
+from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
+from agent.control.protocol.method import OutputReservation, RequestTransport
+from agent.plugins.manager import PluginManager
+from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
+from bus.event_bus import EventBus
+from infra.control.connection import _FrameReservation
+from plugins.agent_restart.plugin import PendingRestart, RestartTool
+from plugins.tools.api import CallSource, ContentPart, durable_call_key
+from plugins.tools.plugin import TOOLS
+from plugins.turn_projection.plugin import TURN_PROJECTION
+from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
 from session.log import MessageLog
-from session.message import CallRef, ContentReferences, Message, Output, ToolCall, ToolResult, freeze_json
+from session.message import CallRef, Message, Output, ToolCall, ToolResult, freeze_json
+
+
+def _copy_plugin_sources(root: Path, names: tuple[str, ...]) -> None:
+    for name in names:
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins" / name,
+            root / name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+
+
+def _write_restart_provider(root: Path) -> None:
+    provider = root / "restart_provider"
+    provider.mkdir()
+    (provider / "plugin.py").write_text(
+        """
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from agent.plugin_composition import CHAT_MODELS, ServiceKey
+from agent.plugin_composition.models import (
+    BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
+    ModelRole, ToolCall,
+)
+from plugins.models.projection import MODEL_CALLS
+from plugins.models.state import _BoundChat
+from plugins.models.store import ModelsStore
+
+api_version = 3
+name = "restart_provider"
+version = "1.0.0"
+inject = ()
+
+async def apply(ctx, config):
+    calls = []
+    store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
+    store.initialize()
+
+    class Driver:
+        max_tool_schemas = None
+
+        def estimate_context_tokens(self, messages, tools):
+            return 10
+
+        async def complete(self, request):
+            calls.append(request)
+            if len(calls) == 1:
+                return LLMResponse(None, [ToolCall(
+                    "search-call", "tool_search", {"query": "select:agent_restart"},
+                )])
+            if len(calls) == 2:
+                return LLMResponse(None, [ToolCall(
+                    "restart-call", "agent_restart", {"reason": "fixture"},
+                )])
+            return LLMResponse("final fixture reply")
+
+    descriptor = BoundModelDescriptor(
+        binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
+        model_id="fixture", connection_id="fixture", driver_id="fixture",
+        driver_contract_version="1", auth_identity="fixture", model="fixture",
+        role=ModelRole.AGENT, reasoning_effort=None,
+        capabilities=ModelCapabilities(context_window=10000),
+        capability_sources=CapabilitySources(), capability_digest="fixture",
+    )
+    model = _BoundChat(descriptor, Driver(), store)
+
+    class Models:
+        @asynccontextmanager
+        async def execution(self, *, model_id=None, reasoning_effort=None):
+            yield SimpleNamespace(chat=lambda role: model)
+
+    await ctx.provide(CHAT_MODELS, Models())
+    await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(ServiceKey("fixture.calls"), calls)
+"""
+    )
+
+
+def _write_blocking_sender(root: Path, state_root: Path) -> None:
+    sender = root / "fixture_sender"
+    sender.mkdir()
+    (sender / "plugin.py").write_text(
+        f"""
+import asyncio
+from pathlib import Path
+from contextlib import asynccontextmanager
+from agent.plugin_composition import ServiceKey
+from plugins.delivery.api import Receipt
+from plugins.delivery.senders import DELIVERY_SENDERS
+
+api_version = 3
+name = "fixture_sender"
+version = "1.0.0"
+inject = (DELIVERY_SENDERS,)
+STATE_ROOT = {str(state_root)!r}
+
+async def apply(ctx, config):
+    Path(STATE_ROOT).mkdir(parents=True, exist_ok=True)
+
+    class Sender:
+        idempotent = True
+
+        async def send(self, key, address, message):
+            Path(STATE_ROOT, "started").write_text("1")
+            while not Path(STATE_ROOT, "release").exists():
+                await asyncio.sleep(0.01)
+            Path(STATE_ROOT, "calls").write_text(message.message_id)
+            return Receipt(status="delivered", provider_ids=("fixture",))
+
+        async def query(self, key, address):
+            return None
+
+    @asynccontextmanager
+    async def open():
+        yield Sender()
+
+    await ctx.require(DELIVERY_SENDERS).register(
+        ctx, name="test", idempotent=True, open=open,
+    )
+"""
+    )
+
+
+@asynccontextmanager
+async def _restart_application(
+    tmp_path: Path, gate: RestartGate, *, channel: bool,
+):
+    sources = tmp_path / "plugins"
+    names = (
+        "sources", "content", "context", "tools", "conversation", "react",
+        "turn_projection", "reply", "tool_search", "delivery", "agent_restart",
+    )
+    names += ("delivery_policy",) if channel else ("programmatic",)
+    _copy_plugin_sources(sources, names)
+    _write_restart_provider(sources)
+    if channel:
+        _write_blocking_sender(sources, tmp_path / "sender-state")
+    log = MessageLog(tmp_path / "sessions.db")
+    host = PluginManager(
+        [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home/cache", message_log=log,
+        restart_gate=gate,
+    )
+    try:
+        await host.load_all()
+        await host.start_runtime()
+        yield log, host
+    finally:
+        await host.terminate_all()
+        log.close()
 
 
 def _source(message_id: str = "call-a", reason: str = "reload") -> CallSource:
@@ -39,70 +190,32 @@ def _source(message_id: str = "call-a", reason: str = "reload") -> CallSource:
     return CallSource(call_ref, (message,))
 
 
-def _pending(source: CallSource, request_id: str = "restart-a") -> PendingRestart:
-    message = source.messages[0]
+def _pending(source: CallSource) -> PendingRestart:
     arguments = freeze_json({"reason": "reload"})
     assert isinstance(arguments, Mapping)
     return PendingRestart(
         source.call_ref,
-        request_id,
-        message.session_id,
-        message.source,
         durable_call_key(source.call_ref),
         cast(Mapping[str, object], arguments),
     )
 
 
-class _Reader:
-    def __init__(self, *, error: BaseException | None = None) -> None:
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-        self.error = error
+class _FrameTransport(RequestTransport):
+    """用真实 frame reservation 证明 programmatic provider 等待 writer drain。"""
 
-    async def follow(self):
-        self.started.set()
-        if self.error is not None:
-            raise self.error
-        await self.release.wait()
-        if False:
-            yield None
-
-
-class _Catalog:
-    def __init__(self, reader: _Reader) -> None:
-        self.reader_value = reader
-
-    def reader(self, _session_id: str) -> _Reader:
-        return self.reader_value
-
-
-class _Gate:
     def __init__(self) -> None:
-        self.aborted: list[str] = []
-        self.committed: list[str] = []
+        self.connection_id = "fixture-connection"
+        self.reservation: OutputReservation | None = None
 
-    def abort(self, request_id: str) -> None:
-        self.aborted.append(request_id)
-
-    async def commit(self, request_id: str) -> None:
-        self.committed.append(request_id)
-
-
-def _context(gate: _Gate, reader: _Reader) -> SimpleNamespace:
-    catalog = _Catalog(reader)
-    services = {
-        RESTART_GATE: gate,
-        MESSAGE_CATALOG: catalog,
-        TURN_PROJECTION: object(),
-        FINAL_OUTPUT_DELIVERY: object(),
-    }
-    return SimpleNamespace(require=services.__getitem__)
+    def reserve_input(self, session_id: str, input_id: str) -> OutputReservation:
+        reservation = _FrameReservation(session_id, input_id)
+        self.reservation = reservation
+        return reservation
 
 
 @pytest.mark.asyncio
 async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
-    runtime = RestartRuntime(cast(Any, object()))
-    tool = RestartTool(runtime)
+    tool = RestartTool()
     source = _source()
     with pytest.raises(ValueError, match="只能包含 reason"):
         await tool.prepare({"reason": "reload", "extra": True}, source)
@@ -112,17 +225,11 @@ async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
     assert prepared == {"reason": "reload"}
     assert pending.effect_key == durable_call_key(source.call_ref)
     assert pending.arguments == prepared
-    assert runtime.pending is None
+    assert tool.idempotent is False
 
-    started: list[PendingRestart] = []
-
-    async def start(value: PendingRestart) -> None:
-        started.append(value)
-
-    runtime.start = start  # type: ignore[method-assign]
     result = await tool.invoke(pending.effect_key, prepared)
     assert result.outcome == "success"
-    assert started == [pending]
+    assert result.parts[0].value == "已安排在本轮最终回复送达后重启。"
 
     with pytest.raises(RestartRejectedError, match="durable key"):
         await tool.invoke("message:[\"other\",0]", prepared)
@@ -132,13 +239,11 @@ async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
 
 @pytest.mark.asyncio
 async def test_restart_prepare_is_idempotent_only_for_same_call_and_arguments() -> None:
-    runtime = RestartRuntime(cast(Any, object()))
-    tool = RestartTool(runtime)
+    tool = RestartTool()
     source = _source()
     await tool.prepare({"reason": "reload"}, source)
     first = tool._prepared
     assert first is not None
-    assert runtime.pending is None
 
     await tool.prepare({"reason": "reload"}, source)
     assert tool._prepared is first
@@ -150,150 +255,131 @@ async def test_restart_prepare_is_idempotent_only_for_same_call_and_arguments() 
 
 
 @pytest.mark.asyncio
-async def test_restart_recovery_is_explicitly_unknown_without_boot_pending() -> None:
-    runtime = RestartRuntime(cast(Any, object()))
-    tool = RestartTool(runtime)
+async def test_restart_requires_prepare_and_query_is_unknown() -> None:
+    tool = RestartTool()
     assert tool.idempotent is False
-    with pytest.raises(RestartRejectedError, match="当前 boot"):
+    assert await tool.query("message:[\"call-a\",0]") is None
+    with pytest.raises(RestartRejectedError, match="prepare"):
         await tool.invoke("message:[\"call-a\",0]", {"reason": "reload"})
 
 
 @pytest.mark.asyncio
-async def test_restart_wait_failure_clears_only_its_pending_owner() -> None:
-    source = _source()
-    pending = _pending(source)
-    gate = _Gate()
-    reader = _Reader(error=RestartRejectedError("turn failed"))
-    runtime = RestartRuntime(_context(gate, reader))
-    runtime.pending = pending
-
-    with pytest.raises(RestartRejectedError, match="turn failed"):
-        await runtime._wait_for_final_output(pending)
-
-    assert runtime.pending is None
-    assert gate.aborted == [pending.request_id]
-
-    replacement = _pending(_source("call-b"), "restart-b")
-    runtime.pending = replacement
-    runtime._clear_pending(pending)
-    assert runtime.pending is replacement
+async def test_unmanaged_runtime_does_not_register_restart_tool(tmp_path: Path) -> None:
+    gate = RestartGate(boot_id="fixture-boot", supervised=False)
+    async with _restart_application(tmp_path, gate, channel=False) as (_log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            names = {item["name"] for item in snapshot.composition_root.context.require(TOOLS).descriptions()}
+    assert "agent_restart" not in names
 
 
 @pytest.mark.asyncio
-async def test_restart_wait_cancellation_reopens_gate_and_allows_next_prepare() -> None:
-    source = _source()
-    pending = _pending(source)
-    gate = _Gate()
-    reader = _Reader()
-    runtime = RestartRuntime(_context(gate, reader))
-    runtime.pending = pending
-
-    waiting = asyncio.create_task(runtime._wait_for_final_output(pending))
-    await reader.started.wait()
-    waiting.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await waiting
-
-    assert runtime.pending is None
-    assert gate.aborted == [pending.request_id]
-
-    replacement = _pending(_source("call-b"), "restart-b")
-    runtime.prepare(replacement)
-    assert runtime.pending is replacement
-
-
-@pytest.mark.asyncio
-async def test_restart_waits_for_complete_turn_delivery_before_gate_commit(tmp_path) -> None:
-    log = MessageLog(tmp_path / "sessions.db")
-    gate = _Gate()
-    delivered: list[str] = []
-    try:
-        log.save_binding("binding-a", {})
-        writer = log.writer(
-            "session-a", author="agent", source="conversation",
-            body_types=(Output,), content={}, check_call=lambda _call: None,
-        )
-        call = writer.append(
-            "call-a", Output((ToolCall("binding-a", {"reason": "reload"}),), "continue")
-        )
-        source = CallSource(CallRef(call.message_id, 0), (call,))
-        pending = _pending(source)
-
-        class _Delivery:
-            async def wait(self, _reader, turn) -> None:
-                delivered.append(turn.ending_message_id or "")
-
-        catalog = SimpleNamespace(reader=log.reader)
-        context = SimpleNamespace(require={
-            RESTART_GATE: gate,
-            MESSAGE_CATALOG: catalog,
-            TURN_PROJECTION: TurnProjection(),
-            FINAL_OUTPUT_DELIVERY: _Delivery(),
-        }.__getitem__)
-        runtime = RestartRuntime(context)
-        runtime.pending = pending
-        waiting = asyncio.create_task(runtime._wait_for_final_output(pending))
-        await asyncio.sleep(0)
-        writer.append("final-a", Output((), "complete"))
-        await waiting
-
-        assert delivered == ["final-a"]
-        assert gate.committed == [pending.request_id]
-        assert gate.aborted == []
-        assert runtime.pending is None
-    finally:
-        log.close()
-
-
-@pytest.mark.asyncio
-async def test_denied_prepare_does_not_block_next_restart_call(tmp_path) -> None:
-    log = MessageLog(tmp_path / "sessions.db")
-    state = log.owner("tool-execution")
-    tasks = Tasks()
-    runtime = RestartRuntime(cast(Any, object()))
-    started: list[PendingRestart] = []
-
-    async def start(pending: PendingRestart) -> None:
-        started.append(pending)
-
-    runtime.start = start  # type: ignore[method-assign]
-    calls = 0
-
-    async def authorize(_binding: str, _arguments: Mapping[str, object]) -> Mapping[str, object]:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise Denied("policy denied")
-        return {"allowed": True}
+async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真实 Reply/Delivery 链路不能在 cleanup 与首次选路之间误 abort。"""
+    commits: list[str] = []
+    committed = asyncio.Event()
+    gate = RestartGate(
+        boot_id="fixture-boot", supervised=True,
+        commit=lambda request_id: (commits.append(request_id), committed.set()),
+        drain_timeout_s=2.0,
+    )
+    cleanup_blocked = asyncio.Event()
+    cleanup_release = asyncio.Event()
 
     @asynccontextmanager
-    async def open_tool(_binding: str):
-        yield RestartTool(runtime)
+    async def controlled_cleanup(*_args):
+        try:
+            yield
+        finally:
+            cleanup_blocked.set()
+            await cleanup_release.wait()
 
-    execution = ToolExecution(state, tasks, open_tool, authorize, task_key="tools")
-    log.save_binding("binding-a", {})
-    output = log.writer(
-        "session-a", author="agent", source="conversation", body_types=(Output,),
-        content={}, check_call=lambda _call: None,
+    import plugins.conversation.program as conversation_program
+
+    monkeypatch.setattr(conversation_program, "shell_cleanup", controlled_cleanup)
+    async with _restart_application(tmp_path, gate, channel=True) as (log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            context = snapshot.composition_root.context
+            accept = context.require(CHANNEL_INPUT)
+            await accept(
+                "test:room", "input-1",
+                ChannelInboundMessage(
+                    "test", "user", "room", "restart now", datetime.now(timezone.utc), {},
+                ),
+            )
+            await asyncio.wait_for(cleanup_blocked.wait(), 2)
+            rows = log.reader("test:room").snapshot()
+            assert any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows)
+            assert not commits
+            assert not gate.accepting
+
+            sender_state = tmp_path / "sender-state"
+
+            async def wait_for_file(name: str) -> None:
+                while not (sender_state / name).exists():
+                    await asyncio.sleep(0.01)
+
+            cleanup_release.set()
+            await asyncio.wait_for(wait_for_file("started"), 2)
+            assert not commits
+            (sender_state / "release").write_text("1")
+            await asyncio.wait_for(wait_for_file("calls"), 2)
+            await asyncio.wait_for(committed.wait(), 2)
+            assert len(commits) == 1
+            assert (sender_state / "calls").read_text() == rows[-1].message_id
+
+
+@pytest.mark.asyncio
+async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_commit(
+    tmp_path: Path,
+) -> None:
+    """归档工具成功落盘后，live programmatic provider 必须等待真实 frame drain。"""
+    commits: list[str] = []
+    committed = asyncio.Event()
+    gate = RestartGate(
+        boot_id="fixture-boot", supervised=True,
+        commit=lambda request_id: (commits.append(request_id), committed.set()),
+        drain_timeout_s=2.0,
     )
+    async with _restart_application(tmp_path, gate, channel=False) as (log, host):
+        session = "programmatic:restart"
+        transport = _FrameTransport()
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            api = snapshot.composition_root.context.require(PROGRAMMATIC)
+            await api.call("programmatic/session/admit", AdmitParams(session_id=session))
+            await api.call(
+                "programmatic/message/send",
+                SendParams(session_id=session, message_id="input", text="restart now"),
+                transport,
+            )
 
-    def reply(message_id: str, call_id: str, reason: str) -> MessageReply:
-        call = output.append(call_id, Output((ToolCall("binding-a", {"reason": reason}),), "continue"))
-        ref = CallRef(call.message_id, 0)
-        result_writer = log.writer(
-            "session-a", author="tool", source="conversation", body_types=(ToolResult,),
-            content={"text": lambda _part: ContentReferences()}, call_ref=ref,
+        final: Message | None = None
+        async with asyncio.timeout(5):
+            async for message in log.reader(session).follow():
+                rows = log.reader(session).snapshot()
+                if (
+                    isinstance(message.body, Output)
+                    and message.body.finish == "complete"
+                    and any(isinstance(row.body, ToolResult) and row.body.outcome == "success" for row in rows)
+                ):
+                    final = message
+                    break
+        assert final is not None
+        assert transport.reservation is not None
+        written = asyncio.get_running_loop().create_future()
+        transport.reservation.observe(
+            {
+                "items": [{
+                    "id": final.message_id,
+                    "session_id": session,
+                    "body": {"kind": "output", "finish": "complete", "parts": []},
+                }],
+            },
+            written,
         )
-        return MessageReply(message_id, ref, log.reader("session-a"), result_writer, lambda: None)
-
-    try:
-        denied = await execution.execute_call(reply("result-a", "call-a", "first"))
-        assert denied.outcome == "denied"
-        assert runtime.pending is None
-
-        succeeded = await execution.execute_call(reply("result-b", "call-b", "second"))
-        assert succeeded.outcome == "success"
-        assert [item.call_ref.message_id for item in started] == ["call-b"]
-    finally:
-        await tasks.close()
-        log.close()
+        await asyncio.sleep(0.05)
+        assert not commits
+        written.set_result(None)
+        await asyncio.wait_for(committed.wait(), 2)
+        assert len(commits) == 1

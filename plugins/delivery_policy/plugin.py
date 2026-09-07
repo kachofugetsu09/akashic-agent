@@ -82,11 +82,18 @@ class DeliveryFinalOutput:
         ending = turn.ending_message_id
         if ending is None:
             raise RestartRejectedError("最终 Turn 没有 Output")
-        delivery = self._ctx.require(DELIVERY).open(self._ctx)
-        selection = delivery.selection(ending)
-        if selection is None or not selection.sinks:
-            raise RestartRejectedError("最终 Output 没有 delivery provider")
+        # 只在取得正式 Delivery owner 时持有 Root lease；记录读取本身不等待外部 I/O。
+        async with self._ctx.runtime_scope():
+            delivery = self._ctx.require(DELIVERY).open(self._ctx)
         async with asyncio.timeout(self._timeout_s):
+            # ReplyCompletion 在 run_reply 的资源 cleanup 之后才创建首次选路；
+            # 日志 follower 可能先看到 complete Output，先等待 Delivery owner 的真实 selection。
+            selection = delivery.selection(ending)
+            while selection is None:
+                await asyncio.sleep(0.01)
+                selection = delivery.selection(ending)
+            if not selection.sinks:
+                raise RestartRejectedError("最终 Output 没有 delivery provider")
             while True:
                 receipts = tuple(delivery.receipt(ending, sink) for sink in selection.sinks)
                 if any(receipt is not None and receipt.status in {"unknown", "rejected"} for receipt in receipts):

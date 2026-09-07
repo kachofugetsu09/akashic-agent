@@ -69,11 +69,17 @@ class Programmatic:
 
     def _reserve_before_accept(
         self, session_id: str, input_id: str, transport: RequestTransport | None,
+        *, replace: bool = False,
     ) -> bool:
-        """在触发来源 watcher 前登记 reservation；返回是否由本次调用新建。"""
-        if transport is None or (session_id, input_id) in self._reservations:
+        """在触发来源 watcher 前登记当前请求连接的 reservation。"""
+        if transport is None:
             return False
-        self.reserve_input(session_id, input_id, transport)
+        key = (session_id, input_id)
+        if not replace and key in self._reservations:
+            return False
+        self._reservations[key] = (
+            transport.connection_id, transport.reserve_input(session_id, input_id),
+        )
         return True
 
     def _drop_reservation(
@@ -149,7 +155,9 @@ class Programmatic:
             message = await source.pause(cast(PauseParams, params).message_id)
         elif method == "programmatic/message/resume":
             resume = cast(ResumeParams, params)
-            created = self._reserve_before_accept(session_id, resume.input_id, transport)
+            created = self._reserve_before_accept(
+                session_id, resume.input_id, transport, replace=True,
+            )
             try:
                 message = await source.resume(resume.message_id, resume.input_id)
             except BaseException:

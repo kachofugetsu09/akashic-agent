@@ -61,6 +61,50 @@ async def test_programmatic_admission_is_immutable_and_ack_retries_recover_same_
 
 
 @pytest.mark.asyncio
+async def test_programmatic_resume_rebinds_output_to_new_connection_after_disconnect(
+    tmp_path, monkeypatch,
+):
+    """旧连接断开后，显式 resume 必须把最终 Output 观察交给新连接。"""
+    from agent.plugins.snapshot import lease_runtime_snapshot
+    from plugins.programmatic.control import PROGRAMMATIC
+    from plugins.turn_projection.plugin import TURN_PROJECTION
+
+    async with endpoint(tmp_path, monkeypatch) as (address, core):
+        session = "programmatic:resume"
+        async with await AsyncAkashic.connect(address) as first:
+            await first.request("programmatic/session/admit", {"session_id": session})
+            await first.request("programmatic/message/send", {
+                "session_id": session, "message_id": "input", "text": "pause me",
+            })
+            await first.request("programmatic/message/pause", {
+                "session_id": session, "message_id": "pause",
+            })
+
+        async with await AsyncAkashic.connect(address) as second:
+            await second.request("programmatic/message/resume", {
+                "session_id": session, "message_id": "resume", "input_id": "input",
+            })
+            writer = core.message_log.writer(
+                session, author="assistant", source="programmatic",
+                body_types=(Output,), content={"text": check_text},
+            )
+            writer.append("final", Output((ContentPart("text", "恢复结果"),), "complete"))
+
+            async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
+                context = snapshot.composition_root.context
+                reader = core.message_log.reader(session)
+                projection = context.require(TURN_PROJECTION)
+                turn = projection.project(reader.snapshot(), "programmatic")[-1]
+                waiter = asyncio.create_task(
+                    context.require(PROGRAMMATIC).wait(reader, turn),
+                )
+            page = await second.message_read(session)
+            await asyncio.wait_for(waiter, 3)
+
+            assert [item["id"] for item in page["items"]][-1] == "final"
+
+
+@pytest.mark.asyncio
 async def test_exec_cli_reads_exact_completed_message_over_real_socket(tmp_path, monkeypatch, capsys):
     from main import run_exec
 
