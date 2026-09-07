@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,9 +23,14 @@ def process_group_spawn_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
-def owned_process_env(overrides: dict[str, str]) -> dict[str, str]:
-    """合并子进程环境，并保留 Supervisor 拥有的 boot identity。"""
-    env = {**os.environ, **overrides}
+def owned_process_env(
+    overrides: dict[str, str],
+    *,
+    scrub_keys: Collection[str] = (),
+) -> dict[str, str]:
+    """先移除调用者不继承的变量，再合并配置并固定 Supervisor 身份。"""
+    env = {key: value for key, value in os.environ.items() if key not in scrub_keys}
+    env.update(overrides)
     for name in _RUNTIME_IDENTITY_ENV:
         if name in os.environ:
             env[name] = os.environ[name]

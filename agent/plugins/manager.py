@@ -23,6 +23,7 @@ from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
 from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 
 from agent.plugins.archive import PluginArchive, decode_config, encode_config
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments, read_environment_refs
 from agent.plugins.config import read_config_source
 from agent.plugin_composition.bindings import BindingScope
 from agent.plugin_composition.context import RuntimeScope
@@ -147,10 +148,11 @@ from agent.plugins.generation import (
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.static_manifest import (
+    StaticManagedProcessDeclaration,
+    StaticMcpDeclaration,
     StaticPluginManifest,
     load_static_plugin_manifest,
     materialize_static_command,
-    staged_python_interpreter,
     validate_module_exports,
 )
 from agent.plugins.reload_journal import (
@@ -353,6 +355,7 @@ class PluginManager:
                 workload_workspace_id if workload_controller is not None else None
             ),
             on_failure=self._on_composition_runtime_failure,
+            command_resolver=self._resolve_runtime_command,
         )
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
@@ -1254,6 +1257,7 @@ class PluginManager:
         """Load stable plugins and reconstruct any durable latest candidate."""
 
         # 1. A prior Core boot cannot retain a live candidate lease.
+        self._composition_generation_host.start_scoped()
         await self._composition_generation_host.cleanup_candidates()
 
         # 2. 处理尚未进入 latest_ready 的残留事务，恢复磁盘 pointer。
@@ -3102,6 +3106,19 @@ class PluginManager:
                 raise asyncio.CancelledError
             return result
 
+    def resource_failures(self) -> tuple[CompositionRuntimeFailure, ...]:
+        """返回调用 scope 保留的真实资源故障；它们不参与插件发布事务。"""
+        return self._composition_generation_host.scoped_failures()
+
+    async def retry_resource_cleanup(self, scope_id: str) -> str:
+        """按调用的精确资源身份重试清理，不切换安装指针或正式 generation。"""
+        host = self._composition_generation_host
+        cleanup = host.retry_scoped_cleanup(scope_id)
+        result, cancelled = await _complete_critical(cleanup)
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
     async def retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
         """Retry one durable v3 runtime owner and reconcile its exact pointer target."""
 
@@ -4586,7 +4603,7 @@ class PluginManager:
         # Builtin v3 may omit a manifest; installed artifacts were rejected above.
         try:
             code_archive = self._archive.save(
-                plugin_dir, exclude=frozenset({".venv", "node_modules"})
+                plugin_dir, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})
             )
             archived_dir = self._archive.open(code_archive)
             if _source_revision(archived_dir) != source_revision:
@@ -4597,6 +4614,16 @@ class PluginManager:
             )
             if archived_manifest != static_manifest:
                 raise RuntimeError("插件 manifest 在加载前发生变化")
+            environment_refs: dict[str, str] = {}
+            if archived_manifest is not None and archived_manifest.python:
+                pointer = plugin_dir / ENVIRONMENT_FILE
+                if pointer.exists():
+                    environment_refs = read_environment_refs(plugin_dir, archived_manifest)
+                else:
+                    if any((archived_dir / item.requirements).read_text().strip() for item in archived_manifest.python):
+                        raise RuntimeError("插件尚未准备固定 Python 环境；请通过安装流程重建")
+                    environments = PythonEnvironments(self._workspace)
+                    environment_refs = {item.runtime_root: environments.prepare(archived_dir, item) for item in archived_manifest.python}
             self._import_plugin(
                 mp, archived_dir / Path(module_path).relative_to(plugin_dir)
             )
@@ -4750,8 +4777,9 @@ class PluginManager:
             if gate_result.status == "failed":
                 raise _CandidateRejected(gate_result)
             archive_ref = self._archive.save_descriptor({
-                "version": 1,
+                "version": 2,
                 "code": code_archive,
+                "python_environments": environment_refs,
                 "plugin_id": plugin_id,
                 "source_revision": source_revision,
                 "config_revision": config_revision,
@@ -5030,7 +5058,7 @@ class PluginManager:
         try:
             for index, ref in enumerate(components):
                 record = self._archive.read_descriptor(ref)
-                if record["version"] != 1 or record["runtime"] != {
+                if record["version"] != 2 or record["runtime"] != {
                     "python_tag": sys.implementation.cache_tag, "binding_api": 1,
                 }:
                     raise RuntimeError("插件归档运行合同不兼容")
@@ -5094,6 +5122,7 @@ class PluginManager:
             if result is not None:
                 raise RuntimeError("归档 snapshot.sealing 不接受 Bail")
             snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
+            _validate_static_manifest_runtime(snapshot, generations)
             store.install(snapshot)
             installed = True
             scope = BindingScope(root)
@@ -5301,7 +5330,12 @@ class PluginManager:
         ):
             _ = await root.context.provide(
                 MCP_SERVERS,
-                PluginMcpServers(root.instance_token),
+                PluginMcpServers(
+                    root.instance_token,
+                    lambda snapshot, name, digest: self._composition_generation_host.open_mcp(
+                        snapshot, name, expected_catalog_digest=digest,
+                    ),
+                ),
             )
         if any(
             MANAGED_PROCESSES in cast(ComposablePlugin, item.instance).inject
@@ -5774,6 +5808,41 @@ class PluginManager:
             self._remove_module_tree(module_path)
             raise
 
+    def _resolve_runtime_command(
+        self,
+        generation: PluginGeneration,
+        kind: str,
+        name: str,
+    ) -> tuple[str, ...]:
+        """仅在实际打开目标前校验其环境，不阻挡同组件的纯读取能力。"""
+        manifest = generation.static_manifest
+        if manifest is None:
+            raise RuntimeError("外部 runtime 需要静态 manifest")
+        targets: dict[
+            str, tuple[StaticMcpDeclaration | StaticManagedProcessDeclaration, ...]
+        ] = {
+            "mcp": manifest.mcp_servers,
+            "process": manifest.managed_processes,
+        }
+        declaration = next(item for item in targets[kind] if item.name == name)
+        environment = None
+        if declaration.python_runtime is not None:
+            if generation.archive_ref is None:
+                raise RuntimeError("外部 runtime 缺少代码归档")
+            record = self._archive.read_descriptor(generation.archive_ref)
+            refs = cast(Mapping[str, str], record["python_environments"])
+            runtime = next(
+                item
+                for item in manifest.python
+                if item.runtime_root == declaration.python_runtime
+            )
+            environment = PythonEnvironments(self._workspace).open(
+                refs[runtime.runtime_root], generation.code_dir, runtime
+            )
+        return materialize_static_command(
+            generation.code_dir, manifest, declaration, environment_root=environment
+        )
+
     async def _start_composition_generation_runtime(
         self,
         generation: PluginGeneration,
@@ -6061,6 +6130,12 @@ class PluginManager:
     ) -> None:
         """Persist a watchdog failure for the exact generation owner."""
 
+        if self._composition_generation_host.scoped(failure.generation_id):
+            logger.error(
+                "调用资源清理待恢复: scope=%s action=%s error=%s",
+                failure.generation_id, failure.action, failure.error,
+            )
+            return
         generation = self._composition_runtime_generations.get(failure.generation_id)
         if generation is None:
             raise RuntimeError(
@@ -6498,8 +6573,10 @@ class PluginManager:
     async def terminate_all(self) -> None:
         """完成快照、插件生命周期和作用域资源的全量关闭。"""
 
-        # 1. 先收束正式 Channel owner，再允许对应插件 Root 进入 drain。
-        externally_cancelled = False
+        # 1. 调用资源先归还借用，再允许正式 owner 进入 drain。
+        _, externally_cancelled = await _complete_critical(
+            self._composition_generation_host.close_scoped()
+        )
         channel_runtime = self._active_channel_generation
         if channel_runtime is not None:
             _ = self._snapshot_store.pause_admission()
@@ -7276,34 +7353,6 @@ def _validate_static_manifest_runtime(
     if not all_manifests:
         return
 
-    # 1. Install staging owns the interpreter used by every declared Python runtime.
-    for _plugin_id, generation in generations.items():
-        manifest = generation.static_manifest
-        if manifest is None:
-            continue
-        runtime_commands: list[tuple[str, tuple[str, ...]]] = []
-        for runtime in manifest.python:
-            _ = staged_python_interpreter(generation.plugin_dir, runtime)
-        for kind, declarations in (
-            ("mcp", manifest.mcp_servers),
-            ("process", manifest.managed_processes),
-        ):
-            for declaration in declarations:
-                runtime_commands.append(
-                    (
-                        f"{kind}:{declaration.name}",
-                        materialize_static_command(
-                            generation.code_dir,
-                            manifest,
-                            declaration,
-                            environment_root=generation.plugin_dir,
-                        ),
-                    )
-                )
-        generation.static_runtime_commands = tuple(
-            sorted(runtime_commands, key=lambda item: item[0])
-        )
-
     # 2. Compare every static owner's import-free declarations with the exact
     # Root-frozen descriptors.  Missing, extra, and field drift all fail closed.
     if snapshot.composition_active_plugin_ids is None:
@@ -7589,6 +7638,7 @@ def _source_revision(plugin_dir: Path) -> str:
         ".venv",
         "__pycache__",
         "node_modules",
+        ENVIRONMENT_FILE,
     }
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)
@@ -7625,6 +7675,7 @@ def _source_metadata_revision(plugin_dir: Path) -> bytes:
         ".venv",
         "__pycache__",
         "node_modules",
+        ENVIRONMENT_FILE,
     }
     for current, directories, filenames in os.walk(plugin_dir, followlinks=False):
         directories[:] = sorted(name for name in directories if name not in excluded)

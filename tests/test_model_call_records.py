@@ -219,3 +219,240 @@ def test_migration_rejects_same_name_with_other_schema_without_write(store, migr
         run_migration(migration, store.path.parent)
     assert dump(store.path) == before
     assert not store.backup_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
+    store, descriptor
+):
+    from datetime import UTC, datetime
+    from agent.plugin_composition.models import ToolCall as ModelToolCall
+    from plugins.models.projection import MessageProjection, response_facts
+    from session.message import (
+        CallRef,
+        ContentPart,
+        Control,
+        Input,
+        Message,
+        Output,
+        ToolCall,
+        ToolResult,
+    )
+
+    class Driver:
+        async def complete(self, request):
+            return LLMResponse(
+                "checking",
+                tool_calls=[
+                    ModelToolCall("provider-call", "original_name", {"value": 1})
+                ],
+                thinking="private reasoning",
+            )
+
+    model = _BoundChat(descriptor, Driver(), store)
+    response = await model.complete(ModelRequest(()))
+    facts = response_facts(response, [1])
+    assert "usage" not in facts.value
+    assert "binding" not in facts.value
+
+    def message(seq, body):
+        return Message(
+            str(seq), "s", seq, datetime.now(UTC), "system", "conversation", body
+        )
+
+    messages = (
+        message(0, Input((ContentPart("text", "u1"),))),
+        message(
+            1,
+            Output(
+                (
+                    ContentPart("text", "checking"),
+                    ToolCall("old-tool-binding", {"value": 1}),
+                    facts,
+                ),
+                "continue",
+            ),
+        ),
+        message(2, Input((ContentPart("text", "u2 interruption"),))),
+        message(3, Control("pause", 2)),
+        message(
+            4,
+            ToolResult(
+                CallRef("1", 1), "unknown", (ContentPart("text", "connection lost"),)
+            ),
+        ),
+    )
+    projection = MessageProjection(
+        model,
+        source="conversation",
+        render_content=lambda part: ({"type": "text", "text": part.value},),
+        tool_name=lambda binding: {"old-tool-binding": "original_name"}[binding],
+        read_call=store.read_call,
+    )
+    request = projection.render(messages, after_seq=-1)
+    assert [row["role"] for row in request.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert request.messages[1]["tool_calls"][0]["id"] == "provider-call"
+    assert request.messages[2]["tool_call_id"] == "provider-call"
+    assert "unknown" in request.messages[2]["content"][0]["text"]
+    assert request.messages[-1]["content"][0]["text"] == "u2 interruption"
+    assert request.messages[1]["reasoning_content"] == "private reasoning"
+    with pytest.raises(ValueError, match="未结算"):
+        projection.render(messages[:-1], after_seq=-1)
+    with pytest.raises(ValueError, match="缺少"):
+        projection.render(messages, after_seq=1)
+    assert projection.render(messages, after_seq=4).messages == ()
+
+
+@pytest.mark.asyncio
+async def test_message_projection_keeps_source_continuation_and_rejects_unsafe_summary(
+    store, descriptor
+):
+    from dataclasses import replace
+    from datetime import UTC, datetime
+    from plugins.models.projection import MessageProjection, response_facts
+    from session.message import ContentPart, Message, Output
+
+    class Driver:
+        async def complete(self, request):
+            return LLMResponse(
+                "text",
+                continuation=ModelContinuation(
+                    "bound", {"opaque": "conversation-state"}
+                ),
+            )
+
+    model = _BoundChat(descriptor, Driver(), store)
+    response = await model.complete(ModelRequest(()))
+    message = Message(
+        "a",
+        "s",
+        0,
+        datetime.now(UTC),
+        "agent",
+        "conversation",
+        Output((ContentPart("text", "text"), response_facts(response, [])), "complete"),
+    )
+    later_other_source = replace(
+        message,
+        message_id="wake-a",
+        seq=1,
+        source="wake",
+        body=Output((ContentPart("text", "wake text"),), "complete"),
+    )
+    projection = MessageProjection(
+        model,
+        source="conversation",
+        render_content=lambda part: ({"type": "text", "text": part.value},),
+        tool_name=lambda binding: "unused",
+        read_call=store.read_call,
+    )
+    request = projection.render((message, later_other_source), after_seq=-1)
+    assert request.continuation == response.continuation
+    assert len(request.messages) == 2
+    with pytest.raises(ValueError, match="摘要"):
+        projection.render((message, later_other_source), after_seq=0)
+    changed = MessageProjection(
+        _BoundChat(replace(descriptor, binding_id="new-model"), Driver(), store),
+        source="conversation",
+        render_content=lambda part: (),
+        tool_name=lambda binding: "unused",
+        read_call=store.read_call,
+    )
+    with pytest.raises(ValueError, match="另一 binding"):
+        changed.render((message,), after_seq=-1)
+
+
+def test_chat_completions_places_output_images_after_complete_tool_group():
+    from copy import deepcopy
+    from plugins.openai_compatible.driver import _normalize_messages
+    from agent.plugin_composition.models import InvalidRequestError
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,fixture"}}
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "read pictures"}],
+            "tool_calls": [
+                {
+                    "id": "one",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                },
+                {
+                    "id": "two",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "one",
+            "content": [{"type": "text", "text": "first image"}, image],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "two",
+            "content": [{"type": "text", "text": "second result"}],
+        },
+    ]
+    original = deepcopy(messages)
+    wire = _normalize_messages(messages)
+    assert messages == original
+    assert [row["role"] for row in wire] == ["assistant", "tool", "tool", "user"]
+    assert [row["tool_call_id"] for row in wire[1:3]] == ["one", "two"]
+    assert wire[1]["content"] == [{"type": "text", "text": "first image"}]
+    assert wire[-1]["content"][-1] == image
+    assert "one" in wire[-1]["content"][0]["text"]
+    with pytest.raises(InvalidRequestError, match="缺少结果"):
+        _normalize_messages(messages[:2])
+
+
+@pytest.mark.parametrize("assistant_picture", [False, True])
+def test_only_images_keep_valid_roles_and_flush_once_after_all_results(
+    assistant_picture,
+):
+    from plugins.openai_compatible.driver import _normalize_messages
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,fixture"}}
+    calls = [
+        {
+            "id": name,
+            "type": "function",
+            "function": {"name": "read", "arguments": "{}"},
+        }
+        for name in ("one", "two")
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": [image] if assistant_picture else "read",
+            "tool_calls": calls,
+        },
+        {"role": "tool", "tool_call_id": "two", "content": [image]},
+        {"role": "tool", "tool_call_id": "one", "content": "plain result"},
+    ]
+    wire = _normalize_messages(messages)
+    assert [row["role"] for row in wire] == ["assistant", "tool", "tool", "user"]
+    assert wire[1]["content"] and all(
+        block["type"] == "text" for block in wire[1]["content"]
+    )
+    if assistant_picture:
+        assert wire[0]["content"] and all(
+            block["type"] == "text" for block in wire[0]["content"]
+        )
+    assert (
+        sum(block["type"] == "image_url" for block in wire[-1]["content"])
+        == 1 + assistant_picture
+    )
+    plain = [
+        messages[0] | {"content": "read"},
+        messages[1] | {"content": "plain"},
+        messages[2],
+    ]
+    assert _normalize_messages(plain) == plain

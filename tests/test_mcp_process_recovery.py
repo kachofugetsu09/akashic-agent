@@ -249,3 +249,40 @@ def test_mcp_recovery_contract_covers_name_description_and_schema(
         [McpToolInfo("ping", "stable", {"type": "object"})]
     )
     assert McpClient._tool_contract([changed]) != stable
+
+
+@pytest.mark.asyncio
+async def test_mcp_environment_scrub_preserves_boot_owner_and_removes_candidate_values(tmp_path, monkeypatch):
+    """真实子进程在环境清理后仍可由 guardian 按 boot identity 发现。"""
+    import json
+    script = tmp_path / "environment.py"
+    script.write_text('''import json, os, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2025-11-25"}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "env", "description": "probe", "inputSchema": {"type": "object"}}]}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": json.dumps({key: os.environ.get(key) for key in ("AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED", "CANDIDATE_MARKER", "EXPLICIT_VALUE")})}]}
+    else:
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+''')
+    monkeypatch.setenv("AKASHIC_BOOT_ID", "real-test-boot")
+    monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
+    monkeypatch.setenv("CANDIDATE_MARKER", "inherited-only")
+    client = McpClient(
+        "boot-owner", [sys.executable, str(script)],
+        env={"AKASHIC_BOOT_ID": "fake", "EXPLICIT_VALUE": "keep"},
+        env_scrub_keys=frozenset({"AKASHIC_BOOT_ID", "AKASHIC_SUPERVISED", "CANDIDATE_MARKER", "EXPLICIT_VALUE"}),
+    )
+    try:
+        await client.connect()
+        assert json.loads(await client.call("env", {})) == {
+            "AKASHIC_BOOT_ID": "real-test-boot", "AKASHIC_SUPERVISED": "1",
+            "CANDIDATE_MARKER": None, "EXPLICIT_VALUE": "keep",
+        }
+    finally:
+        await client.disconnect()

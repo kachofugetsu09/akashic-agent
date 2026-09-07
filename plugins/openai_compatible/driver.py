@@ -1168,11 +1168,34 @@ def _normalize_messages(
     """Match the established generic Chat Completions message contract."""
 
     normalized: list[dict[str, Any]] = []
+    images: list[dict[str, Any]] = []
+    pending_calls: set[str] = set()
     for message in messages:
         item = _thaw_mapping(message)
         item.pop("reasoning_content", None)
         role = str(item.get("role") or "")
         content = item.get("content")
+        # Chat Completions 的 assistant/tool content 不接受 image_url。
+        # 只在请求视图中将图片放到配对完成后的 user 数据消息，保持 call/result 邻接。
+        if role in {"assistant", "tool"} and isinstance(content, list):
+            pictures = [block for block in content if block.get("type") == "image_url"]
+            if pictures:
+                label = (
+                    f"工具结果 {item['tool_call_id']} 的图片"
+                    if role == "tool" else "Agent 输出消息中的图片"
+                )
+                images.append({"type": "text", "text": label})
+                images.extend(pictures)
+                content = [block for block in content if block.get("type") != "image_url"]
+                if not content:
+                    content = [{"type": "text", "text": "图片见本组消息后的图像内容。"}]
+                item["content"] = content
+        if role == "assistant" and item.get("tool_calls"):
+            if images and pending_calls:
+                raise InvalidRequestError("图片所在工具请求尚未完成配对")
+            pending_calls = {call["id"] for call in item["tool_calls"]}
+        elif role == "tool":
+            pending_calls.discard(item["tool_call_id"])
         if role == "assistant" and item.get("tool_calls"):
             if content is None or (isinstance(content, str) and not content.strip()):
                 calls = item.get("tool_calls")
@@ -1187,6 +1210,11 @@ def _normalize_messages(
         elif role in {"user", "assistant", "tool"} and content is None:
             item["content"] = ""
         normalized.append(item)
+        if images and not pending_calls:
+            normalized.append({"role": "user", "content": images})
+            images = []
+    if images:
+        raise InvalidRequestError("图片所在工具请求缺少结果，不能重排为有效历史")
     return normalized
 
 

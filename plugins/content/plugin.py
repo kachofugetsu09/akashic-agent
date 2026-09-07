@@ -3,126 +3,35 @@ from __future__ import annotations
 import re
 from collections.abc import (
     AsyncGenerator,
-    Awaitable,
     Callable,
-    Iterator,
     Mapping,
     Sequence,
 )
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Protocol
 
 from markdown_it import MarkdownIt
 
 from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition.bindings import Bindings
 from session.message import ContentPart
+
+# 类型属于 Content 的公开 API；不同归档实现共享当前已校验的 binding ABI。
+from plugins.content.api import (
+    ContentCheck,
+    ContentSchema,
+    Reference,
+    Span,
+    TextProtocol,
+    TextSource,
+)
 
 api_version = 3
 name = "content"
 version = "1.0.0"
 desc = "按固定协议组装内容，各解析器只读取同一份原文"
 inject = ()
-
-
-@dataclass(frozen=True, slots=True)
-class Reference:
-    """调用方实际取得的引用证据；模型声明不能自己产生这些权限。"""
-
-    ref: str
-    resolved_ref: str | None = None
-    retrieval_ref: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.ref, str) or not self.ref:
-            raise ValueError("引用身份不能为空")
-        if any(
-            value is not None and (not isinstance(value, str) or not value)
-            for value in (self.resolved_ref, self.retrieval_ref)
-        ):
-            raise ValueError("引用的解析目标与查询凭据必须是非空字符串或 None")
-
-
-@dataclass(frozen=True, slots=True)
-class Span:
-    """替换原文的一个精确区间；零长度区间用于附加引用等非文本事实。"""
-
-    start: int
-    end: int
-    parts: tuple[ContentPart, ...]
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.start) is not int
-            or type(self.end) is not int
-            or self.start < 0
-            or self.end < self.start
-        ):
-            raise ValueError("内容区间必须是有序的非负整数")
-        parts = tuple(self.parts)
-        if any(not isinstance(part, ContentPart) for part in parts):
-            raise TypeError("文本协议只能产生内容块，不能提出工具调用")
-        if self.start == self.end and any(part.kind == "text" for part in parts):
-            raise ValueError("零长度区间只能附加非文本事实")
-        object.__setattr__(self, "parts", parts)
-
-
-ContentCheck = Callable[[ContentPart], tuple[str, ...]]
-
-
-@dataclass(frozen=True, slots=True)
-class TextSource:
-    """原文与其字面区间，供协议同时判定显式声明和召回兜底。"""
-
-    text: str
-    literals: tuple[tuple[int, int], ...]
-
-    def allows(self, start: int, end: int) -> bool:
-        return not any(left < end and start < right for left, right in self.literals)
-
-    def matches(self, pattern: re.Pattern[str]) -> Iterator[re.Match[str]]:
-        return (
-            match
-            for match in pattern.finditer(self.text)
-            if self.allows(match.start(), match.end())
-        )
-
-
-TextDecoder = Callable[[TextSource, tuple[Reference, ...]], Awaitable[Sequence[Span]]]
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ContentSchema:
-    """内容 owner 的纯 schema 声明，结构化生产者不需要文本协议。"""
-
-    name: str
-    content: Mapping[str, ContentCheck]
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError("内容声明名不能为空")
-        if any(
-            not isinstance(key, str) or not key or not callable(check)
-            for key, check in self.content.items()
-        ):
-            raise TypeError("内容声明必须映射 kind 到纯 schema 校验函数")
-        if "text" in self.content or "tool_call" in self.content:
-            raise ValueError("内容声明不能重定义基础文本或工具调用")
-        object.__setattr__(self, "content", MappingProxyType(dict(self.content)))
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class TextProtocol(ContentSchema):
-    """文本协议一起提供提示、解析与产生的内容 schema。"""
-
-    prompt: str
-    decode: TextDecoder
-
-    def __post_init__(self) -> None:
-        ContentSchema.__post_init__(self)
-        if not isinstance(self.prompt, str) or not callable(self.decode):
-            raise TypeError("文本协议必须提供提示文本和 decoder")
 
 
 def check_text(part: ContentPart) -> tuple[str, ...]:
@@ -294,7 +203,7 @@ class _ContentView:
 class Content:
     def __init__(self, ctx: Context):
         self._ctx = ctx
-        self._definitions: dict[str, ContentSchema] = {}
+        self._definitions: dict[str, tuple[Context, ContentSchema]] = {}
 
     async def register(self, ctx: Context, definition: ContentSchema) -> Effect:
         """内容与协议共用普通 Effect 注册，schema 只有一个 owner。"""
@@ -307,11 +216,11 @@ class Content:
             if definition.name in self._definitions:
                 raise ValueError(f"内容声明重复: {definition.name}")
             kinds = {
-                kind for item in self._definitions.values() for kind in item.content
+                kind for _, item in self._definitions.values() for kind in item.content
             }
             if kinds.intersection(definition.content):
                 raise ValueError("内容 schema 必须有唯一 owner")
-            self._definitions[definition.name] = definition
+            self._definitions[definition.name] = (ctx, definition)
 
             def cleanup() -> None:
                 del self._definitions[definition.name]
@@ -320,12 +229,31 @@ class Content:
 
         return await ctx.effect(setup, label=f"content:{definition.name}")
 
+    def describe(self) -> Mapping[str, object]:
+        return {
+            name: {
+                "kinds": tuple(sorted(definition.content)),
+                "prompt": (
+                    definition.prompt if isinstance(definition, TextProtocol) else None
+                ),
+            }
+            for name, (_, definition) in sorted(self._definitions.items())
+        }
+
+    def save_binding(self, bindings: Bindings) -> str:
+        """固定实际注册者及协议选择，恢复不能从当前安装补全遗漏的 decoder。"""
+        return bindings.bind(
+            CONTENT,
+            self.describe(),
+            contributors=tuple(ctx for ctx, _ in self._definitions.values()),
+        )
+
     @asynccontextmanager
     async def bind(self) -> AsyncGenerator[ContentView]:
         """调用方把 bind 保持到 append 完成，未提交结果不跨 lease 恢复。"""
         async with self._ctx.runtime_scope():
             view = _ContentView(
-                tuple(self._definitions[key] for key in sorted(self._definitions))
+                tuple(self._definitions[key][1] for key in sorted(self._definitions))
             )
             try:
                 yield view
@@ -336,5 +264,17 @@ class Content:
 CONTENT = ServiceKey[Content]("content.v1")
 
 
-async def apply(ctx: Context, _config: object) -> None:
+@asynccontextmanager
+async def open_content(
+    bindings: Bindings, binding_id: str
+) -> AsyncGenerator[ContentView]:
+    """打开已固定的内容协议；动态配置改变时明确拒绝不同的解析选择。"""
+    async with bindings.open(binding_id, CONTENT) as (content, metadata):
+        if content.describe() != metadata:
+            raise ValueError("归档内容协议与固定描述不一致")
+        async with content.bind() as view:
+            yield view
+
+
+async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(CONTENT, Content(ctx))

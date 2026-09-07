@@ -4,7 +4,7 @@
 - 修订日期：2026-09-05。
 - 源码与原提案基线：`51f1467456881e7302abf76a931e9dfe698fef6c`。
 - DSH 参考基线：`49a606bc5b5934603f22a26957a07dc799ab0291`。
-- 实施基线：`6a15444009c807994d33691e0b756167880fad5d`，worktree `message-plugins-stack`。当前层只修改设计与索引；后续层按第 16 节实施。
+- 实施基线：`6a15444009c807994d33691e0b756167880fad5d`，worktree `message-plugins-stack`。实施按第 16 节分层；当前已实现边界见第 18 节，业务全量切换尚未完成。
 - 已批准执行原则：回复业务由 100% 非特权插件组合；非灰度、非 shadow；可删除经核实不必要或冗余的功能，但逐项记录依据、影响、承接职责、验证与恢复点。开发可分批，正式运行采用完整新链路。
 - 前版概念复核：独立 reviewer `/root/design_concept_review`，调用请求配置 `gpt-5.6-terra / xhigh`，2026-09-05 设计层 PASS；首轮九项 must-fix 已闭合。被审正文 SHA256 为 `64c30bf568ff66fc50a79c73e73cac9af156bacf73dfb5c2da9fa612ac3b03a4`。本次进一步明确 Core/普通插件边界与切换方式，前版结论不自动覆盖本次修订。
 - 上次概念复核（不覆盖本次功能合同修订）：同一独立 reviewer 于 2026-09-05 对正文 SHA256 `2f06db73a347dd8f08b6292d6ae07caea8cc01cca5036cb828010140428967ff`（不含本条记录）给出设计层 PASS，无新增 P0/P1；可以开始实施准备，第 14.3 节合同与正式迁移/恢复验收仍未完成。
@@ -271,9 +271,9 @@ Core 需要补齐或改造的能力限定为四组。插件提供业务能力，
 | Task scope | `start / cancel / join` | Core；有界任务、资源、取消与代际保护 | 后台监控、定时等待、工具任务 |
 | Timer | `wait(deadline)` | Core；一次等待 | Scheduler、退避、Wake |
 
-模型接口已经存在于 [`BoundChatModel.complete`](../../agent/plugin_composition/models.py)，本版复用它，不再包一层同义 LLMPort。ToolExecutor 已有单调用准入框架；需要补的是持久 effect 边界和摆脱 Turn 上下文，而不是复制一套执行器。
+模型接口已经存在于 [`BoundChatModel.complete`](../../agent/plugin_composition/models.py)，本版复用它，不再包一层同义 LLMPort。旧 ToolExecutor 的领域动作迁到普通 Tools 注册和执行能力；旧 Turn 上下文、可变事件与编排入口在消费者切换后删除。
 
-Tool 同样复用 [`ToolExecutionRequest`](../../agent/tools/events.py) 的独立请求形态：工具绑定、参数、授权与稳定调用 key。对话中的 key 直接使用 call_ref，从已提交消息取得请求；命令或固定流程使用其领域的持久幂等 key，Session 可缺省。两者经过同一个执行 owner。对话调用以 ToolResult Message 为唯一结果正文，receipt 只存结果指针；独立调用由自身 receipt 保存结果，调用程序按需要另行产生面向用户的消息。记录位置在开始前固定，不能在恢复时变换位置或生成新 key 再执行。工具不要求程序伪造 assistant 输出。
+Tool 提供 `execute(key, binding, args)` 与 `execute_call(reply)` 两个入口，共用同一执行 owner。前者接收程序自有的持久 key；后者从已提交 Output 的 call_ref 读取绑定和原始参数，调用者只提供结果 Message 身份与已获授权的读写口。两种 key 使用分开的空间。对话调用以 ToolResult Message 为唯一结果正文，receipt 只存结果指针；独立调用由自身 receipt 保存结果，调用程序按需要另行产生面向用户的消息。记录位置在开始前固定，不能在恢复时变换位置或生成新 key 再执行。工具不要求程序伪造 assistant 输出。
 
 Core 持有权限授予、资源访问和原子存储的硬边界；Tool execution、Delivery、provider、具体工具、渠道均由普通插件实现。内置插件与仓库外插件使用相同的权限、安装链和生命周期合同，不存在 builtin 专享 writer、私有业务入口或执行顺序。可信进程内插件的窄接口用于减少误用，不伪装成恶意代码沙箱；不可信执行仍须经过进程/OS 隔离边界。
 
@@ -421,7 +421,7 @@ U2(conversation) → conversation head 变成 2
 ```text
 call 已提交
     ▼
-prepared（参数、权限、exact binding）
+prepared（最终参数、exact binding）
     ▼ durable start intent
 started ── 外部调用 ──▶ result / unknown
 ```
@@ -433,7 +433,7 @@ started ── 外部调用 ──▶ result / unknown
 - 对话 result 追加与本地 receipt 的结果指针在同一存储事务完成；独立调用在其 receipt 提交结果。不同存储时必须有已验收的 outbox/handoff，不能默认跨库原子。
 - 取消与 effect start 由执行 owner 排序：取消先被接纳则不新发起；已开始则结算为真实结果或 unknown，不能假称没执行。
 
-unknown 是自动执行路径的终止结果，不证明远端失败。人工核对后产生新的明确管理事实/新获授权调用；不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 持久引用其 exact generation，进程重启后重建引用再允许 generation 回收。
+unknown 是自动执行路径的终止结果，不证明远端失败。人工核对后产生新的明确管理事实/新获授权调用；不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 持久引用其 exact generation，进程重启后按该引用打开所需目标。内存 lease 排空后释放资源，耐久归档没有自动 GC，也不另存 active claim 或 refcount。
 
 Tool 与 Delivery 都需要外部效果记录，但各自拥有不同状态和查询协议。暂不创建统一 EffectManager；相同 SQL/锁 helper 只有在实现重复且合同相同时才共享。
 
@@ -682,7 +682,7 @@ UI 的 scope handle 和来源 head 前置条件在控制提交时一起核对；
 
 用户已允许删除核实为不必要或冗余的功能。每项删除在实施当批写入[既有重构账本](../refactor/clean-code-ledger.md)，记录：对象与位置、独立事实判断、静态/动态/正式消费者证据、为何不需要、是否有承接 owner、可观察行为变化、状态处理、验证、commit 与恢复点。没有独立事实也没有消费者的包装直接删除；确有产品行为变化则明确记录，不伪称语义不变。
 
-当前尚未实施删除。旧 Attempt/Turn 身份与重复 transcript、固定 Phase pipeline、工具名特判和只转发包装属于待核实候选；历史 plugin-data、消息、学习状态、附件和回执不因对应代码退休而自动删除。已批准的删除许可不要求逐个重复确认普通冗余代码；涉及未定义的数据减少或无法判定是否仍需的产品行为时，先给出具体影响再处理。
+已实施的删除与恢复点记录在清理账本；旧业务链路尚未退休。旧 Attempt/Turn 身份与重复 transcript、固定 Phase pipeline、工具名特判和只转发包装属于待核实候选；历史 plugin-data、消息、学习状态、附件和回执不因对应代码退休而自动删除。已批准的删除许可不要求逐个重复确认普通冗余代码；涉及未定义的数据减少或无法判定是否仍需的产品行为时，先给出具体影响再处理。
 
 ## 15. 按线上插件功能修订扩展合同
 
@@ -770,7 +770,7 @@ Akasha 声明依赖该服务；在线学习与离线重建调用同一函数。�
 | 04 内容与 Context | 提供普通 Content/Context 能力与临时内容索引；Citation/Meme 形态样例；第 08 层接入后取代共享可变编排 | 仅改变新消息内容无需重写旧消息；有配置归属迁移时随本 PR |
 | 05 任务、事务与调用记录 | 通用 Task、受限 owner 事务；现有 Model 单次入口在 I/O 前后记录调用，冻结请求 | `owner_records` 与 `model_calls` 各附 yoyo；原子回滚、取消、费用 unknown 与重复迁移 |
 | 06 耐久绑定 | 归档完整代码与配置闭包；按引用打开 exact 短命 scope，不维护业务执行状态 | 所需绑定 schema/归档脚本同 PR；卸载当前 cache、重启与归档损坏验收 |
-| 07 单次工具与模型投影 | Tool 的最终参数授权、effect receipt 与恢复；Model 从 Message 投影协议并生成 replay facts | 所需 receipt schema 同 PR；独立调用及执行前后 crash point，不盲重跑 |
+| 07 单次工具与模型投影 | Tool 授权、receipt 与恢复；Model 的 Message 投影；固定 Python 环境、按目标打开 MCP 与借用 Workload | 复用 05 的 owner_records，无新 SQL；独立调用、crash point、环境丢失与资源排空 |
 | 08 回复与消费接入 | ReAct/conversation、Akasha/compaction/记忆读者及实时协议使用新日志；接管命令、暂停/恢复 | 本层引入的旧 turns 尾部、Akasha provenance/消费 ledger 与控制状态迁移同 PR；学习状态保全 |
 | 09 Delivery 与来源 | 独立发送/重试；Scheduler/Subagent/Wake 组合公开能力；发布操作脱离父 Turn | Delivery/来源状态脚本随本 PR；已发送不重发、ACK 丢失与重启验收 |
 | 10 删除与累计验收 | 删除旧 Worker/Pipeline/Attempt 执行权与重复入口；同步长期规格、能力手册和删除账本 | 不 DROP 历史表或自动删除数据；剩余实际 schema 变化仍附本层脚本，不能补漏前层迁移 |
@@ -867,9 +867,47 @@ Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在
 第 06 层的实现边界：
 
 - 代码在导入前按完整文件树归档，正常 generation、候选 clone、延迟 import、静态命令和资源读取均使用归档路径。`plugin_dir` 保留安装来源和发布指针含义；`code_dir` 从实际模块入口计算，不再保存第二份路径字段。Skills 的展示软链也指向该 generation 的归档资源；原安装目录变化不能改变旧 lease 的正文。
-- 代码归档保留 manifest 和 requirements；`.venv`、`node_modules` 属于运行环境，不作为代码归档。当前正式安装的 Python interpreter 仍由安装 owner 显式传给静态命令解析，代码/cwd 与环境分开。历史 binding 本层不解析或启动外部 runtime；第 07 层的资源 owner 按目标、代码归档、manifest 与 requirements 固定运行环境，缺失或不匹配明确失败，不能借用当前 installed cache。
+- 代码归档保留 manifest 和 requirements；`.venv`、`node_modules` 属于运行环境，不作为代码归档。第 06 层只分开代码/cwd 与安装环境，不打开历史外部 runtime。第 07 层已由安装 owner 在最终路径创建并固定 Python 环境；历史调用按所选目标校验环境引用，缺失或不匹配明确失败。当前 installed cache 不参与历史环境恢复，具体边界见下一节。
 - binding 从所需 Service 的实际 provider 出发，只向上收集插件与子 Fiber 的声明依赖。Content、Tool 等注册表由自己选择目标的注册 Context，再将真实 Context 交给 binding；Core 校验其属于当前所选 Root 的存活 Fiber，随后将其 owner 纳入同一闭包。调用者不拼 plugin ID，也不恢复整个 fleet。目标选择和 definition 身份属于 registry 的不可变 metadata；第 07 层完成这些具体注册表消费者接入。
 - 配置正文与 revision 来自同一次读取。归档保存可复建投影和已捕获的静态启用选择，不重算当前环境下的 `is_active`。日期和 CredentialRef 使用明确的值编码；凭据解析仍通过其 owner 的 revision fence，不在归档中存 secret 原文。
 - 打开历史 binding 只装配其闭包和 Root 本地注册表，不装正式 Session、Turn、timer、Delivery 或 Undo 端口，不执行 `runtime.started`。尚依赖旧业务端口的目标明确不可恢复；Akasha 等在第 08 层移除旧依赖后接入，不能用空数据或 candidate 兼容壳冒充成功。
 - scope 退出先停止接纳新 lease，等待保留的 lease 排空，再在取消保护中释放 Root 和模块。它管理真实运行生命周期，不是任意 Python 对象的可撤销沙箱；服务必须在 `async with` 内使用。具体 Tool/Model/Delivery/MCP facade 在执行入口检查 exact scope 和目标，这是各资源 owner 的职责，不增加透明代理。
 - 本层复用第 03 层的 `bindings`/`message_bindings` 表，不引入 SQL schema 或配置迁移，因此没有空 yoyo。binding descriptor 与 archive 都是不可变恢复材料；Message 对它的引用仍与正文同事务提交，不持久保存另一份 active claim。
+
+
+### 18.4 第 07 层：工具调用、模型投影与所需资源
+
+普通 Tools 插件拥有单次调用。准备阶段只固定最终参数；真正执行前才授权这些参数并记录 started。重复请求复用同一个 Task 与 receipt；已知结果直接读取，started 在恢复时先查询原目标。不能查询且不保证幂等的副作用停在 unknown。对话 ToolResult 与结果指针在同一事务提交，独立调用由 receipt 保存结果正文；两者不复制同一份正文。
+
+Model 的只读投影把 Output 与对应 ToolResult 排成 provider 要求的完整调用组，Message 的 seq 和正文保持原样。成功调用记录提供 binding 与 usage，Output 只引用该记录及必要的 tool ID、thinking 和 continuation；跨来源上下文可见，但 provider continuation 只属于选定来源。图像从 Artifact 的只读内容产生；Chat Completions 的 assistant/tool 图像放在完整工具组后的 user 行。纯图像原行留下明确提示，不发送不合法的空 content。
+
+Content 的协议类型作为稳定 API，实际解码器与注册 Context 仍属于归档 generation。Context/Content/Tools 从同一个所选 Root 捕获依赖，Overlay 只接受自身拥有的真实 Context。
+
+```text
+┌─────────────────────────────┐
+│ 固定 binding / 注册 owner    │
+└──────────────┬──────────────┘
+               ▼
+┌─────────────────────────────┐
+│ 打开所选 Tool / MCP          │
+│ 校验所需代码与 Python 环境    │
+└──────┬──────────────┬───────┘
+       ▼              ▼
+┌──────────────┐ ┌────────────────────┐
+│ 私有 process │ │ 借用匹配的 Workload │
+│ / MCP 连接   │ │ 正式 owner 保持控制 │
+└──────┬───────┘ └──────────┬─────────┘
+       └─────────┬─────────┘
+                 ▼
+          调用 → 断开并排空
+                 ▼
+             归还借用
+```
+
+Python 环境在最终目录创建，之后不移动虚拟环境；console script 的绝对解释器路径因此保持有效。component descriptor 第 2 版按每个 Python runtime 保存环境引用。打开纯 Content 不检查该插件未使用的 MCP 环境；调用具体 MCP/process 时才校验它自己的代码、requirements、环境树和宿主基础 Python 身份。该协议只覆盖同一 POSIX 主机和基础解释器，不宣称冻结整个操作系统或动态库。Node 等未实现的运行环境不能套用 Python 的恢复承诺。
+
+MCP 的公开 open 要求调用 Context 是该声明的实际 owner；其他插件须使用 owner 明确提供的能力。历史 MCP 使用独立连接和私有 process 端口，不执行正式启动事件。需要 Desktop 等 Workload 时，只借用当前 ready 且完整 descriptor 相等的已有资源；不替换或停止它。正式 owner 在停止前禁止新借用，等待已有借用排空。历史 MCP 断开、process 停止成功后才归还借用，清理失败保留实际 owner 和重试证据。调用 scope 的失败从资源 host 的 tombstone 查询，通过 Manager 的 `resource_failures / retry_resource_cleanup` 按精确 scope 重试；不写正式插件 reload journal，不重建 stable Root。Manager 关闭时同步停止接纳新调用，再清理已接纳的调用资源，最后停止正式 Workload。同一个调用 owner 的锁覆盖启动、停止与重试，关闭不取消整个调用者 Task；并发重试只归还一次借用。监督运行中进程继承 boot 身份，Gateway 退出后的进程组清理由既有 guardian 拥有。
+
+本层没有新的 SQL 或配置 schema，Tool receipt 复用第 05 层 owner_records，因此不增加空 yoyo。环境新增、保留及恢复材料见[状态地图](persistence-state-map.md)的第 07 层。没有上线过的第 06 层 component v1 明确拒绝，不增加临时格式兼容壳；整栈一起上线。旧安装 cache 缺少环境引用时，显式重装发布新的代码 artifact 与引用，旧 cache 不被原位改写；普通读取不会偷偷安装依赖。
+
+本层验证了实际归档、Python 环境、MCP 子进程、工具 receipt 和 provider 请求投影。ReAct、conversation、Akasha 及现有 Computer 工具注册仍待第 08 层接入，Delivery 与各来源待第 09 层切换；本节不代表完整被动链路已经运行在新组合上。

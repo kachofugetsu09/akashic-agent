@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
-import sys
 import tomllib
 from pathlib import Path
 
@@ -20,6 +20,11 @@ from agent.plugins.install import (
     set_installed_plugin_enabled,
 )
 from agent.plugins.manifest import plugins_root
+from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
+from agent.plugins.static_manifest import (
+    load_static_plugin_manifest,
+    materialize_static_command,
+)
 from agent.plugins.source_resolver import resolve_plugin_sources
 
 
@@ -111,7 +116,7 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
     repo = tmp_path / "feed-mcp"
     (repo / "mcp").mkdir(parents=True)
     (repo / "mcp" / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
-    (repo / "mcp" / "requirements.txt").write_text("requests\n", encoding="utf-8")
+    (repo / "mcp" / "requirements.txt").write_text("", encoding="utf-8")
     _write_v3_plugin(repo, name="feed")
     (repo / "akashic.plugin.toml").write_text(
         (repo / "akashic.plugin.toml").read_text(encoding="utf-8")
@@ -126,16 +131,6 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
         encoding="utf-8",
     )
     _commit(repo)
-    calls: list[tuple[str, Path]] = []
-
-    def fake_run(args: list[str], *, cwd: Path, label: str) -> None:
-        calls.append((label, cwd))
-        if label.endswith("venv"):
-            python_path = install_module._venv_python_path(cwd / ".venv")
-            python_path.parent.mkdir(parents=True, exist_ok=True)
-            python_path.write_text("", encoding="utf-8")
-
-    monkeypatch.setattr(install_module, "_run_command", fake_run)
     result = install_git_plugin(
         workspace=tmp_path / "workspace",
         source=str(repo),
@@ -143,20 +138,60 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
         plugins_home=tmp_path / "plugins-home",
     )
 
-    assert [label for label, _ in calls] == [
-        "feed python[0] venv",
-        "feed python[0] pip install",
-    ]
-    assert all(
-        cwd.name == "mcp"
-        and cwd.is_relative_to(result.installed_path.parents[2])
-        and cwd != result.installed_path / "mcp"
-        for _, cwd in calls
+    store = PythonEnvironments(tmp_path / "workspace")
+    ref = json.loads((result.installed_path / ENVIRONMENT_FILE).read_text())["mcp"]
+    record = store.archive.read_descriptor(ref)
+    code = store.archive.open(record["input"]["code"])
+    manifest = load_static_plugin_manifest(code)
+    environment = store.open(ref, code, manifest.python[0])
+    command = materialize_static_command(
+        code, manifest, manifest.mcp_servers[0], environment_root=environment
     )
-    assert not (result.installed_path / "mcp" / "servers.json").exists()
+    assert (
+        subprocess.run(
+            command, cwd=code, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        == "ok"
+    )
+    assert not (result.installed_path / "mcp" / ".venv").exists()
+    # 模拟同 revision 的旧安装：只有 cache 内 .venv，没有新环境引用。
+    (result.installed_path / ENVIRONMENT_FILE).unlink()
+    old_python = result.installed_path / "mcp/.venv/bin/python"
+    old_python.parent.mkdir(parents=True)
+    old_python.write_text("old environment must not execute")
+    reinstalled = install_git_plugin(
+        workspace=tmp_path / "workspace",
+        source=str(repo),
+        marketplace="lab",
+        plugins_home=tmp_path / "plugins-home",
+    )
+    assert reinstalled.installed_path != result.installed_path
+    assert (
+        json.loads((reinstalled.installed_path / ENVIRONMENT_FILE).read_text())["mcp"]
+        == ref
+    )
+    assert old_python.read_text() == "old environment must not execute"
+    assert (
+        subprocess.run(
+            command, cwd=code, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        == "ok"
+    )
+    finalize_uninstall_plugin(
+        "feed@lab",
+        workspace=tmp_path / "workspace",
+        plugins_home=tmp_path / "plugins-home",
+    )
+    assert store.open(ref, code, manifest.python[0]) == environment
+    assert (
+        subprocess.run(
+            command, cwd=code, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        == "ok"
+    )
 
 
-def test_retry_reuses_artifact_with_core_generated_python_symlink(
+def test_retry_reuses_artifact_and_fixed_python_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -171,13 +206,6 @@ def test_retry_reuses_artifact_with_core_generated_python_symlink(
     )
     _commit(repo)
 
-    def fake_run(args: list[str], *, cwd: Path, label: str) -> None:
-        if label.endswith("venv"):
-            python_path = install_module._venv_python_path(cwd / ".venv")
-            python_path.parent.mkdir(parents=True, exist_ok=True)
-            python_path.symlink_to(sys.executable)
-
-    monkeypatch.setattr(install_module, "_run_command", fake_run)
     home = tmp_path / "plugins-home"
     workspace = tmp_path / "workspace"
     _ = install_git_plugin(
@@ -212,6 +240,9 @@ def test_retry_reuses_artifact_with_core_generated_python_symlink(
 
     assert retried.installed_path == candidate.installed_path
     assert retried.staged_candidate is True
+    assert (retried.installed_path / ENVIRONMENT_FILE).read_text() == (
+        candidate.installed_path / ENVIRONMENT_FILE
+    ).read_text()
 
 
 def test_plugin_enable_disable_and_uninstall_preserve_data(tmp_path: Path) -> None:
@@ -322,7 +353,9 @@ def test_install_failure_restores_previous_cache_and_manifest(
     )
     _commit(repo)
 
-    def fail_prepare(plugin_root: Path, static_manifest: object) -> None:
+    def fail_prepare(
+        plugin_root: Path, static_manifest: object, *, workspace: Path
+    ) -> None:
         resolved = resolve_plugin_sources(
             [],
             installed_cache_root=home / "cache",

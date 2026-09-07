@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import TYPE_CHECKING
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -16,6 +18,11 @@ from agent.plugin_composition.model import (
     ServiceKey,
 )
 
+if TYPE_CHECKING:
+    from agent.plugins.mcp_generation_host import McpServerView
+    from agent.plugins.snapshot import RuntimeSnapshot
+
+
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
 _RESERVED_ENV = frozenset(
@@ -23,6 +30,8 @@ _RESERVED_ENV = frozenset(
         "AKA_PLUGIN_DATA_DIR",
         "AKASHIC_PLUGIN_DATA_DIR",
         "AKASHIC_WORKSPACE",
+        "AKASHIC_BOOT_ID",
+        "AKASHIC_SUPERVISED",
     }
 )
 
@@ -321,9 +330,34 @@ class _McpServerDeclarations:
 class PluginMcpServers:
     """Expose only Fiber-owned MCP registration to plugins."""
 
-    def __init__(self, root_instance_token: object) -> None:
+    def __init__(
+        self, root_instance_token: object,
+        opener: Callable[[RuntimeSnapshot, str, str | None], AbstractAsyncContextManager[McpServerView]] | None = None,
+    ) -> None:
         self._root_instance_token = root_instance_token
         self._declarations = _McpServerDeclarations()
+        self._opener = opener
+
+    @asynccontextmanager
+    async def open(
+        self, ctx: Context, name: str, *, expected_catalog_digest: str | None = None,
+    ) -> AsyncIterator[McpServerView]:
+        """在调用者的 exact scope 内使用一个 MCP；退出后路由不可再用。"""
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        if ctx.require(MCP_SERVERS) is not self or self._opener is None:
+            raise RuntimeError("MCP 服务没有可用的资源 owner")
+        async with ctx.runtime_scope():
+            snapshot = get_current_runtime_snapshot()
+            if snapshot is None:
+                raise RuntimeError("打开 MCP 需要实际 runtime scope")
+            registry = snapshot.mcp_server_registry
+            if registry is None:
+                raise RuntimeError("当前 scope 没有 MCP 声明")
+            if registry[name].activation_token is not ctx.fiber.activation_token:
+                raise PermissionError("MCP 目标未由当前 Context 授予；请使用 owner 提供的能力")
+            async with self._opener(snapshot, name, expected_catalog_digest) as server:
+                yield server
 
     async def register(
         self,

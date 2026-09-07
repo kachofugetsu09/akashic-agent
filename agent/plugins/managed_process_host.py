@@ -162,6 +162,7 @@ class _Generation:
     mode: ProcessMode
     artifact_root: Path | None
     entries: dict[str, _ProcessEpoch]
+    fixed_ports: bool = True
     state: GenerationState = "starting"
     cleanup_attempts: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -225,6 +226,7 @@ class ManagedProcessGenerationHost:
         *,
         mode: ProcessMode = "candidate",
         artifact_root: Path | None = None,
+        fixed_ports: bool = True,
     ) -> ManagedProcessGeneration:
         """Start and readiness-check one isolated candidate or formal generation."""
 
@@ -239,6 +241,7 @@ class ManagedProcessGenerationHost:
             generation_id=generation_id,
             mode=mode,
             artifact_root=artifact_root.resolve() if artifact_root is not None else None,
+            fixed_ports=fixed_ports,
             entries={
                 name: _ProcessEpoch(
                     generation_id=generation_id,
@@ -459,7 +462,7 @@ class ManagedProcessGenerationHost:
         """Spawn one process epoch, wait for Core-owned readiness, then publish it."""
 
         definition = entry.definition
-        port = self._allocate_port(definition.formal_port if generation.mode == "formal" else None)
+        port = self._allocate_port(definition.formal_port if generation.mode == "formal" and generation.fixed_ports else None)
         command = self._resolve_command(definition.command, entry.artifact_root)
         cwd = self._resolve_cwd(definition.cwd, entry.artifact_root)
         env = self._process_env(definition.env, definition.port_env, port)

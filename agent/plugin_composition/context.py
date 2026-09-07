@@ -13,7 +13,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, AsyncGenerator, TypeVar, cast
+from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar, cast
 
 from agent.plugin_composition.effect import Effect, EffectSetup
 from agent.plugin_composition.diagnostics import (
@@ -46,6 +46,10 @@ from agent.plugin_composition.model import (
     TopologyFiberView,
     TopologyView,
 )
+
+if TYPE_CHECKING:
+    from agent.plugin_composition.overlay import CompositionSnapshotRoot
+
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -156,7 +160,7 @@ class Context:
         lease = (
             current.fork()
             if current is not None
-            and current.snapshot.composition_root is self._root
+            and self._belongs_to_scope(current.snapshot.composition_root)
             else await self._root._acquire_runtime_scope()
         )
 
@@ -170,9 +174,15 @@ class Context:
         from agent.plugins.snapshot import get_current_runtime_lease
 
         current = get_current_runtime_lease()
-        if current is None or current.snapshot.composition_root is not self._root:
+        if current is None or not self._belongs_to_scope(current.snapshot.composition_root):
             raise RuntimeError("当前 task 未绑定此插件 Root 的 runtime scope")
         return RuntimeScope(current.fork())
+
+    def _belongs_to_scope(self, root: CompositionSnapshotRoot | None) -> bool:
+        """Overlay 按实际 Context 选择 generation，不能退回其底层旧 Root。"""
+        return root is self._root or (
+            root is not None and root.context_owner(self) is not None
+        )
 
     @property
     def runtime(self) -> PluginRuntime:

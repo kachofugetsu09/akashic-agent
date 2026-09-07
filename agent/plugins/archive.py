@@ -34,11 +34,11 @@ class PluginArchive:
         # 1. 文件树是完整输入；运行环境等边界由调用者明确选定。
         if self.path.is_relative_to(source.resolve()):
             raise ValueError("插件归档不能写入自身输入目录")
-        expected = _entries(source, exclude=exclude)
-        identity = hashlib.sha256(_encode(expected)).hexdigest()
+        expected = tree_entries(source, exclude=exclude)
+        identity = hashlib.sha256(encode_tree(expected)).hexdigest()
         if (self.path / identity).exists() or (self.path / identity).is_symlink():
             _ = self.open(identity)
-            _sync_directory(self.path)
+            sync_directory(self.path)
             return identity
         pending = Path(tempfile.mkdtemp(prefix=".pending-", dir=self.path))
         try:
@@ -49,10 +49,10 @@ class PluginArchive:
                 symlinks=True,
                 ignore=shutil.ignore_patterns(*(_CACHE_NAMES | exclude)),
             )
-            actual = _entries(tree)
+            actual = tree_entries(tree)
             if actual != expected:
                 raise RuntimeError("归档期间插件文件树发生变化")
-            payload = _encode(actual)
+            payload = encode_tree(actual)
             archive_id = hashlib.sha256(payload).hexdigest()
 
             # 2. 归档文件及索引先落盘，再让内容身份可见。
@@ -67,8 +67,8 @@ class PluginArchive:
                 stream.flush()
                 os.fsync(stream.fileno())
             for current, _, _ in os.walk(tree, topdown=False, followlinks=False):
-                _sync_directory(Path(current))
-            _sync_directory(pending)
+                sync_directory(Path(current))
+            sync_directory(pending)
 
             # 3. 同内容可重复发布；已有对象必须完整，不能覆盖修复损坏。
             target = self.path / archive_id
@@ -81,7 +81,7 @@ class PluginArchive:
                     if error.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
                         raise
                     _ = self.open(archive_id)
-            _sync_directory(self.path)
+            sync_directory(self.path)
             return archive_id
         finally:
             # 只清理本次尚未发布的临时副本，已发布归档没有减少路径。
@@ -99,7 +99,7 @@ class PluginArchive:
         if hashlib.sha256(payload).hexdigest() != archive_id:
             raise RuntimeError("插件归档索引损坏")
         tree = root / "tree"
-        if _encode(_entries(tree)) != payload:
+        if encode_tree(tree_entries(tree)) != payload:
             raise RuntimeError("插件归档文件树损坏")
         return tree
 
@@ -126,7 +126,7 @@ class PluginArchive:
             except FileExistsError:
                 if target.is_symlink() or target.read_bytes() != payload:
                     raise RuntimeError("插件归档 descriptor 损坏")
-            _sync_directory(self.path)
+            sync_directory(self.path)
             return identity
         finally:
             pending.unlink()
@@ -147,7 +147,7 @@ class PluginArchive:
         return cast(Mapping[str, object], freeze_json(cast(dict[str, object], value)))
 
 
-def _entries(
+def tree_entries(
     root: Path, *, exclude: frozenset[str] = frozenset()
 ) -> list[tuple[str, str, str]]:
     """枚举完整文件树，拒绝外部链接和无法归档的特殊文件。"""
@@ -183,11 +183,11 @@ def _entries(
     return sorted(entries)
 
 
-def _encode(entries: list[tuple[str, str, str]]) -> bytes:
+def encode_tree(entries: list[tuple[str, str, str]]) -> bytes:
     return json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode()
 
 
-def _sync_directory(path: Path) -> None:
+def sync_directory(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)

@@ -256,6 +256,10 @@ class MessageReader:
         self._log = log
         self._session_id = session_id
 
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
     def read(
         self,
         *,
@@ -280,6 +284,15 @@ class MessageReader:
         with self._log._lock:
             rows = self._log._connection.execute(sql, values).fetchall()
         return tuple(_message(row) for row in rows)
+
+    def get(self, message_id: str) -> Message | None:
+        """按不可变身份读取消息，不能跨 reader 获授的 Session。"""
+        with self._log._lock:
+            row = self._log._connection.execute(
+                "SELECT * FROM messages WHERE id=? AND session_key=?",
+                (message_id, self._session_id),
+            ).fetchone()
+        return None if row is None else _message(row)
 
     def head(self, *, source: str | None = None) -> int:
         sql = "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=?"
@@ -337,6 +350,26 @@ class MessageWriter:
         self._check_call = check_call
         self._active = True
 
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    def check(self, body: Body) -> None:
+        """预先核对提交权限与引用；不占序号，实际提交仍在事务内核对实时状态。"""
+        with self._log._lock:
+            self._check_grant(body)
+            if not self._active:
+                raise WriterExpired("writer 已失效")
+            _ = self._check_parts(body)
+            if isinstance(body, ToolResult):
+                self._check_call_result(body)
+
+    def _check_grant(self, body: Body) -> None:
+        if type(body) not in self._body_types:
+            raise PermissionError("writer 未获授该消息类型")
+        if isinstance(body, ToolResult) and body.call_ref != self._call_ref:
+            raise PermissionError("工具结果不属于 writer 获授的调用")
+
     def expire(self) -> None:
         with self._log._lock:
             self._active = False
@@ -355,10 +388,7 @@ class MessageWriter:
         self, message_id: str, body: Body, *, expected_source_head: int | None = None
     ) -> Message:
         # 1. 固定 writer 的能力范围；内容 schema 由其注册 owner 验证。
-        if type(body) not in self._body_types:
-            raise PermissionError("writer 未获授该消息类型")
-        if isinstance(body, ToolResult) and body.call_ref != self._call_ref:
-            raise PermissionError("工具结果不属于 writer 获授的调用")
+        self._check_grant(body)
         payload = encode_body(body)
         connection = self._log._connection
         old = connection.execute(
@@ -490,6 +520,11 @@ class OwnerStore:
     def __init__(self, log: MessageLog, owner: str):
         self._log = log
         self._owner = owner
+
+    def check_access(self, *capabilities: MessageReader | MessageWriter) -> None:
+        """在产生外部效果前确认获授能力可参与同一 authority 的事务。"""
+        if any(capability._log is not self._log for capability in capabilities):
+            raise ValueError("原子提交不能跨存储 authority")
 
     def read(self, key: str) -> OwnerRecord | None:
         with self._log._lock:

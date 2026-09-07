@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal
 
 import httpx
@@ -58,6 +60,8 @@ class _Generation:
     )
     state: Literal["starting", "ready", "stopping", "degraded"] = "starting"
     cleanup_attempts: int = 0
+    borrowers: set[object] = field(default_factory=set[object])
+    drained: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class WorkloadGeneration:
@@ -231,6 +235,33 @@ class WorkloadGenerationHost:
         generation = self._generations.get(generation_id)
         return None if generation is None else WorkloadGeneration(generation)
 
+    @asynccontextmanager
+    async def borrow(
+        self, descriptor: WorkloadDescriptor
+    ) -> AsyncIterator[Mapping[str, str]]:
+        """借用完全匹配的正式资源；不创建桌面，也不转移停止权。"""
+        # 1. 从资源 owner 的实际回执选择，不读取当前插件或 stable endpoint。
+        matches = [
+            (generation, entry)
+            for generation in self._generations.values()
+            if generation.mode == "formal" and generation.state == "ready"
+            for entry in generation.entries.values()
+            if entry.binding.descriptor == descriptor
+        ]
+        if len(matches) != 1:
+            raise RuntimeError("没有唯一且就绪的相同 Workload")
+        generation, entry = matches[0]
+        token = object()
+        generation.borrowers.add(token)
+        generation.drained.clear()
+        try:
+            yield MappingProxyType(dict(entry.endpoints))
+        finally:
+            # 2. 无 await 的释放不会被取消截断，也不等待 stop 持有的锁。
+            generation.borrowers.remove(token)
+            if not generation.borrowers:
+                generation.drained.set()
+
     def tombstone(self, generation_id: str) -> WorkloadCleanupTombstone | None:
         return self._tombstones.get(generation_id)
 
@@ -259,6 +290,8 @@ class WorkloadGenerationHost:
 
     async def _cleanup(self, generation: _Generation) -> None:
         generation.state = "stopping"
+        if generation.borrowers:
+            _ = await generation.drained.wait()
         errors: list[BaseException] = []
         for name, (binding, request) in tuple(generation.pending.items()):
             try:

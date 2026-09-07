@@ -143,11 +143,7 @@ class McpClient:
 
     async def _connect_impl(self) -> list[McpToolInfo]:
         """启动子进程，完成握手，获取工具列表。"""
-        proc_env = owned_process_env(self.env)
-        for key in self.env_scrub_keys:
-            proc_env.pop(key, None)
-            if key in self.env:
-                proc_env[key] = self.env[key]
+        proc_env = owned_process_env(self.env, scrub_keys=self.env_scrub_keys)
         logger.debug("[mcp] 启动 %r: %s  cwd=%s", self.name, self.command, self.cwd)
         self._process = await asyncio.create_subprocess_exec(
             *self.command,
