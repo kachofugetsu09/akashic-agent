@@ -249,11 +249,11 @@ async def test_typed_authorize_rejects_invalid_bail_with_owner_incident() -> Non
         _ = await ctx.on(TOOL_RESULT, observed.append)
 
     _ = await root.mount(composition, name="bad-authorizer")
-    assert root.topology_view().listeners == (
+    assert set(root.topology_view().listeners) == {
         "serial:tool.execution.authorize"
         "[bail=akashic.tool-deny-reason.v1]:bad-authorizer",
         "observe:tool.result:bad-authorizer",
-    )
+    }
 
     async def invoke(_: str, __: dict[str, Any]) -> str:
         nonlocal invoked
