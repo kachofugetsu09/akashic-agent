@@ -8,16 +8,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import textwrap
-from typing import Any
+from typing import cast
 
 import httpx
 import pytest
 
+from agent.plugins.manager import PluginManager
+from agent.plugins.snapshot import RuntimeSnapshot
+from agent.plugins.web_ui import WebModuleDescriptor
 from bootstrap.dashboard_api import create_dashboard_app
 from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
 from plugins.delivery.history import DELIVERY_READ
 from plugins.drift.plugin import DRIFT_PROPOSALS
 from plugins.wake.api import DRIFT_WAKE
+from plugins.wake.runtime import Runtime
+from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Input, Output
 
 
@@ -25,7 +30,7 @@ _REPO_ROOT = Path(__file__).parents[1]
 
 
 def _file_snapshot(path: Path) -> dict[str, tuple[int, str]]:
-    """Record a small database family without opening or changing it."""
+    """记录数据库及其协调文件的内容，不打开数据库。"""
     result: dict[str, tuple[int, str]] = {}
     for candidate in sorted(path.parent.glob(path.name + "*")):
         if candidate.is_file():
@@ -36,8 +41,8 @@ def _file_snapshot(path: Path) -> dict[str, tuple[int, str]]:
     return result
 
 
-def _web_headers(snapshot: Any, plugin_id: str) -> tuple[Any, dict[str, str]]:
-    catalog = getattr(snapshot, "web_ui_catalog")
+def _web_headers(snapshot: RuntimeSnapshot, plugin_id: str) -> tuple[WebModuleDescriptor, dict[str, str]]:
+    catalog = snapshot.web_ui_catalog
     assert catalog is not None
     module = next(item for item in catalog.modules if item.plugin_id == plugin_id)
     headers = {
@@ -51,14 +56,14 @@ def _web_headers(snapshot: Any, plugin_id: str) -> tuple[Any, dict[str, str]]:
 
 def _render_compiled_module(
     tmp_path: Path,
-    module: Any,
+    module: WebModuleDescriptor,
     payload: dict[str, object],
     marker: str,
 ) -> None:
-    """Render the exact catalog asset in jsdom and reject missing fields."""
-    module_file = tmp_path / f"{getattr(module, 'plugin_id')}-web_module.js"
-    payload_file = tmp_path / f"{getattr(module, 'plugin_id')}-detail.json"
-    module_file.write_text(getattr(module, "asset").module, encoding="utf-8")
+    """渲染 snapshot 中的编译资源，检查实际字段是否完整。"""
+    module_file = tmp_path / f"{module.plugin_id}-web_module.js"
+    payload_file = tmp_path / f"{module.plugin_id}-detail.json"
+    module_file.write_text(module.asset.module, encoding="utf-8")
     payload_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     script = textwrap.dedent(
         """
@@ -104,7 +109,7 @@ def _render_compiled_module(
     )
 
 
-def _seed_saved_recall(log: Any, _host: Any) -> None:
+def _seed_saved_recall(log: MessageLog, _host: PluginManager) -> None:
     checks = {"text": lambda _part: ContentReferences()}
     inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content=checks)
     outputs = log.writer("s", author="assistant", source="conversation", body_types=(Output,), content=checks)
@@ -144,14 +149,17 @@ async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tm
         assert snapshot is not None
         module, headers = _web_headers(snapshot, "akasha")
         app = create_dashboard_app(tmp_path / "workspace", plugin_manager=host)
-        before = _file_snapshot(tmp_path / "workspace" / "memory" / "akasha.db")
+        sessions_db = tmp_path / "sessions.db"
+        assert sessions_db.is_file()
+        before_db = sessions_db.read_bytes()
+        before_messages = log.reader("s").snapshot()
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers,
         ) as client:
             overview = await client.get("/api/dashboard/akasha-inspector/overview")
             listing = await client.get("/api/dashboard/akasha-inspector/turns?page=1&page_size=25")
             detail_response = await client.get("/api/dashboard/akasha-inspector/turns/saved-query")
-        after = _file_snapshot(tmp_path / "workspace" / "memory" / "akasha.db")
+        after_db = sessions_db.read_bytes()
 
         assert [response.status_code for response in (overview, listing, detail_response)] == [200, 200, 200]
         assert overview.json() == {"available": True, "total": 1}
@@ -168,7 +176,9 @@ async def test_akasha_dashboard_reads_saved_recall_and_renders_catalog_module(tm
         assert [message["presented"] for message in messages] == [True, False]
         assert messages[0]["text"].endswith("END")
         assert len(messages[0]["text"]) > 240
-        assert before == after
+        assert before_db
+        assert after_db == before_db
+        assert log.reader("s").snapshot() == before_messages
         assert not (tmp_path / "embedding-calls.txt").exists()
         _render_compiled_module(tmp_path, module, detail, "命中回忆")
 
@@ -179,7 +189,7 @@ async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_pa
 
     async with application(tmp_path) as (host, log, ctx, _source, control):
         await host.start_runtime()
-        runtime = control["runtime"]
+        runtime = cast(Runtime, control["runtime"])
         now = datetime.now(timezone.utc)
         ctx.require(DRIFT_PROPOSALS).propose("duty", "1", {"summary": "dashboard delivery"}, now)
         original = request(ctx, "drift", now, proposals=ctx.require(DRIFT_WAKE).snapshot(now)["proposals"])
@@ -228,8 +238,7 @@ async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_pa
         assert detail["flow"]["delivery"]["message_id"] == direct_receipt["message_id"]
         assert detail["flow"]["delivery"]["status"] == direct_receipt["status"] == "delivered"
         assert detail["flow"]["delivery"]["receipt"] == direct_receipt["receipt"]
-        # A read-only SQLite connection may create WAL coordination sidecars;
-        # the Wake-owned database and its rows must remain byte-for-byte stable.
+        # 只读 SQLite 连接可以创建 WAL 协调文件；Wake 主库和行内容必须稳定。
         assert before_files[state_path.name] == after_files[state_path.name]
         assert runtime.state.read_only().get_attempt(original.flow_id) == before_attempt
         assert runtime.state.read_only().list_attempts(500) == before_attempts
@@ -244,7 +253,7 @@ async def test_wake_dashboard_get_missing_state_does_not_create_database(tmp_pat
 
     async with application(tmp_path) as (host, _log, _ctx, _source, control):
         await host.start_runtime()
-        runtime = control["runtime"]
+        runtime = cast(Runtime, control["runtime"])
         state_path = runtime.state.path
         assert state_path.exists()
         state_path.unlink()
