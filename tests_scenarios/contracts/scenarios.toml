@@ -33,10 +33,9 @@ companion_shell_cleanup_rewrites_turn = "tests/semantic/test_companion_contract.
 companion_control_replay_drops_live_event = "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant"
 companion_dashboard_uses_html_sink = "tests/semantic/test_companion_contract.py::test_dashboard_rejects_html_sink_mutant"
 domain_event_bus_bridge = "tests/test_plugin_composition_lifecycle.py::test_event_bus_does_not_bridge_into_plugin_composition"
-domain_event_candidate_binding = "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_uses_bound_candidate_root"
-domain_event_wrong_task_fallback = "tests/test_plugin_composition_lifecycle.py::test_event_bus_rejects_inherited_wrong_task_binding"
-retrieval_event_payload = "tests/test_plugin_composition_lifecycle.py::test_retrieval_completed_event_payload"
-after_turn_event_error_propagation = "tests/test_plugin_composition_lifecycle.py::test_after_turn_committed_event_propagates_listener_failure"
+runtime_snapshot_wrong_task_binding = "tests/test_plugin_composition_lifecycle.py::test_runtime_snapshot_rejects_inherited_wrong_task_binding"
+event_bus_wrong_task_binding = "tests/test_plugin_composition_lifecycle.py::test_event_bus_rejects_inherited_wrong_task_binding"
+emit_event_listener_failure = "tests/test_plugin_composition_lifecycle.py::test_emit_event_listener_failure_is_fail_loud"
 model_consumer_imports_plugin_source = "tests/semantic/test_model_owner_contract.py::test_model_consumers_do_not_import_ordinary_plugin_sources"
 
 [scenarios.contract_catalog]
@@ -361,7 +360,6 @@ observes = [
   "nested_execution_reuse",
   "child_task_execution_rejection",
   "vision_binding",
-  "background_job_model_binding",
   "akasha_embedding_binding",
   "public_model_control_socket",
   "catalog_secret_redaction",
@@ -381,29 +379,21 @@ command = [
   "pytest",
   "-q",
   "tests/test_plugin_composition_lifecycle.py::test_event_bus_does_not_bridge_into_plugin_composition",
-  "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_uses_bound_candidate_root",
-  "tests/test_plugin_composition_lifecycle.py::test_domain_observe_event_rejects_inherited_wrong_task_binding",
+  "tests/test_plugin_composition_lifecycle.py::test_runtime_snapshot_rejects_inherited_wrong_task_binding",
   "tests/test_plugin_composition_lifecycle.py::test_event_bus_rejects_inherited_wrong_task_binding",
-  "tests/test_plugin_composition_lifecycle.py::test_retrieval_completed_event_payload",
-  "tests/test_plugin_composition_lifecycle.py::test_after_turn_committed_event_propagates_listener_failure",
-  "tests/test_plugin_composition_lifecycle.py::test_domain_event_contract_imports_without_phase_runtime",
+  "tests/test_plugin_composition_lifecycle.py::test_emit_event_listener_failure_is_fail_loud",
 ]
 observes = [
-  "domain_event_identity",
   "event_bus_composition_isolation",
-  "candidate_root_binding",
-  "wrong_task_failure",
-  "event_bus_wrong_task_failure",
-  "retrieval_completed_payload",
-  "after_turn_error_propagation",
-  "leaf_contract_import",
+  "runtime_snapshot_task_binding",
+  "event_bus_task_binding",
+  "emit_listener_failure",
 ]
 mutants = [
   "domain_event_bus_bridge",
-  "domain_event_candidate_binding",
-  "domain_event_wrong_task_fallback",
-  "retrieval_event_payload",
-  "after_turn_event_error_propagation",
+  "runtime_snapshot_wrong_task_binding",
+  "event_bus_wrong_task_binding",
+  "emit_event_listener_failure",
 ]
 
 [scenarios.plugin_uninstall_drain_finality]
@@ -466,8 +456,8 @@ command = [
   "-q",
   "tests/semantic/test_recursive_plugin_self_validation_contract.py",
   "tests/test_plugin_runtime_control.py",
-  "tests/test_subagent_messages.py::test_background_main_program_keeps_tools_and_new_input_interrupts_it",
-  "tests/test_channel_input.py::test_stop_commits_pause_before_draining_and_duplicate_does_not_pause_new_work",
+  "tests/test_reply_follow.py::test_log_follower_coalesces_interrupts_without_blocking_other_sessions",
+  "tests/test_conversation_source.py::test_interrupt_inputs_survive_and_old_output_cannot_commit",
   "tests/test_plugin_hot_reload.py::test_startup_recovers_installed_candidate_from_durable_pointers",
   "tests/test_plugin_hot_reload.py::test_snapshot_admission_waits_while_current_is_quiesced",
   "tests/test_channel_input.py::test_retry_uses_message_identity_without_copying_transport_clock_or_handoff",
@@ -570,8 +560,33 @@ requirements = ["SEC-007", "SEC-008", "CTRL-001", "CTRL-002", "ERR-001", "TST-00
 groups = ["companion_control"]
 environment = "public_clean_workspace"
 timeout_seconds = 60
-command = ["python", "-m", "pytest", "-q", "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant", "tests/test_message_control.py::test_control_v2_uses_real_message_input_and_cancellable_read_subscription", "tests/test_programmatic_control.py::test_programmatic_admission_is_immutable_and_ack_retries_recover_same_input"]
-observes = ["control_message_input", "message_ack", "replay_cursor", "live_message_event", "replay_boundary", "replay_truncated", "replay_expired", "session_message_write_set", "session_store_write_set", "failure_semantics"]
+command = [
+  "python",
+  "-m",
+  "pytest",
+  "-q",
+  "tests/semantic/test_companion_contract.py::test_control_replay_rejects_live_drop_mutant",
+  "tests/test_message_control.py::test_control_v2_uses_real_message_input_and_cancellable_read_subscription",
+  "tests/test_message_control.py::test_connection_eof_releases_full_queue_and_blocked_writer",
+  "tests/test_programmatic_control.py::test_programmatic_admission_is_immutable_and_ack_retries_recover_same_input",
+  "tests/test_message_sdk.py::test_async_sdk_real_socket_replay_and_subscription_replacement",
+  "tests/test_message_sdk.py::test_sync_sdk_uses_same_message_contract",
+  "tests/test_message_sdk.py::test_subscription_claims_one_consumer_before_first_iteration",
+  "tests/test_message_sdk.py::test_sync_subscription_concurrent_consumers_cannot_split_one_queue",
+]
+observes = [
+  "control_message_input",
+  "message_ack",
+  "replay_cursor",
+  "replay_message",
+  "live_message_event",
+  "subscription_replacement",
+  "single_consumer_claim",
+  "concurrent_queue_ownership",
+  "eof_queue_cleanup",
+  "session_message_write_set",
+  "failure_semantics",
+]
 mutants = ["companion_control_replay_drops_live_event"]
 
 [scenarios.companion_dashboard_value_contract]
