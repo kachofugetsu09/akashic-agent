@@ -89,6 +89,43 @@ async def test_mobile_history_reads_full_message_prefix_and_directory_without_ol
 
 
 @pytest.mark.asyncio
+async def test_mobile_session_open_uses_message_log_and_preserves_raw_facts(mobile, tmp_path):
+    log, runtime, channel, device = mobile
+    session = f'akashic:{uuid4()}'
+    log.ensure_session(session, SessionAttributes())
+    before = snapshot(tmp_path / 'sessions.db')
+
+    opened = await channel._open_session(
+        device,
+        _generic_frame(
+            frame_id='01ARZ3NDEKTSV4RRFFQ69G5FAV',
+            command_type='session.open',
+            session_id=session,
+            payload={},
+        ),
+    )
+
+    assert opened.type == 'session.open.ok'
+    assert opened.session_id == session
+    assert runtime.events[-1] == {
+        'event_type': 'session.updated',
+        'session_id': session,
+        'payload': {'session_id': session, 'state': 'opened'},
+    }
+    with pytest.raises(MobileCommandError, match='会话不存在'):
+        await channel._open_session(
+            device,
+            _generic_frame(
+                frame_id='01ARZ3NDEKTSV4RRFFQ69G5GAV',
+                command_type='session.open',
+                session_id=f'akashic:{uuid4()}',
+                payload={},
+            ),
+        )
+    assert snapshot(tmp_path / 'sessions.db') == before
+
+
+@pytest.mark.asyncio
 async def test_mobile_large_messages_download_whole_json_and_page_budget_never_truncates(mobile, tmp_path):
     log, runtime, channel, device = mobile
     session = f'akashic:{uuid4()}'
