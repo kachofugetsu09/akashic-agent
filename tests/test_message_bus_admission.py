@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from session.inbound_store import InboundHandoffStore
 import asyncio
 import gc
 import logging
@@ -31,7 +32,7 @@ from agent.plugin_composition.channels import (
 from bus.events import InboundMessage
 from bus.queue import MessageBus
 from session.manager import SessionManager
-from session.store import SessionAdmissionConflictError, SessionStore
+from session.store import SessionAdmissionConflictError
 
 
 def _v3_outbound() -> tuple[OutboundEnvelope, _OutboundBinding]:
@@ -126,7 +127,7 @@ class _OutboundBinding:
 async def test_worker_error_before_turn_owner_keeps_handoff_and_releases_admission(
     tmp_path: Path,
 ) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = InboundHandoffStore(tmp_path / "sessions.db")
     manager = SessionManager(tmp_path / "workspace")
     session_key = "akashic:cleanup"
     manager.save(manager.get_or_create(session_key))
@@ -182,7 +183,7 @@ async def test_worker_error_before_turn_owner_keeps_handoff_and_releases_admissi
 
     # 2. session admission 恰一次释放，同一会话可再次取得。
     assert (
-        store._conn.execute(
+        manager.admissions._conn.execute(
             "SELECT 1 FROM session_admissions WHERE admission_id = ?",
             (admission_id,),
         ).fetchone()
@@ -204,7 +205,7 @@ async def test_worker_error_before_turn_owner_keeps_handoff_and_releases_admissi
 async def test_mobile_attachment_acquire_failure_releases_session_admission(
     tmp_path: Path,
 ) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = InboundHandoffStore(tmp_path / "sessions.db")
     manager = SessionManager(tmp_path / "workspace")
     session_key = "akashic:missing-attachment"
     manager.save(manager.get_or_create(session_key))
@@ -245,7 +246,7 @@ async def test_mobile_attachment_acquire_failure_releases_session_admission(
 
     assert len(store.list_inbound_handoffs()) == 1
     assert (
-        store._conn.execute(
+        manager.admissions._conn.execute(
             "SELECT 1 FROM session_admissions WHERE admission_id = ?",
             (admission_id,),
         ).fetchone()
@@ -261,7 +262,7 @@ async def test_mobile_attachment_acquire_failure_releases_session_admission(
 async def test_persistent_cleanup_failure_is_bounded_and_shutdown_cancels_retry(
     tmp_path: Path,
 ) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = InboundHandoffStore(tmp_path / "sessions.db")
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     item = InboundMessage(
@@ -307,7 +308,7 @@ async def test_cleanup_finalize_failure_is_fatal_and_observable(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = InboundHandoffStore(tmp_path / "sessions.db")
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
     item = InboundMessage(
@@ -695,8 +696,8 @@ async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
     session_key = "akashic:delete-before-reserve"
     manager.save(manager.get_or_create(session_key))
     bus = MessageBus()
-    bus.bind_durable_inbound_store(manager.control_store)
-    bus.bind_mobile_session_admission_owner(manager)
+    bus.bind_durable_inbound_store(manager.inbound_store)
+    bus.bind_mobile_session_admission_owner(manager.admissions)
     envelope, _ = _v3_inbound(
         channel="akashic",
         message_id="client-delete-before-reserve",
@@ -722,9 +723,9 @@ async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
 
     with pytest.raises(KeyError, match="session 不存在"):
         await reserving
-    assert manager.control_store.list_inbound_handoffs() == []
+    assert manager.inbound_store.list_inbound_handoffs() == []
     assert (
-        manager.control_store._conn.execute(
+        manager.admissions._conn.execute(
             "SELECT 1 FROM session_admissions WHERE session_key = ?",
             (session_key,),
         ).fetchone()
@@ -741,10 +742,10 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
     manager = SessionManager(tmp_path / "workspace")
     session_key = "akashic:close-before-reserve-lock"
     manager.save(manager.get_or_create(session_key))
-    store = manager.control_store
+    store = manager.inbound_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
-    bus.bind_mobile_session_admission_owner(manager)
+    bus.bind_mobile_session_admission_owner(manager.admissions)
     envelope, _ = _v3_inbound(
         channel="akashic",
         message_id="client-close-before-reserve-lock",
@@ -777,7 +778,7 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
     assert store.list_inbound_handoffs() == []
     assert bus._mobile_v3_admissions == {}
     assert (
-        store._conn.execute(
+        manager.admissions._conn.execute(
             "SELECT 1 FROM session_admissions WHERE session_key = ?",
             (session_key,),
         ).fetchone()
@@ -795,10 +796,12 @@ async def test_channel_worker_rejects_image_budget_before_acquiring_leases(
     from bootstrap.passive_worker import PassiveMessageWorker
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
 
-    session_store = SessionStore(tmp_path / "artifact-sessions.db")
+    from session.artifact_store import ArtifactStore
+
+    session_store = ArtifactStore(tmp_path / "artifact-sessions.db")
     artifact_store = ChannelAttachmentArtifactStore(
         workspace=tmp_path,
-        session_store=session_store,
+        metadata_store=session_store,
     )
     image_path = tmp_path / "source.png"
     Image.new("RGB", (2, 2), (255, 0, 0)).save(image_path)

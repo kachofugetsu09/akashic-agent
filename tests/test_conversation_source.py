@@ -203,3 +203,67 @@ async def test_stop_and_duplicate_stop_wait_for_cleanup_without_cancelling_it_tw
         assert (await repeated).message_id == "stop"
         assert task.done
         assert [m.message_id for m in log.reader("s").snapshot()] == ["u1", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_completion_waits_for_human_reply_and_cancellation_does_not_cancel_human(tmp_path):
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def human(task, reader, writer):
+        entered.set()
+        await release.wait()
+        return writer.append("human-answer", Output((), "complete"))
+    async with source(tmp_path, human) as (conversation, log, writer, program):
+        await conversation.accept("human", Input(()))
+        task = await conversation.start(program)
+        await entered.wait()
+        waiting = asyncio.Event()
+        async def report(task, reader):
+            pytest.fail("completion cannot start while human reply is active")
+        async def complete():
+            waiting.set()
+            return await conversation.complete(report)
+        pending = asyncio.create_task(complete())
+        await waiting.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert task.active
+        release.set()
+        await task.join()
+        assert log.reader("s").get("human-answer") is not None
+
+
+@pytest.mark.asyncio
+async def test_new_human_input_revokes_completion_then_result_resumes_after_reply(tmp_path):
+    entered, revoked, drain = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    attempts = []
+    async def human(task, reader, writer):
+        return writer.append("human-answer", Output((), "complete"))
+    async with source(tmp_path, human) as (conversation, log, writer, program):
+        writer(Output).append("previous-answer", Output((), "complete"))
+        async def report(task, reader):
+            output = writer(Output, source="background:one")
+            task.on_close(output.expire)
+            attempts.append(output)
+            if len(attempts) == 1:
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    revoked.set()
+                    await drain.wait()
+            assert reader.get("human-answer") is not None
+            return output.append("report", Output((ContentPart("text", "result"),), "complete"))
+        pending = asyncio.create_task(conversation.complete(report))
+        await entered.wait()
+        await conversation.accept("human", Input(()))
+        await revoked.wait()
+        with pytest.raises(WriterExpired):
+            attempts[0].append("late", Output((), "complete"))
+        start = asyncio.create_task(conversation.start(program))
+        drain.set()
+        await (await start).join()
+        result = await asyncio.wait_for(pending, 3)
+        assert result.message_id == "report"
+        assert [m.message_id for m in log.reader("s").snapshot()] == ["previous-answer", "human", "human-answer", "report"]
+        assert len(attempts) == 2

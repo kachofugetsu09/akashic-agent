@@ -144,3 +144,82 @@ async def test_search_requirement_cannot_be_bypassed_by_configuration(tmp_path):
                                        open=unused, always_on=True, requires_search=True)
     finally:
         await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_fixed_menu_uses_original_directory_after_targets_are_uninstalled(tmp_path):
+    sources = tmp_path / "plugins"
+    write_plugins(sources)
+    shutil.copytree(Path(__file__).parents[1] / "plugins/tool_search", sources / "tool_search",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    log = MessageLog(tmp_path / "sessions.db")
+    host = manager(tmp_path, [sources])
+    try:
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            original = ToolMenu(catalog, bindings, None, None, names=("example", "tool_search"),
+                                reader=log.reader("s"), source="chat")
+            _ = original.schemas
+            search = original.bind("tool_search")
+            candidate = bindings.describe(search, TOOLS)["candidates"]["example"]["binding_id"]
+            identities = {"example": candidate, "tool_search": search}
+            with pytest.raises(ValueError, match="配置入口"):
+                catalog.bind("example", bindings, configuration={})
+            assert catalog.bind("example", bindings, configuration=None) == candidate
+            restricted = ToolMenu(catalog, bindings, None, None, names=("tool_search",),
+                                  reader=log.reader("s"), source="chat")
+            _ = restricted.schemas
+            empty_search = restricted.bind("tool_search")
+        await host.terminate_all()
+        for name in ("target", "prepare", "tool_search"):
+            shutil.rmtree(sources / name)
+        host = manager(tmp_path, [sources])
+        await host.load_all()
+        bindings = Bindings(log, host._archive, host.open_binding)
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            catalog = snapshot.composition_root.context.require(TOOLS)
+            assert catalog.descriptions() == ()
+            with pytest.raises(ValueError, match="完整对应"):
+                ToolMenu(catalog, bindings, None, None, names=tuple(identities), reader=log.reader("s"),
+                         source="chat", fixed_bindings={"example": candidate})
+            with pytest.raises(ValueError, match="候选与允许目录"):
+                ToolMenu(catalog, bindings, None, None, names=tuple(identities), reader=log.reader("s"),
+                         source="chat", fixed_bindings={**identities, "tool_search": empty_search})
+            log.writer("conflict", author="assistant", source="chat", body_types=(Output,), content={},
+                       check_call=lambda call: None).append("foreign-search", Output((ToolCall(empty_search, {}),), "continue"))
+            conflict = ToolMenu(catalog, bindings, None, None, names=tuple(identities),
+                                reader=log.reader("conflict"), source="chat", fixed_bindings=identities)
+            with pytest.raises(PermissionError, match="未闭合调用"):
+                _ = conflict.schemas
+            fixed = ToolMenu(catalog, bindings, None, None, names=tuple(identities),
+                             reader=log.reader("s"), source="chat", fixed_bindings=identities)
+            identities.clear()  # 调用者后改目录不改变已建立的程序。
+            assert [row["function"]["name"] for row in fixed.schemas] == ["tool_search"]
+            assert fixed.bind("tool_search") == search
+            async with open_tool(bindings, search) as target:
+                selected = await target.invoke("search", await target.prepare({
+                    "query": "select:example", "allowed_risk": ["read-write"]}))
+            log.writer("s", author="user", source="chat", body_types=(Input,), content={}).append("u", Input(()))
+            log.writer("s", author="assistant", source="chat", body_types=(Output,), content={},
+                       check_call=fixed.check_call).append("search", Output((ToolCall(search, {}),), "continue"))
+            ref = CallRef("search", 0)
+            log.writer("s", author="tool", source="chat", body_types=(ToolResult,), call_ref=ref,
+                       content={"tool.selection": lambda part: fixed.check_selection(ref, part)}).append(
+                           "selected", ToolResult(ref, "success", (selected.parts[-1],)))
+            assert {row["function"]["name"] for row in fixed.schemas} == {"example", "tool_search"}
+            assert fixed.bind("example") == candidate
+            log.writer("s", author="assistant", source="chat", body_types=(Output,), content={},
+                       check_call=fixed.check_call).append("call", Output((ToolCall(candidate, {"value": "x"}),), "continue"))
+            log.writer("s", author="assistant", source="chat", body_types=(Output,), content={}).append(
+                "complete", Output((), "complete"))
+            # 闭段预载也只能使用固定目录，不能重新查当前插件。
+            assert {row["function"]["name"] for row in fixed.schemas} == {"example", "tool_search"}
+            assert fixed.bind("example") == candidate
+            async with open_tool(bindings, candidate) as target:
+                result = await target.invoke("fixed", await target.prepare({"value": "input"}))
+                assert result.parts[0].value == "A:restore:input"
+    finally:
+        await host.terminate_all()
+        log.close()

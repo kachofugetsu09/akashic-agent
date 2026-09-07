@@ -256,7 +256,10 @@ docs/
 │   ├── 0052-compaction-and-markdown-memory-are-ordinary-plugins.md
 │   ├── 0053-plugins-declare-managed-workloads.md
 │   ├── 0054-model-sync-refreshes-public-capabilities.md
-│   └── 0055-host-bridge-uses-typed-protobuf.md
+│   ├── 0055-host-bridge-uses-typed-protobuf.md
+│   ├── 0056-plugin-update-crashes-return-to-stable.md
+│   ├── 0057-internal-source-messages.md
+│   └── 0058-scheduler-keeps-internal-messages.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-channel-client-adapters.md
@@ -326,3 +329,5 @@ docs/
 4. `NOW.md` 没有已完成流水账。
 5. proposed 设计、代码事实和维护者已确认意图有明确标签。
 6. 历史 handbook 如果与当前实现冲突，入口处有醒目提示或已经完成勘误。
+
+- [0057 · Subagent 与 Wake 保留完整内部消息](decisions/0057-internal-source-messages.md)：独立内部 Session 的保存、展示、投递和学习边界。

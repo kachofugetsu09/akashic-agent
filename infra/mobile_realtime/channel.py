@@ -9,12 +9,14 @@ import sqlite3
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
+from agent.plugin_composition.models import ModelCallStats
+from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 
 from agent.plugin_composition.channels import (
     AttachmentKind,
@@ -60,6 +62,10 @@ from agent.plugins.mobile_ui import (
 )
 from agent.control.models import TurnStatus
 from agent.model_runtime.session_selection import read_session_model_selection
+from session.log import InvalidPage, MessageCatalog, MessageConflict, MessageReader
+from session.message import ContentPart, Input
+from bus.queue import MessageBus
+from infra.channels.base import AttachmentStore
 from agent.plugin_composition import ModelCatalogSnapshot
 from agent.plugins.model_catalog import (
     ModelCatalogUnavailable,
@@ -72,7 +78,8 @@ from infra.mobile_realtime.runtime_inspection import (
     RuntimeInspectionService,
 )
 from infra.channels.contract import ChannelContext
-from infra.channels.reply_context import build_reply_inbound_text
+from infra.channels.message_view import message_rows, session_row
+from infra.mobile_realtime.message_view import message_chunks, message_json as _message_json
 from infra.mobile_realtime.attachments import (
     AttachmentChunk,
     AttachmentRequestError,
@@ -117,6 +124,7 @@ _EPHEMERAL_QUERY_COMMAND_TYPES = frozenset(
     {
         "command.list",
         "model.catalog.get",
+        "model.call.get",
         "runtime.capability.list",
         "runtime.document.list",
         "scheduler.job.list",
@@ -430,8 +438,12 @@ class MobileRealtimeChannel:
     v3_inbound_identity = InboundIdentity.PROVIDER_MESSAGE_ID
 
     def __init__(self, runtime: MobileGatewayRuntime) -> None:
+        self._messages: MessageCatalog | None = None
+        self.reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
         self._runtime = runtime
         self._ctx: ChannelContext | None = None
+        self._input_bus: MessageBus | None = None
+        self._upload_store: AttachmentStore | None = None
         self._processing_commands: set[tuple[str, str]] = set()
         self._receipt_completion_failures: set[tuple[str, str]] = set()
         self._active_turn_ids: dict[str, str] = {}
@@ -451,6 +463,7 @@ class MobileRealtimeChannel:
         self._model_catalog_reader: (
             Callable[[], Awaitable[ModelCatalogSnapshot]] | None
         ) = None
+        self._model_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None
         self._channel_attachment_store: ChannelAttachmentArtifactStore | None = None
         self._v3_inbound_runtime = _MobileInboundRuntime()
 
@@ -471,6 +484,11 @@ class MobileRealtimeChannel:
             raise RuntimeError("Runtime inspection service 已绑定")
         self._runtime_inspection = service
 
+    def bind_model_stats(self, reader: Callable[[str], Awaitable[ModelCallStats]]) -> None:
+        if self._model_stats_reader is not None:
+            raise RuntimeError("Model stats reader 已绑定")
+        self._model_stats_reader = reader
+
     def bind_model_catalog(
         self,
         reader: Callable[[], Awaitable[ModelCatalogSnapshot]],
@@ -480,6 +498,16 @@ class MobileRealtimeChannel:
         if self._model_catalog_reader is not None:
             raise RuntimeError("Model catalog reader 已绑定")
         self._model_catalog_reader = reader
+
+    def bind_messages(
+        self, messages: MessageCatalog,
+        reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+    ) -> None:
+        """绑定宿主只读日志；Gateway 不加载旧 Session 对象或取得写权限。"""
+        if self._messages is not None:
+            raise RuntimeError("Mobile MessageCatalog 已绑定")
+        self._messages = messages
+        self.reply_status = reply_status
 
     def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
         """绑定读取当前插件快照的移动 UI 提供器。"""
@@ -517,75 +545,39 @@ class MobileRealtimeChannel:
         )
         self._mobile_ui_catalog_identity = identity
 
-    async def start(self, ctx: ChannelContext) -> None:
-        """注册移动渠道的出站、流事件和主动推送入口。"""
-
-        if self._ctx is not None:
+    async def start(
+        self, ctx: ChannelContext,
+    ) -> None:
+        """启动上传和输入恢复；消息及回复状态由已绑定的窄读取端口提供。"""
+        if self._input_bus is not None:
             raise RuntimeError("MobileRealtimeChannel 已启动")
+        self._require_messages()
+        bus = ctx.bus
+        attachment_store = ctx.attachment_store
         self._ctx = ctx
-        bind_recoverer = getattr(ctx.bus, "bind_mobile_channel_inbound_recoverer", None)
-        if callable(bind_recoverer):
-            bind_recoverer(self._recover_v3_handoff)
+        self._input_bus = bus
+        self._upload_store = attachment_store
+        bus.bind_mobile_channel_inbound_recoverer(self._recover_v3_handoff)
         self._attachments = AttachmentTransferService(
-            self._runtime.storage,
-            ctx.attachment_store,
+            self._runtime.storage, attachment_store,
             max_attachment_bytes=self._runtime.config.max_attachment_mb * 1024 * 1024,
         )
+        for receipt in self._runtime.storage.pending_message_rejections():
+            if receipt.session_id is None:
+                raise RuntimeError("Mobile 输入失败收据缺少 Session")
+            await self._settle_message_rejection(
+                device_id=receipt.device_id, command_id=receipt.command_id,
+                session_id=receipt.session_id,
+            )
         self._reconcile_committed_attachment_imports()
         await self._resume_prepared_attachment_imports()
-        _ = ctx.event_bus.on(TurnStarted, self._on_turn_started)
-        _ = ctx.event_bus.on(StreamDeltaReady, self._on_stream_delta)
-        _ = ctx.event_bus.on(ToolCallStarted, self._on_tool_call_started)
-        _ = ctx.event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
-        _ = ctx.event_bus.on(TurnOutputCompleted, self._on_output_completed)
-        _ = ctx.event_bus.on(TurnCommitted, self._on_turn_committed)
 
     async def stop(self) -> None:
-        """先发布活动 turn 的终态，再释放移动渠道运行态。"""
-
-        # 1. 计划停机必须把已向手机公开的活动 turn 收敛为终态；
-        #    每个 turn 都走同一 owner 的终态 barrier，避免与 in-flight final 竞态。
-        store = self._require_ctx().session_manager.control_store
-        for session_id, turn_id in tuple(self._active_turn_ids.items()):
-            turn = store.read_turn(turn_id)
-            if turn is not None and turn.status is TurnStatus.COMPLETED:
-                continue
-            payload = self._interrupt_payload(
-                session_id,
-                turn_id,
-                status=(
-                    turn.status.value
-                    if turn is not None and turn.status.is_terminal
-                    else TurnStatus.INTERRUPTED.value
-                ),
-                message="服务端正在维护，本轮生成已中断",
-                reason="runtime_shutdown",
-            )
-            _ = await self._publish_terminal(
-                session_id=session_id,
-                turn_id=turn_id,
-                event_type="turn.interrupted",
-                payload=payload,
-            )
-
-        # 2. 终态已持久化后再取消批处理并清理进程内状态
-        for batch in self._delta_batches.values():
-            _ = batch.timer.cancel()
-        if self._delta_batches:
-            _ = await asyncio.gather(
-                *(batch.timer for batch in self._delta_batches.values()),
-                return_exceptions=True,
-            )
-        self._delta_batches.clear()
-        self._delta_locks.clear()
-        self._turn_terminals.clear()
-        self._delta_failure = None
+        """输入 binding 排空后释放本地上传与回执状态。"""
         self._attachments = None
-        self._ctx = None
-        self._active_turn_ids.clear()
-        self._process_turns.clear()
+        self._upload_store = None
+        self._input_bus = None
         self._send_received_at.clear()
-        self._turn_started_at.clear()
         self._processing_commands.clear()
         self._receipt_completion_failures.clear()
 
@@ -656,11 +648,19 @@ class MobileRealtimeChannel:
                 str(error),
             ) from error
         if not created:
-            replay = self._recover_message_send_receipt(
+            replay = await self._recover_message_send_receipt(
                 device_id=device_id,
                 frame=frame,
                 receipt=receipt,
             )
+            final_receipt = self._runtime.storage.read_command(device_id=device_id, command_id=frame.id)
+            if final_receipt is None:
+                raise RuntimeError("已占用的 Mobile 命令收据丢失")
+            if isinstance(frame, MessageSendCommand) and final_receipt.status == "completed" and replay.type == "message.send.error":
+                await self._settle_message_rejection(
+                    device_id=device_id, command_id=frame.id,
+                    session_id=self._normalize_session_id(frame.session_id),
+                )
             if (
                 isinstance(frame, AttachmentDownloadCommand)
                 and replay.type == "attachment.download.ok"
@@ -705,6 +705,11 @@ class MobileRealtimeChannel:
                 self._receipt_completion_failures.add(command_key)
                 raise
             stored = _reply_from_receipt(completed)
+            if isinstance(frame, MessageSendCommand) and stored.type == "message.send.error":
+                await self._settle_message_rejection(
+                    device_id=device_id, command_id=frame.id,
+                    session_id=self._normalize_session_id(frame.session_id),
+                )
             return CommandReply(
                 type=stored.type,
                 payload=stored.payload,
@@ -714,6 +719,17 @@ class MobileRealtimeChannel:
             )
         finally:
             self._processing_commands.discard(command_key)
+
+    async def _settle_message_rejection(
+        self, *, device_id: str, command_id: str, session_id: str,
+    ) -> None:
+        """失败收据保留到 Bus 结算完成；取消和跨库失败均可从原收据恢复。"""
+        await self._require_input_bus().settle_rejected_mobile_input(
+            session_key=session_id, client_message_id=command_id,
+        )
+        self._runtime.storage.complete_rejected_message_handoff(
+            device_id=device_id, command_id=command_id,
+        )
 
     async def _execute_command_reply(
         self,
@@ -725,6 +741,12 @@ class MobileRealtimeChannel:
 
         try:
             reply = await self._execute_command(device_id=device_id, frame=frame)
+        except MessageConflict as error:
+            reply = CommandReply(
+                type=f"{frame.type}.error",
+                payload={"code": "message_conflict", "message": str(error)},
+                session_id=frame.session_id, turn_id=frame.turn_id,
+            )
         except (MobileCommandError, RuntimeInspectionError) as error:
             reply = CommandReply(
                 type=f"{frame.type}.error",
@@ -767,50 +789,35 @@ class MobileRealtimeChannel:
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
 
     def prepare_message_content(self, frame: GenericCommand) -> dict[str, object]:
-        """校验正文下载请求并返回当前不可变内容描述。"""
-
-        # 1. 请求必须精确引用 history.page 宣告的正文版本
-        _expect_keys(frame.payload, {"message_id", "byte_length", "sha256"})
-        session_id = self._require_mobile_session(frame.session_id)
-        message_id = _expect_nonempty_string(frame.payload["message_id"], "message_id")
-        byte_length = _expect_nonnegative_int(
-            frame.payload["byte_length"], "byte_length"
-        )
-        sha256 = _expect_sha256(frame.payload["sha256"], "sha256")
-
-        # 2. 重新读取 SessionDB 权威正文，拒绝客户端猜测或过期 manifest
+        """校验 v2 完整 Message 下载请求及其不可变表示摘要。"""
+        _expect_message_log_version(frame.payload)
+        _expect_keys(frame.payload, {"message_log_version", "message_id", "byte_length", "sha256"})
+        session_id = self._normalize_session_id(frame.session_id)
+        message_id = _expect_nonempty_string(frame.payload.get("message_id"), "message_id")
+        byte_length = _expect_nonnegative_int(frame.payload.get("byte_length"), "byte_length")
+        sha256 = _expect_sha256(frame.payload.get("sha256"), "sha256")
         content = self.read_message_content(
-            session_id=session_id,
-            message_id=message_id,
-            byte_length=byte_length,
-            sha256=sha256,
+            session_id=session_id, message_id=message_id,
+            byte_length=byte_length, sha256=sha256,
         )
-        return {
-            "message_id": message_id,
-            "byte_length": len(content),
-            "sha256": sha256,
-        }
+        return {"version": 2, "message_id": message_id, "byte_length": len(content),
+                "sha256": sha256, "encoding": "utf-8", "media_type": "application/json"}
 
     def read_message_content(
-        self,
-        *,
-        session_id: str,
-        message_id: str,
-        byte_length: int,
-        sha256: str,
+        self, *, session_id: str, message_id: str, byte_length: int, sha256: str,
     ) -> bytes:
-        """从 SessionDB 读取并核对票据绑定的完整 UTF-8 正文。"""
-
-        message = self._require_ctx().session_manager.control_store.get_message(
-            message_id
-        )
-        if message is None or message["session_key"] != session_id:
-            raise MobileCommandError("message_not_found", "消息正文不存在")
-        content = str(message["content"]).encode("utf-8")
+        """读取与分页相同的完整展示 JSON；不暴露私有 binding 或模型续传数据。"""
+        reader = self._require_messages().reader(session_id)
+        message = reader.get(message_id)
+        if message is None:
+            raise MobileCommandError("message_not_found", "消息不存在")
+        page = reader.read_page(after_seq=message.seq - 1, through_seq=message.seq, limit=1)
+        rows = message_rows(page)
+        if not rows:
+            raise MobileCommandError("message_not_found", "消息不存在")
+        content = _message_json(rows[0])
         if len(content) != byte_length or hashlib.sha256(content).hexdigest() != sha256:
-            raise MobileCommandError(
-                "content_changed", "消息正文与历史 manifest 不一致"
-            )
+            raise MobileCommandError("content_changed", "消息与历史 manifest 不一致")
         return content
 
     async def cancel_plugin_ui_device(self, device_id: str) -> None:
@@ -821,7 +828,7 @@ class MobileRealtimeChannel:
             await scheduler.cancel_device(device_id)
         _ = self._mobile_ui_hot_connections.pop(device_id, None)
 
-    def _recover_message_send_receipt(
+    async def _recover_message_send_receipt(
         self,
         *,
         device_id: str,
@@ -849,14 +856,15 @@ class MobileRealtimeChannel:
             )
             return _reply_from_receipt(unknown)
 
-        # 2. 只有同一 client_message_id 已落库时，才能确认副作用已完成
+        # 2. 未完成的 handoff 仍由 Bus 恢复；Message ID 本身不能证明是同一请求。
         session_id = self._normalize_session_id(frame.session_id)
-        message = (
-            self._require_ctx().session_manager.control_store.get_message_by_client_id(
-                session_id,
-                frame.payload.client_message_id,
-            )
-        )
+        if self._require_input_bus().has_pending_mobile_handoff(
+            session_key=session_id, client_message_id=frame.payload.client_message_id,
+        ):
+            return CommandReply(type="message.send.error", payload={
+                "code": "command_in_progress", "message": "该命令已进入持久化队列，请等待原命令 ID 的最终收据",
+            })
+        message = self._require_messages().reader(session_id).get(frame.payload.client_message_id)
         if message is None:
             if (device_id, frame.id) in self._processing_commands:
                 return CommandReply(
@@ -864,17 +872,6 @@ class MobileRealtimeChannel:
                     payload={
                         "code": "command_in_progress",
                         "message": "该命令仍在执行，请等待原命令 ID 的最终收据",
-                    },
-                )
-            if self._require_ctx().bus.has_pending_mobile_handoff(
-                session_key=session_id,
-                client_message_id=frame.payload.client_message_id,
-            ):
-                return CommandReply(
-                    type=f"{receipt.command_type}.error",
-                    payload={
-                        "code": "command_in_progress",
-                        "message": "该命令已进入持久化队列，请等待原命令 ID 的最终收据",
                     },
                 )
             if (device_id, frame.id) in self._receipt_completion_failures:
@@ -889,39 +886,20 @@ class MobileRealtimeChannel:
                 frame=frame,
                 session_id=session_id,
             )
-        if message["role"] != "user":
-            raise RuntimeError(
-                f"client_message_id 绑定了非用户消息: {frame.payload.client_message_id}"
+        # 3. 使用原请求再次进入唯一 writer；幂等接纳核对完整正文，冲突仍得到明确拒绝。
+        key = (device_id, frame.id)
+        self._processing_commands.add(key)
+        try:
+            reply = await self._execute_command_reply(device_id=device_id, frame=frame)
+            completed = self._runtime.storage.complete_command(
+                device_id=device_id, command_id=frame.id, reply_type=reply.type,
+                reply_payload_json=_message_json(reply.payload).decode("utf-8"),
+                session_id=reply.session_id, turn_id=reply.turn_id, completed_at=_utc_now(),
             )
-
-        self._mark_attachment_imports_bound(
-            session_id=session_id,
-            client_message_id=frame.payload.client_message_id,
-            message_id=cast(str, message["id"]),
-        )
-
-        # 3. 原子补写成功收据，后续重放继续得到相同 ACK
-        completed = self._runtime.storage.complete_command(
-            device_id=device_id,
-            command_id=frame.id,
-            reply_type="message.send.ok",
-            reply_payload_json=json.dumps(
-                {
-                    "accepted": True,
-                    "client_message_id": frame.payload.client_message_id,
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-                allow_nan=False,
-            ),
-            session_id=session_id,
-            turn_id=None,
-            completed_at=_utc_now(),
-        )
-        self._receipt_completion_failures.discard((device_id, frame.id))
-        self._processing_commands.discard((device_id, frame.id))
-        return _reply_from_receipt(completed)
+            self._receipt_completion_failures.discard(key)
+            return _reply_from_receipt(completed)
+        finally:
+            self._processing_commands.discard(key)
 
     def _complete_interrupted_message_send(
         self,
@@ -1000,15 +978,41 @@ class MobileRealtimeChannel:
         await self._v3_inbound_runtime.wait_quiescent()
 
     async def _recover_v3_handoff(self, raw: RawInbound) -> bool:
-        """Replay one durable Mobile handoff through the current formal binding only."""
-
-        if raw.message.channel != self.name:
-            raise RuntimeError("v3 Mobile handoff channel 不一致")
-        if raw.message.metadata.get("mobile_v3_handoff") is not True:
-            raise RuntimeError("v3 Mobile handoff 缺少 exact marker")
+        """先读取持久命令结果；未决输入才交给当前 conversation binding。"""
+        metadata = raw.message.metadata
+        device_id, command_id = metadata["device_id"], metadata["client_request_id"]
+        if not isinstance(device_id, str) or not isinstance(command_id, str):
+            raise RuntimeError("Mobile handoff 缺少命令身份")
+        if (device_id, command_id) in self._processing_commands:
+            return True
+        receipt = self._runtime.storage.read_command(device_id=device_id, command_id=command_id)
+        if receipt is None:
+            raise RuntimeError("Mobile handoff 缺少持久命令收据")
+        session_id = cast(str, metadata["session_key_override"])
+        if receipt.status == "completed" and receipt.reply_type == "message.send.error":
+            await self._settle_message_rejection(device_id=device_id, command_id=command_id, session_id=session_id)
+            return True
         ports, task = self._v3_inbound_runtime.capture()
         try:
-            return await self._v3_inbound_runtime.recover(raw, ports=ports)
+            try:
+                accepted = await self._v3_inbound_runtime.recover(raw, ports=ports)
+                if accepted:
+                    self._runtime.storage.claim_session(
+                        device_id=device_id, session_id=session_id, created_at=_utc_now(),
+                    )
+                    self._mark_attachment_imports_bound(
+                        session_id=session_id, client_message_id=raw.message_id,
+                        message_id=raw.message_id,
+                    )
+                return accepted
+            except MessageConflict as error:
+                self._runtime.storage.complete_command(
+                    device_id=device_id, command_id=command_id, reply_type="message.send.error",
+                    reply_payload_json=_message_json({"code": "message_conflict", "message": str(error)}).decode("utf-8"),
+                    session_id=session_id, turn_id=None, completed_at=_utc_now(),
+                )
+                await self._settle_message_rejection(device_id=device_id, command_id=command_id, session_id=session_id)
+                return True
         finally:
             self._v3_inbound_runtime.release_capture(task)
 
@@ -1397,6 +1401,18 @@ class MobileRealtimeChannel:
             )
         if frame.type == "model.catalog.get":
             return await self._model_catalog(frame)
+        if frame.type == "model.call.get":
+            _expect_keys(frame.payload, {"call_record_id"})
+            call_id = _expect_nonempty_string(frame.payload["call_record_id"], "call_record_id")
+            if self._model_stats_reader is None:
+                raise MobileCommandError("model_stats_unavailable", "模型调用统计未接入")
+            try:
+                stats = await self._model_stats_reader(call_id)
+            except KeyError as error:
+                raise MobileCommandError("model_call_not_found", "模型调用不存在") from error
+            except ModelControlUnavailable as error:
+                raise MobileCommandError("model_stats_unavailable", str(error)) from error
+            return CommandReply(type="model.call.get.ok", payload=asdict(stats))
         if frame.type == "message.send":
             return await self._send_message(device_id, frame)
         if frame.type == "turn.stop":
@@ -1488,13 +1504,10 @@ class MobileRealtimeChannel:
             }
             for runtime in project_chat_runtimes(current)
         ]
-        selection = (
-            read_session_model_selection(
-                self._require_ctx().session_manager.get_existing(session_id).metadata
-            )
-            if self._require_ctx().session_manager.session_exists(session_id)
-            else None
-        )
+        if self._messages is None:
+            raise MobileCommandError("session_log_unavailable", "会话日志尚未绑定")
+        metadata = self._messages.reader(session_id).metadata()
+        selection = read_session_model_selection(metadata if metadata is not None else {})
         return CommandReply(
             type="model.catalog.get.ok",
             session_id=session_id,
@@ -1846,69 +1859,35 @@ class MobileRealtimeChannel:
         )
 
     async def _list_sessions(
-        self,
-        device_id: str,
-        frame: GenericCommand,
+        self, device_id: str, frame: GenericCommand,
     ) -> CommandReply:
-        """发布全部移动会话索引，供手机按需分页拉取缺失历史。"""
-
-        # 1. 所有已认证手机共享 mobile 渠道的完整会话空间
-        _expect_keys(frame.payload, {"history_snapshot_version"})
-        history_snapshot_version = frame.payload.get("history_snapshot_version")
-        if history_snapshot_version is not None and (
-            not isinstance(history_snapshot_version, int)
-            or isinstance(history_snapshot_version, bool)
-            or history_snapshot_version != 1
-        ):
-            raise MobileCommandError(
-                "invalid_payload",
-                "history_snapshot_version 仅支持 1",
+        """分页读取共享目录；标题由 Mobile 展示层从首条消息生成。"""
+        _expect_message_log_version(frame.payload)
+        _expect_keys(frame.payload, {"message_log_version", "page_size", "after_time", "after_key"})
+        page_size = _message_page_size(frame.payload)
+        after = None
+        if "after_time" in frame.payload or "after_key" in frame.payload:
+            after = (_expect_nonempty_string(frame.payload.get("after_time"), "after_time"),
+                     _expect_nonempty_string(frame.payload.get("after_key"), "after_key"))
+        try:
+            page = self._require_messages().sessions(
+                prefix=f"{self.name}:", visibility="listed", after=after, limit=page_size,
             )
-        ctx = self._require_ctx()
-        session_rows = {
-            item["key"]: item for item in ctx.session_manager.list_sessions()
-        }
-        session_ids = tuple(
-            session_id
-            for session_id in session_rows
-            if session_id.startswith(f"{self.name}:")
-        )
-
-        # 2. 补充抽屉标题和历史消息总数
+        except InvalidPage as error:
+            raise MobileCommandError("invalid_pagination", str(error)) from error
         items: list[dict[str, object]] = []
-        for session_id in session_ids:
-            session = session_rows.get(session_id)
-            if session is None:
-                raise RuntimeError(
-                    f"已绑定移动会话在 session store 中不存在: {session_id}"
-                )
-            title, dashboard_total = self._mobile_session_title(session_id)
-            item: dict[str, object] = {
-                "session_id": session_id,
-                "title": title,
-                "updated_at": _format_server_timestamp(
-                    session["updated_at"],
-                    field=f"sessions.updated_at:{session_id}",
-                ),
-                "message_count": dashboard_total,
-            }
-            if history_snapshot_version == 1:
-                snapshot_total, snapshot_max_seq = (
-                    ctx.session_manager.control_store.mobile_history_snapshot(
-                        session_id
-                    )
-                )
-                item["message_count"] = snapshot_total
-                item["snapshot_max_seq"] = snapshot_max_seq
-            items.append(item)
-
-        # 3. 索引也走 durable event，断线后仍会重放
-        _ = await self._runtime.publish_event(
-            event_type="session.list",
-            device_id=device_id,
-            payload={"items": cast(list[object], items)},
-        )
-        return CommandReply(type="session.list.ok", payload={"total": len(items)})
+        for entry in page.items:
+            row = session_row(entry)
+            text = cast(str, row["first_message_content"]).strip()
+            items.append({"session_id": entry.session_id,
+                          "title": text.split("\n", 1)[0][:32] if text else "新对话",
+                          "updated_at": row["updated_at"], "message_count": entry.message_count,
+                          "head_seq": entry.head_seq})
+        payload: dict[str, object] = {"version": 2, "items": items, "total": page.total,
+                   "next_cursor": None if page.next_cursor is None else {
+                       "updated_at": page.next_cursor[0], "session_id": page.next_cursor[1]}}
+        _ = await self._runtime.publish_event(event_type="session.list", device_id=device_id, payload=payload)
+        return CommandReply(type="session.list.ok", payload={key: value for key, value in payload.items() if key != "items"})
 
     async def _open_session(
         self,
@@ -1929,89 +1908,44 @@ class MobileRealtimeChannel:
         )
 
     async def _get_history(
-        self,
-        device_id: str,
-        frame: GenericCommand,
+        self, device_id: str, frame: GenericCommand,
     ) -> CommandReply:
-        session_id = self._require_mobile_session(frame.session_id)
-        query = _history_query_payload(frame.payload)
-        store = self._require_ctx().session_manager.control_store
-        if query["content_ref_version"] == 1:
-            snapshot_max_seq = query["snapshot_max_seq"]
-            if snapshot_max_seq is None:
-                total, snapshot_max_seq = store.mobile_history_snapshot(session_id)
-            else:
-                _, current_max_seq = store.mobile_history_snapshot(session_id)
-                if snapshot_max_seq > current_max_seq:
-                    raise MobileCommandError(
-                        "invalid_snapshot",
-                        "历史快照高水位超过服务端当前序列",
-                    )
-                total = store.mobile_history_count_through(session_id, snapshot_max_seq)
-            after_seq = cast(int, query["after_seq"])
-            snapshot_max_seq = cast(int, snapshot_max_seq)
-            items = store.list_mobile_history_page(
-                session_key=session_id,
-                after_seq=after_seq,
-                through_seq=snapshot_max_seq,
-                page_size=cast(int, query["page_size"]),
+        """沿固定 Message 前缀同步；任何消息内容都不因帧预算而截断。"""
+        _expect_message_log_version(frame.payload)
+        _expect_keys(frame.payload, {"message_log_version", "page_size", "after_seq", "through_seq"})
+        session_id = self._normalize_session_id(frame.session_id)
+        page_size = _message_page_size(frame.payload)
+        after_seq = _message_cursor(frame.payload.get("after_seq", -1), "after_seq")
+        through_seq = None if "through_seq" not in frame.payload else _message_cursor(frame.payload["through_seq"], "through_seq")
+        try:
+            page = self._require_messages().reader(session_id).read_page(
+                after_seq=after_seq, through_seq=through_seq, limit=page_size,
             )
-            next_after_seq = int(items[-1]["seq"]) if items else after_seq
-            has_more = (
-                len(items) == cast(int, query["page_size"])
-                and next_after_seq < snapshot_max_seq
-            )
-        else:
-            pagination = {
-                "page": cast(int, query["page"]),
-                "page_size": cast(int, query["page_size"]),
-            }
-            items, total = store.list_messages_for_dashboard(
-                session_key=session_id,
-                page=pagination["page"],
-                page_size=pagination["page_size"],
-                sort_by="seq",
-                sort_order="asc",
-            )
-        mobile_items = [await self._mobile_history_item(item) for item in items]
-        title, _ = self._mobile_session_title(session_id)
-        if query["content_ref_version"] == 1:
-            page_payload: dict[str, object] = {
-                "items": cast(list[object], mobile_items),
-                "title": title,
-                "total": total,
-                "page_size": query["page_size"],
-                "content_ref_version": 1,
-                "after_seq": query["after_seq"],
-                "next_after_seq": next_after_seq,
-                "snapshot_max_seq": snapshot_max_seq,
-                "has_more": has_more,
-            }
-        else:
-            page_payload = {
-                "items": cast(list[object], mobile_items),
-                "title": title,
-                "total": total,
-                "page": query["page"],
-                "page_size": query["page_size"],
-            }
-        _fit_mobile_history_payload(
-            page_payload,
-            allow_content_refs=query["content_ref_version"] == 1,
-        )
-        _ = await self._runtime.publish_event(
-            event_type="history.page",
-            session_id=session_id,
-            device_id=device_id,
-            payload=page_payload,
-        )
-        return CommandReply(
-            type="history.get.ok",
-            session_id=session_id,
-            payload={
-                key: value for key, value in page_payload.items() if key != "items"
-            },
-        )
+        except KeyError as error:
+            raise MobileCommandError("session_not_found", f"会话不存在: {session_id}") from error
+        except InvalidPage as error:
+            raise MobileCommandError("invalid_pagination", str(error)) from error
+        try:
+            payload = next(message_chunks({"version": 2, "items": message_rows(page),
+                "after_seq": after_seq, "through_seq": page.through_seq, "has_more": page.has_more,
+                "next_after_seq": page.messages[-1].seq if page.messages else after_seq}))
+        except ValueError as error:
+            raise MobileCommandError("message_manifest_too_large", str(error)) from error
+        _ = await self._runtime.publish_event(event_type="history.page", session_id=session_id,
+                                          device_id=device_id, payload=payload)
+        return CommandReply(type="history.get.ok", session_id=session_id,
+                            payload={key: value for key, value in payload.items() if key != "items"})
+
+    def prepare_message_follow(self, frame: GenericCommand) -> tuple[MessageReader, int]:
+        """在协议边界验证 Session 与续读 cursor，只交出窄读取端口。"""
+        _expect_message_log_version(frame.payload)
+        _expect_keys(frame.payload, {"message_log_version", "after_seq"})
+        session_id = self._normalize_session_id(frame.session_id)
+        after_seq = _message_cursor(frame.payload.get("after_seq", -1), "after_seq")
+        reader = self._require_messages().reader(session_id)
+        if after_seq > reader.head():
+            raise MobileCommandError("invalid_pagination", "after_seq 超过会话当前 head")
+        return reader, after_seq
 
     def _mobile_session_title(self, session_id: str) -> tuple[str, int]:
         """Return one Core-owned title projection and the message count."""
@@ -2077,16 +2011,10 @@ class MobileRealtimeChannel:
         session_id: str,
     ) -> CommandReply:
         ports, callback_task = self._v3_inbound_runtime.capture()
-        ctx: ChannelContext | None = None
+        bus = self._require_input_bus()
         reserved_handoff_id: str | None = None
         try:
-            ctx = self._require_ctx()
             claimed_session = self._runtime.storage.has_session_claim(session_id)
-            if claimed_session and not ctx.session_manager.session_exists(session_id):
-                raise MobileCommandError(
-                    "session_not_found",
-                    "会话已从电脑端删除，请在手机上新建会话后继续",
-                )
             try:
                 _ = self._require_attachments().resolve_uploads(
                     device_id=device_id,
@@ -2095,19 +2023,12 @@ class MobileRealtimeChannel:
                 )
             except (AttachmentRequestError, AttachmentStateError) as error:
                 raise MobileCommandError("attachment_not_ready", str(error)) from error
-            reply = self._resolve_reply(session_id, frame.payload.reply_to)
-            if frame.payload.retry_of_client_message_id is not None:
-                self._validate_retry_source(
-                    session_id,
-                    frame.payload.retry_of_client_message_id,
-                )
-            inbound_content = frame.payload.text
             metadata: dict[str, object] = {
                 "client_request_id": frame.id,
                 "client_message_id": frame.payload.client_message_id,
                 "client_created_at": frame.payload.client_created_at,
                 "device_id": device_id,
-                "require_existing_session": True,
+                "require_existing_session": claimed_session,
                 "session_key_override": session_id,
                 "mobile_v3_handoff": True,
                 "mobile_handoff_id": uuid4().hex,
@@ -2121,27 +2042,8 @@ class MobileRealtimeChannel:
                 metadata["model_reasoning_effort"] = (
                     frame.payload.model_reasoning_effort or ""
                 )
-            if reply is not None:
-                metadata.update(
-                    {
-                        "display_content": frame.payload.text,
-                        "reply_to_message_id": reply.message_id,
-                        "reply_role": reply.role,
-                        "reply_preview": reply.preview,
-                    }
-                )
-                inbound_content = build_reply_inbound_text(
-                    frame.payload.text,
-                    reply.content,
-                    sender_label="你" if reply.role == "user" else "Akashic",
-                )
-            self._runtime.storage.claim_session(
-                device_id=device_id,
-                session_id=session_id,
-                created_at=_utc_now(),
-            )
-            if not claimed_session:
-                _ = ctx.session_manager.get_or_create(session_id)
+            if frame.payload.reply_to is not None:
+                metadata["reply_to_message_id"] = frame.payload.reply_to.message_id
             refs = await self._prepare_message_attachment_refs(
                 device_id=device_id,
                 session_id=session_id,
@@ -2158,13 +2060,18 @@ class MobileRealtimeChannel:
                     channel=self.name,
                     sender=f"device:{device_id}",
                     chat_id=self._chat_id(session_id),
-                    content=_normalize_v3_content(inbound_content),
+                    content=_normalize_v3_content(frame.payload.text),
                     timestamp=datetime.now(timezone.utc),
                     metadata=cast(Any, metadata),
                     attachments=refs,
                 ),
             )
-            reserved = await ctx.bus.reserve_mobile_channel_handoff(raw)
+            try:
+                reserved = await bus.reserve_mobile_channel_handoff(raw)
+            except KeyError as error:
+                raise MobileCommandError(
+                    "session_not_found", "会话已从电脑端删除，请在手机上新建会话后继续",
+                ) from error
             if not reserved:
                 raise RuntimeError("Mobile exact handoff reserve 被 durable fence 拒绝")
             reserved_handoff_id = cast(str, metadata["mobile_handoff_id"])
@@ -2184,6 +2091,13 @@ class MobileRealtimeChannel:
             if not accepted:
                 raise RuntimeError("Mobile exact ingress 违反 captured binding fence")
             reserved_handoff_id = None
+            self._runtime.storage.claim_session(
+                device_id=device_id, session_id=session_id, created_at=_utc_now(),
+            )
+            self._mark_attachment_imports_bound(
+                session_id=session_id, client_message_id=frame.payload.client_message_id,
+                message_id=frame.payload.client_message_id,
+            )
 
             # 3. 时间链：入站消息被总线接受并返回 ACK
             received_at = self._send_received_at.get(
@@ -2209,8 +2123,8 @@ class MobileRealtimeChannel:
                 },
             )
         except BaseException:
-            if ctx is not None and reserved_handoff_id is not None:
-                await ctx.bus.defer_mobile_channel_handoff(reserved_handoff_id)
+            if reserved_handoff_id is not None:
+                await bus.defer_mobile_channel_handoff(reserved_handoff_id)
             raise
         finally:
             self._v3_inbound_runtime.release_capture(callback_task)
@@ -2254,7 +2168,7 @@ class MobileRealtimeChannel:
         store = self._channel_attachment_store
         if store is None:
             raise RuntimeError("Mobile channel attachment store 未绑定")
-        allowed_root = self._require_ctx().attachment_store.root
+        allowed_root = self._require_upload_store().root
         refs: list[AttachmentRef] = []
         for mapping in mappings:
             record = self._runtime.storage.read_attachment(mapping.mobile_attachment_id)
@@ -2311,7 +2225,7 @@ class MobileRealtimeChannel:
                 )
             ref = await store.adopt_file_with_artifact_id(
                 Path(record.local_path),
-                allowed_root=self._require_ctx().attachment_store.root,
+                allowed_root=self._require_upload_store().root,
                 expected_ref=expected_ref,
             )
             if mapping.phase == "prepared":
@@ -2810,11 +2724,11 @@ class MobileRealtimeChannel:
         )
         if not mappings:
             return
-        durable_ids = (
-            self._require_ctx().session_manager.control_store.message_attachment_ids(
-                message_id
-            )
-        )
+        message = self._require_messages().reader(session_id).get(message_id)
+        if message is None or not isinstance(message.body, Input):
+            raise RuntimeError("Mobile attachment mapping 缺少已提交 Input")
+        durable_ids = tuple(part.value for part in message.body.parts
+                            if isinstance(part, ContentPart) and part.kind == "artifact_ref")
         if durable_ids != tuple(item.artifact_id for item in mappings):
             raise RuntimeError("Mobile attachment mapping 与 Session binding 不一致")
         for item in mappings:
@@ -2834,20 +2748,19 @@ class MobileRealtimeChannel:
     def _reconcile_committed_attachment_imports(self) -> None:
         """Close mappings whose Session message committed before the prior process died."""
 
-        store = self._require_ctx().session_manager.control_store
         groups = {
             (item.session_id, item.client_message_id)
             for item in self._runtime.storage.list_incomplete_attachment_imports()
             if item.phase == "artifact_committed"
         }
         for session_id, client_message_id in sorted(groups):
-            message = store.get_message_by_client_id(session_id, client_message_id)
+            message = self._require_messages().reader(session_id).get(client_message_id)
             if message is None:
                 continue
             self._mark_attachment_imports_bound(
                 session_id=session_id,
                 client_message_id=client_message_id,
-                message_id=cast(str, message["id"]),
+                message_id=message.message_id,
             )
 
     async def _resume_prepared_attachment_imports(self) -> None:
@@ -2863,7 +2776,7 @@ class MobileRealtimeChannel:
                     (item.device_id, item.session_id, item.client_message_id)
                 ].append(item)
         for (device_id, session_id, client_message_id), items in groups.items():
-            expected_refs = self._require_ctx().bus.pending_mobile_attachment_refs(
+            expected_refs = self._require_input_bus().pending_mobile_attachment_refs(
                 session_key=session_id,
                 client_message_id=client_message_id,
             )
@@ -3546,6 +3459,11 @@ class MobileRealtimeChannel:
             raise RuntimeError(f"mobile process turn 未开始: {session_id}/{turn_id}")
         return state
 
+    def _require_messages(self) -> MessageCatalog:
+        if self._messages is None:
+            raise MobileCommandError("session_log_unavailable", "会话日志尚未绑定")
+        return self._messages
+
     def _require_mobile_session(self, value: str | None) -> str:
         session_id = self._normalize_session_id(value)
         if not self._require_ctx().session_manager.session_exists(session_id):
@@ -3699,6 +3617,16 @@ class MobileRealtimeChannel:
         if client_message_id:
             _ = self._send_received_at.pop((session_id, client_message_id), None)
 
+    def _require_input_bus(self) -> MessageBus:
+        if self._input_bus is None:
+            raise RuntimeError("Mobile 输入总线尚未启动")
+        return self._input_bus
+
+    def _require_upload_store(self) -> AttachmentStore:
+        if self._upload_store is None:
+            raise RuntimeError("Mobile 上传存储尚未启动")
+        return self._upload_store
+
     def _require_ctx(self) -> ChannelContext:
         if self._ctx is None:
             raise RuntimeError("MobileRealtimeChannel 尚未启动")
@@ -3783,6 +3711,25 @@ def _decode_reply_payload(raw: str) -> dict[str, object]:
     if not isinstance(decoded, dict):
         raise TypeError("命令回复 payload 必须是 JSON object")
     return cast(dict[str, object], decoded)
+
+
+def _expect_message_log_version(payload: Mapping[str, object]) -> None:
+    version = payload.get("message_log_version")
+    if type(version) is not int or version != 2:
+        raise MobileCommandError("unsupported_message_log_version", "需要支持 Message 日志 v2 的客户端")
+
+
+def _message_page_size(payload: Mapping[str, object]) -> int:
+    value = payload.get("page_size", 50)
+    if type(value) is not int or not 1 <= value <= 200:
+        raise MobileCommandError("invalid_pagination", "page_size 必须在 1..200")
+    return value
+
+
+def _message_cursor(value: object, field: str) -> int:
+    if type(value) is not int or value < -1:
+        raise MobileCommandError("invalid_pagination", f"{field} 必须是大于等于 -1 的整数")
+    return value
 
 
 def _history_query_payload(payload: Mapping[str, object]) -> dict[str, int | None]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from agent.plugin_composition.model import ServiceKey
-from session.artifacts import AttachmentReadLease, AttachmentRef
+from session.artifacts import AttachmentKind, AttachmentReadLease, AttachmentRef
 
 
 class _ReadLease:
@@ -38,3 +38,18 @@ class ArtifactRead:
 
 
 ARTIFACT_READ = ServiceKey[ArtifactRead]("core.artifact_read")
+
+
+class ArtifactImport:
+    """只授予来源导入与不可变引用；不附带消息、读取、删除或任意数据库权限。"""
+
+    def __init__(self, import_source: Callable[[str, AttachmentKind], Awaitable[AttachmentRef]] | None):
+        self._import_source = import_source
+
+    async def import_source(self, source: str, kind: AttachmentKind) -> AttachmentRef:
+        if self._import_source is None:
+            raise RuntimeError("candidate 验证期禁止导入正式 artifact")
+        return await self._import_source(source, kind)
+
+
+ARTIFACT_IMPORT = ServiceKey[ArtifactImport]("core.artifact_import")

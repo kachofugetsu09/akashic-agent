@@ -7,6 +7,10 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 
+class EmbeddingSpaceMismatchError(RuntimeError):
+    """已有学习图属于另一个向量空间，必须显式重建。"""
+
+
 @dataclass(frozen=True)
 class MemoryConfig:
     """Configure one deterministic memory dynamics contract."""

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import aclosing
 from typing import Any, cast
 
 from pydantic import ValidationError
@@ -30,7 +31,7 @@ from agent.control.protocol.errors import (
     PLUGIN_OPERATION_FAILED,
     JsonRpcError,
 )
-from agent.control.protocol.models import METHOD_PARAMS, InitializeParams, StrictModel
+from agent.control.protocol.models import METHOD_PARAMS, InitializeParams, StrictModel, MessageSendParams
 from agent.control.service import ControlService
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,15 @@ class ConnectionRouter:
         self._send = send
         self._pending = asyncio.Semaphore(max_pending_requests)
         self._state = "new"
-        self._event_tasks: set[asyncio.Task[None]] = set()
-        self._attached_turns: dict[str, Any] = {}
+        self._subscriptions: dict[str, tuple[str, asyncio.Task[None] | None]] = {}
+        self._subscription_lock = asyncio.Lock()
         self._closed = False
+        conflicts = METHOD_PARAMS.keys() & service.methods.keys()
+        if conflicts:
+            raise ValueError(f"控制方法已经存在: {sorted(conflicts)}")
+        self._method_params = {**METHOD_PARAMS, **{
+            name: method.params for name, method in service.methods.items()
+        }}
 
     async def handle_line(self, line: bytes) -> None:
         """解析单条 NDJSON frame，并在边界返回标准错误。"""
@@ -169,7 +176,7 @@ class ConnectionRouter:
                 INVALID_REQUEST, f"Unknown request fields: {', '.join(sorted(unknown))}"
             )
         method = cast(str, request["method"])
-        model_type = METHOD_PARAMS.get(method)
+        model_type = self._method_params.get(method)
         if model_type is None:
             raise JsonRpcError(METHOD_NOT_FOUND, f"Method not found: {method}")
 
@@ -177,11 +184,11 @@ class ConnectionRouter:
         raw_params = request.get("params", {})
         if not isinstance(raw_params, dict):
             raise JsonRpcError(INVALID_PARAMS, "params must be an object")
-        if method == "initialize" and raw_params.get("protocolVersion") != "1.0":
+        if method == "initialize" and raw_params.get("protocolVersion") != "2.0":
             raise JsonRpcError(
                 INCOMPATIBLE_VERSION,
                 "Unsupported protocol version",
-                {"supported": ["1.0"]},
+                {"supported": ["2.0"]},
             )
         try:
             params = model_type.model_validate(raw_params)
@@ -208,146 +215,100 @@ class ConnectionRouter:
         return await self._call_method(method, params)
 
     async def _call_method(self, method: str, params: StrictModel) -> object:
+        operation = self._service.methods.get(method)
+        if operation is not None:
+            return await operation.call(params)
         values = params.model_dump()
         if method == "server/status":
             return self._service.status()
-        if method == "thread/start":
-            return self._service.start_thread(
-                values["metadata"],
-                values["runtime"],
-                values["pluginRolloutCapability"],
-            )
-        if method == "thread/resume":
-            return self._service.resume_thread(values["threadId"])
-        if method == "thread/list":
-            return self._service.list_threads(values["cursor"], values["limit"])
-        if method == "thread/read":
-            return self._service.read_thread(values["threadId"], values["includeTurns"])
-        if method == "thread/delete":
-            return self._service.delete_thread(values["threadId"])
-        if method == "turn/read":
-            return self._service.read_turn(values["threadId"], values["turnId"])
-        if method == "turn/interrupt":
-            return await self._service.interrupt_turn(
-                values["threadId"], values["turnId"]
-            )
-        if method == "turn/start":
-            handle = await self._service.start_turn(
-                values["threadId"],
-                values["input"],
-                values["metadata"],
-                values["runtime"],
-                attached=not values["detached"],
-            )
-            if not values["detached"]:
-                self._attached_turns[handle.id] = handle
-            task = asyncio.create_task(
-                self._forward_events(handle), name=f"control-events:{handle.id}"
-            )
-            self._event_tasks.add(task)
-            task.add_done_callback(self._event_tasks.discard)
-            return handle.record()
-        if method == "plugin/disable-and-drain":
-            return await self._service.disable_and_drain_plugin(values["pluginId"])
-        if method == "plugin/install":
-            return await self._service.install_plugin(
-                values["source"],
-                values["marketplace"],
-                values["ref"],
-                values["sparse"],
-                values["ownerTurnId"],
-            )
+        if method == "session/create":
+            return self._service.create_session()
+        if method == "session/list":
+            return self._service.list_sessions(values["cursor"], values["limit"])
+        if method == "message/read":
+            return self._service.read_messages(values["session_id"], values["after_seq"],
+                                                values["through_seq"], values["limit"])
+        if method == "message/send":
+            return await self._service.send_message(cast(MessageSendParams, params))
+        if method == "session/follow":
+            session_id, subscription_id = values["session_id"], values["subscription_id"]
+            async with self._subscription_lock:
+                await self._stop_subscription(session_id)
+                if self._closed:
+                    raise RuntimeError("连接已经关闭")
+                self._subscriptions[session_id] = (subscription_id, None)
+            return {"version": 2, "session_id": session_id, "subscription_id": subscription_id,
+                    "after_seq": values["after_seq"]}
+        if method == "session/unfollow":
+            async with self._subscription_lock:
+                existing = self._subscriptions.get(values["session_id"])
+                if existing is not None and existing[0] == values["subscription_id"]:
+                    await self._stop_subscription(values["session_id"])
+            return {"session_id": values["session_id"], "subscription_id": values["subscription_id"]}
         if method == "plugin/status":
             return self._service.plugin_status()
+        if method == "plugin/update":
+            return self._service.plugin_update(values["update_id"])
+        if method == "plugin/install":
+            return await self._service.install_plugin(values["source"], values["marketplace"],
+                values["ref"], values["sparse"], values["update_id"])
         if method == "plugin/promote":
-            return await self._service.promote_plugin(values["pluginId"])
+            return await self._service.promote_plugin(values["update_id"])
         if method == "plugin/discard":
-            return await self._service.discard_plugin(values["pluginId"])
-        if method == "plugin/uninstall/start":
-            if not values["ownerTurnId"]:
-                operation = self._service.start_plugin_uninstall(values["pluginId"])
-                task = asyncio.create_task(
-                    self._forward_operation(operation),
-                    name=f"control-operation:{operation.id}",
-                )
-                self._event_tasks.add(task)
-                task.add_done_callback(self._event_tasks.discard)
-                return operation.record()
-            return await self._service.register_plugin_uninstall(
-                values["pluginId"], values["ownerTurnId"]
-            )
-        if method == "plugin/revert":
-            return await self._service.revert_plugin(values["ownerTurnId"])
+            return await self._service.discard_plugin(values["update_id"])
+        if method == "plugin/disable-and-drain":
+            return await self._service.disable_and_drain_plugin(values["plugin_id"])
+        if method == "plugin/uninstall":
+            return await self._service.uninstall_plugin(values["plugin_id"])
         raise AssertionError(f"unhandled protocol method: {method}")
 
-    async def _post_response_notifications(
-        self,
-        request: JsonObject,
-        result: object,
-    ) -> None:
-        method = request.get("method")
-        if not isinstance(result, dict):
+    async def _post_response_notifications(self, request: JsonObject, result: object) -> None:
+        """follow ACK 先进入传输队列，再启动订阅；客户端能建立对应的读取 owner。"""
+        if request["method"] != "session/follow":
             return
-        if method == "thread/start":
-            await self._send(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "thread/started",
-                    "params": {"thread": result},
-                }
-            )
-        elif method == "thread/delete":
-            await self._send(
-                {"jsonrpc": "2.0", "method": "thread/deleted", "params": result}
-            )
+        assert isinstance(result, dict)
+        session_id = cast(str, result["session_id"])
+        identity = cast(str, result["subscription_id"])
+        if self._closed or self._subscriptions.get(session_id) != (identity, None):
+            return
+        task = asyncio.create_task(self._forward_session(session_id, identity, cast(int, result["after_seq"])),
+                                   name="control-follow:" + session_id)
+        self._subscriptions[session_id] = (identity, task)
+        task.add_done_callback(self._subscription_finished)
 
-    async def _forward_operation(self, operation: Any) -> None:
-        result = await asyncio.shield(operation.task)
-        await self._send(
-            {
-                "jsonrpc": "2.0",
-                "method": "operation/completed",
-                "params": {"operation": result},
-            }
-        )
+    @staticmethod
+    def _subscription_finished(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.error("消息订阅传输失败", exc_info=error)
 
-    async def _forward_events(self, handle: Any) -> None:
+    async def _forward_session(self, session_id: str, identity: str, after_seq: int) -> None:
+        """每个 Session 独立读取；旧订阅身份不能进入新订阅的消费队列。"""
         try:
-            async for event in handle.events():
-                await self._send(event.to_notification())
-                if event.method == "turn/completed":
-                    self._service.notify_turn_delivered(handle.id)
+            async with aclosing(self._service.follow(session_id, after_seq)) as feed:
+                async for event in feed:
+                    await self._send({"jsonrpc": "2.0", "method": "session/event",
+                        "params": {"subscription_id": identity, "event": event}})
         except asyncio.CancelledError:
-            self._service.notify_turn_delivery_failed(
-                handle.id,
-                "connection closed before terminal delivery",
-            )
             raise
-        except Exception as exc:
-            self._service.notify_turn_delivery_failed(handle.id, str(exc))
-            logger.exception("turn event forwarding failed turn=%s", handle.id)
-        finally:
-            if handle.record()["status"] in {
-                "completed",
-                "interrupted",
-                "failed",
-                "cancelled",
-            }:
-                self._attached_turns.pop(handle.id, None)
+        except Exception as error:
+            logger.exception("消息订阅读取失败 session=%s", session_id)
+            await self._send({"jsonrpc": "2.0", "method": "session/error", "params": {
+                "session_id": session_id, "subscription_id": identity,
+                "error": {"type": type(error).__name__, "message": str(error)},
+            }})
+
+    async def _stop_subscription(self, session_id: str) -> None:
+        previous = self._subscriptions.pop(session_id, None)
+        if previous is not None and previous[1] is not None:
+            task = previous[1]
+            _ = task.cancel()
+            # done callback 已记录传输错误；独立订阅的清理仍须全部完成。
+            await asyncio.gather(task, return_exceptions=True)
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        attached = tuple(self._attached_turns.values())
-        if attached:
-            await asyncio.gather(
-                *(handle.interrupt() for handle in attached),
-                return_exceptions=True,
-            )
-        self._attached_turns.clear()
-        for task in self._event_tasks:
-            task.cancel()
-        if self._event_tasks:
-            await asyncio.gather(*self._event_tasks, return_exceptions=True)
-        self._event_tasks.clear()
+        async with self._subscription_lock:
+            for session_id in tuple(self._subscriptions):
+                await self._stop_subscription(session_id)

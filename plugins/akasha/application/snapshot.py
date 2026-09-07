@@ -31,12 +31,14 @@ async def read_memory(
     path: Path, *, legacy_index: Path | None, catalog: MessageCatalog,
     embeddings: MessageEmbeddings, bindings: Bindings, config: MemoryConfig,
     embedding_space: tuple[str, int] | None = None,
+    allow_initial: bool = False,
 ) -> AsyncGenerator[tuple[MemoryCycle, Consumption]]:
     """只从一致副本恢复图，重用原 binding 校验；不给调用者提交或正式文件权限。"""
-    # 1. 来源必须已经发布；缺文件由只读 SQLite 打开明确失败，不能创建空图。
+    # 1. 默认只读已发布图；材料可显式沿原初次启用算法在临时目录建立空图。
     with TemporaryDirectory(prefix="akasha-read-") as temporary:
         snapshot = Path(temporary) / "memory.db"
-        await run_memory_job(lambda: _copy_published(path, snapshot))
+        if not allow_initial or path.exists():
+            await run_memory_job(lambda: _copy_published(path, snapshot))
         # 2. 复用完整恢复校验；恢复器的本地 lease 只保护临时副本。
         restored = await MessageConsumer.load(
             snapshot, legacy_index=legacy_index, catalog=catalog,

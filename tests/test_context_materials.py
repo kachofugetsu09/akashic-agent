@@ -61,6 +61,45 @@ async def test_materials_fix_explicit_order_and_keep_retrieval_evidence_out_of_p
 
 
 @pytest.mark.asyncio
+async def test_program_excludes_retrieval_without_running_it_or_losing_persona():
+    calls = []
+
+    async def memory(snapshot, source):
+        calls.append("memory")
+        return Materials("", (ContentPart("text", "retrieved private context"),))
+
+    async def persona(snapshot, source):
+        calls.append("persona")
+        return Materials("fixed persona")
+
+    async with catalog(prompt_sources={"persona": "trusted"}) as (ctx, service, _):
+        await service.register(ctx, name="persona", prepare=persona, prompt=True)
+        await service.register(ctx, name="memory", prepare=memory, after=("persona",))
+        async with service.bind(exclude=frozenset({"memory"})) as view:
+            result = await view.prepare((), "scheduler:job")
+        assert result.system_prompt == "fixed persona"
+        assert not result.context
+        assert calls == ["persona"]
+        # 显式排除不改变全局注册；普通回复仍能取得原有检索。
+        async with service.bind() as view:
+            result = await view.prepare((), "conversation")
+        assert result.context[0].value == "retrieved private context"
+
+
+@pytest.mark.asyncio
+async def test_material_exclusion_cannot_silently_break_a_required_dependency():
+    async def prepare(snapshot, source):
+        return Materials("")
+
+    async with catalog() as (ctx, service, _):
+        await service.register(ctx, name="first", prepare=prepare)
+        await service.register(ctx, name="second", prepare=prepare, after=("first",))
+        with pytest.raises(ValueError, match="依赖缺失"):
+            async with service.bind(exclude=frozenset({"first"})):
+                pytest.fail("dependent material must not run")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("conflict", ["prompt", "summary", "reference", "dependency"])
 async def test_materials_reject_unauthorized_prompt_and_conflicting_owners(conflict):
     async def first(snapshot, source):

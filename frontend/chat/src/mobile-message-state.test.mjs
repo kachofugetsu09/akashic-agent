@@ -236,40 +236,19 @@ test("shared text appends without silently truncating at the durable limit", () 
   );
 });
 
-function selectableMessage(id, role, content, streaming = false) {
-  return {
-    id,
-    sessionId: "mobile-current",
-    role,
-    content,
-    streaming,
-    replyable: true,
-    createdAt: 1_000,
-    attachments: [],
-  };
+function selectableMessage(id, role, content) {
+  const parts = [{ kind: "text", value: content }];
+  return { id, session_id: "mobile-current", seq: 0, timestamp: new Date(1000).toISOString(),
+    author: role === "user" ? "花月" : "Akashic", source: "conversation", attachments: [],
+    body: role === "user" ? { kind: "input", parts } : { kind: "output", parts, finish: "complete" } };
 }
 
-test("message selection preserves conversation order and excludes streaming turns", () => {
+test("selection preserves message order and drops IDs absent from the log", () => {
   const first = selectableMessage("first", "user", "第一条");
-  const streaming = selectableMessage("streaming", "assistant", "还在生成", true);
   const last = selectableMessage("last", "assistant", "最后一条");
-
-  const selected = selectableMobileMessages(
-    [first, streaming, last],
-    new Set(["last", "streaming", "first"]),
-  );
-
-  assert.deepEqual(selected.map((item) => item.id), ["first", "last"]);
-});
-
-test("message selection drops vanished and newly streaming identities", () => {
-  const selected = new Set(["kept", "vanished", "became-streaming"]);
-  const reconciled = reconcileMobileMessageSelection(selected, [
-    selectableMessage("kept", "user", "保留"),
-    selectableMessage("became-streaming", "assistant", "变化中", true),
-  ]);
-
-  assert.deepEqual([...reconciled], ["kept"]);
+  const ids = new Set(["last", "preview-only", "first"]);
+  assert.deepEqual(selectableMobileMessages([first, last], ids).map((item) => item.id), ["first", "last"]);
+  assert.deepEqual([...reconcileMobileMessageSelection(ids, [first, last])], ["last", "first"]);
 });
 
 test("single selection copies exact body and attachment names without transcript labels", () => {
@@ -293,17 +272,17 @@ test("multiple selection copies only copyable messages in conversation order", (
 
   assert.equal(
     formatMobileSelectionCopyText(messages, () => "昨天 11:02"),
-    "你 · 昨天 11:02\n问题\n\nAkashic · 昨天 11:02\n回答",
+    "花月 · 昨天 11:02\n问题\n\nAkashic · 昨天 11:02\n回答",
   );
 });
 
 test("reply actions only target messages owned by the selected mobile session", () => {
   const current = selectableMessage("current", "assistant", "当前会话");
-  const historical = { ...current, id: "historical", sessionId: "mobile-previous" };
+  const historical = { ...current, id: "historical", session_id: "mobile-previous" };
 
   assert.equal(mobileMessageCanReply(current, "mobile-current"), true);
   assert.equal(mobileMessageCanReply(historical, "mobile-current"), false);
-  assert.equal(mobileMessageCanReply({ ...current, replyable: false }, "mobile-current"), false);
+  assert.equal(mobileMessageCanReply({ ...current, body: { kind: "control", action: "pause", through_seq: 0, reason: null } }, "mobile-current"), false);
 });
 
 test("reply navigation only resolves a target from the current message projection", () => {
@@ -574,46 +553,43 @@ test("returning to bottom under the scroll lock clears unread messages", () => {
   assert.deepEqual(result, []);
 });
 
-test("streaming search reuses stable history and only rematches changed revisions", () => {
-  const history = { id: "history", content: "旧消息里的 fitbit", searchRevision: 1, attachments: [] };
-  const streaming = { id: "streaming", content: "正在", searchRevision: 1, attachments: [] };
-  const initial = updateMobileSearchIndex(new Map(), [history, streaming], "fitbit", true);
-
-  const updated = updateMobileSearchIndex(
-    initial,
-    [history, { ...streaming, content: "正在读取 fitbit", searchRevision: 2 }],
-    "fitbit",
-    false,
-  );
-
+test("search reuses immutable messages and matches newly committed content", () => {
+  const history = selectableMessage("history", "user", "旧消息里的 fitbit");
+  const next = { ...selectableMessage("next", "assistant", "正在读取 fitbit"), seq: 1 };
+  const initial = updateMobileSearchIndex(new Map(), [history], "fitbit", true);
+  const updated = updateMobileSearchIndex(initial, [history, next], "fitbit", false);
   assert.equal(updated.get("history"), initial.get("history"));
-  assert.equal(updated.get("streaming")?.matches, true);
+  assert.equal(updated.get("next")?.matches, true);
 });
 
-test("query changes rematch cached normalized text without rebuilding it", () => {
-  const source = { id: "message", content: "Fitbit 睡眠", searchRevision: 1, attachments: [] };
-  const initial = updateMobileSearchIndex(new Map(), [source], "fitbit", true);
-  const updated = updateMobileSearchIndex(initial, [source], "睡眠", true);
-
-  assert.equal(updated.get("message")?.searchable, initial.get("message")?.searchable);
-  assert.equal(updated.get("message")?.matches, true);
+test("search includes actual authors, tool arguments, thinking and attachment names", () => {
+  const source = { ...selectableMessage("message", "assistant", ""), author: "scheduler",
+    attachments: [{ filename: "cycle2-file-probe.md" }], body: { kind: "output", finish: "continue", parts: [
+      { kind: "model.facts", value: { call_record_id: "call", thinking: "分析睡眠" } },
+      { kind: "tool_call", name: "read", binding_id: "b", arguments: { filename: "Fitbit.json" } },
+    ] } };
+  let index = new Map();
+  for (const query of ["scheduler", "fitbit", "睡眠", "file-probe"]) {
+    const next = updateMobileSearchIndex(index, [source], query, true);
+    assert.equal(next.get("message")?.matches, true);
+    if (index.size) assert.equal(next.get("message").searchable, index.get("message").searchable);
+    index = next;
+  }
 });
 
-test("attachment filenames participate in conversation search", () => {
-  const source = {
-    id: "attachment-message",
-    content: "正文不包含查询词",
-    searchRevision: 1,
-    attachments: [{ filename: "cycle2-file-probe.md" }],
-  };
-
-  const result = updateMobileSearchIndex(new Map(), [source], "file-probe", true);
-
-  assert.equal(result.get(source.id)?.matches, true);
+test("unread counts new facts by seq and does not count older loaded pages", () => {
+  const known = { id: "known", seq: 5 };
+  const added = { id: "control", seq: 8 };
+  const viewport = { escapedFromLock: true, isAtBottom: false, suspended: false };
+  const result = advanceMobileUnreadTracking(new Map([[known.id, known]]), [],
+    [{ id: "older", seq: 1 }, known, added], viewport, false);
+  assert.deepEqual(result.unseenMessageIds, ["control"]);
+  assert.deepEqual(advanceMobileUnreadTracking(result.knownMessages, result.unseenMessageIds,
+    [...result.knownMessages.values()], viewport, false).unseenMessageIds, ["control"]);
 });
 
 test("same-session history rebuild establishes a read baseline", () => {
-  const history = message("mobile:test:2", "assistant", 1_000);
+  const history = { id: "history", seq: 2 };
   const viewport = { escapedFromLock: true, isAtBottom: false, suspended: false };
   const emptied = advanceMobileUnreadTracking(
     new Map([[history.id, history]]),

@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
+from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass, field
 from enum import StrEnum
 import math
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, AsyncContextManager, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Literal, Protocol, TypeAlias
 
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
 
 if TYPE_CHECKING:
     from agent.plugin_composition.context import Context
+    from agent.plugin_composition.bindings import Bindings
 
 
 class ModelRole(StrEnum):
@@ -48,6 +51,21 @@ class ModelUsage:
     request_count: int = 1
     covered_request_count: int = 0
     coverage: UsageCoverage = UsageCoverage.UNAVAILABLE
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCallStats:
+    """调用的公开统计；不含凭据、请求正文或 provider continuation。"""
+
+    call_record_id: str
+    model: str
+    state: Literal["started", "success", "unknown"]
+    first_token_ms: float | None
+    duration_ms: float | None
+    usage: ModelUsage | None
+
+
+MODEL_CALL_STATS = ServiceKey[Callable[[str], ModelCallStats]]("models.call-stats.v1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,7 +284,38 @@ class ChatModels(Protocol):
         ...
 
 
+class SavedEmbedding(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    model_id: str = Field(min_length=1)
+    space_identity: str = Field(min_length=1)
+    dimensions: int = Field(gt=0)
+
+
+def read_embedding_binding(bindings: Bindings, identity: str) -> SavedEmbedding:
+    return SavedEmbedding.model_validate(dict(bindings.describe(identity, EMBEDDINGS)))
+
+
+@asynccontextmanager
+async def open_embedding(bindings: Bindings, identity: str) -> AsyncGenerator[BoundEmbeddingModel]:
+    """在归档 Root 核对当前同名模型，配置漂移时在远程调用前拒绝。"""
+    saved = read_embedding_binding(bindings, identity)
+    async with bindings.open(identity, EMBEDDINGS) as (embeddings, _metadata):
+        # 1. driver.open 可能联网，先拒绝已经变化的 endpoint、身份或空间。
+        descriptor = embeddings.describe(model_id=saved.model_id)
+        if (descriptor.identity, descriptor.dimensions) != (saved.space_identity, saved.dimensions):
+            raise ModelUnavailableError("已保存 embedding 配置已变化，不能替换原调用")
+        async with embeddings.bind(model_id=saved.model_id) as model:
+            # 2. open 的 await 期间设置仍可能变化；以真正取得的模型再核对一次。
+            if (model.descriptor.identity, model.descriptor.dimensions) != (saved.space_identity, saved.dimensions):
+                raise ModelUnavailableError("打开期间 embedding 配置已变化，不能替换原调用")
+            yield model
+
+
 class Embeddings(Protocol):
+    def save_binding(self, bindings: Bindings, *, model_id: str | None = None) -> str:
+        """固定所选模型、空间与实际 driver 代码，不归档凭据。"""
+        ...
+
     def describe(
         self,
         *,
@@ -672,11 +721,16 @@ __all__ = [
     "DriverUnavailableError",
     "EMBEDDINGS",
     "EmbeddingResult",
+    "SavedEmbedding",
+    "read_embedding_binding",
+    "open_embedding",
     "Embeddings",
     "EmbeddingSpaceDescriptor",
     "FinishConnectionAuth",
     "LLMResponse",
     "MODEL_CATALOG",
+    "MODEL_CALL_STATS",
+    "ModelCallStats",
     "MODEL_DRIVERS",
     "MODEL_SETTINGS",
     "ModelAvailability",

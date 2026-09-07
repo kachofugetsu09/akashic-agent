@@ -4,4 +4,3 @@ export function ThinkingPlaceholder() {
     <span>等待回应</span>
   </div>;
 }
-

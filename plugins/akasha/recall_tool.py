@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -10,7 +11,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.models import Embeddings
+from agent.plugin_composition.models import BoundEmbeddingModel
 from plugins.content.api import Reference
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS
@@ -42,7 +43,7 @@ class RecallArguments(BaseModel):
 class PreparedRecall(RecallArguments):
     source: ToolSource | None
     learning_binding: str = Field(min_length=1)
-    embedding_model_id: str = Field(min_length=1)
+    embedding_binding: str = Field(min_length=1)
     max_chars: int = Field(gt=0)
 
 
@@ -103,7 +104,7 @@ class RecallTool:
         self, *, memory: Path, legacy_index: Path | None, config: MemoryConfig,
         catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
         select_learning: Callable[[], tuple[str, str]], records: RecallRecords,
-        embedding_api: Embeddings, max_chars: int = 12000,
+        open_embedding: Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]], max_chars: int = 12000,
     ):
         if max_chars <= 0:
             raise ValueError("召回文本预算必须为正")
@@ -115,7 +116,7 @@ class RecallTool:
         self._bindings = bindings
         self._select_learning = select_learning
         self._records = records
-        self._embedding_api = embedding_api
+        self._open_embedding = open_embedding
         self._max_chars = max_chars
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
@@ -130,7 +131,7 @@ class RecallTool:
         binding, model_id = self._select_learning()
         return PreparedRecall(**request.model_dump(), source=origin,
                               learning_binding=binding,
-                              embedding_model_id=model_id,
+                              embedding_binding=model_id,
                               max_chars=self._max_chars).model_dump(mode="json")
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
@@ -149,7 +150,7 @@ class RecallTool:
                 embeddings=self._embeddings, bindings=self._bindings, config=self._config,
                 embedding_space=(rule.embedding_model, rule.dimension),
             ) as (cycle, state):
-                async with self._embedding_api.bind(model_id=request.embedding_model_id) as model:
+                async with self._open_embedding(request.embedding_binding) as model:
                     if model.descriptor.identity != rule.embedding_model:
                         raise ValueError("实际 embedding 模型不匹配已准备的学习 binding")
                     values = (await model.embed([request.query])).vectors

@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.scheduler import JobStore, ScheduledJob
+from plugins.scheduler.store import JobStore
+from plugins.scheduler.schedule import ScheduledJob
 from tests.conftest import make_job
 
 
@@ -43,7 +44,7 @@ class TestJobStoreLoadSave:
 
     def test_load_rejects_non_object_job_with_path_and_index(self, tmp_path):
         path = tmp_path / "jobs.json"
-        path.write_text('["invalid-job"]', encoding="utf-8")
+        path.write_text(json.dumps({"version": 2, "jobs": ["invalid-job"], "operations": {}, "fires": {}}), encoding="utf-8")
 
         with pytest.raises(ValueError, match=rf"path={path} index=0"):
             JobStore(path).load()
@@ -67,7 +68,7 @@ class TestJobStoreLoadSave:
         store = JobStore(path)
         store.save({job.id: job})
         payload = json.loads(path.read_text(encoding="utf-8"))
-        payload[0]["interval_seconds"] = "60"
+        payload["jobs"][0]["interval_seconds"] = "60"
         path.write_text(json.dumps(payload), encoding="utf-8")
 
         with pytest.raises(ValueError, match=rf"path={path} index=0"):
@@ -88,7 +89,7 @@ class TestJobStoreLoadSave:
         store = JobStore(path)
         store.save({job.id: job})
         payload = json.loads(path.read_text(encoding="utf-8"))
-        del payload[0]["id"]
+        del payload["jobs"][0]["id"]
         path.write_text(json.dumps(payload), encoding="utf-8")
 
         with pytest.raises(ValueError, match=rf"path={path} index=0"):

@@ -56,7 +56,7 @@ Akashic 理想上的动作应该是：
 ```bash
 git clone <this-repo>
 cd akashic-agent
-uv venv && uv pip install -r requirements.txt
+uv venv && uv pip install -r requirements.txt -e sdk/python
 ```
 
 没有 uv？先 `pip install uv`。
@@ -338,9 +338,9 @@ uv run python scripts/migrate_plugin_data.py \
   --plugins-home "$HOME/.akashic-plugin"
 ```
 
-程序化客户端连接 workspace 下的 `akashic.sock`，先完成 JSON-RPC
-`initialize`/`initialized`，再使用 `thread/start`、`turn/start`、`turn/read` 和
-`turn/interrupt`。Python SDK 位于 `sdk/python/`；旧 TUI 和无 request id 的 IPC payload
-已删除，不提供兼容 fallback。
+客户端连接 workspace 下的 `akashic.sock`，先以协议版本 `2.0` 完成 JSON-RPC
+`initialize`/`initialized`，再使用 `session/create`、`message/send`、`message/read`
+和 `session/follow`。发送 ACK 表示原始输入已经保存；回复随后追加。关闭连接只停止读取，
+重连后按已处理的 `seq` 补读。旧 Thread/Turn 方法已由 Message v2 替代。
 
-完整配置、协议和回滚说明见[程序化控制面迁移指南](./_handbook/programmatic-control-migration.md)。
+完整用法见 [Python SDK](sdk/python/README.md) 和 [协议 schema](schema/app-server-v2.json)。

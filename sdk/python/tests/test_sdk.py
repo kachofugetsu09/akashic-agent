@@ -2,269 +2,107 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
-from typing import cast
 
 import pytest
 
-from agent.control.models import TurnRequest
-from agent.control.ports import ControlExecutionResult
-from agent.control.runtime import ConversationRuntime
-from agent.control.service import ControlService
-from infra.control.socket import SocketAppServer
-from session.manager import SessionManager
-
-from akashic_sdk import (
-    Akashic,
-    AsyncAkashic,
-    RemoteError,
-    SlowConsumerError,
-    TurnHandle,
-)
-from akashic_sdk.client import _WireClient
-
-
-def _buffered_notification_reader(
-    count: int,
-    *,
-    turn_id: str | None = None,
-) -> asyncio.StreamReader:
-    reader = asyncio.StreamReader()
-    for index in range(count):
-        params: dict[str, object] = {"index": index}
-        if turn_id is not None:
-            params["turnId"] = turn_id
-        payload: dict[str, object] = {
-            "jsonrpc": "2.0",
-            "method": "test/notification",
-            "params": params,
-        }
-        reader.feed_data(
-            (json.dumps(payload, separators=(",", ":")) + "\n").encode()
-        )
-    reader.feed_eof()
-    return reader
+from akashic_sdk import AsyncAkashic, SlowConsumerError
 
 
 @pytest.mark.asyncio
-async def test_sdk_reader_yields_to_active_turn_consumer() -> None:
-    reader = _buffered_notification_reader(600, turn_id="turn-1")
-    wire = _WireClient(reader, cast(asyncio.StreamWriter, object()))
-    handle = TurnHandle(wire, "thread-1", "turn-1")
+async def test_slow_subscription_does_not_close_other_sessions_or_requests():
+    """可控服务端批次先灌满慢队列，再证明另一订阅和 request 仍工作。"""
+    ready = asyncio.Event()
+    sent = asyncio.Event()
+    finished = asyncio.Event()
+    subscriptions = {}
+    writers = []
 
-    notifications = handle.events()
-    received = [
-        await asyncio.wait_for(anext(notifications), timeout=1)
-        for _ in range(600)
-    ]
-    await wire.reader_task
+    async def accept(reader, writer):
+        writers.append(writer)
+        async def send(frame):
+            writer.write((json.dumps({"jsonrpc": "2.0", **frame}) + "\n").encode())
+            await writer.drain()
+        try:
+            while line := await reader.readline():
+                frame = json.loads(line)
+                if "id" not in frame:
+                    continue
+                params = frame["params"]
+                if frame["method"] == "session/follow":
+                    subscriptions[params["session_id"]] = params["subscription_id"]
+                await send({"id": frame["id"], "result": {"ok": True}})
+                if frame["method"] == "test/flood":
+                    for index in range(3):
+                        await send({"method": "session/event", "params": {
+                            "subscription_id": subscriptions["slow"],
+                            "event": {"session_id": "slow", "index": index},
+                        }})
+                    for index in range(600):
+                        await send({"method": "session/event", "params": {
+                            "subscription_id": subscriptions["fast"],
+                            "event": {"session_id": "fast", "index": index},
+                        }})
+                    sent.set()
+                if frame["method"] == "session/unfollow":
+                    ready.set()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            finished.set()
 
-    assert [event["params"]["index"] for event in received] == list(range(600))
-
-
-@pytest.mark.asyncio
-async def test_sdk_reader_fails_loud_for_unconsumed_notification_queue() -> None:
-    reader = _buffered_notification_reader(513)
-    wire = _WireClient(reader, cast(asyncio.StreamWriter, object()))
-    client = AsyncAkashic(wire)
-
-    await wire.reader_task
-
-    notifications = client.notifications()
-    for _ in range(511):
-        _ = await anext(notifications)
-    with pytest.raises(
-        SlowConsumerError,
-        match="global notification queue overflow",
-    ):
-        _ = await anext(notifications)
-
-
-@pytest.mark.asyncio
-async def test_async_sdk_runs_against_real_socket_router(tmp_path: Path) -> None:
-    sessions = SessionManager(tmp_path)
-
-    async def execute(request: TurnRequest) -> ControlExecutionResult:
-        return ControlExecutionResult(response=f"sdk:{request.input}")
-
-    runtime = ConversationRuntime(sessions.control_store, execute)
-    server = SocketAppServer(tmp_path / "control.sock", ControlService(runtime, sessions, tmp_path))
-    await server.start()
+    server = await asyncio.start_server(accept, "127.0.0.1", 0)
+    address = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
     try:
-        async with await AsyncAkashic.connect(str(server.endpoint)) as client:
-            thread = await client.thread_start()
-            handle = await thread.turn("hello")
-            events = [event async for event in handle.stream()]
-            result = await handle.result()
-            assert [event["method"] for event in events if event["method"].startswith("turn/")] == [
-                "turn/queued",
-                "turn/started",
-                "turn/completed",
-            ]
-            assert result["finalResponse"] == "sdk:hello"
+        async with await AsyncAkashic.connect(address) as client:
+            slow = await client.session_follow("slow", queue_size=1)
+            fast = await client.session_follow("fast")
+            async def consume():
+                events = fast.events()
+                try:
+                    return [(await anext(events))["index"] for _ in range(600)]
+                finally:
+                    await events.aclose()
+            consumer = asyncio.create_task(consume())
+            await client.request("test/flood", {})
+            async with asyncio.timeout(5):
+                await sent.wait()
+                await ready.wait()
+                with pytest.raises(SlowConsumerError):
+                    await anext(slow.events())
+                assert await consumer == list(range(600))
+                assert await client.request("server/status", {}) == {"ok": True}
+                await fast.close()
+        await asyncio.wait_for(finished.wait(), 5)
     finally:
-        await server.stop()
-        await runtime.shutdown()
-        sessions.close()
+        server.close()
+        await server.wait_closed()
 
 
 @pytest.mark.asyncio
-async def test_async_sdk_exposes_active_turn_busy_as_retryable(tmp_path: Path) -> None:
-    sessions = SessionManager(tmp_path)
-    started = asyncio.Event()
+async def test_malformed_response_fails_pending_request_instead_of_losing_it():
+    from akashic_sdk import ProtocolError
 
-    async def execute(_request: TurnRequest) -> ControlExecutionResult:
-        started.set()
-        await asyncio.Event().wait()
-        return ControlExecutionResult(response="unreachable")
+    finished = asyncio.Event()
+    async def accept(reader, writer):
+        try:
+            frame = json.loads(await reader.readline())
+            # 初始化响应的 error 缺 code；解析失败仍须唤醒已登记的等待者。
+            writer.write((json.dumps({"jsonrpc": "2.0", "id": frame["id"],
+                                      "error": {"message": "invalid"}}) + "\n").encode())
+            await writer.drain()
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            finished.set()
 
-    runtime = ConversationRuntime(sessions.control_store, execute)
-    server = SocketAppServer(
-        tmp_path / "control-busy.sock",
-        ControlService(runtime, sessions, tmp_path),
-    )
-    await server.start()
+    server = await asyncio.start_server(accept, "127.0.0.1", 0)
+    endpoint = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
     try:
-        async with await AsyncAkashic.connect(str(server.endpoint)) as client:
-            thread = await client.thread_start()
-            first = await thread.turn("u1")
-            await started.wait()
-
-            with pytest.raises(RemoteError) as captured:
-                await thread.turn("u2")
-
-            assert captured.value.retryable is True
-            assert captured.value.data == {"retryable": True}
-            assert (await first.interrupt())["status"] == "interrupted"
+        async with asyncio.timeout(2):
+            with pytest.raises(ProtocolError):
+                await AsyncAkashic.connect(endpoint)
+            await finished.wait()
     finally:
-        await server.stop()
-        await runtime.shutdown()
-        sessions.close()
-
-
-@pytest.mark.asyncio
-async def test_async_sdk_reads_terminal_frame_larger_than_streamreader_default(
-    tmp_path: Path,
-) -> None:
-    sessions = SessionManager(tmp_path)
-    response = "x" * (128 * 1024)
-
-    async def execute(_request: TurnRequest) -> ControlExecutionResult:
-        return ControlExecutionResult(response=response)
-
-    runtime = ConversationRuntime(sessions.control_store, execute)
-    server = SocketAppServer(
-        tmp_path / "large-terminal.sock",
-        ControlService(runtime, sessions, tmp_path),
-    )
-    await server.start()
-    try:
-        async with await AsyncAkashic.connect(str(server.endpoint)) as client:
-            thread = await client.thread_start()
-            result = await thread.run("large")
-            assert result["status"] == "completed"
-            assert result["finalResponse"] == response
-    finally:
-        await server.stop()
-        await runtime.shutdown()
-        sessions.close()
-
-
-@pytest.mark.asyncio
-async def test_64k_streamreader_ablation_rejects_large_ndjson_frame() -> None:
-    reader = asyncio.StreamReader(limit=64 * 1024)
-    reader.feed_data(b"x" * (128 * 1024) + b"\n")
-    reader.feed_eof()
-
-    with pytest.raises(ValueError, match="chunk"):
-        _ = await reader.readline()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("terminal_mode", "expected_status"),
-    (
-        ("completed", "completed"),
-        ("failed", "failed"),
-        ("interrupted", "interrupted"),
-        ("cancelled", "cancelled"),
-    ),
-)
-async def test_sdk_result_leaves_no_duplicate_terminal_in_turn_queue(
-    tmp_path: Path,
-    terminal_mode: str,
-    expected_status: str,
-) -> None:
-    """等待 result 和连接 barrier 后，turn queue 不得残留第二个终态。"""
-
-    sessions = SessionManager(tmp_path / terminal_mode)
-    started = asyncio.Event()
-
-    async def execute(request: TurnRequest) -> ControlExecutionResult:
-        if terminal_mode == "failed":
-            raise RuntimeError("sdk failure")
-        if terminal_mode in {"interrupted", "cancelled"}:
-            started.set()
-            await asyncio.Event().wait()
-        return ControlExecutionResult(response=request.input)
-
-    runtime = ConversationRuntime(sessions.control_store, execute)
-    server = SocketAppServer(
-        tmp_path / f"sdk-{terminal_mode}.sock",
-        ControlService(runtime, sessions, tmp_path),
-    )
-    await server.start()
-    try:
-        async with await AsyncAkashic.connect(str(server.endpoint)) as client:
-            thread = await client.thread_start()
-            handle = await thread.turn(terminal_mode)
-            if terminal_mode == "interrupted":
-                await started.wait()
-                _ = await handle.interrupt()
-            elif terminal_mode == "cancelled":
-                await started.wait()
-                await runtime.shutdown()
-
-            result = await handle.result()
-            assert result["status"] == expected_status
-
-            # turn/read 是同连接 barrier；响应到达后，之前的通知已经进入 SDK reader。
-            _ = await client.turn_read(thread.id, handle.id)
-            await asyncio.sleep(0)
-            assert handle._wire.turn_queues[handle.id].empty()
-    finally:
-        await server.stop()
-        await runtime.shutdown()
-        sessions.close()
-
-
-@pytest.mark.asyncio
-async def test_sync_sdk_has_turn_handle_and_thread_management_parity(tmp_path: Path) -> None:
-    sessions = SessionManager(tmp_path)
-
-    async def execute(request: TurnRequest) -> ControlExecutionResult:
-        return ControlExecutionResult(response=f"sync:{request.input}")
-
-    runtime = ConversationRuntime(sessions.control_store, execute)
-    server = SocketAppServer(tmp_path / "sync-control.sock", ControlService(runtime, sessions, tmp_path))
-    await server.start()
-
-    def exercise() -> None:
-        with Akashic.connect(str(server.endpoint)) as client:
-            thread = client.thread_start()
-            handle = thread.turn("hello")
-            events = list(handle.events())
-            result = handle.result()
-            assert events[-1]["method"] == "turn/completed"
-            assert result["finalResponse"] == "sync:hello"
-            assert client.turn_read(thread.id, handle.id)["status"] == "completed"
-            assert client.thread_read(thread.id)["id"] == thread.id
-            assert any(item["id"] == thread.id for item in client.thread_list()["data"])
-            assert client.thread_delete(thread.id)["deleted"] is True
-
-    try:
-        await asyncio.to_thread(exercise)
-    finally:
-        await server.stop()
-        await runtime.shutdown()
-        sessions.close()
+        server.close()
+        await server.wait_closed()

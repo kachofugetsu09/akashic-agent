@@ -1,0 +1,568 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "methods": {
+    "initialize": {
+      "$defs": {
+        "ClientCapabilities": {
+          "additionalProperties": false,
+          "properties": {
+            "reasoningEvents": {
+              "default": false,
+              "title": "Reasoningevents",
+              "type": "boolean"
+            }
+          },
+          "title": "ClientCapabilities",
+          "type": "object"
+        },
+        "ClientInfo": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            },
+            "version": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "version"
+          ],
+          "title": "ClientInfo",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/ClientCapabilities"
+        },
+        "clientInfo": {
+          "$ref": "#/$defs/ClientInfo"
+        },
+        "protocolVersion": {
+          "const": "2.0",
+          "title": "Protocolversion",
+          "type": "string"
+        },
+        "workspaceToken": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspacetoken"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "clientInfo"
+      ],
+      "title": "InitializeParams",
+      "type": "object"
+    },
+    "message/read": {
+      "additionalProperties": false,
+      "properties": {
+        "after_seq": {
+          "default": -1,
+          "minimum": -1,
+          "title": "After Seq",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "through_seq": {
+          "anyOf": [
+            {
+              "minimum": -1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Through Seq"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "MessageReadParams",
+      "type": "object"
+    },
+    "message/send": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Attachment Ids",
+          "type": "array"
+        },
+        "message_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Id"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning Effort"
+        },
+        "reply_to_message_id": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reply To Message Id"
+        },
+        "retry_of": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retry Of"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "maxLength": 1048576,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_id"
+      ],
+      "title": "MessageSendParams",
+      "type": "object"
+    },
+    "plugin/disable-and-drain": {
+      "additionalProperties": false,
+      "properties": {
+        "plugin_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Plugin Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin_id"
+      ],
+      "title": "PluginIdParams",
+      "type": "object"
+    },
+    "plugin/discard": {
+      "additionalProperties": false,
+      "properties": {
+        "update_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Update Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "update_id"
+      ],
+      "title": "UpdateIdParams",
+      "type": "object"
+    },
+    "plugin/install": {
+      "additionalProperties": false,
+      "properties": {
+        "marketplace": {
+          "default": "local",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Marketplace",
+          "type": "string"
+        },
+        "ref": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Ref",
+          "type": "string"
+        },
+        "source": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "sparse": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Sparse",
+          "type": "array"
+        },
+        "update_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Update Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "update_id",
+        "source"
+      ],
+      "title": "InstallParams",
+      "type": "object"
+    },
+    "plugin/promote": {
+      "additionalProperties": false,
+      "properties": {
+        "update_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Update Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "update_id"
+      ],
+      "title": "UpdateIdParams",
+      "type": "object"
+    },
+    "plugin/status": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "StrictModel",
+      "type": "object"
+    },
+    "plugin/uninstall": {
+      "additionalProperties": false,
+      "properties": {
+        "plugin_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Plugin Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin_id"
+      ],
+      "title": "PluginIdParams",
+      "type": "object"
+    },
+    "plugin/update": {
+      "additionalProperties": false,
+      "properties": {
+        "update_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Update Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "update_id"
+      ],
+      "title": "UpdateIdParams",
+      "type": "object"
+    },
+    "programmatic/message/pause": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_id"
+      ],
+      "title": "PauseParams",
+      "type": "object"
+    },
+    "programmatic/message/result": {
+      "additionalProperties": false,
+      "properties": {
+        "input_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Input Id",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "input_id"
+      ],
+      "title": "ResultParams",
+      "type": "object"
+    },
+    "programmatic/message/resume": {
+      "additionalProperties": false,
+      "properties": {
+        "input_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Input Id",
+          "type": "string"
+        },
+        "message_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_id",
+        "input_id"
+      ],
+      "title": "ResumeParams",
+      "type": "object"
+    },
+    "programmatic/message/send": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Message Id",
+          "type": "string"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 1048576,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "message_id",
+        "text"
+      ],
+      "title": "SendParams",
+      "type": "object"
+    },
+    "programmatic/session/admit": {
+      "additionalProperties": false,
+      "properties": {
+        "persist_memory": {
+          "default": false,
+          "title": "Persist Memory",
+          "type": "boolean"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "AdmitParams",
+      "type": "object"
+    },
+    "server/status": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "StrictModel",
+      "type": "object"
+    },
+    "session/create": {
+      "additionalProperties": false,
+      "properties": {},
+      "title": "StrictModel",
+      "type": "object"
+    },
+    "session/follow": {
+      "additionalProperties": false,
+      "properties": {
+        "after_seq": {
+          "default": -1,
+          "minimum": -1,
+          "title": "After Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "subscription_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Subscription Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "subscription_id"
+      ],
+      "title": "SessionFollowParams",
+      "type": "object"
+    },
+    "session/list": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor"
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "SessionListParams",
+      "type": "object"
+    },
+    "session/unfollow": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "subscription_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Subscription Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "subscription_id"
+      ],
+      "title": "SessionUnfollowParams",
+      "type": "object"
+    }
+  },
+  "notifications": [
+    "session/event",
+    "session/error"
+  ],
+  "protocolVersion": "2.0",
+  "title": "Akashic App Server Protocol v2",
+  "transport": "JSON-RPC 2.0 NDJSON"
+}

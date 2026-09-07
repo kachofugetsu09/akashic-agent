@@ -41,7 +41,7 @@ from bus.events import (
 )
 from bus.queue import MessageBus
 from bus.events import channel_message_from_outbound
-from bootstrap.channel_attachment_import import import_channel_attachments
+from infra.channels.attachment_import import import_channel_attachments
 from core.common.diagnostic_log import turn_milestone
 
 logger = logging.getLogger(__name__)

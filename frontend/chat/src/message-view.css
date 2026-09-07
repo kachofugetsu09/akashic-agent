@@ -939,6 +939,29 @@ button.tool-step-summary:active {
   background: var(--ak-color-bg-canvas);
 }
 
+/* Message 正文类型只决定布局；作者与来源由消息元数据呈现。 */
+.timeline-message { display: flex; flex-direction: column; gap: 0.5rem; }
+.timeline-input { align-items: flex-end; }
+.timeline-message .agent-content { min-width: 0; }
+.timeline-message .user-bubble { min-width: 0; }
+.timeline-details { margin-block: 0.5rem; color: var(--ak-color-text-secondary); }
+.timeline-details summary { cursor: pointer; padding-block: 0.5rem; overflow-wrap: anywhere; }
+.timeline-details summary:focus-visible,
+.timeline-result-heading button:focus-visible { outline: 2px solid var(--ak-color-text-primary); outline-offset: 3px; }
+.timeline-details pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8125rem; max-height: 32rem; overflow-y: auto; }
+.timeline-details p { overflow-wrap: anywhere; }
+.timeline-control-summary, .timeline-result-heading { border-inline-start: 2px solid var(--ak-color-border-default); padding-inline-start: 0.875rem; }
+.reply-activity { padding-block: 0.75rem; overflow-wrap: anywhere; }
+.reply-activity-label { display: flex; gap: 0.75rem; color: var(--ak-color-text-secondary); font-size: 0.8125rem; }
+.reply-unavailable { color: var(--ak-color-text-secondary); font-size: 0.8125rem; text-align: center; }
+.timeline-control-summary strong, .timeline-result-heading strong { font-size: 0.875rem; }
+.timeline-result-heading button { display: block; min-height: 2.75rem; text-decoration: underline; font-size: 0.8125rem; }
+.timeline-result-heading button:disabled { text-decoration: none; color: var(--ak-color-text-secondary); }
+.timeline-state { color: var(--ak-color-text-secondary); font-size: 0.8125rem; }
+.timeline-meta { flex-wrap: wrap; overflow-wrap: anywhere; }
+.timeline-meta details { max-width: 100%; }
+.timeline-meta pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.timeline-input > .timeline-meta { justify-content: flex-end; }
 /* 首段内容到达前保持轻量反馈，不把网络等待伪装成推理内容。 */
 .thinking-placeholder {
   display: flex;

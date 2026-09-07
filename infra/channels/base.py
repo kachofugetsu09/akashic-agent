@@ -3,11 +3,8 @@ from __future__ import annotations
 import os
 from collections import deque
 from pathlib import Path
-from typing import Callable
 from uuid import uuid4
 
-from session.manager import SessionManager
-from session.store import ChannelIdentityWriteReceipt
 
 
 class AttachmentStore:
@@ -71,86 +68,6 @@ class AttachmentStore:
         path = root / f"{prefix}{uuid4().hex}{suffix}"
         os.replace(staging_path, path)
         return path
-
-
-class SessionIdentityIndex:
-    """维护 identity -> chat_id 的索引，并同步写入 session metadata。"""
-
-    def __init__(
-        self,
-        session_manager: SessionManager,
-        *,
-        channel: str,
-        metadata_key: str,
-        normalizer: Callable[[str], str] | None = None,
-    ) -> None:
-        self._session_manager = session_manager
-        self._channel = channel
-        self._metadata_key = metadata_key
-        self._normalizer = normalizer or (lambda value: value)
-        self.mapping: dict[str, str] = {}
-
-    def rebuild(self) -> dict[str, str]:
-        self.mapping.clear()
-        durable = self._session_manager.get_channel_identities(self._channel)
-        if self._session_manager.channel_identity_migration_completed(self._channel):
-            self.mapping.update(durable)
-            return dict(self.mapping)
-        seeded: dict[str, tuple[str, str]] = {}
-        for entry in self._session_manager.get_channel_metadata(self._channel):
-            raw_value = entry["metadata"].get(self._metadata_key)
-            if not isinstance(raw_value, str):
-                continue
-            normalized = self._normalize(raw_value)
-            if normalized:
-                seeded[normalized] = (
-                    entry["chat_id"],
-                    entry["updated_at"],
-                )
-        self._session_manager.seed_channel_identities(self._channel, seeded)
-        self.mapping.update(
-            self._session_manager.get_channel_identities(self._channel)
-        )
-        return dict(self.mapping)
-
-    def resolve(self, identity: str) -> str | None:
-        normalized = self._normalize(identity)
-        if not normalized:
-            return None
-        durable = self._session_manager.get_channel_identities(self._channel)
-        self.mapping.clear()
-        self.mapping.update(durable)
-        return self.mapping.get(normalized)
-
-    async def remember(
-        self,
-        identity: str,
-        chat_id: str,
-    ) -> ChannelIdentityWriteReceipt | None:
-        normalized = self._normalize(identity)
-        if not normalized:
-            return None
-        receipt = await self._session_manager.remember_channel_identity(
-            channel=self._channel,
-            identity=normalized,
-            chat_id=chat_id,
-            metadata_key=self._metadata_key,
-        )
-        self.mapping[normalized] = chat_id
-        return receipt
-
-    async def rollback(self, receipt: ChannelIdentityWriteReceipt) -> bool:
-        """撤销失败 acceptance 尚未被并发状态取代的 identity 写入。"""
-
-        rolled_back = await self._session_manager.rollback_channel_identity(receipt)
-        self.mapping.clear()
-        self.mapping.update(
-            self._session_manager.get_channel_identities(self._channel)
-        )
-        return rolled_back
-
-    def _normalize(self, value: str) -> str:
-        return self._normalizer((value or "").strip())
 
 
 class MessageDeduper:

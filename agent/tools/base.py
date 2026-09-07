@@ -87,6 +87,11 @@ class ToolResult:
     content_blocks: list[dict[str, Any]] = field(default_factory=list)
     mobile_attention: Literal["confirmation"] | None = None
     runtime_provenance: dict[str, str] = field(default_factory=dict)
+    is_error: bool = False
+
+    def __post_init__(self) -> None:
+        if type(self.is_error) is not bool:
+            raise TypeError("工具 is_error 必须是 bool")
 
     def preview(self) -> str:
         if self.text:

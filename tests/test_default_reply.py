@@ -16,22 +16,28 @@ from session.message import Input, Output, ToolResult
 
 @asynccontextmanager
 async def application(tmp_path, *, replying, start=True, missing_tool=False, discovery=False, compaction=False,
-                      output_tokens=4096, keep_recent_tokens=128, summary_padding=0):
+                      output_tokens=4096, keep_recent_tokens=128, summary_padding=0, provider_effect_data=False,
+                      updates=False, validation_passed=True, extra_sources=None):
     sources = tmp_path / "plugins"
-    for name in ("content", "context", "tools", "conversation", "react", "turn_projection", *(('reply',) if replying else ())):
+    for name in ("sources", "content", "context", "tools", "conversation", "react", "turn_projection", *(('reply',) if replying else ())):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     if discovery:
         shutil.copytree(Path(__file__).parents[1] / "plugins/tool_search", sources / "tool_search",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+    if updates:
+        from tests.test_delivery_bindings import sources as delivery_sources
+        delivery_sources(sources)
+        shutil.copytree(Path(__file__).parents[1] / "plugins/plugin_update", sources / "plugin_update",
                         ignore=shutil.ignore_patterns("__pycache__"))
     if compaction:
         shutil.copytree(Path(__file__).parents[1] / "plugins/compaction", sources / "compaction",
                         ignore=shutil.ignore_patterns("__pycache__"))
         (sources / "compaction/akashic.plugin.toml").write_text(
             'schema_version = 1\nname = "compaction"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
-        module = sources / "context/plugin.py"
-        module.write_text(module.read_text().replace('summary_source: tuple[str, str] | None = None',
-            'summary_source: tuple[str, str] | None = ("compaction", "compaction")'))
+        settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text('summary_source = ["compaction", "compaction"]\n')
         module = sources / "compaction/message_plugin.py"
         module.write_text(module.read_text().replace('Field(default=20_000,', f'Field(default={keep_recent_tokens},'))
         reply = sources / 'reply/plugin.py'
@@ -102,6 +108,15 @@ async def apply(ctx, config):
     await ctx.provide(MODEL_CALLS, store.read_call)
     await ctx.provide(ServiceKey("fixture.calls"), calls)
 '''.replace("EFFECT_PATH", repr(str(tmp_path / "effect.txt"))))
+    if provider_effect_data:
+        module = provider / "plugin.py"
+        module.write_text(module.read_text().replace(
+            repr(str(tmp_path / "effect.txt")), 'ctx.runtime.data_dir / "effect.txt"'))
+    if updates:
+        import json
+        module = provider / "plugin.py"
+        verdict = json.dumps({"passed": validation_passed, "reason": "tool evidence checked"})
+        module.write_text(module.read_text().replace('return LLMResponse("finished")', f'return LLMResponse({verdict!r})'))
     if discovery:
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
@@ -115,13 +130,15 @@ async def apply(ctx, config):
                 return LLMResponse("\\n".join(heading + "\\nPreserved facts." for heading in HEADINGS))
             business.append(request)
             if len(business) == 1:''').replace("Preserved facts.", "Preserved facts." + "z" * summary_padding))
+    if extra_sources is not None:
+        extra_sources(sources)
     log = MessageLog(tmp_path / "sessions.db")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home", message_log=log)
+                         installed_cache_root=tmp_path / "home/cache", message_log=log)
     try:
         await host.load_all()
         if start:
-            await host._start_current_runtime_snapshot()
+            await host.start_runtime()
         yield log, host
     finally:
         await host.terminate_all()
@@ -161,7 +178,7 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
 async def test_bad_reply_tool_configuration_fails_before_consuming_any_input(tmp_path):
     async with application(tmp_path, replying=True, start=False, missing_tool=True) as (log, host):
         with pytest.raises(ValueError, match="未安装的工具"):
-            await host._start_current_runtime_snapshot()
+            await host.start_runtime()
         assert log.catalog().snapshot_heads() == {}
 
 
@@ -208,7 +225,7 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
             writer.append(f"old-a{index}", Output((ContentPart("text", f"old answer {index}: " + "y" * size),), "complete"))
         writer.append("current", Input((ContentPart("text", "current request"),)))
         original = log.reader("s").snapshot()
-        await host._start_current_runtime_snapshot()
+        await host.start_runtime()
         async def completed():
             async for _ in log.catalog().follow():
                 rows = log.reader("s").snapshot()

@@ -1,8 +1,9 @@
+import { mergeTimelineMessages, readMessageLogFrame, type ReplyActivity, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Duration, Effect, Fiber, Schedule } from "effect";
 import { createUuid, createUuidV7 } from "./browser-uuid.ts";
 import type { ChatMessage } from "./chat-message";
-import { desktopComposerReplyPreview, type ComposerFile } from "./desktop-composer";
+import type { ComposerFile } from "./desktop-composer";
 import { loadWebPluginCatalog } from "./mobile-plugin-runtime";
 import { StreamProjectionStore } from "./stream-projection";
 import { canProjectWebStreamWithoutRoot, publishWebStreamChanges } from "./web-stream-projection";
@@ -13,7 +14,7 @@ import {
   errorMessage,
   fetchChatJson,
   isAbortError,
-  sessionRows,
+  sessionPage,
   uploadFiles,
   webShellState,
   type ChatModelState,
@@ -22,52 +23,25 @@ import {
 } from "./web-chat-data";
 import {
   formatNavigationTime,
-  isVisibleChatRow,
-  rowToMessage,
   sessionLabel,
   uploadedFileToAttachment,
 } from "./web-chat-message-data";
-import { ClientTurnMetricsTracker } from "./stream-turn-metrics";
-import { applyChatFrame, parseChatFrame, sendWhenOpen, traceKindForChatFrame, type ChatFrame } from "./web-chat-transport";
+import { parseChatFrame, sendWhenOpen } from "./web-chat-transport";
 import { webTurnTrace } from "./web-turn-trace";
 
-function outputTokensFromFrame(frame: ChatFrame): number | null {
-  if (frame.type !== "message.final") return null;
-  const metadata = frame.metadata;
-  if (!metadata) return null;
-  const usage = metadata.model_usage ?? metadata.usage;
-  if (typeof usage !== "object" || usage === null) return null;
-  const record = usage as Record<string, unknown>;
-  const raw = record.completion_tokens ?? record.output_tokens ?? record.outputTokens;
-  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : null;
-}
-
-function observeTurnMetrics(tracker: ClientTurnMetricsTracker, frame: ChatFrame): void {
-  if (frame.type === "turn.started") {
-    tracker.onTurnStarted(frame.turn_id);
-    return;
-  }
-  if (frame.type === "react.thinking.delta" || frame.type === "answer.delta") {
-    tracker.onDelta(frame.turn_id, frame.delta);
-    return;
-  }
-  if (frame.type === "message.final") {
-    if (frame.metadata?.source === "message_push") return;
-    tracker.onSettled(frame.turn_id, outputTokensFromFrame(frame));
-    return;
-  }
-  if (frame.type === "turn.interrupted" || frame.type === "error") {
-    tracker.onInterrupted();
-  }
-}
-
-function attachSession(socket: WebSocket | null, sessionId: string): void {
+function followSession(socket: WebSocket | null, sessionId: string, afterSeq: number): void {
   if (!sessionId || socket?.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify({
-    type: "session.attach",
+    type: "session.follow", version: 2, after_seq: afterSeq,
     request_id: createUuid(),
     session_id: sessionId,
   }));
+}
+
+function replyChatStatus(items: ReplyActivity[], pending: number): ChatStatus {
+  if (pending) return "submitted";
+  if (items.some((item) => item.active)) return "streaming";
+  return items.length ? "finalizing" : "idle";
 }
 
 export function useDesktopChatController() {
@@ -78,7 +52,17 @@ export function useDesktopChatController() {
   const [activeSessionId, setActiveSessionId] = useState("");
   const [pendingSessionId, setPendingSessionId] = useState("");
   const [streamStore] = useState(() => new StreamProjectionStore<ChatMessage>());
-  const [turnMetrics] = useState(() => new ClientTurnMetricsTracker());
+  const [timelineMessages, setTimelineState] = useState<TimelineMessage[]>([]);
+  const timelineRef = useRef<TimelineMessage[]>([]);
+  const setTimelineMessages = useCallback((next: TimelineMessage[]) => {
+    timelineRef.current = next;
+    setTimelineState(next);
+  }, []);
+  const followAfterRef = useRef<number | null>(null);
+  const [replyActivities, setReplyActivities] = useState<ReplyActivity[]>([]);
+  const replyActivitiesRef = useRef<ReplyActivity[]>([]);
+  const [replyAvailable, setReplyAvailable] = useState<boolean | null>(null);
+  const [historyThroughSeq, setHistoryThroughSeq] = useState<number | null>(null);
   const [messages, setMessagesState] = useState<ChatMessage[]>([]);
   const [historyBeforeSeq, setHistoryBeforeSeq] = useState<number | null>(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
@@ -116,7 +100,7 @@ export function useDesktopChatController() {
   const [error, setError] = useState("");
   const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
   const [shellState, setShellState] = useState<WebShellState | null>(null);
-  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
+  const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [modelState, setModelState] = useState<ChatModelState | null>(null);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState("");
@@ -124,6 +108,7 @@ export function useDesktopChatController() {
   const [modelSelectionDirty, setModelSelectionDirty] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const connectionTaskRef = useRef<Fiber.RuntimeFiber<void> | null>(null);
+  const connectRef = useRef<(() => WebSocket) | null>(null);
   const [reconnect] = useState(() => Effect.runSync(Schedule.driver(Schedule.exponential("1 second").pipe(
     Schedule.modifyDelay((_, delay) => Math.min(Duration.toMillis(delay), 30_000)),
     Schedule.jitteredWith({ min: 0, max: 1 }),
@@ -133,8 +118,6 @@ export function useDesktopChatController() {
   const activeSessionRef = useRef("");
   const statusRef = useRef<ChatStatus>("idle");
   const statusLiveRef = useRef<ChatStatus>("idle");
-  const activeTurnIdRef = useRef<string | null>(null);
-  const liveProjectionRevisionRef = useRef(0);
   const sessionsRequestRef = useRef<AbortController | null>(null);
   const messagesRequestRef = useRef<AbortController | null>(null);
   const olderMessagesRequestRef = useRef<AbortController | null>(null);
@@ -163,9 +146,19 @@ export function useDesktopChatController() {
     const controller = new AbortController();
     sessionsRequestRef.current = controller;
     try {
-      const payload = await fetchChatJson<unknown>("/api/chat/sessions?page=1&page_size=80", { signal: controller.signal });
-      const items = sessionRows(payload);
-      setSessions(items.filter((session) => session.first_message_content?.trim()));
+      const items = new Map<string, SessionRow>();
+      const cursors = new Set<string>();
+      let query = "page_size=80";
+      while (true) {
+        const page = sessionPage(await fetchChatJson<unknown>(`/api/chat/sessions?${query}`, { signal: controller.signal }));
+        if (controller.signal.aborted) return;
+        page.items.forEach((session) => { if (!items.has(session.key)) items.set(session.key, session); });
+        if (!page.nextCursor) break;
+        query = `page_size=80&after_time=${encodeURIComponent(page.nextCursor.updated_at)}&after_key=${encodeURIComponent(page.nextCursor.session_id)}`;
+        if (cursors.has(query)) throw new Error("会话目录游标未前进");
+        cursors.add(query);
+      }
+      setSessions([...items.values()]);
     } finally {
       if (sessionsRequestRef.current === controller) sessionsRequestRef.current = null;
     }
@@ -173,31 +166,36 @@ export function useDesktopChatController() {
 
   const loadMessages = useCallback(async (sessionId: string) => {
     messagesRequestRef.current?.abort();
+    olderMessagesRequestRef.current?.abort();
     const controller = new AbortController();
     messagesRequestRef.current = controller;
     const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
-    const projectionRevision = liveProjectionRevisionRef.current;
     try {
       const page = chatHistoryPage(
         await fetchChatJson<unknown>(`${endpoint}?page_size=50`, { signal: controller.signal }),
         endpoint,
       );
       if (
-        activeSessionRef.current !== sessionId
-        || liveProjectionRevisionRef.current !== projectionRevision
+        controller.signal.aborted
+        || activeSessionRef.current !== sessionId
       ) return;
+      if (page.items.some((row) => row.session_id !== sessionId)) throw new Error("历史页属于其他会话");
       streamStore.clear();
-      setMessages(page.items.filter(isVisibleChatRow).map(rowToMessage));
+      setMessages([]);
+      setTimelineMessages(page.items);
+      followAfterRef.current = page.throughSeq;
+      setHistoryThroughSeq(page.throughSeq);
       setHistoryBeforeSeq(page.beforeSeq);
       setHistoryHasMore(page.hasMore);
+      followSession(socketRef.current ?? connectRef.current?.() ?? null, sessionId, page.throughSeq);
     } finally {
       if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
     }
-  }, [setMessages, streamStore]);
+  }, [setMessages, setTimelineMessages, streamStore]);
 
   const loadOlderMessages = useCallback(async () => {
     const sessionId = activeSessionRef.current;
-    if (!sessionId || historyBeforeSeq === null || historyLoadingOlder) return;
+    if (!sessionId || historyBeforeSeq === null || historyThroughSeq === null || historyLoadingOlder) return;
     olderMessagesRequestRef.current?.abort();
     const controller = new AbortController();
     olderMessagesRequestRef.current = controller;
@@ -205,18 +203,14 @@ export function useDesktopChatController() {
     const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
     try {
       const page = chatHistoryPage(await fetchChatJson<unknown>(
-        `${endpoint}?page_size=50&before_seq=${historyBeforeSeq}`,
+        `${endpoint}?page_size=50&before_seq=${historyBeforeSeq}&through_seq=${historyThroughSeq}`,
         { signal: controller.signal },
       ), endpoint);
-      if (activeSessionRef.current !== sessionId) return;
-      setMessages((current) => {
-        const existingIds = new Set(current.map((message) => message.id));
-        const older = page.items
-          .filter(isVisibleChatRow)
-          .map(rowToMessage)
-          .filter((message) => !existingIds.has(message.id));
-        return older.length ? [...older, ...current] : current;
-      });
+      if (controller.signal.aborted || activeSessionRef.current !== sessionId) return;
+      if (page.throughSeq !== historyThroughSeq || page.items.some((row) => row.session_id !== sessionId)) {
+        throw new Error("历史页上界或会话发生变化");
+      }
+      setTimelineMessages(mergeTimelineMessages(timelineRef.current, page.items));
       setHistoryBeforeSeq(page.beforeSeq);
       setHistoryHasMore(page.hasMore);
     } finally {
@@ -225,7 +219,7 @@ export function useDesktopChatController() {
         setHistoryLoadingOlder(false);
       }
     }
-  }, [historyBeforeSeq, historyLoadingOlder, setMessages]);
+  }, [historyBeforeSeq, historyThroughSeq, historyLoadingOlder, setTimelineMessages]);
 
   useEffect(() => {
     streamStore.reconcileBaseline(messages);
@@ -269,39 +263,6 @@ export function useDesktopChatController() {
     return () => window.removeEventListener("message", handleModelsChanged);
   }, [loadModels, reportError]);
 
-  /** 校验网络帧，再更新当前会话的消息投影。 */
-  const receiveFrame = useCallback((event: MessageEvent) => {
-    console.debug("[chat-ui] ws message", typeof event.data);
-    try {
-      const frame = parseChatFrame(JSON.parse(String(event.data)));
-      if ("session_id" in frame && frame.session_id === activeSessionRef.current) {
-        liveProjectionRevisionRef.current += 1;
-      }
-      const traceKind = traceKindForChatFrame(frame);
-      if (traceKind !== undefined && "session_id" in frame && "turn_id" in frame) {
-        webTurnTrace.observeFrame(frame.session_id, frame.turn_id, traceKind);
-      }
-      observeTurnMetrics(turnMetrics, frame);
-      applyChatFrame(frame, {
-        activeSessionId: () => activeSessionRef.current,
-        activateSession: (sessionId) => {
-          activeSessionRef.current = sessionId;
-          setActiveSessionId(sessionId);
-        },
-        setError,
-        setMessages,
-        getStatus: () => statusLiveRef.current,
-        setStatus: setStatusLive,
-        getActiveTurnId: () => activeTurnIdRef.current,
-        setActiveTurnId: (turnId) => { activeTurnIdRef.current = turnId; },
-        loadSessions: loadSessionsSafely,
-        loadMessages: loadMessagesSafely,
-      });
-    } catch (error) {
-      reportError(error, "error");
-    }
-  }, [loadMessagesSafely, loadSessionsSafely, reportError, setMessages, setStatusLive, turnMetrics]);
-
   const closeConnection = useCallback(() => {
     // React 可立即重新挂载；先撤销旧连接，不能等异步 finalizer 才清引用。
     socketRef.current = null;
@@ -317,19 +278,53 @@ export function useDesktopChatController() {
     const url = `${protocol}://${window.location.host}/ws`;
     const first = new WebSocket(url);
     socketRef.current = first;
-    // 任务拥有整个重连循环；每次连接结束都先释放 socket 和监听器。
     connectionTaskRef.current = Effect.runFork(Effect.gen(function*() {
       let socket = first;
       while (true) {
         const current = socket;
         const event = yield* Effect.async<CloseEvent>((resume) => {
-          current.onmessage = (event) => { if (socketRef.current === current) receiveFrame(event); };
+          current.onmessage = (event) => {
+            if (socketRef.current !== current) return;
+            console.debug("[chat-ui] ws message", typeof event.data);
+            try {
+              const value: unknown = JSON.parse(String(event.data));
+              const frame = readMessageLogFrame(value);
+              if (frame) {
+                if (frame.session_id !== activeSessionRef.current) return;
+                if (frame.type === "messages.appended") {
+                  if (frame.after_seq !== followAfterRef.current) throw new Error("实时消息游标不连续，请重新连接");
+                  setTimelineMessages(mergeTimelineMessages(timelineRef.current, frame.items));
+                  followAfterRef.current = frame.next_after_seq;
+                  const saved = new Set(frame.items.map((item) => item.id));
+                  setMessages((currentMessages) => currentMessages.filter((item) => !saved.has(item.id)));
+                  setStatusLive(replyChatStatus(replyActivitiesRef.current, messagesRef.current.length));
+                  void loadSessionsSafely();
+                } else if (frame.type === "reply.status") {
+                  replyActivitiesRef.current = frame.items;
+                  setReplyActivities(frame.items);
+                  setReplyAvailable(frame.available);
+                  setStatusLive(replyChatStatus(frame.items, messagesRef.current.length));
+                }
+                return;
+              }
+              const other = parseChatFrame(value);
+              if (other.type === "error") {
+                setMessages((currentMessages) => currentMessages.filter((item) => item.id !== other.request_id));
+                reportError(new Error(other.message), "error");
+              }
+            } catch (error) {
+              reportError(error, "error");
+            }
+          };
           current.onopen = () => {
             if (socketRef.current !== current) return;
             Effect.runSync(reconnect.reset);
+            console.info("[chat-ui] ws connected", current.url);
             const sessionId = activeSessionRef.current;
-            attachSession(current, sessionId);
-            if (sessionId) loadMessagesSafely(sessionId);
+            if (sessionId) {
+              if (followAfterRef.current === null) void loadMessagesSafely(sessionId);
+              else followSession(current, sessionId, followAfterRef.current);
+            }
           };
           current.onerror = () => current.close();
           current.onclose = (event) => resume(Effect.succeed(event));
@@ -339,6 +334,9 @@ export function useDesktopChatController() {
           current.close(1000, "connection released");
         })));
         console.warn("[chat-ui] ws close", { code: event.code, reason: event.reason });
+        replyActivitiesRef.current = [];
+        setReplyActivities([]);
+        setReplyAvailable(null);
         if (event.code !== 1000 && event.code !== 1013) reportError(new Error("聊天连接已关闭"), "error");
         yield* reconnect.next(undefined);
         socket = yield* Effect.sync(() => new WebSocket(url));
@@ -346,17 +344,12 @@ export function useDesktopChatController() {
       }
     }).pipe(Effect.catchAll(() => Effect.sync(() => reportError(new Error("聊天连接已断开，请刷新页面重试"), "error")))));
     return first;
-  }, [closeConnection, loadMessagesSafely, receiveFrame, reconnect, reportError]);
-
-  useEffect(() => {
-    connect();
-    return closeConnection;
-  }, [closeConnection, connect]);
+  }, [closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reportError, setMessages, setStatusLive, setTimelineMessages]);
 
   useEffect(() => {
     // 请求结束后再等待下一次轮询；中断任务会把 AbortSignal 传给 fetch。
     const task = Effect.runFork(Effect.tryPromise({
-      try: async (signal) => webShellState(await fetchChatJson<unknown>("/api/shell/state", { signal })),
+      try: (signal) => fetchChatJson<unknown>("/api/shell/state", { signal }).then(webShellState),
       catch: (error) => error,
     }).pipe(
       Effect.tap((next) => Effect.sync(() => setShellState(next))),
@@ -365,6 +358,15 @@ export function useDesktopChatController() {
     ));
     return () => { Effect.runFork(Fiber.interrupt(task)); };
   }, [reportError]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
+
+  useEffect(() => {
+    connect();
+    return closeConnection;
+  }, [closeConnection, connect]);
 
   useEffect(() => {
     if (!chatReady) return;
@@ -390,13 +392,18 @@ export function useDesktopChatController() {
   }, [chatReady, reportError]);
 
   const ensureSession = useCallback(async () => {
-    if (activeSessionRef.current) return activeSessionRef.current;
+    if (activeSessionRef.current) {
+      const sessionId = activeSessionRef.current;
+      if (followAfterRef.current === null) await loadMessages(sessionId);
+      return sessionId;
+    }
     const sessionId = `akashic:${createUuid().replaceAll("-", "")}`;
     activeSessionRef.current = sessionId;
-    attachSession(socketRef.current, sessionId);
+    followAfterRef.current = -1;
+    followSession(socketRef.current, sessionId, -1);
     setActiveSessionId(sessionId);
     return sessionId;
-  }, []);
+  }, [loadMessages]);
 
   const sendMessage = useCallback(async (text: string, files: ComposerFile[]) => {
     const cleanText = text.trim();
@@ -412,6 +419,7 @@ export function useDesktopChatController() {
     const reply = replyTarget;
     try {
       const sessionId = await ensureSession();
+      controller.signal.throwIfAborted();
       console.info("[chat-ui] sendMessage", {
         sessionId,
         textLength: cleanText.length,
@@ -429,11 +437,6 @@ export function useDesktopChatController() {
           blocks: [],
           createdAt: new Date().toISOString(),
           canonical: false,
-          reply: reply ? {
-            messageId: reply.id,
-            role: reply.role,
-            preview: desktopComposerReplyPreview(reply),
-          } : undefined,
         },
       ]);
       const payload: Record<string, unknown> = {
@@ -467,6 +470,7 @@ export function useDesktopChatController() {
       sendRequestRef.current.abort();
       if (socketRef.current?.readyState === WebSocket.CONNECTING) {
         closeConnection();
+        socketRef.current = null;
         statusRef.current = "idle";
       }
       setStatus("idle");
@@ -477,13 +481,12 @@ export function useDesktopChatController() {
     stopRequestRef.current = controller;
     setStopPending(true);
     void sendWhenOpen(connect(), {
-      type: "turn.stop",
+      type: "message.send", text: "/stop", media: [],
       request_id: createUuid(),
       session_id: activeSessionId,
     }, controller.signal)
       .then(() => {
-        console.debug("[chat-ui] turn.stop acknowledged", { activeSessionId });
-        setStatus("idle");
+        console.debug("[chat-ui] stop request sent", { activeSessionId });
       })
       .catch((error: unknown) => reportError(error, "error"))
       .finally(() => {
@@ -496,6 +499,7 @@ export function useDesktopChatController() {
     setSurface("chat");
     window.history.replaceState(null, "", window.location.pathname);
     activeSessionRef.current = "";
+    closeConnection();
     messagesRequestRef.current?.abort();
     olderMessagesRequestRef.current?.abort();
     modelsRequestRef.current?.abort();
@@ -504,6 +508,12 @@ export function useDesktopChatController() {
     setActiveSessionId("");
     setPendingSessionId("");
     setMessages([]);
+    setTimelineMessages([]);
+    followAfterRef.current = null;
+    replyActivitiesRef.current = [];
+    setReplyActivities([]);
+    setReplyAvailable(null);
+    setHistoryThroughSeq(null);
     setHistoryBeforeSeq(null);
     setHistoryHasMore(false);
     setHistoryLoadingOlder(false);
@@ -514,17 +524,29 @@ export function useDesktopChatController() {
     setSelectedReasoningEffort("");
     setModelSelectionDirty(false);
     void loadModels("").catch((error: unknown) => reportError(error));
-  }, [loadModels, reportError, setMessages]);
+  }, [closeConnection, loadModels, reportError, setMessages, setTimelineMessages]);
 
   const activateSession = useCallback((sessionId: string) => {
     if (surface === "chat" && activeSessionRef.current === sessionId) return;
     setSurface("chat");
     window.history.replaceState(null, "", window.location.pathname);
     activeSessionRef.current = sessionId;
-    attachSession(socketRef.current, sessionId);
+    sendRequestRef.current?.abort();
+    stopRequestRef.current?.abort();
+    closeConnection();
+    followAfterRef.current = null;
+    replyActivitiesRef.current = [];
+    setReplyActivities([]);
+    setReplyAvailable(null);
+    setStatusLive("idle");
+    setStopPending(false);
     olderMessagesRequestRef.current?.abort();
     setActiveSessionId(sessionId);
     setPendingSessionId(sessionId);
+    setTimelineMessages([]);
+    setMessages([]);
+    setHistoryBeforeSeq(null);
+    setHistoryHasMore(false);
     setReplyTarget(null);
     setModelState(null);
     setSelectedRuntimeId("");
@@ -534,13 +556,13 @@ export function useDesktopChatController() {
       .finally(() => {
         if (activeSessionRef.current === sessionId) setPendingSessionId("");
       });
-  }, [loadMessages, loadModels, reportError, surface]);
+  }, [closeConnection, loadMessages, loadModels, reportError, setMessages, setTimelineMessages, setStatusLive, surface]);
 
   const openRuntime = useCallback(() => {
     setSurface("runtime");
     window.history.replaceState(null, "", `${window.location.pathname}?surface=runtime`);
   }, []);
-  const handleReplyMessage = useCallback((message: ChatMessage) => setReplyTarget(message), []);
+  const handleReplyMessage = useCallback((reply: TimelineReply) => setReplyTarget(reply), []);
   const handleModelChange = useCallback((runtimeId: string, effort: string) => {
     setSelectedRuntimeId(runtimeId);
     setSelectedReasoningEffort(effort);
@@ -560,15 +582,22 @@ export function useDesktopChatController() {
   })), [activeSessionId, sessions]);
   const retry = useCallback(() => {
     setError("");
+    closeConnection();
+    replyActivitiesRef.current = [];
+    setReplyActivities([]);
+    setReplyAvailable(null);
+    const sessionId = activeSessionRef.current;
+    if (sessionId && timelineRef.current.length) void loadMessagesSafely(sessionId);
+    else connect();
     void loadSessionsSafely();
     if (shellState?.chatReady) {
       void loadModels(activeSessionRef.current).catch((reason: unknown) => reportError(reason));
     }
-  }, [loadModels, loadSessionsSafely, reportError, shellState?.chatReady]);
+  }, [closeConnection, connect, loadMessagesSafely, loadModels, loadSessionsSafely, reportError, shellState?.chatReady]);
 
   return {
-    surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, status,
-    streamStore, turnMetrics, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
+    surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
+    streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
     historyHasMore, historyLoadingOlder, loadOlderMessages,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
     activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,

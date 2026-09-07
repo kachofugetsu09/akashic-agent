@@ -289,7 +289,8 @@ async def test_file_wire_preserves_empty_values_defaults_and_business_errors(
             pb.FileRequest(**common, read=pb.ReadFile(path=path + ".missing")),
             metadata=META,
         )
-        assert "不存在" in missing.text
+        assert missing.WhichOneof("result") == "error"
+        assert missing.error.is_error and "不存在" in missing.error.text
         for request in (
             pb.FileRequest(**common),
             pb.FileRequest(**common, write=pb.WriteFile(path=path)),

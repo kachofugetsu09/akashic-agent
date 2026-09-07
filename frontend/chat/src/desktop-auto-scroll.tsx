@@ -4,15 +4,20 @@ import { useStickToBottomContext } from "use-stick-to-bottom";
 import type { ChatMessage } from "./chat-message";
 import type { StreamProjectionStore } from "./stream-projection";
 import type { ChatStatus } from "./web-chat-status";
+import type { ReplyActivity, TimelineMessage } from "./message-timeline";
 
 export function DesktopAutoScroll({
   messages,
   status,
   streamStore,
+  timelineMessages,
+  replyActivities,
 }: {
   messages: ChatMessage[];
   status: ChatStatus;
   streamStore: StreamProjectionStore<ChatMessage>;
+  timelineMessages: TimelineMessage[];
+  replyActivities: ReplyActivity[];
 }) {
   const { escapedFromLock, isAtBottom, scrollToBottom } = useStickToBottomContext();
   const lastMessageCountRef = useRef(messages.length);
@@ -38,6 +43,8 @@ export function DesktopAutoScroll({
     lastMessage?.content.length ?? 0,
     lastMessage?.blocks.length ?? 0,
     lastBlock?.kind === "thinking" ? lastBlock.content.length : "",
+    timelineMessages.at(-1)?.id ?? "",
+    ...replyActivities.map((item) => `${item.handle}:${item.preview?.message_id}:${item.preview?.text.length}:${item.preview?.thinking.length}`),
   ].join(":");
   const lastMessageRole = lastMessage?.role;
 
@@ -51,7 +58,7 @@ export function DesktopAutoScroll({
       return;
     }
 
-    if ((status === "streaming" || status === "submitted") && isAtBottom && !escapedFromLock) {
+    if (isAtBottom && !escapedFromLock) {
       void scrollToBottom({ animation: "instant", ignoreEscapes: false });
     }
   }, [escapedFromLock, isAtBottom, lastMessageRole, messages.length, scrollKey, status, scrollToBottom]);

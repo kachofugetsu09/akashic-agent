@@ -4,11 +4,11 @@ import json
 import mimetypes
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+from contextlib import ExitStack, closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
-from uuid import uuid4
 
 from agent.plugin_composition.request_projection import SessionHistoryUnit
 from agent.prompting import (
@@ -16,8 +16,10 @@ from agent.prompting import (
     build_context_frame_content,
     build_context_frame_message,
 )
+from session.identities import ChannelIdentities
+from session.admissions import SessionAdmissions
+from session.inbound_store import InboundHandoffStore
 from session.store import (
-    ChannelIdentityWriteReceipt,
     SessionDeleteAudit,
     SessionStore,
     validate_message_delivery_id,
@@ -476,7 +478,12 @@ class SessionManager:
         self.session_dir = workspace / "sessions"
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = workspace / "sessions.db"
-        self._store = SessionStore(self.db_path)
+        with ExitStack() as stores:
+            self._store = stores.enter_context(closing(SessionStore(self.db_path)))
+            self.inbound_store = stores.enter_context(closing(InboundHandoffStore(self.db_path)))
+            self.admissions = stores.enter_context(closing(SessionAdmissions(self.db_path)))
+            self.identities = stores.enter_context(closing(ChannelIdentities(self.db_path)))
+            self._stores = stores.pop_all()
         self._cache: dict[str, Session] = {}
         self._write_locks: dict[str, asyncio.Lock] = {}
         self._projection_grant_key = object()
@@ -489,7 +496,7 @@ class SessionManager:
 
     def clear_stale_admissions(self) -> None:
         """由持有 workspace 独占锁的 runtime 清理上次进程遗留租约。"""
-        self._store.clear_session_admissions()
+        self.admissions.clear_stale()
 
     def get_or_create(self, key: str) -> Session:
         cached = self._cache.get(key)
@@ -591,20 +598,21 @@ class SessionManager:
         """为仍存在的会话建立跨连接处理租约并返回会话。"""
 
         # 1. 持久化 owner 原子核对身份并建立租约
-        admission_id = uuid4().hex
-        if not self._store.acquire_session_admission(key, admission_id):
+        try:
+            admission_id = self.admissions.acquire(key)
+        except KeyError:
             self.invalidate(key)
-            raise KeyError(f"session 不存在: {key}")
+            raise
 
         # 2. 租约覆盖装载窗口；失败时立即回收
         try:
             return self.get_existing(key), admission_id
         except BaseException:
-            self._store.release_session_admission(admission_id)
+            self.admissions.release_admission(admission_id)
             raise
 
     def release_admission(self, admission_id: str) -> None:
-        self._store.release_session_admission(admission_id)
+        self.admissions.release_admission(admission_id)
 
     def peek_next_message_id(self, session_key: str) -> str:
         next_seq = self._store.next_seq(session_key)
@@ -704,7 +712,7 @@ class SessionManager:
         self._cache[session.key] = session
 
     def close(self) -> None:
-        self._store.close()
+        self._stores.close()
 
     async def save_async(self, session: Session) -> None:
         async with self._lock(session.key):
@@ -834,73 +842,3 @@ class SessionManager:
         """删除 thread，并保留原有 bool 结果供 control service 使用。"""
 
         return self.delete_session_with_audit(key).result == "committed"
-
-    def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
-        return self._store.get_channel_metadata(channel)
-
-    def get_channel_identities(self, channel: str) -> dict[str, str]:
-        return self._store.get_channel_identities(channel)
-
-    def channel_identity_migration_completed(self, channel: str) -> bool:
-        return self._store.channel_identity_migration_completed(channel)
-
-    def seed_channel_identities(
-        self,
-        channel: str,
-        mapping: Mapping[str, tuple[str, str]],
-    ) -> None:
-        self._store.seed_channel_identities(channel, mapping)
-
-    async def remember_channel_identity(
-        self,
-        *,
-        channel: str,
-        identity: str,
-        chat_id: str,
-        metadata_key: str,
-    ) -> ChannelIdentityWriteReceipt:
-        """Atomically move one durable identity to its target Session."""
-
-        session_key = f"{channel}:{chat_id}"
-        async with self._lock(session_key):
-            # 1. Build a transient Session without creating a durable row.
-            stored = self._store.get_session_meta(session_key)
-            session = (
-                Session(session_key)
-                if stored is None
-                else self.get_existing(session_key)
-            )
-            updated_at = datetime.now(UTC)
-            metadata = dict(session.metadata)
-            metadata[metadata_key] = identity
-
-            # 2. Commit the Session metadata and unique identity owner together.
-            receipt = self._store.persist_channel_identity(
-                channel=channel,
-                identity=identity,
-                chat_id=chat_id,
-                session_key=session.key,
-                created_at=session.created_at.isoformat(),
-                updated_at=updated_at.isoformat(),
-                metadata=metadata,
-            )
-
-            # 3. Adopt the committed state only after SQLite succeeds.
-            session.metadata = metadata
-            session.updated_at = datetime.fromisoformat(receipt.committed_updated_at)
-            self._cache[session.key] = session
-            return receipt
-
-    async def rollback_channel_identity(
-        self,
-        receipt: ChannelIdentityWriteReceipt,
-    ) -> bool:
-        """撤销仍由失败 acceptance attempt 拥有的 identity 写入。"""
-
-        if not isinstance(receipt, ChannelIdentityWriteReceipt):
-            raise TypeError("channel identity rollback receipt 类型无效")
-        async with self._lock(receipt.session_key):
-            rolled_back = self._store.rollback_channel_identity(receipt)
-            if rolled_back:
-                self.invalidate(receipt.session_key)
-            return rolled_back

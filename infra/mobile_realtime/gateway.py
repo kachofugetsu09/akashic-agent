@@ -8,7 +8,8 @@ import logging
 import secrets
 import sqlite3
 import time
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager, suppress
+from collections.abc import AsyncGenerator
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,9 @@ from infra.mobile_realtime.attachments import (
     encode_attachment_chunk,
 )
 from infra.mobile_realtime.inbox import DurableInboxManager, InboxResetRequired
+from infra.channels.message_view import follow_messages
+from infra.mobile_realtime.message_view import bounded_reply_status, message_chunks
+from session.log import MessageReader
 from core.common.diagnostic_log import turn_milestone
 from infra.mobile_realtime.key_protection import (
     FileMasterKeyStore,
@@ -120,7 +124,7 @@ if TYPE_CHECKING:
 _CLOSE_PROTOCOL = 4400
 _CLOSE_UNAUTHENTICATED = 4401
 _PLUGIN_UI_HTTP_PATH = "/mobile/plugin-ui/v1/query"
-_MESSAGE_CONTENT_HTTP_PATH = "/mobile/message-content/v1"
+_MESSAGE_CONTENT_HTTP_PATH = "/mobile/message-content/v2"
 _MOBILE_WEBUI_MANIFEST_PATH = "/mobile/webui/v1/manifest"
 _MOBILE_WEBUI_BLOB_PATH = "/mobile/webui/v1/blob"
 _MAX_MESSAGE_CONTENT_RANGE_BYTES = 256 * 1024
@@ -292,6 +296,8 @@ class MobileGatewayRuntime:
         self._channel: MobileRealtimeChannel | None = None
         self._connections: dict[str, ActiveMobileConnection] = {}
         self._delivery_lock = asyncio.Lock()
+        self._message_followers: dict[WebSocket, asyncio.Task[None]] = {}
+        self._stopping = False
         self._publication_monitor_task: asyncio.Task[None] | None = None
         self._publication_selection_digest = (
             publication.get_release(verify_integrity=False).selection_digest
@@ -313,8 +319,11 @@ class MobileGatewayRuntime:
     async def handle_websocket(self, websocket: WebSocket) -> None:
         """执行 challenge、配对或设备认证，再进入已认证协议循环。"""
 
-        self.start()
         await websocket.accept()
+        if self._stopping:
+            await websocket.close(code=1012, reason="服务正在停止")
+            return
+        self.start()
         connection_id = secrets.token_hex(16)
         challenge = self.authenticator.create_challenge(connection_id)
         await _send_control(websocket, "server.challenge", challenge.payload())
@@ -444,18 +453,40 @@ class MobileGatewayRuntime:
         await websocket.close(code=1000, reason="配对完成，请使用设备密钥重新连接")
 
     async def _authenticated_loop(
+        self, websocket: WebSocket, *, device_id: str, connection_epoch: int,
+        capabilities: tuple[str, ...] = (),
+    ) -> None:
+        """连接拥有实时订阅；退出前排空 reader，不留下脱离连接的任务。"""
+        failure: WebSocketDisconnect | ProtocolDecodeError | ValidationError | None = None
+        async with asyncio.TaskGroup() as tasks:
+            try:
+                await self._run_authenticated_loop(websocket, device_id=device_id,
+                    connection_epoch=connection_epoch, capabilities=capabilities, tasks=tasks)
+            except (WebSocketDisconnect, ProtocolDecodeError, ValidationError) as error:
+                # 协议错误由外层既有处理器报告，不包装成 TaskGroup 异常。
+                failure = error
+            finally:
+                await self._cancel_message_follow(websocket)
+        if failure is not None:
+            raise failure
+
+    async def _run_authenticated_loop(
         self,
         websocket: WebSocket,
         *,
         device_id: str,
         connection_epoch: int,
         capabilities: tuple[str, ...] = (),
+        tasks: asyncio.TaskGroup,
     ) -> None:
         """只处理 epoch 匹配的 resume、ACK 和基础 command。"""
 
         resumed = False
         try:
             while True:
+                if self._stopping:
+                    await websocket.close(code=1012, reason="服务正在停止")
+                    return
                 incoming = await _receive_authenticated_item(websocket)
                 if isinstance(incoming, AttachmentChunk):
                     if not resumed:
@@ -617,6 +648,9 @@ class MobileGatewayRuntime:
                             device_id,
                         )
                         continue
+                    if isinstance(frame, GenericCommand) and frame.type == "session.follow":
+                        await self._start_message_follow(frame, device_id, connection, tasks)
+                        continue
                     if (
                         isinstance(frame, GenericCommand)
                         and frame.type == "message.content.prepare"
@@ -663,6 +697,70 @@ class MobileGatewayRuntime:
                     device_id=device_id,
                     websocket=websocket,
                 )
+
+    async def _start_message_follow(
+        self, frame: GenericCommand, device_id: str,
+        connection: ActiveMobileConnection, tasks: asyncio.TaskGroup,
+    ) -> None:
+        """订阅命令只替换当前连接的 reader，不写命令收据或 durable inbox。"""
+        from infra.mobile_realtime.channel import MobileCommandError
+
+        try:
+            reader, after_seq = self.channel.prepare_message_follow(frame)
+        except MobileCommandError as error:
+            async with connection.send_lock:
+                await _send_reply(connection.websocket, frame_id=frame.id,
+                    connection_epoch=connection.connection_epoch, reply_type="session.follow.error",
+                    payload={"code": error.code, "message": str(error)}, session_id=frame.session_id, turn_id=None)
+            return
+        await self._cancel_message_follow(connection.websocket)
+        if self._stopping or self._connections.get(device_id) is not connection:
+            return
+        async with connection.send_lock:
+            await _send_reply(connection.websocket, frame_id=frame.id,
+                connection_epoch=connection.connection_epoch, reply_type="session.follow.ok",
+                payload={"version": 2, "through_seq": reader.head()}, session_id=reader.session_id, turn_id=None)
+        if self._stopping or self._connections.get(device_id) is not connection:
+            return
+        self._message_followers[connection.websocket] = tasks.create_task(
+            self._follow_message_session(reader, after_seq, device_id, connection))
+
+    async def _follow_message_session(
+        self, reader: MessageReader, after_seq: int, device_id: str,
+        connection: ActiveMobileConnection,
+    ) -> None:
+        """同一订阅并行发送正式消息和当前回复状态，两者都从 owner 读取。"""
+        async def send(frames: AsyncGenerator[dict[str, object], None], kind: str) -> None:
+            async with aclosing(frames):
+                async for frame in frames:
+                    payload: dict[str, object] = {"type": kind, **frame}
+                    chunks = message_chunks(payload) if kind == "messages.appended" else (bounded_reply_status(payload),)
+                    for chunk in chunks:
+                        await self.publish_connection_control(control_type="session.message", payload=chunk,
+                            device_id=device_id, connection_epoch=connection.connection_epoch)
+
+        async with asyncio.TaskGroup() as tasks:
+            _ = tasks.create_task(send(follow_messages(reader, after_seq=after_seq), "messages.appended"))
+            if self.channel.reply_status is None:
+                await self.publish_connection_control(control_type="session.message", device_id=device_id,
+                    connection_epoch=connection.connection_epoch, payload={"type": "reply.status", "version": 2,
+                        "session_id": reader.session_id, "snapshot_id": None, "available": False, "items": []})
+            else:
+                _ = tasks.create_task(send(self.channel.reply_status(reader.session_id), "reply.status"))
+
+    async def _cancel_message_follow(self, websocket: WebSocket) -> None:
+        """同一任务只发一次取消，多个退出 owner 均等待它真正排空。"""
+        task = self._message_followers.get(websocket)
+        if task is None:
+            return
+        if not task.cancelling():
+            _ = task.cancel()
+        try:
+            with suppress(asyncio.CancelledError):
+                await task
+        finally:
+            if self._message_followers.get(websocket) is task:
+                del self._message_followers[websocket]
 
     async def _cancel_plugin_ui_connection(
         self,
@@ -739,6 +837,8 @@ class MobileGatewayRuntime:
 
         # 2. 在短临界区内冻结重放窗口，并让并发新事件进入新连接队列
         async with self._delivery_lock:
+            if self._stopping:
+                return
             replay_after, replay_through, terminal = self._prepare_resume(
                 device_id=device_id,
                 last_ack=last_ack,
@@ -757,6 +857,7 @@ class MobileGatewayRuntime:
 
         # 3. 旧连接关闭和新连接重放都不占用全局投递锁
         if previous is not None and previous.websocket is not websocket:
+            await self._cancel_message_follow(previous.websocket)
             await self._cancel_plugin_ui_connection(device_id, previous)
             async with previous.sent_condition:
                 previous.sent_condition.notify_all()
@@ -1256,13 +1357,22 @@ class MobileGatewayRuntime:
     def start(self) -> None:
         """Start the non-durable publication watcher on the active event loop."""
 
-        if self.publication is None or self._publication_monitor_task is not None:
+        if self._stopping or self.publication is None or self._publication_monitor_task is not None:
             return
         self._publication_monitor_task = asyncio.create_task(self._watch_publication())
 
     async def stop(self) -> None:
-        """Stop the publication watcher without changing durable publication state."""
+        """停止新订阅并排空连接 reader，再停止 publication watcher。"""
 
+        self._stopping = True
+        async with self._delivery_lock:
+            connections = tuple(self._connections.items())
+            self._connections.clear()
+        for websocket in tuple(self._message_followers):
+            await self._cancel_message_follow(websocket)
+        for device_id, connection in connections:
+            await self._cancel_plugin_ui_connection(device_id, connection)
+            await self._close_connection(device_id, connection, code=1012, reason="服务正在停止")
         task = self._publication_monitor_task
         self._publication_monitor_task = None
         if task is not None:
@@ -1443,6 +1553,7 @@ class MobileGatewayRuntime:
     ) -> None:
         """关闭已退出活动表的 WebSocket，锁失活时强制中断。"""
 
+        await self._cancel_message_follow(connection.websocket)
         try:
             if force:
                 await connection.websocket.close(code=code, reason=reason)
@@ -2330,7 +2441,7 @@ def create_mobile_gateway_app(runtime: MobileGatewayRuntime) -> FastAPI:
         return Response(
             content=content,
             status_code=206,
-            media_type="text/plain; charset=utf-8",
+            media_type="application/json",
             headers={
                 "Accept-Ranges": "bytes",
                 "Cache-Control": "private, no-store",

@@ -1,3 +1,4 @@
+import { readTimelineMessage, type TimelineMessage } from "./message-timeline.ts";
 import type { ComposerFile } from "./desktop-composer";
 import type { ChatModelRuntime } from "./model-capsule-data";
 
@@ -8,26 +9,9 @@ export interface SessionRow {
   first_message_content?: string;
 }
 
-export interface MessageRow {
-  id: number | string;
-  seq?: number;
-  role: "user" | "assistant";
-  content: string;
-  timestamp?: string;
-  media?: unknown;
-  attachments?: unknown;
-  tool_chain?: unknown;
-  reasoning_content?: unknown;
-  turn_duration_ms?: unknown;
-  extra?: Record<string, unknown>;
-  reply_to_message_id?: string;
-  reply_role?: "user" | "assistant";
-  reply_preview?: string;
-}
-
 export interface ChatHistoryPage {
-  items: MessageRow[];
-  total: number;
+  items: TimelineMessage[];
+  throughSeq: number;
   hasMore: boolean;
   beforeSeq: number | null;
 }
@@ -87,7 +71,7 @@ export async function fetchChatJson<T>(url: string, options: RequestInit = {}): 
   return payload as T;
 }
 
-export function sessionRows(payload: unknown): SessionRow[] {
+export function sessionPage(payload: unknown): { items: SessionRow[]; nextCursor: { updated_at: string; session_id: string } | null } {
   const items = responseItems(payload, "/api/chat/sessions");
   if (items.some((item) => (
     typeof item.key !== "string"
@@ -98,60 +82,34 @@ export function sessionRows(payload: unknown): SessionRow[] {
   ))) {
     throw new Error("/api/chat/sessions 返回了无效 session 行");
   }
-  return items as unknown as SessionRow[];
-}
-
-export function messageRows(payload: unknown, endpoint: string): MessageRow[] {
-  const items = responseItems(payload, endpoint);
-  if (items.some((item) => (
-    (typeof item.id !== "string" && (typeof item.id !== "number" || !Number.isFinite(item.id)))
-    || (item.role !== "user" && item.role !== "assistant")
-    || typeof item.content !== "string"
-    || (item.extra !== undefined && (recordValue(item.extra) === null
-      || (recordValue(item.extra)?.control_turn_id !== undefined
-        && typeof recordValue(item.extra)?.control_turn_id !== "string")))
-    || (item.reply_to_message_id !== undefined && typeof item.reply_to_message_id !== "string")
-    || (item.reply_role !== undefined && item.reply_role !== "user" && item.reply_role !== "assistant")
-    || (item.reply_preview !== undefined && typeof item.reply_preview !== "string")
-    || ([item.reply_to_message_id, item.reply_role, item.reply_preview].filter((value) => value !== undefined).length % 3 !== 0)
-  ))) {
-    throw new Error(`${endpoint} 返回了无效 message 行`);
+  const cursor = recordValue(payload)?.next_cursor;
+  const next = recordValue(cursor);
+  if (cursor !== null && (!next || typeof next.updated_at !== "string"
+    || !Number.isFinite(Date.parse(next.updated_at)) || typeof next.session_id !== "string" || !next.session_id)) {
+    throw new Error("/api/chat/sessions 返回了无效目录游标");
   }
-  return items as unknown as MessageRow[];
+  return { items: items as unknown as SessionRow[], nextCursor: next as { updated_at: string; session_id: string } | null };
 }
 
+/** 历史页只接受 Message v2；分页上界与行顺序都来自服务端日志。 */
 export function chatHistoryPage(payload: unknown, endpoint: string): ChatHistoryPage {
   const body = recordValue(payload);
-  if (!body || typeof body.total !== "number" || !Number.isInteger(body.total) || body.total < 0) {
+  if (!body || body.version !== 2 || !Number.isSafeInteger(body.through_seq)
+    || Number(body.through_seq) < -1 || typeof body.has_more !== "boolean") {
     throw new Error(`${endpoint} 返回了无效历史页`);
   }
-  const items = messageRows(payload, endpoint);
-  if (items.some((item) => item.seq !== undefined && (!Number.isInteger(item.seq) || Number(item.seq) < 0))) {
-    throw new Error(`${endpoint} 返回了无效历史游标`);
-  }
-
-  // 旧 Gateway 只回 items/total；缺分页元数据时视为整页已终止，避免前端卡在加载态。
-  if (typeof body.has_more !== "boolean") {
-    return {
-      items,
-      total: body.total,
-      hasMore: false,
-      beforeSeq: null,
-    };
-  }
-
-  if (body.before_seq !== null && (!Number.isInteger(body.before_seq) || Number(body.before_seq) < 0)) {
-    throw new Error(`${endpoint} 返回了无效历史页`);
-  }
-  if (body.has_more && (items.length === 0 || body.before_seq !== items[0].seq)) {
+  const items = responseItems(payload, endpoint).map(readTimelineMessage);
+  const ids = new Set<string>();
+  if (items.some((item, index) => {
+    const invalid = ids.has(item.id) || item.session_id !== items[0].session_id
+      || item.seq > Number(body.through_seq) || (index > 0 && item.seq <= items[index - 1].seq);
+    ids.add(item.id);
+    return invalid;
+  }) || (body.has_more ? !items.length || body.before_seq !== items[0].seq : body.before_seq !== null)) {
     throw new Error(`${endpoint} 返回了不一致的历史游标`);
   }
-  return {
-    items,
-    total: body.total,
-    hasMore: body.has_more,
-    beforeSeq: body.before_seq as number | null,
-  };
+  return { items, throughSeq: Number(body.through_seq), hasMore: body.has_more,
+    beforeSeq: body.before_seq as number | null };
 }
 
 export function webShellState(payload: unknown): WebShellState {

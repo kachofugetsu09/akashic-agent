@@ -15,7 +15,7 @@ from uuid import uuid4
 PairingStatus = Literal["pending", "confirmed", "consumed", "expired"]
 AttachmentDirection = Literal["upload", "outbound"]
 AttachmentState = Literal["transferring", "ready", "failed"]
-AttachmentImportPhase = Literal["prepared", "artifact_committed", "message_bound"]
+AttachmentImportPhase = Literal["prepared", "artifact_committed", "message_bound", "rejected"]
 _MAX_REBASE_ACK = 1 << 62
 
 
@@ -184,6 +184,61 @@ class MobileAttachmentImportRecord:
     error: str | None
 
 
+COMMAND_RECEIPT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mobile_command_receipts (
+    device_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    command_type TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(
+        status IN ('processing', 'completed', 'outcome_unknown')
+    ),
+    reply_type TEXT,
+    reply_payload_json TEXT,
+    handoff_pending INTEGER NOT NULL DEFAULT 0 CHECK(handoff_pending IN (0, 1)),
+    session_id TEXT,
+    turn_id TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    PRIMARY KEY(device_id, command_id),
+    CHECK(
+        ((status IN ('processing', 'outcome_unknown'))
+         AND reply_type IS NULL
+         AND reply_payload_json IS NULL AND completed_at IS NULL)
+        OR
+        (status = 'completed' AND reply_type IS NOT NULL
+         AND reply_payload_json IS NOT NULL AND completed_at IS NOT NULL)
+    ),
+    FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+        ON DELETE CASCADE
+);
+"""
+
+ATTACHMENT_IMPORT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mobile_attachment_imports (
+    device_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    client_message_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+    mobile_attachment_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL UNIQUE,
+    phase TEXT NOT NULL CHECK(
+        phase IN ('prepared', 'artifact_committed', 'message_bound', 'rejected')
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    error TEXT,
+    PRIMARY KEY(device_id, session_id, client_message_id, ordinal),
+    UNIQUE(session_id, client_message_id, ordinal),
+    UNIQUE(device_id, session_id, client_message_id, mobile_attachment_id),
+    FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY(mobile_attachment_id)
+        REFERENCES mobile_attachments(attachment_id)
+);
+"""
+
+
 class MobileRealtimeStorage:
     """持有移动端数据库 schema，并原子维护设备游标与 durable inbox。"""
 
@@ -203,8 +258,17 @@ class MobileRealtimeStorage:
             _ = self._db.execute("PRAGMA synchronous=NORMAL")
             _ = self._db.execute("PRAGMA foreign_keys=ON")
 
-            # 2. 创建由本存储层拥有的 schema
-            self._init_schema()
+            # 2. 已有输入状态必须先经过显式 yoyo；启动只创建新库 schema。
+            try:
+                for table, marker in (("mobile_command_receipts", "handoff_pending"),
+                                      ("mobile_attachment_imports", "'rejected'")):
+                    row = self._db.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+                    if row is not None and marker not in row[0]:
+                        raise RuntimeError("Mobile 输入状态需要先运行 yoyo 20260906_05_mobile_input_rejections")
+                self._init_schema()
+            except BaseException:
+                self._db.close()
+                raise
 
     def close(self) -> None:
         with self._lock:
@@ -1148,7 +1212,7 @@ class MobileRealtimeStorage:
             rows = self._db.execute(
                 """
                 SELECT * FROM mobile_attachment_imports
-                WHERE phase != 'message_bound'
+                WHERE phase IN ('prepared', 'artifact_committed')
                 ORDER BY created_at, device_id, session_id, client_message_id, ordinal
                 """
             ).fetchall()
@@ -1858,6 +1922,7 @@ class MobileRealtimeStorage:
             """
             DELETE FROM mobile_command_receipts
             WHERE device_id = ? AND status = 'completed'
+              AND handoff_pending = 0
               AND completed_at IS NOT NULL AND completed_at < ?
             """,
             (device_id, cutoff_text),
@@ -1877,6 +1942,36 @@ class MobileRealtimeStorage:
         if row is None:
             raise RuntimeError("命令收据用量查询无结果")
         return int(row["count"]), int(row["bytes"])
+
+    def pending_message_rejections(self) -> tuple[CommandReceipt, ...]:
+        """列出仍需结算跨库 handoff 的失败收据，启动时由输入 owner 接续。"""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM mobile_command_receipts WHERE handoff_pending = 1 "
+                "ORDER BY created_at, device_id, command_id",
+            ).fetchall()
+        return tuple(_command_receipt_from_row(row) for row in rows)
+
+    def complete_rejected_message_handoff(self, *, device_id: str, command_id: str) -> None:
+        """Bus 已成功结算后，才允许失败收据按原 TTL 回收。"""
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "UPDATE mobile_command_receipts SET handoff_pending = 0 "
+                "WHERE device_id = ? AND command_id = ? "
+                "AND status = 'completed' AND reply_type = 'message.send.error'",
+                (device_id, command_id),
+            )
+            if cursor.rowcount != 1:
+                raise MobileStorageError("Mobile handoff 结算缺少明确失败收据")
+
+    def read_command(self, *, device_id: str, command_id: str) -> CommandReceipt | None:
+        """恢复交接前读取原命令的持久结果，不创建或改写收据。"""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM mobile_command_receipts WHERE device_id = ? AND command_id = ?",
+                (device_id, command_id),
+            ).fetchone()
+        return None if row is None else _command_receipt_from_row(row)
 
     def complete_command(
         self,
@@ -1977,6 +2072,19 @@ class MobileRealtimeStorage:
                 raise MobileStorageError(
                     f"命令收据不处于 processing: {device_key}/{command_key}"
                 )
+            if reply_name == "message.send.error":
+                # 拒绝及附件终态共同提交；跨库 handoff 结算前不得按 TTL 回收拒绝依据。
+                _ = self._db.execute(
+                    "UPDATE mobile_command_receipts SET handoff_pending = 1 "
+                    "WHERE device_id = ? AND command_id = ?",
+                    (device_key, command_key),
+                )
+                _ = self._db.execute(
+                    "UPDATE mobile_attachment_imports SET phase = 'rejected', error = ?, updated_at = ? "
+                    "WHERE device_id = ? AND session_id = ? AND client_message_id = ? "
+                    "AND phase IN ('prepared', 'artifact_committed')",
+                    (payload, timestamp, device_key, session_id, command_key),
+                )
             row = self._db.execute(
                 """
                 SELECT device_id, command_id, command_type, request_hash,
@@ -1996,7 +2104,7 @@ class MobileRealtimeStorage:
 
         # 1. 身份与配对状态
         _ = self._db.executescript(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS mobile_server_identity (
                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                 server_id TEXT NOT NULL,
@@ -2073,32 +2181,7 @@ class MobileRealtimeStorage:
             ON mobile_device_inbox(device_id, created_at);
 
             -- 4. 命令收据跨重连提供幂等回复
-            CREATE TABLE IF NOT EXISTS mobile_command_receipts (
-                device_id TEXT NOT NULL,
-                command_id TEXT NOT NULL,
-                command_type TEXT NOT NULL,
-                request_hash TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(
-                    status IN ('processing', 'completed', 'outcome_unknown')
-                ),
-                reply_type TEXT,
-                reply_payload_json TEXT,
-                session_id TEXT,
-                turn_id TEXT,
-                created_at TEXT NOT NULL,
-                completed_at TEXT,
-                PRIMARY KEY(device_id, command_id),
-                CHECK(
-                    ((status IN ('processing', 'outcome_unknown'))
-                     AND reply_type IS NULL
-                     AND reply_payload_json IS NULL AND completed_at IS NULL)
-                    OR
-                    (status = 'completed' AND reply_type IS NOT NULL
-                     AND reply_payload_json IS NOT NULL AND completed_at IS NOT NULL)
-                ),
-                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
-                    ON DELETE CASCADE
-            );
+            {COMMAND_RECEIPT_SCHEMA}
 
             -- 5. 记录首次创建关系；认证设备共享 mobile 会话读取权限
             CREATE TABLE IF NOT EXISTS mobile_device_sessions (
@@ -2148,27 +2231,7 @@ class MobileRealtimeStorage:
                     ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS mobile_attachment_imports (
-                device_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                client_message_id TEXT NOT NULL,
-                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
-                mobile_attachment_id TEXT NOT NULL,
-                artifact_id TEXT NOT NULL UNIQUE,
-                phase TEXT NOT NULL CHECK(
-                    phase IN ('prepared', 'artifact_committed', 'message_bound')
-                ),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                error TEXT,
-                PRIMARY KEY(device_id, session_id, client_message_id, ordinal),
-                UNIQUE(session_id, client_message_id, ordinal),
-                UNIQUE(device_id, session_id, client_message_id, mobile_attachment_id),
-                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
-                    ON DELETE CASCADE,
-                FOREIGN KEY(mobile_attachment_id)
-                    REFERENCES mobile_attachments(attachment_id)
-            );
+            {ATTACHMENT_IMPORT_SCHEMA}
             """
         )
         self._db.commit()
@@ -2473,7 +2536,7 @@ def _attachment_from_row(row: sqlite3.Row) -> AttachmentRecord:
 
 def _attachment_import_from_row(row: sqlite3.Row) -> MobileAttachmentImportRecord:
     phase = _row_text(row, "phase")
-    if phase not in {"prepared", "artifact_committed", "message_bound"}:
+    if phase not in {"prepared", "artifact_committed", "message_bound", "rejected"}:
         raise ValueError(f"mobile_attachment_imports.phase 非法: {phase}")
     ordinal = int(row["ordinal"])
     if ordinal < 0:

@@ -8,9 +8,12 @@ import math
 import secrets
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from time import monotonic_ns
 from types import MappingProxyType
 from typing import Any, AsyncIterator, Mapping, Protocol, Sequence, cast
+
+from agent.plugin_composition.bindings import Bindings
 
 from agent.plugin_composition import (
     AddConnection,
@@ -89,6 +92,8 @@ class _BoundChat:
         return self._descriptor
 
     async def complete(self, request: ModelRequest) -> LLMResponse:
+        """先登记真实调用，再计时并按实际响应结算。"""
+        # 1. 同一 binding 接续历史；调用账必须先于 provider I/O。
         continuation = request.continuation
         if (
             continuation is not None
@@ -96,18 +101,44 @@ class _BoundChat:
         ):
             raise ModelUnavailableError("continuation 不属于当前 model binding")
         call_id = self._store.start_call(self._descriptor, request)
+        started: int | None = None
+        first_token = False
+
+        async def delta(value: dict[str, str]) -> None:
+            nonlocal first_token
+            assert started is not None
+            if not first_token and (
+                value.get("content_delta") or value.get("thinking_delta")
+            ):
+                self._store.record_first_token(
+                    call_id, (monotonic_ns() - started) / 1_000_000
+                )
+                first_token = True
+            if request.on_delta is not None:
+                await request.on_delta(value)
+
+        # 2. 通知调用身份后才开始计时，首段与总耗时使用同一单调时钟。
         try:
-            response = await self._driver.complete(request)
+            driver_request = request if request.on_delta is None else replace(request, on_delta=delta)
+            if request.on_delta is not None:
+                await request.on_delta({"call_record_id": call_id})
+            started = monotonic_ns()
+            response = await self._driver.complete(driver_request)
         except BaseException as failure:
             # 网络请求可能已经到达 provider；本地异常不证明没有计费。
             try:
                 self._store.finish_call(
-                    call_id, usage=None, failure=type(failure).__name__
+                    call_id, usage=None, failure=type(failure).__name__,
+                    duration_ms=None if started is None else (monotonic_ns() - started) / 1_000_000,
                 )
             except Exception as record_failure:
                 raise failure from record_failure
             raise
-        self._store.finish_call(call_id, usage=response.usage, failure=None)
+        # 3. 结算失败继续向上传播，不能把未记账的响应交给 Message writer。
+        self._store.finish_call(
+            call_id, usage=response.usage, failure=None,
+            duration_ms=(monotonic_ns() - started) / 1_000_000,
+        )
         response.call_record_id = call_id
         return response
 
@@ -246,6 +277,9 @@ class _EmbeddingsView:
     def __init__(self, state: ModelsState) -> None:
         self._state = state
 
+    def save_binding(self, bindings: Bindings, *, model_id: str | None = None) -> str:
+        return self._state.save_embedding_binding(bindings, model_id)
+
     def describe(self, *, model_id: str | None = None) -> EmbeddingSpaceDescriptor:
         return self._state.describe_embedding(model_id)
 
@@ -314,6 +348,7 @@ class ModelsState:
         self.root_instance_token = root_instance_token
         self.capability_catalog = capability_catalog
         self._driver_registrations: dict[str, ModelDriverDefinition] = {}
+        self._driver_contexts: dict[str, Context] = {}
         self._drivers: Mapping[str, ModelDriverDefinition] = MappingProxyType({})
         self.sealed = False
         self.drivers = _DriversView(self)
@@ -343,11 +378,13 @@ class ModelsState:
             if definition.driver_id in self._driver_registrations:
                 raise ValueError(f"model driver 重复注册: {definition.driver_id}")
             self._driver_registrations[definition.driver_id] = definition
+            self._driver_contexts[definition.driver_id] = ctx
 
             def cleanup() -> None:
                 current = self._driver_registrations.get(definition.driver_id)
                 if current is definition:
                     del self._driver_registrations[definition.driver_id]
+                    del self._driver_contexts[definition.driver_id]
 
             return cleanup
 
@@ -534,6 +571,19 @@ class ModelsState:
             yield bound
         finally:
             await lease.release()
+
+    def save_embedding_binding(self, bindings: Bindings, model_id: str | None) -> str:
+        """由实际注册表选择 driver owner，调用者不能自己拼归档闭包。"""
+        from agent.plugin_composition.models import SavedEmbedding
+        from agent.plugins.snapshot import get_current_runtime_snapshot
+
+        snapshot = get_current_runtime_snapshot()
+        self._check_snapshot_service(snapshot, EMBEDDINGS, self.embeddings)
+        descriptor = self.describe_embedding(model_id)
+        saved = SavedEmbedding(model_id=descriptor.model_id, space_identity=descriptor.identity,
+                               dimensions=descriptor.dimensions)
+        return bindings.bind(EMBEDDINGS, saved.model_dump(),
+            contributors=(self._driver_contexts[descriptor.driver_id],))
 
     def describe_embedding(self, model_id: str | None) -> EmbeddingSpaceDescriptor:
         """描述已配置空间，不读取凭据或执行外部 I/O。"""

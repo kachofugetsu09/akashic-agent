@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -10,6 +11,17 @@ from session.message import CallRef, ContentPart, Message, Output, ToolCall, Too
 
 
 Outcome = Literal["success", "denied", "error", "unknown"]
+
+
+def durable_call_key(call_ref: CallRef) -> str:
+    """Return the stable effect key already used by a submitted ToolCall."""
+    if not isinstance(call_ref, CallRef):
+        raise TypeError("工具调用引用无效")
+    return "message:" + json.dumps(
+        [call_ref.message_id, call_ref.part_index],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +107,17 @@ class MessageReply:
         if not isinstance(body, ToolResult) or body.call_ref != self.call_ref:
             raise ValueError("工具结果不属于原调用")
         return Result(body.outcome, body.parts)
+
+
+def display_name(metadata: Mapping[str, object]) -> str:
+    """从原 binding 读取工具名称，不打开工具或暴露其恢复配置。"""
+    tool = metadata.get("tool")
+    if not isinstance(tool, Mapping):
+        raise ValueError("工具 binding 描述无效")
+    name = cast(Mapping[str, object], tool).get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("工具 binding 缺少工具名")
+    return name
 
 
 class InvalidArguments(ValueError):

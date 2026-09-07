@@ -1,10 +1,11 @@
+import { timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 
 import { MessageReplyReference, SharedMessageActions } from "./message-actions";
 import { MobilePluginSlot } from "./mobile-plugin-runtime";
 import type { ChatMessage, ChatRole } from "./chat-message";
-import { ChatMessageView } from "./message-view";
+import { ChatMessageView, TimelineMessageView } from "./message-view";
 import { StreamProjectionStore } from "./stream-projection";
 import type { ChatStatus } from "./web-chat-status";
 import { webTurnTrace } from "./web-turn-trace";
@@ -38,12 +39,11 @@ function ProjectedChatMessageView({
 
 export interface DesktopConversationMessagesProps {
   messages: ChatMessage[];
-  activeSessionId: string;
   status: ChatStatus;
   copiedMessageId: string;
   streamStore: StreamProjectionStore<ChatMessage>;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
-  onReply: (message: ChatMessage) => void;
+  onReply?: (message: ChatMessage) => void;
   onCopied: (messageId: string) => void;
   onError: (error: unknown) => void;
 }
@@ -51,7 +51,6 @@ export interface DesktopConversationMessagesProps {
 /** Render desktop history with stable rows and viewport-deferred rich content. */
 export function DesktopConversationMessages({
   messages,
-  activeSessionId,
   status,
   copiedMessageId,
   streamStore,
@@ -72,8 +71,7 @@ export function DesktopConversationMessages({
           initiallyVisible={index >= messages.length - 8}
           followsSameRole={messages[index - 1]?.role === message.role}
           replySourceUnavailable={Boolean(message.reply && !messageIds.has(message.reply.messageId))}
-          activeSessionId={activeSessionId}
-          canReply={Boolean(message.canonical) && status === "idle"}
+          canReply={Boolean(onReply && message.canonical) && status === "idle"}
           copied={copiedMessageId === message.id}
           enhancementSuspended={status !== "idle"}
           waitingForResponse={status === "streaming" && index === messages.length - 1}
@@ -94,7 +92,6 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   initiallyVisible,
   followsSameRole,
   replySourceUnavailable,
-  activeSessionId,
   canReply,
   copied,
   enhancementSuspended,
@@ -110,14 +107,13 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   initiallyVisible: boolean;
   followsSameRole: boolean;
   replySourceUnavailable: boolean;
-  activeSessionId: string;
   canReply: boolean;
   copied: boolean;
   enhancementSuspended: boolean;
   waitingForResponse: boolean;
   streamStore: StreamProjectionStore<ChatMessage>;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
-  onReply: (message: ChatMessage) => void;
+  onReply?: (message: ChatMessage) => void;
   onCopied: (messageId: string) => void;
   onError: (error: unknown) => void;
   stopScroll: () => void;
@@ -147,7 +143,6 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
   }, [enhancementSuspended, nearViewport]);
 
   const renderFullMessage = nearViewport || message.streaming === true;
-  const pluginTurnId = message.controlTurnId;
   return (
     <>
       {followsSameRole ? <RoleDivider role={message.role} /> : null}
@@ -182,31 +177,6 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
                   }}
                 />
               ) : undefined}
-              processStartContent={message.role === "assistant" ? (
-                <MobilePluginSlot
-                  name="turn.before_reasoning"
-                  sessionId={activeSessionId}
-                  messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                  turnId={pluginTurnId}
-                />
-              ) : undefined}
-              beforeProcessBlock={(block) => message.role === "assistant" && block.kind === "tool" ? (
-                <MobilePluginSlot
-                  name="turn.before_tool"
-                  sessionId={activeSessionId}
-                  messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                  turnId={pluginTurnId}
-                  block={block}
-                />
-              ) : null}
-              answerEndContent={message.role === "assistant" ? (
-                <MobilePluginSlot
-                  name="turn.after_answer"
-                  sessionId={activeSessionId}
-                  messageId={message.streaming ? `assistant:${message.id}` : message.id}
-                  turnId={pluginTurnId}
-                />
-              ) : undefined}
               onCopyToolDetail={(text) => {
                 void navigator.clipboard.writeText(text).catch(onError);
               }}
@@ -216,7 +186,7 @@ const DesktopMessageRow = React.memo(function DesktopMessageRow({
               message={message}
               copied={copied}
               canReply={canReply}
-              onReply={() => onReply(message)}
+              onReply={() => onReply?.(message)}
               onCopy={() => {
                 void navigator.clipboard.writeText(message.content).then(() => onCopied(message.id)).catch(onError);
               }}
@@ -289,4 +259,51 @@ const chatMessageTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 function formatMessageTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "" : chatMessageTimeFormatter.format(date);
+}
+
+/** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
+export function DesktopTimelineMessages({ messages, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
+  messages: TimelineMessage[];
+  status: ChatStatus;
+  messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
+  copiedMessageId: string;
+  onReply: (reply: TimelineReply) => void;
+  onCopied: (id: string) => void;
+  onError: (error: unknown) => void;
+}) {
+  const { stopScroll } = useStickToBottomContext();
+  const byId = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages]);
+  const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
+  const onNavigate = useCallback((id: string, partIndex?: number) => {
+    stopScroll();
+    const row = messageElementsRef.current.get(id);
+    const target = partIndex === undefined ? row : row?.querySelector<HTMLElement>(`[data-part-index="${partIndex}"]`);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ behavior: "instant", block: "center" });
+  }, [messageElementsRef, stopScroll]);
+  return <>{messages.map((message) => <div key={message.id}
+    className={`web-message-anchor history-isolated timeline-${message.body.kind}`}
+    tabIndex={-1} data-message-id={message.id} data-message-kind={message.body.kind} data-message-seq={message.seq}
+    ref={(element) => {
+      if (element) messageElementsRef.current.set(message.id, element);
+      else messageElementsRef.current.delete(message.id);
+    }}>
+    <TimelineMessageView message={message} lookupMessage={lookupMessage} onNavigate={onNavigate} onError={onError}
+      leadingContent={message.body.kind === "output" ? <MobilePluginSlot name="turn.before_reasoning"
+        sessionId={message.session_id} messageId={message.id} /> : undefined}
+      beforePart={(part, index) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
+        name="turn.before_tool" sessionId={message.session_id} messageId={message.id} block={{ ...part, message_id: message.id, part_index: index }} /> : null}
+      afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <MobilePluginSlot
+        name="turn.after_answer" sessionId={message.session_id} messageId={message.id} /> : undefined} />
+    <div className="shared-message-meta timeline-meta">
+      <span>{message.author}</span><span>来源 · {message.source}</span>
+      <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
+      <details><summary>消息详情</summary><pre>{message.id}{"\n"}序号 {message.seq}</pre></details>
+      <SharedMessageActions
+        canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
+        canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}
+        onReply={() => onReply(timelineReply(message))}
+        onCopy={() => { void navigator.clipboard.writeText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }} />
+    </div>
+  </div>)}</>;
 }

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import shutil
+import os
+from uuid import uuid4
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.config import Config
 from agent.persona import VEDA_RELATIVE_PATH, read_default_veda
 from infra.persistence.json_store import save_json
-from session.store import SessionStore
+from session.log import MessageLog
 
 _TEXT_FILES: dict[str, str] = {
     VEDA_RELATIVE_PATH.as_posix(): read_default_veda() + "\n",
+    "plugin-data/context-builtin/config.local.toml": (
+        'prompt_sources = {default_prompt = "prompt", markdown_memory = "markdown_memory"}\n'
+        'summary_source = ["compaction", "compaction"]\n'
+    ),
 }
 
 _JSON_FILES: dict[str, object] = {
@@ -69,6 +75,17 @@ def _ensure_config(config_path: Path, *, force: bool, summary: InitSummary) -> N
         summary.skipped.append(config_path)
         return
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    if existed:
+        # --force 只重置配置模板，旧凭据配置必须有独立恢复文件。
+        before = config_path.read_bytes()
+        backup = config_path.with_name(config_path.name + ".before-init-" + uuid4().hex + ".bak")
+        with os.fdopen(os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as output:
+            _ = output.write(before)
+            output.flush()
+            os.fsync(output.fileno())
+        if backup.read_bytes() != before or config_path.read_bytes() != before:
+            raise RuntimeError("初始化配置备份不一致或源配置已变化")
+        summary.notes.append(f"原配置恢复文件: {backup}")
     shutil.copyfile(template, config_path)
     if existed:
         summary.overwritten.append(config_path)
@@ -87,7 +104,7 @@ def _ensure_workspace_text_assets(
         _write_text_file(
             workspace / rel_path,
             content,
-            force=force and rel_path != VEDA_RELATIVE_PATH.as_posix(),
+            force=False,
             summary=summary,
         )
 
@@ -99,7 +116,7 @@ def _ensure_workspace_json_assets(
     summary: InitSummary,
 ) -> None:
     for rel_path, payload in _JSON_FILES.items():
-        _write_json_file(workspace / rel_path, payload, force=force, summary=summary)
+        _write_json_file(workspace / rel_path, payload, force=False, summary=summary)
 
 
 def _ensure_workspace_directories(
@@ -124,7 +141,7 @@ def _ensure_workspace_db_assets(
 ) -> None:
     sessions_db = workspace / "sessions.db"
     sessions_exists = sessions_db.exists()
-    SessionStore(sessions_db).close()
+    MessageLog(sessions_db).close()
     if not sessions_exists:
         summary.created.append(sessions_db)
     else:
@@ -152,10 +169,10 @@ def init_workspace(
 
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [
-        f"1. 按需编辑 {config_path}，配置 Telegram、QQ 等消息频道。",
+        f"1. 默认可用 Web；启用 Telegram/QQ 时，编辑 {config_path} 并配置同名 Sender 插件。",
         "2. 运行 uv run python main.py 启动。",
         "3. 打开 http://127.0.0.1:2236，在模型页添加连接并选择默认聊天模型。",
         "4. 需要语义记忆时，再选择默认 embedding 模型。",
-        "5. 返回对话页验证消息收发；其他普通 v3 插件可按需安装。",
+        "5. 返回对话页验证消息收发；Sender 配置路径与示例见 config.example.toml。",
     ]
     return summary

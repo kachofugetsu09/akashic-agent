@@ -4,7 +4,7 @@
 - 日期：2026-08-25
 - 关联条款：SES-001、SES-007～SES-008、MEM-002、MEM-009～MEM-011、PLG-001～PLG-014、RUN-003、RUN-007～RUN-009
 - supersedes：0006 的宿主 memory engine 选择与 `skip_post_memory` 写入合同；0040 的 memory 专用 scoped Turn 字段
-- superseded by：0052（移除 Core Markdown 特权通道并退役 PENDING/optimizer）
+- superseded by：0052（移除 Core Markdown 特权通道并退役 PENDING/optimizer）；0055（Scheduler 改用可恢复内部消息，取代该来源的 in_memory 选择）
 
 ## 背景
 
@@ -74,7 +74,7 @@ Turn 排除语义一次性投影为 `effects.post_commit=suppress`，并删除�
 ## 影响
 
 - Akasha 是唯一内置的 embedding memory 插件；经典记忆插件和私有 reconciliation 通道删除。
-- Scheduler、Subagent 和 Wake 筛选 Turn 使用 `in_memory + suppress`。
+- 历史选择为 Scheduler、Subagent 和 Wake 筛选 Turn 使用 `in_memory + suppress`；现已分别由 [0058](0058-scheduler-keeps-internal-messages.md) 和 [0057](0057-internal-source-messages.md) 的完整内部 Message 保存协议取代。
 - Wake 已送达投影、后台 programmatic Turn 和 continuation 使用 `durable + suppress`。
 - Session 删除只删除 Session 事实；某个 Memory 插件若需要撤销自己的投影，应通过自己的领域 Tool 或生命周期协议拥有该能力。
 

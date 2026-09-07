@@ -21,7 +21,7 @@ from session.log import MessageCatalog, MessageReader
 from session.message import ContentPart, Message, Output
 
 from .plugin import prepare_profile_draft, profile_lock, start_store, check_draft
-from .store import MarkdownProfileStore
+from .store import DEFAULT_SELF_MD, MarkdownProfileStore
 
 api_version = 3
 name = "markdown_memory"
@@ -37,7 +37,7 @@ workspace_files = (
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sources: tuple[str, ...] = Field(default=("conversation",), min_length=1)
+    sources: tuple[str, ...] = Field(default=("conversation", "programmatic"), min_length=1)
 
 
 def _unapplied_messages(record: SummaryRecord, lookup: SummaryLookup, reader: MessageReader,
@@ -81,7 +81,7 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
                   store: MarkdownProfileStore, models: ChatModels, lock_path: Path,
                   sources: tuple[str, ...], projection: TurnProjection) -> None:
     """只处理已提交的模型 Output；两份文件沿原 before-image receipt 恢复。"""
-    if message.source not in sources or not isinstance(message.body, Output):
+    if reader.attributes.learning != "eligible" or message.source not in sources or not isinstance(message.body, Output):
         return
     refs = [part for part in message.body.parts if isinstance(part, ContentPart) and part.kind == "context.summary"]
     if not refs:
@@ -114,15 +114,20 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
 async def apply(ctx: Context, config: Config) -> None:
     """启动后才创建文件与跟随日志；归档 apply 不写入正式记忆。"""
     store: MarkdownProfileStore | None = None
-    ready = asyncio.Event()
     watcher: asyncio.Task[None] | None = None
     lock_path = ctx.workspace_file("memory/markdown-profile.lock")
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
-        _ = await ready.wait()
-        assert store is not None
+        # 完整初始态只投影 Store 的同一默认值；不创建文件或消费旧队列。
+        state_files = tuple(ctx.workspace_file(name) for name in workspace_files
+                            if name != "memory/markdown-profile.lock")
+        if not any(path.exists() for path in state_files):
+            self_profile, memory = DEFAULT_SELF_MD.strip(), ""
+        else:
+            async with profile_lock(lock_path, create=False):
+                self_profile = ctx.workspace_file("memory/SELF.md").read_text(encoding="utf-8").strip()
+                memory = ctx.workspace_file("memory/MEMORY.md").read_text(encoding="utf-8").strip()
         parts: list[str] = []
-        self_profile, memory = store.read_self().strip(), store.read_memory().strip()
         if self_profile:
             parts.append("## Akashic 自我认知\n\n" + self_profile)
         if memory:
@@ -151,7 +156,6 @@ async def apply(ctx: Context, config: Config) -> None:
                                      ctx.workspace_file("memory/markdown-profile-writes.db"))
         await start_store(store, lock_path, ctx.workspace_file("memory/PENDING.md"),
                            ctx.workspace_file("memory/PENDING.snapshot.md"), ctx.workspace_file("memory/PENDING.retired.md"))
-        ready.set()
         watcher = await ctx.spawn(follow(ctx.require(MESSAGE_CATALOG)), name="markdown-memory")
 
     async def stop(_event: object) -> None:

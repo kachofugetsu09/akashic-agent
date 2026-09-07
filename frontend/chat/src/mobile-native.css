@@ -2607,6 +2607,16 @@ button {
   }
 }
 
+/* 消息作者和来源可以是程序名；窄屏按真实文字换行。 */
+.mobile-message-meta.timeline-meta .mobile-message-meta__text {
+  min-width: 0;
+  flex-wrap: wrap;
+  white-space: normal;
+}
+.mobile-message-anchor.timeline-input .mobile-message-meta {
+  margin-inline-start: auto;
+  justify-content: flex-end;
+}
 /* 两端阅读字号一致，输入框与触摸按钮保留移动端尺寸。 */
 .mobile-message-anchor .agent-content,
 .mobile-plain-message-view__content,

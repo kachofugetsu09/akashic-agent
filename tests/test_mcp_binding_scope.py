@@ -364,3 +364,48 @@ async def test_mcp_registration_rejects_supervisor_identity_override(tmp_path, k
         ))
     finally:
         await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_scoped_mcp_uses_candidate_environment_and_tool_permissions(tmp_path):
+    """业务验证的短命 MCP 保留候选环境和 allowlist，不借正式路由。"""
+    plugins = tmp_path / "plugins"
+    source = plugins / "probe"
+    write_plugin(source)
+    path = source / "plugin.py"
+    path.write_text(path.read_text().replace(
+        'required_tools=("ping",), candidate_read_only_tools=("ping",),',
+        'required_tools=("ping",), candidate_read_only_tools=("ping",), candidate_env={"VALIDATION_MARK": "candidate"},',
+    ))
+    path = source / "akashic.plugin.toml"
+    path.write_text(path.read_text().replace(
+        'candidate_read_only_tools = ["ping"]',
+        'candidate_read_only_tools = ["ping"]\ncandidate_env = {VALIDATION_MARK = "candidate"}',
+    ))
+    for name in ("first", "second"):
+        path = source / name / "server.py"
+        path.write_text(path.read_text().replace(
+            '[{"name": "ping", "description": "fixed A", "inputSchema": {"type": "object"}}]',
+            '[{"name": name, "description": "probe", "inputSchema": {"type": "object"}} for name in ("ping", "mutate")]',
+        ).replace('"text": "fixed A"', '"text": os.environ.get("VALIDATION_MARK", "formal")'))
+    owner = manager(tmp_path, [plugins])
+    try:
+        await owner.load_all()
+        snapshot = owner.current_snapshot
+        host = owner._composition_generation_host
+        formal = host.get(snapshot.generations["probe"].generation_id)
+        async with formal.mcp.server("first").route() as route:
+            assert (await route.call("ping", {})).output == "formal"
+        async with host.open_mcp(snapshot, "first", mode="candidate") as candidate:
+            scope_id = candidate.generation_id
+            assert scope_id != formal.generation_id
+            assert set(candidate.tools) == {"ping"}
+            async with candidate.route() as route:
+                assert (await route.call("ping", {})).output == "candidate"
+                with pytest.raises(PermissionError, match="allowlist"):
+                    await route.call("mutate", {})
+        assert host.get(scope_id) is None
+        async with formal.mcp.server("first").route() as route:
+            assert (await route.call("mutate", {})).output == "formal"
+    finally:
+        await owner.terminate_all()

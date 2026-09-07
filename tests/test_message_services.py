@@ -191,12 +191,12 @@ async def apply(ctx, config):
     try:
         await host.load_all()
         if formal_log:
-            await host._start_current_runtime_snapshot()
+            await host.start_runtime()
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 assert snapshot.composition_root.context.require(ServiceKey("started")) == {"s": 0}
         else:
             with pytest.raises(CompositionError, match="core.message_writers"):
-                await host._start_current_runtime_snapshot()
+                await host.start_runtime()
     finally:
         await host.terminate_all()
         if log is not None:

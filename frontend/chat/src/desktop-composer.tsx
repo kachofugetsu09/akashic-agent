@@ -9,7 +9,7 @@ import {
   PromptInputActionMenuTrigger, PromptInputBody, PromptInputFooter, PromptInputTextarea, PromptInputTools,
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
-import type { ChatMessage } from "./chat-message";
+import type { TimelineReply } from "./message-timeline";
 import { nextComposerExpanded } from "./composer-layout";
 import { ComposerActionButton } from "./composer-action";
 import { ComposerReply } from "./message-actions";
@@ -30,7 +30,7 @@ export const DesktopComposer = memo(function DesktopComposer({
   modelState: { defaultRuntime: string; runtimes: ChatModelRuntime[] } | null;
   selectedRuntimeId: string;
   selectedEffort: string;
-  replyTarget: ChatMessage | null;
+  replyTarget: TimelineReply | null;
   onModelChange: (runtimeId: string, effort: string) => void;
   onCancelReply: () => void;
   onSend: (text: string, files: ComposerFile[]) => Promise<void>;
@@ -71,7 +71,7 @@ export const DesktopComposer = memo(function DesktopComposer({
       multiple
       onSubmit={(message) => submit(message.text, message.files)}
     >
-      {replyTarget ? <ComposerReply role={replyTarget.role} preview={desktopComposerReplyPreview(replyTarget)} onCancel={onCancelReply} /> : null}
+      {replyTarget ? <ComposerReply author={replyTarget.author} preview={replyTarget.preview} onCancel={onCancelReply} /> : null}
       <PromptInputBody>
         <ComposerAttachments onPresenceChange={setHasAttachments} />
         <PromptInputTextarea
@@ -166,9 +166,4 @@ function ComposerSubmit({ input, status, stopPending, onStop, disabled }: { inpu
     onClick={generating ? onStop : undefined}
     disabled={disabled || stopPending || (!generating && !input.trim() && attachments.files.length === 0)}
   />;
-}
-
-export function desktopComposerReplyPreview(message: ChatMessage) {
-  return message.content.split(/\s+/u).filter(Boolean).join(" ").slice(0, 512)
-    || (message.attachments?.length ? "[附件]" : "[无文字消息]");
 }

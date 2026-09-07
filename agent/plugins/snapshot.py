@@ -1589,12 +1589,24 @@ class RuntimeSnapshotStore:
     ) -> RuntimeSnapshotLease:
         """Retain the closed exact target for one Core publication participant."""
 
-        if self._pending is not transaction and self._provisional is not transaction:
-            raise RuntimeError("RuntimeSnapshot publication target 已失效")
         candidate = transaction.candidate
+        closed_promotion = (
+            candidate is self.unpromoted_candidate
+            and transaction.previous is self._current
+            and not candidate.accepting_leases
+        )
+        if self._pending is not transaction and self._provisional is not transaction and not closed_promotion:
+            raise RuntimeError("RuntimeSnapshot publication target 已失效")
         if self._snapshots.get(candidate.snapshot_id) is not candidate:
             raise RuntimeError("RuntimeSnapshot publication target 未被 Store 持有")
         return self._claim_lease(candidate)
+
+    def retain_recovery_target(self, snapshot: RuntimeSnapshot) -> RuntimeSnapshotLease:
+        """仅允许 Core 为已关闭并排空的当前快照准备重建后的资源。"""
+        if (snapshot is not self._current or snapshot.state != "committed"
+                or snapshot.accepting_leases or snapshot.lease_count):
+            raise RuntimeError("RuntimeSnapshot recovery target 必须是已关闭并排空的 current")
+        return self._claim_lease(snapshot)
 
     def _claim_lease(self, snapshot: RuntimeSnapshot) -> RuntimeSnapshotLease:
         snapshot.lease_count += 1

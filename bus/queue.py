@@ -95,7 +95,7 @@ class DurableInboundStore(Protocol):
 class MobileSessionAdmissionOwner(Protocol):
     """Mobile exact handoff 所需的最小 Session admission owner。"""
 
-    def admit_existing(self, key: str) -> tuple[object, str]: ...
+    def acquire(self, key: str, *, require_existing: bool = True) -> str: ...
 
     def release_admission(self, admission_id: str) -> None: ...
 
@@ -597,6 +597,7 @@ class MessageBus:
             _, acquired = self._ensure_mobile_v3_admission(
                 handoff_id,
                 session_key,
+                require_existing=cast(bool, raw.message.metadata.get("require_existing_session", True)),
             )
             try:
                 persisted_id, created = self._reserve_mobile_v3_handoff(
@@ -630,6 +631,27 @@ class MessageBus:
             if admission.envelope is not None:
                 return
             admission.recoverable = True
+            self._recovery_claimed.discard(handoff_id)
+
+    async def settle_rejected_mobile_input(self, *, session_key: str, client_message_id: str) -> None:
+        """明确拒绝的命令收据落库后，释放未接纳的交接及 Session 租约。"""
+        async with self._durable_handoff_lock:
+            store = self._durable_inbound_store
+            if store is None:
+                raise RuntimeError("mobile inbound durable handoff store 未绑定")
+            row = store.read_inbound_handoff(session_key=session_key, client_message_id=client_message_id)
+            if row is None:
+                return
+            handoff_id = row["handoff_id"]
+            if not isinstance(handoff_id, str):
+                raise RuntimeError("Mobile handoff 缺少身份")
+            admission = self._mobile_v3_admissions.get(handoff_id)
+            if admission is not None and admission.envelope is not None:
+                raise RuntimeError("不得结算仍有执行 owner 的 Mobile 输入")
+            # 删除失败保留行和租约，由同一失败收据在恢复时重新结算。
+            store.complete_inbound_handoff(handoff_id)
+            if admission is not None:
+                self._release_new_mobile_v3_admission(handoff_id)
             self._recovery_claimed.discard(handoff_id)
 
     def has_pending_mobile_handoff(
@@ -742,6 +764,7 @@ class MessageBus:
             _, acquired = self._ensure_mobile_v3_admission(
                 handoff_id,
                 envelope.session_key,
+                require_existing=cast(bool, metadata.get("require_existing_session", True)),
             )
             try:
                 persisted_id, created = self._reserve_mobile_v3_handoff(
@@ -854,6 +877,7 @@ class MessageBus:
         self,
         handoff_id: str,
         session_key: str,
+        *, require_existing: bool,
     ) -> tuple[_MobileV3Admission, bool]:
         """Acquire or reuse the Session admission owned by a durable handoff."""
 
@@ -863,7 +887,7 @@ class MessageBus:
         owner = self._mobile_session_admission_owner
         if owner is None:
             raise RuntimeError("mobile session admission owner 未绑定")
-        _, admission_id = owner.admit_existing(session_key)
+        admission_id = owner.acquire(session_key, require_existing=require_existing)
         admission = _MobileV3Admission(admission_id=admission_id)
         self._mobile_v3_admissions[handoff_id] = admission
         return admission, True

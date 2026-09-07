@@ -42,11 +42,7 @@ class NdjsonConnection:
 
     async def send(self, message: dict[str, object]) -> None:
         encoded = (json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-        written = (
-            asyncio.get_running_loop().create_future()
-            if message.get("method") == "turn/completed"
-            else None
-        )
+        written = None
         try:
             self._queue.put_nowait(_PendingFrame(encoded, written))
         except asyncio.QueueFull as exc:
@@ -59,16 +55,14 @@ class NdjsonConnection:
         writer_task = asyncio.create_task(self._write_loop(), name="control-writer")
         try:
             while True:
-                line = await self._reader.readline()
+                try:
+                    line = await self._reader.readline()
+                except ValueError as error:
+                    raise ConnectionError("control frame exceeds reader limit") from error
                 if not line:
                     break
                 if len(line) > self._max_message_bytes:
-                    await self.send({
-                        "jsonrpc": "2.0",
-                        "id": None,
-                        "error": {"code": -32600, "message": "Message too large"},
-                    })
-                    break
+                    raise ConnectionError("control frame exceeds message limit")
                 task = asyncio.create_task(
                     self._router.handle_line(line),
                     name="control-request",
@@ -82,11 +76,15 @@ class NdjsonConnection:
                 await asyncio.gather(*self._request_tasks, return_exceptions=True)
             self._request_tasks.clear()
             await self._router.close()
-            if not writer_task.done():
-                await self._queue.put(None)
-            await writer_task
-            self._writer.close()
+            # 对端已关闭或连接已失败，不能等满队列和卡住的 drain 完成。
+            _ = writer_task.cancel()
+            self._writer.transport.abort()
+            results = await asyncio.gather(writer_task, return_exceptions=True)
+            self._fail_pending_frames(ConnectionError("control connection closed"))
             await self._writer.wait_closed()
+            for result in results:
+                if isinstance(result, Exception):
+                    raise result
 
     def _on_request_done(self, task: asyncio.Task[None]) -> None:
         self._request_tasks.discard(task)

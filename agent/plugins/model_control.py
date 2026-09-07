@@ -16,6 +16,7 @@ from agent.plugin_composition.model_settings_http import (
     BoundModelControl,
     ModelControlUnavailable,
 )
+from agent.plugin_composition.models import ModelCallStats
 
 
 class RuntimeModelControl:
@@ -24,6 +25,15 @@ class RuntimeModelControl:
     def __init__(self, snapshot_store: RuntimeSnapshotStore) -> None:
         self._snapshot_store = snapshot_store
         self._bound = BoundModelControl()
+
+    async def call_stats(self, call_id: str) -> ModelCallStats:
+        lease = await self._snapshot_store.acquire()
+        token = bind_runtime_snapshot(lease)
+        try:
+            return await self._bound.call_stats(call_id)
+        finally:
+            reset_runtime_snapshot(token)
+            await lease.release()
 
     async def catalog(self) -> ModelCatalogSnapshot:
         lease = await self._snapshot_store.acquire()

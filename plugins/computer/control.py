@@ -1,4 +1,4 @@
-"""在本代插件与其 MCP 进程间传递调用上下文、取消和 Turn 收尾。"""
+"""在插件与独立 MCP 进程间传递调用、取消和收尾协议。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,15 @@ from collections.abc import Mapping
 from pathlib import Path
 
 
-def endpoint_name(data_root: Path) -> str:
-    """Root 的数据目录只用于路由；generation 身份由 Core 的 Tool binding 保证。"""
+def endpoint_name(data_root: Path, generation_id: str) -> str:
+    """按数据目录和实际 MCP generation 路由控制 socket。"""
+    if not isinstance(generation_id, str) or not generation_id:
+        raise ValueError("Computer generation id 不能为空")
     return (
         "akashic-computer-"
-        + hashlib.sha256(str(data_root.resolve()).encode()).hexdigest()[:32]
+        + hashlib.sha256(
+            (str(data_root.resolve()) + "\0" + generation_id).encode()
+        ).hexdigest()[:32]
     )
 
 

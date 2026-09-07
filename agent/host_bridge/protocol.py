@@ -133,10 +133,12 @@ def decode_cleanup(reply: pb.CleanupReply) -> ExecutionCleanupReport:
 
 
 def encode_file_result(result: str | ToolResult) -> pb.FileReply:
-    """只转换文件工具已拥有的文本或单张图片，不接受动态扩展载荷。"""
+    """把文件工具的文本、业务错误或单张图片转换为固定 oneof。"""
     # 1. 文本包括工具业务错误，保持其原有返回语义。
     if isinstance(result, str):
         return pb.FileReply(text=result)
+    if result.is_error and not result.content_blocks and result.mobile_attention is None:
+        return pb.FileReply(error=pb.FileError(text=result.text, is_error=True))
     if (
         result.mobile_attention is not None
         or result.runtime_provenance
@@ -181,6 +183,12 @@ def decode_file_result(reply: pb.FileReply) -> str | ToolResult:
     kind = reply.WhichOneof("result")
     if kind == "text":
         return reply.text
+    if kind == "error":
+        error = reply.error
+        require_fields(error, "text", "is_error")
+        if not error.is_error:
+            raise ValueError("Host Bridge 文件错误结果必须标记 is_error")
+        return ToolResult(text=error.text, is_error=True)
     if kind != "image":
         raise ValueError("Host Bridge 文件响应缺少结果")
     image = reply.image

@@ -12,6 +12,7 @@ from session.artifacts import AttachmentKind, AttachmentRef
 from session.log import MessageLog, MessageConflict
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from session.store import SessionStore
+from session.artifact_store import ArtifactStore
 
 
 @pytest.fixture
@@ -138,8 +139,8 @@ async def test_host_exposes_only_bounded_artifact_read_and_candidate_cannot_open
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    store = SessionStore(workspace / "sessions.db")
-    artifacts = ChannelAttachmentArtifactStore(workspace=workspace, session_store=store)
+    store = ArtifactStore(workspace / "sessions.db")
+    artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
     ref = await artifacts.import_bytes(b"fixed bytes", kind=AttachmentKind.FILE,
                                        filename="evidence.txt", media_type="text/plain")
     sources = tmp_path / "plugins"

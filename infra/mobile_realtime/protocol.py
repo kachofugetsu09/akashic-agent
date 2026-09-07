@@ -24,9 +24,11 @@ COMMAND_TYPES = frozenset(
         "session.list",
         "session.create",
         "session.open",
+        "session.follow",
         "history.get",
         "message.content.prepare",
         "model.catalog.get",
+        "model.call.get",
         "message.send",
         "turn.stop",
         "attachment.begin",
@@ -83,6 +85,7 @@ CONTROL_TYPES = frozenset(
         "auth.accepted",
         "resume",
         "plugin.ui.changed",
+        "session.message",
         "mobile.webui.release.changed",
         "pair.claim",
         "pair.pending",
@@ -151,41 +154,11 @@ class ProtocolModel(BaseModel):
 
 
 class MessageReplyReference(ProtocolModel):
-    message_id: NonEmptyId | None = None
-    client_message_id: FrameId | None = None
-    delivery_id: Annotated[str, Field(min_length=1, max_length=128)] | None = None
-    legacy_role: Literal["user", "assistant"] | None = Field(
-        default=None,
-        alias="role",
-        exclude=True,
-    )
-    legacy_preview: str | None = Field(
-        default=None,
-        alias="preview",
-        max_length=512,
-        exclude=True,
-    )
-
-    @model_validator(mode="after")
-    def validate_identity(self) -> MessageReplyReference:
-        """要求引用消息只携带一种稳定标识。"""
-
-        identities = sum(
-            identity is not None
-            for identity in (
-                self.message_id,
-                self.client_message_id,
-                self.delivery_id,
-            )
-        )
-        if identities != 1:
-            raise ValueError("reply_to 必须且只能提供一种消息标识")
-        if self.client_message_id is not None:
-            _validate_frame_id(self.client_message_id, "reply_to.client_message_id")
-        return self
+    message_id: NonEmptyId
 
 
 class MessageSendPayload(ProtocolModel):
+    message_log_version: Literal[2]
     client_message_id: FrameId
     retry_of_client_message_id: FrameId | None = None
     session_id: NonEmptyId
@@ -371,9 +344,11 @@ class GenericCommand(CommandEnvelope):
         "session.list",
         "session.create",
         "session.open",
+        "session.follow",
         "history.get",
         "message.content.prepare",
         "model.catalog.get",
+        "model.call.get",
         "command.list",
         "runtime.document.list",
         "runtime.document.get",
@@ -537,6 +512,10 @@ class ResumeControl(AuthenticatedControlEnvelope):
     payload: ResumePayload
 
 
+class SessionMessageControl(AuthenticatedControlEnvelope):
+    type: Literal["session.message"]
+
+
 class PluginUiChangedControl(AuthenticatedControlEnvelope):
     type: Literal["plugin.ui.changed"]
 
@@ -569,6 +548,7 @@ class GenericControl(ControlEnvelope):
 ControlFrame: TypeAlias = Annotated[
     AuthAcceptedControl
     | ResumeControl
+    | SessionMessageControl
     | PluginUiChangedControl
     | MobileWebUiReleaseChangedControl
     | GenericControl,

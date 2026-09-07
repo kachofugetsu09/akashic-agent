@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -21,12 +22,14 @@ from agent.plugins.mobile_ui import (
     MobileUiStaleRevision,
 )
 from agent.model_runtime.session_selection import read_session_model_selection
+from session.log import InvalidPage, MessageCatalog
 from agent.plugin_composition import ModelCatalogSnapshot
 from agent.plugins.model_catalog import (
     ModelCatalogUnavailable,
     default_chat_model_id,
     project_chat_runtimes,
 )
+from infra.channels.message_view import message_rows, session_row
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.web_chat_channel import (
@@ -40,7 +43,7 @@ from infra.mobile_realtime.runtime_inspection import (
     RuntimeInspectionService,
 )
 from infra.mobile_realtime.storage import PairingStateError
-from session.store import SessionStore
+from session.artifact_store import ArtifactStore
 
 if TYPE_CHECKING:
     from agent.plugin_composition.model_settings_http import ModelControl
@@ -86,20 +89,31 @@ def create_chat_app(
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     model_control: ModelControl | None = None,
+    messages: MessageCatalog | None = None,
+    reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
 ) -> FastAPI:
+    if messages is not None:
+        channel.bind_message_readers(messages, reply_status)
     channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
-    channel_context = channel._ctx
-    if channel.artifact_store is None and channel_context is not None:
-        session_store = channel_context.session_manager.control_store
-        if isinstance(session_store, SessionStore):
-            channel.bind_artifact_store(
-                ChannelAttachmentArtifactStore(
-                    workspace=workspace,
-                    session_store=session_store,
-                    max_import_bytes=MAX_UPLOAD_BYTES,
-                )
+    metadata_store: ArtifactStore | None = None
+    if channel.artifact_store is None and channel._ctx is not None:
+        metadata_store = ArtifactStore(workspace / "sessions.db")
+        channel.bind_artifact_store(
+            ChannelAttachmentArtifactStore(
+                workspace=workspace, metadata_store=metadata_store,
+                max_import_bytes=MAX_UPLOAD_BYTES,
             )
-    app = FastAPI(title="Akashic Chat API")
+        )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+        try:
+            yield
+        finally:
+            if metadata_store is not None:
+                metadata_store.close()
+
+    app = FastAPI(title="Akashic Chat API", lifespan=lifespan)
     if model_control is not None:
         from agent.plugin_composition.model_settings_http import create_model_settings_router
 
@@ -165,19 +179,23 @@ def create_chat_app(
         )
 
     @app.get("/api/chat/sessions")
-    def list_sessions(page: int = Query(1), page_size: int = Query(50)) -> dict[str, Any]:
-        ctx = channel._require_ctx()
-        items, total = ctx.session_manager._store.list_sessions_for_dashboard(
-            channel=channel.name,
-            page=page,
-            page_size=page_size,
-        )
-        visible = [
-            item
-            for item in items
-            if str(item.get("first_message_content") or "").strip()
-        ]
-        return {"items": visible, "total": len(visible)}
+    def list_sessions(
+        page_size: int = Query(50, ge=1, le=200),
+        after_time: str | None = Query(default=None),
+        after_key: str | None = Query(default=None),
+    ) -> dict[str, object]:
+        if messages is None:
+            raise HTTPException(status_code=503, detail="会话日志不可用")
+        if (after_time is None) != (after_key is None):
+            raise HTTPException(status_code=422, detail="目录 cursor 需要时间与会话 ID")
+        after = None if after_time is None or after_key is None else (after_time, after_key)
+        try:
+            page = messages.sessions(prefix=f"{channel.name}:", visibility="listed", after=after, limit=page_size)
+        except InvalidPage as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {"items": [session_row(entry) for entry in page.items], "total": page.total,
+                "next_cursor": None if page.next_cursor is None else {
+                    "updated_at": page.next_cursor[0], "session_id": page.next_cursor[1]}}
 
     @app.get("/api/chat/navigation")
     def chat_navigation() -> dict[str, str]:
@@ -190,8 +208,10 @@ def create_chat_app(
         session_override = ""
         session_effort = ""
         if session_key:
-            session = channel._require_ctx().session_manager.get_or_create(session_key)
-            selection = read_session_model_selection(session.metadata)
+            if messages is None:
+                raise HTTPException(status_code=503, detail="会话日志不可用")
+            metadata = messages.reader(session_key).metadata()
+            selection = read_session_model_selection(metadata if metadata is not None else {})
             session_override = selection.model_ref
             session_effort = selection.reasoning_effort
         try:
@@ -320,21 +340,21 @@ def create_chat_app(
         session_key: str,
         page_size: int = Query(50, ge=1, le=200),
         before_seq: int | None = Query(default=None, ge=0),
-    ) -> dict[str, Any]:
-        ctx = channel._require_ctx()
-        items, total, has_more = ctx.session_manager._store.list_chat_history_page(
-            session_key=session_key,
-            page_size=page_size,
-            before_seq=before_seq,
-        )
-        _project_message_attachments(channel, items)
-        next_before_seq = items[0]["seq"] if items and has_more else None
-        return {
-            "items": items,
-            "total": total,
-            "has_more": has_more,
-            "before_seq": next_before_seq,
-        }
+        through_seq: int | None = Query(default=None, ge=-1),
+    ) -> dict[str, object]:
+        if messages is None:
+            raise HTTPException(status_code=503, detail="会话日志不可用")
+        try:
+            page = messages.reader(session_key).read_tail(
+                before_seq=before_seq, through_seq=through_seq, limit=page_size)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="会话不存在") from error
+        except InvalidPage as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        items = message_rows(page)
+        return {"version": 2, "items": items, "through_seq": page.through_seq,
+                "has_more": page.has_more,
+                "before_seq": page.messages[0].seq if page.has_more else None}
 
     @app.websocket("/ws")
     async def chat_ws(websocket: WebSocket) -> None:
@@ -461,6 +481,8 @@ def build_chat_server(
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     model_control: ModelControl | None = None,
+    messages: MessageCatalog | None = None,
+    reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     uds: str,
 ) -> uvicorn.Server:
     config = uvicorn.Config(
@@ -473,6 +495,8 @@ def build_chat_server(
             web_ui_provider=web_ui_provider,
             model_catalog_reader=model_catalog_reader,
             model_control=model_control,
+            messages=messages,
+            reply_status=reply_status,
         ),
         uds=uds,
         log_level="warning",

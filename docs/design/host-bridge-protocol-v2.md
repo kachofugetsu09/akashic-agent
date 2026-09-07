@@ -74,7 +74,7 @@ Bridge service 拥有 boot admission 和 manager lease；ShellProcessManager 拥
 | Stop | 必需 stopped，false 的存在性不能丢失 |
 | TerminateOwner、ShutdownManager | attempted/cleaned 为正整数集合，可空；failures 为 execution_id>0、非空 error_type/message 列表，可空 |
 | ActiveExecutions | execution_ids 为正整数集合，可空 |
-| FileTool | 必需 result oneof：text（可空），或 image(text、mime_type、data、detail)；图片文本可空但必须存在，data 必须存在且非空，detail 为现有high |
+| FileTool | 必需 result oneof：text（可空）、error(text、is_error=true)，或 image(text、mime_type、data、detail)；图片文本可空但必须存在，data 必须存在且非空，detail 为现有high |
 | SkillRequirements | 必需 available/missing，各含 bins/env 名称列表，允许空；精确覆盖请求，不泄露环境变量值 |
 
 客户端在远端响应边界校验 presence、值域和 oneof，不用默认值伪造成功。

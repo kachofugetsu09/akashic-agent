@@ -1,4 +1,5 @@
 aiofiles>=25.1.0
+aiohttp>=3.14.3
 anyio>=4.12.1
 APScheduler>=3.11.2
 certifi

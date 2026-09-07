@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.tasks import Task
-from plugins.conversation.source import Conversation
+from plugins.sources.plugin import Source, Sources
 from session.log import MessageCatalog, MessageReader
 
 logger = logging.getLogger(__name__)
@@ -21,19 +21,19 @@ class _Wake:
 
 async def follow(
     ctx: Context, catalog: MessageCatalog,
-    conversation: Callable[[str], Conversation], program: Program,
+    sources: Sources, program: Program,
 ) -> None:
     """从日志追赶可回复来源；空闲不保留 scope，不保存 cursor 或回复队列。"""
-    active: dict[str, _Wake] = {}
+    active: dict[tuple[str, str], _Wake] = {}
 
-    async def drive(session_id: str, wake: _Wake) -> None:
+    async def drive(session_id: str, source: Source, wake: _Wake) -> None:
         """每个 Session 独立排空旧工作；并发通知只要求再次读取日志。"""
         task: Task | None = None
         try:
             while wake.changed:
                 wake.changed = False
                 async with ctx.runtime_scope():
-                    task = await conversation(session_id).start(program)
+                    task = await source.open(session_id).start(program)
                 if task is None:
                     continue
                 try:
@@ -48,7 +48,7 @@ async def follow(
                 task = None
                 wake.changed = True
         finally:
-            del active[session_id]
+            del active[(session_id, source.name)]
             if task is not None:
                 task.cancel()
                 # 卸载只撤销新决策；已开始的工具仍必须真实结算并归还资源。
@@ -67,10 +67,15 @@ async def follow(
             changed = [key for key, head in heads.items() if previous.get(key) != head]
             previous = dict(heads)
             for session_id in changed:
-                wake = active.get(session_id)
-                if wake is None:
-                    wake = _Wake()
-                    active[session_id] = wake
-                    _ = group.create_task(drive(session_id, wake))
-                else:
-                    wake.changed = True
+                present = {message.source for message in catalog.reader(session_id).snapshot()}
+                for source in sources.entries():
+                    if source.name not in present:
+                        continue
+                    key = (session_id, source.name)
+                    wake = active.get(key)
+                    if wake is None:
+                        wake = _Wake()
+                        active[key] = wake
+                        _ = group.create_task(drive(session_id, source, wake))
+                    else:
+                        wake.changed = True

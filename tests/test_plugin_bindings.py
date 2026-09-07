@@ -490,7 +490,7 @@ async def apply(ctx, config):
     key = ServiceKey("reader.test")
     try:
         await host.load_all()
-        await host._start_current_runtime_snapshot()
+        await host.start_runtime()
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             assert snapshot.composition_root.context.require(key)["started"]

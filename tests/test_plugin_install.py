@@ -20,6 +20,7 @@ from agent.plugins.install import (
     set_installed_plugin_enabled,
 )
 from agent.plugins.manifest import plugins_root
+from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
@@ -228,7 +229,7 @@ def test_retry_reuses_artifact_and_fixed_python_environment(
         plugins_home=home,
         stage_candidate=True,
     )
-    _ = discard_latest_pointer(candidate.installed_path.parents[1])
+    ReloadJournal(workspace).rollback_updates(home, update_id=candidate.update_id, error="explicit discard")
 
     retried = install_git_plugin(
         workspace=workspace,

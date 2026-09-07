@@ -53,6 +53,13 @@ _AKASHA_CONSUMPTION_ID = "20260905_04_akasha_consumption"
 _MESSAGE_EMBEDDINGS_ID = "20260905_05_message_embeddings"
 _MESSAGE_ARTIFACTS_ID = "20260905_06_message_artifacts"
 _TURN_MESSAGES_ID = "20260906_01_turn_messages"
+_SCHEDULER_MESSAGES_ID = "20260906_01_scheduler_messages"
+_SESSION_ATTRIBUTES_ID = "20260906_02_session_attributes"
+_PLUGIN_UPDATE_ROLLBACK_ID = "20260906_03_plugin_update_rollback"
+_CHANNEL_IDENTITIES_ID = "20260906_04_channel_identities"
+_MOBILE_INPUT_REJECTIONS_ID = "20260906_05_mobile_input_rejections"
+_MODEL_CALL_TIMING_ID = "20260906_06_model_call_timing"
+_CONTEXT_MATERIAL_GRANTS_ID = "20260907_01_context_material_grants"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -89,6 +96,13 @@ _CURRENT_IDS = (
     _MESSAGE_EMBEDDINGS_ID,
     _MESSAGE_ARTIFACTS_ID,
     _TURN_MESSAGES_ID,
+    _SCHEDULER_MESSAGES_ID,
+    _SESSION_ATTRIBUTES_ID,
+    _PLUGIN_UPDATE_ROLLBACK_ID,
+    _CHANNEL_IDENTITIES_ID,
+    _MOBILE_INPUT_REJECTIONS_ID,
+    _MODEL_CALL_TIMING_ID,
+    _CONTEXT_MATERIAL_GRANTS_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -438,6 +452,13 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _MESSAGE_EMBEDDINGS_ID,
         _MESSAGE_ARTIFACTS_ID,
         _TURN_MESSAGES_ID,
+        _SCHEDULER_MESSAGES_ID,
+        _SESSION_ATTRIBUTES_ID,
+        _PLUGIN_UPDATE_ROLLBACK_ID,
+        _CHANNEL_IDENTITIES_ID,
+    _MOBILE_INPUT_REJECTIONS_ID,
+    _MODEL_CALL_TIMING_ID,
+        _CONTEXT_MATERIAL_GRANTS_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert migrated["agent"]["wiring"]["toolsets"] == ["meta_common"]
@@ -504,6 +525,13 @@ def test_toolset_wiring_migration_leaves_nonlegacy_values_untouched(
         _MESSAGE_EMBEDDINGS_ID,
         _MESSAGE_ARTIFACTS_ID,
         _TURN_MESSAGES_ID,
+        _SCHEDULER_MESSAGES_ID,
+        _SESSION_ATTRIBUTES_ID,
+        _PLUGIN_UPDATE_ROLLBACK_ID,
+        _CHANNEL_IDENTITIES_ID,
+    _MOBILE_INPUT_REJECTIONS_ID,
+    _MODEL_CALL_TIMING_ID,
+        _CONTEXT_MATERIAL_GRANTS_ID,
     )
     migrated = tomllib.loads(config.read_text())
     assert migrated["agent"]["wiring"]["toolsets"] == toolsets
@@ -558,6 +586,13 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _MESSAGE_EMBEDDINGS_ID,
         _MESSAGE_ARTIFACTS_ID,
         _TURN_MESSAGES_ID,
+        _SCHEDULER_MESSAGES_ID,
+        _SESSION_ATTRIBUTES_ID,
+        _PLUGIN_UPDATE_ROLLBACK_ID,
+        _CHANNEL_IDENTITIES_ID,
+    _MOBILE_INPUT_REJECTIONS_ID,
+    _MODEL_CALL_TIMING_ID,
+        _CONTEXT_MATERIAL_GRANTS_ID,
     )
     assert config.is_symlink()
     assert os.readlink(config) == source.name
@@ -641,6 +676,13 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _MESSAGE_EMBEDDINGS_ID,
         _MESSAGE_ARTIFACTS_ID,
         _TURN_MESSAGES_ID,
+        _SCHEDULER_MESSAGES_ID,
+        _SESSION_ATTRIBUTES_ID,
+        _PLUGIN_UPDATE_ROLLBACK_ID,
+        _CHANNEL_IDENTITIES_ID,
+    _MOBILE_INPUT_REJECTIONS_ID,
+    _MODEL_CALL_TIMING_ID,
+        _CONTEXT_MATERIAL_GRANTS_ID,
     )
 
 
@@ -996,6 +1038,13 @@ api_key = "secret"
         _MESSAGE_EMBEDDINGS_ID,
         _MESSAGE_ARTIFACTS_ID,
         _TURN_MESSAGES_ID,
+        _SCHEDULER_MESSAGES_ID,
+        _SESSION_ATTRIBUTES_ID,
+        _PLUGIN_UPDATE_ROLLBACK_ID,
+        _CHANNEL_IDENTITIES_ID,
+    _MOBILE_INPUT_REJECTIONS_ID,
+    _MODEL_CALL_TIMING_ID,
+        _CONTEXT_MATERIAL_GRANTS_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

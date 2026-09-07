@@ -102,6 +102,13 @@ def check_facts(part: ContentPart) -> ContentReferences:
     return ContentReferences()
 
 
+def display_facts(part: ContentPart) -> dict[str, object]:
+    """页面只取得调用记录与思考文本，不能取得 provider continuation。"""
+    _ = check_facts(part)
+    value = cast(Mapping[str, object], part.value)
+    return {"call_record_id": value["call_record_id"], "thinking": value["thinking"]}
+
+
 class MessageProjection:
     """Model 的只读历史投影；不读写会话、不执行工具，也不调用模型。"""
 

@@ -16,7 +16,8 @@ from agent.host_bridge import host_bridge_pb2_grpc as rpc
 from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
 from agent.host_bridge.factory import build_shell_process_manager
-from agent.host_bridge.server import _host_environment
+from agent.host_bridge.protocol import CHANNEL_OPTIONS
+from agent.host_bridge.server import HostBridgeService, _host_environment
 from agent.skills import SkillsLoader
 from agent.tools.base import ToolResult
 
@@ -297,6 +298,16 @@ async def test_host_bridge_file_tools_preserve_host_bytes(tmp_path: Path) -> Non
         )
         assert isinstance(edited, str) and "已成功编辑" in edited
         assert target.read_bytes() == b"beta\n"
+        failed = await manager.execute_file_tool(
+            "read_file", allowed_dir=tmp_path, arguments={"path": "missing.txt"},
+        )
+        assert isinstance(failed, ToolResult) and failed.is_error
+        denied = await manager.execute_file_tool(
+            "write_file", allowed_dir=tmp_path,
+            arguments={"path": "../outside.txt", "content": "bad"},
+        )
+        assert isinstance(denied, ToolResult) and denied.is_error
+        assert not (tmp_path.parent / "outside.txt").exists()
         await manager.shutdown()
 
 
@@ -321,6 +332,7 @@ async def test_host_bridge_returns_image_before_core_model_projection(
         )
 
         assert isinstance(result, ToolResult)
+        assert not result.is_error
         assert result.content_blocks[0]["type"] == "image_url"
         assert result.content_blocks[0]["image_url"]["url"].startswith(
             "data:image/png;base64,"
@@ -539,3 +551,115 @@ async def test_new_boot_claim_cleans_old_boot_long_job_before_admission(
         assert completed.exit_code == 0
         await old_manager.close_transport()
         assert not (await new_manager.shutdown()).failures
+
+
+@pytest.mark.asyncio
+async def test_shutdown_failure_keeps_bridge_owner_for_confirmed_retry(tmp_path, monkeypatch):
+    from agent.tools.unified_exec import ExecutionCleanupFailure, ExecutionCleanupReport
+
+    service = HostBridgeService(
+        "test-token", 30.0, tmp_path / "artifacts", release_commit="a" * 40,
+        toolchain_digest="b" * 64, runtime_checkout=_test_runtime_checkout(tmp_path),
+        bridge_python=Path(sys.executable),
+    )
+    server = grpc.aio.server(options=CHANNEL_OPTIONS)
+    rpc.add_HostBridgeServicer_to_server(service, server)
+    socket = tmp_path / "retry.sock"
+    assert server.add_insecure_port(f"unix:{socket}") == 1
+    await server.start()
+    manager = HostBridgeShellProcessManager(socket, "boot-retry", "test-token", "a" * 40, "b" * 64)
+    backend = None
+    try:
+        await manager.claim_boot()
+        running = await manager.exec_command(
+            command="wait for a signal", argv=[sys.executable, "-c",
+                "import os, signal; print(os.getpid(), flush=True); signal.pause()"],
+            cwd=tmp_path, env=os.environ.copy(), tty=False, yield_time_ms=250,
+            max_output_tokens=100, hard_timeout_s=30, owner_session_key="job",
+        )
+        assert running.execution_id is not None
+        pid = int(running.output)
+        lease = service._managers[("boot-retry", manager._manager_id)]
+        backend = lease.manager
+        shutdown = backend.shutdown
+        calls = 0
+
+        async def fail_once():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ExecutionCleanupReport((running.execution_id,), (), (
+                    ExecutionCleanupFailure(running.execution_id, "OSError", "controlled cleanup failure"),))
+            return await shutdown()
+
+        monkeypatch.setattr(backend, "shutdown", fail_once)
+        manager._lease_error = RuntimeError("controlled heartbeat failure")
+        report = await manager.shutdown()
+        assert report.failed_execution_ids == (running.execution_id,)
+        assert not manager._closed
+        assert service._managers[("boot-retry", manager._manager_id)] is lease
+        os.kill(pid, 0)
+        report = await manager.shutdown()
+        assert not report.failures
+        assert manager._closed
+        assert calls == 2
+        assert ("boot-retry", manager._manager_id) not in service._managers
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if backend is not None:
+            await backend.shutdown()
+        await manager.close_transport()
+        await server.stop(0)
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_owner_cleanup_blocks_spawn_until_rpc_retry(tmp_path):
+    manager = HostBridgeShellProcessManager(
+        tmp_path / "unused.sock", "boot-cleanup", "test-token", "a" * 40, "b" * 64,
+    )
+    cleanup_calls = 0
+    execution_calls: list[str] = []
+
+    async def call(_call, _request, *, method, lease=True, timeout=None):
+        nonlocal cleanup_calls
+        if method == "TerminateOwner":
+            cleanup_calls += 1
+            if cleanup_calls == 1:
+                raise RuntimeError("controlled cleanup RPC cut")
+            return pb.CleanupReply()
+        if method == "Exec":
+            execution_calls.append(_request.owner_session_key)
+            return pb.ExecutionReply(
+                output=b"confirmed", wall_time_ms=0, original_token_count=0,
+                output_omitted_bytes=0, exit_code=0, finish_reason="natural",
+            )
+        raise AssertionError(method)
+
+    manager._call = call
+    try:
+        with pytest.raises(RuntimeError, match="controlled cleanup"):
+            await manager.terminate_owner("same")
+        with pytest.raises(RuntimeError, match="cleanup 未确认"):
+            await manager.exec_command(
+                command="blocked", argv=["blocked"], cwd=None, env={}, tty=False,
+                yield_time_ms=0, max_output_tokens=0, hard_timeout_s=1,
+                owner_session_key="same",
+            )
+        other = await manager.exec_command(
+            command="other", argv=["other"], cwd=None, env={}, tty=False,
+            yield_time_ms=0, max_output_tokens=0, hard_timeout_s=1,
+            owner_session_key="other",
+        )
+        assert other.exit_code == 0
+        assert execution_calls == ["other"]
+        assert not (await manager.terminate_owner("same")).failures
+        same = await manager.exec_command(
+            command="same", argv=["same"], cwd=None, env={}, tty=False,
+            yield_time_ms=0, max_output_tokens=0, hard_timeout_s=1,
+            owner_session_key="same",
+        )
+        assert same.exit_code == 0
+        assert execution_calls == ["other", "same"]
+    finally:
+        await manager.close_transport()

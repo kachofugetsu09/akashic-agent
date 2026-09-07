@@ -32,6 +32,7 @@ _RESERVED_ENV = frozenset(
         "AKASHIC_WORKSPACE",
         "AKASHIC_BOOT_ID",
         "AKASHIC_SUPERVISED",
+        "AKASHIC_MCP_SCOPE_ID",
     }
 )
 

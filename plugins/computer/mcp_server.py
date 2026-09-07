@@ -250,7 +250,10 @@ async def serve() -> None:
     data_root = os.environ.get("AKA_PLUGIN_DATA_DIR") or os.environ.get(
         "AKASHIC_PLUGIN_DATA_DIR"
     )
-    control_name = endpoint_name(Path(data_root)) if data_root else None
+    scope_id = os.environ.get("AKASHIC_MCP_SCOPE_ID")
+    if data_root and not scope_id:
+        raise RuntimeError("Computer MCP scope id is missing")
+    control_name = endpoint_name(Path(data_root), scope_id) if data_root and scope_id else None
     active_connections = set()
 
     async def connection(reader, writer):

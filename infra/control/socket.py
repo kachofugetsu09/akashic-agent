@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import stat
 from pathlib import Path
 
 from agent.control.protocol.limits import DEFAULT_CONTROL_FRAME_BYTES
@@ -35,6 +36,7 @@ class SocketAppServer:
         self._max_message_bytes = max_message_bytes
         self._outbound_queue_size = outbound_queue_size
         self._server: asyncio.AbstractServer | None = None
+        self._socket_identity: tuple[int, int] | None = None
         self._connections: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
@@ -58,11 +60,22 @@ class SocketAppServer:
         endpoint = self.endpoint
         assert isinstance(endpoint, Path)
         endpoint.parent.mkdir(parents=True, exist_ok=True)
-        if endpoint.exists():
+        try:
+            existing = endpoint.lstat()
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if not stat.S_ISSOCK(existing.st_mode):
+                raise RuntimeError(f"app-server endpoint 不是 socket，保留原文件: {endpoint}")
             try:
                 reader, writer = await asyncio.open_unix_connection(str(endpoint))
-            except (ConnectionRefusedError, FileNotFoundError, OSError):
+            except ConnectionRefusedError:
+                current = endpoint.lstat()
+                if (current.st_dev, current.st_ino) != (existing.st_dev, existing.st_ino):
+                    raise RuntimeError(f"app-server endpoint 在接管前已变化: {endpoint}")
                 endpoint.unlink()
+            except FileNotFoundError:
+                pass
             else:
                 writer.close()
                 await writer.wait_closed()
@@ -74,33 +87,38 @@ class SocketAppServer:
             path=str(endpoint),
             limit=self._max_message_bytes + 1,
         )
+        bound = endpoint.lstat()
+        self._socket_identity = (bound.st_dev, bound.st_ino)
         try:
             os.chmod(endpoint, 0o600)
         except OSError:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
-            endpoint.unlink(missing_ok=True)
+            await self.stop()
             raise
         logger.info("app-server listening on %s", self.endpoint)
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        async with self._slots:
-            connection = NdjsonConnection(
-                reader,
-                writer,
-                self._service,
-                max_message_bytes=self._max_message_bytes,
-                max_pending_requests=self._max_pending_requests,
-                outbound_queue_size=self._outbound_queue_size,
-            )
-            task = asyncio.current_task()
-            assert task is not None
-            self._connections.add(task)
-            try:
+        task = asyncio.current_task()
+        assert task is not None
+        self._connections.add(task)
+        try:
+            if self._server is None:
+                return
+            async with self._slots:
+                connection = NdjsonConnection(
+                    reader,
+                    writer,
+                    self._service,
+                    max_message_bytes=self._max_message_bytes,
+                    max_pending_requests=self._max_pending_requests,
+                    outbound_queue_size=self._outbound_queue_size,
+                )
                 await connection.run()
-            except (ConnectionError, BrokenPipeError):
-                logger.info("app-server client disconnected")
+        except (ConnectionError, BrokenPipeError):
+            logger.info("app-server client disconnected")
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
             finally:
                 self._connections.discard(task)
 
@@ -109,14 +127,27 @@ class SocketAppServer:
         self._server = None
         if server is not None:
             server.close()
-            await server.wait_closed()
         for task in tuple(self._connections):
             task.cancel()
         if self._connections:
             await asyncio.gather(*self._connections, return_exceptions=True)
         self._connections.clear()
-        if isinstance(self.endpoint, Path):
-            self.endpoint.unlink(missing_ok=True)
+        if server is not None:
+            await server.wait_closed()
+        self._remove_socket()
+
+    def _remove_socket(self) -> None:
+        """清理仅属于本次监听的 inode，保留后来替换到同一路径的文件。"""
+        if not isinstance(self.endpoint, Path) or self._socket_identity is None:
+            return
+        try:
+            current = self.endpoint.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if (current.st_dev, current.st_ino) == self._socket_identity:
+                self.endpoint.unlink()
+        self._socket_identity = None
 
 
 def _parse_loopback_tcp(endpoint: str) -> tuple[str, int] | None:

@@ -120,6 +120,7 @@ class HostBridgeShellProcessManager:
         self._stub = rpc.HostBridgeStub(self._channel)
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._lease_error: Exception | None = None
+        self._unconfirmed_owners: dict[str, str] = {}
         self._closed = False
 
     def _request_context(self) -> pb.RequestContext:
@@ -202,6 +203,11 @@ class HostBridgeShellProcessManager:
         hard_timeout_s: int,
         owner_session_key: str,
     ) -> ExecutionResult:
+        if owner_session_key in self._unconfirmed_owners:
+            raise RuntimeError(
+                f"Host Bridge owner={owner_session_key} 的 cleanup 未确认，拒绝创建新 execution: "
+                f"{self._unconfirmed_owners[owner_session_key]}"
+            )
         request = pb.ExecRequest(
             context=self._request_context(),
             command=command,
@@ -251,37 +257,60 @@ class HostBridgeShellProcessManager:
         require_fields(reply, "stopped")
         return reply.stopped
 
-    async def terminate_owner(self, owner_session_key: str) -> ExecutionCleanupReport:
-        request = pb.OwnerRequest(
-            context=self._request_context(), owner_session_key=owner_session_key
-        )
-        return decode_cleanup(
-            await self._call(
-                self._stub.TerminateOwner, request, method="TerminateOwner"
+    async def terminate_owner(
+        self,
+        owner_session_key: str,
+    ) -> ExecutionCleanupReport:
+        """缺少远端清理确认时阻止同 owner 新命令，成功重试才解除。"""
+        try:
+            request = pb.OwnerRequest(
+                context=self._request_context(), owner_session_key=owner_session_key
             )
-        )
+            report = decode_cleanup(
+                await self._call(
+                    self._stub.TerminateOwner, request, method="TerminateOwner"
+                )
+            )
+        except (Exception, asyncio.CancelledError) as error:
+            # RPC、损坏响应与取消都不能证明远端进程已清理；明确 report 的隔离归服务端。
+            self._unconfirmed_owners[owner_session_key] = f"{type(error).__name__}: {error}"
+            raise
+        if report.failures:
+            self._unconfirmed_owners[owner_session_key] = "; ".join(
+                f"execution={failure.execution_id}: {failure.message}"
+                for failure in report.failures
+            )
+        else:
+            _ = self._unconfirmed_owners.pop(owner_session_key, None)
+        return report
 
     async def shutdown(self) -> ExecutionCleanupReport:
         if self._closed:
             return ExecutionCleanupReport((), (), ())
+        await self._stop_heartbeat()
         reply: pb.CleanupReply = await self._call(
             self._stub.ShutdownManager,
             pb.ContextRequest(context=self._request_context()),
             method="ShutdownManager",
+            lease=False,
         )
         report = decode_cleanup(reply)
-        self._closed = True
-        await self.close_transport()
+        if not report.failures:
+            await self.close_transport()
         return report
 
     async def close_transport(self) -> None:
         """只关闭客户端；已登记进程仍由宿主 lease owner 回收。"""
         self._closed = True
+        await self._stop_heartbeat()
+        await self._channel.close()
+
+    async def _stop_heartbeat(self) -> None:
         if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
+            _ = self._heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-        await self._channel.close()
+            self._heartbeat_task = None
 
     async def active_execution_ids(self) -> list[int]:
         reply: pb.ActiveExecutionsReply = await self._call(
@@ -328,7 +357,7 @@ class HostBridgeShellProcessManager:
         """发起一次 RPC；失败或取消均不重放可能已生效的操作。"""
         if self._closed:
             raise RuntimeError("Host Bridge manager 已关闭")
-        if method != "Heartbeat" and self._lease_error is not None:
+        if method not in {"Heartbeat", "ShutdownManager"} and self._lease_error is not None:
             raise RuntimeError(f"Host Bridge lease 已失效: {self._lease_error}")
         if lease:
             self._ensure_heartbeat()

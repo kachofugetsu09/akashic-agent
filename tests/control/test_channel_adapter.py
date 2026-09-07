@@ -27,6 +27,7 @@ from bus.events import (
 )
 from bus.queue import MessageBus
 from session.manager import SessionManager
+from session.inbound_store import InboundHandoffStore
 from session.store import SessionStore
 
 
@@ -136,7 +137,7 @@ def _real_worker(
     """构造绑定同一 control_store 的真实 MessageBus 与 worker。"""
 
     bus = MessageBus()
-    bus.bind_durable_inbound_store(manager.control_store)
+    bus.bind_durable_inbound_store(manager.inbound_store)
     worker = PassiveMessageWorker(
         bus,
         runtime,
@@ -437,7 +438,7 @@ async def test_recovered_mobile_handoff_without_turn_creates_one_turn_and_delive
     turns = manager.control_store.list_turns(session_key)
     assert len(turns) == 1
     assert turns[0].status is TurnStatus.COMPLETED
-    assert manager.control_store.list_inbound_handoffs() == []
+    assert manager.inbound_store.list_inbound_handoffs() == []
     assert [msg.content for msg in delivered] == ["echo:hello"]
     assert delivered[0].control_turn_id == turns[0].id
     assert delivered[0].execution_attempt_id == turns[0].id
@@ -494,7 +495,7 @@ async def test_recovered_mobile_handoff_with_completed_turn_redelivers_and_acks(
     assert delivered[0].control_turn_id == turns[0].id
     assert delivered[0].metadata["client_message_id"] == "client:t"
     assert delivered[0].session_message_id == "akashic:terminal:5"
-    assert manager.control_store.list_inbound_handoffs() == []
+    assert manager.inbound_store.list_inbound_handoffs() == []
     recovery_records = [
         record
         for record in caplog.records
@@ -556,7 +557,7 @@ async def test_recovered_mobile_handoff_in_interrupted_attempt_is_not_reenqueued
     assert len(delivered) == 1
     assert delivered[0].terminal_status is TurnTerminalStatus.INTERRUPTED
     assert delivered[0].metadata["client_message_id"] == "client:interrupted"
-    assert manager.control_store.list_inbound_handoffs() == []
+    assert manager.inbound_store.list_inbound_handoffs() == []
     assert bus._inbound_accepted == {}
     await runtime.shutdown()
     manager.close()
@@ -593,7 +594,7 @@ async def test_capacity_busy_waits_then_creates_single_turn_and_delivers(
     await bus.publish_inbound(_mobile_item("two", "u2", "client:b"))
 
     # 1. 容量占满：B 等待期间 row 保留、不建 turn、无 outbound。
-    await _wait_for(lambda: len(manager.control_store.list_inbound_handoffs()) == 2)
+    await _wait_for(lambda: len(manager.inbound_store.list_inbound_handoffs()) == 2)
     await _wait_for(
         lambda: manager.control_store.list_turns(session_b, limit=10) == []
         and manager.control_store._conn.execute(
@@ -607,7 +608,7 @@ async def test_capacity_busy_waits_then_creates_single_turn_and_delivers(
 
     # 2. 释放容量：B 只建一次 turn 并最终投递。
     release.set()
-    await _wait_for(lambda: manager.control_store.list_inbound_handoffs() == [])
+    await _wait_for(lambda: manager.inbound_store.list_inbound_handoffs() == [])
     assert len(manager.control_store.list_turns(session_b, limit=10)) == 1
     assert manager.control_store.list_turns(session_b, limit=10)[0].status is (
         TurnStatus.COMPLETED
@@ -671,7 +672,7 @@ async def test_capacity_bytes_includes_request_waits_without_busy_polling(
 
     # 2. 释放容量后只重试一次并只建一次 turn，无忙轮询。
     release.set()
-    await _wait_for(lambda: manager.control_store.list_inbound_handoffs() == [])
+    await _wait_for(lambda: manager.inbound_store.list_inbound_handoffs() == [])
     assert attempts["count"] == 2
     turns_b = manager.control_store.list_turns(session_b, limit=10)
     assert len(turns_b) == 1
@@ -707,11 +708,11 @@ async def test_worker_cancelled_while_waiting_capacity_keeps_handoff(
     await bus.publish_inbound(_mobile_item("one", "u1", "client:a"))
     await asyncio.wait_for(first_started.wait(), timeout=2)
     await bus.publish_inbound(_mobile_item("two", "u2", "client:b"))
-    await _wait_for(lambda: len(manager.control_store.list_inbound_handoffs()) == 2)
+    await _wait_for(lambda: len(manager.inbound_store.list_inbound_handoffs()) == 2)
 
     # 1. 等待容量期间取消：row 保留、不建 turn、无 outbound。
     await _cancel_task(worker_task)
-    assert len(manager.control_store.list_inbound_handoffs()) == 2
+    assert len(manager.inbound_store.list_inbound_handoffs()) == 2
     assert manager.control_store.list_turns(session_b, limit=10) == []
     assert bus.outbound_size == 0
 
@@ -750,13 +751,13 @@ async def test_runtime_closed_while_waiting_capacity_keeps_handoff(
     await bus.publish_inbound(_mobile_item("one", "u1", "client:a"))
     await asyncio.wait_for(first_started.wait(), timeout=2)
     await bus.publish_inbound(_mobile_item("two", "u2", "client:b"))
-    await _wait_for(lambda: len(manager.control_store.list_inbound_handoffs()) == 2)
+    await _wait_for(lambda: len(manager.inbound_store.list_inbound_handoffs()) == 2)
 
     # 1. 关闭唤醒等待并暴露 RuntimeClosedError：B 不建 turn、row 保留。
     await runtime.shutdown()
     await _wait_for(
         lambda: {
-            row["dedupe_key"] for row in manager.control_store.list_inbound_handoffs()
+            row["dedupe_key"] for row in manager.inbound_store.list_inbound_handoffs()
         }
         == {"akashic:two:client:b"}
     )
@@ -817,7 +818,7 @@ async def test_restart_cancel_resumes_waiting_mobile_handoff_in_same_process(
 
     # 1. 恢复栅栏后不依赖新消息或进程重启，原 accepted owner 直接建立 turn。
     runtime.resume_after_restart_cancel(caller.id)
-    await _wait_for(lambda: manager.control_store.list_inbound_handoffs() == [])
+    await _wait_for(lambda: manager.inbound_store.list_inbound_handoffs() == [])
     waiting_turns = manager.control_store.list_turns(waiting_key, limit=10)
     assert len(waiting_turns) == 1
     assert waiting_turns[0].status is TurnStatus.COMPLETED
@@ -858,7 +859,7 @@ async def test_create_turn_oserror_keeps_handoff_and_releases_admission(
         await worker._run_message(consumed)
 
     # 1. create_turn 失败：原异常可观察，row 保留、无 turn。
-    assert len(manager.control_store.list_inbound_handoffs()) == 1
+    assert len(manager.inbound_store.list_inbound_handoffs()) == 1
     assert manager.control_store.list_turns(session_key, limit=10) == []
     assert id(consumed) in bus._inbound_accepted
 
@@ -903,7 +904,7 @@ async def test_terminal_handoff_retained_until_dispatcher_delivers(
     await asyncio.wait_for(result_task, timeout=2)
 
     # 2. 送达任务完成后 worker 才删除 handoff。
-    assert manager.control_store.list_inbound_handoffs() == []
+    assert manager.inbound_store.list_inbound_handoffs() == []
     assert [msg.content for msg in delivered] == ["echo:hello"]
     await runtime.shutdown()
     manager.close()
@@ -947,14 +948,14 @@ async def test_handoff_deleted_only_after_callback_durable_commit(
 
     # 1. SessionDB terminal 已落、callback 已进入但未提交：handoff 仍在。
     assert events == ["callback_entered"]
-    assert len(manager.control_store.list_inbound_handoffs()) == 1
+    assert len(manager.inbound_store.list_inbound_handoffs()) == 1
     assert not result_task.done()
     release_callback.set()
     await asyncio.wait_for(result_task, timeout=2)
 
     # 2. 顺序：callback 提交成功后才删除 handoff。
     assert events == ["callback_entered", "callback_committed"]
-    assert manager.control_store.list_inbound_handoffs() == []
+    assert manager.inbound_store.list_inbound_handoffs() == []
     await runtime.shutdown()
     manager.close()
 
@@ -984,7 +985,7 @@ async def test_handoff_retained_when_callback_fails_twice(tmp_path: Path) -> Non
 
     # 1. typed dispatcher 单次失败：fail-loud，row 与 owner 保留。
     assert attempts["count"] == 1
-    assert len(manager.control_store.list_inbound_handoffs()) == 1
+    assert len(manager.inbound_store.list_inbound_handoffs()) == 1
     assert id(consumed) in bus._inbound_accepted
 
     # 2. 失败路径 finally 恰一次释放 session admission，同一会话可再次 admit。
@@ -1021,7 +1022,7 @@ async def test_result_task_cancel_releases_admission_keeps_handoff(
     await _cancel_task(result_task)
 
     # 2. row 保留、无 owner 清除，session admission 恰一次释放可再次取得。
-    assert len(manager.control_store.list_inbound_handoffs()) == 1
+    assert len(manager.inbound_store.list_inbound_handoffs()) == 1
     assert id(consumed) in bus._inbound_accepted
     _, readmission = manager.admit_existing(session_key)
     manager.release_admission(readmission)
@@ -1056,7 +1057,7 @@ async def test_handoff_retained_when_dispatcher_cancelled(tmp_path: Path) -> Non
     # 1. typed dispatcher provider 失败：worker fail-loud，row 保留。
     with pytest.raises(RuntimeError, match="provider stopped"):
         await asyncio.wait_for(result_task, timeout=2)
-    assert len(manager.control_store.list_inbound_handoffs()) == 1
+    assert len(manager.inbound_store.list_inbound_handoffs()) == 1
     assert id(consumed) in bus._inbound_accepted
     await runtime.shutdown()
     manager.close()
@@ -1087,7 +1088,7 @@ async def test_failed_outbound_carries_authoritative_turn_id_across_threads(
     worker_task = asyncio.create_task(worker.run())
     await bus.publish_inbound(_mobile_item("afail", "a", "client:a"))
     await bus.publish_inbound(_mobile_item("bsuccess", "b", "client:b"))
-    await _wait_for(lambda: manager.control_store.list_inbound_handoffs() == [])
+    await _wait_for(lambda: manager.inbound_store.list_inbound_handoffs() == [])
 
     turns_a = manager.control_store.list_turns(session_a, limit=10)
     turns_b = manager.control_store.list_turns(session_b, limit=10)
@@ -1332,7 +1333,7 @@ async def test_handoff_retained_without_subscriber(tmp_path: Path) -> None:
         await worker._run_message(consumed)
 
     # 1. 无 subscriber 不算 delivered：row 与 owner 保留。
-    assert len(manager.control_store.list_inbound_handoffs()) == 1
+    assert len(manager.inbound_store.list_inbound_handoffs()) == 1
     assert id(consumed) in bus._inbound_accepted
     await runtime.shutdown()
     manager.close()
@@ -1409,7 +1410,7 @@ async def test_restart_recovery_redelivers_terminals_and_creates_missing_turn_on
     await bus1.publish_inbound(
         _mobile_item("restart-interrupt", "interrupt", "client:interrupt")
     )
-    assert len(manager1.control_store.list_inbound_handoffs()) == 4
+    assert len(manager1.inbound_store.list_inbound_handoffs()) == 4
     await bus1.aclose()
     await runtime1.shutdown()
     manager1.close()
@@ -1439,7 +1440,7 @@ async def test_restart_recovery_redelivers_terminals_and_creates_missing_turn_on
     assert bus2.inbound_size == 4
     assert len(bus2._inbound_accepted) == 4
     worker2_task = asyncio.create_task(worker2.run())
-    await _wait_for(lambda: manager2.control_store.list_inbound_handoffs() == [])
+    await _wait_for(lambda: manager2.inbound_store.list_inbound_handoffs() == [])
 
     done = manager2.control_store.find_turn_by_client_message_id(
         done_key, "client:done"
@@ -1520,7 +1521,7 @@ async def test_failed_outbound_carries_verified_client_message_id(
     failed = next(msg for msg in delivered if msg.content == "boom")
     assert failed.metadata["client_message_id"] == "client:fcmid"
     assert failed.control_turn_id == turn.id
-    assert manager.control_store.list_inbound_handoffs() == []
+    assert manager.inbound_store.list_inbound_handoffs() == []
     await runtime.shutdown()
     manager.close()
 
@@ -1547,7 +1548,7 @@ async def test_restart_redelivery_failed_carries_verified_client_message_id(
         RuntimeError, match="Passive terminal exact Channel dispatcher 未绑定"
     ):
         await worker1._run_message(consumed1)
-    assert len(manager1.control_store.list_inbound_handoffs()) == 1
+    assert len(manager1.inbound_store.list_inbound_handoffs()) == 1
     await bus1.aclose()
     await runtime1.shutdown()
     manager1.close()
@@ -1573,7 +1574,7 @@ async def test_restart_redelivery_failed_carries_verified_client_message_id(
     failed = next(msg for msg in delivered2 if msg.content == "boom")
     assert failed.metadata["client_message_id"] == "client:rdfail"
     assert failed.control_turn_id == turn.id
-    assert manager2.control_store.list_inbound_handoffs() == []
+    assert manager2.inbound_store.list_inbound_handoffs() == []
     await runtime2.shutdown()
     manager2.close()
 
@@ -1620,7 +1621,7 @@ async def test_worker_terminal_error_milestone_carries_result_identity(
     assert error_records[0].akashic_fields["client_message_id"] == "client:emid"
     assert error_records[0].akashic_fields["outcome"] == "error"
     assert error_records[0].akashic_fields["duration_ms"] is not None
-    assert len(manager.control_store.list_inbound_handoffs()) == 1
+    assert len(manager.inbound_store.list_inbound_handoffs()) == 1
     await runtime.shutdown()
     manager.close()
 
@@ -1647,17 +1648,17 @@ async def test_worker_terminal_cleanup_failure_emits_only_error_terminal(
     async def commit_mobile_terminal(message: OutboundMessage) -> None:
         delivered.append(message)
 
-    original_complete = SessionStore.complete_inbound_handoff
+    original_complete = InboundHandoffStore.complete_inbound_handoff
     cleanup_attempts = 0
 
-    def fail_once(store: SessionStore, handoff_id: str) -> None:
+    def fail_once(store: InboundHandoffStore, handoff_id: str) -> None:
         nonlocal cleanup_attempts
         cleanup_attempts += 1
         if cleanup_attempts == 1:
             raise OSError("simulated handoff fsync failure")
         original_complete(store, handoff_id)
 
-    monkeypatch.setattr(SessionStore, "complete_inbound_handoff", fail_once)
+    monkeypatch.setattr(InboundHandoffStore, "complete_inbound_handoff", fail_once)
     monkeypatch.setattr("bus.queue._INBOUND_CLEANUP_RETRY_INITIAL_DELAY", 0.0)
     _bind_channel_delivery(worker, commit_mobile_terminal)
     inbound = _mobile_item(
@@ -1672,7 +1673,7 @@ async def test_worker_terminal_cleanup_failure_emits_only_error_terminal(
             await worker._run_message(consumed)
 
     # 1. 后台 cleanup-only retry 最终删除 row，但本次 span 不得先 done 再 error。
-    await _wait_for(lambda: manager.control_store.list_inbound_handoffs() == [])
+    await _wait_for(lambda: manager.inbound_store.list_inbound_handoffs() == [])
     turn = manager.control_store.find_turn_by_client_message_id(
         session_key,
         "client:cleanup-fail-once",
@@ -1727,7 +1728,7 @@ async def test_never_fit_input_persists_failed_terminal_before_handoff_ack(
     await bus.publish_inbound(
         _mobile_item("never-fit", "x" * 2_000, "client:never-fit")
     )
-    await _wait_for(lambda: manager.control_store.list_inbound_handoffs() == [])
+    await _wait_for(lambda: manager.inbound_store.list_inbound_handoffs() == [])
 
     # 1. Provider 未执行；SessionStore 拥有真实 failed turn 与稳定 client identity。
     assert executed == []
@@ -1744,7 +1745,7 @@ async def test_never_fit_input_persists_failed_terminal_before_handoff_ack(
 
     # 2. 永久拒绝关闭该 logical interaction；后续小输入不携带被拒绝正文续接。
     await bus.publish_inbound(_mobile_item("never-fit", "ok", "client:after-never-fit"))
-    await _wait_for(lambda: manager.control_store.list_inbound_handoffs() == [])
+    await _wait_for(lambda: manager.inbound_store.list_inbound_handoffs() == [])
     assert [request.input for request in executed] == ["ok"]
     turns = manager.control_store.list_turns(session_key, limit=10)
     assert len(turns) == 2

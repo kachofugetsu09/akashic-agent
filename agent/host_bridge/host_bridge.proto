@@ -126,7 +126,12 @@ message FileReply {
   oneof result {
     string text = 1;
     FileImage image = 2;
+    FileError error = 3;
   }
+}
+message FileError {
+  optional string text = 1;
+  optional bool is_error = 2;
 }
 message FileImage {
   optional string text = 1;

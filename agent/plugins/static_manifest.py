@@ -25,6 +25,7 @@ _RESERVED_ENV = frozenset(
         "AKA_PLUGIN_DATA_DIR",
         "AKASHIC_PLUGIN_DATA_DIR",
         "AKASHIC_WORKSPACE",
+        "AKASHIC_MCP_SCOPE_ID",
     }
 )
 _TOP_LEVEL_KEYS = frozenset(
@@ -40,6 +41,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "processes",
         "workload",
         "channel_credentials",
+        "credential_paths",
     }
 )
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?")
@@ -115,6 +117,14 @@ class StaticPluginManifest:
     workloads: tuple[StaticWorkloadDeclaration, ...]
     channel_credentials: tuple[tuple[str, tuple[str, ...]], ...]
     identity_digest: str
+    credential_paths: tuple[str, ...] = ()
+
+    @property
+    def all_credential_paths(self) -> tuple[str, ...]:
+        """完整脱敏范围；渠道仍保留各自更窄的凭据授权。"""
+        return tuple(sorted(set(self.credential_paths) | {
+            path for _channel, paths in self.channel_credentials for path in paths
+        }))
 
     @property
     def requirements(self) -> tuple[str, ...]:
@@ -260,6 +270,10 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     managed_processes = _process_declarations(root, raw, python)
     workloads = _workload_declarations(raw)
     channel_credentials = _channel_credentials(raw.get("channel_credentials", {}))
+    credential_paths = _credential_paths(raw.get("credential_paths", []), "credential_paths")
+    _check_credential_overlap(set(credential_paths) | {
+        path for _channel, paths in channel_credentials for path in paths
+    }, "credential_paths/channel_credentials")
     _validate_endpoint_process_refs(mcp_servers, managed_processes)
     _validate_endpoint_workload_refs(mcp_servers, workloads)
     identity: dict[str, object] = {
@@ -284,6 +298,9 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
             for channel, paths in channel_credentials
         ],
     }
+    # 原渠道 manifest 的身份保持不变；通用声明参与自身不可变身份。
+    if credential_paths:
+        identity["credential_paths"] = list(credential_paths)
     identity_digest = hashlib.sha256(
         json.dumps(
             identity,
@@ -305,6 +322,7 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         workloads=workloads,
         channel_credentials=channel_credentials,
         identity_digest=identity_digest,
+        credential_paths=credential_paths,
     )
 
 
@@ -318,33 +336,29 @@ def _channel_credentials(
     result: list[tuple[str, tuple[str, ...]]] = []
     for channel, paths in sorted(table.items()):
         name = _name(channel, f"channel_credentials.{channel}")
-        values = _string_list(paths, f"channel_credentials.{name}")
-        normalized: list[str] = []
-        for value in values:
-            parts = value.split(".")
-            if any(_CONFIG_KEY.fullmatch(part) is None for part in parts):
-                raise ValueError(
-                    f"channel_credentials.{name} 包含无效 config path: {value}"
-                )
-            normalized.append(".".join(parts))
-
-        # 2. Prefix overlap would make redaction order observable.
-        path_set = set(normalized)
-        for value in normalized:
-            parts = value.split(".")
-            if any(
-                ".".join(parts[:index]) in path_set for index in range(1, len(parts))
-            ):
-                raise ValueError(f"channel_credentials.{name} 路径重叠: {value}")
-        result.append((name, tuple(sorted(normalized))))
+        result.append((name, _credential_paths(paths, f"channel_credentials.{name}")))
 
     # 3. Two channels may reuse one exact credential, but not overlapping paths.
     all_paths = {path for _channel, paths in result for path in paths}
-    for value in all_paths:
-        parts = value.split(".")
-        if any(".".join(parts[:index]) in all_paths for index in range(1, len(parts))):
-            raise ValueError(f"channel_credentials 跨 channel 路径重叠: {value}")
+    _check_credential_overlap(all_paths, "channel_credentials 跨 channel")
     return tuple(result)
+
+
+def _credential_paths(raw: object, label: str) -> tuple[str, ...]:
+    """在静态文件边界校验凭据路径，防止脱敏依赖处理顺序。"""
+    values = _string_list(raw, label)
+    for value in values:
+        if any(_CONFIG_KEY.fullmatch(part) is None for part in value.split(".")):
+            raise ValueError(f"{label} 包含无效 config path: {value}")
+    _check_credential_overlap(set(values), label)
+    return tuple(sorted(values))
+
+
+def _check_credential_overlap(paths: set[str], label: str) -> None:
+    for value in paths:
+        parts = value.split(".")
+        if any(".".join(parts[:index]) in paths for index in range(1, len(parts))):
+            raise ValueError(f"{label} 路径重叠: {value}")
 
 
 def _python_runtimes(

@@ -11,23 +11,23 @@ import pytest
 from PIL import Image
 
 from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
-from bootstrap.channel_attachment_import import import_channel_attachments
+from infra.channels.attachment_import import import_channel_attachments
 from bus.events import (
     AttachmentKind as LegacyAttachmentKind,
     ChannelAttachment,
 )
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from session.store import SessionStore
+from session.artifact_store import ArtifactStore
 
 
 @pytest.fixture
 def stores(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    session_store = SessionStore(workspace / "sessions.db")
+    session_store = ArtifactStore(workspace / "sessions.db")
     artifact_store = ChannelAttachmentArtifactStore(
         workspace=workspace,
-        session_store=session_store,
+        metadata_store=session_store,
     )
     try:
         yield session_store, artifact_store
@@ -49,7 +49,7 @@ async def test_import_publishes_ready_metadata_and_verified_read_lease(stores) -
     record = session_store.get_attachment(ref.artifact_id)
     assert record is not None
     assert record.storage_key == f"uploads/artifacts/{ref.artifact_id}.bin"
-    assert record.state == "ready"
+    assert record.ref == ref
     assert not Path(record.storage_key).is_absolute()
 
     lease = await artifact_store.acquire(ref)
@@ -162,10 +162,10 @@ async def test_import_rejects_symlinked_artifact_parent_before_write(
     workspace.mkdir()
     outside.mkdir()
     os.symlink(outside, workspace / "uploads")
-    session_store = SessionStore(workspace / "sessions.db")
+    session_store = ArtifactStore(workspace / "sessions.db")
     artifact_store = ChannelAttachmentArtifactStore(
         workspace=workspace,
-        session_store=session_store,
+        metadata_store=session_store,
     )
     try:
         with pytest.raises(ValueError, match="符号链接"):

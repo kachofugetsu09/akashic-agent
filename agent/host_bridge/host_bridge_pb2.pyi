@@ -228,12 +228,22 @@ class ListDir(_message.Message):
     def __init__(self, path: _Optional[str] = ...) -> None: ...
 
 class FileReply(_message.Message):
-    __slots__ = ("text", "image")
+    __slots__ = ("text", "image", "error")
     TEXT_FIELD_NUMBER: _ClassVar[int]
     IMAGE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
     text: str
     image: FileImage
-    def __init__(self, text: _Optional[str] = ..., image: _Optional[_Union[FileImage, _Mapping]] = ...) -> None: ...
+    error: FileError
+    def __init__(self, text: _Optional[str] = ..., image: _Optional[_Union[FileImage, _Mapping]] = ..., error: _Optional[_Union[FileError, _Mapping]] = ...) -> None: ...
+
+class FileError(_message.Message):
+    __slots__ = ("text", "is_error")
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    IS_ERROR_FIELD_NUMBER: _ClassVar[int]
+    text: str
+    is_error: bool
+    def __init__(self, text: _Optional[str] = ..., is_error: bool = ...) -> None: ...
 
 class FileImage(_message.Message):
     __slots__ = ("text", "mime_type", "data", "detail")

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -215,7 +216,6 @@ if __name__ == "__main__" and _run_lightweight_command():
 
 
 from agent.config import Config, resolve_app_server_endpoint
-from agent.turn_effects import PostCommitEffect, set_post_commit_effect
 from agent.control.client import ControlClient, RemoteControlError
 from agent.migrations import (
     MigrationOutcome,
@@ -244,12 +244,14 @@ _HELP = """\
   gateway                       启动未托管 Agent 服务（调试）
   supervise                     显式进入 supervisor（兼容别名）
   app-server --stdio            在 stdio 上运行程序化控制面
-  exec --new|--thread ID PROMPT 执行一个非交互 turn
+  exec --new|--session ID PROMPT 提交程序输入并等待结果
   dashboard                     单独启动 Dashboard
-  plugin-install                安装 Git 插件
+  plugin-install --update-id ID 安装 Git 插件候选
   plugin-install-trusted-batch  离线安装 operator 已信任的 exact v3 插件批次
   plugin-uninstall PLUGIN_ID    卸载插件
-  plugin-revert                 撤销本 turn 最近一次插件操作
+  plugin-status [UPDATE_ID]      查询当前插件或指定更新
+  plugin-promote UPDATE_ID       提交候选发布
+  plugin-discard UPDATE_ID       丢弃候选更新
   plugin-doctor [PLUGIN_ID]     检查插件状态
 
 通用选项:
@@ -359,196 +361,148 @@ def _uninstall_via_runtime(
         config.app_server.listen,
         workspace,
     )
-    owner_turn_id = os.environ.get(_PLUGIN_ROLLOUT_OWNER_TURN_ENV, "")
-    return asyncio.run(
-        _request_plugin_uninstall(
-            endpoint,
-            plugin_id,
-            workspace,
-            owner_turn_id=owner_turn_id,
-        )
-    )
+    return asyncio.run(_request_plugin_uninstall(endpoint, plugin_id, workspace))
 
 
 async def _request_plugin_uninstall(
-    endpoint: str,
-    plugin_id: str,
-    workspace: Path,
-    *,
-    owner_turn_id: str,
+    endpoint: str, plugin_id: str, workspace: Path,
 ) -> dict[str, object]:
-    """Register a turn-owned uninstall without waiting on its own lease."""
-
-    # 1. Runtime records intent only; terminal resolution owns drain and cleanup.
+    """由应用 owner 停用、排空并卸载，控制连接只等待结果。"""
     token = read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
     async with await ControlClient.connect(endpoint, workspace_token=token) as client:
-        result = await client.request(
-            "plugin/uninstall/start",
-            {"pluginId": plugin_id, "ownerTurnId": owner_turn_id},
-        )
+        result = await client.request("plugin/uninstall", {"plugin_id": plugin_id})
         if not isinstance(result, dict):
-            raise RuntimeError("插件卸载登记响应无效")
+            raise RuntimeError("插件卸载响应无效")
         return cast(dict[str, object], result)
 
 
-def _exec_prompt(args: list[str]) -> str:
-    values_with_argument = {
-        "--config",
-        "--workspace",
-        "--endpoint",
-        "--thread",
-        "--runtime",
-    }
-    positional: list[str] = []
-    skip = False
-    for index, value in enumerate(args[1:], start=1):
-        if skip:
-            skip = False
-            continue
-        if value in values_with_argument:
-            skip = True
-            continue
-        if value.startswith("--"):
-            continue
-        positional.append(value)
-    if not positional:
-        raise ValueError("exec 缺少 prompt；使用 - 可从 stdin 读取")
-    if len(positional) != 1:
-        raise ValueError("exec 只接受一个 prompt 参数")
-    return sys.stdin.read() if positional[0] == "-" else positional[0]
+async def _wait_exec_result(client: ControlClient, session_id: str, input_id: str,
+                            *, json_events: bool) -> dict[str, object]:
+    """从当前结果的 seq 继续跟随；订阅建立期间的新消息仍能补读。"""
+    query: dict[str, object] = {"session_id": session_id, "input_id": input_id}
+    result = cast(dict[str, object], await client.request("programmatic/message/result", query))
+    if result["status"] != "open":
+        return result
+    async with await client.session_follow(session_id, after_seq=cast(int, result["through_seq"])) as feed:
+        async for event in feed.events():
+            if json_events:
+                print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
+            if event["type"] == "messages.appended":
+                result = cast(dict[str, object], await client.request("programmatic/message/result", query))
+                if result["status"] != "open":
+                    return result
+    raise ConnectionError("消息订阅已关闭；使用原 Session 和 Input 身份恢复查询")
+
+
+async def _exec_until_stop(client: ControlClient, session_id: str, input_id: str,
+                           *, json_events: bool) -> tuple[dict[str, object], bool]:
+    """显式 SIGINT 提交 pause；普通连接关闭只停止本地读取。"""
+    interrupt = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    previous = signal.getsignal(signal.SIGINT)
+    native_handler = False
+    try:
+        loop.add_signal_handler(signal.SIGINT, interrupt.set)
+        native_handler = True
+    except NotImplementedError:
+        def on_sigint(_signal: int, _frame: object) -> None:
+            _ = loop.call_soon_threadsafe(interrupt.set)
+        _ = signal.signal(signal.SIGINT, on_sigint)
+    result_task = asyncio.create_task(_wait_exec_result(client, session_id, input_id,
+                                                       json_events=json_events), name="exec-result")
+    interrupt_task = asyncio.create_task(interrupt.wait(), name="exec-sigint")
+    stopped = False
+    try:
+        done, _ = await asyncio.wait((result_task, interrupt_task), return_when=asyncio.FIRST_COMPLETED)
+        if interrupt_task in done and not result_task.done():
+            stopped = True
+            _ = await client.request("programmatic/message/pause", {
+                "session_id": session_id, "message_id": uuid4().hex,
+            })
+        return await result_task, stopped
+    finally:
+        _ = result_task.cancel()
+        _ = interrupt_task.cancel()
+        _ = await asyncio.gather(result_task, interrupt_task, return_exceptions=True)
+        if native_handler:
+            _ = loop.remove_signal_handler(signal.SIGINT)
+        _ = signal.signal(signal.SIGINT, previous)
 
 
 async def run_exec(args: list[str], config_path: str, workspace: Path) -> int:
-    """连接现有 gateway，执行一轮并输出稳定机器结果。"""
-
-    # 1. 校验 thread 选择和输入来源。
-    new_thread = "--new" in args
-    thread_id = _get_flag_value(args, "--thread")
-    if new_thread == (thread_id is not None):
-        raise ValueError("exec 必须且只能指定 --new 或 --thread ID")
-    runtime_value = _get_flag_value(args, "--runtime")
-    if runtime_value is not None and runtime_value not in {"stable", "latest"}:
-        raise ValueError("exec --runtime 必须是 stable 或 latest")
-    rollout_capability = os.environ.get(_PLUGIN_ROLLOUT_CAPABILITY_ENV, "")
-    if rollout_capability and runtime_value is not None:
-        raise ValueError("插件自验证由 Core 自动选择候选版本，请移除 --runtime")
-    if "--persist-memory" in args and not new_thread:
-        raise ValueError("exec --persist-memory 只能与 --new 一起使用")
-    if "--detach" in args and "--final-only" in args:
-        raise ValueError("exec --detach 不能与 --final-only 一起使用")
-    prompt = _exec_prompt(args)
-    if "--json" in args and "--final-only" in args:
-        raise ValueError("exec 的 --json 与 --final-only 不能同时使用")
-    endpoint = _get_flag_value(args, "--endpoint")
+    """通过普通程序来源提交 Message，按原 Input 的持久结果退出。"""
+    # 1. 每个可重试写入都有调用方身份；CLI 不接受来源或学习属性覆盖。
+    parser = argparse.ArgumentParser(prog="exec")
+    _ = parser.add_argument("prompt", nargs="?")
+    _ = parser.add_argument("--new", action="store_true")
+    _ = parser.add_argument("--session")
+    _ = parser.add_argument("--message-id")
+    _ = parser.add_argument("--resume")
+    _ = parser.add_argument("--persist-memory", action="store_true")
+    _ = parser.add_argument("--detach", action="store_true")
+    output = parser.add_mutually_exclusive_group()
+    _ = output.add_argument("--json", action="store_true")
+    _ = output.add_argument("--final-only", action="store_true")
+    for option in ("--endpoint", "--config", "--workspace"):
+        _ = parser.add_argument(option)
+    options = parser.parse_args(args[1:])
+    if not options.new and options.session is None:
+        raise ValueError("exec 需要 --new 或 --session ID")
+    if options.persist_memory and not options.new:
+        raise ValueError("--persist-memory 只能在 --new 准入时选择")
+    if options.detach and options.final_only:
+        raise ValueError("--detach 不能与 --final-only 一起使用")
+    if options.resume is not None:
+        if options.new or options.prompt is not None:
+            raise ValueError("--resume 只引用原 Session 的 Input，不接收新 prompt")
+    elif options.prompt is None:
+        raise ValueError("exec 缺少 prompt；使用 - 从 stdin 读取")
+    session_id = options.session or "programmatic:" + uuid4().hex
+    message_id = options.message_id or uuid4().hex
+    input_id = options.resume or message_id
+    endpoint = options.endpoint
     if endpoint is None:
         config = Config.load(config_path, workspace=workspace)
         endpoint = resolve_app_server_endpoint(config.app_server.listen, workspace)
+    token = read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
+    identity: dict[str, object] = {"session_id": session_id, "message_id": message_id, "input_id": input_id}
+    print(json.dumps({"type": "message.submitting", **identity}, ensure_ascii=False),
+          file=sys.stdout if options.json else sys.stderr, flush=True)
 
-    # 2. turn events 与最终文本严格按选定 stdout 模式输出。
-    workspace_token = (
-        read_workspace_token(workspace) if is_tcp_endpoint(endpoint) else None
-    )
-    async with await ControlClient.connect(
-        endpoint,
-        workspace_token=workspace_token,
-    ) as client:
-        if new_thread:
-            thread_metadata: dict[str, object] = {}
-            if "--persist-memory" in args:
-                set_post_commit_effect(
-                    thread_metadata,
-                    PostCommitEffect.ALLOW,
-                )
-            thread = await client.start_thread(
-                thread_metadata,
-                runtime=runtime_value or "stable",
-                plugin_rollout_capability=rollout_capability,
-            )
-            thread_id = str(thread["id"])
-        assert thread_id is not None
-        turn_metadata: dict[str, object] = {}
-        handle = await client.start_turn(
-            thread_id,
-            prompt,
-            runtime=(runtime_value if not new_thread else None),
-            detached="--detach" in args,
-            metadata=turn_metadata,
-        )
-        if "--detach" in args:
-            detached_result = {"threadId": thread_id, "turn": handle.record}
-            if "--json" in args:
-                print(
-                    json.dumps(
-                        detached_result, ensure_ascii=False, separators=(",", ":")
-                    )
-                )
-            else:
-                print(f"thread: {thread_id}")
-                print(f"turn: {handle.id}")
+    # 2. 先固定 Session 属性，再提交输入；ACK 不等默认回复。
+    async with await ControlClient.connect(endpoint, workspace_token=token) as client:
+        if options.new:
+            _ = await client.request("programmatic/session/admit", {
+                "session_id": session_id, "persist_memory": options.persist_memory,
+            })
+        if options.resume is not None:
+            receipt = await client.request("programmatic/message/resume", identity)
+        else:
+            prompt = sys.stdin.read() if options.prompt == "-" else options.prompt
+            receipt = await client.request("programmatic/message/send", {
+                "session_id": session_id, "message_id": message_id, "text": prompt,
+            })
+        if options.json:
+            print(json.dumps({"type": "message.accepted", "receipt": receipt}, ensure_ascii=False), flush=True)
+        if options.detach:
             return 0
-        interrupt_requested = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        previous_sigint: object | None = None
-        native_handler = False
-        try:
-            loop.add_signal_handler(signal.SIGINT, interrupt_requested.set)
-            native_handler = True
-        except NotImplementedError:
-            previous_sigint = signal.getsignal(signal.SIGINT)
-            _ = signal.signal(
-                signal.SIGINT,
-                lambda _sig, _frame: loop.call_soon_threadsafe(interrupt_requested.set),
-            )
 
-        async def consume_events() -> dict[str, object]:
-            async for event in handle.events():
-                if "--json" in args:
-                    print(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
-                if event.get("method") == "turn/completed":
-                    params = event["params"]
-                    assert isinstance(params, dict)
-                    value = params["turn"]
-                    assert isinstance(value, dict)
-                    return value
-            raise ConnectionError("turn event stream closed without terminal event")
-
-        event_task = asyncio.create_task(
-            consume_events(), name=f"exec-events:{handle.id}"
-        )
-        interrupt_task = asyncio.create_task(
-            interrupt_requested.wait(), name="exec-sigint"
-        )
-        interrupted_by_user = False
-        try:
-            done, _ = await asyncio.wait(
-                {event_task, interrupt_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if interrupt_task in done and not event_task.done():
-                interrupted_by_user = True
-                _ = await handle.interrupt()
-            terminal = await event_task
-        finally:
-            interrupt_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await interrupt_task
-            if native_handler:
-                _ = loop.remove_signal_handler(signal.SIGINT)
-            elif previous_sigint is not None:
-                _ = signal.signal(signal.SIGINT, previous_sigint)
-
-        if "--final-only" in args:
-            print(str(terminal.get("finalResponse") or ""))
-        status = terminal["status"]
-        if interrupted_by_user:
+        # 3. 完成、暂停、失败都来自日志；读取关闭不会伪造成功。
+        result, stopped = await _exec_until_stop(client, session_id, input_id, json_events=options.json)
+        if options.json:
+            print(json.dumps({"type": "message.result", **result}, ensure_ascii=False), flush=True)
+        elif result["status"] in {"complete", "quiet"}:
+            ending = cast(int, result["ending_seq"])
+            page = await client.message_read(session_id, after_seq=ending - 1, through_seq=ending, limit=1)
+            row = page["items"][0]
+            if row["id"] != result["ending_message_id"]:
+                raise RuntimeError("程序结果引用与读取的 Message 不一致")
+            print("\n".join(part["value"] for part in row["body"]["parts"] if part["kind"] == "text"))
+        else:
+            print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
+        if stopped or result["status"] == "pause":
             return 130
-        if status == "completed":
-            return 0
-        if status in {"interrupted", "cancelled"}:
-            return 130
-        if not terminal.get("error"):
-            print(json.dumps(terminal, ensure_ascii=False), file=sys.stderr)
-        return 1
+        return 0 if result["status"] in {"complete", "quiet"} else 1
 
 
 async def inspect_modules(config_path: str, workspace: Path) -> None:
@@ -776,52 +730,8 @@ if __name__ == "__main__":
                         "marketplace": marketplace,
                         "ref": ref_value or "",
                         "sparse": _parse_csv_flag(sparse_value),
-                        "ownerTurnId": os.environ.get(
-                            _PLUGIN_ROLLOUT_OWNER_TURN_ENV, ""
-                        ),
+                        "update_id": _get_flag_value(args, "--update-id") or "",
                     },
-                )
-            )
-        except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
-            print(str(exc), file=sys.stderr)
-            sys.exit(1)
-        if "--json" in args:
-            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-        else:
-            print(str(result["message"]))
-            print(f"版本: {result['version']}")
-            print(f"代码: {result['installedPath']}")
-            print(f"数据: {result['dataPath']}")
-        sys.exit(0)
-
-    if args and args[0] == "plugin-revert":
-        owner_turn_id = os.environ.get(_PLUGIN_ROLLOUT_OWNER_TURN_ENV, "")
-        try:
-            result = asyncio.run(
-                _request_runtime_control(
-                    config_path,
-                    workspace,
-                    "plugin/revert",
-                    {"ownerTurnId": owner_turn_id},
-                )
-            )
-        except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
-            print(str(exc), file=sys.stderr)
-            sys.exit(1)
-        if "--json" in args:
-            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-        else:
-            print(str(result["message"]))
-        sys.exit(0)
-
-    if args and args[0] == "plugin-status":
-        try:
-            result = asyncio.run(
-                _request_runtime_control(
-                    config_path,
-                    workspace,
-                    "plugin/status",
-                    {},
                 )
             )
         except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
@@ -830,20 +740,21 @@ if __name__ == "__main__":
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         sys.exit(0)
 
-    if args and args[0] in {"plugin-promote", "plugin-discard"}:
-        if len(args) < 2 or args[1].startswith("--"):
-            print(f"{args[0]} 缺少插件 ID", file=sys.stderr)
+    if args and args[0] in {"plugin-status", "plugin-promote", "plugin-discard"}:
+        update_id = args[1] if len(args) > 1 and not args[1].startswith("--") else None
+        if args[0] != "plugin-status" and update_id is None:
+            print(f"{args[0]} 缺少更新 ID", file=sys.stderr)
             sys.exit(1)
-        method = "plugin/promote" if args[0] == "plugin-promote" else "plugin/discard"
+        method = (
+            "plugin/status" if update_id is None else
+            "plugin/update" if args[0] == "plugin-status" else
+            "plugin/promote" if args[0] == "plugin-promote" else "plugin/discard"
+        )
         try:
-            result = asyncio.run(
-                _request_runtime_control(
-                    config_path,
-                    workspace,
-                    method,
-                    {"pluginId": args[1]},
-                )
-            )
+            result = asyncio.run(_request_runtime_control(
+                config_path, workspace, method,
+                {} if update_id is None else {"update_id": update_id},
+            ))
         except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
             print(str(exc), file=sys.stderr)
             sys.exit(1)
@@ -885,7 +796,7 @@ if __name__ == "__main__":
                     )
                 )
             else:
-                print(str(runtime_result["message"]))
+                print(json.dumps(runtime_result, ensure_ascii=False))
             sys.exit(0)
         except (ValueError, RuntimeError) as exc:
             print(str(exc))

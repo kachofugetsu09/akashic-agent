@@ -14,7 +14,8 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotLease,
     RuntimeSnapshotStore,
 )
-from agent.scheduler import JobStore, ScheduledJob
+from plugins.scheduler.store import JobStore
+from plugins.scheduler.schedule import ScheduledJob
 from agent.skills import SkillRecord, SkillsLoader
 
 _MAX_DOCUMENT_BYTES = 192 * 1024

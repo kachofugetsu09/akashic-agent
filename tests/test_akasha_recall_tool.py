@@ -17,15 +17,14 @@ def target(tmp_path, runtime, *, embed=None, binding=None, model_id="fixture", m
         descriptor = SimpleNamespace(identity="fixed")
         async def embed(self, texts):
             return EmbeddingResult(tuple(tuple(vector) for vector in await call(texts)))
-    class Embeddings:
-        @asynccontextmanager
-        async def bind(self, *, model_id=None):
-            assert model_id == "fixture"
-            yield Model()
+    @asynccontextmanager
+    async def open_embedding(model_id):
+        assert model_id == "fixture"
+        yield Model()
     return RecallTool(memory=tmp_path / "memory.db", legacy_index=None, config=MemoryConfig(),
         catalog=runtime._catalog, embeddings=runtime._embeddings, bindings=runtime._bindings,
         select_learning=lambda: (runtime._learning_binding if binding is None else binding, model_id),
-        records=runtime._records, embedding_api=Embeddings(), max_chars=max_chars)
+        records=runtime._records, open_embedding=open_embedding, max_chars=max_chars)
 
 
 @pytest.mark.asyncio

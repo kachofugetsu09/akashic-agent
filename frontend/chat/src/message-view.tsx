@@ -46,6 +46,9 @@ import type {
   ThinkingBlock,
   ToolBlock,
 } from "./chat-message";
+import type { ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
+import { timelineReply } from "./message-timeline";
+import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
 
 const LazyMessageResponse = lazy(() =>
@@ -83,6 +86,27 @@ const MessageBody = memo(function MessageBody({
     </Suspense>
   );
 });
+
+/** 草稿是当前活动的预览；没有 Message 的作者、时间、seq 或插件槽。 */
+export function ReplyActivityView({ activity, committed, onError }: {
+  activity: ReplyActivity;
+  committed: ReadonlySet<string>;
+  onError?: (error: unknown) => void;
+}) {
+  const draft = activity.preview && !committed.has(activity.preview.message_id) ? activity.preview : null;
+  return <div className="reply-activity" data-reply-handle={activity.handle}
+    data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
+    <div className="reply-activity-label" role="status">
+      {activity.active ? draft ? "正在生成" : "正在处理" : "正在结束"}
+      <span>{activity.source}</span>
+    </div>
+    {draft?.thinking ? <details className="timeline-details">
+      <summary>思考</summary><p className="plain-message-response">{draft.thinking}</p>
+    </details> : null}
+    {draft?.text ? <MessageBody content={draft.text} streaming deferRichContent onError={onError} /> : null}
+    {draft?.truncated ? <p className="reply-activity-label">预览仅显示部分内容，完整内容将在提交后显示</p> : null}
+  </div>;
+}
 
 export function ChatMessageView({
   message,
@@ -161,6 +185,102 @@ export function ChatMessageView({
     </Message>
   );
 }
+
+/** 按持久顺序展示每个内容块，结果和控制记录各占一行。 */
+export function TimelineMessageView({ message, lookupMessage, onNavigate, onError, leadingContent, beforePart, afterBody, renderAttachment }: {
+  message: TimelineMessage;
+  renderAttachment?: (attachment: TimelineAttachment) => ReactNode;
+  leadingContent?: ReactNode;
+  beforePart?: (part: TimelinePart, index: number) => ReactNode;
+  afterBody?: ReactNode;
+  lookupMessage: (id: string) => TimelineMessage | undefined;
+  onNavigate: (id: string, partIndex?: number) => void;
+  onError?: (error: unknown) => void;
+}) {
+  const body = message.body;
+  const referencedArtifacts = new Set(body.kind === "control" ? [] : body.parts.flatMap((part) =>
+    !("display" in part) && part.kind === "artifact_ref" ? [part.value] : []));
+  const attachment = (id: string) => {
+    const ref = message.attachments.find((item) => item.artifact_id === id)!;
+    if (renderAttachment) return renderAttachment(ref);
+    return <MessageAttachmentItem attachment={{ id: ref.artifact_id, type: "file",
+      filename: ref.filename ?? "附件", mediaType: ref.media_type ?? "application/octet-stream",
+      url: `/api/chat/artifacts/${encodeURIComponent(ref.artifact_id)}` }} />;
+  };
+  return <div className={`message-row timeline-message timeline-${body.kind}`}>
+    <div className={body.kind === "input" ? "user-bubble" : "agent-content"}>
+      {leadingContent}
+      {body.kind === "control" ? <div className="timeline-control-summary">
+        <strong>{controlLabels[body.action]}</strong>
+        {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
+        <details className="timeline-details"><summary>控制范围</summary><p>截至消息序号 {body.through_seq}</p></details>
+      </div> : <>
+        {body.kind === "tool_result" ? <div className="timeline-result-heading">
+          <strong>工具结果 · {outcomeLabels[body.outcome]}</strong>
+          <button type="button" onClick={() => onNavigate(body.call_ref.message_id, body.call_ref.part_index)}
+            disabled={!lookupMessage(body.call_ref.message_id)}>
+            {lookupMessage(body.call_ref.message_id) ? "查看调用" : "调用不在当前记录中"}
+          </button>
+          <details className="timeline-details"><summary>调用引用</summary>
+            <p>{body.call_ref.message_id} · 内容块 {body.call_ref.part_index}</p>
+          </details>
+        </div> : null}
+        {body.parts.map((part, index) => <div key={index} data-part-index={index} tabIndex={-1}>
+          {beforePart?.(part, index)}
+          <TimelinePartView part={part} attachment={attachment} lookupMessage={lookupMessage}
+            onNavigate={onNavigate} onError={onError} />
+        </div>)}
+        {body.kind === "output" && body.finish !== "complete" ? <p className="timeline-state">
+          {body.finish === "continue" ? "继续执行" : "静默输出"}
+        </p> : null}
+      </>}
+      {afterBody}
+      {message.attachments.filter((ref) => !referencedArtifacts.has(ref.artifact_id)).map((ref, index) =>
+        <Fragment key={`${ref.artifact_id}:${index}`}>{attachment(ref.artifact_id)}</Fragment>)}
+    </div>
+  </div>;
+}
+
+function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError }: {
+  part: TimelinePart;
+  attachment: (id: string) => ReactNode;
+  lookupMessage: (id: string) => TimelineMessage | undefined;
+  onNavigate: (id: string, partIndex?: number) => void;
+  onError?: (error: unknown) => void;
+}) {
+  if ("display" in part) return <p className="timeline-state">无法展示此内容 · {part.kind}</p>;
+  if ("archive" in part) return <TimelineArchive kind={part.kind} archive={part.archive} />;
+  switch (part.kind) {
+    case "text": return <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
+    case "artifact_ref": return attachment(part.value);
+    case "reply_ref": {
+      const source = lookupMessage(part.value);
+      return <MessageReplyReference author={source?.author ?? "原消息"}
+        preview={source ? timelineReply(source).preview : ""} unavailable={!source}
+        onNavigate={() => onNavigate(part.value)} />;
+    }
+    case "model.facts": return <details className="timeline-details">
+      <summary>思考记录</summary>
+      {part.value.thinking === null ? <p>没有思考文本</p> : <MessageBody
+        content={part.value.thinking} streaming={false} deferRichContent onError={onError} />}
+    </details>;
+    case "tool_call": return <details className="timeline-details timeline-tool-call">
+      <summary>工具调用 · {part.name}</summary>
+      <pre tabIndex={0}>{JSON.stringify(part.arguments, null, 2)}</pre>
+    </details>;
+  }
+}
+
+function TimelineArchive({ kind, archive }: { kind: string; archive: unknown }) {
+  const [open, setOpen] = useState(false);
+  return <details className="timeline-details timeline-archive" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary>旧记录归档 · {kind}</summary>
+    {open ? <pre tabIndex={0}>{typeof archive === "string" ? archive : JSON.stringify(archive, null, 2)}</pre> : null}
+  </details>;
+}
+
+const controlLabels = { pause: "已暂停", resume: "已恢复", abandon: "已放弃", failure: "执行失败" };
+const outcomeLabels = { success: "成功", denied: "已拒绝", error: "失败", unknown: "结果未知" };
 
 const MessageAttachments = memo(function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
   return (

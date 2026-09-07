@@ -21,6 +21,7 @@ from session.message_codec import json_value
 
 from plugins.tools.api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
+    durable_call_key,
 )
 
 
@@ -54,21 +55,14 @@ class ToolExecution:
         """同一已提交调用只有一个效果身份，与等待者及结果展示位置无关。"""
         self._state.check_access(reply.reader, reply.writer)
         call = reply.request()
-        key = "message:" + json.dumps(
-            [reply.call_ref.message_id, reply.call_ref.part_index],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        key = durable_call_key(reply.call_ref)
         return await self._execute(key, call.binding_id, call.arguments, reply)
 
     async def deny_call(self, reply: MessageReply, reason: str) -> Result:
         """结算不再获准启动的调用；已有执行先排空，崩溃后的 start 不能伪称未发生。"""
         self._state.check_access(reply.reader, reply.writer)
         call = reply.request()
-        key = "message:" + json.dumps(
-            [reply.call_ref.message_id, reply.call_ref.part_index],
-            ensure_ascii=False, separators=(",", ":"),
-        )
+        key = durable_call_key(reply.call_ref)
         fingerprint = _fingerprint(call.binding_id, call.arguments, reply)
 
         async def deny(task: Task) -> Result:

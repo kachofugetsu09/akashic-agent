@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -44,6 +46,10 @@ from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import UploadTooLargeError, WebChatChannel
 from bootstrap.core_channel_adapter import build_core_channel_definition
 from session.manager import Session, SessionManager
+from session.log import MessageLog
+from session.identities import ChannelIdentities
+from session.message import ContentPart, ContentReferences, Control, Input, Output
+from tests.test_channel_input import Custody
 
 
 class _Bus:
@@ -73,6 +79,9 @@ class _WebSocket:
 
     async def send_json(self, frame: dict[str, Any]) -> None:
         self.frames.append(frame)
+
+    async def close(self, **kwargs) -> None:
+        self.application_state = WebSocketState.DISCONNECTED
 
 
 class _FailingWebSocket(_WebSocket):
@@ -386,83 +395,96 @@ def test_web_ui_bootstrap_returns_one_complete_uncached_payload(tmp_path: Path) 
 
 def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
     channel = WebChatChannel()
-    sessions = _SessionManager()
-    session = sessions.get_or_create("akashic:abc")
-    session.metadata["model_runtime_override"] = "runtime-b"
-    channel._ctx = cast(Any, SimpleNamespace(session_manager=sessions))
-    catalog = ModelCatalogSnapshot(
-        revision=7,
-        connections=(
-            ConnectionDescriptor(
-                connection_id="source-a",
-                name="OpenAI",
-                driver_id="openai-compatible",
-                auth_identity="account-a",
-                availability=ModelAvailability.AVAILABLE,
+    from contextlib import closing
+    import sqlite3
+    from session.log import MessageLog, SessionAttributes
+    log = MessageLog(tmp_path / "sessions.db")
+    try:
+        log.ensure_session("akashic:abc", SessionAttributes())
+        with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+            connection.execute("UPDATE sessions SET metadata=?", ('{"model_runtime_override":"runtime-b"}',))
+        catalog = ModelCatalogSnapshot(
+            revision=7,
+            connections=(
+                ConnectionDescriptor(
+                    connection_id="source-a",
+                    name="OpenAI",
+                    driver_id="openai-compatible",
+                    auth_identity="account-a",
+                    availability=ModelAvailability.AVAILABLE,
+                ),
             ),
-        ),
-        models=(
-            ModelDescriptor(
-                model_id="runtime-a",
-                connection_id="source-a",
-                kind=ModelKind.CHAT,
-                model="model-a",
-                default_reasoning_effort=None,
-                capabilities=ModelCapabilities(),
-                capability_sources=CapabilitySources(),
-                availability=ModelAvailability.AVAILABLE,
+            models=(
+                ModelDescriptor(
+                    model_id="runtime-a",
+                    connection_id="source-a",
+                    kind=ModelKind.CHAT,
+                    model="model-a",
+                    default_reasoning_effort=None,
+                    capabilities=ModelCapabilities(),
+                    capability_sources=CapabilitySources(),
+                    availability=ModelAvailability.AVAILABLE,
+                ),
             ),
-        ),
-        role_bindings={ModelRole.DEFAULT: "runtime-a"},
-        default_embedding_model_id=None,
-    )
+            role_bindings={ModelRole.DEFAULT: "runtime-a"},
+            default_embedding_model_id=None,
+        )
 
-    async def read_catalog() -> ModelCatalogSnapshot:
-        return catalog
+        async def read_catalog() -> ModelCatalogSnapshot:
+            return catalog
 
-    app = create_chat_app(
-        workspace=tmp_path,
-        channel=channel,
-        model_catalog_reader=read_catalog,
-    )
+        app = create_chat_app(
+            workspace=tmp_path,
+            channel=channel,
+            model_catalog_reader=read_catalog,
+            messages=log.catalog(),
+        )
 
-    response = TestClient(app).get(
-        "/api/chat/models",
-        params={"session_key": "akashic:abc"},
-    )
+        response = TestClient(app).get(
+            "/api/chat/models",
+            params={"session_key": "akashic:abc"},
+        )
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "generationId": 7,
-            "defaultRuntime": "runtime-a",
-            "sessionOverride": "runtime-b",
-            "sessionSelection": {
-                "modelRef": "runtime-b",
-                "reasoningEffort": "",
-            },
-            "runtimes": [
-                {
-                    "id": "runtime-a",
-                    "provider": "openai-compatible",
-                    "catalogProvider": "openai-compatible",
-                    "model": "model-a",
+        assert response.status_code == 200
+        assert response.json() == {
+            "generationId": 7,
+                "defaultRuntime": "runtime-a",
+                "sessionOverride": "runtime-b",
+                "sessionSelection": {
+                    "modelRef": "runtime-b",
                     "reasoningEffort": "",
-                    "supportedReasoningEfforts": [],
-                    "sourceId": "source-a",
-                    "sourceName": "OpenAI",
-                    "contextWindow": 0,
-                    "maxOutputTokens": 0,
-                    "inputModalities": ["text"],
-                    "capabilitySource": "unknown",
-                    "capabilitySources": {
-                        "contextWindow": "unknown",
-                        "maxOutputTokens": "unknown",
-                        "inputModalities": "unknown",
-                    },
-                    "roles": ["default"],
-                }
-            ],
-        }
+                },
+                "runtimes": [
+                    {
+                        "id": "runtime-a",
+                        "provider": "openai-compatible",
+                        "catalogProvider": "openai-compatible",
+                        "model": "model-a",
+                        "reasoningEffort": "",
+                        "supportedReasoningEfforts": [],
+                        "sourceId": "source-a",
+                        "sourceName": "OpenAI",
+                        "contextWindow": 0,
+                        "maxOutputTokens": 0,
+                        "inputModalities": ["text"],
+                        "capabilitySource": "unknown",
+                        "capabilitySources": {
+                            "contextWindow": "unknown",
+                            "maxOutputTokens": "unknown",
+                            "inputModalities": "unknown",
+                        },
+                        "roles": ["default"],
+                    }
+                ],
+            }
+
+        before = log.catalog().snapshot_heads()
+        response = TestClient(app).get("/api/chat/models", params={"session_key": "akashic:unknown"})
+        assert response.status_code == 200
+        assert response.json()["sessionSelection"] == {"modelRef": "", "reasoningEffort": ""}
+        assert log.catalog().snapshot_heads() == before
+    finally:
+        log.close()
 
 
 def test_chat_model_catalog_maps_missing_models_plugin_to_503(
@@ -579,92 +601,32 @@ async def test_web_chat_message_send_can_create_session_without_persisting_empty
 
 
 @pytest.mark.asyncio
-async def test_web_chat_message_send_resolves_canonical_reply(tmp_path: Path) -> None:
-    bus = _Bus()
+async def test_web_chat_message_send_passes_reply_id_without_copying_body(tmp_path: Path) -> None:
     ingress = _Inbound()
-    session_manager = _SessionManager()
-    session_manager._store.messages["m1"] = {
-        "id": "m1",
-        "session_key": "akashic:abc",
-        "role": "assistant",
-        "content": "先前回答",
-    }
     channel = WebChatChannel()
     adapter = await _open_inbound_adapter(channel, ingress)
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
+    # 新入站不需要旧 ChannelContext 或 SessionManager。
     app = create_chat_app(workspace=tmp_path, channel=channel)
-
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "reply-1",
-                "session_id": "akashic:abc",
-                "text": "继续说明",
-                "media": [],
-                "reply_to_message_id": "m1",
-            })
-
-    assert bus.inbound == []
-    assert len(ingress.messages) == 1
+            ws.send_json({"type": "message.send", "request_id": "reply-1",
+                "session_id": "akashic:abc", "text": "继续说明", "media": [], "reply_to_message_id": "m1"})
     inbound = ingress.messages[0].message
-    assert "先前回答" in inbound.content
-    assert "继续说明" in inbound.content
-    assert inbound.metadata == {
-        "client_request_id": "reply-1",
-        "display_content": "继续说明",
-        "reply_to_message_id": "m1",
-        "reply_role": "assistant",
-        "reply_preview": "先前回答",
-    }
+    assert inbound.content == "继续说明"
+    assert inbound.metadata == {"client_request_id": "reply-1", "reply_to_message_id": "m1"}
     await adapter.stop()
 
 
 @pytest.mark.asyncio
-async def test_web_chat_message_send_rejects_invalid_reply_target(tmp_path: Path) -> None:
-    bus = _Bus()
-    session_manager = _SessionManager()
-    session_manager._store.messages["other"] = {
-        "id": "other",
-        "session_key": "akashic:other",
-        "role": "user",
-        "content": "其他会话",
-    }
+async def test_web_chat_message_send_rejects_invalid_reply_id(tmp_path: Path) -> None:
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
     app = create_chat_app(workspace=tmp_path, channel=channel)
-
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "bad-reply",
-                "session_id": "akashic:abc",
-                "text": "继续",
-                "media": [],
-                "reply_to_message_id": "other",
-            })
-            assert ws.receive_json() == {
-                "type": "error",
-                "request_id": "bad-reply",
-                "message": "不能引用其他会话的消息",
-            }
-
-    assert bus.inbound == []
+            ws.send_json({"type": "message.send", "request_id": "bad-reply",
+                "session_id": "akashic:abc", "text": "继续", "media": [], "reply_to_message_id": ""})
+            assert ws.receive_json() == {"type": "error", "request_id": "bad-reply",
+                                        "message": "reply_to_message_id 必须是非空字符串"}
 
 
 def test_chat_navigation_uses_same_origin_dashboard_path(
@@ -910,79 +872,52 @@ def test_chat_media_reads_registered_outbound_file(tmp_path: Path) -> None:
     assert response.content == b"image"
 
 
-def test_chat_messages_default_to_latest_turn_order(tmp_path: Path) -> None:
-    channel = WebChatChannel()
-    session_manager = _SessionManager()
-    channel._ctx = cast(Any, SimpleNamespace(session_manager=session_manager))
-    app = create_chat_app(workspace=tmp_path, channel=channel)
+def test_chat_messages_default_to_latest_seq_order(tmp_path: Path) -> None:
+    from contextlib import closing
+    from session.log import MessageLog
+    from session.message import Input
 
-    with TestClient(app) as client:
-        response = client.get("/api/chat/sessions/akashic:abc/messages")
-
-    payload = response.json()
-    assert [item["role"] for item in payload["items"]] == ["user", "assistant"]
-    assert payload["has_more"] is True
-    assert payload["before_seq"] == 8
-    assert session_manager._store.calls[0] == {
-        "session_key": "akashic:abc",
-        "page_size": 50,
-        "before_seq": None,
-    }
+    with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        writer = log.writer("akashic:abc", author="user", source="conversation", body_types=(Input,), content={})
+        for index in range(52):
+            writer.append(str(index), Input(()))
+        app = create_chat_app(workspace=tmp_path, channel=WebChatChannel(), messages=log.catalog())
+        with TestClient(app) as client:
+            response = client.get("/api/chat/sessions/akashic:abc/messages")
+        payload = response.json()
+        assert [item["seq"] for item in payload["items"]] == list(range(2, 52))
+        assert payload["has_more"] is True and payload["before_seq"] == 2
+        assert payload["through_seq"] == 51
 
 
 def test_chat_messages_project_durable_artifacts_without_paths(tmp_path: Path) -> None:
-    ref = AttachmentRef(
-        artifact_id="artifact-history",
-        kind=V3AttachmentKind.IMAGE,
-        filename="001.png",
-        media_type="image/png",
-        size_bytes=3,
-        sha256="a" * 64,
-    )
+    from contextlib import closing
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+    from session.artifact_store import ArtifactStore
+    from session.log import MessageLog
+    from session.message import ContentPart, ContentReferences, Input, Output
 
-    class _ArtifactStore:
-        def resolve_refs(
-            self,
-            artifact_ids: tuple[str, ...],
-        ) -> tuple[AttachmentRef, ...]:
-            assert artifact_ids == (ref.artifact_id,)
-            return (ref,)
-
-    channel = WebChatChannel()
-    session_manager = _SessionManager()
-    session_manager._store.list_chat_history_page = lambda **_kwargs: (
-        [
-            {"id": "m0", "seq": 0, "role": "user", "content": "问题"},
-            {
-                "id": "m1",
-                "seq": 1,
-                "role": "assistant",
-                "content": "答复",
-                "attachment_ids": [ref.artifact_id],
-            },
-        ],
-        2,
-        False,
-    )
-    channel._ctx = cast(Any, SimpleNamespace(session_manager=session_manager))
-    channel._artifact_store = cast(Any, _ArtifactStore())
-    app = create_chat_app(workspace=tmp_path, channel=channel)
-
-    with TestClient(app) as client:
-        payload = client.get("/api/chat/sessions/akashic:abc/messages").json()
-
-    assistant = payload["items"][1]
-    assert assistant["attachment_ids"] == [ref.artifact_id]
-    assert assistant["attachments"] == [{
-        "artifact_id": ref.artifact_id,
-        "kind": "image",
-        "filename": "001.png",
-        "media_type": "image/png",
-        "size_bytes": 3,
-        "sha256": "a" * 64,
-        "url": f"/api/chat/artifacts/{ref.artifact_id}",
-    }]
-    assert "/sandbox/" not in str(assistant)
+    path = tmp_path / "sessions.db"
+    with closing(MessageLog(path)) as log, closing(ArtifactStore(path)) as metadata:
+        store = ChannelAttachmentArtifactStore(workspace=tmp_path, metadata_store=metadata)
+        ref = asyncio.run(store.import_bytes(b"abc", kind=V3AttachmentKind.FILE, filename="001.txt", media_type="text/plain"))
+        log.writer("akashic:abc", author="user", source="conversation", body_types=(Input,), content={}).append("m0", Input(()))
+        log.writer("akashic:abc", author="agent", source="conversation", body_types=(Output,),
+                   content={"artifact_ref": lambda part: ContentReferences(artifact_ids=(cast(str, part.value),))}).append(
+                       "m1", Output((ContentPart("artifact_ref", ref.artifact_id),), "complete"))
+        channel = WebChatChannel()
+        channel.bind_artifact_store(store)
+        app = create_chat_app(workspace=tmp_path, channel=channel, messages=log.catalog())
+        with TestClient(app) as client:
+            payload = client.get("/api/chat/sessions/akashic:abc/messages").json()
+            content = client.get(f"/api/chat/artifacts/{ref.artifact_id}")
+        output = payload["items"][1]
+        assert output["body"]["parts"] == [{"kind": "artifact_ref", "value": ref.artifact_id}]
+        assert output["attachments"] == [{
+            "artifact_id": ref.artifact_id, "kind": "file", "filename": "001.txt",
+            "media_type": "text/plain", "size_bytes": 3, "sha256": ref.sha256}]
+        assert str(tmp_path) not in str(output)
+        assert content.status_code == 200 and content.content == b"abc"
 
 
 @pytest.mark.asyncio
@@ -1314,63 +1249,67 @@ async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
     Image.new("RGB", (2, 2), (255, 0, 0)).save(image_path)
     image_bytes = image_path.read_bytes()
     session_manager = SessionManager(tmp_path)
-    bus = _Bus()
-    ingress = _Inbound()
-    channel = WebChatChannel()
-    adapter = await _open_inbound_adapter(channel, ingress)
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
-    app = create_chat_app(workspace=tmp_path, channel=channel)
+    try:
+        bus = _Bus()
+        ingress = _Inbound()
+        channel = WebChatChannel()
+        adapter = await _open_inbound_adapter(channel, ingress)
+        await channel.start(cast(Any, SimpleNamespace(
+            bus=bus,
+            session_manager=session_manager,
+            event_bus=_EventBus(),
+            push_tool=_PushTool(),
+            attachment_store=AttachmentStore(tmp_path / "uploads"),
+            interrupt_controller=None,
+        )))
+        app = create_chat_app(workspace=tmp_path, channel=channel)
 
-    with TestClient(app) as client:
-        upload = client.post(
-            "/api/chat/uploads",
-            params={"filename": "meme"},
-            content=image_bytes,
-        )
-        payload = upload.json()
-        assert upload.status_code == 200
-        assert payload["filename"] == "meme"
-        assert payload["kind"] == "image"
-        assert payload["media_type"] == "image/png"
-        assert payload["artifact_id"]
-        assert "upload_path" not in payload
-        assert all(str(tmp_path) not in str(value) for value in payload.values())
+        with TestClient(app) as client:
+            upload = client.post(
+                "/api/chat/uploads",
+                params={"filename": "meme"},
+                content=image_bytes,
+            )
+            payload = upload.json()
+            assert upload.status_code == 200
+            assert payload["filename"] == "meme"
+            assert payload["kind"] == "image"
+            assert payload["media_type"] == "image/png"
+            assert payload["artifact_id"]
+            assert "upload_path" not in payload
+            assert all(str(tmp_path) not in str(value) for value in payload.values())
 
-        readback = client.get(payload["upload_url"])
-        forged = client.post(
-            "/api/chat/uploads",
-            params={"filename": "forged.png"},
-            content=b"not an image",
-        ).json()
-        assert forged["kind"] == "file"
-        traversal = client.get("/api/chat/artifacts/../sessions.db")
-        with client.websocket_connect("/ws") as ws:
-            ws.send_json({"type": "session.create", "request_id": "create"})
-            session_id = ws.receive_json()["session_id"]
-            ws.send_json({
-                "type": "message.send",
-                "request_id": "send",
-                "session_id": session_id,
-                "text": "请查看附件",
-                "media": [payload["artifact_id"]],
-            })
+            readback = client.get(payload["upload_url"])
+            forged = client.post(
+                "/api/chat/uploads",
+                params={"filename": "forged.png"},
+                content=b"not an image",
+            ).json()
+            assert forged["kind"] == "file"
+            traversal = client.get("/api/chat/artifacts/../sessions.db")
+            with client.websocket_connect("/ws") as ws:
+                ws.send_json({"type": "session.create", "request_id": "create"})
+                session_id = ws.receive_json()["session_id"]
+                ws.send_json({
+                    "type": "message.send",
+                    "request_id": "send",
+                    "session_id": session_id,
+                    "text": "请查看附件",
+                    "media": [payload["artifact_id"]],
+                })
 
-    assert readback.status_code == 200
-    assert readback.content == image_bytes
-    assert traversal.status_code in {404, 405}
-    assert bus.inbound == []
-    assert len(ingress.messages) == 1
-    inbound = ingress.messages[0].message
-    assert inbound.attachments[0].artifact_id == payload["artifact_id"]
-    assert inbound.metadata == {"client_request_id": "send"}
-    await adapter.stop()
+        assert readback.status_code == 200
+        assert readback.content == image_bytes
+        assert traversal.status_code in {404, 405}
+        assert bus.inbound == []
+        assert len(ingress.messages) == 1
+        inbound = ingress.messages[0].message
+        assert inbound.attachments[0].artifact_id == payload["artifact_id"]
+        assert inbound.metadata == {"client_request_id": "send"}
+        await adapter.stop()
+
+    finally:
+        session_manager.close()
 
 
 @pytest.mark.asyncio
@@ -1518,264 +1457,132 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
     await new.stop()
 
 
-@pytest.mark.asyncio
-async def test_web_bus_closed_rolls_back_identity_session_and_connection(
-    tmp_path: Path,
-) -> None:
-    session_manager = SessionManager(tmp_path / "workspace")
-    manager = PluginManager(
-        plugin_dirs=[tmp_path / "plugins"],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-        session_manager=session_manager,
-        installed_cache_root=tmp_path / "cache",
-    )
-    bus = MessageBus()
+@asynccontextmanager
+async def _message_runtime(tmp_path: Path, *, bus=None):
+    """真实 conversation 接纳与 Channel binding，共用同库身份记录。"""
+    source = tmp_path / "plugins"
+    shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", source / "conversation",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(Path(__file__).parents[1] / "plugins/sources", source / "sources",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    log = MessageLog(workspace / "sessions.db")
+    identities = ChannelIdentities(workspace / "sessions.db")
+    manager = PluginManager([source], event_bus=EventBus(), workspace=workspace,
+        message_log=log, channel_identities=identities, installed_cache_root=tmp_path / "cache")
+    bus = bus if bus is not None else MessageBus()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
-    manager.channel_generation_host.bind_inbound_publisher(bus.publish_channel_inbound)
-    await manager.bind_core_channel_definitions(
-        (build_core_channel_definition(channel),)
-    )
-    adapter = tuple(channel._v3_adapters.values())[0]
-    existing = session_manager.get_or_create("akashic:existing")
-    existing.metadata["marker"] = "before"
-    session_manager.save(existing)
-    existing_before = session_manager.control_store.get_session_meta("akashic:existing")
-    existing_socket = _WebSocket()
-    assert await channel._add_connection(
-        "akashic:existing",
-        cast(Any, existing_socket),
-    ) is True
-    await bus.aclose()
+    manager.channel_generation_host.bind_input_custody(bus)
     try:
-        socket = _WebSocket()
-        with pytest.raises(RuntimeError, match="message bus 已关闭"):
-            await channel._send_user_message(
-                cast(Any, socket),
-                "closed-bus",
-                {"session_id": "akashic:abc", "text": "hello", "media": []},
-            )
-
-        assert session_manager.get_channel_identities("akashic") == {}
-        assert session_manager.control_store.get_session_meta("akashic:abc") is None
-        assert session_manager.channel_identity_migration_completed("akashic") is True
-        assert "akashic:abc" not in session_manager._cache
-        assert channel._connections.get("akashic:abc") is None
-        assert adapter._in_flight == 0
-
-        with pytest.raises(RuntimeError, match="message bus 已关闭"):
-            await channel._send_user_message(
-                cast(Any, existing_socket),
-                "closed-bus-existing",
-                {"session_id": "akashic:existing", "text": "hello", "media": []},
-            )
-        assert (
-            session_manager.control_store.get_session_meta("akashic:existing")
-            == existing_before
-        )
-        assert channel._connections["akashic:existing"] == {existing_socket}
-        assert adapter._in_flight == 0
+        await manager.load_all()
+        await manager.bind_core_channel_definitions((build_core_channel_definition(channel),))
+        yield log, identities, manager, bus, channel
     finally:
-        await manager.terminate_all()
-        session_manager.close()
-
-
-@pytest.mark.asyncio
-async def test_web_cancelled_ingress_rolls_back_session_and_connection(
-    tmp_path: Path,
-) -> None:
-    session_manager = SessionManager(tmp_path / "workspace")
-    manager = PluginManager(
-        plugin_dirs=[tmp_path / "plugins"],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-        session_manager=session_manager,
-        installed_cache_root=tmp_path / "cache",
-    )
-    publish_started = asyncio.Event()
-    publish_release = asyncio.Event()
-
-    async def publish(_envelope: Any) -> None:
-        publish_started.set()
-        await publish_release.wait()
-
-    channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=_Bus(),
-        session_manager=session_manager,
-        event_bus=EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
-    manager.channel_generation_host.bind_inbound_publisher(publish)
-    await manager.bind_core_channel_definitions(
-        (build_core_channel_definition(channel),)
-    )
-    adapter = tuple(channel._v3_adapters.values())[0]
-    try:
-        socket = _WebSocket()
-        send_task = asyncio.create_task(channel._send_user_message(
-            cast(Any, socket),
-            "cancelled-ingress",
-            {"session_id": "akashic:cancel", "text": "hello", "media": []},
-        ))
-        await publish_started.wait()
-        send_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await send_task
-
-        assert session_manager.get_channel_identities("akashic") == {}
-        assert session_manager.control_store.get_session_meta("akashic:cancel") is None
-        assert "akashic:cancel" not in session_manager._cache
-        assert channel._connections.get("akashic:cancel") is None
-        assert adapter._in_flight == 0
-    finally:
-        publish_release.set()
-        await manager.terminate_all()
-        session_manager.close()
-
-
-@pytest.mark.asyncio
-async def test_web_v3_ingress_persists_unprefixed_identity_for_exact_session(
-    tmp_path: Path,
-) -> None:
-    """A Web identity and its envelope must name the same durable session."""
-
-    session_manager = SessionManager(tmp_path / "workspace")
-    manager = PluginManager(
-        plugin_dirs=[tmp_path / "plugins"],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-        session_manager=session_manager,
-        installed_cache_root=tmp_path / "cache",
-    )
-    bus = MessageBus()
-    channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
-    manager.channel_generation_host.bind_inbound_publisher(bus.publish_channel_inbound)
-    await manager.bind_core_channel_definitions(
-        (build_core_channel_definition(channel),)
-    )
-    try:
-        socket = _WebSocket()
-        session_key = await channel._create_session(cast(Any, socket), "create-1")
-        await channel._send_user_message(
-            cast(Any, socket),
-            "request-1",
-            {"session_id": session_key, "text": "hello", "media": []},
-        )
-        envelope = await bus.consume_inbound()
-        assert isinstance(envelope, InboundEnvelope)
-        chat_id = session_key.removeprefix("akashic:")
-        assert envelope.session_key == session_key
-        assert envelope.message.chat_id == chat_id
-        assert session_manager.get_channel_identities("akashic") == {chat_id: chat_id}
-        _, admission_id = session_manager.admit_existing(session_key)
-        session_manager.release_admission(admission_id)
-        await bus.release_channel_inbound(envelope, InboundOwner.LANE)
-    finally:
+        await channel.stop()
         await manager.terminate_all()
         await bus.aclose()
-        session_manager.close()
+        log.close()
+        identities.close()
 
 
 @pytest.mark.asyncio
-async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(
-    tmp_path: Path,
-) -> None:
-    """普通插件晋升后，Web 入站继续通过新 stable snapshot。"""
+async def test_web_bus_closed_rolls_back_identity_session_and_connection(tmp_path: Path) -> None:
+    async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
+        log.writer("akashic:existing", author="u", source="conversation", body_types=(Input,), content={}).append("original", Input(()))
+        existing_before = log.reader("akashic:existing").snapshot()
+        existing_socket = _WebSocket()
+        await channel._add_connection("akashic:existing", cast(Any, existing_socket))
+        await bus.aclose()
+        for session, socket in [("akashic:abc", _WebSocket()), ("akashic:existing", existing_socket)]:
+            with pytest.raises(RuntimeError, match="message bus 已关闭"):
+                await channel._send_user_message(cast(Any, socket), "closed-bus",
+                    {"session_id": session, "text": "hello", "media": []})
+        assert identities.load("akashic") == {}
+        assert not log.reader("akashic:abc").snapshot()
+        assert channel._connections.get("akashic:abc") is None
+        assert log.reader("akashic:existing").snapshot() == existing_before
+        assert channel._connections["akashic:existing"] == {existing_socket}
+        assert all(adapter._in_flight == 0 for adapter in channel._v3_adapters.values())
 
-    # 1. 先发布普通插件，再接入 Core Web Channel
-    plugin_dir = tmp_path / "plugins" / "plain_probe"
+
+@pytest.mark.asyncio
+async def test_web_cancelled_ingress_rolls_back_session_and_connection(tmp_path: Path) -> None:
+    bus = Custody()
+    bus.prepare_gate.clear()
+    async with _message_runtime(tmp_path, bus=bus) as (log, identities, manager, bus, channel):
+        send = asyncio.create_task(channel._send_user_message(cast(Any, _WebSocket()), "cancelled-ingress",
+            {"session_id": "akashic:cancel", "text": "hello", "media": []}))
+        await asyncio.wait_for(bus.prepared.wait(), 3)
+        send.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await send
+        assert identities.load("akashic") == {}
+        assert not log.reader("akashic:cancel").snapshot()
+        assert channel._connections.get("akashic:cancel") is None
+        assert all(adapter._in_flight == 0 for adapter in channel._v3_adapters.values())
+
+
+@pytest.mark.asyncio
+async def test_web_v3_ingress_persists_unprefixed_identity_for_exact_session(tmp_path: Path) -> None:
+    async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
+        socket = _WebSocket()
+        session = await channel._create_session(cast(Any, socket), "create-1")
+        await channel._send_user_message(cast(Any, socket), "request-1",
+            {"session_id": session, "text": "hello", "media": []})
+        message = log.reader(session).get("request-1")
+        assert isinstance(message.body, Input)
+        assert message.body.parts[0].value["chat_id"] == session.removeprefix("akashic:")
+        assert identities.load("akashic") == {session.removeprefix("akashic:"): session.removeprefix("akashic:")}
+        assert bus.inbound_size == 0 and manager.current_snapshot.lease_count == 0
+
+
+@pytest.mark.asyncio
+async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins/plain_probe"
     plugin_dir.mkdir(parents=True)
-    plugin_source = (
-        "api_version = 3\n"
-        "name = 'plain_probe'\n"
-        "version = {version!r}\n"
-        "async def apply(ctx, config): pass\n"
-    )
-    (plugin_dir / "plugin.py").write_text(
-        plugin_source.format(version="1.0.0"),
-        encoding="utf-8",
-    )
-    workspace = tmp_path / "workspace"
-    session_manager = SessionManager(workspace)
-    manager = PluginManager(
-        plugin_dirs=[tmp_path / "plugins"],
-        event_bus=EventBus(),
-        workspace=workspace,
-        session_manager=session_manager,
-        installed_cache_root=tmp_path / "cache",
-    )
-    await manager.load_all()
-    bus = MessageBus()
-    channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-        interrupt_controller=None,
-    )))
-    manager.channel_generation_host.bind_inbound_publisher(
-        bus.publish_channel_inbound
-    )
-    await manager.bind_core_channel_definitions(
-        (build_core_channel_definition(channel),)
-    )
-    previous_snapshot = manager.current_snapshot
-    assert previous_snapshot is not None
-    previous_runtime = manager.channel_generation_host.get(previous_snapshot.snapshot_id)
-    assert previous_runtime is not None
-
-    try:
-        # 2. 只晋升普通插件，Core Web Channel 声明保持完全相同
-        (plugin_dir / "plugin.py").write_text(
-            plugin_source.format(version="2.0.0"),
-            encoding="utf-8",
-        )
+    source = "api_version=3\nname='plain_probe'\nversion={version!r}\nasync def apply(ctx, config): pass\n"
+    (plugin_dir / "plugin.py").write_text(source.format(version="1.0.0"))
+    async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
+        previous = manager.current_snapshot
+        (plugin_dir / "plugin.py").write_text(source.format(version="2.0.0"))
         assert await manager.prepare_candidate("plain_probe") is not None
         await manager.publish_prepared("plain_probe")
-        current_snapshot = manager.current_snapshot
-        assert current_snapshot is not None
-        current_runtime = manager.channel_generation_host.get(current_snapshot.snapshot_id)
-        assert current_runtime is not None
-        assert current_runtime is not previous_runtime
-        assert current_runtime.snapshot_id == current_snapshot.snapshot_id
+        current = manager.current_snapshot
+        assert current is not previous
+        await channel._send_user_message(cast(Any, _WebSocket()), "request-after-promotion",
+            {"session_id": "akashic:after-promotion", "text": "hello", "media": []})
+        message = log.reader("akashic:after-promotion").get("request-after-promotion")
+        assert isinstance(message.body, Input) and message.body.parts[1].value == "hello"
+        assert current.lease_count == previous.lease_count == 0 and bus.inbound_size == 0
 
-        # 3. 真实 Web 发送必须进入 MessageBus，不得因旧 snapshot 断开
+
+@pytest.mark.asyncio
+async def test_web_reply_uses_real_message_target_and_reports_source_conflicts(tmp_path: Path) -> None:
+    from plugins.models.content import render_content
+    async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
+        writer = log.writer("akashic:abc", author="另一个作者", source="program", body_types=(Output, Control),
+            content={"text": lambda p: ContentReferences()})
+        writer.append("target", Output((ContentPart("text", "原始引用全文"),), "complete"))
+        writer.append("control", Control("pause", 0))
+        log.writer("akashic:other", author="u", source="conversation", body_types=(Input,), content={}).append("other", Input(()))
         socket = _WebSocket()
-        await channel._send_user_message(
-            cast(Any, socket),
-            "request-after-promotion",
-            {"session_id": "akashic:after-promotion", "text": "hello", "media": []},
-        )
-        envelope = await bus.consume_inbound()
-        assert isinstance(envelope, InboundEnvelope)
-        assert envelope.snapshot_id == current_runtime.snapshot_id
-        assert envelope.message.content == "hello"
-        await bus.release_channel_inbound(envelope, InboundOwner.LANE)
-    finally:
-        await manager.terminate_all()
-        await bus.aclose()
-        session_manager.close()
+        await channel._send_user_message(cast(Any, socket), "reply",
+            {"session_id": "akashic:abc", "text": "继续", "reply_to_message_id": "target"})
+        reader = log.reader("akashic:abc")
+        message = reader.get("reply")
+        assert message.body.parts[1:] == (ContentPart("text", "继续"), ContentPart("reply_ref", "target"))
+        rendered = render_content(message.body.parts[-1], artifacts={}, read_message=reader.get)
+        assert "原始引用全文" in rendered[0]["text"]
+        before = reader.snapshot()
+        for target in ("missing", "other", "control"):
+            await channel._send_user_message(cast(Any, socket), f"bad-{target}",
+                {"session_id": "akashic:abc", "text": "继续", "reply_to_message_id": target})
+            assert socket.frames[-1] == {"type": "error", "request_id": f"bad-{target}",
+                "message": "引用目标不是当前 Session 的 Input 或 Output"}
+            assert reader.snapshot() == before
+        assert channel._connections["akashic:abc"] == {socket}
+        assert bus.inbound_size == 0 and manager.current_snapshot.lease_count == 0
 
 
 @pytest.mark.asyncio
@@ -1822,7 +1629,7 @@ async def test_web_rejects_invalid_external_ids_before_ingress_or_session_write(
             "message": expected_error,
         }]
         assert ingress.messages == []
-        assert session_manager.get_channel_identities("akashic") == {}
+        assert session_manager.identities.load("akashic") == {}
         with pytest.raises(KeyError, match="session 不存在"):
             session_manager.admit_existing("akashic:abc")
     finally:

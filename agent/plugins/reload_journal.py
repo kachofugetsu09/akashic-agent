@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, cast
 
+from agent.plugins import update_rollback
+from agent.plugins.artifacts import ArtifactPointer, ArtifactPointers
+
 ReloadPhase = Literal[
     "preparing",
     "prepared",
@@ -151,7 +154,70 @@ class ReloadJournal:
     def __init__(self, workspace: Path) -> None:
         self.path = workspace / "runtime" / "plugin-reloads.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        new = not self.path.exists()
         self._initialize()
+        if new:
+            with self._connect() as conn:
+                _ = conn.execute("BEGIN IMMEDIATE")
+                if not update_rollback.check_schema(conn):
+                    for statement in update_rollback.SCHEMA.values():
+                        _ = conn.execute(statement)
+
+    def arm_update(
+        self, *, update_id: str, plugin_id: str, plugin_base: Path,
+        previous: ArtifactPointers | None, candidate: ArtifactPointer,
+        previous_enabled: bool | None,
+    ) -> None:
+        with self._connect() as conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            update_rollback.arm(conn, update_id=update_id, plugin_id=plugin_id, plugin_base=plugin_base,
+                previous=previous, candidate=candidate, previous_enabled=previous_enabled, now=_now())
+
+    def update(self, update_id: str) -> update_rollback.UpdateRollback:
+        with self._connect() as conn:
+            return update_rollback.read(conn, update_id)
+
+    def update_for_reload(self, tx_id: str) -> update_rollback.UpdateRollback | None:
+        """有更新恢复点时，完整旧指针对只由该记录恢复。"""
+        with self._connect() as conn:
+            if not update_rollback.check_schema(conn):
+                return None
+            row = conn.execute("SELECT update_id FROM plugin_updates WHERE reload_tx_id=?", (tx_id,)).fetchone()
+            return None if row is None else update_rollback.read(conn, row[0])
+
+    def record_update_error(self, update_id: str, error: str) -> None:
+        """保存实际失败原因，不把诊断写入伪装成发布或回退。"""
+        with self._connect() as conn:
+            changed = conn.execute(
+                "UPDATE plugin_updates SET error=?,updated_at=? WHERE update_id=?",
+                (error, _now(), update_id),
+            )
+            if changed.rowcount != 1:
+                raise KeyError(f"插件更新不存在: {update_id}")
+
+    def commit_update(self, update_id: str) -> None:
+        """离线安装没有 runtime reload；安装 owner 核验完成后提交恢复点。"""
+        with self._connect() as conn:
+            changed = conn.execute(
+                "UPDATE plugin_updates SET phase='committed',updated_at=? WHERE update_id=? AND phase='armed' AND reload_tx_id IS NULL",
+                (_now(), update_id),
+            )
+            if changed.rowcount != 1:
+                raise RuntimeError("插件安装恢复点不能提交")
+
+    def rollback_updates(self, plugins_home: Path, *, update_id: str | None = None, error: str = "update interrupted") -> None:
+        """启动前或安装失败后恢复旧指针；已有提交不参加自动回退。"""
+        with self._connect() as conn:
+            _ = conn.execute("BEGIN IMMEDIATE")
+            if not update_rollback.check_schema(conn):
+                return
+            query = "SELECT update_id FROM plugin_updates WHERE phase='armed'"
+            values: tuple[str, ...] = ()
+            if update_id is not None:
+                query += " AND update_id=?"
+                values = (update_id,)
+            for row in conn.execute(query, values).fetchall():
+                update_rollback.rollback(conn, update_rollback.read(conn, row[0]), plugins_home, now=_now(), error=error)
 
     def begin(
         self,
@@ -193,6 +259,7 @@ class ReloadJournal:
                 ),
             )
             self._append_event(conn, tx_id, "preparing", {}, now)
+            update_rollback.link(conn, tx_id=tx_id, plugin_id=plugin_id, candidate_pointer=candidate_artifact_pointer)
         return tx_id
 
     def mark_runtime_owner(self, tx_id: str, boot_id: str) -> None:
@@ -432,6 +499,10 @@ class ReloadJournal:
                 ),
             )
             self._append_event(conn, tx_id, phase, details_for_event, now)
+            if phase == "committed":
+                update_rollback.commit(conn, tx_id, now)
+            elif phase == "aborted":
+                update_rollback.rollback_linked(conn, tx_id, now=now, error=next_error)
 
     def get(self, tx_id: str) -> ReloadTransactionRecord:
         with self._connect() as conn:
@@ -601,12 +672,22 @@ class ReloadJournal:
                 """,
                 tuple(sorted(_TERMINAL_PHASES)),
             ).fetchall()
+            rolled_back: set[str] = set()
+            if update_rollback.check_schema(conn):
+                rolled_back = {row[0] for row in conn.execute(
+                    "SELECT reload_tx_id FROM plugin_updates WHERE phase='rolled_back' AND reload_tx_id IS NOT NULL"
+                )}
         actions: list[ReloadRecoveryAction] = []
         for row in rows:
             phase = cast(ReloadPhase, str(row[7]))
             action = _recovery_action(phase, _optional_action(row[10]))
             if action is None:
                 raise RuntimeError(f"ReloadTransaction 无法恢复状态: {phase}")
+            target = _optional_recovery_target(row[16])
+            if row[0] in rolled_back:
+                target = "base"
+                if action not in {"retry_generation_cleanup", "retry_runtime_recovery"}:
+                    action = "discard_candidate"
             actions.append(
                 ReloadRecoveryAction(
                     tx_id=str(row[0]),
@@ -625,7 +706,7 @@ class ReloadJournal:
                     runtime_owner_boot_id=_optional_string(row[13]),
                     base_artifact_pointer=_optional_string(row[14]),
                     candidate_artifact_pointer=_optional_string(row[15]),
-                    recovery_target=_optional_recovery_target(row[16]),
+                    recovery_target=target,
                 )
             )
         return tuple(
@@ -741,6 +822,10 @@ class ReloadJournal:
                     f"{action.tx_id}"
                 )
             self._append_event(conn, action.tx_id, terminal, details, now)
+            if action.recovery_target == "candidate":
+                update_rollback.commit(conn, action.tx_id, now)
+            else:
+                update_rollback.rollback_linked(conn, action.tx_id, now=now, error="update rolled back")
 
     def _initialize(self) -> None:
         with self._connect() as conn:

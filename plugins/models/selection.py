@@ -19,12 +19,12 @@ def check_selection(part: ContentPart) -> ContentReferences:
     return ContentReferences()
 
 
-def selection(messages: Sequence[Message]) -> ChatModelSelection:
-    """Session 的最后一次明确选择生效；没有选择时使用模型配置的默认值。"""
+def selection(messages: Sequence[Message]) -> ChatModelSelection | None:
+    """读取给定输入范围的最后一次显式选择；None 表示没有选择事实。"""
     for message in reversed(messages):
         if isinstance(message.body, Input):
             for part in reversed(message.body.parts):
                 if part.kind == "model.selection":
                     value = cast(Mapping[str, str | None], part.value)
                     return ChatModelSelection(value["model_id"], value["reasoning_effort"])
-    return ChatModelSelection()
+    return None

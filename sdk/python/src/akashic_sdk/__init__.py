@@ -4,18 +4,11 @@ from akashic_sdk.client import (
     ConnectionClosedError,
     ProtocolError,
     RemoteError,
+    SessionSubscription,
     SlowConsumerError,
-    Thread,
-    TurnHandle,
 )
 
 __all__ = [
-    "Akashic",
-    "AsyncAkashic",
-    "ConnectionClosedError",
-    "ProtocolError",
-    "RemoteError",
-    "SlowConsumerError",
-    "Thread",
-    "TurnHandle",
+    "Akashic", "AsyncAkashic", "ConnectionClosedError", "ProtocolError",
+    "RemoteError", "SessionSubscription", "SlowConsumerError",
 ]

@@ -303,7 +303,7 @@ class CompositionGenerationHost:
     @asynccontextmanager
     async def open_mcp(
         self, snapshot: RuntimeSnapshot, name: str,
-        *, expected_catalog_digest: str | None = None,
+        *, expected_catalog_digest: str | None = None, mode: RuntimeMode = "formal",
     ) -> AsyncIterator[McpServerView]:
         """只打开指定 MCP 与其资源依赖；不启动整个插件或发布 runtime。"""
         # 1. 同步接纳不跨 await；关闭与 owner 登记在同一事件循环中排序。
@@ -324,7 +324,9 @@ class CompositionGenerationHost:
             endpoint.process: process_bindings[endpoint.process]
             for endpoint in binding.descriptor.endpoint_env
         }
-        workload_bindings = _owned_workload_bindings(snapshot, generation.plugin_id)
+        names = {endpoint.workload for endpoint in binding.descriptor.workload_env}
+        declared_workloads = _owned_workload_bindings(snapshot, generation.plugin_id)
+        workload_bindings = {name: declared_workloads[name] for name in names}
         if self._command_resolver is not None:
             bound_generation.static_runtime_commands = tuple(
                 (f"{kind}:{target}", self._command_resolver(generation, kind, target))
@@ -335,11 +337,11 @@ class CompositionGenerationHost:
                 for target in targets
             )
         borrowed = AsyncExitStack()
-        bridge = _RootBridge(root.instance_token, {}, process_bindings, {name: binding})
+        bridge = _RootBridge(root.instance_token, workload_bindings, process_bindings, {name: binding})
         self._bridges[scope_id] = bridge
         self._owners[scope_id] = _RuntimeOwner(
             CompositionRuntimeGeneration(
-                generation.plugin_id, scope_id, "formal", None, None, None
+                generation.plugin_id, scope_id, mode, None, None, None
             ),
             bridge,
             borrowed,
@@ -349,22 +351,24 @@ class CompositionGenerationHost:
         assert owner.lock is not None
         try:
             async with owner.lock:
-                # 2. 桌面只借阅同 spec 的正式资源；MCP 与依赖进程属于本次 scope。
+                # 2. 正式调用只借相同桌面；验证只创建自己拥有的候选资源。
                 endpoints: dict[tuple[str, str], str] = {}
-                names = {
-                    endpoint.workload for endpoint in binding.descriptor.workload_env
-                }
-                for workload_name in sorted(names):
+                workloads = None
+                if workload_bindings:
                     if self._workload_host is None:
                         raise RuntimeError("MCP 依赖 Workload，但没有资源 owner")
-                    urls = await borrowed.enter_async_context(
-                        self._workload_host.borrow(
-                            workload_bindings[workload_name].descriptor
+                    if mode == "candidate":
+                        workloads = await self._workload_host.start_generation(
+                            scope_id, generation.plugin_id, workload_bindings, mode="candidate",
                         )
-                    )
-                    endpoints.update(
-                        {(workload_name, port): url for port, url in urls.items()}
-                    )
+                        owner.generation = replace(owner.generation, workloads=workloads)
+                        endpoints.update(workloads.endpoints)
+                    else:
+                        for workload_name in sorted(workload_bindings):
+                            urls = await borrowed.enter_async_context(
+                                self._workload_host.borrow(workload_bindings[workload_name].descriptor)
+                            )
+                            endpoints.update({(workload_name, port): url for port, url in urls.items()})
                 processes = None
                 if process_bindings:
                     processes = await self._process_host.start_generation(
@@ -372,16 +376,19 @@ class CompositionGenerationHost:
                         _materialized_process_definitions(
                             bound_generation, process_bindings
                         ),
-                        mode="formal",
+                        mode=mode,
                         fixed_ports=False,
                     )
+                    owner.generation = replace(owner.generation, processes=processes)
                 mcp = await self._mcp_host.start_generation(
                     scope_id,
                     McpServerRegistry(
                         {name: binding}, root_instance_token=root.instance_token
                     ),
-                    _materialized_mcp_commands(bound_generation, {name: binding}),
-                    mode="formal",
+                    _materialized_mcp_commands(
+                        bound_generation, {name: binding}, scope_id=scope_id
+                    ),
+                    mode=mode,
                     endpoint_ports=(
                         {}
                         if processes is None
@@ -400,8 +407,8 @@ class CompositionGenerationHost:
                 self._owners[scope_id].generation = CompositionRuntimeGeneration(
                     generation.plugin_id,
                     scope_id,
-                    "formal",
-                    None,
+                    mode,
+                    workloads,
                     processes,
                     mcp,
                 )
@@ -978,8 +985,11 @@ def _materialized_process_definitions(
 def _materialized_mcp_commands(
     generation: PluginGeneration,
     bindings: Mapping[str, McpServerBinding],
+    *,
+    scope_id: str | None = None,
 ) -> dict[str, McpMaterializedCommand]:
     commands = dict(generation.static_runtime_commands)
+    materialized_scope = generation.generation_id if scope_id is None else scope_id
     return {
         name: McpMaterializedCommand(
             command=_runtime_command(
@@ -995,10 +1005,13 @@ def _materialized_mcp_commands(
                 )
             ),
             env=MappingProxyType(
-                _core_environment(
-                    binding.runtime_data_dir,
-                    binding.runtime_workspace,
-                )
+                {
+                    **_core_environment(
+                        binding.runtime_data_dir,
+                        binding.runtime_workspace,
+                    ),
+                    "AKASHIC_MCP_SCOPE_ID": materialized_scope,
+                }
             ),
         )
         for name, binding in bindings.items()
