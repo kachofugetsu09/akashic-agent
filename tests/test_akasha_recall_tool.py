@@ -1,8 +1,8 @@
 import pytest
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 
-from agent.plugin_composition.models import EmbeddingResult
+from agent.plugin_composition.models import EmbeddingResult, EmbeddingSpaceDescriptor
 
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.recall_tool import RecallTool
@@ -13,12 +13,23 @@ from tests.test_akasha_message_queries import memory_runtime
 
 def target(tmp_path, runtime, *, embed=None, binding=None, model_id="fixture", max_chars=12000):
     call = runtime._embed_batch if embed is None else embed
+    class FixtureDescriptor(EmbeddingSpaceDescriptor):
+        @property
+        def identity(self) -> str:
+            return "fixed"
+
     class Model:
-        descriptor = SimpleNamespace(identity="fixed")
-        async def embed(self, texts):
+        descriptor = FixtureDescriptor(
+            plugin_snapshot_id="fixture", model_revision=0, model_id="fixture",
+            connection_id="fixture", driver_id="fixture", driver_contract_version="1",
+            auth_identity="fixture", connection_fingerprint="fixture", model="fixture",
+            dimensions=2, normalization="unit", capability_digest="fixture",
+        )
+
+        async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
             return EmbeddingResult(tuple(tuple(vector) for vector in await call(texts)))
     @asynccontextmanager
-    async def open_embedding(model_id):
+    async def open_embedding(model_id: str):
         assert model_id == "fixture"
         yield Model()
     return RecallTool(memory=tmp_path / "memory.db", legacy_index=None, config=MemoryConfig(),

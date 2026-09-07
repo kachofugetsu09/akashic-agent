@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Sequence
 from contextlib import asynccontextmanager, closing
 import threading
 
@@ -15,7 +16,7 @@ from plugins.akasha.recalls import RecallRecords
 from plugins.akasha.runtime import MessageMemory
 from session.embedding_store import MessageEmbeddings
 from session.log import MessageLog, OwnerTransaction
-from session.message import ContentPart, ContentReferences, Control, Input, Output
+from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
 from tests.test_akasha_learning_binding import manager, sources
 
 
@@ -43,10 +44,22 @@ async def memory_runtime(tmp_path, *, max_chars=12000):
         records = RecallRecords(log.owner("plugin:akasha"))
         runtime = MessageMemory(consumer, catalog=log.catalog(), embeddings=embeddings, bindings=bindings,
             learning_binding=binding, records=records, embed_batch=embed, max_chars=max_chars)
-        def write(identity, text, kind=Input, source="chat"):
-            body = Input((ContentPart("text", text),)) if kind is Input else Output((ContentPart("text", text),), "complete")
-            return log.writer("s", author="test", source=source, body_types=(kind,),
-                              content={"text": lambda part: ContentReferences()}).append(identity, body)
+        def write(
+            identity: str,
+            text: str,
+            kind: type[Input] | type[Output] = Input,
+            source: str = "chat",
+        ) -> Message:
+            parts = (ContentPart("text", text),)
+            if kind is Input:
+                return log.writer(
+                    "s", author="test", source=source, body_types=(Input,),
+                    content={"text": lambda part: ContentReferences()},
+                ).append(identity, Input(parts))
+            return log.writer(
+                "s", author="test", source=source, body_types=(Output,),
+                content={"text": lambda part: ContentReferences()},
+            ).append(identity, Output(parts, "complete"))
         yield runtime, consumer, log, records, calls, write
     finally:
         if runtime is not None:
@@ -76,8 +89,10 @@ async def test_context_query_uses_fixed_multimessage_input_and_published_referen
         assert material.system_prompt == ""
         assert calls[-1] == ["remember the detail", "and the correction"]
         assert [ref.ref for ref in material.references] == ["old-u1", "old-u2", "old-a"]
+        assert isinstance(material.context[0].value, str)
         assert "learned answer" in material.context[0].value
         identity = material.references[0].retrieval_ref
+        assert identity is not None
         record = records.read(identity)
         assert record.source.through_seq == snapshot[-1].seq
         assert record.graph_version == 1
@@ -191,9 +206,12 @@ async def test_budget_records_exact_presented_members_without_losing_learning_me
             assert await runtime.consume() == 1
         write("q", "recall")
         material = await runtime.prepare(log.reader("s").snapshot(), "chat")
+        assert isinstance(material.context[0].value, str)
         assert len(material.context[0].value) <= 100
         assert len(material.references) == 1
-        record = records.read(material.references[0].retrieval_ref)
+        retrieval_ref = material.references[0].retrieval_ref
+        assert retrieval_ref is not None
+        record = records.read(retrieval_ref)
         assert [hit.message_ids for hit in record.hits] == [("u2", "a2"), ("u1", "a1")]
         assert record.presented_message_ids == tuple(ref.ref for ref in material.references)
         assert record.presented_message_ids == ("u2",)
