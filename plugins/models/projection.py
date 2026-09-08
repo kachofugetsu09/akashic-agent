@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from typing import Any, cast
 
 from agent.plugin_composition import ServiceKey
@@ -25,6 +26,7 @@ from session.message import (
 )
 from session.message_codec import json_value
 from plugins.context.api import check_summary
+from .store import ModelCallReader
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
@@ -194,63 +196,67 @@ class MessageProjection:
         continuation_summary: str | None = None
         continuation_seq = -1
         results: dict[CallRef, Message] = {}
-        for message in messages:
-            body = message.body
-            if isinstance(body, Control) and body.action == "abandon" and message.source == self._source:
-                continuation = None
-            if isinstance(body, ToolResult):
-                if body.call_ref in abandoned_calls:
+        # models 的读取器提供连接范围；既有插件传入的普通 callable 仍逐条读取。
+        reads = (self._read_call.open() if isinstance(self._read_call, ModelCallReader)
+                 else nullcontext(self._read_call))
+        with reads as read_call:
+            for message in messages:
+                body = message.body
+                if isinstance(body, Control) and body.action == "abandon" and message.source == self._source:
+                    continuation = None
+                if isinstance(body, ToolResult):
+                    if body.call_ref in abandoned_calls:
+                        continue
+                    if body.call_ref in results:
+                        raise ValueError("同一工具调用出现多个结果")
+                    results[body.call_ref] = message
+                if not isinstance(body, Output) or message.message_id in abandoned:
                     continue
-                if body.call_ref in results:
-                    raise ValueError("同一工具调用出现多个结果")
-                results[body.call_ref] = message
-            if not isinstance(body, Output) or message.message_id in abandoned:
-                continue
-            recorded = [
-                part
-                for part in body.parts
-                if isinstance(part, ContentPart) and part.kind == "model.facts"
-            ]
-            if len(recorded) > 1:
-                raise ValueError("同一 Output 出现多个 model.facts")
-            if not recorded:
-                continue
-            _ = check_facts(recorded[0])
-            value = cast(Mapping[str, Any], recorded[0].value)
-            receipt = self._read_call(value["call_record_id"])
-            if receipt["state"] != "success":
-                raise ValueError("已提交模型事实必须引用成功结算的真实调用")
-            indices = {
-                str(index)
-                for index, part in enumerate(body.parts)
-                if isinstance(part, ToolCall)
-            }
-            if set(value["tool_ids"]) != indices:
-                raise ValueError("模型工具 ID 不匹配实际 Output 调用位置")
-            state = value["continuation"]
-            message_continuation = (
-                None
-                if state is None
-                else ModelContinuation(state["binding_id"], state["payload"])
-            )
-            if (
-                message_continuation is not None
-                and message_continuation.binding_id != receipt["binding"]["binding_id"]
-            ):
-                raise ValueError("continuation 不属于记录中的模型")
-            if message.source == self._source:
-                continuation = message_continuation
-                continuation_seq = message.seq
-                summaries = [
-                    part for part in body.parts
-                    if isinstance(part, ContentPart) and part.kind == "context.summary"
+                recorded = [
+                    part
+                    for part in body.parts
+                    if isinstance(part, ContentPart) and part.kind == "model.facts"
                 ]
-                if len(summaries) > 1:
-                    raise ValueError("同一模型 Output 只能使用一份摘要")
-                continuation_summary = (
-                    check_summary(summaries[0]).binding_ids[0] if summaries else None
+                if len(recorded) > 1:
+                    raise ValueError("同一 Output 出现多个 model.facts")
+                if not recorded:
+                    continue
+                _ = check_facts(recorded[0])
+                value = cast(Mapping[str, Any], recorded[0].value)
+                receipt = read_call(value["call_record_id"])
+                if receipt["state"] != "success":
+                    raise ValueError("已提交模型事实必须引用成功结算的真实调用")
+                indices = {
+                    str(index)
+                    for index, part in enumerate(body.parts)
+                    if isinstance(part, ToolCall)
+                }
+                if set(value["tool_ids"]) != indices:
+                    raise ValueError("模型工具 ID 不匹配实际 Output 调用位置")
+                state = value["continuation"]
+                message_continuation = (
+                    None
+                    if state is None
+                    else ModelContinuation(state["binding_id"], state["payload"])
                 )
-            facts[message.message_id] = value
+                if (
+                    message_continuation is not None
+                    and message_continuation.binding_id != receipt["binding"]["binding_id"]
+                ):
+                    raise ValueError("continuation 不属于记录中的模型")
+                if message.source == self._source:
+                    continuation = message_continuation
+                    continuation_seq = message.seq
+                    summaries = [
+                        part for part in body.parts
+                        if isinstance(part, ContentPart) and part.kind == "context.summary"
+                    ]
+                    if len(summaries) > 1:
+                        raise ValueError("同一模型 Output 只能使用一份摘要")
+                    continuation_summary = (
+                        check_summary(summaries[0]).binding_ids[0] if summaries else None
+                    )
+                facts[message.message_id] = value
         # 摘要明确开启新请求；原 opaque 保存在日志，只续接同一摘要后的响应。
         if fresh or summary_reference is not None and (
             continuation_summary != summary_reference or continuation_seq <= after_seq

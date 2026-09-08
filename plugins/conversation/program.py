@@ -38,8 +38,7 @@ def check_source(task: Task, reader: MessageReader, source: str, through_seq: in
 
     if not task.active or any(
         message.source == source and isinstance(message.body, (Input, Control))
-        for message in reader.snapshot()
-        if message.seq > through_seq
+        for message in reader.snapshot(after_seq=through_seq)
     ):
         raise asyncio.CancelledError
 

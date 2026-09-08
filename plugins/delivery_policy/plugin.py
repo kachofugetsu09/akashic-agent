@@ -57,18 +57,18 @@ def origin(reader: MessageReader, message: Message, sources: tuple[str, ...]) ->
 
 def input_origin(reader: MessageReader, source: str, *, through_seq: int) -> tuple[str, str] | None:
     """只从原输入的已验证渠道事实读取目的地。"""
-    for previous in reversed(reader.snapshot(through_seq=through_seq)):
-        if previous.source != source or not isinstance(previous.body, Input):
-            continue
-        parts = [part for part in previous.body.parts if part.kind == "channel.origin"]
-        if not parts:
-            return None
-        if len(parts) != 1:
-            raise ValueError("输入必须只有一个渠道来源")
-        _ = check_origin(parts[0])
-        value = cast(Mapping[str, str], parts[0].value)
-        return value["channel"], value["chat_id"]
-    return None
+    previous = reader.latest_input(source, through_seq=through_seq)
+    if previous is None:
+        return None
+    assert isinstance(previous.body, Input)
+    parts = [part for part in previous.body.parts if part.kind == "channel.origin"]
+    if not parts:
+        return None
+    if len(parts) != 1:
+        raise ValueError("输入必须只有一个渠道来源")
+    _ = check_origin(parts[0])
+    value = cast(Mapping[str, str], parts[0].value)
+    return value["channel"], value["chat_id"]
 
 
 class DeliveryFinalOutput:
@@ -168,9 +168,7 @@ async def apply(ctx: Context, config: Config) -> None:
                 try:
                     yield
                 finally:
-                    for message in reader.snapshot():
-                        if message.seq <= head:
-                            continue
+                    for message in reader.snapshot(after_seq=head):
                         if message.source != source or origin(reader, message, config.sources) is None:
                             continue
                         try:

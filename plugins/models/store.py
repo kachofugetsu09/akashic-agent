@@ -7,7 +7,7 @@ import os
 import sqlite3
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import closing, contextmanager
+from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from types import MappingProxyType
@@ -127,6 +127,37 @@ class StoredSnapshot:
         )
 
 
+class ModelCallReader:
+    """只读调用账；每个显式读取范围独占连接，不保存查询结果。"""
+
+    def __init__(self, connect: Callable[[], AbstractContextManager[sqlite3.Connection]]) -> None:
+        self._connect = connect
+
+    def __call__(self, call_id: str) -> Mapping[str, Any]:
+        with self.open() as read:
+            return read(call_id)
+
+    @contextmanager
+    def open(self) -> Iterator[Callable[[str], Mapping[str, Any]]]:
+        """在同步组装内复用连接；不开启跨查询事务，退出时关闭。"""
+        with self._connect() as connection:
+            def read(call_id: str) -> Mapping[str, Any]:
+                """逐条读取并解码，结算变化在下一次查询可见。"""
+                require_model_calls_schema(connection)
+                row = connection.execute(
+                    "SELECT * FROM model_calls WHERE id=?", (call_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(call_id)
+                record = dict(row)
+                record["binding"] = json.loads(record.pop("binding_json"))
+                usage = record.pop("usage_json")
+                record["usage"] = None if usage is None else json.loads(usage)
+                return _freeze_json(record)
+
+            yield read
+
+
 class ModelsStore:
     """Own the ordinary models plugin's durable registry and write protocol."""
 
@@ -134,6 +165,7 @@ class ModelsStore:
         self.path = path
         self.backup_dir = backup_dir
         self.writable = writable
+        self.read_call = ModelCallReader(lambda: self._connect(read_only=True))
 
     def initialize(self) -> None:
         """Create a new registry or expand the two approved additive columns."""
@@ -317,21 +349,6 @@ class ModelsStore:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("Model 调用不存在或已经结算")
-
-    def read_call(self, call_id: str) -> Mapping[str, Any]:
-        """读取一次调用的事实；started 无终态时仍表示可能发生了费用。"""
-        with self._connect(read_only=True) as connection:
-            require_model_calls_schema(connection)
-            row = connection.execute(
-                "SELECT * FROM model_calls WHERE id=?", (call_id,)
-            ).fetchone()
-        if row is None:
-            raise KeyError(call_id)
-        record = dict(row)
-        record["binding"] = json.loads(record.pop("binding_json"))
-        usage = record.pop("usage_json")
-        record["usage"] = None if usage is None else json.loads(usage)
-        return _freeze_json(record)
 
     def read_calls(self, after_id: str, limit: int) -> tuple[Mapping[str, Any], ...]:
         """按身份分页读取调用快照；每轮从头扫描，started 记录仍可能结算。"""

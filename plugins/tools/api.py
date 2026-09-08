@@ -99,7 +99,7 @@ class MessageReply:
             raise ValueError("工具调用消息缺失")
         return any(message.source == call.source and isinstance(message.body, Control)
                    and message.body.action == "abandon" and message.body.through_seq >= call.seq
-                   for message in self.reader.snapshot())
+                   for message in self.reader.snapshot(after_seq=call.seq))
 
     def read(self, pointer: object) -> Result:
         """按持久指针读取正文，不在工具回执中保留第二份结果。"""

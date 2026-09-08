@@ -89,10 +89,11 @@ async def follow_abandon(
             if head == previous:
                 continue
             reader = catalog.reader(session_id)
-            messages = reader.snapshot(through_seq=head)
-            for control in messages:
-                if control.seq <= previous or not isinstance(control.body, Control) or control.body.action != "abandon":
-                    continue
+            changed = reader.snapshot(after_seq=previous, through_seq=head)
+            controls = [message for message in changed
+                        if isinstance(message.body, Control) and message.body.action == "abandon"]
+            messages = reader.snapshot(through_seq=head) if controls else ()
+            for control in controls:
                 for ref in abandoned_calls(messages, control):
                     target = await reply(reader, control.source, ref)
                     try:
