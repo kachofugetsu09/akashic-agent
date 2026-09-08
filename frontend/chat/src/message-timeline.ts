@@ -242,7 +242,7 @@ export function historyTranscript(archive: unknown): HistoryTranscriptGroup[] | 
 
 /** 聊天可见性只影响布局，原始 Message、part index 和同步 seq 不变。 */
 export function isTimelinePartVisible(part: TimelinePart): boolean {
-  if ("display" in part) return true;
+  if ("display" in part) return !["channel.origin", "context.summary", "tool.selection", "command.result", "akasha.recall", "akasha.feedback"].includes(part.kind);
   if ("archive" in part) {
     if (part.kind !== "history.transcript") return false;
     const groups = historyTranscript(part.archive);
@@ -260,16 +260,40 @@ export function isTimelineMessageVisible(message: TimelineMessage): boolean {
 
 /** 隐藏行沿原始顺序定位后续可见行；末尾隐藏行使用前一可见行。 */
 export function timelineAnchorIndexes(messages: TimelineMessage[]): Map<string, number> {
+  const visibleIds = new Set(timelineVisibleMessages(messages).map((message) => message.id));
   const indexes = new Map<string, number>();
   const pending: string[] = [];
   let index = -1;
   for (const message of messages) {
     pending.push(message.id);
-    if (!isTimelineMessageVisible(message)) continue;
+    if (!visibleIds.has(message.id)) continue;
     index += 1;
     for (const id of pending) indexes.set(id, index);
     pending.length = 0;
   }
   if (index >= 0) for (const id of pending) indexes.set(id, index);
+  for (const message of messages) {
+    if (message.body.kind !== "tool_result" || visibleIds.has(message.id)) continue;
+    const callIndex = indexes.get(message.body.call_ref.message_id);
+    if (callIndex !== undefined) indexes.set(message.id, callIndex);
+  }
   return indexes;
+}
+
+/** 结果按原调用引用索引，展示层不推测工具是否完成。 */
+export function timelineToolResults(messages: TimelineMessage[]): Map<string, TimelineMessage> {
+  return new Map(messages.flatMap((message) => message.body.kind === "tool_result"
+    ? [[`${message.body.call_ref.message_id}:${message.body.call_ref.part_index}`, message] as const] : []));
+}
+
+/** 已加载的工具结果在原调用面板中展示；缺少调用的分页仍保留结果行。 */
+export function timelineVisibleMessages(messages: TimelineMessage[]): TimelineMessage[] {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  return messages.filter((message) => {
+    if (!isTimelineMessageVisible(message)) return false;
+    if (message.body.kind !== "tool_result" || message.attachments.length) return true;
+    if (message.body.parts.some((part) => isTimelinePartVisible(part) && part.kind !== "text")) return true;
+    const call = byId.get(message.body.call_ref.message_id);
+    return call?.body.kind !== "output" || call.body.parts[message.body.call_ref.part_index]?.kind !== "tool_call";
+  });
 }

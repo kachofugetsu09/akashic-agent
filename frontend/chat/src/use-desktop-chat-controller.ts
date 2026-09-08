@@ -67,6 +67,7 @@ export function useDesktopChatController() {
   const [historyBeforeSeq, setHistoryBeforeSeq] = useState<number | null>(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyLoadingOlder, setHistoryLoadingOlder] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const messagesRef = useRef<ChatMessage[]>([]);
   const commitMessages = useCallback((action: SetStateAction<ChatMessage[]>) => {
     // 1. Resolve every WebSocket mutation against a synchronous immutable baseline.
@@ -98,6 +99,7 @@ export function useDesktopChatController() {
   }, [setStatus]);
   const [stopPending, setStopPending] = useState(false);
   const [error, setError] = useState("");
+  const [connectionError, setConnectionError] = useState("");
   const [mobilePairingOpen, setMobilePairingOpen] = useState(false);
   const [shellState, setShellState] = useState<WebShellState | null>(null);
   const [replyTarget, setReplyTarget] = useState<TimelineReply | null>(null);
@@ -169,6 +171,7 @@ export function useDesktopChatController() {
     olderMessagesRequestRef.current?.abort();
     const controller = new AbortController();
     messagesRequestRef.current = controller;
+    setHistoryLoading(true);
     const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
     try {
       const page = chatHistoryPage(
@@ -189,7 +192,10 @@ export function useDesktopChatController() {
       setHistoryHasMore(page.hasMore);
       followSession(socketRef.current ?? connectRef.current?.() ?? null, sessionId, page.throughSeq);
     } finally {
-      if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
+      if (messagesRequestRef.current === controller) {
+        messagesRequestRef.current = null;
+        setHistoryLoading(false);
+      }
     }
   }, [setMessages, setTimelineMessages, streamStore]);
 
@@ -319,6 +325,7 @@ export function useDesktopChatController() {
           current.onopen = () => {
             if (socketRef.current !== current) return;
             Effect.runSync(reconnect.reset);
+            setConnectionError("");
             console.info("[chat-ui] ws connected", current.url);
             const sessionId = activeSessionRef.current;
             if (sessionId) {
@@ -337,12 +344,12 @@ export function useDesktopChatController() {
         replyActivitiesRef.current = [];
         setReplyActivities([]);
         setReplyAvailable(null);
-        if (event.code !== 1000 && event.code !== 1013) reportError(new Error("聊天连接已关闭"), "error");
+        if (event.code !== 1000 && event.code !== 1013) setConnectionError("连接已断开，正在重新连接…");
         yield* reconnect.next(undefined);
         socket = yield* Effect.sync(() => new WebSocket(url));
         socketRef.current = socket;
       }
-    }).pipe(Effect.catchAll(() => Effect.sync(() => reportError(new Error("聊天连接已断开，请刷新页面重试"), "error")))));
+    }).pipe(Effect.catchAll(() => Effect.sync(() => setConnectionError("暂时无法连接，请重试")))));
     return first;
   }, [closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reportError, setMessages, setStatusLive, setTimelineMessages]);
 
@@ -371,16 +378,21 @@ export function useDesktopChatController() {
   useEffect(() => {
     if (!chatReady) return;
     void loadSessionsSafely();
-    void loadModels("").catch((error: unknown) => reportError(error));
-    return () => {
+    void loadModels(activeSessionRef.current).catch((error: unknown) => reportError(error));
+    if (activeSessionRef.current && timelineRef.current.length === 0) {
+      void loadMessagesSafely(activeSessionRef.current);
+    }
+  }, [chatReady, loadModels, loadMessagesSafely, loadSessionsSafely, reportError]);
+
+  // 健康探测暂时失败不取消用户已经发送的请求或正在读取的历史。
+  useEffect(() => () => {
       sessionsRequestRef.current?.abort();
       messagesRequestRef.current?.abort();
       olderMessagesRequestRef.current?.abort();
       modelsRequestRef.current?.abort();
       sendRequestRef.current?.abort();
       stopRequestRef.current?.abort();
-    };
-  }, [chatReady, loadModels, loadSessionsSafely, reportError]);
+  }, []);
 
   useEffect(() => {
     if (!chatReady) return;
@@ -598,8 +610,8 @@ export function useDesktopChatController() {
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
-    historyHasMore, historyLoadingOlder, loadOlderMessages,
-    selectedRuntimeId, selectedReasoningEffort, replyTarget, error, mobilePairingOpen,
+    historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
+    selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError, mobilePairingOpen,
     activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,
     setMobilePairingOpen,

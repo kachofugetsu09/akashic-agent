@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mount, renderDetail } from "../plugins/akasha/message_ui.js";
+import { JSDOM } from "jsdom";
+import { build } from "esbuild";
+const compiled = await build({ entryPoints: [new URL("../frontend/plugins/akasha/src/mobile.js", import.meta.url).pathname],
+  bundle: true, write: false, format: "esm", loader: { ".css": "empty" } });
+const { mountRecall, mount, renderDetail } = await import(
+  `data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`);
+
 
 const detail = {
   schema: "akasha.queries.v1", query_text: "Context", query_text_truncated: false,
@@ -36,4 +42,23 @@ test("closing Inspector prevents a late page response from replacing its host", 
   resolve({ schema: "akasha.queries.v1", items: [], total: 0, page: 1, page_size: 30 });
   await new Promise((done) => setImmediate(done));
   assert.equal(host.innerHTML, "another page");
+});
+
+
+test("chat recall mounts the old two lanes, escapes memory text and stops after unmount", async () => {
+  const dom = new JSDOM("<div id='host'></div>");
+  const host = dom.window.document.getElementById("host");
+  const calls = [];
+  const close = mountRecall(host, { messageId: "draft", block: { source: "conversation" },
+    query: async (...args) => { calls.push(args); return { items: [detail], pending: false }; } });
+  await new Promise((done) => setImmediate(done));
+  assert.equal(host.querySelectorAll(".akasha-mobile-recall").length, 2);
+  assert.match(host.textContent, /左脑 · 精确回忆/);
+  assert.match(host.textContent, /右脑 · 模式补全/);
+  assert.equal(host.querySelector("img"), null);
+  assert.doesNotMatch(host.textContent, /conversation/);
+  assert.deepEqual(calls[0], ["recall.turn", { message_id: "draft", source: "conversation" },
+    { cache: "none", transport: "https" }]);
+  close();
+  dom.window.close();
 });

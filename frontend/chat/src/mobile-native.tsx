@@ -1,4 +1,5 @@
-import { isTimelineMessageVisible, timelineAnchorIndexes } from "./message-timeline";
+import { timelineVisibleMessages, timelineToolResults } from "./message-timeline";
+import { timelineAnchorIndexes } from "./message-timeline";
 import { TimelineMessageView, ReplyActivityView } from "./message-view";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineAttachment } from "./message-timeline";
 import { applyMobileMessageEvent, mergeMobileMessageSnapshot, readMobileMessageLog, readMobileDownloads, readMobileStateSnapshot, type MobileMessageLog, type MobileDownload } from "./mobile-message-log";
@@ -1836,7 +1837,7 @@ export function MobileNativeApp() {
 const MobileMessageRow = React.memo(function MobileMessageRow({
   source, startsDay, followsSameRole, unreadCount, highlighted, selected, selectionActive,
   canReply, copied, selectedSessionUnavailable, messageElementsRef, onEnterSelection,
-  onToggleSelection, onReplyToMessage, onNavigateToReply, onCopyMessage, lookupMessage, downloads,
+  onToggleSelection, onReplyToMessage, onNavigateToReply, onCopyMessage, lookupMessage, toolResults, downloads,
 }: {
   source: MobileMessage;
   startsDay: boolean; followsSameRole: boolean; unreadCount: number; highlighted: boolean;
@@ -1848,6 +1849,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
   onNavigateToReply: (sourceId: string, targetId: string, partIndex?: number) => void;
   onCopyMessage: (message: MobileMessage) => void;
   lookupMessage: (id: string) => MobileMessage | undefined;
+  toolResults: ReadonlyMap<string, MobileMessage>;
   downloads: ReadonlyMap<string, MobileDownload>;
 }) {
   const body = source.body;
@@ -1873,7 +1875,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
       selectable selectionActive={selectionActive} selected={selected}
       onEnterSelection={() => onEnterSelection(source.id)} onToggleSelection={() => onToggleSelection(source.id)}>
       <div className="message-interaction-surface">
-        <TimelineMessageView message={source} lookupMessage={lookupMessage}
+        <TimelineMessageView message={source} lookupMessage={lookupMessage} toolResults={toolResults}
           onNavigate={(id, index) => onNavigateToReply(source.id, id, index)} renderAttachment={renderAttachment}
           leadingContent={!selectedSessionUnavailable && body.kind === "output" ? <MobilePluginSlot
             name="turn.before_reasoning" sessionId={source.session_id} messageId={source.id} /> : undefined}
@@ -3509,8 +3511,9 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     const scrollRef = useRef<HTMLDivElement>(null);
     const byId = useMemo(() => new Map(snapshot.messages.map((message) => [message.id, message])), [snapshot.messages]);
     const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
+    const toolResults = useMemo(() => timelineToolResults(snapshot.messages), [snapshot.messages]);
     const downloads = useMemo(() => new Map(snapshot.downloads.map((download) => [download.artifactId, download])), [snapshot.downloads]);
-    const visibleMessages = useMemo(() => snapshot.messages.filter(isTimelineMessageVisible), [snapshot.messages]);
+    const visibleMessages = useMemo(() => timelineVisibleMessages(snapshot.messages), [snapshot.messages]);
     const sourceMessagesRef = useRef(visibleMessages);
     sourceMessagesRef.current = visibleMessages;
     const activities = snapshot.replyStatus?.items ?? [];
@@ -3715,7 +3718,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
                   >
                     <MobileMessageRow
                       source={source}
-                      lookupMessage={lookupMessage}
+                      lookupMessage={lookupMessage} toolResults={toolResults}
                       downloads={downloads}
                                 startsDay={!previous || !sameLocalDay(Date.parse(previous.timestamp), Date.parse(source.timestamp))}
                       followsSameRole={previous?.author === source.author}

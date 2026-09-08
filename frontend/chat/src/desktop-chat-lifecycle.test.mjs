@@ -64,9 +64,9 @@ async function mountChat(t, strict = false) {
     WebSocket: Socket,
     IS_REACT_ACT_ENVIRONMENT: true,
     fetch(url, options = {}) {
-      assert.equal(url, "/api/shell/state");
       return new Promise((resolve, reject) => {
         const request = {
+          url,
           signal: options.signal,
           finish: (body) => resolve(new Response(JSON.stringify(body))),
         };
@@ -162,7 +162,7 @@ test("断线重试保留十二次上限，成功连接后重新计数", async (t
   }
   await fail();
   assert.equal(chat.sockets.length, 18);
-  assert.equal(chat.controller().error, "聊天连接已断开，请刷新页面重试");
+  assert.equal(chat.controller().error, "暂时无法连接，请重试");
   await chat.tick(60_000);
   assert.equal(chat.sockets.length, 18);
 });
@@ -182,4 +182,28 @@ test("StrictMode 重挂载与重试等待中的卸载不留下连接或监听器
     assert.equal(socket.onopen, null);
     assert.equal(socket.onclose, null);
   }
+});
+
+
+test("短暂健康失败不取消当前历史，重连成功清除连接提示", async (t) => {
+  const chat = await mountChat(t);
+  await act(async () => {
+    chat.sockets[0].open();
+    chat.requests[0].finish({ status: "ready", configured: true, chatReady: true });
+  });
+  await act(async () => chat.controller().activateSession("akashic:test"));
+  const history = chat.requests.find((item) => item.url.includes("/messages?"));
+  assert.ok(history);
+  assert.equal(chat.controller().historyLoading, true);
+  await chat.tick(1200);
+  await act(async () => chat.requests.filter((item) => item.url === "/api/shell/state").at(-1)
+    .finish({ status: "starting", configured: true, chatReady: false }));
+  assert.equal(history.signal.aborted, false);
+  await act(async () => history.finish({ version: 2, items: [], through_seq: -1, before_seq: null, has_more: false }));
+  assert.equal(chat.controller().historyLoading, false, "空会话加载完成后不再显示读取提示");
+  await act(async () => { chat.sockets.at(-1).open(); chat.sockets.at(-1).close(1006); });
+  assert.match(chat.controller().error, /重新连接/u);
+  await chat.tick(1200);
+  await act(async () => chat.sockets.at(-1).open());
+  assert.equal(chat.controller().error, "");
 });
