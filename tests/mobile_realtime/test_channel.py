@@ -1116,6 +1116,39 @@ def _register_device(storage: MobileRealtimeStorage, device_id: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_lazy_mcp_catalog_error_does_not_abort_next_command(tmp_path: Path) -> None:
+    from agent.plugins.snapshot import RuntimeSnapshot
+    from infra.mobile_realtime.runtime_inspection import _mcp_items
+
+    snapshot = RuntimeSnapshot("lazy-mcp", {}, None)
+    snapshot.mcp_server_registry = cast(Any, SimpleNamespace(
+        descriptors=(SimpleNamespace(owner="computer", name="computer"),),
+    ))
+
+    class Inspection(_RuntimeInspection):
+        async def list_capabilities(self) -> dict[str, object]:
+            return {"mcp_servers": _mcp_items(snapshot)}
+
+    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
+    device_id = uuid4().hex
+    _register_device(storage, device_id)
+    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
+    channel.bind_runtime_inspection(cast(RuntimeInspectionService, Inspection()))
+    try:
+        failed = await channel.handle_command(device_id=device_id, frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV", command_type="runtime.capability.list",
+        ))
+        assert failed.type == "runtime.capability.list.error"
+        assert failed.payload["code"] == "mcp_catalog_unavailable"
+        following = await channel.handle_command(device_id=device_id, frame=_generic_frame(
+            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAW", command_type="runtime.document.list",
+        ))
+        assert following.type == "runtime.document.list.ok"
+    finally:
+        storage.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_document_commands_use_bound_read_service(tmp_path: Path) -> None:
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex

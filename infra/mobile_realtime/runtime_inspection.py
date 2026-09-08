@@ -369,8 +369,6 @@ def _mcp_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
     registry = snapshot.mcp_server_registry
     if registry is not None:
-        if snapshot.tool_registry is None:
-            raise RuntimeError("stable v3 MCP registry 缺少 exact ToolRegistry")
         for descriptor in registry.descriptors:
             tools = _mcp_tools_from_registry(snapshot, descriptor.name)
             items.append(
@@ -393,7 +391,11 @@ def _mcp_tools_from_registry(
 
     registry = snapshot.tool_registry
     if registry is None:
-        raise RuntimeError("stable v3 MCP registry 缺少 exact ToolRegistry")
+        # 按需 MCP 尚无快照工具目录；查询失败不能中断同一连接上的聊天。
+        raise RuntimeInspectionError(
+            "mcp_catalog_unavailable",
+            "MCP 工具目录暂不可用，声明的服务按需启动",
+        )
     prefix = f"mcp_{server_name}__"
     tools: list[dict[str, object]] = []
     for name in registry.get_registered_order(
