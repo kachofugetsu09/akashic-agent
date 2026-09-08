@@ -123,7 +123,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
     root = CompositionRoot("exact-tool-contributions")
     refs = {}
     contexts = {}
-    catalog = None
+    catalog = ToolCatalog(root.context)
 
     def runtime(plugin_id):
         return PluginRuntime(
@@ -136,10 +136,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
         yield
 
     async def target(ctx, label):
-        nonlocal catalog
         contexts[label] = ctx
-        if catalog is None:
-            catalog = ToolCatalog(ctx)
         refs[label] = await catalog.register(
             ctx,
             name="example",
@@ -152,7 +149,6 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
         first = await root.mount(
             lambda ctx: target(ctx, "first"), name="first", runtime=runtime("first")
         )
-        assert catalog is not None
         with pytest.raises(TypeError, match="搜索提示"):
             await catalog.register(
                 contexts["first"],
@@ -188,7 +184,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
                 return "binding"
 
         captured = CapturingBindings()
-        catalog.bind(refs["first"], captured)
+        catalog.bind(refs["first"], cast(Bindings, captured))
         assert captured.metadata["prepare"] == "first-prepare"
         assert captured.metadata["authorize"] == "first-authorize"
 
@@ -197,7 +193,7 @@ async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path
         await root.mount(
             lambda ctx: target(ctx, "second"), name="second", runtime=runtime("second")
         )
-        catalog.bind(refs["second"], captured)
+        catalog.bind(refs["second"], cast(Bindings, captured))
         assert captured.metadata == {
             "tool": refs["second"].description,
             "prepare": None,
