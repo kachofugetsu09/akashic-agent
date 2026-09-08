@@ -5,6 +5,7 @@ export type MobileReplyStatus = Extract<MessageLogFrame, { type: "reply.status" 
 /** 原生只保存下载进度与设备 URL；附件身份和文件信息来自 Message。 */
 export interface MobileDownload {
   artifactId: string;
+  cacheId: string;
   state: string;
   transferredBytes: number;
   contentUrl?: string;
@@ -74,7 +75,7 @@ export function readMobileStateSnapshot(value: unknown): Record<string, unknown>
   const fields = new Set(["protocolVersion", "connection", "sessions", "selectedSessionId", "readingPosition",
     "navigationTarget", "projectionGeneration", "downloads", "composer", "modelCatalog", "runtimeInspection"]);
   if (raw.protocolVersion !== 2 || Object.keys(raw).some((key) => !fields.has(key))) throw new Error("状态 patch 版本或字段无效");
-  return { ...raw, protocolVersion: 9, messages: [], throughSeq: -1, replyStatus: null };
+  return { ...raw, protocolVersion: 10, messages: [], throughSeq: -1, replyStatus: null };
 }
 
 export function readMobileDownloads(value: unknown): MobileDownload[] {
@@ -82,7 +83,7 @@ export function readMobileDownloads(value: unknown): MobileDownload[] {
   const ids = new Set<string>();
   return value.map((value) => {
     const raw = record(value);
-    if (typeof raw.artifactId !== "string" || !raw.artifactId || ids.has(raw.artifactId)
+    if (typeof raw.cacheId !== "string" || !raw.cacheId || typeof raw.artifactId !== "string" || !raw.artifactId || ids.has(raw.artifactId)
       || !["remote", "pending", "downloading", "cached", "failed", "evicted"].includes(String(raw.state))
       || !Number.isSafeInteger(raw.transferredBytes) || (raw.transferredBytes as number) < 0
       || (raw.contentUrl !== undefined && typeof raw.contentUrl !== "string")) throw new Error("附件下载状态无效");

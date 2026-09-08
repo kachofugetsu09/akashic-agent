@@ -166,7 +166,7 @@ export function timelineText(message: TimelineMessage): string {
 }
 
 export function timelineReply(message: TimelineMessage): TimelineReply {
-  return { id: message.id, author: message.author,
+  return { id: message.id, author: message.author === "legacy-attribution-unknown" ? "原消息" : message.author,
     preview: timelineText(message).replace(/\s+/gu, " ").trim().slice(0, 512)
       || (message.attachments.length ? "[附件]" : "[无文字消息]") };
 }
@@ -202,3 +202,74 @@ function nonempty(value: unknown): value is string { return typeof value === "st
 function nullableText(value: unknown): boolean { return value === null || typeof value === "string"; }
 function integer(value: unknown): boolean { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
 function cursor(value: unknown): boolean { return value === -1 || integer(value); }
+
+export interface HistoryToolRecord {
+  name: string;
+  arguments: unknown;
+  result: unknown;
+}
+
+export interface HistoryTranscriptGroup {
+  text: string;
+  thinking: string;
+  calls: HistoryToolRecord[];
+}
+
+/** 只解释已知旧工具记录格式；未知记录保留在原 Message，不猜执行状态。 */
+export function historyTranscript(archive: unknown): HistoryTranscriptGroup[] | null {
+  const value = object(archive);
+  if (!value || value.schema !== "sessions.messages.tool_chain.v0" || typeof value.raw !== "string") return null;
+  let groups: unknown;
+  try { groups = JSON.parse(value.raw); }
+  catch (error) { if (error instanceof SyntaxError) return null; throw error; }
+  if (!Array.isArray(groups)) return null;
+  const result: HistoryTranscriptGroup[] = [];
+  for (const item of groups) {
+    const group = object(item);
+    if (!group || !Array.isArray(group.calls)
+      || (group.text != null && typeof group.text !== "string")
+      || (group.reasoning_content != null && typeof group.reasoning_content !== "string")) return null;
+    const calls: HistoryToolRecord[] = [];
+    for (const item of group.calls) {
+      const call = object(item);
+      if (!call || typeof call.name !== "string" || !call.name) return null;
+      calls.push({ name: call.name, arguments: call.arguments, result: call.result });
+    }
+    result.push({ text: group.text as string ?? "", thinking: group.reasoning_content as string ?? "", calls });
+  }
+  return result;
+}
+
+/** 聊天可见性只影响布局，原始 Message、part index 和同步 seq 不变。 */
+export function isTimelinePartVisible(part: TimelinePart): boolean {
+  if ("display" in part) return true;
+  if ("archive" in part) {
+    if (part.kind !== "history.transcript") return false;
+    const groups = historyTranscript(part.archive);
+    return groups === null || groups.some((group) => group.text || group.thinking || group.calls.length);
+  }
+  if (part.kind === "text") return part.value.length > 0;
+  if (part.kind === "model.facts") return Boolean(part.value.thinking);
+  return true;
+}
+
+export function isTimelineMessageVisible(message: TimelineMessage): boolean {
+  return message.attachments.length > 0 || message.body.kind === "control"
+    || message.body.kind === "tool_result" || message.body.parts.some(isTimelinePartVisible);
+}
+
+/** 隐藏行沿原始顺序定位后续可见行；末尾隐藏行使用前一可见行。 */
+export function timelineAnchorIndexes(messages: TimelineMessage[]): Map<string, number> {
+  const indexes = new Map<string, number>();
+  const pending: string[] = [];
+  let index = -1;
+  for (const message of messages) {
+    pending.push(message.id);
+    if (!isTimelineMessageVisible(message)) continue;
+    index += 1;
+    for (const id of pending) indexes.set(id, index);
+    pending.length = 0;
+  }
+  if (index >= 0) for (const id of pending) indexes.set(id, index);
+  return indexes;
+}

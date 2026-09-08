@@ -102,6 +102,15 @@ class _ArtifactReadLease:
                 raise RuntimeError("AttachmentReadLease 已关闭")
             return await asyncio.to_thread(os.pread, self._fd, self._ref.size_bytes, 0)
 
+    async def read_chunk(self, *, offset: int, max_bytes: int) -> bytes:
+        """从已核验文件读取有限分片，不重新打开路径。"""
+        if not 0 <= offset <= self._ref.size_bytes or max_bytes <= 0:
+            raise ValueError("附件分片范围无效")
+        async with self._lock:
+            if self._fd < 0:
+                raise RuntimeError("AttachmentReadLease 已关闭")
+            return await asyncio.to_thread(os.pread, self._fd, max_bytes, offset)
+
     async def aclose(self) -> None:
         async with self._lock:
             if self._fd < 0:

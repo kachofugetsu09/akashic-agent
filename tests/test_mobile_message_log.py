@@ -236,3 +236,73 @@ async def test_mobile_json_range_authentication_and_reopen(mobile, tmp_path):
         runtime._connections[device].connection_epoch = 2
         assert client.get('/mobile/message-content/v2', headers={**headers, 'Range': 'bytes=0-9'}).status_code == 401
         client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('artifact_id,content,filename,media_type', [
+    ('21f6c57ea37a477a98037f6ea74c5fb6', b'old attachment' * 15000, 'old.txt', 'text/plain'),
+    ('opaque.File_' + 'x' * 100, b'', None, None),
+])
+async def test_artifact_download_uses_message_reference_and_core_bytes(mobile, tmp_path, artifact_id, content, filename, media_type):
+    """真实历史引用经过 Mobile 命令与二进制编码，重放和跨会话不改变权威事实。"""
+    from dataclasses import asdict
+    import struct
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+    from infra.mobile_realtime.attachments import encode_attachment_chunk, MAX_ATTACHMENT_CHUNK_BYTES
+    from infra.mobile_realtime.protocol import AttachmentDownloadCommand, parse_frame
+    from session.artifact_store import ArtifactStore
+    from session.artifacts import AttachmentKind, AttachmentRef
+
+    log, runtime, channel, device = mobile
+    session = f'akashic:{uuid4()}'
+    other = f'akashic:{uuid4()}'
+    source = tmp_path / 'original.bin'
+    source.write_bytes(content)
+    ref = AttachmentRef(artifact_id, AttachmentKind.FILE, filename, media_type, len(content), hashlib.sha256(content).hexdigest())
+    with closing(ArtifactStore(tmp_path / 'sessions.db')) as metadata:
+        artifacts = ChannelAttachmentArtifactStore(workspace=tmp_path, metadata_store=metadata)
+        assert await artifacts.adopt_file_with_artifact_id(source, allowed_root=tmp_path, expected_ref=ref) == ref
+        channel.bind_channel_attachment_store(artifacts)
+        for sid, mid in ((session, 'message'), (other, 'other-message')):
+            log.writer(sid, author='user', source='conversation', body_types=(Input,),
+                       content={'artifact_ref': lambda part: ContentReferences(artifact_ids=(part.value,))}).append(
+                           mid, Input((ContentPart('artifact_ref', artifact_id),)))
+        before = snapshot(tmp_path / 'sessions.db')
+        await channel._get_history(device, command('history.get', session))
+        row = runtime.events[-1]['payload']['items'][0]
+        assert row['attachments'] == [asdict(ref)]
+
+        def request(sid, mid, offset, counter):
+            frame = parse_frame(json.dumps({'v': 1, 'kind': 'command', 'type': 'attachment.download',
+                'id': f'01ARZ3NDEKTSV4RRFFQ69G5{counter:03d}', 'connection_epoch': 1, 'session_id': sid,
+                'payload': {'message_id': mid, 'artifact_id': row['attachments'][0]['artifact_id'], 'offset': offset}}))
+            assert isinstance(frame, AttachmentDownloadCommand)
+            return frame
+
+        recovered = bytearray()
+        offset = 0
+        counter = 0
+        while True:
+            frame = request(session, row['id'], offset, counter)
+            reply = await channel.handle_command(device_id=device, frame=frame)
+            assert reply.type == 'attachment.download.ok'
+            repeated = await channel.handle_command(device_id=device, frame=frame)
+            assert repeated == reply
+            binary = encode_attachment_chunk(reply.binary)
+            size = struct.unpack('>I', binary[:4])[0]
+            assert json.loads(binary[4:4 + size]) == {'artifact_id': artifact_id, 'offset': offset}
+            chunk = binary[4 + size:]
+            assert len(chunk) <= MAX_ATTACHMENT_CHUNK_BYTES
+            recovered.extend(chunk)
+            offset = reply.payload['next_offset']
+            if reply.payload['complete']:
+                break
+            assert chunk
+            counter += 1
+        assert bytes(recovered) == content
+        allowed = await channel.handle_command(device_id=device, frame=request(other, 'other-message', 0, 900))
+        assert allowed.type == 'attachment.download.ok'
+        rejected = await channel.handle_command(device_id=device, frame=request(other, 'message', 0, 901))
+        assert rejected.type == 'attachment.download.error'
+        assert rejected.payload['code'] == 'attachment_download_rejected'
+        assert snapshot(tmp_path / 'sessions.db') == before

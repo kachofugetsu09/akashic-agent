@@ -1,3 +1,4 @@
+import { isTimelineMessageVisible } from "./message-timeline";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -281,7 +282,7 @@ export function DesktopTimelineMessages({ messages, status, messageElementsRef, 
     target?.focus({ preventScroll: true });
     target?.scrollIntoView({ behavior: "instant", block: "center" });
   }, [messageElementsRef, stopScroll]);
-  return <>{messages.map((message) => <div key={message.id}
+  return <>{messages.filter(isTimelineMessageVisible).map((message) => <div key={message.id}
     className={`web-message-anchor history-isolated timeline-${message.body.kind}`}
     tabIndex={-1} data-message-id={message.id} data-message-kind={message.body.kind} data-message-seq={message.seq}
     ref={(element) => {
@@ -296,9 +297,7 @@ export function DesktopTimelineMessages({ messages, status, messageElementsRef, 
       afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <MobilePluginSlot
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} /> : undefined} />
     <div className="shared-message-meta timeline-meta">
-      <span>{message.author}</span><span>来源 · {message.source}</span>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
-      <details><summary>消息详情</summary><pre>{message.id}{"\n"}序号 {message.seq}</pre></details>
       <SharedMessageActions
         canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
         canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}

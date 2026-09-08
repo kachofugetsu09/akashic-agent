@@ -149,6 +149,10 @@ Writer 交接前必须把允许范围内的修改提交成可引用 commit，或
 
 跨语言协议的长度、顺序、终态、取消和迟到响应由协议定义，不由 Python、Kotlin、JavaScript 或数据库的默认 primitive 定义。协议说 Unicode code point 时，各端都按 code point 验证；协议说请求已取消时，已知取消请求的迟到响应可以忽略，未知 response ID 仍须 fail-loud。临时命令目录等连接级投影在 reconnect、reset、source 变化或 terminal close 后失效，不能伪装成持久权威状态。
 
+Frame ID 只标识传输命令与上传暂存，不限定 Message 引用的 `artifact_id`。附件下载使用已提交 Message 的引用授权，读取 Core ArtifactStore 的同一份不可变 metadata 和文件；不能回到来源渠道的旧出站缓存。附件的会话引用与文件身份独立，文件名和 MIME 可以为空，文件大小可以为零。
+
+普通聊天是 Message 日志的只读展示：隐藏迁移 provenance、纯归档行和内部身份诊断，保留旧文字、思考与工具记录。隐藏不改变原始正文、part index、Message ID、seq、分页或已读高水位。明确拒绝结束客户端发送待办并保留失败正文；未知结果继续使用原 ID 核对，已接受 Input 不因执行失败降级。
+
 ### MOB-004 数据库迁移识别真实 schema lineage
 
 数据库 `user_version` 只表示版本号，不能单独证明表、列、索引和外键形状。若多个已发布或已评审分支曾使用同一版本号但 schema 不同，迁移必须识别每一种已知 lineage，逐一验证保留集合并汇合到唯一目标 schema；未知或部分匹配的形状 fail-loud，不得猜测、清库或用 destructive fallback 获得启动成功。

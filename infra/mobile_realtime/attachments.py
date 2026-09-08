@@ -56,6 +56,13 @@ class AttachmentChunk:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactChunk:
+    artifact_id: str
+    offset: int
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class OutboundAttachmentChunk:
     descriptor: dict[str, object]
     offset: int
@@ -716,9 +723,11 @@ class AttachmentTransferService:
         )
 
 
-def encode_attachment_chunk(chunk: AttachmentChunk) -> bytes:
+def encode_attachment_chunk(chunk: AttachmentChunk | ArtifactChunk) -> bytes:
     header = json.dumps(
-        {"attachment_id": chunk.attachment_id, "offset": chunk.offset},
+        ({"artifact_id": chunk.artifact_id, "offset": chunk.offset}
+         if isinstance(chunk, ArtifactChunk)
+         else {"attachment_id": chunk.attachment_id, "offset": chunk.offset}),
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,

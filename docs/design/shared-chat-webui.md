@@ -152,3 +152,26 @@ TypeScript 固定为 5.9.3，沿用现有 strict、ES2022 和 bundler 配置。
 - 离线与降级场景：通过生产 Chat 的静态响应、fixture transport 或现有状态测试注入输入，继续使用正式 `ChatMessageView`；不维护平行方案页或独立消息实现。
 - 移动仓库：ZIP 正向校验、篡改失败测试、Gradle debug build。
 - 报告两仓库 commit/tree、ZIP digest；真机 WebView、内存、掉帧和冷启动单独列为未验证或设备证据。
+
+
+## 历史附件、聊天投影与发送待办（2026-09-08，已确认）
+
+```text
+┌─ Core Message / Artifact ──────────────────────────────┐
+│ 原始 Message + seq；不可变 artifact_id / metadata / bytes │
+└────────────┬──────────────────────────────┬─────────────┘
+             │ 完整同步                      │ Message 引用授权下载
+             ▼                              ▼
+┌─ 共享 WebUI ─────────────────┐  ┌─ Android ──────────────────┐
+│ 只读聊天投影；隐藏迁移诊断     │  │ Room / outbox / 文件缓存    │
+│ 思考与工具记录留在原 Message  │  │ cacheId = H(server, artifact)│
+└──────────────────────────────┘  └────────────────────────────┘
+```
+
+- `attachment.download` 请求携带 `message_id`、`artifact_id` 和 `offset`。Session reader 先确认该 Message 引用了文件，再由 Core ArtifactStore 核验和读取。回复保留完整附件 metadata；下载二进制头使用 `artifact_id`，上传头继续使用 Frame ID `attachment_id`。空文件允许零字节分片并按 SHA-256 验证。
+- Android 缓存键与远端 Artifact ID 分开。Native→Web snapshot v10 的下载状态同时提供 `artifactId`（匹配 Message 引用）和 `cacheId`（调用本地重试、打开和分享）。会话仅从 Message link 取得授权，不拥有共享文件缓存。
+- `history.provenance`、`history.record`、`history.turn_input` 不进入普通聊天；纯归档 Message 不占布局和可见未读数量。`history.transcript` 的已知旧格式按原组顺序展示思考、说明和工具记录，不生成新消息或执行状态。原始数据和同步进度不减少。旧阅读或导航锚若指向隐藏行，定位到后续首个可见行；末尾则定位前一可见行，不能直接跳到最新消息。
+- 明确拒绝删除本地 outbox、保留失败正文并释放本地上传占用。结果未知保留原命令及其附件占用；核对复用原 ID。新一次发送创建新 Message，不迁移旧视觉身份。已落地 Input 或 ACK 都是接受证据，迟到错误不得将其降级。
+- 文件缓存写入失败只结束该下载并消费对应回复。Room 持久化失败停止消费和 ACK，等待用户处理存储后重连；自动重连不作为本地数据修复。
+
+验证入口：`tests/test_mobile_message_log.py`、共享聊天投影测试、Android Room 18→19 迁移与下载测试；`tests_scenarios/mobile_artifact_history.py` 提供全新目录中的真实 TLS Gateway，用于 Android Room→文件→共享 WebView 的完整验证。测试不读取正式 workspace 或正式手机应用。

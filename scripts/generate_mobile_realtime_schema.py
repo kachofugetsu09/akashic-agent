@@ -52,7 +52,7 @@ def build_schema() -> dict[str, object]:
                 "header_length bytes UTF-8 JSON header",
                 "remaining bytes chunk payload",
             ],
-            "headerSchema": {
+            "uploadHeaderSchema": {
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["attachment_id", "offset"],
@@ -65,6 +65,16 @@ def build_schema() -> dict[str, object]:
                     "offset": {"type": "integer", "minimum": 0},
                 },
             },
+            "downloadHeaderSchema": {
+                "type": "object", "additionalProperties": False,
+                "required": ["artifact_id", "offset"],
+                "properties": {
+                    "artifact_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$"},
+                    "offset": {"type": "integer", "minimum": 0},
+                },
+            },
+            "downloadPayloadMinimumBytes": 0,
+            "uploadPayloadMinimumBytes": 1,
             "maxHeaderBytes": 1024,
             "payloadOffsetSemantics": "absolute byte offset",
         },

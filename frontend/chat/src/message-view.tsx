@@ -47,7 +47,7 @@ import type {
   ToolBlock,
 } from "./chat-message";
 import type { ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
-import { timelineReply } from "./message-timeline";
+import { timelineReply, historyTranscript, isTimelinePartVisible } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
 
@@ -213,7 +213,6 @@ export function TimelineMessageView({ message, lookupMessage, onNavigate, onErro
       {body.kind === "control" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
-        <details className="timeline-details"><summary>控制范围</summary><p>截至消息序号 {body.through_seq}</p></details>
       </div> : <>
         {body.kind === "tool_result" ? <div className="timeline-result-heading">
           <strong>工具结果 · {outcomeLabels[body.outcome]}</strong>
@@ -221,18 +220,12 @@ export function TimelineMessageView({ message, lookupMessage, onNavigate, onErro
             disabled={!lookupMessage(body.call_ref.message_id)}>
             {lookupMessage(body.call_ref.message_id) ? "查看调用" : "调用不在当前记录中"}
           </button>
-          <details className="timeline-details"><summary>调用引用</summary>
-            <p>{body.call_ref.message_id} · 内容块 {body.call_ref.part_index}</p>
-          </details>
         </div> : null}
-        {body.parts.map((part, index) => <div key={index} data-part-index={index} tabIndex={-1}>
+        {body.parts.map((part, index) => isTimelinePartVisible(part) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index)}
           <TimelinePartView part={part} attachment={attachment} lookupMessage={lookupMessage}
             onNavigate={onNavigate} onError={onError} />
-        </div>)}
-        {body.kind === "output" && body.finish !== "complete" ? <p className="timeline-state">
-          {body.finish === "continue" ? "继续执行" : "静默输出"}
-        </p> : null}
+        </div> : null)}
       </>}
       {afterBody}
       {message.attachments.filter((ref) => !referencedArtifacts.has(ref.artifact_id)).map((ref, index) =>
@@ -248,8 +241,8 @@ function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError
   onNavigate: (id: string, partIndex?: number) => void;
   onError?: (error: unknown) => void;
 }) {
-  if ("display" in part) return <p className="timeline-state">无法展示此内容 · {part.kind}</p>;
-  if ("archive" in part) return <TimelineArchive kind={part.kind} archive={part.archive} />;
+  if ("display" in part) return <p className="timeline-state">无法展示此内容</p>;
+  if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} onError={onError} /> : null;
   switch (part.kind) {
     case "text": return <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
     case "artifact_ref": return attachment(part.value);
@@ -271,11 +264,19 @@ function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError
   }
 }
 
-function TimelineArchive({ kind, archive }: { kind: string; archive: unknown }) {
-  const [open, setOpen] = useState(false);
-  return <details className="timeline-details timeline-archive" onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>旧记录归档 · {kind}</summary>
-    {open ? <pre tabIndex={0}>{typeof archive === "string" ? archive : JSON.stringify(archive, null, 2)}</pre> : null}
+function TimelineTranscript({ archive, onError }: { archive: unknown; onError?: (error: unknown) => void }) {
+  const groups = historyTranscript(archive);
+  return <details className="timeline-details">
+    <summary>思考与工具记录</summary>
+    {groups === null ? <p>这段历史过程暂无法展示。</p> : groups.map((group, index) => <div key={index}>
+      {group.thinking ? <MessageBody content={group.thinking} streaming={false} deferRichContent onError={onError} /> : null}
+      {group.text ? <MessageBody content={group.text} streaming={false} deferRichContent onError={onError} /> : null}
+      {group.calls.map((call, callIndex) => <details className="timeline-details" key={callIndex}>
+        <summary>工具 · {call.name}</summary>
+        {call.arguments !== undefined ? <pre tabIndex={0}>{JSON.stringify(call.arguments, null, 2)}</pre> : null}
+        {call.result !== undefined ? <pre tabIndex={0}>{typeof call.result === "string" ? call.result : JSON.stringify(call.result, null, 2)}</pre> : null}
+      </details>)}
+    </div>)}
   </details>;
 }
 

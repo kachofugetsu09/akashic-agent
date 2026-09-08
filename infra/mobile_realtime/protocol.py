@@ -219,7 +219,8 @@ class AttachmentFinishPayload(ProtocolModel):
 
 
 class AttachmentDownloadPayload(ProtocolModel):
-    attachment_id: FrameId
+    message_id: NonEmptyId
+    artifact_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$")
     offset: int = Field(ge=0)
 
 
