@@ -18,7 +18,8 @@ from plugins.models.selection import selection
 from plugins.models.content import load_artifacts, render_content as render_model_content
 from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts
 from plugins.tools.api import Authorize, MessageReply, result_message_id
-from plugins.tools.menu import ToolMenu
+from plugins.tools.menu import ToolMenu, ToolPresentation
+from plugins.tools.plugin import ToolView
 from plugins.standard_tools.shell import shell_cleanup
 from session.log import MessageReader
 from session.message import CallRef, ContentPart, Input, Message, Output, ToolResult
@@ -50,17 +51,16 @@ async def run_reply(
     materials: ContextMaterials,
     turn_projection: TurnProjection,
     render_content: ContentRenderer | None = None, read_call: CallReader, authorize: Authorize,
-    tool_names: Sequence[str], max_output_tokens: int, max_steps: int,
+    tool_view: ToolView | None, max_output_tokens: int, max_steps: int,
     exclude_materials: frozenset[str] = frozenset(), prompt_hints: Sequence[str] = (),
     fixed_bindings: Mapping[str, str] | None = None,
     preview: Preview | None = None,
     reminders: Sequence[Reminder] = (),
     terminal_tools: frozenset[str] = frozenset(),
+    presentation: ToolPresentation | None = None,
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
     # 1. 内容检查器与模型绑定覆盖整个程序，取消时先排空已开始的工具。
-    if terminal_tools - set(tool_names):
-        raise ValueError("终结工具必须属于本次允许目录")
     prompt_hints = tuple(prompt_hints)
     source_head = reader.head(source=source)
     snapshot = reader.snapshot()
@@ -90,7 +90,7 @@ async def run_reply(
                 result_message_id(ref), ref, reader,
                 writers.bind(
                     ctx, author="tool", source=source, body_types=(ToolResult,),
-                    content={**view.checks, "tool.selection": lambda part: menu.check_selection(ref, part)},
+                    content=view.checks,
                 )(reader.session_id, call_ref=ref),
                 lambda: check_source(task, reader, source, source_head),
             )
@@ -98,8 +98,10 @@ async def run_reply(
         menu = ToolMenu(tools, bindings, tools.execution(
             authorize, child_permit=task.child_permit if task.has_external_permit else None,
         ), reply,
-                        names=tool_names, reader=reader, source=source,
-                        limit=model.max_tool_schemas, fixed_bindings=fixed_bindings)
+                        view=tool_view, limit=model.max_tool_schemas,
+                        fixed_bindings=fixed_bindings, presentation=presentation)
+        if terminal_tools - menu.names:
+            raise ValueError("终结工具必须属于本次允许目录")
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
             check_metadata=view.check_metadata,
@@ -117,7 +119,13 @@ async def run_reply(
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
         async def build_materials(messages: tuple[Message, ...]) -> Materials:
             nonlocal artifacts
-            result = await material_view.prepare(messages, source, caller=ctx, reminders=tuple(reminders))
+            result = await material_view.prepare(
+                messages,
+                source,
+                caller=ctx,
+                reminders=tuple(reminders),
+                reminder_contributors=menu.reminders,
+            )
             if render_content is None:
                 start = 0 if result.summary is None else summary_range(messages, result.summary.source_message_ids).stop
                 refs = tuple(

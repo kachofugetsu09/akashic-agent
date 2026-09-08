@@ -29,17 +29,51 @@ inject = ()
 
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[None]]
-Candidates = Mapping[str, Mapping[str, object]]
 OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[BoundTool]]
 Capture = Callable[[Mapping[str, object]], Mapping[str, object]]
 
 
 @dataclass(frozen=True, slots=True)
-class _Registration:
-    context: Context
+class ToolRef:
+    """引用当前 composition Root 中的一次真实工具注册。"""
+
+    name: str
     description: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _Registration:
+    ref: ToolRef
+    context: Context
     open: OpenTarget
     capture: Capture | None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolView:
+    """消费者获授的一组真实工具引用。"""
+
+    refs: tuple[ToolRef, ...]
+
+    def __post_init__(self) -> None:
+        refs = tuple(self.refs)
+        names = tuple(ref.name for ref in refs)
+        if len(set(names)) != len(names):
+            raise ValueError("工具 view 不能包含重复名称")
+        object.__setattr__(self, "refs", refs)
+
+    def select(self, name: str) -> ToolRef:
+        for ref in self.refs:
+            if ref.name == name:
+                return ref
+        raise PermissionError(f"工具不属于获授 view: {name}")
+
+    def without(self, names: frozenset[str]) -> ToolView:
+        return ToolView(tuple(ref for ref in self.refs if ref.name not in names))
+
+    @classmethod
+    def combine(cls, *views: ToolView) -> ToolView:
+        return cls(tuple(ref for view in views for ref in view.refs))
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,8 +135,26 @@ class ToolCatalog:
     def __init__(self, ctx: Context):
         self._ctx = ctx
         self._tools: dict[str, _Registration] = {}
+        self._groups: dict[str, bool] = {}
         self._preparations: dict[str, _Preparation] = {}
         self._authorizations: dict[str, _Authorization] = {}
+
+    async def declare_group(self, ctx: Context, *, always_on: bool = False) -> Effect:
+        """由真实插件 owner 在注册工具前声明唯一组级展示事实。"""
+        self._check_context(ctx)
+        if type(always_on) is not bool:
+            raise TypeError("工具组 always_on 必须是 bool")
+        owner = ctx.runtime.plugin_id
+        if any(item.context.runtime.plugin_id == owner for item in self._tools.values()):
+            raise ValueError("工具组必须在工具注册前声明")
+
+        def setup() -> Callable[[], None]:
+            if owner in self._groups:
+                raise ValueError(f"工具组重复声明: {owner}")
+            self._groups[owner] = always_on
+            return lambda: self._groups.pop(owner)
+
+        return await ctx.effect(setup, label=f"tool-group:{owner}")
 
     async def register(
         self,
@@ -113,15 +165,11 @@ class ToolCatalog:
         parameters: Mapping[str, object],
         open: OpenTarget,
         capture: Capture | None = None,
-        discovery: bool = False,
         public: bool = True,
         idempotent: bool = False,
         risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
-        always_on: bool = False,
-        preloadable: bool = True,
-        requires_search: bool = False,
         search_hint: str | None = None,
-    ) -> Effect:
+    ) -> ToolRef:
         """目标自行校验参数 schema；注册表固定发现描述与真实资源入口。"""
         self._check_context(ctx)
         if (
@@ -135,15 +183,9 @@ class ToolCatalog:
             raise ValueError("工具风险声明无效")
         if any(
             type(value) is not bool
-            for value in (idempotent, always_on, preloadable, requires_search, discovery, public)
+            for value in (idempotent, public)
         ):
             raise TypeError("工具执行和发现选项必须是 bool")
-        if always_on and requires_search:
-            raise ValueError("工具不能同时常驻和要求搜索解锁")
-        if discovery and (not always_on or requires_search):
-            raise ValueError("捕获候选的工具必须直接可见，不能递归等待搜索解锁")
-        if discovery and capture is not None:
-            raise ValueError("发现工具的 open 参数已由候选集合拥有")
         if capture is not None and not callable(capture):
             raise TypeError("工具 capture 必须是同步回调")
         descriptor = cast(
@@ -152,31 +194,31 @@ class ToolCatalog:
                 {
                     "name": name,
                     "owner": ctx.runtime.plugin_id,
-                    "discovery": discovery,
                     "public": public,
                     "description": description,
                     "parameters": parameters,
                     "idempotent": idempotent,
                     "risk": risk,
-                    "always_on": always_on,
-                    "preloadable": preloadable,
-                    "requires_search": requires_search,
                     "search_hint": search_hint,
                 }
             ),
         )
 
+        reference = ToolRef(name, descriptor)
+        registration = _Registration(reference, ctx, open, capture)
+
         def setup() -> Callable[[], None]:
             if name in self._tools:
                 raise ValueError(f"工具名重复: {name}")
-            self._tools[name] = _Registration(ctx, descriptor, open, capture)
+            self._tools[name] = registration
 
             def cleanup() -> None:
                 del self._tools[name]
 
             return cleanup
 
-        return await ctx.effect(setup, label=f"tool:{name}")
+        _ = await ctx.effect(setup, label=f"tool:{name}")
+        return reference
 
     async def register_prepare(
         self, ctx: Context, *, tool: str, name: str, prepare: Prepare
@@ -244,9 +286,20 @@ class ToolCatalog:
             child_permit=child_permit,
         )
 
-    def descriptions(self) -> tuple[Mapping[str, object], ...]:
-        return tuple(self._tools[key].description for key in sorted(self._tools)
-                     if self._tools[key].description["public"])
+    def view(self, *refs: ToolRef) -> ToolView:
+        """构造消费者 view，并核对每个引用仍属于当前 Root 的真实注册。"""
+        for ref in refs:
+            self._check_ref(ref)
+        return ToolView(tuple(refs))
+
+    def _all_view(self) -> ToolView:
+        return ToolView(tuple(self._tools[name].ref for name in sorted(self._tools)
+                              if self._tools[name].ref.description["public"]))
+
+    def group_always_on(self, ref: ToolRef) -> bool:
+        self._check_ref(ref)
+        registration = self._registration(ref)
+        return self._groups.get(registration.context.runtime.plugin_id, False)
 
     async def drain_calls(self, calls: tuple[CallRef, ...]) -> None:
         """清理 owner 等待原效果退出；终态结果不等于资源已经释放。"""
@@ -264,25 +317,17 @@ class ToolCatalog:
                         raise
 
     def bind(
-        self, name: str, bindings: Bindings, *, candidates: Candidates | None = None,
+        self, ref: ToolRef, bindings: Bindings, *,
         configuration: Mapping[str, object] | None = None,
     ) -> str:
         """从真实注册 Context 固定闭包，不让调用者省略准备贡献或重选目标。"""
-        registration = self._tools[name]
+        self._check_ref(ref)
+        name = ref.name
+        registration = self._registration(ref)
         preparation = self._preparations.get(name)
         authorization = self._authorizations.get(name)
-        discovery = registration.description["discovery"]
-        if discovery and candidates is None:
-            raise ValueError("固定发现工具需要来源允许的候选快照")
-        if not discovery and candidates is not None:
-            raise ValueError("普通工具不接收候选目录")
         if configuration is not None and registration.capture is None:
             raise ValueError("该工具未声明 binding 配置入口")
-        if candidates is not None:
-            candidates = check_candidates(candidates)
-            for item in candidates.values():
-                if bindings.describe(cast(str, item["binding_id"]), TOOLS)["tool"] != item["tool"]:
-                    raise ValueError("候选描述不属于指定 binding")
         contributors = (
             registration.context,
             *(() if preparation is None else (preparation.context,)),
@@ -301,14 +346,23 @@ class ToolCatalog:
         return bindings.bind(
             TOOLS,
             {
-                "tool": registration.description,
+                "tool": ref.description,
                 "prepare": None if preparation is None else preparation.name,
                 **({"authorize": authorization.name} if authorization is not None else {}),
-                **({"candidates": candidates} if discovery else {}),
                 **({"state": state} if state is not None else {}),
             },
             contributors=contributors,
         )
+
+    def _check_ref(self, ref: ToolRef) -> None:
+        _ = self._registration(ref)
+
+    def _registration(self, ref: ToolRef) -> _Registration:
+        registration = self._tools.get(ref.name) if isinstance(ref, ToolRef) else None
+        if registration is None or registration.ref is not ref:
+            label = ref.name if isinstance(ref, ToolRef) else type(ref).__name__
+            raise RuntimeError(f"工具引用已经失效: {label}")
+        return registration
 
     @asynccontextmanager
     async def open(self, metadata: Mapping[str, object]) -> AsyncIterator[BoundTool]:
@@ -321,7 +375,7 @@ class ToolCatalog:
             raise ValueError("工具 binding 缺少工具名")
         registration = self._tools[name]
         preparation = self._preparations.get(name)
-        if registration.description != description or metadata["prepare"] != (
+        if registration.ref.description != description or metadata["prepare"] != (
             None if preparation is None else preparation.name
         ):
             raise ValueError("归档工具描述或参数准备与 binding 不一致")
@@ -331,14 +385,11 @@ class ToolCatalog:
             if authorization is None or metadata["authorize"] != authorization.name:
                 raise ValueError("归档工具限制与 binding 不一致")
             expected.add("authorize")
-        if description["discovery"]:
-            expected.add("candidates")
         if registration.capture is not None:
             expected.add("state")
         if set(metadata) != expected:
             raise ValueError("工具 binding 字段无效")
-        candidates: Candidates = check_candidates(metadata["candidates"]) if description["discovery"] else {}
-        state: Mapping[str, object] = candidates
+        state: Mapping[str, object] = {}
         if registration.capture is not None:
             captured = metadata["state"]
             if not isinstance(captured, Mapping):
@@ -369,27 +420,8 @@ class ToolCatalog:
         async with self._ctx.runtime_scope():
             await authorization.authorize(arguments)
 
-
-def check_candidates(value: object) -> Candidates:
-    """候选边界只有普通工具的公开描述与精确绑定，不接受嵌套发现目录。"""
-    if not isinstance(value, Mapping):
-        raise ValueError("工具候选必须是对象")
-    rows = cast(Mapping[object, object], value)
-    for name, raw in rows.items():
-        if not isinstance(name, str) or not isinstance(raw, Mapping):
-            raise ValueError("工具候选格式无效")
-        item = cast(Mapping[str, object], raw)
-        if set(item) != {"binding_id", "tool"} or not isinstance(item["binding_id"], str) or not item["binding_id"]:
-            raise ValueError("工具候选缺少精确绑定")
-        if not isinstance(item["tool"], Mapping):
-            raise ValueError("工具候选缺少描述")
-        tool = cast(Mapping[str, object], item["tool"])
-        if tool.get("name") != name or tool.get("discovery") is not False:
-            raise ValueError("工具候选名称不一致或包含递归发现")
-    return cast(Candidates, freeze_json(rows))
-
-
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
+ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
 TOOL_DISPLAY_NAME = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
 
 
@@ -402,7 +434,9 @@ async def open_tool(bindings: Bindings, binding_id: str) -> AsyncIterator[BoundT
 
 
 async def apply(ctx: Context, config: object) -> None:
-    _ = await ctx.provide(TOOLS, ToolCatalog(ctx))
+    catalog = ToolCatalog(ctx)
+    _ = await ctx.provide(TOOLS, catalog)
+    _ = await ctx.provide(ALL_TOOLS, catalog._all_view)
 
     def read_name(binding_id: str) -> str:
         """只读原 binding 的名称；诊断消费者不能打开或执行工具。"""

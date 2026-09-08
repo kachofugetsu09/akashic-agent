@@ -248,12 +248,21 @@ async def react(
             decoded, metadata = await content.decode(response.content or "", prepared.references)
             parts: list[Part] = list(decoded)
             indices: list[int] = []
+            actual_calls: list[ToolCall] = []
             for call in response.tool_calls:
                 indices.append(len(parts))
-                parts.append(ToolCall(tools.bind(call.name), call.arguments))
+                binding_id, arguments = tools.decode(call)
+                actual = ToolCall(binding_id, arguments)
+                actual_calls.append(actual)
+                parts.append(actual)
             if not parts:
                 raise ValueError("模型没有产生内容或工具调用；空响应不是 quiet")
-            parts.append(projection.facts(response, indices))
+            parts.append(projection.facts(
+                response,
+                indices,
+                reminder=context.reminder_content(prepared),
+                actual_calls=actual_calls,
+            ))
             if prepared.summary is not None:
                 parts.append(ContentPart("context.summary", {"reference": prepared.summary.reference}))
             # 3. 内容完成后按来源 CAS 提交；失败的草稿绝不触发工具。

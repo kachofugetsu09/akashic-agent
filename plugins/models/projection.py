@@ -36,7 +36,13 @@ MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ..
 )
 
 
-def response_facts(response: LLMResponse, call_indices: Sequence[int]) -> ContentPart:
+def response_facts(
+    response: LLMResponse,
+    call_indices: Sequence[int],
+    *,
+    reminder: str | None = None,
+    wire_tool_calls: Mapping[str, Mapping[str, object]] = {},
+) -> ContentPart:
     """只保存调用账指针与协议重放所需事实，计费数据仍由 Model store 拥有。"""
     if response.call_record_id is None:
         raise ValueError("模型响应尚未结算调用记录")
@@ -53,6 +59,8 @@ def response_facts(response: LLMResponse, call_indices: Sequence[int]) -> Conten
             "tool_ids": {
                 str(index): call.id for index, call in zip(indices, response.tool_calls)
             },
+            "wire_tool_calls": wire_tool_calls,
+            "reminder": reminder,
             "thinking": response.thinking,
             "continuation": (
                 None
@@ -72,7 +80,9 @@ def check_facts(part: ContentPart) -> ContentReferences:
     if not isinstance(value, Mapping):
         raise ValueError("model.facts 必须是对象")
     value = cast(Mapping[str, object], value)
-    if set(value) != {"call_record_id", "tool_ids", "thinking", "continuation"}:
+    old_fields = {"call_record_id", "tool_ids", "thinking", "continuation"}
+    new_fields = old_fields | {"wire_tool_calls", "reminder"}
+    if set(value) not in (old_fields, new_fields):
         raise ValueError("model.facts 字段无效")
     if not isinstance(value["call_record_id"], str) or not value["call_record_id"]:
         raise ValueError("model.facts 缺少调用记录")
@@ -90,6 +100,23 @@ def check_facts(part: ContentPart) -> ContentReferences:
             raise ValueError("模型工具 ID 或位置无效")
     if len(set(ids.values())) != len(ids):
         raise ValueError("同一响应的模型工具 ID 不能重复")
+    if "wire_tool_calls" in value:
+        wire = value["wire_tool_calls"]
+        if not isinstance(wire, Mapping) or set(wire) - set(ids):
+            raise ValueError("wire 工具调用必须对应实际 ToolCall")
+        for index, raw in cast(Mapping[str, object], wire).items():
+            if not isinstance(raw, Mapping):
+                raise ValueError("wire 工具调用必须是对象")
+            call = cast(Mapping[str, object], raw)
+            if (
+                set(call) != {"name", "arguments"}
+                or not isinstance(call["name"], str)
+                or not call["name"]
+                or not isinstance(call["arguments"], Mapping)
+            ):
+                raise ValueError("wire 工具调用字段无效")
+        if value["reminder"] is not None and not isinstance(value["reminder"], str):
+            raise ValueError("模型请求 reminder 必须是文本或 None")
     if value["thinking"] is not None and not isinstance(value["thinking"], str):
         raise ValueError("模型思考必须是文本或 None")
     continuation = value["continuation"]
@@ -145,9 +172,34 @@ class MessageProjection:
     def estimate(self, request: ModelRequest) -> int:
         return self._model.estimate_context_tokens(request.messages, request.tools)
 
-    def facts(self, response: LLMResponse, call_indices: Sequence[int]) -> ContentPart:
+    def facts(
+        self,
+        response: LLMResponse,
+        call_indices: Sequence[int],
+        *,
+        reminder: str | None = None,
+        actual_calls: Sequence[ToolCall] = (),
+    ) -> ContentPart:
         """只为当前模型已成功结算的响应生成可持久 replay 内容。"""
-        facts = response_facts(response, call_indices)
+        if len(actual_calls) != len(response.tool_calls):
+            raise ValueError("模型 wire 调用与实际 ToolCall 数量不匹配")
+        wire: dict[str, Mapping[str, object]] = {}
+        for index, original, actual in zip(call_indices, response.tool_calls, actual_calls):
+            actual_name = self._tool_name(actual.binding_id)
+            if (
+                original.name != actual_name
+                or json_value(original.arguments) != json_value(actual.arguments)
+            ):
+                wire[str(index)] = {
+                    "name": original.name,
+                    "arguments": original.arguments,
+                }
+        facts = response_facts(
+            response,
+            call_indices,
+            reminder=reminder,
+            wire_tool_calls=wire,
+        )
         assert response.call_record_id is not None
         receipt = self._read_call(response.call_record_id)
         if receipt["state"] != "success" or (
@@ -283,6 +335,8 @@ class MessageProjection:
             calls: list[dict[str, Any]] = []
             observations: list[Mapping[str, Any]] = []
             model_facts = facts.get(message.message_id)
+            if model_facts is not None and model_facts.get("reminder") is not None:
+                rows.append({"role": "user", "content": model_facts["reminder"]})
             for index, part in enumerate(body.parts):
                 if isinstance(part, ContentPart):
                     if part.kind != "model.facts":
@@ -299,20 +353,28 @@ class MessageProjection:
                         json.dumps([ref.message_id, ref.part_index]).encode()
                     ).hexdigest()[:32]
                 )
-                calls.append(
-                    {
-                        "id": identity,
-                        "type": "function",
-                        "function": {
-                            "name": self._tool_name(part.binding_id),
-                            "arguments": json.dumps(
-                                json_value(part.arguments),
-                                ensure_ascii=False,
-                                separators=(",", ":"),
+                wire = None if model_facts is None else model_facts.get("wire_tool_calls")
+                raw_call = None if wire is None else wire.get(str(index))
+                calls.append({
+                    "id": identity,
+                    "type": "function",
+                    "function": {
+                        "name": (
+                            self._tool_name(part.binding_id)
+                            if raw_call is None
+                            else raw_call["name"]
+                        ),
+                        "arguments": json.dumps(
+                            json_value(
+                                part.arguments
+                                if raw_call is None
+                                else raw_call["arguments"]
                             ),
-                        },
-                    }
-                )
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    },
+                })
                 observation = results.get(ref)
                 if observation is None:
                     raise ValueError("模型请求包含未结算的工具调用")

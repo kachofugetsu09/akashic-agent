@@ -89,9 +89,12 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
                 "name": "example", "parameters": {"type": "object"},
             }},)
 
-        def bind(self, name: str) -> str:
-            assert name == "example"
-            return "tool"
+        def decode(self, call: ModelToolCall):
+            if call.name == "tool_call":
+                assert call.arguments["name"] == "example"
+                return "tool", call.arguments["arguments"]
+            assert call.name == "example"
+            return "tool", call.arguments
 
         def name(self, binding: str) -> str:
             assert binding == "tool"
@@ -109,9 +112,6 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
 
         def check_call(self, call: ToolCall) -> None:
             raise AssertionError(f"controlled menu unexpectedly checked {call}")
-
-        def check_selection(self, ref: CallRef, part: ContentPart) -> ContentReferences:
-            raise AssertionError(f"controlled menu unexpectedly checked selection {ref}: {part}")
 
     class Content:
         def check_metadata(self, metadata):
@@ -567,3 +567,52 @@ async def test_terminal_tool_recovery_adds_only_missing_quiet_message(tmp_path, 
         result = await (await conversation.start(run)).join()
         assert result.body == Output((), "quiet")
         assert calls == effects == 1
+
+
+@pytest.mark.asyncio
+async def test_indirect_wire_call_and_request_reminder_replay_exactly(tmp_path):
+    requests = []
+
+    async def complete(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return LLMResponse(None, [ModelToolCall(
+                "wire-1", "tool_call", {"name": "example", "arguments": {"value": 1}},
+            )])
+        return LLMResponse("done")
+
+    async def invoke(key, arguments):
+        return Result("success", (ContentPart("text", str(arguments["value"])),))
+
+    async def materials(snapshot):
+        return Materials("system", (Reminder("directory", "example directory", 10),))
+
+    async with runtime(
+        tmp_path, complete, invoke, material_source=materials,
+    ) as (conversation, log, store, run):
+        await conversation.accept("u1", Input((ContentPart("text", "run"),)))
+        await (await conversation.start(run)).join()
+
+        facts = next(
+            part
+            for message in log.reader("s").snapshot()
+            if isinstance(message.body, Output)
+            for part in message.body.parts
+            if isinstance(part, ContentPart) and part.kind == "model.facts"
+            and part.value["wire_tool_calls"]
+        )
+        assert facts.value["wire_tool_calls"] == {
+            "0": {
+                "name": "tool_call",
+                "arguments": {"name": "example", "arguments": {"value": 1}},
+            }
+        }
+        replay = requests[1].messages
+        assistant = next(row for row in replay if row.get("tool_calls"))
+        assert assistant["tool_calls"][0]["function"] == {
+            "name": "tool_call",
+            "arguments": '{"arguments":{"value":1},"name":"example"}',
+        }
+        position = replay.index(assistant)
+        assert replay[position - 1]["role"] == "user"
+        assert "example directory" in replay[position - 1]["content"]
