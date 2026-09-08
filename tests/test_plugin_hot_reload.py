@@ -1704,3 +1704,23 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
 
     await manager.snapshot_store.retry_drains()
     await manager.terminate_all()
+
+
+def test_compiled_source_reuse_keeps_modules_fresh_and_observes_same_size_edits(tmp_path):
+    from types import ModuleType
+    from agent.plugins.importer import FreshSourceLoader
+    path = tmp_path / "plugin.py"
+    path.write_text("values = []\ndef value(): return 1\n")
+    loader = FreshSourceLoader(path)
+    first = ModuleType("first"); second = ModuleType("second")
+    loader.exec_module(first); loader.exec_module(second)
+    first.values.append("changed")
+    assert second.values == []
+    assert first.value.__globals__ is not second.value.__globals__
+    stamp = path.stat()
+    path.write_text("values = []\ndef value(): return 2\n")
+    import os
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    third = ModuleType("third"); loader.exec_module(third)
+    assert first.value() == second.value() == 1
+    assert third.value() == 2
