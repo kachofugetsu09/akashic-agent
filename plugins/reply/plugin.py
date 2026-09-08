@@ -67,7 +67,7 @@ async def apply(ctx: Context, config: Config) -> None:
         """输入提交时同步占活动；暂停和失败只释放尚未开始的回复。"""
         if not running:
             return
-        if not needs_reply(reader.snapshot(), source):
+        if not needs_reply(reader, source):
             release(reader, source)
             return
         key = (reader.session_id, source)
@@ -103,6 +103,7 @@ async def apply(ctx: Context, config: Config) -> None:
 
     async def respond(task: Task, reader: MessageReader, source: str, preview: Preview,
                       reminders: Sequence[Reminder] = ()) -> Message:
+        reader = reader.incremental()
         command = None if reminders else await ctx.require(CONVERSATION_COMMANDS)(task, reader, source)
         if command is not None:
             return command

@@ -34,8 +34,15 @@ def update_selection(body: Body) -> Mapping[str, object | None]:
     return {"model_selection": selected.get("model_selection"), "model_runtime_override": None}
 
 
-def needs_reply(messages: Sequence[Message], source: str) -> bool:
+def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool:
     """来源从输入和控制事实决定是否唤醒；不依赖逻辑 Turn 或消费 cursor。"""
+    # 最近 Input 之前的控制和终结只能覆盖更早的 seq，不影响本次唤醒。
+    if isinstance(messages, MessageReader):
+        head = messages.head()
+        latest = messages.latest_input(source, through_seq=head)
+        if latest is None:
+            return False
+        messages = (latest, *messages.snapshot(after_seq=latest.seq, through_seq=head))
     boundary = -1
     latest_input = -1
     paused_through = -1
@@ -247,7 +254,7 @@ class Conversation:
                 def admit(slot: TaskSlot) -> tuple[Task | None, bool]:
                     if slot.current is not None:
                         return slot.current, False
-                    if needs_reply(self._reader.snapshot(), self._source):
+                    if needs_reply(self._reader, self._source):
                         return None, False
                     return slot.start(lambda task: program(task, self._reader)), True
 
@@ -299,7 +306,7 @@ class Conversation:
         def admit(slot: TaskSlot) -> Task | None:
             if slot.current is not None:
                 return slot.current
-            if not needs_reply(self._reader.snapshot(), self._source):
+            if not needs_reply(self._reader, self._source):
                 return None
 
             if self._restart_gate is not None and not self._restart_gate.accepting:

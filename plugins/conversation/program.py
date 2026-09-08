@@ -62,6 +62,7 @@ async def run_reply(
     if terminal_tools - set(tool_names):
         raise ValueError("终结工具必须属于本次允许目录")
     prompt_hints = tuple(prompt_hints)
+    reader = reader.incremental()
     source_head = reader.head(source=source)
     snapshot = reader.snapshot()
     turns = turn_projection.project(snapshot, source)
@@ -120,11 +121,10 @@ async def run_reply(
             result = await material_view.prepare(messages, source, caller=ctx, reminders=tuple(reminders))
             if render_content is None:
                 start = 0 if result.summary is None else summary_range(messages, result.summary.source_message_ids).stop
-                refs = tuple(
-                    ref for index, message in enumerate(messages)
+                refs = reader.attachments_for(tuple(
+                    message.message_id for index, message in enumerate(messages)
                     if index >= start or message.message_id in keep_input_ids
-                    for ref in reader.attachments(message.message_id)
-                )
+                ))
                 if refs:
                     artifacts = await load_artifacts(
                         ctx.require(ARTIFACT_READ), refs,
