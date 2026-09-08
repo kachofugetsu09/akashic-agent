@@ -9,6 +9,7 @@ import inspect
 import re
 import sqlite3
 import threading
+from bisect import bisect_right
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Generator, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from typing import Literal, TypeVar, cast
 from pathlib import Path
 from types import MappingProxyType
+from weakref import WeakValueDictionary
 
 from session.artifacts import AttachmentKind, AttachmentRef
 from session.artifact_store import ARTIFACT_SCHEMA
@@ -249,6 +251,7 @@ class MessageLog:
 
     def __init__(self, path: str | Path):
         self._lock = threading.RLock()
+        self._decoded: WeakValueDictionary[tuple[object, ...], Message] = WeakValueDictionary()
         self._closed = False
         self._listeners: dict[asyncio.Event, asyncio.AbstractEventLoop] = {}
         self._connection = sqlite3.connect(str(path), check_same_thread=False)
@@ -275,6 +278,16 @@ class MessageLog:
         except BaseException:
             self._connection.close()
             raise
+
+    def _decode(self, row: sqlite3.Row) -> Message:
+        """查询仍读真实行；只复用完整行相同且仍被调用者持有的不可变消息。"""
+        key = tuple(row)
+        with self._lock:
+            message = self._decoded.get(key)
+            if message is None:
+                message = _message(row)
+                self._decoded[key] = message
+            return message
 
     def backup(self, destination: Path) -> None:
         """向新文件保存已提交的完整数据库，供隔离宿主独立打开。"""
@@ -573,6 +586,10 @@ class MessageReader:
         self._log = log
         self._session_id = session_id
 
+    def incremental(self) -> MessageReader:
+        """创建本次程序的只读视图，旧前缀复用解码结果，后续读取追赶新增消息。"""
+        return _IncrementalMessageReader(self._log, self._session_id)
+
     @property
     def session_id(self) -> str:
         return self._session_id
@@ -618,7 +635,7 @@ class MessageReader:
         values.append(limit)
         with self._log._lock:
             rows = self._log._connection.execute(sql, values).fetchall()
-        return tuple(_message(row) for row in rows)
+        return tuple(self._log._decode(row) for row in rows)
 
     def source_names(self) -> frozenset[str]:
         """只读取本 Session 中出现过的来源，不解码消息正文。"""
@@ -636,7 +653,7 @@ class MessageReader:
                 "AND json_extract(body,'$.kind')='input' ORDER BY seq DESC LIMIT 1",
                 (self._session_id, source, through_seq),
             ).fetchone()
-        return None if row is None else _message(row)
+        return None if row is None else self._log._decode(row)
 
     def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
         """固定上界后分页读取消息区间，默认保留完整前缀。"""
@@ -692,7 +709,7 @@ class MessageReader:
             selected = rows[:limit]
             if tail:
                 selected.reverse()
-            messages = tuple(_message(row) for row in selected)
+            messages = tuple(self._log._decode(row) for row in selected)
             # 2. 只取该页引用，不逐消息查询，也不启动归档目标或执行任何能力。
             attachments, bindings = _page_references(connection, messages)
         return MessagePage(messages, attachments, bindings, through, len(rows) > limit)
@@ -704,18 +721,34 @@ class MessageReader:
                 "SELECT * FROM messages WHERE id=? AND session_key=?",
                 (message_id, self._session_id),
             ).fetchone()
-        return None if row is None else _message(row)
+        return None if row is None else self._log._decode(row)
 
     def attachments(self, message_id: str) -> tuple[AttachmentRef, ...]:
-        """只读取已获授 Session 中该消息的有序附件引用，不暴露路径或任意 ID 查询。"""
+        """只读取已获授 Session 中该消息的有序附件引用。"""
+        return self.attachments_for((message_id,))
+
+    def attachments_for(self, message_ids: tuple[str, ...]) -> tuple[AttachmentRef, ...]:
+        """批量读取已获授消息的附件，按输入顺序保留重复引用。"""
+        if not message_ids:
+            return ()
         with self._log._lock:
-            if self.get(message_id) is None:
-                raise LookupError("消息不在 reader 获授的 Session 中")
             rows = self._log._connection.execute(
-                "SELECT a.* FROM message_attachments ma JOIN attachments a ON a.artifact_id=ma.artifact_id "
-                "WHERE ma.message_id=? ORDER BY ma.ordinal", (message_id,),
+                "SELECT m.id,ma.ordinal,a.* FROM messages m "
+                "LEFT JOIN message_attachments ma ON ma.message_id=m.id "
+                "LEFT JOIN attachments a ON a.artifact_id=ma.artifact_id "
+                "WHERE m.session_key=? AND m.id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY m.seq,ma.ordinal", (self._session_id, json.dumps(message_ids)),
             ).fetchall()
-        return tuple(_artifact_ref(row) for row in rows)
+        refs: dict[str, list[AttachmentRef]] = {}
+        for row in rows:
+            items = refs.setdefault(row["id"], [])
+            if row["ordinal"] is not None:
+                if row["ordinal"] != len(items) or row["artifact_id"] is None:
+                    raise ValueError(f"Message {row['id']} 附件引用损坏")
+                items.append(_artifact_ref(row))
+        if refs.keys() != set(message_ids):
+            raise LookupError("消息不在 reader 获授的 Session 中")
+        return tuple(ref for identity in message_ids for ref in refs[identity])
 
     def head(self, *, source: str | None = None) -> int:
         sql = "SELECT COALESCE(MAX(seq), -1) FROM messages WHERE session_key=?"
@@ -749,6 +782,41 @@ class MessageReader:
         finally:
             with self._log._lock:
                 del self._log._listeners[event]
+
+
+class _IncrementalMessageReader(MessageReader):
+    """只拥有短命的解码前缀；消息与修改事实仍由数据库拥有。"""
+
+    def __init__(self, log: MessageLog, session_id: str):
+        super().__init__(log, session_id)
+        self._messages: tuple[Message, ...] = ()
+        self._data_version: int | None = None
+
+    def incremental(self) -> MessageReader:
+        return self
+
+    def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
+        """同一读事务内核对外部变化并补读尾部；不把未提交行留到下次读取。"""
+        with self._log._lock:
+            # 1. 调用方事务可能回滚，直接读取它的视图，不复用或推进解码前缀。
+            if self._log._connection.in_transaction:
+                return super().snapshot(after_seq=after_seq, through_seq=through_seq)
+            with self._log._read() as connection:
+                head = self.head()
+                version = connection.execute("PRAGMA data_version").fetchone()[0]
+                # MessageLog 正常只追加；其他连接的编辑、删除或恢复使旧前缀失效。
+                messages = self._messages if version == self._data_version else ()
+                previous = messages[-1].seq if messages else -1
+                through = head if through_seq is None else min(head, through_seq)
+                if through > previous:
+                    added = super().snapshot(after_seq=previous, through_seq=through)
+                    messages += added
+            # 2. 只在读取事务成功结束后发布进度，稀疏 seq 和旧前缀请求均按原序号切片。
+            self._messages = messages
+            self._data_version = version
+            start = bisect_right(messages, after_seq, key=lambda message: message.seq)
+            stop = bisect_right(messages, through, key=lambda message: message.seq)
+            return messages[start:stop]
 
 
 class MessageWriter:
@@ -1225,7 +1293,7 @@ def _owner_record(row: sqlite3.Row) -> OwnerRecord:
 def _message_metadata(raw: str, session_id: str, message_id: str) -> Mapping[str, object]:
     """持久附加信息损坏时保留消息定位，不依赖解释它的插件。"""
     try:
-        return freeze_metadata(_json_object(raw, "metadata"))
+        return _json_object(raw, "metadata")
     except (ValueError, TypeError) as error:
         raise ValueError(f"Session {session_id} Message {message_id} metadata 损坏: {error}") from error
 

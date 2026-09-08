@@ -176,3 +176,21 @@ async def apply(ctx, config):
     finally:
         await host.terminate_all()
         store.close()
+
+
+def test_batch_artifacts_keep_order_and_scope_without_decoding_bodies(storage, monkeypatch):
+    _path, log, ref = storage
+    target = writer(log, Input)
+    target.append("image", Input((ContentPart("image", ref.artifact_id),)))
+    target.append("empty", Input(()))
+    reader = log.reader("s")
+    import session.log as messages
+    def no_decode(_row):
+        raise AssertionError("附件查询不能解码消息正文")
+    monkeypatch.setattr(messages, "_message", no_decode)
+    assert reader.attachments_for(("empty", "image", "image")) == (ref, ref)
+    assert reader.attachments_for(()) == ()
+    with pytest.raises(LookupError):
+        reader.attachments_for(("image", "missing"))
+    with pytest.raises(LookupError):
+        log.reader("other").attachments_for(("image",))
