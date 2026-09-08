@@ -798,6 +798,8 @@ button {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  /* 虚拟列表负责锚点补偿，避免浏览器再按 DOM 位移补偿一次。 */
+  overflow-anchor: none;
   overscroll-behavior-y: contain;
   /* 底部多留一截，让下一条消息略微露出 dock 上方（progressive disclosure）。 */
   padding-block: calc(64px + env(safe-area-inset-top)) calc(var(--mobile-composer-height, 76px) + 16px);
@@ -2625,3 +2627,28 @@ button {
 .mobile-message-anchor .agent-content h2 { font-size: 1.175rem; }
 .mobile-message-anchor .agent-content h3 { font-size: 1.025rem; }
 .mobile-message-anchor .agent-content h4 { font-size: 1rem; }
+
+.mobile-history-controls {
+  position: absolute;
+  z-index: 2;
+  inset: calc(64px + env(safe-area-inset-top)) 16px auto;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.mobile-conversation-frame.has-history .mobile-conversation {
+  padding-block-start: calc(112px + env(safe-area-inset-top));
+}
+
+.mobile-history-controls button,
+.mobile-history-controls span {
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface);
+  font: inherit;
+  pointer-events: auto;
+}

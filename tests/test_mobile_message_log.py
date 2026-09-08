@@ -45,7 +45,7 @@ def command(kind, session_id=None, **payload):
 
 
 def append(log, session, identity, body, call_ref=None):
-    checks = {kind: lambda part: ContentReferences() for kind in ('text', 'history.transcript', 'future.private')}
+    checks = {kind: lambda part: ContentReferences() for kind in ('text', 'history.transcript', 'history.record', 'history.provenance', 'history.turn_input', 'future.private')}
     checks['model.facts'] = check_facts
     return log.writer(session, author='真实作者', source='来源', body_types=(type(body),),
                       content=checks, call_ref=call_ref, check_call=lambda call: None).append(identity, body)
@@ -86,6 +86,73 @@ async def test_mobile_history_reads_full_message_prefix_and_directory_without_ol
     assert runtime.events[-1]['payload']['through_seq'] == -1
     with pytest.raises(MobileCommandError, match='会话不存在'):
         await channel._get_history(device, command('history.get', f'akashic:{uuid4()}'))
+
+
+@pytest.mark.asyncio
+async def test_mobile_tail_pages_keep_latest_manifest_and_load_older_on_request(mobile, tmp_path):
+    log, runtime, channel, device = mobile
+    session = f'akashic:{uuid4()}'
+    for index in range(12):
+        append(log, session, f'm{index}', Input((ContentPart('text', 'x' * 60000),)))
+    before = snapshot(tmp_path / 'sessions.db')
+    await channel._get_history(device, command('history.get', session, direction='backward', page_size=12))
+    page = runtime.events[-1]['payload']
+    assert page['direction'] == 'backward' and page['before_seq'] == 12
+    assert page['items'][-1]['id'] == 'm11' and page['has_more']
+    seen = []
+    while True:
+        assert len(json.dumps(page, ensure_ascii=False).encode()) < 240 * 1024
+        assert page['next_after_seq'] == page['before_seq'] - 1
+        assert page['next_before_seq'] == page['items'][0]['seq']
+        seen = [row['id'] for row in page['items']] + seen
+        if not page['has_more']:
+            assert page['after_seq'] == -1
+            break
+        assert page['after_seq'] == page['next_before_seq'] - 1
+        await channel._get_history(device, command('history.get', session, direction='backward',
+            before_seq=page['next_before_seq'], through_seq=page['through_seq'], page_size=12))
+        page = runtime.events[-1]['payload']
+    assert seen == [f'm{index}' for index in range(12)]
+    await channel._get_history(device, command('history.get', session, direction='backward', around_id='m5', page_size=2))
+    page = runtime.events[-1]['payload']
+    assert [row['id'] for row in page['items']] == ['m4', 'm5']
+    assert page['around_id'] == 'm5' and page['through_seq'] == 11 and page['before_seq'] == 6
+    with pytest.raises(MobileCommandError, match='目标消息不存在'):
+        await channel._get_history(device, command('history.get', session, direction='backward', around_id='missing'))
+    assert snapshot(tmp_path / 'sessions.db') == before
+
+
+@pytest.mark.asyncio
+async def test_display_pages_omit_hidden_archives_and_keep_legacy_downloads(mobile, tmp_path):
+    log, runtime, channel, device = mobile
+    session = f'akashic:{uuid4()}'
+    append(log, session, 'archive', Output((
+        ContentPart('history.record', {'private_archive': 'x' * 400000}),
+        ContentPart('history.transcript', {'raw': '可见旧对话', 'completeness': 'unknown'}),
+        ContentPart('text', '当前正文'),
+    ), 'complete'))
+    before = snapshot(tmp_path / 'sessions.db')
+    await channel._get_history(device, command('history.get', session))
+    old = runtime.events[-1]['payload']['items'][0]['message_ref']
+    await channel._get_history(device, command('history.get', session, direction='backward', display_only=True))
+    compact = runtime.events[-1]['payload']['items'][0]
+    assert compact['body']['parts'] == [
+        {'kind': 'history.record', 'display': 'unavailable'},
+        {'kind': 'history.transcript', 'archive': {'raw': '可见旧对话', 'completeness': 'unknown'}},
+        {'kind': 'text', 'value': '当前正文'},
+    ]
+    assert len(json.dumps(compact).encode()) < 1024
+    legacy = channel.read_message_content(session_id=session, message_id='archive', byte_length=old['byte_length'], sha256=old['sha256'])
+    assert len(legacy) > 400000 and json.loads(legacy)['body']['parts'][0]['archive']['private_archive']
+    assert snapshot(tmp_path / 'sessions.db') == before
+    append(log, session, 'large-visible', Input((ContentPart('text', 'x' * 80000),)))
+    await channel._get_history(device, command('history.get', session, direction='backward', display_only=True, page_size=1))
+    reference = runtime.events[-1]['payload']['items'][0]['message_ref']
+    assert reference['display_only'] is True
+    visible = channel.read_message_content(session_id=session, message_id='large-visible', byte_length=reference['byte_length'], sha256=reference['sha256'])
+    assert json.loads(visible)['body']['parts'][0]['value'] == 'x' * 80000
+    # 第一条权威记录保持原始归档，没有被展示适配器压缩。
+    assert log.reader(session).get('archive').body.parts[0].value['private_archive'] == 'x' * 400000
 
 
 @pytest.mark.asyncio

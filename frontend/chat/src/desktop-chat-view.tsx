@@ -1,4 +1,5 @@
-import React, { lazy, Suspense } from "react";
+import { timelineReplyGroups, timelineToolResults } from "./message-timeline";
+import React, { lazy, Suspense, useMemo } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import { cycleTheme, useTheme } from "../../theme/src/theme-runtime";
 import { MaterialButton } from "../../theme/src/material-react";
@@ -34,6 +35,8 @@ interface DesktopChatViewProps {
 
 export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: DesktopChatViewProps) {
   const theme = useTheme();
+  const replyGroups = useMemo(() => timelineReplyGroups(controller.timelineMessages, controller.replyActivities), [controller.timelineMessages, controller.replyActivities]);
+  const toolResults = useMemo(() => timelineToolResults(controller.timelineMessages), [controller.timelineMessages]);
   const {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
@@ -99,7 +102,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
                   loading={historyLoadingOlder}
                   onLoadOlder={() => loadOlderMessages().catch(reportError)}
                 />
-                <DesktopTimelineMessages messages={timelineMessages} status={status}
+                <DesktopTimelineMessages messages={timelineMessages} activities={replyActivities} status={status}
                   messageElementsRef={messageElementsRef} copiedMessageId={copiedMessageId}
                   onReply={handleReplyMessage} onCopied={handleCopiedMessage} onError={reportError} />
                 <DesktopConversationMessages
@@ -109,7 +112,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
                   onCopied={handleCopiedMessage} onError={reportError}
                 />
                 {replyActivities.map((activity) => <ReplyActivityView key={activity.handle}
-                  activity={activity} committed={committed} onError={reportError} />)}
+                  activity={activity} committed={committed} processMessages={replyGroups.active.get(activity.handle)} toolResults={toolResults} onError={reportError} />)}
               </MessageRendererErrorBoundary>
             )}
             {status === "submitted" ? <ThinkingPlaceholder /> : null}

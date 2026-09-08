@@ -203,6 +203,12 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 
 发布仓的 `release_epoch` 是 store 初始化时生成并持久化的 lineage UUID；从备份恢复到历史 `ReleaseView` 后保持备份中的 lineage 与当前选择。客户端不使用 epoch、sequence 或时间排序，因此恢复不会要求伪造更大的版本号。正式备份必须在同一 source snapshot 中列出 `publication.sqlite3`、当时所有数据库声明的 generation/blob、rollback pin 和 artifact digest；只复制数据库或只复制目录都不能证明可恢复。backup source set 在快照完成前 pin，避免与 live GC 竞态；恢复先在隔离目录验证 SQLite `integrity_check`、server identity、epoch、ReleaseView/selection、journal 连续性及每个 manifest/member digest，再原子替换 live publication root，替换前另建可恢复备份，替换后重复全部校验。
 
+### 3.7 Android 按需 Message 缓存
+
+Room `message_ranges` 只记录已持久收到的 `(afterSeq,throughSeq]` 清单范围；与消息或 `message_content_transfers` 同事务增加，重叠范围合并时只删除被完整包含的范围行，不丢失覆盖证据。只有用户明确清理该服务端投影或删除所属本地会话时才随缓存减少。事件 `sync.reset_required` 无权清空这些范围或 Message；它只重置 durable event cursor 并重读目录和当前尾页。
+
+Room 19→20 新增范围表和下载表示标记，旧表、Message、outbox、草稿、通知、附件 bytes 不减少。最大 seq 不推断完整前缀。新旧展示表示重放时，只允许把不可见归档值改成类型标记，其余 Message 事实必须相等；原始归档始终由 SessionDB 保留。正文清单不等于正文已下载，完整正文和通知仍由原下载/通知 owner 提交。恢复证据为旧 schema、源码恢复点、迁移后的 schema identity/FK、事务回归及隔离设备结果；正式设备不做无备份降级。
+
 ## 4. 再看上层所有权
 
 ```text

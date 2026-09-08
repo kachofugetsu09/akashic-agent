@@ -73,7 +73,7 @@ export function applyMobileMessageEvent<T extends MobileMessageLog>(current: T, 
 export function readMobileStateSnapshot(value: unknown): Record<string, unknown> {
   const raw = record(value);
   const fields = new Set(["protocolVersion", "connection", "sessions", "selectedSessionId", "readingPosition",
-    "navigationTarget", "projectionGeneration", "downloads", "composer", "modelCatalog", "runtimeInspection"]);
+    "navigationTarget", "projectionGeneration", "downloads", "composer", "modelCatalog", "runtimeInspection", "history"]);
   if (raw.protocolVersion !== 2 || Object.keys(raw).some((key) => !fields.has(key))) throw new Error("状态 patch 版本或字段无效");
   return { ...raw, protocolVersion: 10, messages: [], throughSeq: -1, replyStatus: null };
 }

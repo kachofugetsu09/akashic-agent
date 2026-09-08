@@ -351,7 +351,7 @@ def create_chat_app(
             raise HTTPException(status_code=404, detail="会话不存在") from error
         except InvalidPage as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        items = message_rows(page)
+        items = message_rows(page, display_only=True)
         return {"version": 2, "items": items, "through_seq": page.through_seq,
                 "has_more": page.has_more,
                 "before_seq": page.messages[0].seq if page.has_more else None}

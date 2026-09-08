@@ -29,12 +29,12 @@ def session_row(entry: SessionEntry) -> dict[str, object]:
     }
 
 
-def message_rows(page: MessagePage) -> list[dict[str, object]]:
+def message_rows(page: MessagePage, *, display_only: bool = False) -> list[dict[str, object]]:
     """把固定消息页转为两端共用的展示数据，不读取或修改运行状态。"""
-    return [_message_row(message, page) for message in page.messages]
+    return [_message_row(message, page, display_only=display_only) for message in page.messages]
 
 
-async def follow_messages(reader: MessageReader, *, after_seq: int) -> AsyncGenerator[dict[str, object], None]:
+async def follow_messages(reader: MessageReader, *, after_seq: int, display_only: bool = False) -> AsyncGenerator[dict[str, object], None]:
     """从 seq 续读完整展示页；唤醒通知不携带第二份消息正文。"""
     # 1. 先注册日志通知，再按页补齐附件和 binding 展示字段。
     async with aclosing(reader.follow(after_seq=after_seq)) as follower:
@@ -45,7 +45,7 @@ async def follow_messages(reader: MessageReader, *, after_seq: int) -> AsyncGene
             while page.messages:
                 next_seq = page.messages[-1].seq
                 yield {"version": 2, "session_id": reader.session_id,
-                       "items": message_rows(page), "after_seq": after_seq,
+                       "items": message_rows(page, display_only=display_only), "after_seq": after_seq,
                        "through_seq": page.through_seq, "next_after_seq": next_seq,
                        "has_more": page.has_more}
                 after_seq = next_seq
@@ -55,7 +55,7 @@ async def follow_messages(reader: MessageReader, *, after_seq: int) -> AsyncGene
                 page = reader.read_page(after_seq=after_seq, through_seq=page.through_seq, limit=50)
 
 
-def _message_row(message: Message, page: MessagePage) -> dict[str, object]:
+def _message_row(message: Message, page: MessagePage, *, display_only: bool) -> dict[str, object]:
     """保留真实类型、顺序和引用，页面不推断执行结果或重新分配作者。"""
     # 1. 身份和消息用途分别呈现；Control 与晚到结果仍是独立行。
     body = message.body
@@ -73,7 +73,7 @@ def _message_row(message: Message, page: MessagePage) -> dict[str, object]:
         row["body"] = {"kind": "control", "action": body.action,
                        "through_seq": body.through_seq, "reason": body.reason}
         return row
-    parts = [_part(part, page.bindings) for part in body.parts]
+    parts = [_part(part, page.bindings, display_only=display_only) for part in body.parts]
     if isinstance(body, Input):
         row["body"] = {"kind": "input", "parts": parts}
     elif isinstance(body, Output):
@@ -84,7 +84,7 @@ def _message_row(message: Message, page: MessagePage) -> dict[str, object]:
     return row
 
 
-def _part(part: ContentPart | ToolCall, bindings: Mapping[str, Mapping[str, object]]) -> dict[str, object]:
+def _part(part: ContentPart | ToolCall, bindings: Mapping[str, Mapping[str, object]], *, display_only: bool) -> dict[str, object]:
     """只公开展示合同允许的字段，未知内容保留类型与不可展示的明确状态。"""
     # 1. 名称由原工具 binding 提供，模型事实由其 owner 限定字段。
     if isinstance(part, ToolCall):
@@ -97,7 +97,10 @@ def _part(part: ContentPart | ToolCall, bindings: Mapping[str, Mapping[str, obje
                 "arguments": json_value(part.arguments)}
     if part.kind == "model.facts":
         return {"kind": part.kind, "value": display_facts(part)}
-    # 2. 旧归档原样留在当前 Message 内，不拆成新的工具调用或回复。
+    # 2. 展示端保留原 part 下标；不可展示的归档只传类型，权威正文不变。
+    if display_only and part.kind in {"history.provenance", "history.record", "history.turn_input"}:
+        return {"kind": part.kind, "display": "unavailable"}
+    # 旧客户端和旧下载摘要仍使用原表示；可见 transcript 始终完整。
     if part.kind in {"history.provenance", "history.transcript", "history.record", "history.turn_input"}:
         return {"kind": part.kind, "archive": json_value(part.value)}
     if part.kind in {"text", "artifact_ref", "reply_ref"}:

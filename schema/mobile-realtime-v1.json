@@ -1973,6 +1973,60 @@
   },
   "maxAttachmentChunkBytes": 131072,
   "maxJsonFrameBytes": 262144,
+  "messageLog": {
+    "displayOnly": {
+      "default": false,
+      "download": "message.content.prepare and authenticated Range reads honor either known representation digest",
+      "follow": "session.follow accepts the same display_only flag",
+      "parts": "history.provenance, history.record and history.turn_input retain kind and display=unavailable; part indexes and history.transcript stay intact",
+      "reference": "message_ref.display_only defaults to false; byte_length and sha256 select the exact legacy or display representation",
+      "requestField": "display_only"
+    },
+    "historyGet": {
+      "backward": "latest page when no cursor; before_seq is exclusive; around_id ends a page at that Message or returns message_not_found",
+      "command": "history.get",
+      "direction": "forward (legacy default) or backward",
+      "exclusive": "backward forbids after_seq; forward forbids before_seq and around_id; before_seq and around_id are mutually exclusive",
+      "optional": [
+        "page_size",
+        "direction",
+        "after_seq",
+        "before_seq",
+        "through_seq",
+        "around_id",
+        "display_only"
+      ],
+      "pageSize": {
+        "maximum": 200,
+        "minimum": 1
+      },
+      "required": [
+        "message_log_version"
+      ]
+    },
+    "historyPage": {
+      "backward": [
+        "direction",
+        "before_seq",
+        "next_before_seq",
+        "request_id"
+      ],
+      "budget": "240 KiB; backward pages retain the newest suffix when the frame budget is reached",
+      "common": [
+        "version",
+        "items",
+        "after_seq",
+        "next_after_seq",
+        "through_seq",
+        "has_more"
+      ],
+      "event": "history.page",
+      "older": "next_before_seq is the first delivered seq; has_more refers to older messages; after_seq=-1 only when the start is reached",
+      "range": "all manifests in (after_seq,next_after_seq] have been delivered; this does not mean bodies or attachments are downloaded",
+      "snapshot": "through_seq is the fixed Session head; backward next_after_seq equals before_seq-1"
+    },
+    "version": 2
+  },
   "mobileWebUi": {
     "capability": "mobile-webui-ota-v1",
     "commandTypes": [

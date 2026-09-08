@@ -1,4 +1,5 @@
-import { timelineVisibleMessages, timelineToolResults } from "./message-timeline";
+import { focusMessagePart } from "./message-actions";
+import { timelineVisibleMessages, timelineToolResults, timelineReplyGroups } from "./message-timeline";
 import { timelineAnchorIndexes } from "./message-timeline";
 import { TimelineMessageView, ReplyActivityView } from "./message-view";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineAttachment } from "./message-timeline";
@@ -193,6 +194,7 @@ interface MobilePendingMessage {
 
 export interface MobileSnapshot extends MobileMessageLog {
   protocolVersion: 10;
+  history?: { hasOlder: boolean; isLatest: boolean; loading: boolean };
   downloads: MobileDownload[];
   connection: {
     label: string;
@@ -294,6 +296,9 @@ interface NativeBridge {
   reportHealthy(): void;
   requestSnapshot(): void;
   selectSession(sessionId: string): void;
+  loadOlderHistory(): void;
+  loadLatestHistory(): void;
+  loadHistoryAround(messageId: string): void;
   removeUnavailableSession(sessionId: string): void;
   createSession(): void;
   restartPairing(): void;
@@ -594,6 +599,12 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
     readingPosition,
     navigationTarget,
     ...log,
+    history: raw.history === undefined || raw.history === null ? undefined : (() => {
+      const history = requireRecord(raw.history, "history");
+      return { hasOlder: requireBoolean(history.hasOlder, "history.hasOlder"),
+        isLatest: requireBoolean(history.isLatest, "history.isLatest"),
+        loading: requireBoolean(history.loading, "history.loading") };
+    })(),
     downloads: readMobileDownloads(raw.downloads),
     composer: {
       draft: (() => {
@@ -1441,6 +1452,13 @@ export function MobileNativeApp() {
       return next;
     });
   }, []);
+  const pendingReplyNavigation = useRef<{ sessionId?: string; messageId: string; partIndex?: number } | null>(null);
+  useEffect(() => {
+    const pending = pendingReplyNavigation.current;
+    if (!pending) return;
+    if (pending.sessionId !== snapshot?.selectedSessionId) { pendingReplyNavigation.current = null; return; }
+    if (jumpToMessage(pending.messageId, true, pending.partIndex)) pendingReplyNavigation.current = null;
+  }, [jumpToMessage, snapshot?.messages, snapshot?.selectedSessionId]);
   const navigateToReply = useCallback((_sourceMessageId: string, replyMessageId: string, partIndex?: number) => {
     const target = resolveMobileReplyNavigationTarget(replyMessageId, snapshotMessagesRef.current);
     if (target) {
@@ -1454,8 +1472,12 @@ export function MobileNativeApp() {
       jumpToMessage(target.id, true, partIndex);
       return;
     }
-    setReplyNavigationAnnouncement("引用消息不在当前记录中");
-  }, [jumpToMessage]);
+    if (snapshot?.history) {
+      pendingReplyNavigation.current = { sessionId: snapshot.selectedSessionId, messageId: replyMessageId, partIndex };
+      window.AkashicNative?.loadHistoryAround(replyMessageId);
+      setReplyNavigationAnnouncement("正在加载引用消息");
+    } else setReplyNavigationAnnouncement("引用消息不在当前记录中");
+  }, [jumpToMessage, snapshot?.history, snapshot?.selectedSessionId]);
   const retryMessageDelivery = useCallback((messageId: string) => {
     setRecoveringMessageIds((current) => new Set(current).add(messageId));
     window.AkashicNative?.performActionHaptic();
@@ -1835,11 +1857,15 @@ export function MobileNativeApp() {
 
 /** 正式消息保留原 body、作者与身份，下载状态不进入消息对象。 */
 const MobileMessageRow = React.memo(function MobileMessageRow({
-  source, startsDay, followsSameRole, unreadCount, highlighted, selected, selectionActive,
+  source, startsDay, followsSameRole, unreadCount, highlighted, selected, selectionActive, canLoadReferences,
   canReply, copied, selectedSessionUnavailable, messageElementsRef, onEnterSelection,
-  onToggleSelection, onReplyToMessage, onNavigateToReply, onCopyMessage, lookupMessage, toolResults, downloads,
+  onToggleSelection, onReplyToMessage, onNavigateToReply, onCopyMessage, lookupMessage, toolResults, downloads, hideBody, processMessages, hideProcess,
 }: {
   source: MobileMessage;
+  canLoadReferences: boolean;
+  hideBody: boolean;
+  processMessages?: MobileMessage[];
+  hideProcess: boolean;
   startsDay: boolean; followsSameRole: boolean; unreadCount: number; highlighted: boolean;
   selected: boolean; selectionActive: boolean; canReply: boolean; copied: boolean;
   selectedSessionUnavailable: boolean;
@@ -1875,22 +1901,22 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
       selectable selectionActive={selectionActive} selected={selected}
       onEnterSelection={() => onEnterSelection(source.id)} onToggleSelection={() => onToggleSelection(source.id)}>
       <div className="message-interaction-surface">
-        <TimelineMessageView message={source} lookupMessage={lookupMessage} toolResults={toolResults}
+        <TimelineMessageView message={source} canLoadReferences={canLoadReferences} hideBody={hideBody} processMessages={processMessages} hideProcess={hideProcess} lookupMessage={lookupMessage} toolResults={toolResults}
           onNavigate={(id, index) => onNavigateToReply(source.id, id, index)} renderAttachment={renderAttachment}
-          leadingContent={!selectedSessionUnavailable && body.kind === "output" ? <MobilePluginSlot
-            name="turn.before_reasoning" sessionId={source.session_id} messageId={source.id} /> : undefined}
-          beforePart={(part, index) => !selectedSessionUnavailable && part.kind === "tool_call" && !("display" in part)
-            ? <MobilePluginSlot name="turn.before_tool" sessionId={source.session_id} messageId={source.id}
-              block={{ ...part, message_id: source.id, part_index: index }} /> : null}
+          beforeReasoning={(origin) => !selectedSessionUnavailable && origin.body.kind === "output" ? <MobilePluginSlot
+            name="turn.before_reasoning" sessionId={origin.session_id} messageId={origin.id} /> : null}
+          beforePart={(part, index, origin) => !selectedSessionUnavailable && part.kind === "tool_call" && !("display" in part)
+            ? <MobilePluginSlot name="turn.before_tool" sessionId={origin.session_id} messageId={origin.id}
+              block={{ ...part, message_id: origin.id, part_index: index }} /> : null}
           afterBody={!selectedSessionUnavailable && body.kind === "output" && body.finish === "complete" ? <MobilePluginSlot
             name="turn.after_answer" sessionId={source.session_id} messageId={source.id} /> : undefined} />
-        <div className={`mobile-message-meta timeline-meta ${body.kind === "input" ? "user" : "assistant"}`}>
+        {!hideBody ? <div className={`mobile-message-meta timeline-meta ${body.kind === "input" ? "user" : "assistant"}`}>
           <div className="mobile-message-meta__text">
             <time dateTime={source.timestamp}>{formatMessageTime(Date.parse(source.timestamp))}</time>
           </div>
           <SharedMessageActions canReply={canReply} canCopy={mobileMessageHasCopyContent(source)} copied={copied}
             onReply={() => onReplyToMessage(source)} onCopy={() => onCopyMessage(source)} />
-        </div>
+        </div> : null}
       </div>
     </MessageSelectionTarget>
   </>;
@@ -3513,7 +3539,8 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
     const toolResults = useMemo(() => timelineToolResults(snapshot.messages), [snapshot.messages]);
     const downloads = useMemo(() => new Map(snapshot.downloads.map((download) => [download.artifactId, download])), [snapshot.downloads]);
-    const visibleMessages = useMemo(() => timelineVisibleMessages(snapshot.messages), [snapshot.messages]);
+    const groups = useMemo(() => timelineReplyGroups(snapshot.messages, snapshot.replyStatus?.items), [snapshot.messages, snapshot.replyStatus]);
+    const visibleMessages = useMemo(() => timelineVisibleMessages(snapshot.messages, groups), [snapshot.messages, groups]);
     const sourceMessagesRef = useRef(visibleMessages);
     sourceMessagesRef.current = visibleMessages;
     const activities = snapshot.replyStatus?.items ?? [];
@@ -3530,8 +3557,8 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     const messageIdentityKey = [snapshot.projectionGeneration, visibleMessages.length,
       visibleMessages[0]?.id ?? "", visibleMessages.at(-1)?.id ?? ""].join("\u001f");
     const messageIndexById = useMemo(
-      () => timelineAnchorIndexes(snapshot.messages),
-      [snapshot.messages],
+      () => timelineAnchorIndexes(snapshot.messages, groups),
+      [snapshot.messages, groups],
     );
     const getScrollElement = useCallback(() => scrollRef.current, []);
     const estimateSize = useCallback(
@@ -3573,17 +3600,16 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     const jumpToMessage = useCallback((messageId: string, focus = false, partIndex?: number) => {
       const index = messageIndexById.get(messageId);
       if (index === undefined) return false;
-      const visibleId = sourceMessagesRef.current[index].id;
-      const visiblePart = visibleId === messageId ? partIndex : undefined;
+      const visibleId = sourceMessagesRef.current[index]?.id;
+      const activity = activitiesRef.current[index - sourceMessagesRef.current.length];
       virtualizer.scrollToIndex(index, { align: "center", behavior: "auto" });
       if (!focus) return true;
       let attempts = 0;
       const focusWhenMounted = () => {
-        const element = messageElementsRef.current.get(visibleId);
+        const element = visibleId ? messageElementsRef.current.get(visibleId)
+          : activity ? scrollRef.current?.querySelector<HTMLElement>(`[data-reply-handle="${CSS.escape(activity.handle)}"]`) : null;
         if (element) {
-          const target = visiblePart === undefined ? element : element.querySelector<HTMLElement>(`[data-part-index="${visiblePart}"]`);
-          target?.focus({ preventScroll: true });
-          if (visiblePart !== undefined) target?.scrollIntoView({ block: "center", behavior: "instant" });
+          focusMessagePart(element, messageId, partIndex);
           return;
         }
         attempts += 1;
@@ -3635,7 +3661,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
           virtualizer.getTotalSize() - (virtualizer.scrollRect?.height ?? 0) - (virtualizer.scrollOffset ?? 0),
           0,
         );
-        if (distanceFromEnd <= 2) {
+        if (distanceFromEnd <= 2 && snapshot.history?.isLatest !== false) {
           const key = `${sessionId}\u001ftail\u001f${snapshot.throughSeq}`;
           if (key !== lastSavedRef.current) {
             lastSavedRef.current = key;
@@ -3663,12 +3689,15 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
         scrollElement.removeEventListener("scroll", schedulePersist);
         if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
       };
-    }, [snapshot.throughSeq, snapshot.composer.isResyncing, snapshot.projectionGeneration, snapshot.selectedSessionId, suspended, virtualizer]);
+    }, [snapshot.throughSeq, snapshot.history?.isLatest, snapshot.composer.isResyncing, snapshot.projectionGeneration, snapshot.selectedSessionId, suspended, virtualizer]);
 
+    const appliedScrollToken = useRef(0);
     useEffect(() => {
-      if (forceScrollToken === 0) return;
-      virtualizer.scrollToEnd({ behavior: "auto" });
-    }, [forceScrollToken, virtualizer]);
+      if (forceScrollToken === 0 || forceScrollToken === appliedScrollToken.current) return;
+      appliedScrollToken.current = forceScrollToken;
+      if (snapshot.history?.isLatest === false) window.AkashicNative?.loadLatestHistory();
+      else virtualizer.scrollToEnd({ behavior: "auto" });
+    }, [forceScrollToken, snapshot.history?.isLatest, virtualizer]);
 
     useMobileUnreadTracking(
       snapshot.selectedSessionId,
@@ -3682,10 +3711,28 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
       onUnreadChange,
     );
 
+    const touchStartY = useRef<number | null>(null);
+    const loadOlder = () => {
+      if (snapshot.history?.hasOlder && !snapshot.history.loading) window.AkashicNative?.loadOlderHistory();
+    };
     const virtualItems = virtualizer.getVirtualItems();
     return (
-      <div className="mobile-conversation-frame">
-        <div ref={scrollRef} className="mobile-conversation mobile-virtual-conversation" role="log">
+      <div className={`mobile-conversation-frame${snapshot.history ? " has-history" : ""}`}>
+        {snapshot.history && (snapshot.history.hasOlder || !snapshot.history.isLatest) ? <div className="mobile-history-controls">
+          {snapshot.history.hasOlder ? <button type="button" disabled={snapshot.history.loading} onClick={loadOlder}>
+            {snapshot.history.loading ? "正在加载历史…" : "加载更早的消息"}
+          </button> : <span>已到最早的消息</span>}
+          {!snapshot.history.isLatest ? <button type="button" onClick={() => window.AkashicNative?.loadLatestHistory()}>回到最新</button> : null}
+        </div> : null}
+        <div ref={scrollRef} className="mobile-conversation mobile-virtual-conversation" role="log"
+          onWheel={(event) => { if (event.deltaY < 0 && event.currentTarget.scrollTop < 80) loadOlder(); }}
+          onTouchStart={(event) => { touchStartY.current = event.touches[0]?.clientY ?? null; }}
+          onTouchMove={(event) => {
+            if (touchStartY.current !== null && event.touches[0]?.clientY > touchStartY.current + 24 && event.currentTarget.scrollTop < 80) {
+              touchStartY.current = null;
+              loadOlder();
+            }
+          }}>
           {rowCount === 0 ? (
             <div className="mobile-empty">
               <h1>开始一段新对话</h1>
@@ -3704,7 +3751,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
                   const activity = activities[index - visibleMessages.length];
                   return <div className="mobile-virtual-row" data-index={index} key={virtualItem.key}
                     ref={virtualizer.measureElement} style={{ transform: `translateY(${virtualItem.start}px)` }}>
-                    {activity ? <ReplyActivityView activity={activity} committed={committed} />
+                    {activity ? <ReplyActivityView activity={activity} committed={committed} processMessages={groups.active.get(activity.handle)} toolResults={toolResults} />
                       : <p className="reply-unavailable" role="status">当前未加载回复插件</p>}
                   </div>;
                 }
@@ -3717,10 +3764,11 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
                     style={{ transform: `translateY(${virtualItem.start}px)` }}
                   >
                     <MobileMessageRow
-                      source={source}
+                      source={source} canLoadReferences={Boolean(snapshot.history)} hideBody={groups.hiddenBodies.has(source.id) || groups.moved.has(source.id)} processMessages={groups.completed.get(source.id)}
+                      hideProcess={groups.moved.has(source.id)}
                       lookupMessage={lookupMessage} toolResults={toolResults}
                       downloads={downloads}
-                                startsDay={!previous || !sameLocalDay(Date.parse(previous.timestamp), Date.parse(source.timestamp))}
+                      startsDay={previous ? !sameLocalDay(Date.parse(previous.timestamp), Date.parse(source.timestamp)) : !snapshot.history?.hasOlder}
                       followsSameRole={previous?.author === source.author}
                       unreadCount={source.id === unread.firstMessageId ? unread.count : 0}
                       highlighted={highlightedMessageId === source.id}
@@ -3743,14 +3791,14 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
           )}
         </div>
         <MobileScrollButton
-          isAtBottom={isAtEnd}
+          isAtBottom={isAtEnd && snapshot.history?.isLatest !== false}
           unread={unread}
           unreadAnchorVisited={unreadAnchorVisited}
           onVisitUnread={(messageId) => {
             onVisitUnread();
             jumpToMessage(messageId);
           }}
-          onScrollToBottom={() => virtualizer.scrollToEnd({ behavior: "auto" })}
+          onScrollToBottom={() => snapshot.history?.isLatest === false ? window.AkashicNative?.loadLatestHistory() : virtualizer.scrollToEnd({ behavior: "auto" })}
         />
       </div>
     );

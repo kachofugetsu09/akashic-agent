@@ -36,12 +36,14 @@ export function MessageReplyReference({
   author,
   preview,
   unavailable,
+  canLoad = false,
   onNavigate,
 }: {
   role?: ReplyRole;
   author?: string;
   preview: string;
   unavailable: boolean;
+  canLoad?: boolean;
   onNavigate: () => void;
 }) {
   return (
@@ -49,7 +51,7 @@ export function MessageReplyReference({
       className={`message-reply-reference ${unavailable ? "unavailable" : ""}`}
       type="button"
       onClick={onNavigate}
-      disabled={unavailable}
+      disabled={unavailable && !canLoad}
       aria-label={`查看引用的 ${author ?? (role === "assistant" ? "Akashic" : "你")} 消息`}
     >
       <span>{author ?? (role === "assistant" ? "Akashic" : "你")}</span>
@@ -79,4 +81,20 @@ export function ComposerReply({
       <button type="button" onClick={onCancel} aria-label="取消引用"><X size={19} /></button>
     </div>
   );
+}
+
+/** 展开合并轨迹后按原消息和 part 定位，不把相同 part index 混为一个节点。 */
+export function focusMessagePart(element: HTMLElement, messageId: string, partIndex?: number): void {
+  const find = () => partIndex === undefined ? element :
+    element.querySelector<HTMLElement>(`[data-process-message-id="${CSS.escape(messageId)}"][data-part-index="${partIndex}"]`)
+      ?? (element.dataset.messageId === messageId ? element.querySelector<HTMLElement>(`[data-part-index="${partIndex}"]`) : null);
+  const focus = () => {
+    const target = find() ?? element;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "center", behavior: "instant" });
+  };
+  if (partIndex !== undefined && !find()) {
+    element.querySelector<HTMLButtonElement>('.process-trigger[aria-expanded="false"]')?.click();
+    requestAnimationFrame(focus);
+  } else focus();
 }

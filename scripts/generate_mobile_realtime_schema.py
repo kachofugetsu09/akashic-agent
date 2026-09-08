@@ -82,6 +82,35 @@ def build_schema() -> dict[str, object]:
         "eventTypes": sorted(EVENT_TYPES),
         "controlTypes": sorted(CONTROL_TYPES),
         "preAuthControlTypes": sorted(PRE_AUTH_CONTROL_TYPES),
+        "messageLog": {
+            "version": 2,
+            "historyGet": {
+                "command": "history.get",
+                "required": ["message_log_version"],
+                "optional": ["page_size", "direction", "after_seq", "before_seq", "through_seq", "around_id", "display_only"],
+                "direction": "forward (legacy default) or backward",
+                "backward": "latest page when no cursor; before_seq is exclusive; around_id ends a page at that Message or returns message_not_found",
+                "exclusive": "backward forbids after_seq; forward forbids before_seq and around_id; before_seq and around_id are mutually exclusive",
+                "pageSize": {"minimum": 1, "maximum": 200},
+            },
+            "historyPage": {
+                "event": "history.page",
+                "common": ["version", "items", "after_seq", "next_after_seq", "through_seq", "has_more"],
+                "backward": ["direction", "before_seq", "next_before_seq", "request_id"],
+                "range": "all manifests in (after_seq,next_after_seq] have been delivered; this does not mean bodies or attachments are downloaded",
+                "snapshot": "through_seq is the fixed Session head; backward next_after_seq equals before_seq-1",
+                "older": "next_before_seq is the first delivered seq; has_more refers to older messages; after_seq=-1 only when the start is reached",
+                "budget": "240 KiB; backward pages retain the newest suffix when the frame budget is reached",
+            },
+            "displayOnly": {
+                "requestField": "display_only",
+                "default": False,
+                "parts": "history.provenance, history.record and history.turn_input retain kind and display=unavailable; part indexes and history.transcript stay intact",
+                "follow": "session.follow accepts the same display_only flag",
+                "reference": "message_ref.display_only defaults to false; byte_length and sha256 select the exact legacy or display representation",
+                "download": "message.content.prepare and authenticated Range reads honor either known representation digest",
+            },
+        },
         "mobileWebUi": {
             "capability": "mobile-webui-ota-v1",
             "commandTypes": [

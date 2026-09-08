@@ -21,6 +21,7 @@ from tests_scenarios.mobile_isolated_gateway import EphemeralMasterKeys, approve
 
 SESSION = "akashic:00000000000070008000000000000001"
 OTHER_SESSION = "akashic:00000000000070008000000000000002"
+TAIL_SESSION = "akashic:00000000000070008000000000000003"
 
 
 class HistoryBus:
@@ -28,7 +29,7 @@ class HistoryBus:
         self.recoverer = recoverer
 
 
-async def run(root: Path, port: int) -> None:
+async def run(root: Path, port: int, tail_count: int = 0) -> None:
     """固定小型旧历史与分片附件，启动可配对的真实 TLS 服务。"""
     # 1. 目录必须全新；不接触已有 workspace 或正式服务。
     root.mkdir(parents=True, exist_ok=False)
@@ -52,8 +53,12 @@ async def run(root: Path, port: int) -> None:
         append(SESSION, "legacy-empty", Output((ContentPart("artifact_ref", empty.artifact_id),), "complete"))
         append(SESSION, "legacy-record", Output((ContentPart("history.record", {"schema": "sessions.turns.v0", "row": {"status": "failed"}}),), "quiet"))
         append(OTHER_SESSION, "other-reference", Input((ContentPart("artifact_ref", ref.artifact_id),)))
+        for index in range(tail_count):
+            append(TAIL_SESSION, f"tail-{index}", Input((ContentPart("text", f"按需历史 {index}"),
+                ContentPart("history.provenance", {"raw": "x" * 8192}))))
         manifest = {"session_id": SESSION, "other_session_id": OTHER_SESSION, "artifact_id": ref.artifact_id,
-                    "sha256": hashlib.sha256(content).hexdigest(), "empty_artifact_id": empty.artifact_id, "head_seq": 4}
+                    "sha256": hashlib.sha256(content).hexdigest(), "empty_artifact_id": empty.artifact_id, "head_seq": 4,
+                    "tail_session_id": TAIL_SESSION, "tail_count": tail_count}
         (root / "fixture.json").write_text(json.dumps(manifest), encoding="utf-8")
         # 2. 使用正式认证、分页、完整性校验和二进制发送路径，不安装回复执行者。
         runtime, keyset = build_mobile_gateway_runtime(build_config(root, "127.0.0.1", port), root, master_keys=EphemeralMasterKeys())
@@ -77,5 +82,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--port", type=int, default=16339)
+    parser.add_argument("--tail-count", type=int, default=0)
     args = parser.parse_args()
-    asyncio.run(run(args.root, args.port))
+    asyncio.run(run(args.root, args.port, args.tail_count))

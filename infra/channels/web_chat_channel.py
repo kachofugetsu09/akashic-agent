@@ -826,7 +826,7 @@ class WebChatChannel:
 
         async with asyncio.TaskGroup() as tasks:
             _ = tasks.create_task(send("messages.appended", follow_messages(
-                self._messages.reader(session_id), after_seq=after_seq)))
+                self._messages.reader(session_id), after_seq=after_seq, display_only=True)))
             if self._reply_status is None:
                 await websocket.send_json({"type": "reply.status", "version": 2,
                     "session_id": session_id, "snapshot_id": None, "available": False, "items": []})
