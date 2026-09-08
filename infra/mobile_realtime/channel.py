@@ -81,6 +81,7 @@ from infra.channels.message_view import message_rows, session_row
 from infra.mobile_realtime.message_view import message_chunks, message_json as _message_json
 from infra.mobile_realtime.attachments import (
     AttachmentChunk,
+    ArtifactChunk,
     AttachmentRequestError,
     AttachmentTransferService,
     MAX_ATTACHMENT_CHUNK_BYTES,
@@ -172,7 +173,7 @@ class CommandReply:
     payload: dict[str, object]
     session_id: str | None = None
     turn_id: str | None = None
-    binary: AttachmentChunk | None = None
+    binary: AttachmentChunk | ArtifactChunk | None = None
     replayed: bool = False
 
 
@@ -655,7 +656,11 @@ class MobileRealtimeChannel:
                 isinstance(frame, AttachmentDownloadCommand)
                 and replay.type == "attachment.download.ok"
             ):
-                return self._download_attachment(frame, replay)
+                try:
+                    return await self._download_attachment(frame, replay)
+                except MobileCommandError as error:
+                    return CommandReply(type="attachment.download.error",
+                        payload={"code": error.code, "message": str(error)}, session_id=frame.session_id)
             return CommandReply(
                 type=replay.type,
                 payload=replay.payload,
@@ -1410,7 +1415,7 @@ class MobileRealtimeChannel:
         if frame.type == "attachment.finish":
             return await self._finish_attachment(device_id, frame)
         if frame.type == "attachment.download":
-            return self._download_attachment(frame)
+            return await self._download_attachment(frame)
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
 
     async def _update_device_capabilities(
@@ -1808,42 +1813,48 @@ class MobileRealtimeChannel:
             payload={**attachment_descriptor(record), "state": "ready"},
         )
 
-    def _download_attachment(
+    async def _download_attachment(
         self,
         frame: AttachmentDownloadCommand,
         stored: CommandReply | None = None,
     ) -> CommandReply:
-        """读取一个出站附件分片，并让二进制帧先于确认回复发送。"""
-
+        """凭已提交消息的引用读取 Core 附件，分片先于确认回复发送。"""
+        # 1. Session reader 拥有引用授权；artifact store 拥有文件和完整性。
         session_id = self._normalize_session_id(frame.session_id)
+        reader = self._require_messages().reader(session_id)
         try:
-            outbound = self._require_attachments().read_outbound_chunk(
-                session_id=session_id,
-                attachment_id=frame.payload.attachment_id,
-                offset=frame.payload.offset,
-            )
-        except (AttachmentRequestError, AttachmentStateError) as error:
-            raise MobileCommandError(
-                "attachment_download_rejected", str(error)
-            ) from error
-        next_offset = outbound.offset + len(outbound.data)
+            refs = reader.attachments(frame.payload.message_id)
+        except LookupError as error:
+            raise MobileCommandError("attachment_download_rejected", str(error)) from error
+        ref = next((ref for ref in refs if ref.artifact_id == frame.payload.artifact_id), None)
+        if ref is None:
+            raise MobileCommandError("attachment_download_rejected", "消息未引用该附件")
+        offset = frame.payload.offset
+        if offset > ref.size_bytes:
+            raise MobileCommandError("attachment_download_rejected", "附件分片 offset 超出文件")
+        store = self._channel_attachment_store
+        if store is None:
+            raise RuntimeError("Mobile channel attachment store 未绑定")
+        try:
+            lease = await store.acquire(ref)
+            try:
+                data = await lease.read_chunk(offset=offset, max_bytes=MAX_ATTACHMENT_CHUNK_BYTES)
+            finally:
+                await lease.aclose()
+        except (OSError, ValueError) as error:
+            logger.exception("Mobile artifact read failed: %s", ref.artifact_id)
+            raise MobileCommandError("attachment_download_failed", f"附件暂时无法读取: {ref.artifact_id}") from error
+        # 2. 回复使用同一份不可变 metadata；重放不建立第二份附件记录。
+        next_offset = offset + len(data)
         payload: dict[str, object] = {
-            **outbound.descriptor,
-            "offset": outbound.offset,
-            "next_offset": next_offset,
-            "complete": outbound.eof,
+            **asdict(ref), "offset": offset, "next_offset": next_offset,
+            "complete": next_offset == ref.size_bytes,
         }
         if stored is not None and stored.payload != payload:
             raise RuntimeError("已完成的附件下载回复与当前文件状态不一致")
         return CommandReply(
-            type="attachment.download.ok",
-            session_id=session_id,
-            payload=payload,
-            binary=AttachmentChunk(
-                attachment_id=frame.payload.attachment_id,
-                offset=outbound.offset,
-                data=outbound.data,
-            ),
+            type="attachment.download.ok", session_id=session_id, payload=payload,
+            binary=ArtifactChunk(artifact_id=ref.artifact_id, offset=offset, data=data),
         )
 
     async def _list_sessions(

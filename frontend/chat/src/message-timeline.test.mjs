@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chatHistoryPage, sessionPage } from "./web-chat-data.ts";
-import { mergeTimelineMessages, readMessageLogFrame, readTimelineMessage, timelineReply, timelineText } from "./message-timeline.ts";
+import { timelineAnchorIndexes, historyTranscript, isTimelineMessageVisible, isTimelinePartVisible, mergeTimelineMessages, readMessageLogFrame, readTimelineMessage, timelineReply, timelineText } from "./message-timeline.ts";
 
 const row = (seq, body, changes = {}) => ({
   id: `message-${seq}`, session_id: "akashic:fixture", seq,
@@ -120,4 +120,36 @@ test("history and live overlap accept omitted metadata as the empty default", ()
   assert.deepEqual(history[0].metadata, {});
   const oldLive = readMessageLogFrame({ ...live, items: [old] });
   assert.equal(mergeTimelineMessages(live.items, oldLive.items).length, 1);
+});
+
+
+test("chat projection hides migration diagnostics while keeping raw seq and readable tool history", () => {
+  const archive = { schema: "sessions.messages.tool_chain.v0", raw: JSON.stringify([
+    { text: "工具前的说明", reasoning_content: "原思考", calls: [{ name: "shell", arguments: { command: "pwd" }, result: "/workspace" }] },
+  ]) };
+  const raw = [
+    row(4, { kind: "input", parts: [text("原提问"), { kind: "history.provenance", archive: { role: "user" } }] }),
+    row(7, { kind: "output", finish: "complete", parts: [text("原回答"), { kind: "history.transcript", archive }] }),
+    row(11, { kind: "output", finish: "quiet", parts: [{ kind: "history.record", archive: { id: "old-turn" } }] }),
+  ];
+  const before = structuredClone(raw);
+  assert.deepEqual(raw.filter(isTimelineMessageVisible).map((message) => [message.id, message.seq]), [["message-4", 4], ["message-7", 7]]);
+  assert.equal(isTimelinePartVisible(raw[0].body.parts[1]), false);
+  assert.equal(historyTranscript(archive)[0].thinking, "原思考");
+  assert.equal(historyTranscript(archive)[0].calls[0].result, "/workspace");
+  assert.deepEqual(raw, before);
+  assert.equal(raw.at(-1).seq, 11);
+});
+
+test("hidden history anchors resolve to nearby visible rows without changing raw messages", () => {
+  const hidden = (seq) => row(seq, { kind: "output", finish: "quiet", parts: [{ kind: "history.record", archive: {} }] });
+  const visible = (seq) => row(seq, { kind: "input", parts: [text("hello")] });
+  const messages = [hidden(0), visible(1), hidden(2), visible(3), hidden(4)];
+  const before = structuredClone(messages);
+  assert.deepEqual([...timelineAnchorIndexes(messages)], [
+    ["message-0", 0], ["message-1", 0], ["message-2", 1], ["message-3", 1], ["message-4", 1],
+  ]);
+  assert.equal(timelineAnchorIndexes([hidden(0)]).size, 0);
+  assert.equal(timelineAnchorIndexes(messages).get("missing"), undefined);
+  assert.deepEqual(messages, before);
 });

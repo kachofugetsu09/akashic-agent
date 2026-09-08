@@ -69,7 +69,7 @@ test("device download progress remains separate from attachment facts", () => {
     size_bytes: 200, sha256: "a".repeat(64) };
   const row = { ...message("input", 0, { kind: "input", parts: [{ kind: "artifact_ref", value: "a" }] }), attachments: [artifact] };
   const current = readMobileMessageLog(baseline([row]));
-  const progress = { artifactId: "a", transferredBytes: 20, state: "downloading" };
+  const progress = { cacheId: "local-key", artifactId: "a", transferredBytes: 20, state: "downloading" };
   const downloaded = { ...progress, transferredBytes: 200, state: "cached", contentUrl: "https://appassets.androidplatform.net/media/a" };
   assert.deepEqual(readMobileDownloads([progress]), [progress]);
   assert.deepEqual(readMobileDownloads([downloaded]), [downloaded]);
@@ -84,7 +84,7 @@ test("control patches reject message and preview fields before snapshot conversi
     assert.throws(() => readMobileStateSnapshot({ ...raw, [field]: null }), /字段无效/);
   }
   assert.throws(() => readMobileStateSnapshot({ ...raw, protocolVersion: 1 }));
-  assert.deepEqual(readMobileStateSnapshot(raw), { ...raw, protocolVersion: 9, messages: [], throughSeq: -1, replyStatus: null });
+  assert.deepEqual(readMobileStateSnapshot(raw), { ...raw, protocolVersion: 10, messages: [], throughSeq: -1, replyStatus: null });
 });
 
 test("late full snapshots cannot roll back a newer session or sync generation", () => {

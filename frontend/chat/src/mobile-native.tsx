@@ -1,3 +1,4 @@
+import { isTimelineMessageVisible, timelineAnchorIndexes } from "./message-timeline";
 import { TimelineMessageView, ReplyActivityView } from "./message-view";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineAttachment } from "./message-timeline";
 import { applyMobileMessageEvent, mergeMobileMessageSnapshot, readMobileMessageLog, readMobileDownloads, readMobileStateSnapshot, type MobileMessageLog, type MobileDownload } from "./mobile-message-log";
@@ -153,7 +154,7 @@ interface MobileUnreadState {
 }
 
 interface MobileConversationHandle {
-  jumpToMessage(messageId: string, focus?: boolean, partIndex?: number): void;
+  jumpToMessage(messageId: string, focus?: boolean, partIndex?: number): boolean;
 }
 
 interface MobileSession {
@@ -190,7 +191,7 @@ interface MobilePendingMessage {
 }
 
 export interface MobileSnapshot extends MobileMessageLog {
-  protocolVersion: 9;
+  protocolVersion: 10;
   downloads: MobileDownload[];
   connection: {
     label: string;
@@ -533,7 +534,7 @@ function parseModelCatalog(value: unknown): MobileModelCatalog {
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 9) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 10) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -580,7 +581,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       };
     })();
   return {
-    protocolVersion: 9,
+    protocolVersion: 10,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -1321,7 +1322,7 @@ export function MobileNativeApp() {
 
   const jumpToMessage = useCallback((messageId: string, focus = false, partIndex?: number) => {
     // 1. 由虚拟列表先挂载目标行，再完成定位和焦点恢复
-    conversationRef.current?.jumpToMessage(messageId, focus, partIndex);
+    if (!conversationRef.current?.jumpToMessage(messageId, focus, partIndex)) return false;
 
     // 2. 点亮目标状态层并恢复无障碍焦点
     setHighlightedMessageId(messageId);
@@ -1330,6 +1331,7 @@ export function MobileNativeApp() {
       setHighlightedMessageId((current) => current === messageId ? null : current);
       searchHighlightTimerRef.current = null;
     }, 1300);
+    return true;
   }, []);
 
   // 必要 effect：处理导航目标（DOM 定位 + 原生回调），不可改为渲染期计算
@@ -1339,8 +1341,8 @@ export function MobileNativeApp() {
     const key = `${target.sessionId}\u001f${target.messageId}`;
     if (handledNavigationTargetRef.current === key) return;
     if (!snapshot.messages.some((message) => message.id === target.messageId)) return;
+    if (!jumpToMessage(target.messageId, true)) return;
     handledNavigationTargetRef.current = key;
-    jumpToMessage(target.messageId, true);
     window.AkashicNative?.navigationTargetHandled(target.messageId);
   }, [jumpToMessage, snapshot?.messages, snapshot?.navigationTarget, snapshot?.selectedSessionId]);
 
@@ -1851,8 +1853,9 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
   const body = source.body;
   const renderAttachment = useCallback((attachment: TimelineAttachment) => {
     const download = downloads.get(attachment.artifact_id);
+    if (!download) return <span>{attachment.filename ?? "附件"} · 正在准备</span>;
     return <MobileMessageAttachment attachment={{
-      id: attachment.artifact_id, filename: attachment.filename ?? "附件",
+      id: download.cacheId, filename: attachment.filename ?? "附件",
       contentType: attachment.media_type ?? "application/octet-stream", sizeBytes: attachment.size_bytes,
       transferredBytes: download?.transferredBytes ?? 0, state: download?.state ?? "remote",
       contentUrl: download?.contentUrl,
@@ -1881,9 +1884,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
             name="turn.after_answer" sessionId={source.session_id} messageId={source.id} /> : undefined} />
         <div className="mobile-message-meta timeline-meta">
           <div className="mobile-message-meta__text">
-            <span>{source.author}</span><span>来源 · {source.source}</span>
             <time dateTime={source.timestamp}>{formatMessageTime(Date.parse(source.timestamp))}</time>
-            <details><summary>消息详情</summary><pre>{source.id}{"\n"}序号 {source.seq}</pre></details>
           </div>
           <SharedMessageActions canReply={canReply} canCopy={mobileMessageHasCopyContent(source)} copied={copied}
             onReply={() => onReplyToMessage(source)} onCopy={() => onCopyMessage(source)} />
@@ -3509,31 +3510,25 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     const byId = useMemo(() => new Map(snapshot.messages.map((message) => [message.id, message])), [snapshot.messages]);
     const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
     const downloads = useMemo(() => new Map(snapshot.downloads.map((download) => [download.artifactId, download])), [snapshot.downloads]);
-    const sourceMessagesRef = useRef(snapshot.messages);
-    sourceMessagesRef.current = snapshot.messages;
+    const visibleMessages = useMemo(() => snapshot.messages.filter(isTimelineMessageVisible), [snapshot.messages]);
+    const sourceMessagesRef = useRef(visibleMessages);
+    sourceMessagesRef.current = visibleMessages;
     const activities = snapshot.replyStatus?.items ?? [];
     const activitiesRef = useRef(activities);
     activitiesRef.current = activities;
     const committed = useMemo(() => new Set(snapshot.messages.map((message) => message.id)), [snapshot.messages]);
-    const rowCount = snapshot.messages.length + activities.length + (snapshot.replyStatus?.available === false ? 1 : 0);
+    const rowCount = visibleMessages.length + activities.length + (snapshot.replyStatus?.available === false ? 1 : 0);
     const [isAtEnd, setIsAtEnd] = useState(true);
     const isAtEndRef = useRef(true);
     const restoredProjectionRef = useRef<string | undefined>(undefined);
     const restoreFrameRef = useRef<number | null>(null);
     const saveTimerRef = useRef<number | null>(null);
     const lastSavedRef = useRef("");
-    const firstMessageId = snapshot.messages[0]?.id ?? "";
-    const lastMessageId = snapshot.messages.at(-1)?.id ?? "";
-    const messageIdentityKey = [
-      snapshot.projectionGeneration,
-      snapshot.messages.length,
-      firstMessageId,
-      lastMessageId,
-    ].join("\u001f");
+    const messageIdentityKey = [snapshot.projectionGeneration, visibleMessages.length,
+      visibleMessages[0]?.id ?? "", visibleMessages.at(-1)?.id ?? ""].join("\u001f");
     const messageIndexById = useMemo(
-      () => new Map(snapshot.messages.map((message, index) => [message.id, index])),
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      [messageIdentityKey],
+      () => timelineAnchorIndexes(snapshot.messages),
+      [snapshot.messages],
     );
     const getScrollElement = useCallback(() => scrollRef.current, []);
     const estimateSize = useCallback(
@@ -3574,22 +3569,25 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
 
     const jumpToMessage = useCallback((messageId: string, focus = false, partIndex?: number) => {
       const index = messageIndexById.get(messageId);
-      if (index === undefined) return;
+      if (index === undefined) return false;
+      const visibleId = sourceMessagesRef.current[index].id;
+      const visiblePart = visibleId === messageId ? partIndex : undefined;
       virtualizer.scrollToIndex(index, { align: "center", behavior: "auto" });
-      if (!focus) return;
+      if (!focus) return true;
       let attempts = 0;
       const focusWhenMounted = () => {
-        const element = messageElementsRef.current.get(messageId);
+        const element = messageElementsRef.current.get(visibleId);
         if (element) {
-          const target = partIndex === undefined ? element : element.querySelector<HTMLElement>(`[data-part-index="${partIndex}"]`);
+          const target = visiblePart === undefined ? element : element.querySelector<HTMLElement>(`[data-part-index="${visiblePart}"]`);
           target?.focus({ preventScroll: true });
-          if (partIndex !== undefined) target?.scrollIntoView({ block: "center", behavior: "instant" });
+          if (visiblePart !== undefined) target?.scrollIntoView({ block: "center", behavior: "instant" });
           return;
         }
         attempts += 1;
         if (attempts < 4) requestAnimationFrame(focusWhenMounted);
       };
       requestAnimationFrame(focusWhenMounted);
+      return true;
     }, [messageElementsRef, messageIndexById, virtualizer]);
 
     useImperativeHandle(ref, () => ({ jumpToMessage }), [jumpToMessage]);
@@ -3597,7 +3595,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     useLayoutEffect(() => {
       // 1. Restore an owned reading anchor or open at the latest message.
       const sessionId = snapshot.selectedSessionId;
-      if (!sessionId || snapshot.messages.length === 0 || snapshot.composer.isResyncing) return;
+      if (!sessionId || visibleMessages.length === 0 || snapshot.composer.isResyncing) return;
       const projectionKey = `${sessionId}\u001f${snapshot.projectionGeneration}`;
       if (restoredProjectionRef.current === projectionKey) return;
       restoredProjectionRef.current = projectionKey;
@@ -3621,7 +3619,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
         if (restoreFrameRef.current !== null) cancelAnimationFrame(restoreFrameRef.current);
         restoreFrameRef.current = null;
       };
-    }, [messageIndexById, snapshot.composer.isResyncing, snapshot.messages.length, snapshot.projectionGeneration, snapshot.readingPosition, snapshot.selectedSessionId, virtualizer]);
+    }, [messageIndexById, snapshot.composer.isResyncing, visibleMessages.length, snapshot.projectionGeneration, snapshot.readingPosition, snapshot.selectedSessionId, virtualizer]);
 
     useEffect(() => {
       // 2. Persist from virtual measurements, avoiding a full DOM layout walk.
@@ -3671,7 +3669,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
 
     useMobileUnreadTracking(
       snapshot.selectedSessionId,
-      snapshot.messages,
+      visibleMessages,
       messageIdentityKey,
       snapshot.projectionGeneration,
       snapshot.composer.isResyncing,
@@ -3697,10 +3695,10 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
             >
               {virtualItems.map((virtualItem) => {
                 const index = virtualItem.index;
-                const source = snapshot.messages[index];
-                const previous = snapshot.messages[index - 1];
+                const source = visibleMessages[index];
+                const previous = visibleMessages[index - 1];
                 if (!source) {
-                  const activity = activities[index - snapshot.messages.length];
+                  const activity = activities[index - visibleMessages.length];
                   return <div className="mobile-virtual-row" data-index={index} key={virtualItem.key}
                     ref={virtualizer.measureElement} style={{ transform: `translateY(${virtualItem.start}px)` }}>
                     {activity ? <ReplyActivityView activity={activity} committed={committed} />
