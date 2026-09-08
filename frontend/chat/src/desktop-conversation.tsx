@@ -297,7 +297,7 @@ export function DesktopTimelineMessages({ messages, status, messageElementsRef, 
         name="turn.before_tool" sessionId={message.session_id} messageId={message.id} block={{ ...part, message_id: message.id, part_index: index }} /> : null}
       afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <MobilePluginSlot
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} /> : undefined} />
-    <div className="shared-message-meta timeline-meta">
+    <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
       <SharedMessageActions
         canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}

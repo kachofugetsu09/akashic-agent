@@ -1884,7 +1884,7 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
               block={{ ...part, message_id: source.id, part_index: index }} /> : null}
           afterBody={!selectedSessionUnavailable && body.kind === "output" && body.finish === "complete" ? <MobilePluginSlot
             name="turn.after_answer" sessionId={source.session_id} messageId={source.id} /> : undefined} />
-        <div className="mobile-message-meta timeline-meta">
+        <div className={`mobile-message-meta timeline-meta ${body.kind === "input" ? "user" : "assistant"}`}>
           <div className="mobile-message-meta__text">
             <time dateTime={source.timestamp}>{formatMessageTime(Date.parse(source.timestamp))}</time>
           </div>

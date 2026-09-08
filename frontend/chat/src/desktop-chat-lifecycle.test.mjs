@@ -52,6 +52,7 @@ async function mountChat(t, strict = false) {
       this.dispatchEvent(event);
     }
     send(text) { this.sent.push(text); }
+    receive(frame) { this.onmessage?.({ data: JSON.stringify(frame) }); }
   }
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
   dom.window.setTimeout = globalThis.setTimeout;
@@ -185,7 +186,7 @@ test("StrictMode 重挂载与重试等待中的卸载不留下连接或监听器
 });
 
 
-test("短暂健康失败不取消当前历史，重连成功清除连接提示", async (t) => {
+test("首次就绪后停止启动探测，断线重连不取消当前历史或要求重新配置模型", async (t) => {
   const chat = await mountChat(t);
   await act(async () => {
     chat.sockets[0].open();
@@ -195,15 +196,52 @@ test("短暂健康失败不取消当前历史，重连成功清除连接提示",
   const history = chat.requests.find((item) => item.url.includes("/messages?"));
   assert.ok(history);
   assert.equal(chat.controller().historyLoading, true);
-  await chat.tick(1200);
-  await act(async () => chat.requests.filter((item) => item.url === "/api/shell/state").at(-1)
-    .finish({ status: "starting", configured: true, chatReady: false }));
+  await chat.tick(60_000);
+  assert.equal(chat.requests.filter((item) => item.url === "/api/shell/state").length, 1);
+  assert.equal(chat.controller().chatReady, true);
   assert.equal(history.signal.aborted, false);
   await act(async () => history.finish({ version: 2, items: [], through_seq: -1, before_seq: null, has_more: false }));
   assert.equal(chat.controller().historyLoading, false, "空会话加载完成后不再显示读取提示");
   await act(async () => { chat.sockets.at(-1).open(); chat.sockets.at(-1).close(1006); });
   assert.match(chat.controller().error, /重新连接/u);
+  assert.equal(chat.controller().chatReady, true);
   await chat.tick(1200);
   await act(async () => chat.sockets.at(-1).open());
+  assert.equal(chat.controller().error, "");
+});
+
+test("生成中断线不保留假等待，重连读取完成消息后回到空闲", async (t) => {
+  const chat = await mountChat(t);
+  const sessionId = "akashic:test";
+  await act(async () => chat.controller().activateSession(sessionId));
+  await act(async () => chat.requests.find((item) => item.url.includes("/messages?"))
+    .finish({ version: 2, items: [], through_seq: -1, before_seq: null, has_more: false }));
+  const status = (items) => ({ type: "reply.status", version: 2, session_id: sessionId,
+    snapshot_id: "current", available: true, items });
+  await act(async () => {
+    chat.sockets.at(-1).open();
+    chat.sockets.at(-1).receive(status([{ session_id: sessionId, source: "conversation", handle: "reply",
+      active: true, preview: { message_id: "answer", text: "", thinking: "" } }]));
+  });
+  assert.equal(chat.controller().status, "streaming");
+  await act(async () => chat.sockets.at(-1).close(1006));
+  assert.equal(chat.controller().status, "idle");
+  assert.equal(chat.controller().replyAvailable, null);
+  assert.deepEqual(chat.controller().replyActivities, []);
+  await chat.tick(30_000);
+  await act(async () => {
+    const socket = chat.sockets.at(-1);
+    socket.open();
+    socket.receive({ type: "messages.appended", version: 2, session_id: sessionId, after_seq: -1,
+      through_seq: 0, next_after_seq: 0, has_more: false, items: [{
+        id: "answer", session_id: sessionId, seq: 0, timestamp: "2026-09-08T15:35:14Z",
+        author: "assistant", source: "conversation", metadata: {}, attachments: [],
+        body: { kind: "output", finish: "complete", parts: [{ kind: "text", value: "你好" }] },
+      }] });
+    socket.receive(status([]));
+  });
+  assert.equal(chat.controller().status, "idle");
+  assert.equal(chat.controller().replyAvailable, true);
+  assert.deepEqual(chat.controller().timelineMessages.map((item) => item.id), ["answer"]);
   assert.equal(chat.controller().error, "");
 });
