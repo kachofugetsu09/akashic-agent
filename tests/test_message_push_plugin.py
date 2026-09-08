@@ -18,7 +18,7 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.delivery.records import DeliveryRecords
 from plugins.message_push.tool import message_id
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import TOOLS, open_tool
+from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 from agent.plugin_composition.tasks import Tasks
 from session.log import MessageLog, OwnerTransaction
 from session.store import SessionStore
@@ -84,9 +84,14 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
         await host.start_runtime()
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            tools = snapshot.composition_root.context.require(TOOLS)
-            binding = tools.bind("message_push", bindings)
-            activity = snapshot.composition_root.context.require(ServiceKey("fixture.delivery"))().activity("test", "room")
+            ctx = snapshot.composition_root.context
+            tools = ctx.require(TOOLS)
+            binding = tools.bind(
+                ctx.require(ALL_TOOLS)().select("message_push"), bindings
+            )
+            activity = snapshot.composition_root.context.require(
+                ServiceKey("fixture.delivery")
+            )().activity("test", "room")
         # 原 Tool 的捕获状态已保存 Sender binding，归档不再依赖当前注册或源码。
         shutil.rmtree(source)
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(bindings, key),

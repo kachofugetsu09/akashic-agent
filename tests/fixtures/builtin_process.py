@@ -92,8 +92,7 @@ async def serve(root: Path, endpoint: str) -> None:
     settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
     if not (root / "config.toml").exists():
         init_workspace(config_path=root / "config.toml", workspace=workspace)
-        plugins = {"reply": 'tools = ["write_file", "read_file", "message_push"]\n',
-                   **settings.get("plugins", {})}
+        plugins = settings.get("plugins", {})
         for plugin, config in plugins.items():
             destination = workspace / f"plugin-data/{plugin}-builtin/config.local.toml"
             destination.parent.mkdir(parents=True, exist_ok=True)

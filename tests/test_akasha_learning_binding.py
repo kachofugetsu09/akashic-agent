@@ -19,7 +19,7 @@ from plugins.akasha.domain.model import EmbeddingSpaceMismatchError, MemoryConfi
 from plugins.akasha.infrastructure.persistence import load_consumption, logical_state_sha256
 from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
 from plugins.akasha.projection import applied_source
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from session.embedding_store import MessageEmbeddings
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
@@ -140,7 +140,12 @@ async def test_archived_learning_restores_complete_interrupted_turn_and_feedback
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             learning = snapshot.composition_root.context.require(AKASHA_LEARNING)
             identity = bindings.bind(AKASHA_LEARNING, rule.model_dump())
-            feedback_tool = snapshot.composition_root.context.require(TOOLS).bind("remember_memory", bindings)
+            feedback_tool = snapshot.composition_root.context.require(TOOLS).bind(
+                snapshot.composition_root.context.require(ALL_TOOLS)().select(
+                    "remember_memory"
+                ),
+                bindings,
+            )
         records = embeddings.bind(learning.text)
         def write(kind, identity, body, *, source="chat", ref=None):
             return log.writer("s", author="test", source=source, body_types=(kind,), call_ref=ref,
@@ -372,8 +377,12 @@ async def test_feedback_uses_prepared_message_identity_after_interrupt_and_repor
         consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None, catalog=log.catalog(),
             embeddings=MessageEmbeddings(log), bindings=bindings, config=MemoryConfig())
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
-            identity = catalog.bind(tool_name, bindings)
+            ctx = snapshot.composition_root.context
+            catalog = ctx.require(TOOLS)
+            identity = catalog.bind(
+                ctx.require(ALL_TOOLS)().select(tool_name), bindings
+            )
+
             def write(kind, identity, body, source="chat"):
                 return log.writer("s", author="test", source=source, body_types=(kind,),
                                   content={"text": lambda part: ContentReferences()}, check_call=lambda call: None).append(identity, body)
@@ -465,8 +474,15 @@ async def apply(ctx, config):
         before = logical_state_sha256(memory)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             catalog = snapshot.composition_root.context.require(TOOLS)
-            identity = catalog.bind("foreign_feedback", bindings)
-            rule = LearningConfig(embedding_model="fixture", dimension=2, sources=("chat",))
+            identity = catalog.bind(
+                snapshot.composition_root.context.require(ALL_TOOLS)().select(
+                    "foreign_feedback"
+                ),
+                bindings,
+            )
+            rule = LearningConfig(
+                embedding_model="fixture", dimension=2, sources=("chat",)
+            )
             learning_binding = bindings.bind(AKASHA_LEARNING, rule.model_dump())
             async with snapshot.composition_root.context.require(CONTENT).bind() as view:
                 log.writer("s", author="user", source="chat", body_types=(Input,), content=view.checks).append(
@@ -516,9 +532,12 @@ async def test_same_output_feedback_checks_all_member_targets_before_authorizati
             return [[0.6, 0.8] for _ in texts]
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             catalog = snapshot.composition_root.context.require(TOOLS)
-            remember = catalog.bind("remember_memory", bindings)
-            forget = catalog.bind("forget_memory", bindings)
-            rule = LearningConfig(embedding_model="fixture", dimension=2, sources=("chat",))
+            view = snapshot.composition_root.context.require(ALL_TOOLS)()
+            remember = catalog.bind(view.select("remember_memory"), bindings)
+            forget = catalog.bind(view.select("forget_memory"), bindings)
+            rule = LearningConfig(
+                embedding_model="fixture", dimension=2, sources=("chat",)
+            )
             learning = bindings.bind(AKASHA_LEARNING, rule.model_dump())
             async def consume():
                 return await consumer.consume(catalog=log.catalog(), learning_binding=learning,

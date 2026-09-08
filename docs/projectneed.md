@@ -376,9 +376,11 @@ skills、长期记忆和检索结果必须带来源和信任级别，作为 syst
 
 请求使用“system → 已保存消息的模型投影（含当前输入与摘要）→ 一个末尾 user-role `<system-reminder>`”。
 VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则留在 system；时间、Akasha 召回和本次后台结果进入提醒。
-提醒不写入 Message 日志，不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
+提醒不另写独立 Message、不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
 提醒块身份为实际贡献插件 ID 与局部名称，同一身份重复时报错；priority 升序，仅决定排列，同优先级按插件 ID、名称的 UTF-8 字节升序。
 SELF/MEMORY 低频更新不要求迁出 system，也不承诺其异步发布与 compaction 只产生一次 provider 缓存失效。
+成功的模型 Output 在 `model.facts` 中保存当次 reminder 与 wire tool call replay；恢复旧请求时使用该
+已提交事实重建原 provider 前缀。它不新增 Input、授权或持久上下文副本，失败和取消也不伪造 replay。
 
 ### CTX-005 新设计不得使用无修饰的 history
 
@@ -565,7 +567,7 @@ Mobile durable inbound 的释放顺序固定为：Channel 先持久化与 Input 
 
 ### RUN-004 Linux 正式入口由 Supervisor 托管
 
-Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮 ToolSearch 授权、回复持久化与送达、boot-scoped 私有提交证据和约定退出码；旧 boot 清理尽力执行并记录未清空目标，但清理失败不阻止已合法提交的下一代。普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
+Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮获授工具 view、回复持久化与送达、boot-scoped 私有提交证据和约定退出码；`agent_restart` 由 `message_push` 的 supervised-only child 提供，不以工具搜索结果作为授权。旧 boot 清理尽力执行并记录未清空目标，但清理失败不阻止已合法提交的下一代。普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
 
 ### RUN-005 Provider 插件拥有协议边界
 
@@ -785,6 +787,17 @@ Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；�
 默认 `computer` 插件通过这条普通边界提供一台持久 Linux 用户桌面。人工操作使用 generation-bound RFB
 通道直达同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 也只操作这台桌面及其唯一
 Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪装成桌面控制。
+
+### PLG-018 工具依赖传递实际注册引用
+
+工具注册返回当前 Root 中的实际引用，provider 通过普通 `ServiceKey` 提供引用 view。工具池只按
+引用建立新 binding；持有工具池不能按全局名字取得未依赖的工具。确需完整目录的管理插件必须
+显式依赖 `ALL_TOOLS`。当前引用失效时 fail-loud；已提交 Message 中的 binding 继续打开原归档
+闭包，不因当前安装、卸载或重启重新选择实现。
+
+工具搜索只在获授 view 内展示完整 schema，并可把自身协议中的间接调用解码为唯一真实
+ToolCall。搜索结果、目录提醒和 compaction 不授予或撤销工具，不保存 loaded、grant、LRU、
+TTL 或 epoch。通用 ReAct、工具执行和回复程序不得按搜索工具、间接调用工具或来源名称分支。
 
 ## 11. Workspace、文件和进程
 

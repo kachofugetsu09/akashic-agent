@@ -101,8 +101,6 @@ class ToolMenu:
                 )
                 for name, ref in current.items()
             }
-            if set(self._bound) != set(descriptions):
-                raise ValueError("展示层配置改变了获授工具范围")
         if limit is not None and len(self._presentation.schemas) > limit:
             raise ValueError(
                 "模型工具容量不足以容纳固定展示: "
@@ -140,6 +138,13 @@ class ToolMenu:
         if identity is None:
             raise PermissionError(f"展示层返回了未获授工具: {name}")
         return identity, arguments
+
+    def bind(self, name: str) -> str:
+        """让归档旧 ReAct 只解析已经固定在本菜单中的 binding。"""
+        identity = self._bound.get(name)
+        if identity is None:
+            raise PermissionError(f"模型未获授工具: {name}")
+        return identity
 
     def name(self, binding_id: str) -> str:
         description = cast(

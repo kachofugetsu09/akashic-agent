@@ -226,6 +226,7 @@ async def apply(ctx: Context, config: object) -> None:
         parameters=Query.model_json_schema(),
         open=open_tool,
         capture=capture,
+        public=False,
         idempotent=True,
         risk="read-only",
     )

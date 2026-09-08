@@ -24,8 +24,8 @@ from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT, Preview
 from plugins.tools.api import Denied
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
-from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION
+from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
+from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
 from session.message import Message
@@ -39,9 +39,22 @@ api_version = 3
 name = "reply"
 version = "1.0.0"
 desc = "跟随日志并组合默认回复；接纳、材料、模型与工具各有独立 owner"
-inject = (SOURCES, CONVERSATION_COMMANDS, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS,
-          TOOLS, ALL_TOOLS, TOOL_SEARCH_PRESENTATION, REACT, MODEL_CALLS,
-          TURN_PROJECTION, RESTART_GATE)
+inject = (
+    SOURCES,
+    CONVERSATION_COMMANDS,
+    CHAT_MODELS,
+    CONTENT,
+    CONTEXT,
+    MATERIALS,
+    TOOLS,
+    ALL_TOOLS,
+    TOOL_SEARCH_TOOLS,
+    TOOL_SEARCH_PRESENTATION,
+    REACT,
+    MODEL_CALLS,
+    TURN_PROJECTION,
+    RESTART_GATE,
+)
 
 
 class Config(BaseModel):
@@ -109,7 +122,9 @@ async def apply(ctx: Context, config: Config) -> None:
             return command
         tools = ctx.require(TOOLS)
         bindings = ctx.require(BINDINGS)
-        view = ctx.require(ALL_TOOLS)()
+        view = ToolView.combine(
+            ctx.require(ALL_TOOLS)(), ctx.require(TOOL_SEARCH_TOOLS)
+        )
 
         async def authorize(binding_id: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
             return {"source": source, "session_id": reader.session_id}

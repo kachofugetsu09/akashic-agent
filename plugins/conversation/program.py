@@ -50,9 +50,15 @@ async def run_reply(
     react: Callable[..., Awaitable[Message]],
     materials: ContextMaterials,
     turn_projection: TurnProjection,
-    render_content: ContentRenderer | None = None, read_call: CallReader, authorize: Authorize,
-    tool_view: ToolView | None, max_output_tokens: int, max_steps: int,
-    exclude_materials: frozenset[str] = frozenset(), prompt_hints: Sequence[str] = (),
+    render_content: ContentRenderer | None = None,
+    read_call: CallReader,
+    authorize: Authorize,
+    max_output_tokens: int,
+    max_steps: int,
+    tool_view: ToolView | None = None,
+    tool_names: Sequence[str] | None = None,
+    exclude_materials: frozenset[str] = frozenset(),
+    prompt_hints: Sequence[str] = (),
     fixed_bindings: Mapping[str, str] | None = None,
     preview: Preview | None = None,
     reminders: Sequence[Reminder] = (),
@@ -60,6 +66,13 @@ async def run_reply(
     presentation: ToolPresentation | None = None,
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
+    if tool_names is not None:
+        if tool_view is not None or fixed_bindings is None:
+            raise ValueError("旧工具名称只可核对原固定 binding")
+        if len(set(tool_names)) != len(tool_names) or set(tool_names) != set(
+            fixed_bindings
+        ):
+            raise ValueError("旧工具名称与原固定 binding 不一致")
     # 1. 内容检查器与模型绑定覆盖整个程序，取消时先排空已开始的工具。
     prompt_hints = tuple(prompt_hints)
     source_head = reader.head(source=source)
@@ -119,13 +132,21 @@ async def run_reply(
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
         async def build_materials(messages: tuple[Message, ...]) -> Materials:
             nonlocal artifacts
-            result = await material_view.prepare(
-                messages,
-                source,
-                caller=ctx,
-                reminders=tuple(reminders),
-                reminder_contributors=menu.reminders,
-            )
+            if menu.reminders:
+                result = await material_view.prepare(
+                    messages,
+                    source,
+                    caller=ctx,
+                    reminders=tuple(reminders),
+                    reminder_contributors=menu.reminders,
+                )
+            else:
+                result = await material_view.prepare(
+                    messages,
+                    source,
+                    caller=ctx,
+                    reminders=tuple(reminders),
+                )
             if render_content is None:
                 start = 0 if result.summary is None else summary_range(messages, result.summary.source_message_ids).stop
                 refs = tuple(

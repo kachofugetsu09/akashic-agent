@@ -25,7 +25,7 @@ from plugins.models.content import render_content
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.react.plugin import react
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageLog
 from session.message import ContentPart, Control, Input, Output, ToolResult
@@ -170,8 +170,11 @@ async def apply(ctx, config):
                     context=root.require(CONTEXT), tools=root.require(TOOLS), react=react,
                     materials=root.require(MATERIALS), render_content=lambda part: render_content(part, artifacts={}),
                     turn_projection=root.require(TURN_PROJECTION),
-                    read_call=store.read_call, authorize=authorize, tool_names=("example",),
-                    max_output_tokens=100, max_steps=4,
+                    read_call=store.read_call,
+                    authorize=authorize,
+                    tool_view=root.require(ALL_TOOLS)(),
+                    max_output_tokens=100,
+                    max_steps=4,
                 )
             conversation = Conversation(
                 reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),

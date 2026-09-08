@@ -41,12 +41,14 @@ class ToolRef:
     description: Mapping[str, object]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _Registration:
     ref: ToolRef
     context: Context
     open: OpenTarget
     capture: Capture | None
+    preparation: _Preparation | None = None
+    authorization: _Authorization | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,8 +138,6 @@ class ToolCatalog:
         self._ctx = ctx
         self._tools: dict[str, _Registration] = {}
         self._groups: dict[str, bool] = {}
-        self._preparations: dict[str, _Preparation] = {}
-        self._authorizations: dict[str, _Authorization] = {}
 
     async def declare_group(self, ctx: Context, *, always_on: bool = False) -> Effect:
         """由真实插件 owner 在注册工具前声明唯一组级展示事实。"""
@@ -152,7 +152,11 @@ class ToolCatalog:
             if owner in self._groups:
                 raise ValueError(f"工具组重复声明: {owner}")
             self._groups[owner] = always_on
-            return lambda: self._groups.pop(owner)
+
+            def cleanup() -> None:
+                _ = self._groups.pop(owner)
+
+            return cleanup
 
         return await ctx.effect(setup, label=f"tool-group:{owner}")
 
@@ -181,10 +185,9 @@ class ToolCatalog:
             raise ValueError("工具参数必须声明 object schema")
         if risk not in {"read-only", "read-write", "external-side-effect"}:
             raise ValueError("工具风险声明无效")
-        if any(
-            type(value) is not bool
-            for value in (idempotent, public)
-        ):
+        if search_hint is not None and not isinstance(search_hint, str):
+            raise TypeError("工具搜索提示必须是字符串或 None")
+        if any(type(value) is not bool for value in (idempotent, public)):
             raise TypeError("工具执行和发现选项必须是 bool")
         if capture is not None and not callable(capture):
             raise TypeError("工具 capture 必须是同步回调")
@@ -221,40 +224,46 @@ class ToolCatalog:
         return reference
 
     async def register_prepare(
-        self, ctx: Context, *, tool: str, name: str, prepare: Prepare
+        self, ctx: Context, *, tool: ToolRef, name: str, prepare: Prepare
     ) -> Effect:
         """每个工具的参数改写只有一个 owner，不按安装顺序串联未知转换。"""
         self._check_context(ctx)
-        if not name or not tool:
-            raise ValueError("参数准备必须有工具名与贡献名")
+        if not name:
+            raise ValueError("参数准备必须有贡献名")
+        registration = self._registration(tool)
+        contribution = _Preparation(ctx, name, prepare)
 
         def setup() -> Callable[[], None]:
-            if tool in self._preparations:
-                raise ValueError(f"工具参数准备已有 owner: {tool}")
-            self._preparations[tool] = _Preparation(ctx, name, prepare)
+            if registration.preparation is not None:
+                raise ValueError(f"工具参数准备已有 owner: {tool.name}")
+            registration.preparation = contribution
 
             def cleanup() -> None:
-                del self._preparations[tool]
+                if registration.preparation is contribution:
+                    registration.preparation = None
 
             return cleanup
 
         return await ctx.effect(setup, label=f"tool-prepare:{name}")
 
     async def register_authorize(
-        self, ctx: Context, *, tool: str, name: str, authorize: BindingAuthorize
+        self, ctx: Context, *, tool: ToolRef, name: str, authorize: BindingAuthorize
     ) -> Effect:
         """每个工具的独立限制只有一个 owner，并随 binding 固定。"""
         self._check_context(ctx)
-        if not name or not tool:
-            raise ValueError("工具限制必须有工具名与贡献名")
+        if not name:
+            raise ValueError("工具限制必须有贡献名")
+        registration = self._registration(tool)
+        contribution = _Authorization(ctx, name, authorize)
 
         def setup() -> Callable[[], None]:
-            if tool in self._authorizations:
-                raise ValueError(f"工具限制已有 owner: {tool}")
-            self._authorizations[tool] = _Authorization(ctx, name, authorize)
+            if registration.authorization is not None:
+                raise ValueError(f"工具限制已有 owner: {tool.name}")
+            registration.authorization = contribution
 
             def cleanup() -> None:
-                del self._authorizations[tool]
+                if registration.authorization is contribution:
+                    registration.authorization = None
 
             return cleanup
 
@@ -289,7 +298,7 @@ class ToolCatalog:
     def view(self, *refs: ToolRef) -> ToolView:
         """构造消费者 view，并核对每个引用仍属于当前 Root 的真实注册。"""
         for ref in refs:
-            self._check_ref(ref)
+            _ = self._registration(ref)
         return ToolView(tuple(refs))
 
     def _all_view(self) -> ToolView:
@@ -297,7 +306,6 @@ class ToolCatalog:
                               if self._tools[name].ref.description["public"]))
 
     def group_always_on(self, ref: ToolRef) -> bool:
-        self._check_ref(ref)
         registration = self._registration(ref)
         return self._groups.get(registration.context.runtime.plugin_id, False)
 
@@ -321,11 +329,10 @@ class ToolCatalog:
         configuration: Mapping[str, object] | None = None,
     ) -> str:
         """从真实注册 Context 固定闭包，不让调用者省略准备贡献或重选目标。"""
-        self._check_ref(ref)
         name = ref.name
         registration = self._registration(ref)
-        preparation = self._preparations.get(name)
-        authorization = self._authorizations.get(name)
+        preparation = registration.preparation
+        authorization = registration.authorization
         if configuration is not None and registration.capture is None:
             raise ValueError("该工具未声明 binding 配置入口")
         contributors = (
@@ -354,8 +361,40 @@ class ToolCatalog:
             contributors=contributors,
         )
 
-    def _check_ref(self, ref: ToolRef) -> None:
-        _ = self._registration(ref)
+    def _bind_saved(
+        self,
+        metadata: Mapping[str, object],
+        bindings: Bindings,
+        *,
+        configuration: Mapping[str, object],
+    ) -> str:
+        """从已归档的精确注册派生新配置，不按当前名称重选实现。"""
+        description = metadata.get("tool")
+        if not isinstance(description, Mapping):
+            raise ValueError("工具 binding 描述无效")
+        name = description.get("name")
+        registration = self._tools.get(name) if isinstance(name, str) else None
+        if registration is None or registration.ref.description != description:
+            raise ValueError("工具 binding 与归档注册不一致")
+        preparation = registration.preparation
+        authorization = registration.authorization
+        expected = {
+            "tool",
+            "prepare",
+            *(("authorize",) if authorization is not None else ()),
+            *(("state",) if registration.capture is not None else ()),
+        }
+        if set(metadata) != expected or metadata["prepare"] != (
+            None if preparation is None else preparation.name
+        ):
+            raise ValueError("工具 binding 参数准备与归档注册不一致")
+        if authorization is not None and metadata["authorize"] != authorization.name:
+            raise ValueError("工具 binding 限制与归档注册不一致")
+        return self.bind(
+            registration.ref,
+            bindings,
+            configuration=configuration,
+        )
 
     def _registration(self, ref: ToolRef) -> _Registration:
         registration = self._tools.get(ref.name) if isinstance(ref, ToolRef) else None
@@ -374,14 +413,14 @@ class ToolCatalog:
         if not isinstance(name, str):
             raise ValueError("工具 binding 缺少工具名")
         registration = self._tools[name]
-        preparation = self._preparations.get(name)
+        preparation = registration.preparation
         if registration.ref.description != description or metadata["prepare"] != (
             None if preparation is None else preparation.name
         ):
             raise ValueError("归档工具描述或参数准备与 binding 不一致")
         expected: set[str] = {"tool", "prepare"}
         if "authorize" in metadata:
-            authorization = self._authorizations.get(name)
+            authorization = registration.authorization
             if authorization is None or metadata["authorize"] != authorization.name:
                 raise ValueError("归档工具限制与 binding 不一致")
             expected.add("authorize")
@@ -414,7 +453,12 @@ class ToolCatalog:
         description = metadata.get("tool")
         if not isinstance(description, Mapping) or not isinstance(description.get("name"), str):
             raise ValueError("工具 binding 描述无效")
-        authorization = self._authorizations.get(cast(str, description["name"]))
+        registration = self._tools.get(cast(str, description["name"]))
+        authorization = (
+            None
+            if registration is None or registration.ref.description != description
+            else registration.authorization
+        )
         if authorization is None or metadata["authorize"] != authorization.name:
             raise ValueError("归档工具限制与 binding 不一致")
         async with self._ctx.runtime_scope():
@@ -431,6 +475,21 @@ async def open_tool(bindings: Bindings, binding_id: str) -> AsyncIterator[BoundT
     async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
         async with catalog.open(metadata) as target:
             yield target
+
+
+async def bind_saved_tool(
+    bindings: Bindings,
+    binding_id: str,
+    *,
+    configuration: Mapping[str, object],
+) -> str:
+    """从真实原 binding 派生新配置，并保留它的归档 provider 闭包。"""
+    async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
+        return catalog._bind_saved(
+            metadata,
+            bindings,
+            configuration=configuration,
+        )
 
 
 async def apply(ctx: Context, config: object) -> None:

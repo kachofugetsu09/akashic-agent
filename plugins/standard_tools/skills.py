@@ -16,16 +16,9 @@ from agent.skills import SkillRecord, skill_body
 from plugins.context.api import Materials
 from plugins.context.materials import MATERIALS
 from plugins.tools.api import CallSource, Result
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import TOOLS, ToolRef
 from session.message import ContentPart, Message
 from session.message_codec import json_value
-
-api_version = 3
-name = "skills"
-version = "1.0.0"
-desc = "从固定插件目录提供技能材料，并归档正文和相对资源供历史调用恢复"
-inject = (MATERIALS, TOOLS)
-
 
 class SkillQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -111,7 +104,7 @@ class SkillTool:
         return None
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def register_skills(ctx: Context) -> ToolRef:
     """目录和工具共享已发布技能事实；工具绑定独自保存恢复材料。"""
     archive_path = ctx.data_root / "skill-files"
 
@@ -157,8 +150,8 @@ async def apply(ctx: Context, config: object) -> None:
         return Materials(text)
 
     _ = await ctx.require(MATERIALS).register(ctx, name="skills", prepare=prepare, prompt=True, priority=300)
-    _ = await ctx.require(TOOLS).register(
+    return await ctx.require(TOOLS).register(
         ctx, name="load_skill", description="按技能名称读取完整指令和固定资源目录；先读取再执行，相对资源以返回的 base_directory 为根。未知、不可用或空技能返回错误。",
         parameters=SkillQuery.model_json_schema(), open=open_tool, capture=capture,
-        risk="read-only", always_on=True, idempotent=True,
+        risk="read-only", idempotent=True,
     )

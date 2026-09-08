@@ -40,10 +40,10 @@ from agent.tools.unified_exec import ExecutionResult
 from agent.tools.unified_exec import ShellProcessManager
 from agent.tools.base import ToolResult
 from agent.tools.filesystem import (
-    EditFileTool,
-    ListDirTool,
-    ReadFileTool,
-    WriteFileTool,
+    EditFileOperation,
+    ListDirOperation,
+    ReadFileOperation,
+    WriteFileOperation,
 )
 from core.common.diagnostic_log import configure_logging
 from core.common.diagnostic_log import diagnostic_context
@@ -479,7 +479,7 @@ class HostBridgeService(rpc.HostBridgeServicer):
                 if read.HasField("limit"):
                     require_positive(read.limit, "limit")
                 async with self._manager_operation(request.context):
-                    result = ReadFileTool(
+                    result = ReadFileOperation(
                         allowed_dir=allowed_dir, enable_bridge=False
                     ).read_from_disk(
                         read.path,
@@ -489,13 +489,13 @@ class HostBridgeService(rpc.HostBridgeServicer):
             case "write":
                 require_fields(request.write, "path", "content")
                 async with self._manager_operation(request.context):
-                    result = await WriteFileTool(
+                    result = await WriteFileOperation(
                         allowed_dir=allowed_dir, enable_bridge=False
                     ).execute(request.write.path, request.write.content)
             case "edit":
                 require_fields(request.edit, "path", "old_text", "new_text")
                 async with self._manager_operation(request.context):
-                    result = await EditFileTool(
+                    result = await EditFileOperation(
                         allowed_dir=allowed_dir, enable_bridge=False
                     ).execute(
                         request.edit.path,
@@ -506,7 +506,7 @@ class HostBridgeService(rpc.HostBridgeServicer):
             case "list":
                 require_fields(request.list, "path")
                 async with self._manager_operation(request.context):
-                    result = await ListDirTool(
+                    result = await ListDirOperation(
                         allowed_dir=allowed_dir, enable_bridge=False
                     ).execute(request.list.path)
             case _:

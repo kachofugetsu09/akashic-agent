@@ -1,10 +1,10 @@
 # 0047 · 一个 provide 可以绑定一个 Tool
 
-- 状态：accepted / implementing
+- 状态：partially superseded
 - 日期：2026-08-28
 - 关联条款：PLG-001～PLG-014、PRO-001～PRO-002
 - supersedes：0041 中“互斥角色声明都不提供可调用服务”的局部约束
-- superseded by：无
+- superseded by：[0062](0062-tools-flow-through-provider-views.md) 替换 Service 按名字解析单个 Tool 的机制；本记录的 Wake 来源与阶段业务选择由 0048 及现行实现继续拥有
 
 ## 背景
 

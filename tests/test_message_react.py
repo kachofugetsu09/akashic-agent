@@ -599,8 +599,10 @@ async def test_indirect_wire_call_and_request_reminder_replay_exactly(tmp_path):
             if isinstance(message.body, Output)
             for part in message.body.parts
             if isinstance(part, ContentPart) and part.kind == "model.facts"
+            and isinstance(part.value, Mapping)
             and part.value["wire_tool_calls"]
         )
+        assert isinstance(facts.value, Mapping)
         assert facts.value["wire_tool_calls"] == {
             "0": {
                 "name": "tool_call",

@@ -14,7 +14,7 @@ from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
 from tests.model_plugin_fakes import build_test_chat_models
@@ -28,11 +28,24 @@ async def test_real_tools_watcher_restarts_and_settles_offline_abandon_once(tmp_
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            binding = ctx.require(TOOLS).bind("shell", Bindings(log, host._archive, host.open_binding))
-        inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content={})
-        outputs = log.writer("s", author="agent", source="conversation", body_types=(Output,),
-                             content={}, check_call=lambda call: None)
-        controls = log.writer("s", author="user", source="conversation", body_types=(Control,), content={})
+            binding = ctx.require(TOOLS).bind(
+                ctx.require(ALL_TOOLS)().select("shell"),
+                Bindings(log, host._archive, host.open_binding),
+            )
+        inputs = log.writer(
+            "s", author="user", source="conversation", body_types=(Input,), content={}
+        )
+        outputs = log.writer(
+            "s",
+            author="agent",
+            source="conversation",
+            body_types=(Output,),
+            content={},
+            check_call=lambda call: None,
+        )
+        controls = log.writer(
+            "s", author="user", source="conversation", body_types=(Control,), content={}
+        )
 
         def append(index):
             inputs.append(f"input-{index}", Input(()))
@@ -85,7 +98,7 @@ async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tm
             root = snapshot.composition_root.context
             ctx = root.require(ServiceKey("standard-tools-probe"))
             catalog = root.require(TOOLS)
-            binding = catalog.bind("shell", bindings)
+            binding = catalog.bind(root.require(ALL_TOOLS)().select("shell"), bindings)
             reader = log.reader("shared")
             inputs = log.writer("shared", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
             inputs.append("input", Input((ContentPart("text", "old work"),)))

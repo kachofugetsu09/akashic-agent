@@ -16,22 +16,32 @@ from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessa
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import get_current_runtime_snapshot, lease_runtime_snapshot
 from bus.event_bus import EventBus
+from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.content.plugin import check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import Config
 from plugins.conversation.plugin import check_origin
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from session.log import MessageLog
+from session.artifact_store import ArtifactStore
 from session.message import ContentPart, Input, Output, ToolResult
+from tests.test_message_push_plugin import storage
 
 
 def prompt_sources(sources):
-    for name in ("prompt", "skills"):
-        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
-                        ignore=shutil.ignore_patterns("__pycache__"))
-    settings = sources.parent / "workspace/plugin-data/context-builtin/config.local.toml"
+    for name in ("prompt", "standard_tools"):
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins" / name,
+            sources / name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+    settings = (
+        sources.parent / "workspace/plugin-data/context-builtin/config.local.toml"
+    )
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text('summary_source = []\nprompt_sources = {default_prompt = "prompt", skills = "skills"}\n')
+    settings.write_text(
+        'summary_source = []\nprompt_sources = {default_prompt = "prompt", skills = "standard_tools"}\n'
+    )
     veda = sources.parent / "workspace/memory/VEDA.md"
     veda.parent.mkdir(parents=True, exist_ok=True)
     veda.write_text("唯一人格甲")
@@ -54,19 +64,29 @@ async def apply(ctx, config):
 @asynccontextmanager
 async def application(tmp_path):
     sources = tmp_path / "plugins"
+    store, log = storage(tmp_path / "workspace")
     for name in ("context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     prompt_sources(sources)
-    log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home/cache", message_log=log)
+    artifacts = ChannelAttachmentArtifactStore(
+        workspace=tmp_path / "workspace", metadata_store=store
+    )
+    host = PluginManager(
+        [sources],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home/cache",
+        message_log=log,
+        channel_attachment_store=artifacts,
+    )
     try:
         await host.load_all()
         yield log, host
     finally:
         await host.terminate_all()
         log.close()
+        store.close()
 
 
 @pytest.mark.asyncio
@@ -131,7 +151,9 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
     async with application(tmp_path) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            reference = ctx.require(TOOLS).bind("load_skill", ctx.require(BINDINGS))
+            reference = ctx.require(TOOLS).bind(
+                ctx.require(ALL_TOOLS)().select("load_skill"), ctx.require(BINDINGS)
+            )
             metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
             state = cast(Mapping[str, object], metadata["state"])
             assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
@@ -140,22 +162,45 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
         (tmp_path / "plugins/fixture_skills/skills/example/resource.txt").write_text("resource-b")
         (tmp_path / "plugins/fixture_skills/skills/example/SKILL.md").write_text("---\ndescription: updated\n---\n新版指令")
     assert not original_root.exists()
-    log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([tmp_path / "plugins"], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home/cache", message_log=log)
+    log = MessageLog(tmp_path / "workspace/sessions.db")
+    store = ArtifactStore(tmp_path / "workspace/sessions.db")
+    artifacts = ChannelAttachmentArtifactStore(
+        workspace=tmp_path / "workspace", metadata_store=store
+    )
+    host = PluginManager(
+        [tmp_path / "plugins"],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home/cache",
+        message_log=log,
+        channel_attachment_store=artifacts,
+    )
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            replacement = ctx.require(TOOLS).bind("load_skill", ctx.require(BINDINGS))
+            replacement = ctx.require(TOOLS).bind(
+                ctx.require(ALL_TOOLS)().select("load_skill"), ctx.require(BINDINGS)
+            )
             assert replacement != reference
     finally:
         await host.terminate_all()
         log.close()
+        store.close()
     shutil.rmtree(tmp_path / "plugins")
-    log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home/cache", message_log=log)
+    log = MessageLog(tmp_path / "workspace/sessions.db")
+    store = ArtifactStore(tmp_path / "workspace/sessions.db")
+    artifacts = ChannelAttachmentArtifactStore(
+        workspace=tmp_path / "workspace", metadata_store=store
+    )
+    host = PluginManager(
+        [],
+        event_bus=EventBus(),
+        workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home/cache",
+        message_log=log,
+        channel_attachment_store=artifacts,
+    )
     try:
         bindings = Bindings(log, host._archive, host.open_binding)
         async with bindings.open(replacement, TOOLS) as (tools, metadata):
@@ -183,6 +228,7 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
     finally:
         await host.terminate_all()
         log.close()
+        store.close()
 
 
 def test_context_grants_can_be_disabled_in_toml_and_reject_bad_owners():
@@ -195,20 +241,20 @@ def test_context_grants_can_be_disabled_in_toml_and_reject_bad_owners():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("restricted", [False, True])
-async def test_default_reply_uses_prompt_and_real_skill_tool_with_menu_authority(tmp_path, restricted):
+async def test_default_reply_uses_prompt_and_real_skill_tool_with_provider_view(
+    tmp_path,
+):
     from datetime import UTC, datetime
     from tests.test_default_reply import application as reply_application
 
     def sources(root):
         prompt_sources(root)
-        if restricted:
-            path = root / "reply/plugin.py"
-            path.write_text(path.read_text().replace("tools: tuple[str, ...] | None = None",
-                                                   'tools: tuple[str, ...] | None = ("write_evidence",)'))
-        else:
-            path = root / "test_provider/plugin.py"
-            path.write_text(path.read_text().replace('"write_evidence", {})', '"load_skill", {"skill": "example"})'))
+        path = root / "test_provider/plugin.py"
+        path.write_text(
+            path.read_text().replace(
+                '"write_evidence", {})', '"load_skill", {"skill": "example"})'
+            )
+        )
 
     async with reply_application(tmp_path, replying=True, extra_sources=sources) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
@@ -230,8 +276,11 @@ async def test_default_reply_uses_prompt_and_real_skill_tool_with_menu_authority
             assert "input_id: input" in environment
             assert rows[0].recorded_at.astimezone().isoformat() in environment
             assert "fixture task" in str(calls[0].messages)
-            assert ("load_skill" in str(calls[0].tools)) != restricted
-            if not restricted:
-                result = cast(Mapping[str, object], json.loads(cast(str, rows[2].body.parts[0].value)))
-                assert (Path(cast(str, result["base_directory"])) / "resource.txt").read_text() == "resource-a"
-                assert result["instructions"] == "读取 resource.txt，保留原内容。"
+            assert "load_skill" in str(calls[0].tools)
+            result = cast(
+                Mapping[str, object], json.loads(cast(str, rows[2].body.parts[0].value))
+            )
+            assert (
+                Path(cast(str, result["base_directory"])) / "resource.txt"
+            ).read_text() == "resource-a"
+            assert result["instructions"] == "读取 resource.txt，保留原内容。"

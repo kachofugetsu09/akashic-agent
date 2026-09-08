@@ -2,17 +2,25 @@ from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
 import shutil
+from typing import cast
 
 import pytest
 
 from agent.plugin_composition.bindings import Bindings
-from agent.plugin_composition.model import ServiceKey
+from agent.plugin_composition import CompositionRoot
+from agent.plugin_composition.model import PluginRuntime, ServiceKey
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import TOOL_DISPLAY_NAME, open_tool
+from plugins.tools.plugin import (
+    ALL_TOOLS,
+    TOOL_DISPLAY_NAME,
+    ToolCatalog,
+    ToolRef,
+    open_tool,
+)
 from session.log import MessageLog
 
 TOOLS = ServiceKey("tools.v1")
@@ -55,11 +63,12 @@ async def apply(ctx, config):
     @asynccontextmanager
     async def open_target(state):
         yield Target()
-    await ctx.require(inject[0]).register(
+    ref = await ctx.require(inject[0]).register(
         ctx, name="example", description="Example target A",
         parameters={"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"], "additionalProperties": False},
         open=open_target,
     )
+    await ctx.provide(ServiceKey("fixture.example-ref"), ref)
 """)
     prepare = path / "prepare"
     prepare.mkdir()
@@ -68,11 +77,13 @@ from agent.plugin_composition import ServiceKey
 api_version = 3
 name = "prepare"
 version = "1.0.0"
-inject = (ServiceKey("tools.v1"),)
+inject = (ServiceKey("tools.v1"), ServiceKey("fixture.example-ref"))
 async def apply(ctx, config):
     async def prepare(arguments):
         return {"value": "restore:" + arguments["value"]}
-    await ctx.require(inject[0]).register_prepare(ctx, tool="example", name="restore", prepare=prepare)
+    await ctx.require(inject[0]).register_prepare(
+        ctx, tool=ctx.require(inject[1]), name="restore", prepare=prepare,
+    )
 """)
 
 
@@ -85,13 +96,13 @@ from plugins.tools.api import Denied
 api_version = 3
 name = "authorize"
 version = "1.0.0"
-inject = (ServiceKey("tools.v1"),)
+inject = (ServiceKey("tools.v1"), ServiceKey("fixture.example-ref"))
 async def apply(ctx, config):
     async def authorize(arguments):
         if arguments["value"] == "restore:blocked":
             raise Denied("blocked by fixed policy")
     await ctx.require(inject[0]).register_authorize(
-        ctx, tool="example", name="fixed-policy", authorize=authorize,
+        ctx, tool=ctx.require(inject[1]), name="fixed-policy", authorize=authorize,
     )
 """)
 
@@ -107,6 +118,109 @@ def manager(tmp_path, sources, log=None):
 
 
 @pytest.mark.asyncio
+async def test_prepare_and_authorize_follow_exact_registration_identity(tmp_path):
+    """同名新工具不能继承旧注册的参数转换或限制。"""
+    root = CompositionRoot("exact-tool-contributions")
+    refs = {}
+    contexts = {}
+    catalog = None
+
+    def runtime(plugin_id):
+        return PluginRuntime(
+            plugin_id, plugin_id + ":1", tmp_path, tmp_path, tmp_path, {}
+        )
+
+    @asynccontextmanager
+    async def open_target(_state):
+        raise AssertionError("identity test does not open targets")
+        yield
+
+    async def target(ctx, label):
+        nonlocal catalog
+        contexts[label] = ctx
+        if catalog is None:
+            catalog = ToolCatalog(ctx)
+        refs[label] = await catalog.register(
+            ctx,
+            name="example",
+            description="same public description",
+            parameters={"type": "object"},
+            open=open_target,
+        )
+
+    try:
+        first = await root.mount(
+            lambda ctx: target(ctx, "first"), name="first", runtime=runtime("first")
+        )
+        assert catalog is not None
+        with pytest.raises(TypeError, match="搜索提示"):
+            await catalog.register(
+                contexts["first"],
+                name="bad_hint",
+                description="bad search hint",
+                parameters={"type": "object"},
+                open=open_target,
+                search_hint=cast(str, object()),
+            )
+
+        async def contribute(ctx):
+            async def prepare(arguments):
+                return {**arguments, "prepared_by": "first"}
+
+            async def authorize(arguments):
+                _ = arguments
+
+            await catalog.register_prepare(
+                ctx, tool=refs["first"], name="first-prepare", prepare=prepare
+            )
+            await catalog.register_authorize(
+                ctx, tool=refs["first"], name="first-authorize", authorize=authorize
+            )
+
+        _ = await root.mount(contribute, name="policy", runtime=runtime("policy"))
+
+        class CapturingBindings:
+            def __init__(self):
+                self.metadata = None
+
+            def bind(self, _key, metadata, *, contributors):
+                self.metadata = metadata
+                return "binding"
+
+        captured = CapturingBindings()
+        catalog.bind(refs["first"], captured)
+        assert captured.metadata["prepare"] == "first-prepare"
+        assert captured.metadata["authorize"] == "first-authorize"
+
+        stale = refs["first"]
+        await first.dispose()
+        await root.mount(
+            lambda ctx: target(ctx, "second"), name="second", runtime=runtime("second")
+        )
+        catalog.bind(refs["second"], captured)
+        assert captured.metadata == {
+            "tool": refs["second"].description,
+            "prepare": None,
+        }
+
+        forged = ToolRef(stale.name, stale.description)
+        async def passthrough(value):
+            return value
+        for invalid in (stale, forged):
+            with pytest.raises(RuntimeError, match="引用已经失效"):
+                catalog.view(invalid)
+            with pytest.raises(RuntimeError, match="引用已经失效"):
+                await catalog.register_prepare(
+                    root.context,
+                    tool=invalid,
+                    name="forged",
+                    prepare=passthrough,
+                )
+    finally:
+        await root.dispose()
+
+
+@pytest.mark.asyncio
 async def test_display_name_reads_old_binding_without_opening_removed_tool(tmp_path):
     sources = tmp_path / "plugins"
     write_plugins(sources)
@@ -117,7 +231,9 @@ async def test_display_name_reads_old_binding_without_opening_removed_tool(tmp_p
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             from agent.plugin_composition.bindings import BINDINGS
             ctx = snapshot.composition_root.context
-            binding_id = ctx.require(TOOLS).bind("example", ctx.require(BINDINGS))
+            binding_id = ctx.require(TOOLS).bind(
+                ctx.require(ALL_TOOLS)().select("example"), ctx.require(BINDINGS)
+            )
         await host.terminate_all()
         shutil.rmtree(sources / "target")
         shutil.rmtree(sources / "prepare")
@@ -150,8 +266,11 @@ async def test_ordinary_tool_binding_restores_code_and_preparer_without_current_
         await host.load_all()
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
-            binding_id = catalog.bind("example", bindings)
+            ctx = snapshot.composition_root.context
+            catalog = ctx.require(TOOLS)
+            binding_id = catalog.bind(
+                ctx.require(ALL_TOOLS)().select("example"), bindings
+            )
         await host.terminate_all()
         shutil.rmtree(sources)
         restored = manager(tmp_path, [])
@@ -211,13 +330,15 @@ async def test_tool_configuration_is_owned_frozen_and_restored_without_recapture
         await host.load_all()
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
+            ctx = snapshot.composition_root.context
+            catalog = ctx.require(TOOLS)
+            ref = ctx.require(ALL_TOOLS)().select("example")
             with pytest.raises(ValueError, match="prefix configuration"):
-                catalog.bind("example", bindings)
+                catalog.bind(ref, bindings)
             with pytest.raises(ValueError, match="prefix configuration"):
-                catalog.bind("example", bindings, configuration={"unexpected": True})
+                catalog.bind(ref, bindings, configuration={"unexpected": True})
             options = {"prefix": " job-a: "}
-            identity = catalog.bind("example", bindings, configuration=options)
+            identity = catalog.bind(ref, bindings, configuration=options)
             options["prefix"] = "job-b:"
             assert bindings.describe(identity, TOOLS)["state"] == {"prefix": "job-a:"}
         await host.terminate_all()
@@ -242,8 +363,11 @@ async def test_binding_authorize_checks_final_arguments_and_old_binding_keeps_ol
         await host.load_all()
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
-            old_binding = catalog.bind("example", bindings)
+            ctx = snapshot.composition_root.context
+            catalog = ctx.require(TOOLS)
+            old_binding = catalog.bind(
+                ctx.require(ALL_TOOLS)().select("example"), bindings
+            )
         await host.terminate_all()
 
         add_authorize(sources)
@@ -257,8 +381,11 @@ async def test_binding_authorize_checks_final_arguments_and_old_binding_keeps_ol
             return {"permission": "caller"}
 
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
-            new_binding = catalog.bind("example", bindings)
+            ctx = snapshot.composition_root.context
+            catalog = ctx.require(TOOLS)
+            new_binding = catalog.bind(
+                ctx.require(ALL_TOOLS)().select("example"), bindings
+            )
             execution = catalog.execution(caller_authorize)
             old_result = await execution.execute("old", old_binding, {"value": "blocked"})
             denied = await execution.execute("new", new_binding, {"value": "blocked"})

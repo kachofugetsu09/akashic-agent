@@ -25,7 +25,7 @@ from agent.plugins.archive import PluginArchive
 from agent.plugin_composition.mcp_slots import PluginMcpServers, _freeze_plugin_mcp_servers
 from plugins.tools import plugin as tools_plugin
 from plugins.tools.api import MessageReply
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection import plugin as turn_projection_plugin
 from session.log import MessageLog
 from agent.plugin_composition.tool_catalog import _freeze_plugin_tools
@@ -115,7 +115,9 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
                 data_dir=tmp_path / "computer-data", workspace=tmp_path, config={},
             ),
         )
-        assert [item["name"] for item in root.context.require(TOOLS).descriptions()] == ["computer"]
+        assert [ref.name for ref in root.context.require(ALL_TOOLS)().refs] == [
+            "computer"
+        ]
         registry = _freeze_plugin_mcp_servers(mcp, root.instance_token)
         assert registry["computer"].definition.workload_env[0].env == "COMPUTER_URL"
     finally:
@@ -419,7 +421,10 @@ class _ComputerHarness:
 
     async def bind_computer(self) -> str:
         async with lease_runtime_snapshot(self.manager.snapshot_store):
-            self.binding = self.tools.bind("computer", self.bindings)
+            self.binding = self.tools.bind(
+                self.composition_root.context.require(ALL_TOOLS)().select("computer"),
+                self.bindings,
+            )
         assert self.binding is not None
         return self.binding
 

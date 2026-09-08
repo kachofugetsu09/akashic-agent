@@ -139,7 +139,7 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 
 ### 新链路候选 Delivery 状态（第 09 层）
 
-`message_push` 的目标消息使用原工具 key 派生的稳定 ID，只通过 Delivery 的同库事务追加正文与首次选择。Tool owner 另存最终参数与工具结算，Delivery 保存原发送回执；没有第二份目标正文。Tools 的可选 binding state 由实际工具校验配置后固定（如当时的 Sender bindings），随既有不可变 binding descriptor 保存；未经处理的配置不另存，不增加业务状态表。程序的固定工具目录只引用原 binding ID，恢复和预载不改写原 descriptor。文件或 URL 在参数准备时导入 Artifact；参数失败或授权拒绝可以留下未引用的已发布附件，沿原无自动 GC 合同保留。新 `ARTIFACT_IMPORT` 只授权导入，不授权读取、删除、改消息或改其他 owner 状态。
+`message_push` 的目标消息使用原工具 key 派生的稳定 ID，只通过 Delivery 的同库事务追加正文与首次选择。Tool owner 另存最终参数与工具结算，Delivery 保存原发送回执；没有第二份目标正文。Tools 的可选 binding state 由实际工具校验配置后固定（如当时的 Sender bindings），随既有不可变 binding descriptor 保存；未经处理的配置不另存，不增加业务状态表。程序的固定工具目录只引用原 binding ID，恢复不改写原 descriptor。当前 `ToolRef` 和 `ToolView` 只活在 composition Root 内；搜索结果是普通 ToolResult，目录 reminder 与成功 wire replay 进入既有 `model.facts` ContentPart，不新增 loaded、grant、LRU、TTL、epoch 或工具目录表。文件或 URL 在参数准备时导入 Artifact；参数失败或授权拒绝可以留下未引用的已发布附件，沿原无自动 GC 合同保留。新 `ARTIFACT_IMPORT` 只授权导入，不授权读取、删除、改消息或改其他 owner 状态。
 
 | 对象 | 正常增加 | 允许原位变化 | 物理减少、owner 与恢复 |
 |---|---|---|---|

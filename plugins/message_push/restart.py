@@ -20,26 +20,14 @@ from agent.control.frame_book import CONTROL_FRAMES, FrameBook, FrameClaim, Fram
 from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
 from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durable_call_key
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import TOOLS, ToolRef
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import Message, MessageCatalog, MessageReader
 from session.message import CallRef, Input, Output, ToolCall, ToolResult, freeze_json
 
 logger = logging.getLogger(__name__)
 
-api_version = 3
-name = "agent_restart"
-version = "1.0.0"
-desc = "在当前最终回复写入并送达后请求 supervisor 重启"
-inject = (
-    TOOLS,
-    BINDINGS,
-    MESSAGE_CATALOG,
-    TURN_PROJECTION,
-    FINAL_OUTPUT_DELIVERY,
-    RESTART_GATE,
-    CONTROL_FRAMES,
-)
+TOOL_NAME = "agent_restart"
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,7 +282,7 @@ class RestartWatcher:
         if not isinstance(descriptor, Mapping):
             raise ValueError("工具 binding 描述无效")
         descriptor = cast(Mapping[str, object], descriptor)
-        if descriptor.get("name") != name or descriptor.get("owner") != self._plugin_id:
+        if descriptor.get("name") != TOOL_NAME or descriptor.get("owner") != self._plugin_id:
             return None
         if call_message.source != message.source:
             raise RestartRejectedError("agent_restart ToolResult 来源不一致")
@@ -365,10 +353,10 @@ def _find_turn(reader: MessageReader, projection: TurnProjection, request: Resta
     return None
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def register_restart(ctx: Context) -> ToolRef | None:
     gate = ctx.require(RESTART_GATE)
     if not gate.supervised:
-        return
+        return None
     watcher = RestartWatcher(ctx)
 
     @asynccontextmanager
@@ -379,7 +367,7 @@ async def apply(ctx: Context, config: object) -> None:
         finally:
             tool.finalize(ctx.require(MESSAGE_CATALOG))
 
-    _ = await ctx.require(TOOLS).register(
+    ref = await ctx.require(TOOLS).register(
         ctx,
         name="agent_restart",
         description="在当前最终回复写入并送达后安全重启 Agent。",
@@ -393,11 +381,9 @@ async def apply(ctx: Context, config: object) -> None:
         },
         open=open_tool,
         risk="external-side-effect",
-        always_on=False,
-        preloadable=False,
-        requires_search=True,
         search_hint="重启 reload restart 核心代码",
     )
     _ = await ctx.on(RUNTIME_STARTING, watcher.prepare)
     _ = await ctx.on(RUNTIME_STARTED, watcher.start)
     _ = await ctx.on(RUNTIME_STOPPING, watcher.stop)
+    return ref

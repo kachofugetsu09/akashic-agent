@@ -18,7 +18,7 @@ from plugins.content.api import ContentSchema
 from plugins.content.plugin import CONTENT
 from plugins.context.api import Materials, Reminder
 from plugins.context.materials import MATERIALS
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import TOOLS, ToolRef, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import Message
 from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
@@ -95,11 +95,18 @@ class RecallBinding(BaseModel):
 
 
 AKASHA_RECORDS = ServiceKey[Callable[[str], Recall | None]]("akasha.recalls.v1")
-AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]]("akasha.recall-records.v1")
+AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]](
+    "akasha.recall-records.v1"
+)
+AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
 
 
 async def apply(ctx: Context, config: Config) -> None:
     """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
+    catalog = ctx.require(TOOLS)
+    _ = await catalog.declare_group(ctx)
+    tool_refs: list[ToolRef] = []
+
     async def request_reindex(_invocation: CommandInvocation) -> CommandResult:
         # TODO: 固定旧学习规则与来源的重建合同确认后，再接管旧请求与启动流程。
         return CommandResult("error", "新消息链路尚未接管 Akasha 重建；原学习图与旧重建记录保持不变。")
@@ -257,13 +264,29 @@ async def apply(ctx: Context, config: Config) -> None:
     actions: tuple[Literal["remember", "forget"], ...] = ("remember", "forget")
     for action in actions:
         @asynccontextmanager
-        async def open_feedback(candidates: object, action: Literal["remember", "forget"] = action) -> AsyncGenerator[FeedbackTool]:
-            yield FeedbackTool(action, learning, ctx.require(BINDINGS),
-                               lambda: load_message_nodes(memory_path, index_path))
-        _ = await ctx.require(TOOLS).register(
-            ctx, name=f"{action}_memory", description="记住明确确认的内容" if action == "remember" else "遗忘明确撤回的内容",
-            parameters=FeedbackArguments.model_json_schema(), open=open_feedback,
-            idempotent=True, always_on=True,
+        async def open_feedback(
+            candidates: object, action: Literal["remember", "forget"] = action
+        ) -> AsyncGenerator[FeedbackTool]:
+            yield FeedbackTool(
+                action,
+                learning,
+                ctx.require(BINDINGS),
+                lambda: load_message_nodes(memory_path, index_path),
+            )
+
+        tool_refs.append(
+            await catalog.register(
+                ctx,
+                name=f"{action}_memory",
+                description=(
+                    "记住明确确认的内容"
+                    if action == "remember"
+                    else "遗忘明确撤回的内容"
+                ),
+                parameters=FeedbackArguments.model_json_schema(),
+                open=open_feedback,
+                idempotent=True,
+            )
         )
 
     def capture_recall(options: Mapping[str, object]) -> Mapping[str, object]:
@@ -294,11 +317,20 @@ async def apply(ctx: Context, config: Config) -> None:
             bindings=bindings, select_learning=select, records=records(),
             open_embedding=partial(open_saved_embedding, bindings), max_chars=settings.inject_max_chars,
         )
-    _ = await ctx.require(TOOLS).register(
-        ctx, name="recall_memory", description="从记忆图召回历史对话，返回原始 Message 引用",
-        parameters=RecallArguments.model_json_schema(), open=open_recall, capture=capture_recall, idempotent=True,
-        risk="read-only", always_on=True,
+
+    tool_refs.append(
+        await catalog.register(
+            ctx,
+            name="recall_memory",
+            description="从记忆图召回历史对话，返回原始 Message 引用",
+            parameters=RecallArguments.model_json_schema(),
+            open=open_recall,
+            capture=capture_recall,
+            idempotent=True,
+            risk="read-only",
+        )
     )
+    _ = await ctx.provide(AKASHA_TOOLS, catalog.view(*tool_refs))
 
     async def close_memory() -> None:
         if memory is not None:

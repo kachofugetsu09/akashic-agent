@@ -14,6 +14,9 @@ from session.message import ContentPart, ContentReferences, Control, Input, Mess
 from session.message_codec import json_value
 
 from .api import DeliveryTarget
+from plugins.tools.plugin import ToolView
+
+WAKE_TOOLS_VIEW = ServiceKey[ToolView]("wake.tools.v1")
 
 Owner = Literal["content", "drift", "alert"]
 Stage = Literal["screen", "investigate", "drift", "alert"]

@@ -26,8 +26,17 @@ def test_yoyo_installs_grants_without_overwriting_operator_choice(tmp_path):
         initialized = tmp_path / "initialized"
         init_workspace(config_path=tmp_path / "init-config.toml", workspace=initialized)
         old = tomllib.loads(path.read_text())
-        old["prompt_sources"]["skills"] = "skills"
-        assert old == tomllib.loads((initialized / "plugin-data/context-builtin/config.local.toml").read_text())
+        assert old == {
+            "prompt_sources": {
+                "default_prompt": "prompt",
+                "markdown_memory": "markdown_memory",
+            },
+            "summary_source": ["compaction", "compaction"],
+        }
+        current = tomllib.loads(
+            (initialized / "plugin-data/context-builtin/config.local.toml").read_text()
+        )
+        assert current["prompt_sources"]["skills"] == "standard_tools"
         assert path.stat().st_mode & 0o777 == 0o600
         path.write_text('prompt_sources = {custom = "custom"}\n')
         before = (path.stat().st_ino, path.read_bytes())

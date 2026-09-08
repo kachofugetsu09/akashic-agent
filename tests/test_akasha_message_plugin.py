@@ -16,6 +16,7 @@ from plugins.content.plugin import CONTENT
 from plugins.context.materials import MATERIALS
 from plugins.tools.api import MessageReply
 from plugins.tools.plugin import TOOLS
+from plugins.akasha.message_plugin import AKASHA_TOOLS
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageLog
 from session.message import CallRef, ContentPart, ContentReferences, Input, Output, ToolCall, ToolResult
@@ -97,7 +98,9 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
             ctx = snapshot.composition_root.context
             bindings = ctx.require(BINDINGS)
             tools = ctx.require(TOOLS)
-            identity = tools.bind("recall_memory", bindings)
+            identity = tools.bind(
+                ctx.require(AKASHA_TOOLS).select("recall_memory"), bindings
+            )
             async with ctx.require(CONTENT).bind() as content:
                 inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content=content.checks)
                 outputs = log.writer("s", author="assistant", source="conversation", body_types=(Output,),
@@ -182,7 +185,9 @@ async def test_prepared_recall_survives_config_change_and_source_removal(tmp_pat
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
             bindings = ctx.require(BINDINGS)
-            identity = ctx.require(TOOLS).bind("recall_memory", bindings)
+            identity = ctx.require(TOOLS).bind(
+                ctx.require(AKASHA_TOOLS).select("recall_memory"), bindings
+            )
             config_path = snapshot.generations["akasha"].data_dir / "config.local.toml"
             async with ctx.require(CONTENT).bind() as content:
                 inputs = log.writer("s", author="user", source="conversation", body_types=(Input,),

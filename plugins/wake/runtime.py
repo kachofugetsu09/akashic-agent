@@ -17,7 +17,9 @@ from plugins.akasha.interest import SEMANTIC_INTEREST
 from plugins.delivery.api import Sink
 from plugins.delivery.history import DELIVERY_READ
 from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.tools.plugin import TOOLS
+from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from plugins.tools.plugin import TOOLS, ToolView
 from session.log import MessageReader, OwnerRecord
 from session.message import Message
 from session.message_codec import encode_body
@@ -26,7 +28,7 @@ from .admission import Admission, Duties
 from .api import Config, DRIFT_WAKE, EVENTMAIL_WAKE
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
-from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
+from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, WAKE_TOOLS_VIEW
 from .source import Pointer, Source
 from .state import WakeState, WakeStateReader
 
@@ -168,10 +170,25 @@ class Runtime:
             binding_id=ctx.require(DELIVERY_SENDERS).bind(target.channel, bindings))
         metadata = ctx.require(MESSAGE_CATALOG).reader(target.session_id).metadata()
         model = read_session_model_selection(metadata if metadata is not None else {})
-        return Request(flow_id=flow_id, owner=owner, now=now, timezone=self.config.timezone,
-            target=target, sink=sink, program_binding=bindings.bind(WAKE_PROGRAM, {}),
-            tools={name: ctx.require(TOOLS).bind(name, bindings) for name in WAKE_TOOLS[owner]},
-            snapshot_seq=admission.pool.snapshot_seq, items=tuple(dict(item) for item in admission.pool.items),
+        view = ToolView.combine(
+            ctx.require(WAKE_TOOLS_VIEW),
+            ctx.require(AKASHA_TOOLS),
+            ctx.require(STANDARD_WEB_TOOLS),
+        )
+        return Request(
+            flow_id=flow_id,
+            owner=owner,
+            now=now,
+            timezone=self.config.timezone,
+            target=target,
+            sink=sink,
+            program_binding=bindings.bind(WAKE_PROGRAM, {}),
+            tools={
+                name: ctx.require(TOOLS).bind(view.select(name), bindings)
+                for name in WAKE_TOOLS[owner]
+            },
+            snapshot_seq=admission.pool.snapshot_seq,
+            items=tuple(dict(item) for item in admission.pool.items),
             proposals=tuple(dict(item) for item in admission.proposals),
             alert_ref=None if alert is None else cast(dict[str, str], dict(alert)),
             model_id=model.model_ref or None, reasoning_effort=model.reasoning_effort or None,

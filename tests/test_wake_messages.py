@@ -13,9 +13,17 @@ from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
-from plugins.tools.plugin import TOOLS
+from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.wake.api import DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
-from plugins.wake.request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
+from plugins.wake.request import (
+    Request,
+    TOOLS as WAKE_TOOLS,
+    WAKE_PROGRAM,
+    WAKE_TOOLS_VIEW,
+)
+from plugins.tools.plugin import ToolView
 from plugins.wake.source import Source
 from plugins.wake.state import WakeState
 from session.message import Input, Output, ToolResult
@@ -60,6 +68,8 @@ from plugins.models.store import ModelsStore
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 from plugins.tools.plugin import TOOLS
+from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS
 from plugins.akasha.interest import SEMANTIC_INTEREST, SemanticInterest
 from plugins.akasha.learning import Learning, LearningConfig
@@ -80,8 +90,12 @@ async def apply(ctx, config):
     async def unused_recall(state):
         raise AssertionError("this fixture never invokes memory recall")
         yield
-    await ctx.require(TOOLS).register(ctx, name="recall_memory", description="fixture unused recall boundary",
+    recall = await ctx.require(TOOLS).register(ctx, name="recall_memory", description="fixture unused recall boundary",
         parameters={"type": "object", "properties": {}}, open=unused_recall, idempotent=True)
+    web = await ctx.require(TOOLS).register(ctx, name="web_fetch", description="fixture unused web boundary",
+        parameters={"type": "object", "properties": {}}, open=unused_recall, idempotent=True)
+    await ctx.provide(AKASHA_TOOLS, ctx.require(TOOLS).view(recall))
+    await ctx.provide(STANDARD_WEB_TOOLS, ctx.require(TOOLS).view(web))
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
     class Driver:
@@ -147,13 +161,29 @@ async def apply(ctx, config):
 
 def request(ctx, owner, now, *, proposals=(), alert_ref=None):
     bindings = ctx.require(BINDINGS)
-    return Request(flow_id="a" * 32, owner=owner, now=now, timezone="UTC",
+    view = ToolView.combine(
+        ctx.require(WAKE_TOOLS_VIEW),
+        ctx.require(AKASHA_TOOLS),
+        ctx.require(STANDARD_WEB_TOOLS),
+    )
+    return Request(
+        flow_id="a" * 32,
+        owner=owner,
+        now=now,
+        timezone="UTC",
         target=DeliveryTarget(channel="test", recipient="room", session_id="test:room"),
         sink=Sink(name="test", binding_id=ctx.require(DELIVERY_SENDERS).bind("test", bindings), address="room"),
         program_binding=bindings.bind(WAKE_PROGRAM, {}),
-        tools={name: ctx.require(TOOLS).bind(name, bindings) for name in WAKE_TOOLS[owner]},
-        snapshot_seq=0, proposals=tuple(dict(item) for item in proposals), alert_ref=alert_ref,
-        rules="", history="")
+        tools={
+            name: ctx.require(TOOLS).bind(view.select(name), bindings)
+            for name in WAKE_TOOLS[owner]
+        },
+        snapshot_seq=0,
+        proposals=tuple(dict(item) for item in proposals),
+        alert_ref=alert_ref,
+        rules="",
+        history="",
+    )
 
 
 def test_recent_context_keeps_legacy_dialogue_without_provenance(tmp_path):
@@ -209,7 +239,9 @@ async def test_drift_runs_actual_private_tool_and_settles_once(tmp_path, action)
         assert log.reader(original.session_id).attributes.visibility == "internal"
         assert log.reader(original.session_id).attributes.learning == "excluded"
         assert len(control["calls"]) == 1
-        assert set(tool["name"] for tool in ctx.require(TOOLS).descriptions()).isdisjoint(WAKE_TOOLS["drift"])
+        assert {ref.name for ref in ctx.require(ALL_TOOLS)().refs}.isdisjoint(
+            WAKE_TOOLS["drift"]
+        )
         assert len(control["sent"]) == (1 if action == "share_content" else 0)
         if action == "share_content":
             assert ctx.require(DRIFT_DELIVERY).lookup(original.accepted)["status"] == "settled"

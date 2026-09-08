@@ -38,14 +38,36 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
 
     try:
         return await run_reply(
-            ctx, task, reader, "wake", models=ctx.require(CHAT_MODELS), content=ctx.require(CONTENT),
-            context=ctx.require(CONTEXT), tools=ctx.require(TOOLS), react=ctx.require(REACT),
-            materials=ctx.require(MATERIALS), turn_projection=ctx.require(TURN_PROJECTION),
-            read_call=ctx.require(MODEL_CALLS), render_content=render, authorize=authorize,
-            tool_names=names, fixed_bindings=fixed, max_output_tokens=4096,
-            max_steps=1 if phase.stage in {"screen", "alert"} else 20 if phase.stage == "investigate" else 40,
-            terminal_tools=frozenset(name for name in names if name not in {"recall_memory", "web_fetch"}),
-            exclude_materials=frozenset({"akasha", "markdown_memory"}) if phase.stage in {"investigate", "alert"} else frozenset(),
+            ctx,
+            task,
+            reader,
+            "wake",
+            models=ctx.require(CHAT_MODELS),
+            content=ctx.require(CONTENT),
+            context=ctx.require(CONTEXT),
+            tools=ctx.require(TOOLS),
+            react=ctx.require(REACT),
+            materials=ctx.require(MATERIALS),
+            turn_projection=ctx.require(TURN_PROJECTION),
+            read_call=ctx.require(MODEL_CALLS),
+            render_content=render,
+            authorize=authorize,
+            tool_view=None,
+            fixed_bindings=fixed,
+            max_output_tokens=4096,
+            max_steps=(
+                1
+                if phase.stage in {"screen", "alert"}
+                else 20 if phase.stage == "investigate" else 40
+            ),
+            terminal_tools=frozenset(
+                name for name in names if name not in {"recall_memory", "web_fetch"}
+            ),
+            exclude_materials=(
+                frozenset({"akasha", "markdown_memory"})
+                if phase.stage in {"investigate", "alert"}
+                else frozenset()
+            ),
             prompt_hints=(HINTS[phase.stage],),
         )
     except ModelError as error:

@@ -178,13 +178,17 @@ class MessageProjection:
         call_indices: Sequence[int],
         *,
         reminder: str | None = None,
-        actual_calls: Sequence[ToolCall] = (),
+        actual_calls: Sequence[ToolCall] | None = None,
     ) -> ContentPart:
         """只为当前模型已成功结算的响应生成可持久 replay 内容。"""
-        if len(actual_calls) != len(response.tool_calls):
+        if actual_calls is not None and len(actual_calls) != len(response.tool_calls):
             raise ValueError("模型 wire 调用与实际 ToolCall 数量不匹配")
         wire: dict[str, Mapping[str, object]] = {}
-        for index, original, actual in zip(call_indices, response.tool_calls, actual_calls):
+        for index, original, actual in zip(
+            call_indices,
+            response.tool_calls,
+            () if actual_calls is None else actual_calls,
+        ):
             actual_name = self._tool_name(actual.binding_id)
             if (
                 original.name != actual_name

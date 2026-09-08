@@ -1,6 +1,7 @@
 from session.message import ContentReferences
 import asyncio
 import importlib
+import inspect
 import shutil
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from session.log import MessageLog
 
 VALUE = ServiceKey("archive.test.value")
 RESULT = ServiceKey("archive.test.result")
+LEGACY_PROGRAM = ServiceKey("archive.test.legacy-program")
 
 
 def write_plugins(path: Path):
@@ -121,6 +123,48 @@ async def test_binding_restarts_without_source_and_keeps_exact_config_and_lifecy
             if name.startswith("_akashic_archive_")
         ]
         await second.terminate_all()
+    finally:
+        log.close()
+        await first.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_archived_absolute_program_import_uses_current_run_reply_boundary(
+    tmp_path,
+):
+    """旧归档程序的绝对 import 会进入当前兼容边界。"""
+    from plugins.conversation.program import run_reply
+
+    sources = tmp_path / "plugins"
+    plugin = sources / "legacy_program"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.py").write_text("""
+from agent.plugin_composition import ServiceKey
+from plugins.conversation.program import run_reply
+api_version = 3
+name = "legacy_program"
+version = "1.0.0"
+async def apply(ctx, config):
+    await ctx.provide(ServiceKey("archive.test.legacy-program"), run_reply)
+""")
+    log = MessageLog(tmp_path / "messages.db")
+    first = manager(tmp_path, [sources])
+    try:
+        await first.load_all()
+        bindings = Bindings(log, first._archive, first.open_binding)
+        async with lease_runtime_snapshot(first.snapshot_store):
+            identity = bindings.bind(LEGACY_PROGRAM, {})
+        await first.terminate_all()
+        shutil.rmtree(sources)
+
+        restored = manager(tmp_path, [])
+        recovered = Bindings(log, restored._archive, restored.open_binding)
+        try:
+            async with recovered.open(identity, LEGACY_PROGRAM) as (program, _):
+                assert program is run_reply
+                assert "tool_names" in inspect.signature(program).parameters
+        finally:
+            await restored.terminate_all()
     finally:
         log.close()
         await first.terminate_all()

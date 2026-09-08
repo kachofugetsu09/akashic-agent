@@ -21,12 +21,22 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
                       output_tokens=4096, keep_recent_tokens=128, summary_padding=0, provider_effect_data=False,
                       updates=False, validation_passed=True, extra_sources=None):
     sources = tmp_path / "plugins"
-    for name in ("sources", "content", "context", "tools", "conversation", "react", "turn_projection", *(('reply',) if replying else ())):
-        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
-                        ignore=shutil.ignore_patterns("__pycache__"))
-    if discovery:
-        shutil.copytree(Path(__file__).parents[1] / "plugins/tool_search", sources / "tool_search",
-                        ignore=shutil.ignore_patterns("__pycache__"))
+    workspace = tmp_path / "workspace"
+    for name in (
+        "sources",
+        "content",
+        "context",
+        "tools",
+        "conversation",
+        "react",
+        "turn_projection",
+        *(("reply", "tool_search") if replying else ()),
+    ):
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins" / name,
+            sources / name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
     if updates:
         from tests.test_delivery_bindings import sources as delivery_sources
         delivery_sources(sources)
@@ -45,9 +55,9 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         reply = sources / 'reply/plugin.py'
         reply.write_text(reply.read_text().replace('Field(default=4096,', f'Field(default={output_tokens},'))
     if missing_tool:
-        reply = sources / "reply/plugin.py"
-        reply.write_text(reply.read_text().replace(
-            "tools: tuple[str, ...] | None = None", 'tools: tuple[str, ...] | None = ("gone",)'))
+        settings = tmp_path / "workspace/plugin-data/reply-builtin/config.local.toml"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text('tools = ["gone"]\n')
     provider = sources / "test_provider"
     provider.mkdir()
     (provider / "plugin.py").write_text('''
@@ -104,6 +114,7 @@ async def apply(ctx, config):
     @asynccontextmanager
     async def open(state):
         yield Target()
+    await ctx.require(TOOLS).declare_group(ctx, always_on=True)
     await ctx.require(TOOLS).register(ctx, name="write_evidence", description="record local test evidence",
         parameters={"type":"object"}, open=open)
     await ctx.provide(CHAT_MODELS, Models())
@@ -134,9 +145,22 @@ async def apply(ctx, config):
             if len(business) == 1:''').replace("Preserved facts.", "Preserved facts." + "z" * summary_padding))
     if extra_sources is not None:
         extra_sources(sources)
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+    from session.artifact_store import ArtifactStore
+
     log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home/cache", message_log=log)
+    artifact_store = ArtifactStore(tmp_path / "sessions.db")
+    artifacts = ChannelAttachmentArtifactStore(
+        workspace=workspace, metadata_store=artifact_store
+    )
+    host = PluginManager(
+        [sources],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home/cache",
+        message_log=log,
+        channel_attachment_store=artifacts,
+    )
     try:
         await host.load_all()
         if start:
@@ -145,6 +169,7 @@ async def apply(ctx, config):
     finally:
         await host.terminate_all()
         log.close()
+        artifact_store.close()
 
 
 @pytest.mark.asyncio
@@ -179,9 +204,14 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_bad_reply_tool_configuration_fails_before_consuming_any_input(tmp_path):
-    async with application(tmp_path, replying=True, start=False, missing_tool=True) as (log, host):
-        with pytest.raises(ValueError, match="未安装的工具"):
-            await host.start_runtime()
+    async with application(tmp_path, replying=True, start=False, missing_tool=True) as (
+        log,
+        host,
+    ):
+        assert host.generation("reply") is None
+        gate = host.latest_gate("reply")
+        assert gate is not None and gate.status == "failed"
+        assert gate.failure_reason == "tools: Extra inputs are not permitted"
         assert log.catalog().snapshot_heads() == {}
 
 
@@ -244,13 +274,23 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
                     return rows
         rows = await asyncio.wait_for(completed(), 5)
         assert rows is not None
-        assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output, ToolResult, Output]
-        assert rows[2].body.parts[-1].kind == "tool.selection"
+        assert [type(row.body) for row in rows] == [
+            Input,
+            Output,
+            ToolResult,
+            Output,
+            ToolResult,
+            Output,
+        ]
+        assert rows[2].body.parts[-1].kind == "text"
         assert (tmp_path / "effect.txt").read_text() == "once\n"
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
-            assert [tool["function"]["name"] for tool in calls[0].tools] == ["tool_search"]
-            assert {tool["function"]["name"] for tool in calls[1].tools} == {"tool_search", "write_evidence"}
+            calls = snapshot.composition_root.context.require(
+                ServiceKey("fixture.calls")
+            )
+            expected = {"tool_search", "tool_call", "write_evidence"}
+            assert {tool["function"]["name"] for tool in calls[0].tools} == expected
+            assert {tool["function"]["name"] for tool in calls[1].tools} == expected
 
 
 @pytest.mark.asyncio
@@ -260,12 +300,9 @@ async def test_default_reply_applies_provider_tool_capacity_before_first_request
         source = module.read_text()
         assert source.count("max_tool_schemas = None") == 1
         assert source.count('parameters={"type":"object"}, open=open)') == 1
-        module.write_text(source.replace(
-            "max_tool_schemas = None", "max_tool_schemas = 1"
-        ).replace(
-            'parameters={"type":"object"}, open=open)',
-            'parameters={"type":"object"}, open=open, always_on=True)',
-        ))
+        module.write_text(
+            source.replace("max_tool_schemas = None", "max_tool_schemas = 1")
+        )
 
     from agent.plugin_composition import ServiceKey
     async with application(

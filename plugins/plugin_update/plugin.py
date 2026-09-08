@@ -20,7 +20,7 @@ from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import ContentPart, Output
 from session.message_codec import json_value
@@ -33,9 +33,26 @@ api_version = 3
 name = "plugin_update"
 version = "1.0.0"
 desc = "按实际要求验证候选，排空后发布，并用原渠道报告结果"
-inject = (PLUGIN_UPDATES, TOOLS, BINDINGS, OWNER_STATE, MESSAGE_CATALOG, MESSAGE_WRITERS,
-          SESSION_ADMISSION, TASKS, DELIVERY, DELIVERY_SENDERS, CHAT_MODELS, CONTENT,
-          CONTEXT, MATERIALS, MODEL_CALLS, REACT, TURN_PROJECTION)
+inject = (
+    PLUGIN_UPDATES,
+    TOOLS,
+    ALL_TOOLS,
+    BINDINGS,
+    OWNER_STATE,
+    MESSAGE_CATALOG,
+    MESSAGE_WRITERS,
+    SESSION_ADMISSION,
+    TASKS,
+    DELIVERY,
+    DELIVERY_SENDERS,
+    CHAT_MODELS,
+    CONTENT,
+    CONTEXT,
+    MATERIALS,
+    MODEL_CALLS,
+    REACT,
+    TURN_PROJECTION,
+)
 
 
 class Config(BaseModel):
@@ -47,6 +64,8 @@ class Config(BaseModel):
 async def apply(ctx: Context, config: Config) -> None:
     """工具只准备候选；普通来源拥有验证策略和通知，发布由 Core 排空。"""
     watcher: asyncio.Task[None] | None = None
+    catalog = ctx.require(TOOLS)
+    _ = await catalog.declare_group(ctx)
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[InstallPlugin]:
@@ -59,12 +78,23 @@ async def apply(ctx: Context, config: Config) -> None:
             raise ValueError("plugin_install 不接收 binding 配置")
         return ctx.require(DELIVERY_SENDERS).bind_all(ctx.require(BINDINGS))
 
-    _ = await ctx.require(TOOLS).register(ctx, name="plugin_install",
+    install_ref = await catalog.register(
+        ctx,
+        name="plugin_install",
         description="安装或更新插件，并按 validation_prompt 验证后发布；稍后单独报告结果",
-        parameters=InstallInput.model_json_schema(), open=open_tool, capture=capture,
-        idempotent=False, risk="external-side-effect")
-    _ = await ctx.provide(PLUGIN_VALIDATION, Validation(ctx,
-        max_steps=config.max_steps, max_output_tokens=config.max_output_tokens))
+        parameters=InstallInput.model_json_schema(),
+        open=open_tool,
+        capture=capture,
+        idempotent=False,
+        risk="external-side-effect",
+    )
+    _ = install_ref
+    _ = await ctx.provide(
+        PLUGIN_VALIDATION,
+        Validation(
+            ctx, max_steps=config.max_steps, max_output_tokens=config.max_output_tokens
+        ),
+    )
 
     async def validate(identity: str, request: Request) -> None:
         """本次存活运行验证一次；失败清理候选，进程重启只报告 Core 的回退。"""

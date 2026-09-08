@@ -22,7 +22,7 @@ from plugins.context.materials import MATERIALS
 from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import SessionAttributes
 from session.message import ContentPart, ContentReferences, Input
@@ -30,7 +30,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (CHAT_MODELS, MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION, TASKS,
-          CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, REACT, TOOLS, TURN_PROJECTION)
+          CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, REACT, TOOLS, ALL_TOOLS, TURN_PROJECTION)
 async def apply(ctx, config):
     async def validate():
         ctx.require(SESSION_ADMISSION).ensure(ctx, "validation", SessionAttributes("internal", "excluded"))
@@ -49,7 +49,8 @@ async def apply(ctx, config):
                 content=ctx.require(CONTENT), context=ctx.require(CONTEXT), tools=ctx.require(TOOLS),
                 react=ctx.require(REACT), materials=ctx.require(MATERIALS),
                 turn_projection=ctx.require(TURN_PROJECTION), read_call=ctx.require(MODEL_CALLS),
-                authorize=authorize, tool_names=("write_evidence",), max_output_tokens=100, max_steps=4,
+                authorize=authorize, tool_view=ctx.require(ALL_TOOLS)(),
+                max_output_tokens=100, max_steps=4,
             )
         task = await ctx.require(TASKS).open(ctx).admit("validation", lambda slot: slot.start(program))
         return await task.join()
@@ -375,6 +376,13 @@ async def apply(ctx, config):
     model = Model()
     model.descriptor = descriptor
     class Embeddings:
+        def save_binding(self, bindings, *, model_id=None):
+            from agent.plugin_composition.models import SavedEmbedding
+            return bindings.bind(EMBEDDINGS, SavedEmbedding(
+                model_id=descriptor.model_id,
+                space_identity=descriptor.identity,
+                dimensions=descriptor.dimensions,
+            ).model_dump())
         def describe(self, *, model_id=None):
             return descriptor
         @asynccontextmanager

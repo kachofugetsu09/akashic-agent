@@ -13,7 +13,7 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.tools.api import MessageReply
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from session.log import MessageLog, OwnerTransaction
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from tests.test_default_reply import application
@@ -52,7 +52,10 @@ async def apply(ctx, config):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             root = snapshot.composition_root.context
             tools = root.require(TOOLS)
-            binding = tools.bind("plugin_install", root.require(BINDINGS))
+            binding = tools.bind(
+                root.require(ALL_TOOLS)().select("plugin_install"),
+                root.require(BINDINGS),
+            )
             reader = log.reader("test:room")
             inputs = log.writer("test:room", author="user", source="conversation", body_types=(Input,),
                 content={"text": check_text, "channel.origin": check_origin})

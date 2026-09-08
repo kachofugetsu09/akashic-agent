@@ -156,13 +156,16 @@ async def test_archived_schedule_tool_recovers_original_operation_after_source_r
     from agent.plugin_composition.bindings import Bindings
     from agent.plugins.manager import PluginManager
     from bus.event_bus import EventBus
-    from plugins.tools.plugin import TOOLS, open_tool
+    from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 
     install(tmp_path)
     async with application(tmp_path, replying=False, start=False) as (log, host):
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            tool = snapshot.composition_root.context.require(TOOLS).bind("schedule", bindings)
+            ctx = snapshot.composition_root.context
+            tool = ctx.require(TOOLS).bind(
+                ctx.require(ALL_TOOLS)().select("schedule"), bindings
+            )
             async with open_tool(bindings, tool) as bound:
                 prepared = await bound.prepare({"tier": "instant", "trigger": "after", "when": "1h",
                     "channel": "test", "chat_id": "room", "timezone": "UTC", "message": "original"})
