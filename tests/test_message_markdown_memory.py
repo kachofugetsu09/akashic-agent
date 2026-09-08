@@ -522,3 +522,43 @@ def test_moving_an_operation_note_into_user_facts_requires_new_evidence():
              "self_before": "", "self": "", "evidence": {"memory": {}, "self": {}}}
     with pytest.raises(ValueError, match="实际消息"):
         check_evidence(draft, ())
+
+
+@pytest.mark.asyncio
+async def test_background_discovery_reads_only_new_eligible_messages(tmp_path, monkeypatch):
+    from session.log import MessageCatalog, MessageReader
+
+    first_done, next_head, finished, hold = (asyncio.Event() for _ in range(4))
+    calls = []
+    original = MessageReader.snapshot
+
+    def snapshot(reader, **kwargs):
+        assert reader.session_id != "excluded", "excluded history must not be decoded"
+        calls.append((reader.session_id, kwargs))
+        return original(reader, **kwargs)
+
+    async def heads(_catalog):
+        yield {"excluded": 0, "eligible": 0}
+        first_done.set()
+        await next_head.wait()
+        yield {"excluded": 0, "eligible": 1}
+        finished.set()
+        await hold.wait()
+
+    async with application(tmp_path) as (log, host):
+        for name, learning in (("excluded", "excluded"), ("eligible", "eligible")):
+            log.ensure_session(name, SessionAttributes("internal", learning))
+            log.writer(name, author="user", source="conversation", body_types=(Input,),
+                       content={"text": check_text}).append(name, Input((ContentPart("text", name),)))
+        monkeypatch.setattr(MessageReader, "snapshot", snapshot)
+        monkeypatch.setattr(MessageCatalog, "follow", heads)
+        await host.start_runtime()
+        await asyncio.wait_for(first_done.wait(), 2)
+        log.writer("eligible", author="user", source="conversation", body_types=(Input,),
+                   content={"text": check_text}).append("next", Input((ContentPart("text", "next"),)))
+        next_head.set()
+        await asyncio.wait_for(finished.wait(), 2)
+        assert calls == [
+            ("eligible", {"after_seq": -1, "through_seq": 0}),
+            ("eligible", {"after_seq": 0, "through_seq": 1}),
+        ]

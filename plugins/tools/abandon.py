@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Hashable, Mapping
 from dataclasses import replace
 from typing import cast
@@ -89,10 +90,10 @@ async def follow_abandon(
             if head == previous:
                 continue
             reader = catalog.reader(session_id)
-            changed = reader.snapshot(after_seq=previous, through_seq=head)
+            changed = await asyncio.to_thread(reader.snapshot, after_seq=previous, through_seq=head)
             controls = [message for message in changed
                         if isinstance(message.body, Control) and message.body.action == "abandon"]
-            messages = reader.snapshot(through_seq=head) if controls else ()
+            messages = await asyncio.to_thread(reader.snapshot, through_seq=head) if controls else ()
             for control in controls:
                 for ref in abandoned_calls(messages, control):
                     target = await reply(reader, control.source, ref)
