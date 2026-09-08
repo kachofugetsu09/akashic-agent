@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from agent.plugin_composition import MobileUiRpcInvalidRequest
+from plugins.turn_projection.plugin import Turn as MessageTurn, TurnProjection
 from session.log import MessageCatalog
 from session.message import ContentPart, Input, Output
 from .recalls import ContextSource, ProgramSource, Recall, ToolSource
@@ -1015,6 +1016,7 @@ class RecallInspector:
         self._read = read
         self._list = list_records
         self._catalog = catalog
+        self._turns: tuple[tuple[str, str, int], tuple[MessageTurn, ...]] | None = None
 
     def recent(self, *, page: int = 1, page_size: int = 30, session_id: str = "") -> dict[str, object]:
         rows = tuple((identity, recall) for identity, recall in self._list()
@@ -1023,6 +1025,55 @@ class RecallInspector:
         start = (page - 1) * page_size
         return self._mobile_result({"items": [self._summary(identity, recall) for identity, recall in rows[start:start + page_size]],
                                     "total": len(rows), "page": page, "page_size": page_size})
+
+    def for_turn(self, session_id: str, message_id: str, source: str,
+                 projection: TurnProjection) -> dict[str, object]:
+        """按既有 Turn 区间展示真实检索，不把查询记录解释为模型使用证明。"""
+        # 1. 已提交消息从日志取得来源；草稿只能读取该来源仍未闭合的 Turn。
+        reader = self._catalog.reader(session_id)
+        message = reader.get(message_id)
+        if message is not None:
+            source = message.source
+        if not source:
+            return {"items": [], "pending": False}
+        # 只缓存最近一个来源的 Turn 引用；同一前缀轮询不再读取消息正文。
+        source_head = reader.head(source=source)
+        key = (session_id, source, source_head)
+        cached = self._turns
+        if cached is None or cached[0] != key:
+            messages = []
+            cursor = -1
+            while cursor < source_head:
+                page = reader.read(after_seq=cursor, through_seq=source_head, source=source)
+                messages.extend(page)
+                cursor = page[-1].seq
+            cached = (key, projection.project(messages, source))
+            self._turns = cached
+        turns = cached[1]
+        turn = next((item for item in turns if message_id in item.message_ids), None)
+        if message is None:
+            turn = next((item for item in reversed(turns) if item.status == "open"), None)
+        if turn is None:
+            return {"items": [], "pending": message is None}
+        # 2. 查询的上下文上界或工具引用必须属于同一来源的这个区间。
+        through_seq = reader.head() if turn.status == "open" else turn.through_seq
+        if turn.status in {"complete", "quiet"}:
+            through_seq -= 1
+        identities: list[str] = []
+        for identity, recall in reversed(self._list()):
+            origin = recall.source
+            if isinstance(origin, ContextSource):
+                matches = (origin.session_id == session_id and origin.source == source
+                           and turn.after_seq < origin.through_seq <= through_seq)
+            elif isinstance(origin, ToolSource):
+                matches = (origin.session_id == session_id
+                           and origin.call_ref.message_id in turn.message_ids)
+            else:
+                matches = False
+            if matches:
+                identities.append(identity)
+        return {"items": [self.mobile_detail(identity) for identity in identities],
+                "pending": turn.status == "open"}
 
     @staticmethod
     def _summary(identity: str, recall: Recall) -> dict[str, object]:

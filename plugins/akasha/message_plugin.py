@@ -146,6 +146,13 @@ async def apply(ctx: Context, config: Config) -> None:
     def query(method: str, payload: dict[str, object], *, session_id: str | None,
               turn_id: str | None) -> dict[str, object]:
         inspector = get_inspector()
+        if method == "recall.turn":
+            if (not session_id or set(payload) != {"message_id", "source"}
+                or not isinstance(payload["message_id"], str) or not payload["message_id"]
+                or not isinstance(payload["source"], str)):
+                raise MobileUiRpcInvalidRequest("检索卡片缺少消息或会话")
+            return inspector.for_turn(session_id, payload["message_id"], payload["source"],
+                                      ctx.require(TURN_PROJECTION))
         if method == "inspector.recent":
             try:
                 page = InspectorPage.model_validate(payload)
@@ -163,6 +170,7 @@ async def apply(ctx: Context, config: Config) -> None:
 
     _ = await ctx.require(UI_SLOTS).register_mobile(
         ctx, MobileUiDefinition(module="message_ui.js", stylesheet="message_ui.css",
+                                slots=("turn.before_reasoning",),
                                 navigation=MobileUiNavigation(label="Akasha Inspector",
                                     description="查看实际检索及呈现的原消息")), query=query,
     )

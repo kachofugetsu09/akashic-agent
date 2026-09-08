@@ -6,7 +6,7 @@ from plugins.akasha.domain.model import Turn
 from plugins.akasha.infrastructure.consumption import Applied
 from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
 from session.log import MessageConflict, MessageLog, OwnerTransaction
-from session.message import ContentPart, ContentReferences, Input, Message, Output
+from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
 
 
 def record(head):
@@ -209,3 +209,91 @@ def test_mobile_inspector_rejects_oversized_complete_references_without_trimming
         with pytest.raises(MobileUiRpcInvalidRequest, match="查询记录仍完整保留"):
             inspector.mobile_detail("query")
         assert records.read("query") == original
+
+
+def test_chat_recall_cards_follow_existing_turns_without_crossing_sources(tmp_path):
+    from contextlib import closing
+    from plugins.akasha.inspector import RecallInspector
+    from plugins.turn_projection.plugin import TurnProjection
+
+    with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        inputs = log.writer("s", author="user", source="chat", body_types=(Input,),
+                            content={"text": lambda part: ContentReferences()})
+        outputs = log.writer("s", author="assistant", source="chat", body_types=(Output,),
+                             content={"text": lambda part: ContentReferences()})
+        inputs.append("u1", Input((ContentPart("text", "first"),)))
+        inputs.append("u2", Input((ContentPart("text", "second"),)))
+        outputs.append("a", Output((ContentPart("text", "answer"),), "complete"))
+        inputs.append("next", Input((ContentPart("text", "new question"),)))
+        records = RecallRecords(log.owner("akasha"))
+        records.save("old", record(1))
+        records.save("active", record(3))
+        records.save("other", record(3).model_copy(update={
+            "source": ContextSource(session_id="s", source="background", through_seq=3),
+        }))
+        inspector = RecallInspector(read=records.read, list_records=records.list, catalog=log.catalog())
+        before = log.reader("s").snapshot()
+        completed = inspector.for_turn("s", "a", "ignored", TurnProjection())
+        active = inspector.for_turn("s", "draft", "chat", TurnProjection())
+        assert [item["query_id"] for item in completed["items"]] == ["old"]
+        assert completed["pending"] is False
+        assert [item["query_id"] for item in active["items"]] == ["active"]
+        assert active["pending"] is True
+        assert log.reader("s").snapshot() == before
+
+
+def test_abandoned_turn_keeps_recall_at_its_closed_input_head(tmp_path):
+    from contextlib import closing
+    from plugins.akasha.inspector import RecallInspector
+    from plugins.turn_projection.plugin import TurnProjection
+
+    with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        writer = log.writer("s", author="user", source="chat", body_types=(Input, Control),
+                            content={"text": lambda part: ContentReferences()})
+        writer.append("u1", Input((ContentPart("text", "question"),)))
+        records = RecallRecords(log.owner("akasha"))
+        records.save("last", record(0).model_copy(update={"hits": ()}))
+        writer.append("stop", Control("abandon", 0, None))
+        inspector = RecallInspector(read=records.read, list_records=records.list, catalog=log.catalog())
+        result = inspector.for_turn("s", "u1", "", TurnProjection())
+        assert [item["query_id"] for item in result["items"]] == ["last"]
+        assert result["pending"] is False
+
+
+def test_recall_turn_cache_tracks_source_head_and_keeps_global_query_head(tmp_path):
+    from contextlib import closing
+    from plugins.akasha.inspector import RecallInspector
+    from plugins.turn_projection.plugin import TurnProjection
+
+    class CountProjection(TurnProjection):
+        calls = 0
+
+        def project(self, messages, source):
+            self.calls += 1
+            return super().project(messages, source)
+
+    with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        inputs = log.writer("s", author="user", source="chat", body_types=(Input,),
+                            content={"text": lambda part: ContentReferences()})
+        outputs = log.writer("s", author="assistant", source="chat", body_types=(Output,),
+                             content={"text": lambda part: ContentReferences()})
+        inputs.append("u1", Input((ContentPart("text", "question"),)))
+        records = RecallRecords(log.owner("akasha"))
+        inspector = RecallInspector(read=records.read, list_records=records.list, catalog=log.catalog())
+        projection = CountProjection()
+        inspector.for_turn("s", "draft", "chat", projection)
+        inspector.for_turn("s", "draft", "chat", projection)
+        assert projection.calls == 1
+        log.writer("s", author="other", source="other", body_types=(Input,),
+                   content={"text": lambda part: ContentReferences()}).append(
+            "other", Input((ContentPart("text", "background"),)))
+        records.save("global-head", record(1).model_copy(update={"hits": ()}))
+        result = inspector.for_turn("s", "draft", "chat", projection)
+        assert [item["query_id"] for item in result["items"]] == ["global-head"]
+        assert projection.calls == 1
+        outputs.append("a", Output((ContentPart("text", "answer"),), "complete"))
+        assert inspector.for_turn("s", "a", "", projection)["pending"] is False
+        assert projection.calls == 2
+        inputs.append("new", Input((ContentPart("text", "next"),)))
+        assert inspector.for_turn("s", "draft-next", "chat", projection)["pending"] is True
+        assert projection.calls == 3

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chatHistoryPage, sessionPage } from "./web-chat-data.ts";
-import { timelineAnchorIndexes, historyTranscript, isTimelineMessageVisible, isTimelinePartVisible, mergeTimelineMessages, readMessageLogFrame, readTimelineMessage, timelineReply, timelineText } from "./message-timeline.ts";
+import { timelineVisibleMessages, timelineToolResults, timelineAnchorIndexes, historyTranscript, isTimelineMessageVisible, isTimelinePartVisible, mergeTimelineMessages, readMessageLogFrame, readTimelineMessage, timelineReply, timelineText } from "./message-timeline.ts";
 
 const row = (seq, body, changes = {}) => ({
   id: `message-${seq}`, session_id: "akashic:fixture", seq,
@@ -152,4 +152,32 @@ test("hidden history anchors resolve to nearby visible rows without changing raw
   assert.equal(timelineAnchorIndexes([hidden(0)]).size, 0);
   assert.equal(timelineAnchorIndexes(messages).get("missing"), undefined);
   assert.deepEqual(messages, before);
+});
+
+
+test("内部来源与索引信息不显示成正文，未知内容仍明确提示", () => {
+  const parts = ["channel.origin", "context.summary", "command.result", "tool.selection", "akasha.recall", "akasha.feedback"]
+    .map((kind) => ({ kind, display: "unavailable" }));
+  const message = row(2, { kind: "input", parts: [...parts, text("晚上好")] });
+  const before = structuredClone(message);
+  assert.equal(isTimelineMessageVisible(message), true);
+  assert.deepEqual(message.body.parts.filter(isTimelinePartVisible), [text("晚上好")]);
+  assert.equal(isTimelinePartVisible({ kind: "future.content", display: "unavailable" }), true);
+  assert.deepEqual(message, before);
+});
+
+
+test("工具结果回到原调用面板，分页缺少调用时仍可阅读和定位", () => {
+  const call = row(3, { kind: "output", finish: "continue", parts: [
+    { kind: "tool_call", binding_id: "read", name: "read", arguments: {} },
+  ] });
+  const result = row(4, { kind: "tool_result", call_ref: { message_id: call.id, part_index: 0 },
+    outcome: "success", parts: [text("文件内容")] });
+  const answer = row(5, { kind: "output", finish: "complete", parts: [text("答案")] });
+  const messages = [call, result, answer];
+  assert.deepEqual(timelineVisibleMessages(messages), [call, answer]);
+  assert.equal(timelineToolResults(messages).get(`${call.id}:0`), result);
+  assert.equal(timelineAnchorIndexes(messages).get(result.id), 0);
+  assert.deepEqual(timelineVisibleMessages([result, answer]), [result, answer]);
+  assert.deepEqual(messages, [call, result, answer]);
 });

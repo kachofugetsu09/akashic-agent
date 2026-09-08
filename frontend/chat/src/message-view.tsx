@@ -1,3 +1,4 @@
+import { MobilePluginSlot } from "./mobile-plugin-runtime";
 import { ThinkingPlaceholder } from "./thinking-placeholder";
 import {
   Attachment,
@@ -47,7 +48,7 @@ import type {
   ToolBlock,
 } from "./chat-message";
 import type { ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
-import { timelineReply, historyTranscript, isTimelinePartVisible } from "./message-timeline";
+import { timelineReply, timelineText, historyTranscript, isTimelinePartVisible } from "./message-timeline";
 import { MessageReplyReference } from "./message-actions";
 import { StaticMessageResponse } from "./static-message-response";
 
@@ -87,24 +88,26 @@ const MessageBody = memo(function MessageBody({
   );
 });
 
-/** 草稿是当前活动的预览；没有 Message 的作者、时间、seq 或插件槽。 */
+/** 草稿复用聊天的等待和思考组件，提交后由相同样式的历史行接替。 */
 export function ReplyActivityView({ activity, committed, onError }: {
   activity: ReplyActivity;
   committed: ReadonlySet<string>;
   onError?: (error: unknown) => void;
 }) {
   const draft = activity.preview && !committed.has(activity.preview.message_id) ? activity.preview : null;
-  return <div className="reply-activity" data-reply-handle={activity.handle}
+  if (activity.preview && !draft) return null;
+  return <div className="message-row agent-row reply-activity" data-reply-handle={activity.handle}
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
-    <div className="reply-activity-label" role="status">
-      {activity.active ? draft ? "正在生成" : "正在处理" : "正在结束"}
-      <span>{activity.source}</span>
+    <div className="agent-content">
+      {draft && !draft.thinking ? <MobilePluginSlot name="turn.before_reasoning" sessionId={activity.session_id}
+        messageId={draft.message_id} block={{ source: activity.source }} /> : null}
+      {draft?.thinking ? <ProcessTrace blocks={[{ kind: "thinking", content: draft.thinking }]}
+        streaming={activity.active} interrupted={false}
+        startContent={<MobilePluginSlot name="turn.before_reasoning" sessionId={activity.session_id}
+          messageId={draft.message_id} block={{ source: activity.source }} />} /> : null}
+      {!draft?.thinking && !draft?.text ? <ThinkingPlaceholder /> : null}
+      {draft?.text ? <MessageBody content={draft.text} streaming={activity.active} deferRichContent onError={onError} /> : null}
     </div>
-    {draft?.thinking ? <details className="timeline-details">
-      <summary>思考</summary><p className="plain-message-response">{draft.thinking}</p>
-    </details> : null}
-    {draft?.text ? <MessageBody content={draft.text} streaming deferRichContent onError={onError} /> : null}
-    {draft?.truncated ? <p className="reply-activity-label">预览仅显示部分内容，完整内容将在提交后显示</p> : null}
   </div>;
 }
 
@@ -186,9 +189,10 @@ export function ChatMessageView({
   );
 }
 
-/** 按持久顺序展示每个内容块，结果和控制记录各占一行。 */
-export function TimelineMessageView({ message, lookupMessage, onNavigate, onError, leadingContent, beforePart, afterBody, renderAttachment }: {
+/** 保留消息引用与 part 位置，复用原聊天的过程和正文组件。 */
+export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, leadingContent, beforePart, afterBody, renderAttachment }: {
   message: TimelineMessage;
+  toolResults: ReadonlyMap<string, TimelineMessage>;
   renderAttachment?: (attachment: TimelineAttachment) => ReactNode;
   leadingContent?: ReactNode;
   beforePart?: (part: TimelinePart, index: number) => ReactNode;
@@ -198,6 +202,22 @@ export function TimelineMessageView({ message, lookupMessage, onNavigate, onErro
   onError?: (error: unknown) => void;
 }) {
   const body = message.body;
+  const process = body.kind !== "output" ? [] : body.parts.map((part, index) => ({ part, index }))
+    .sort((left, right) => Number(right.part.kind === "model.facts") - Number(left.part.kind === "model.facts"))
+    .flatMap(({ part, index }): { block: AgentBlock; index: number }[] => {
+    if ("display" in part) return [];
+    if (part.kind === "model.facts" && part.value.thinking) return [{ index, block: { kind: "thinking", content: part.value.thinking } }];
+    if ("archive" in part && part.kind === "history.transcript") {
+      return historyBlocks(part.archive).map((block) => ({ index, block }));
+    }
+    if (part.kind !== "tool_call") return [];
+    const result = toolResults.get(`${message.id}:${index}`);
+    const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
+    return [{ index, block: { kind: "tool", callId: `${message.id}:${index}`, name: part.name,
+      input: part.arguments, output: result ? timelineText(result) : undefined,
+      status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
+      errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
+  });
   const referencedArtifacts = new Set(body.kind === "control" ? [] : body.parts.flatMap((part) =>
     !("display" in part) && part.kind === "artifact_ref" ? [part.value] : []));
   const attachment = (id: string) => {
@@ -209,7 +229,11 @@ export function TimelineMessageView({ message, lookupMessage, onNavigate, onErro
   };
   return <div className={`message-row timeline-message timeline-${body.kind}`}>
     <div className={body.kind === "input" ? "user-bubble" : "agent-content"}>
-      {leadingContent}
+      {process.length === 0 ? leadingContent : null}
+      {body.kind === "output" && process.length ? <ProcessTrace blocks={process.map((item) => item.block)} streaming={false}
+        interrupted={false} startContent={leadingContent} beforeBlock={(_block, index) => <div
+          data-part-index={process[index].index} tabIndex={-1}>{beforePart?.(
+            body.parts[process[index].index], process[index].index)}</div>} /> : null}
       {body.kind === "control" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
@@ -221,10 +245,13 @@ export function TimelineMessageView({ message, lookupMessage, onNavigate, onErro
             {lookupMessage(body.call_ref.message_id) ? "查看调用" : "调用不在当前记录中"}
           </button>
         </div> : null}
-        {body.parts.map((part, index) => isTimelinePartVisible(part) ? <div key={index} data-part-index={index} tabIndex={-1}>
+        {body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
+          Number(right.part.kind === "model.facts" || right.part.kind === "history.transcript")
+          - Number(left.part.kind === "model.facts" || left.part.kind === "history.transcript"))
+          .map(({ part, index }) => isTimelinePartVisible(part) && !process.some((item) => item.index === index) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index)}
           <TimelinePartView part={part} attachment={attachment} lookupMessage={lookupMessage}
-            onNavigate={onNavigate} onError={onError} />
+            onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
         </div> : null)}
       </>}
       {afterBody}
@@ -234,7 +261,8 @@ export function TimelineMessageView({ message, lookupMessage, onNavigate, onErro
   </div>;
 }
 
-function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError }: {
+function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError, processStartContent }: {
+  processStartContent?: ReactNode;
   part: TimelinePart;
   attachment: (id: string) => ReactNode;
   lookupMessage: (id: string) => TimelineMessage | undefined;
@@ -242,7 +270,7 @@ function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError
   onError?: (error: unknown) => void;
 }) {
   if ("display" in part) return <p className="timeline-state">无法展示此内容</p>;
-  if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} onError={onError} /> : null;
+  if ("archive" in part) return part.kind === "history.transcript" ? <TimelineTranscript archive={part.archive} startContent={processStartContent} onError={onError} /> : null;
   switch (part.kind) {
     case "text": return <MessageBody content={part.value} streaming={false} deferRichContent onError={onError} />;
     case "artifact_ref": return attachment(part.value);
@@ -252,11 +280,9 @@ function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError
         preview={source ? timelineReply(source).preview : ""} unavailable={!source}
         onNavigate={() => onNavigate(part.value)} />;
     }
-    case "model.facts": return <details className="timeline-details">
-      <summary>思考记录</summary>
-      {part.value.thinking === null ? <p>没有思考文本</p> : <MessageBody
-        content={part.value.thinking} streaming={false} deferRichContent onError={onError} />}
-    </details>;
+    case "model.facts": return part.value.thinking ? <ProcessTrace
+      blocks={[{ kind: "thinking", content: part.value.thinking }]} streaming={false}
+      interrupted={false} startContent={processStartContent} /> : null;
     case "tool_call": return <details className="timeline-details timeline-tool-call">
       <summary>工具调用 · {part.name}</summary>
       <pre tabIndex={0}>{JSON.stringify(part.arguments, null, 2)}</pre>
@@ -264,20 +290,22 @@ function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError
   }
 }
 
-function TimelineTranscript({ archive, onError }: { archive: unknown; onError?: (error: unknown) => void }) {
+/** 将归档转换成既有过程组件的展示块，原日志不变。 */
+function historyBlocks(archive: unknown): AgentBlock[] {
   const groups = historyTranscript(archive);
-  return <details className="timeline-details">
-    <summary>思考与工具记录</summary>
-    {groups === null ? <p>这段历史过程暂无法展示。</p> : groups.map((group, index) => <div key={index}>
-      {group.thinking ? <MessageBody content={group.thinking} streaming={false} deferRichContent onError={onError} /> : null}
-      {group.text ? <MessageBody content={group.text} streaming={false} deferRichContent onError={onError} /> : null}
-      {group.calls.map((call, callIndex) => <details className="timeline-details" key={callIndex}>
-        <summary>工具 · {call.name}</summary>
-        {call.arguments !== undefined ? <pre tabIndex={0}>{JSON.stringify(call.arguments, null, 2)}</pre> : null}
-        {call.result !== undefined ? <pre tabIndex={0}>{typeof call.result === "string" ? call.result : JSON.stringify(call.result, null, 2)}</pre> : null}
-      </details>)}
-    </div>)}
-  </details>;
+  return groups?.flatMap((group, index): AgentBlock[] => [
+    ...(group.thinking ? [{ kind: "thinking" as const, content: group.thinking }] : []),
+    ...(group.text ? [{ kind: "thinking" as const, content: group.text }] : []),
+    ...group.calls.map((call, callIndex) => ({ kind: "tool" as const,
+      callId: `history-${index}-${callIndex}`, name: call.name, input: call.arguments,
+      output: call.result, status: "output-available" as const, errorText: undefined })),
+  ]) ?? [];
+}
+
+function TimelineTranscript({ archive }: { archive: unknown; startContent?: ReactNode; onError?: (error: unknown) => void }) {
+  if (historyTranscript(archive) === null) return <p>这段历史过程暂无法展示。</p>;
+  const blocks = historyBlocks(archive);
+  return blocks.length ? <ProcessTrace blocks={blocks} streaming={false} interrupted={false} /> : null;
 }
 
 const controlLabels = { pause: "已暂停", resume: "已恢复", abandon: "已放弃", failure: "执行失败" };

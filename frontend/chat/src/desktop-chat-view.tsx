@@ -91,7 +91,7 @@ export function DesktopChatView({ embeddedShell, embeddedRuntime, controller }: 
         </header>
         <Conversation className="conversation" resize="instant">
           <ConversationContent className={hasMessages ? "conversation-content" : "conversation-content empty"}>
-            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} /> : (
+            {!hasMessages ? <DesktopEmptyState shellStatus={shellState?.status ?? null} loadingSession={Boolean(activeSessionId)} /> : (
               <MessageRendererErrorBoundary>
                 <DesktopHistoryLoader
                   firstMessageId={timelineMessages[0]?.id ?? messages[0]?.id}
@@ -177,9 +177,9 @@ function DesktopHistoryLoader({
   >{loading ? "正在加载更早消息…" : "加载更早消息"}</button>;
 }
 
-function DesktopEmptyState({ shellStatus }: { shellStatus: string | null }) {
+function DesktopEmptyState({ shellStatus, loadingSession }: { shellStatus: string | null; loadingSession: boolean }) {
   return <ConversationEmptyState className="home-state">
-    {shellStatus === "needs_setup" ? <div className="model-connection-state">
+    {loadingSession ? <div className="home-state__ready" role="status"><strong>正在读取消息</strong></div> : shellStatus === "needs_setup" ? <div className="model-connection-state">
       <span>首次使用</span><h1>先连接一个模型</h1>
       <p>绑定 Codex、OpenCode 或自己的 API Key 后，就可以在这里直接对话。</p>
       <a href="/#models">连接模型</a>

@@ -93,4 +93,34 @@ export function mount(host, context) {
   return () => { active = false; };
 }
 
-export default { slots: {}, dashboard: { mount } };
+/** 在原思考面板展示本轮真实查询，两条记忆通道保持原来的折叠卡片。 */
+export function mountRecall(host, context) {
+  let active = true;
+  let timer;
+  const load = async () => {
+    const result = await context.query("recall.turn", {
+      message_id: context.messageId, source: context.block?.source ?? "",
+    }, { cache: "none", transport: "https" });
+    if (!active) return;
+    const opened = new Set(Array.from(host.querySelectorAll("details[open]"), (item) => item.dataset.lane));
+    host.innerHTML = result.items.length ? `<div class="akasha-mobile-recall-group">${[
+      ["dense", "左脑 · 精确回忆", "precise"], ["completion", "右脑 · 模式补全", "completion"],
+    ].map(([lane, title, style]) => {
+      const hits = result.items.flatMap((item) => item.hits.filter((hit) => hit.lane === lane));
+      return `<details data-lane="${lane}" class="akasha-mobile-recall akasha-mobile-recall--${style}">
+        <summary><span>${title}</span><b>${hits.length}</b></summary>
+        <ol class="akasha-mobile-memories">${hits.map((hit) => `<li><div>${hit.messages.map((message) =>
+          `<p>${escapeHtml(message.preview || "（非文本消息）")}${message.truncated ? "…" : ""}</p>`).join("")}</div></li>`).join("")
+          || '<li class="akasha-mobile-empty">本次没有命中</li>'}</ol></details>`;
+    }).join("")}</div>` : "";
+    host.querySelectorAll("details").forEach((item) => { item.open = opened.has(item.dataset.lane); });
+    if (result.pending) timer = setTimeout(() => { void load().catch(failed); }, 1000);
+  };
+  const failed = (error) => {
+    if (active) host.innerHTML = `<p class="akasha-mobile-error">${escapeHtml(error.message)}</p>`;
+  };
+  void load().catch(failed);
+  return () => { active = false; clearTimeout(timer); };
+}
+
+export default { slots: { "turn.before_reasoning": { mount: mountRecall } }, dashboard: { mount } };

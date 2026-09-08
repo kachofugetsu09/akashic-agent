@@ -1,4 +1,4 @@
-import { isTimelineMessageVisible } from "./message-timeline";
+import { timelineVisibleMessages, timelineToolResults } from "./message-timeline";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -275,6 +275,7 @@ export function DesktopTimelineMessages({ messages, status, messageElementsRef, 
   const { stopScroll } = useStickToBottomContext();
   const byId = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages]);
   const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
+  const toolResults = useMemo(() => timelineToolResults(messages), [messages]);
   const onNavigate = useCallback((id: string, partIndex?: number) => {
     stopScroll();
     const row = messageElementsRef.current.get(id);
@@ -282,14 +283,14 @@ export function DesktopTimelineMessages({ messages, status, messageElementsRef, 
     target?.focus({ preventScroll: true });
     target?.scrollIntoView({ behavior: "instant", block: "center" });
   }, [messageElementsRef, stopScroll]);
-  return <>{messages.filter(isTimelineMessageVisible).map((message) => <div key={message.id}
+  return <>{timelineVisibleMessages(messages).map((message) => <div key={message.id}
     className={`web-message-anchor history-isolated timeline-${message.body.kind}`}
     tabIndex={-1} data-message-id={message.id} data-message-kind={message.body.kind} data-message-seq={message.seq}
     ref={(element) => {
       if (element) messageElementsRef.current.set(message.id, element);
       else messageElementsRef.current.delete(message.id);
     }}>
-    <TimelineMessageView message={message} lookupMessage={lookupMessage} onNavigate={onNavigate} onError={onError}
+    <TimelineMessageView message={message} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
       leadingContent={message.body.kind === "output" ? <MobilePluginSlot name="turn.before_reasoning"
         sessionId={message.session_id} messageId={message.id} /> : undefined}
       beforePart={(part, index) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
