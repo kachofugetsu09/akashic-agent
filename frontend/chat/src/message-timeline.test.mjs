@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chatHistoryPage, sessionPage } from "./web-chat-data.ts";
-import { timelineVisibleMessages, timelineToolResults, timelineAnchorIndexes, historyTranscript, isTimelineMessageVisible, isTimelinePartVisible, mergeTimelineMessages, readMessageLogFrame, readTimelineMessage, timelineReply, timelineText } from "./message-timeline.ts";
+import { timelineReplyGroups, timelineVisibleMessages, timelineToolResults, timelineAnchorIndexes, historyTranscript, isTimelineMessageVisible, isTimelinePartVisible, mergeTimelineMessages, readMessageLogFrame, readTimelineMessage, timelineReply, timelineText } from "./message-timeline.ts";
 
 const row = (seq, body, changes = {}) => ({
   id: `message-${seq}`, session_id: "akashic:fixture", seq,
@@ -175,9 +175,37 @@ test("工具结果回到原调用面板，分页缺少调用时仍可阅读和�
     outcome: "success", parts: [text("文件内容")] });
   const answer = row(5, { kind: "output", finish: "complete", parts: [text("答案")] });
   const messages = [call, result, answer];
-  assert.deepEqual(timelineVisibleMessages(messages), [call, answer]);
+  assert.deepEqual(timelineVisibleMessages(messages), [answer]);
   assert.equal(timelineToolResults(messages).get(`${call.id}:0`), result);
   assert.equal(timelineAnchorIndexes(messages).get(result.id), 0);
+  assert.deepEqual(timelineReplyGroups(messages).completed.get(answer.id), [call, answer]);
   assert.deepEqual(timelineVisibleMessages([result, answer]), [result, answer]);
   assert.deepEqual(messages, [call, result, answer]);
+  // 正文接替与工具引用是独立事实，恢复分页和实时追加使用相同规则。
+  call.body.parts.push(text("临时正文"));
+  const original = structuredClone(messages);
+  assert.deepEqual([...timelineReplyGroups([call, result]).hiddenBodies], []);
+  assert.deepEqual([...timelineReplyGroups(messages).hiddenBodies], [call.id]);
+  assert.deepEqual(timelineVisibleMessages(messages), [answer]);
+  const activity = { session_id: call.session_id, source: call.source, active: true, handle: "reply",
+    preview: { message_id: "draft", text: "", thinking: "继续思考" } };
+  assert.deepEqual([...timelineReplyGroups([call, result], [activity]).hiddenBodies], []);
+  activity.preview.text = "最终正文正在生成";
+  assert.ok(timelineReplyGroups([call, result], [activity]).moved.has(call.id));
+  activity.source = "another-source";
+  assert.deepEqual([...timelineReplyGroups([call], [activity]).hiddenBodies], []);
+  const abandoned = row(6, { kind: "control", action: "abandon", through_seq: call.seq, reason: null });
+  assert.deepEqual([...timelineReplyGroups([call, abandoned, answer]).hiddenBodies], []);
+  const activeGroups = timelineReplyGroups([call, result], [{ ...activity, source: call.source }]);
+  assert.deepEqual(timelineVisibleMessages([call, result], activeGroups), []);
+  assert.deepEqual(activeGroups.active.get(activity.handle), [call]);
+  assert.equal(timelineAnchorIndexes([call, result], activeGroups).get(result.id), 0);
+  const quiet = row(7, { kind: "output", finish: "quiet", parts: [] });
+  assert.deepEqual(timelineVisibleMessages([call, result, quiet]), [quiet]);
+  assert.deepEqual(timelineReplyGroups([call, abandoned, answer]).completed.size, 0);
+  assert.deepEqual(timelineVisibleMessages([call, abandoned, answer]), [call, abandoned, answer]);
+  assert.deepEqual(timelineReplyGroups([answer]).completed.size, 0);
+  assert.deepEqual(timelineReplyGroups([call, result, answer]).completed.get(answer.id), [call, answer]);
+  assert.deepEqual(messages, original);
+
 });

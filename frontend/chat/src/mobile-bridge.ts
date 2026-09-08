@@ -5,7 +5,7 @@ type NativeTransport = {
 type NativeBridgeMethod = (...args: unknown[]) => void;
 
 export const MOBILE_NATIVE_METHODS = [
-  "requestSnapshot", "selectSession", "removeUnavailableSession", "createSession",
+  "requestSnapshot", "selectSession", "loadOlderHistory", "loadLatestHistory", "loadHistoryAround", "removeUnavailableSession", "createSession",
   "restartPairing", "reloadFromServer", "exportDiagnostics", "openSettings",
   "chooseAttachments", "removeAttachment", "retryAttachment", "continueMeteredTransfer",
   "retryFailedMessage", "saveReadingPosition", "markSessionReadThrough", "navigationTargetHandled",
@@ -20,7 +20,7 @@ export const MOBILE_NATIVE_METHODS = [
 export type MobileNativeMethod = (typeof MOBILE_NATIVE_METHODS)[number];
 
 const METHOD_ARITY: Record<MobileNativeMethod, number> = {
-  requestSnapshot: 0, selectSession: 1, removeUnavailableSession: 1, createSession: 0,
+  requestSnapshot: 0, selectSession: 1, loadOlderHistory: 0, loadLatestHistory: 0, loadHistoryAround: 1, removeUnavailableSession: 1, createSession: 0,
   restartPairing: 0, reloadFromServer: 0, exportDiagnostics: 0, openSettings: 0,
   chooseAttachments: 0, removeAttachment: 1, retryAttachment: 1, continueMeteredTransfer: 0,
   retryFailedMessage: 1, saveReadingPosition: 3, markSessionReadThrough: 2, navigationTargetHandled: 1,

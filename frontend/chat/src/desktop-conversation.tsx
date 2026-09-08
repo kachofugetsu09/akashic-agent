@@ -1,4 +1,5 @@
-import { timelineVisibleMessages, timelineToolResults } from "./message-timeline";
+import { focusMessagePart } from "./message-actions";
+import { timelineVisibleMessages, timelineToolResults, timelineReplyGroups, timelineAnchorIndexes, type ReplyActivity } from "./message-timeline";
 import { timelineReply, timelineText, type TimelineMessage, type TimelineReply } from "./message-timeline";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
@@ -263,8 +264,9 @@ function formatMessageTime(value: string) {
 }
 
 /** 展示完整日志，引用只定位原消息，不给工具结果补造助手身份。 */
-export function DesktopTimelineMessages({ messages, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
+export function DesktopTimelineMessages({ messages, activities, status, messageElementsRef, copiedMessageId, onReply, onCopied, onError }: {
   messages: TimelineMessage[];
+  activities: ReplyActivity[];
   status: ChatStatus;
   messageElementsRef: React.RefObject<Map<string, HTMLDivElement>>;
   copiedMessageId: string;
@@ -276,34 +278,39 @@ export function DesktopTimelineMessages({ messages, status, messageElementsRef, 
   const byId = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages]);
   const lookupMessage = useCallback((id: string) => byId.get(id), [byId]);
   const toolResults = useMemo(() => timelineToolResults(messages), [messages]);
+  const groups = useMemo(() => timelineReplyGroups(messages, activities), [messages, activities]);
+  const visibleMessages = useMemo(() => timelineVisibleMessages(messages, groups), [messages, groups]);
+  const anchorIndexes = useMemo(() => timelineAnchorIndexes(messages, groups), [messages, groups]);
   const onNavigate = useCallback((id: string, partIndex?: number) => {
     stopScroll();
-    const row = messageElementsRef.current.get(id);
-    const target = partIndex === undefined ? row : row?.querySelector<HTMLElement>(`[data-part-index="${partIndex}"]`);
-    target?.focus({ preventScroll: true });
-    target?.scrollIntoView({ behavior: "instant", block: "center" });
-  }, [messageElementsRef, stopScroll]);
-  return <>{timelineVisibleMessages(messages).map((message) => <div key={message.id}
+    const index = anchorIndexes.get(id);
+    const activity = index === undefined ? undefined : activities[index - visibleMessages.length];
+    const row = messageElementsRef.current.get(visibleMessages[index ?? -1]?.id)
+      ?? (activity ? document.querySelector<HTMLElement>(`[data-reply-handle="${CSS.escape(activity.handle)}"]`) : null);
+    if (row) focusMessagePart(row, id, partIndex);
+  }, [activities, anchorIndexes, messageElementsRef, stopScroll, visibleMessages]);
+  return <>{visibleMessages.map((message) => <div key={message.id}
     className={`web-message-anchor history-isolated timeline-${message.body.kind}`}
     tabIndex={-1} data-message-id={message.id} data-message-kind={message.body.kind} data-message-seq={message.seq}
     ref={(element) => {
       if (element) messageElementsRef.current.set(message.id, element);
       else messageElementsRef.current.delete(message.id);
     }}>
-    <TimelineMessageView message={message} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
-      leadingContent={message.body.kind === "output" ? <MobilePluginSlot name="turn.before_reasoning"
-        sessionId={message.session_id} messageId={message.id} /> : undefined}
-      beforePart={(part, index) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
-        name="turn.before_tool" sessionId={message.session_id} messageId={message.id} block={{ ...part, message_id: message.id, part_index: index }} /> : null}
+    <TimelineMessageView message={message} hideBody={groups.hiddenBodies.has(message.id) || groups.moved.has(message.id)} processMessages={groups.completed.get(message.id)}
+      hideProcess={groups.moved.has(message.id)} lookupMessage={lookupMessage} toolResults={toolResults} onNavigate={onNavigate} onError={onError}
+      beforeReasoning={(origin) => origin.body.kind === "output" ? <MobilePluginSlot name="turn.before_reasoning"
+        sessionId={origin.session_id} messageId={origin.id} /> : null}
+      beforePart={(part, index, origin) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
+        name="turn.before_tool" sessionId={origin.session_id} messageId={origin.id} block={{ ...part, message_id: origin.id, part_index: index }} /> : null}
       afterBody={message.body.kind === "output" && message.body.finish === "complete" ? <MobilePluginSlot
         name="turn.after_answer" sessionId={message.session_id} messageId={message.id} /> : undefined} />
-    <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
+    {!groups.hiddenBodies.has(message.id) && !groups.moved.has(message.id) ? <div className={`shared-message-meta timeline-meta ${message.body.kind === "input" ? "user" : "assistant"}`}>
       <time dateTime={message.timestamp}>{formatMessageTime(message.timestamp)}</time>
       <SharedMessageActions
         canReply={status === "idle" && (message.body.kind === "input" || message.body.kind === "output")}
         canCopy={Boolean(timelineText(message))} copied={copiedMessageId === message.id}
         onReply={() => onReply(timelineReply(message))}
         onCopy={() => { void navigator.clipboard.writeText(timelineText(message)).then(() => onCopied(message.id)).catch(onError); }} />
-    </div>
+    </div> : null}
   </div>)}</>;
 }

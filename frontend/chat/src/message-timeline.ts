@@ -259,8 +259,8 @@ export function isTimelineMessageVisible(message: TimelineMessage): boolean {
 }
 
 /** 隐藏行沿原始顺序定位后续可见行；末尾隐藏行使用前一可见行。 */
-export function timelineAnchorIndexes(messages: TimelineMessage[]): Map<string, number> {
-  const visibleIds = new Set(timelineVisibleMessages(messages).map((message) => message.id));
+export function timelineAnchorIndexes(messages: TimelineMessage[], groups = timelineReplyGroups(messages)): Map<string, number> {
+  const visibleIds = new Set(timelineVisibleMessages(messages, groups).map((message) => message.id));
   const indexes = new Map<string, number>();
   const pending: string[] = [];
   let index = -1;
@@ -272,6 +272,15 @@ export function timelineAnchorIndexes(messages: TimelineMessage[]): Map<string, 
     pending.length = 0;
   }
   if (index >= 0) for (const id of pending) indexes.set(id, index);
+  for (const [ending, members] of groups.completed) {
+    const target = indexes.get(ending);
+    if (target !== undefined) for (const member of members) indexes.set(member.id, target);
+  }
+  let activityIndex = visibleIds.size;
+  for (const members of groups.active.values()) {
+    for (const member of members) indexes.set(member.id, activityIndex);
+    activityIndex += 1;
+  }
   for (const message of messages) {
     if (message.body.kind !== "tool_result" || visibleIds.has(message.id)) continue;
     const callIndex = indexes.get(message.body.call_ref.message_id);
@@ -286,11 +295,46 @@ export function timelineToolResults(messages: TimelineMessage[]): Map<string, Ti
     ? [[`${message.body.call_ref.message_id}:${message.body.call_ref.part_index}`, message] as const] : []));
 }
 
+/** 完成后把同来源的过程归到最终消息；成员只保存原消息引用。 */
+export function timelineReplyGroups(messages: TimelineMessage[], activities: ReplyActivity[] = []) {
+  const pending = new Map<string, TimelineMessage[]>();
+  const completed = new Map<string, TimelineMessage[]>();
+  const hiddenBodies = new Set<string>();
+  for (const message of messages) {
+    const key = `${message.session_id}:${message.source}`;
+    const body = message.body;
+    if (body.kind === "output") {
+      const members = pending.get(key) ?? [];
+      const prior = members.at(-1);
+      if (prior) hiddenBodies.add(prior.id);
+      members.push(message);
+      if (body.finish === "continue") pending.set(key, members);
+      else {
+        if (members.length > 1) completed.set(message.id, members);
+        pending.delete(key);
+      }
+    } else if (body.kind === "control" && body.action === "abandon") {
+      const members = pending.get(key) ?? [];
+      const closed = members.filter((item) => item.seq <= body.through_seq).at(-1);
+      if (closed) hiddenBodies.delete(closed.id);
+      pending.set(key, members.filter((item) => item.seq > body.through_seq));
+    }
+  }
+  const active = new Map<string, TimelineMessage[]>();
+  for (const activity of activities) active.set(activity.handle, pending.get(`${activity.session_id}:${activity.source}`) ?? []);
+  const moved = new Set([...completed.values()].flatMap((members) => members.slice(0, -1).map((message) => message.id)));
+  for (const members of active.values()) for (const message of members) moved.add(message.id);
+  return { completed, active, moved, hiddenBodies };
+}
+
 /** 已加载的工具结果在原调用面板中展示；缺少调用的分页仍保留结果行。 */
-export function timelineVisibleMessages(messages: TimelineMessage[]): TimelineMessage[] {
+export function timelineVisibleMessages(messages: TimelineMessage[], groups = timelineReplyGroups(messages)): TimelineMessage[] {
   const byId = new Map(messages.map((message) => [message.id, message]));
   return messages.filter((message) => {
-    if (!isTimelineMessageVisible(message)) return false;
+    if (groups.moved.has(message.id) && !message.attachments.length) return false;
+    if (!isTimelineMessageVisible(message) && !groups.completed.has(message.id)) return false;
+    if (groups.hiddenBodies.has(message.id) && !message.attachments.length && message.body.kind === "output"
+      && !message.body.parts.some((part) => part.kind !== "text" && isTimelinePartVisible(part))) return false;
     if (message.body.kind !== "tool_result" || message.attachments.length) return true;
     if (message.body.parts.some((part) => isTimelinePartVisible(part) && part.kind !== "text")) return true;
     const call = byId.get(message.body.call_ref.message_id);

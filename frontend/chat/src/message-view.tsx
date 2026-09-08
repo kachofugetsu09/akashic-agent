@@ -89,24 +89,36 @@ const MessageBody = memo(function MessageBody({
 });
 
 /** 草稿复用聊天的等待和思考组件，提交后由相同样式的历史行接替。 */
-export function ReplyActivityView({ activity, committed, onError }: {
+export function ReplyActivityView({ activity, committed, onError, processMessages = [], toolResults = new Map() }: {
   activity: ReplyActivity;
   committed: ReadonlySet<string>;
+  processMessages?: TimelineMessage[];
+  toolResults?: ReadonlyMap<string, TimelineMessage>;
   onError?: (error: unknown) => void;
 }) {
-  const draft = activity.preview && !committed.has(activity.preview.message_id) ? activity.preview : null;
-  if (activity.preview && !draft) return null;
+  // 展示保留最后草稿直到同 ID 落库；provider 退出预览 scope 不让正文倒退。
+  const [lastPreview, setLastPreview] = useState(activity.preview);
+  if (activity.preview && activity.preview !== lastPreview) setLastPreview(activity.preview);
+  const preview = activity.preview ?? (activity.active ? lastPreview : null);
+  const draft = preview && !committed.has(preview.message_id) ? preview : null;
+  if (preview && !draft && !processMessages.length) return null;
+  const process = timelineProcessBlocks(processMessages, toolResults);
+  const latest = processMessages.at(-1);
+  const text = draft?.text || (latest ? timelineText(latest) : "");
+  const beforeReasoning = (message: TimelineMessage) => <MobilePluginSlot name="turn.before_reasoning"
+    sessionId={message.session_id} messageId={message.id} />;
   return <div className="message-row agent-row reply-activity" data-reply-handle={activity.handle}
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
     <div className="agent-content">
-      {draft && !draft.thinking ? <MobilePluginSlot name="turn.before_reasoning" sessionId={activity.session_id}
-        messageId={draft.message_id} block={{ source: activity.source }} /> : null}
-      {draft?.thinking ? <ProcessTrace blocks={[{ kind: "thinking", content: draft.thinking }]}
-        streaming={activity.active} interrupted={false}
-        startContent={<MobilePluginSlot name="turn.before_reasoning" sessionId={activity.session_id}
-          messageId={draft.message_id} block={{ source: activity.source }} />} /> : null}
-      {!draft?.thinking && !draft?.text ? <ThinkingPlaceholder /> : null}
-      {draft?.text ? <MessageBody content={draft.text} streaming={activity.active} deferRichContent onError={onError} /> : null}
+      <TimelineProcess process={process} draftThinking={draft?.thinking} streaming={activity.active}
+        beforeReasoning={beforeReasoning}
+        draftSlot={draft ? <MobilePluginSlot name="turn.before_reasoning" sessionId={activity.session_id}
+          messageId={draft.message_id} block={{ source: activity.source }} /> : undefined}
+        beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
+          name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
+          block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
+      {!draft?.thinking && !text && !process.length ? <ThinkingPlaceholder /> : null}
+      {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
     </div>
   </div>;
 }
@@ -189,35 +201,76 @@ export function ChatMessageView({
   );
 }
 
+interface TimelineProcessBlock {
+  origin: TimelineMessage;
+  part: TimelinePart;
+  index: number;
+  block: AgentBlock;
+}
+
+/** 每条消息内先展示思考，再按原消息顺序连接全部过程。 */
+function timelineProcessBlocks(messages: TimelineMessage[], toolResults: ReadonlyMap<string, TimelineMessage>): TimelineProcessBlock[] {
+  return messages.flatMap((origin) => origin.body.kind !== "output" ? [] : origin.body.parts.map((part, index) => ({ part, index }))
+    .sort((left, right) => Number(right.part.kind === "model.facts") - Number(left.part.kind === "model.facts"))
+    .flatMap(({ part, index }): TimelineProcessBlock[] => {
+    if ("display" in part) return [];
+    if (part.kind === "model.facts" && part.value.thinking) return [{ index, origin, part, block: { kind: "thinking", content: part.value.thinking } }];
+    if ("archive" in part && part.kind === "history.transcript") {
+      return historyBlocks(part.archive).map((block) => ({ index, origin, part, block }));
+    }
+    if (part.kind !== "tool_call") return [];
+    const result = toolResults.get(`${origin.id}:${index}`);
+    const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
+    return [{ index, origin, part, block: { kind: "tool", callId: `${origin.id}:${index}`, name: part.name,
+      input: part.arguments, output: result ? timelineText(result) : undefined,
+      status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
+      errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
+  }));
+}
+
+/** 历史与实时回复共用一条轨迹，节点继续引用原消息和 part。 */
+function TimelineProcess({ process, streaming = false, draftThinking = "", draftSlot, beforeReasoning, beforePart }: {
+  process: TimelineProcessBlock[];
+  streaming?: boolean;
+  draftThinking?: string;
+  draftSlot?: ReactNode;
+  beforeReasoning?: (message: TimelineMessage) => ReactNode;
+  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
+}) {
+  const blocks: AgentBlock[] = process.map((item) => item.block);
+  if (draftThinking) blocks.push({ kind: "thinking", content: draftThinking });
+  if (!blocks.length) return draftSlot;
+  return <ProcessTrace blocks={blocks} streaming={streaming} interrupted={false}
+    startContent={process.length ? beforeReasoning?.(process[0].origin) : draftSlot}
+    beforeBlock={(_block, index) => {
+      const item = process[index];
+      if (!item) return process.length ? draftSlot : null;
+      return <div data-process-message-id={item.origin.id} data-part-index={item.index} tabIndex={-1}>
+        {index > 0 && process[index - 1].origin.id !== item.origin.id ? beforeReasoning?.(item.origin) : null}
+        {beforePart?.(item.part, item.index, item.origin)}
+      </div>;
+    }} />;
+}
+
 /** 保留消息引用与 part 位置，复用原聊天的过程和正文组件。 */
-export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, leadingContent, beforePart, afterBody, renderAttachment }: {
+export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, canLoadReferences = false }: {
   message: TimelineMessage;
+  hideBody?: boolean;
+  canLoadReferences?: boolean;
   toolResults: ReadonlyMap<string, TimelineMessage>;
   renderAttachment?: (attachment: TimelineAttachment) => ReactNode;
-  leadingContent?: ReactNode;
-  beforePart?: (part: TimelinePart, index: number) => ReactNode;
+  beforeReasoning?: (message: TimelineMessage) => ReactNode;
+  processMessages?: TimelineMessage[];
+  hideProcess?: boolean;
+  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
   afterBody?: ReactNode;
   lookupMessage: (id: string) => TimelineMessage | undefined;
   onNavigate: (id: string, partIndex?: number) => void;
   onError?: (error: unknown) => void;
 }) {
   const body = message.body;
-  const process = body.kind !== "output" ? [] : body.parts.map((part, index) => ({ part, index }))
-    .sort((left, right) => Number(right.part.kind === "model.facts") - Number(left.part.kind === "model.facts"))
-    .flatMap(({ part, index }): { block: AgentBlock; index: number }[] => {
-    if ("display" in part) return [];
-    if (part.kind === "model.facts" && part.value.thinking) return [{ index, block: { kind: "thinking", content: part.value.thinking } }];
-    if ("archive" in part && part.kind === "history.transcript") {
-      return historyBlocks(part.archive).map((block) => ({ index, block }));
-    }
-    if (part.kind !== "tool_call") return [];
-    const result = toolResults.get(`${message.id}:${index}`);
-    const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
-    return [{ index, block: { kind: "tool", callId: `${message.id}:${index}`, name: part.name,
-      input: part.arguments, output: result ? timelineText(result) : undefined,
-      status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
-      errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
-  });
+  const process = hideProcess ? [] : timelineProcessBlocks(processMessages, toolResults);
+  const leadingContent = hideProcess ? null : beforeReasoning?.(process[0]?.origin ?? message);
   const referencedArtifacts = new Set(body.kind === "control" ? [] : body.parts.flatMap((part) =>
     !("display" in part) && part.kind === "artifact_ref" ? [part.value] : []));
   const attachment = (id: string) => {
@@ -230,10 +283,8 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   return <div className={`message-row timeline-message timeline-${body.kind}`}>
     <div className={body.kind === "input" ? "user-bubble" : "agent-content"}>
       {process.length === 0 ? leadingContent : null}
-      {body.kind === "output" && process.length ? <ProcessTrace blocks={process.map((item) => item.block)} streaming={false}
-        interrupted={false} startContent={leadingContent} beforeBlock={(_block, index) => <div
-          data-part-index={process[index].index} tabIndex={-1}>{beforePart?.(
-            body.parts[process[index].index], process[index].index)}</div>} /> : null}
+      {body.kind === "output" && process.length ? <TimelineProcess process={process}
+        beforeReasoning={beforeReasoning} beforePart={beforePart} /> : null}
       {body.kind === "control" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
@@ -248,9 +299,9 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
         {body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
           Number(right.part.kind === "model.facts" || right.part.kind === "history.transcript")
           - Number(left.part.kind === "model.facts" || left.part.kind === "history.transcript"))
-          .map(({ part, index }) => isTimelinePartVisible(part) && !process.some((item) => item.index === index) ? <div key={index} data-part-index={index} tabIndex={-1}>
-          {beforePart?.(part, index)}
-          <TimelinePartView part={part} attachment={attachment} lookupMessage={lookupMessage}
+          .map(({ part, index }) => isTimelinePartVisible(part) && !(hideBody && part.kind === "text") && !((hideProcess && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) || process.some((item) => item.origin.id === message.id && item.index === index)) ? <div key={index} data-part-index={index} tabIndex={-1}>
+          {beforePart?.(part, index, message)}
+          <TimelinePartView part={part} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
         </div> : null)}
       </>}
@@ -261,7 +312,8 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   </div>;
 }
 
-function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError, processStartContent }: {
+function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError, processStartContent, canLoadReferences }: {
+  canLoadReferences: boolean;
   processStartContent?: ReactNode;
   part: TimelinePart;
   attachment: (id: string) => ReactNode;
@@ -277,7 +329,7 @@ function TimelinePartView({ part, attachment, lookupMessage, onNavigate, onError
     case "reply_ref": {
       const source = lookupMessage(part.value);
       return <MessageReplyReference author={source?.author ?? "原消息"}
-        preview={source ? timelineReply(source).preview : ""} unavailable={!source}
+        preview={source ? timelineReply(source).preview : ""} unavailable={!source} canLoad={canLoadReferences}
         onNavigate={() => onNavigate(part.value)} />;
     }
     case "model.facts": return part.value.thinking ? <ProcessTrace

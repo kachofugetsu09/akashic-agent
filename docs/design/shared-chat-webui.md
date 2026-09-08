@@ -175,3 +175,56 @@ TypeScript 固定为 5.9.3，沿用现有 strict、ES2022 和 bundler 配置。
 - 文件缓存写入失败只结束该下载并消费对应回复。Room 持久化失败停止消费和 ACK，等待用户处理存储后重连；自动重连不作为本地数据修复。
 
 验证入口：`tests/test_mobile_message_log.py`、共享聊天投影测试、Android Room 18→19 迁移与下载测试；`tests_scenarios/mobile_artifact_history.py` 提供全新目录中的真实 TLS Gateway，用于 Android Room→文件→共享 WebView 的完整验证。测试不读取正式 workspace 或正式手机应用。
+
+## 9. 正文接替与历史恢复（2026-09-09）
+
+### 9.1 已确认的正文展示
+
+同一 source 的 `continue` 正文只是执行中的当前正文；新正文接替旧正文，`complete` 结束后只展示最终正文。思考与工具合为一条过程轨迹，仍沿原 `message_id + part_index` 查看，最后正文使用最终 Message 的复制、引用和时间。`abandon` 隔开前后回复；其他 source 的输出不替换本来源正文。分页和实时追加使用同一展示规则，不改写任何 Message。
+
+```text
+Input → 等待 → 思考 / 工具 + 当前正文 → 最终正文
+                  └─ 原过程引用仍保留 ──────┘
+```
+
+本次修复由共享 WebUI 的 `message-timeline.ts` 和 `TimelineMessageView` 拥有，桌面与 Android WebUI 使用同一规则。`runtime_patch=false`；SessionDB 和 Akasha 不变。只修改 Git worktree 的源码与本说明，验证使用一次性 fixture；没有正式 workspace、外部消息或部署副作用。恢复点为任务开始前的源码归档与基线 `b5967641`。
+
+### 9.2 当前窗口与按需历史
+
+维护者于 2026-09-09 选择按需方案并授权实现、合并、部署与必要 APK 发布。原 Android `28bdd84` 的全会话前向补齐已被替换；桌面本来就使用最近 50 条和 `before_seq`，本次同时收窄它的展示响应。
+
+只读基线：正式会话末尾 50 条 HTTP 响应为 6,718,701 bytes，其中不可见 `history.record` 占 6,655,426 bytes；loopback 三次完整读取为 854 / 242 / 159 ms，不含公网与手机渲染。4,204 条持久记录的正文与 metadata 共 160,616,603 bytes。行数上限不能代替字节边界。
+
+```text
+┌───────────────┐    ┌─────────────────────┐
+│ 认证与会话目录 │───▶│ 当前会话尾页，head=H │
+└───────────────┘    └──────────┬──────────┘
+                              ▼
+                   ┌──────────────────────┐
+                   │ 从 H 订阅 + 回复状态 │──▶ 可以发送
+                   └──────────────────────┘
+┌───────────────┐    ┌─────────────────────┐
+│ 上翻 / 引用跳转│───▶│ 旧页 / 目标所在窗口 │
+└───────────────┘    └─────────────────────┘
+```
+
+#### 分页与展示合同
+
+- `history.get(direction=backward)` 无 cursor 时读尾页；`before_seq` 排他地读更早消息；`around_id` 由服务端定位并返回以目标结尾的窗口，目标不存在返回 `message_not_found`。三者都复用 `MessageReader.read_tail`，不创建消息身份或改写日志。
+- 页内 `(after_seq,next_after_seq]` 是完整收到的记录/下载清单范围；`through_seq` 是快照 head。向后页的 `next_after_seq=before_seq-1`；`next_before_seq` 是首条 seq，`has_more` 指更早记录。没有更早记录时下界为 -1。`request_id` 只关联当前请求，不成为历史进度。
+- 初始页数 50 是调节值，不是聊天准入条件。单帧仍有 240 KiB 预算，尾页缩小时只舍去左侧整条记录，不能丢掉最新消息。超大可见正文沿既有整条 JSON 清单和 Range 传输，不截断内容。
+- 新 Mobile 显式请求 `display_only=true`，桌面默认用展示表示：不可见的 `history.provenance / history.record / history.turn_input` 只留 kind 和 unavailable 标记，原 part 下标与可见 `history.transcript` 不变。旧客户端保持旧表示。整条下载仍由原 byte_length 与 SHA-256 精确选择两种已知表示，升级前的未完成下载可以继续。
+- Room 19→20 只新增 `message_ranges(sessionId,afterSeq,throughSeq)` 与下载记录的表示标记；不删除旧消息、附件、草稿、outbox 或配对。范围和完整记录/清单在同一事务提交，之后才 ACK。重叠范围合并不丢覆盖；没有范围证据的旧缓存不推断为完整前缀。
+- Native 拥有订阅、Room、下载与唯一连续显示窗口。上翻扩展左边界；引用跳转换成目标窗口；旧窗口中的新实时消息只进入缓存，回最新时重新取尾页。窗口替换推进 WebUI projection generation，旧代际事件不能混入新窗口。
+- 初次 READY 等待当前尾页清单、当前订阅确认和已知回复状态，不等待全部旧正文、附件、其他会话或通知定位。outbox 仍持久化用户输入，在 READY 后由原 owner 发送。保存的阅读锚在近期窗口外时，单独定位该锚，不枚举它之前的全部记录。
+- 缓存未命中不能判定通知过期；必须取得服务端明确不存在证据。通知仍在精确 `Output(finish=complete)` 的完整正文落地后发布。分页错误不把已就绪连接降为不可聊天。
+
+#### 所有权与持久化
+
+Core Message 日志和附件保持 append-only，只有既有 adapter 的读协议变化；不新增 SessionDB 状态或删除权限。Native 本地范围只增加或合并，明确清理投影时与对应缓存一起减少；事件 `reset_required` 只更新事件 cursor 并重读目录/当前尾页，不清空 Message。旧缓存重放时只允许去掉上述不可见归档展示值，并逐字段核对其余消息事实；权威归档仍在服务端。旧、新清单交错时保留当前下载 owner，不改写其已确认片段。
+
+恢复点：Core 基线 `b5967641`、Mobile 基线 `28bdd84` 及任务目录外源码归档；正式部署前另备份整个运行 workspace。Room schema 升级后不支持直接降级 APK；回退需提供兼容 schema 的修复版。所有设备验证使用隔离 application ID。
+
+验收覆盖尾页帧预算、旧/新表示摘要、完整数据库未变、部分窗口与实时追加、Room 接收范围/ACK 原子性、旧引用定位、阅读锚、断线和未下载正文。性能分别记录首屏 bytes、接收行数和发送时刻，不能把本地输入接受当成服务器已发送。
+
+参考：[Matrix limited timeline 与向前补页](https://spec.matrix.org/latest/client-server-api/#syncing)、[Stream 消息 ID 分页](https://getstream.io/chat/docs/javascript/channel-pagination/)；使用本项目已有 `message_id + seq`，不引入第三方 token 模型。

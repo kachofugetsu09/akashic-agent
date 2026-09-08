@@ -807,13 +807,15 @@ class MobileRealtimeChannel:
         if message is None:
             raise MobileCommandError("message_not_found", "消息不存在")
         page = reader.read_page(after_seq=message.seq - 1, through_seq=message.seq, limit=1)
-        rows = message_rows(page)
-        if not rows:
-            raise MobileCommandError("message_not_found", "消息不存在")
-        content = _message_json(rows[0])
-        if len(content) != byte_length or hashlib.sha256(content).hexdigest() != sha256:
-            raise MobileCommandError("content_changed", "消息与历史 manifest 不一致")
-        return content
+        # 摘要明确选择表示；新展示清单和升级前的未完成下载都可重开。
+        for display_only in (True, False):
+            rows = message_rows(page, display_only=display_only)
+            if not rows:
+                raise MobileCommandError("message_not_found", "消息不存在")
+            content = _message_json(rows[0])
+            if len(content) == byte_length and hashlib.sha256(content).hexdigest() == sha256:
+                return content
+        raise MobileCommandError("content_changed", "消息与历史 manifest 不一致")
 
     async def cancel_plugin_ui_device(self, device_id: str) -> None:
         """断线时取消设备的全部临时插件查询。"""
@@ -1909,15 +1911,34 @@ class MobileRealtimeChannel:
     async def _get_history(
         self, device_id: str, frame: GenericCommand,
     ) -> CommandReply:
-        """沿固定 Message 前缀同步；任何消息内容都不因帧预算而截断。"""
+        """读取固定范围的一页；尾页与旧页都保留原 Message 身份。"""
         _expect_message_log_version(frame.payload)
-        _expect_keys(frame.payload, {"message_log_version", "page_size", "after_seq", "through_seq"})
+        _expect_keys(frame.payload, {"message_log_version", "page_size", "after_seq", "through_seq", "before_seq", "around_id", "direction", "display_only"})
         session_id = self._normalize_session_id(frame.session_id)
         page_size = _message_page_size(frame.payload)
+        display_only = _message_display_only(frame.payload)
+        direction = frame.payload.get("direction", "forward")
+        if not isinstance(direction, str) or direction not in {"forward", "backward"}:
+            raise MobileCommandError("invalid_pagination", "direction 必须是 forward 或 backward")
+        backward = direction == "backward"
+        if backward and "after_seq" in frame.payload or not backward and ("before_seq" in frame.payload or "around_id" in frame.payload):
+            raise MobileCommandError("invalid_pagination", "分页方向与 cursor 不一致")
+        if "around_id" in frame.payload and "before_seq" in frame.payload:
+            raise MobileCommandError("invalid_pagination", "around_id 与 before_seq 不能同时使用")
         after_seq = _message_cursor(frame.payload.get("after_seq", -1), "after_seq")
         through_seq = None if "through_seq" not in frame.payload else _message_cursor(frame.payload["through_seq"], "through_seq")
+        before_seq = None if "before_seq" not in frame.payload else _message_cursor(frame.payload["before_seq"], "before_seq")
         try:
-            page = self._require_messages().reader(session_id).read_page(
+            reader = self._require_messages().reader(session_id)
+            if "around_id" in frame.payload:
+                message_id = frame.payload["around_id"]
+                if not isinstance(message_id, str) or not message_id or len(message_id) > 512:
+                    raise MobileCommandError("invalid_pagination", "around_id 必须是消息 ID")
+                target = reader.get(message_id)
+                if target is None:
+                    raise MobileCommandError("message_not_found", "目标消息不存在")
+                before_seq = target.seq + 1
+            page = reader.read_tail(before_seq=before_seq, through_seq=through_seq, limit=page_size) if backward else reader.read_page(
                 after_seq=after_seq, through_seq=through_seq, limit=page_size,
             )
         except KeyError as error:
@@ -1925,9 +1946,31 @@ class MobileRealtimeChannel:
         except InvalidPage as error:
             raise MobileCommandError("invalid_pagination", str(error)) from error
         try:
-            payload = next(message_chunks({"version": 2, "items": message_rows(page),
+            page_payload: dict[str, object] = {"version": 2, "items": message_rows(page, display_only=display_only),
                 "after_seq": after_seq, "through_seq": page.through_seq, "has_more": page.has_more,
-                "next_after_seq": page.messages[-1].seq if page.messages else after_seq}))
+                "next_after_seq": page.messages[-1].seq if page.messages else after_seq}
+            if backward:
+                before = page.through_seq + 1 if before_seq is None else before_seq
+                page_payload.update(direction="backward", before_seq=before,
+                                    next_before_seq=before, request_id=frame.id, after_seq=page.through_seq, next_after_seq=page.through_seq)
+                if "around_id" in frame.payload:
+                    page_payload["around_id"] = frame.payload["around_id"]
+            chunks = message_chunks(page_payload, display_only=display_only)
+            if backward:
+                # 1. 帧预算只能收窄尾页的左边，不能丢掉最新消息。
+                payloads = list(chunks)
+                payload = payloads[-1]
+                items = cast(list[dict[str, object]], payload["items"])
+                before = page.through_seq + 1 if before_seq is None else before_seq
+                has_more = page.has_more or len(payloads) > 1
+                start = cast(int, items[0]["seq"]) if items else before
+                payload.update(direction="backward", before_seq=before, next_before_seq=start,
+                               after_seq=start - 1 if has_more else -1,
+                               next_after_seq=before - 1, has_more=has_more)
+                if "around_id" in frame.payload:
+                    payload["around_id"] = frame.payload["around_id"]
+            else:
+                payload = next(chunks)
         except ValueError as error:
             raise MobileCommandError("message_manifest_too_large", str(error)) from error
         _ = await self._runtime.publish_event(event_type="history.page", session_id=session_id,
@@ -1938,7 +1981,8 @@ class MobileRealtimeChannel:
     def prepare_message_follow(self, frame: GenericCommand) -> tuple[MessageReader, int]:
         """在协议边界验证 Session 与续读 cursor，只交出窄读取端口。"""
         _expect_message_log_version(frame.payload)
-        _expect_keys(frame.payload, {"message_log_version", "after_seq"})
+        _expect_keys(frame.payload, {"message_log_version", "after_seq", "display_only"})
+        _message_display_only(frame.payload)
         session_id = self._normalize_session_id(frame.session_id)
         after_seq = _message_cursor(frame.payload.get("after_seq", -1), "after_seq")
         reader = self._require_messages().reader(session_id)
@@ -3493,6 +3537,13 @@ def build_v3_adapter(
     """Return the native v3 adapter for an already-started Mobile channel."""
 
     return channel.build_v3_adapter(context)
+
+
+def _message_display_only(payload: Mapping[str, object]) -> bool:
+    value = payload.get("display_only", False)
+    if not isinstance(value, bool):
+        raise MobileCommandError("invalid_payload", "display_only 必须是 boolean")
+    return value
 
 
 def _plain_json(value: object) -> object:

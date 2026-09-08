@@ -723,24 +723,25 @@ class MobileGatewayRuntime:
         if self._stopping or self._connections.get(device_id) is not connection:
             return
         self._message_followers[connection.websocket] = tasks.create_task(
-            self._follow_message_session(reader, after_seq, device_id, connection))
+            self._follow_message_session(reader, after_seq, device_id, connection,
+                display_only=cast(bool, frame.payload.get("display_only", False))))
 
     async def _follow_message_session(
         self, reader: MessageReader, after_seq: int, device_id: str,
-        connection: ActiveMobileConnection,
+        connection: ActiveMobileConnection, *, display_only: bool = False,
     ) -> None:
         """同一订阅并行发送正式消息和当前回复状态，两者都从 owner 读取。"""
         async def send(frames: AsyncGenerator[dict[str, object], None], kind: str) -> None:
             async with aclosing(frames):
                 async for frame in frames:
                     payload: dict[str, object] = {"type": kind, **frame}
-                    chunks = message_chunks(payload) if kind == "messages.appended" else (bounded_reply_status(payload),)
+                    chunks = message_chunks(payload, display_only=display_only) if kind == "messages.appended" else (bounded_reply_status(payload),)
                     for chunk in chunks:
                         await self.publish_connection_control(control_type="session.message", payload=chunk,
                             device_id=device_id, connection_epoch=connection.connection_epoch)
 
         async with asyncio.TaskGroup() as tasks:
-            _ = tasks.create_task(send(follow_messages(reader, after_seq=after_seq), "messages.appended"))
+            _ = tasks.create_task(send(follow_messages(reader, after_seq=after_seq, display_only=display_only), "messages.appended"))
             if self.channel.reply_status is None:
                 await self.publish_connection_control(control_type="session.message", device_id=device_id,
                     connection_epoch=connection.connection_epoch, payload={"type": "reply.status", "version": 2,

@@ -12,7 +12,7 @@ def message_json(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
-def message_chunks(payload: dict[str, object]) -> Iterator[dict[str, object]]:
+def message_chunks(payload: dict[str, object], *, display_only: bool = False) -> Iterator[dict[str, object]]:
     """按帧预算分组完整消息；超大消息只换成整条 JSON 的下载引用。"""
     # 1. 引用摘要与 HTTP 下载共用同一 JSON 编码。
     items: list[dict[str, object]] = []
@@ -23,6 +23,8 @@ def message_chunks(payload: dict[str, object]) -> Iterator[dict[str, object]]:
             reference: dict[str, object] = {"id": row["id"], "session_id": row["session_id"], "seq": row["seq"],
                    "message_ref": {"version": 2, "encoding": "utf-8", "media_type": "application/json",
                                    "byte_length": len(content), "sha256": hashlib.sha256(content).hexdigest()}}
+            if display_only:
+                cast(dict[str, object], reference["message_ref"])["display_only"] = True
             row = reference
         candidate: dict[str, object] = {**payload, "items": [*items, row], "after_seq": after_seq,
                      "next_after_seq": row["seq"], "has_more": row["seq"] != payload["through_seq"]}
