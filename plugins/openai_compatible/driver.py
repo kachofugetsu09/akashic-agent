@@ -16,6 +16,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from core.net.http import HttpClient, finish_response
+
 from agent.plugin_composition import (
     AuthenticationError,
     BoundModelDescriptor,
@@ -92,11 +94,13 @@ class _BoundChat:
         credential: CredentialHandle,
         descriptor: BoundModelDescriptor,
         config: _ModelConfig,
+        http: HttpClient,
     ) -> None:
         self._connection = connection
         self._credential = credential
         self._descriptor = descriptor
         self._config = config
+        self._http = http
 
     @property
     def max_tool_schemas(self) -> int | None:
@@ -117,6 +121,7 @@ class _BoundChat:
                 "POST",
                 "/chat/completions",
                 body=body,
+                http=self._http,
             )
             return _parse_chat_response(payload)
         body["stream"] = True
@@ -126,6 +131,7 @@ class _BoundChat:
             self._credential,
             body,
             request.on_delta,
+            self._http,
         )
 
     def estimate_context_tokens(
@@ -149,11 +155,13 @@ class _BoundEmbedding:
         credential: CredentialHandle,
         descriptor: EmbeddingSpaceDescriptor,
         config: _ModelConfig,
+        http: HttpClient,
     ) -> None:
         self._connection = connection
         self._credential = credential
         self._descriptor = descriptor
         self._config = config
+        self._http = http
 
     async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
         """Embed a non-empty text batch and preserve response ordering."""
@@ -170,6 +178,7 @@ class _BoundEmbedding:
                 "POST",
                 "/embeddings",
                 body={"model": self._descriptor.model, "input": list(batch)},
+                http=self._http,
             )
             result = _parse_embedding_response(payload, expected_count=len(batch))
             vectors.extend(result.vectors)
@@ -199,6 +208,8 @@ async def _open(
     if credential.auth_identity != descriptor.auth_identity:
         raise AuthenticationError("credential auth identity does not match")
 
+    http = HttpClient(lambda: _client(connection))
+
     def bind_chat(
         model: BoundModelDescriptor,
         raw_config: Mapping[str, Any],
@@ -209,6 +220,7 @@ async def _open(
             credential,
             model,
             _model_config(raw_config),
+            http,
         )
 
     def bind_embedding(
@@ -221,9 +233,10 @@ async def _open(
             credential,
             model,
             _model_config(raw_config),
+            http,
         )
 
-    return DriverConnection(bind_chat=bind_chat, bind_embedding=bind_embedding)
+    return DriverConnection(bind_chat=bind_chat, bind_embedding=bind_embedding, close=http.aclose)
 
 
 async def _probe(
@@ -422,13 +435,18 @@ async def _request_json(
     path: str,
     *,
     body: Mapping[str, Any] | None = None,
+    http: HttpClient,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(connection.max_retries + 1):
         try:
             token = _credential_token(await credential.read())
-            async with _client(connection, token) as client:
-                response = await client.request(method, path, json=body)
+            client = http.client()
+            # 只复用传输连接，不继承旧凭据请求产生的 Cookie。
+            client.cookies.clear()
+            response = await client.request(
+                method, path, json=body, headers={"Authorization": f"Bearer {token}"}
+            )
             _raise_status(response, secret=token)
             return _json_object(response)
         except asyncio.CancelledError:
@@ -546,20 +564,24 @@ async def _stream_chat(
     credential: CredentialHandle,
     body: Mapping[str, Any],
     on_delta: Callable[[dict[str, str]], Awaitable[None]],
+    http: HttpClient,
 ) -> LLMResponse:
     last_error: Exception | None = None
     for attempt in range(connection.max_retries + 1):
         response_delta_seen = False
         try:
             token = _credential_token(await credential.read())
-            async with _client(connection, token) as client:
-                async with client.stream(
-                    "POST", "/chat/completions", json=body
-                ) as response:
-                    if response.status_code >= 400:
-                        _ = await response.aread()
-                    _raise_status(response, secret=token)
-                    return await _consume_stream(response, on_delta)
+            client = http.client()
+            # 只复用传输连接，不继承旧凭据请求产生的 Cookie。
+            client.cookies.clear()
+            async with client.stream(
+                "POST", "/chat/completions", json=body,
+                headers={"Authorization": f"Bearer {token}"},
+            ) as response:
+                if response.status_code >= 400:
+                    _ = await response.aread()
+                _raise_status(response, secret=token)
+                return await _consume_stream(response, on_delta)
         except asyncio.CancelledError:
             raise
         except _CallbackError as error:
@@ -611,7 +633,8 @@ async def _consume_stream(
     pending_content = ""
     legacy_candidate: str | None = None
     try:
-        async for line in response.aiter_lines():
+        lines = response.aiter_lines()
+        async for line in lines:
             if not line.startswith("data:"):
                 continue
             data = line[5:].strip()
@@ -619,6 +642,7 @@ async def _consume_stream(
                 continue
             if data == "[DONE]":
                 completed = True
+                await finish_response(lines)
                 break
             try:
                 chunk = json.loads(data)
@@ -727,8 +751,8 @@ async def _emit_delta(
         raise _CallbackError(error) from error
 
 
-def _client(connection: _ConnectionConfig, token: str) -> httpx.AsyncClient:
-    headers = {"Authorization": f"Bearer {token}"}
+def _client(connection: _ConnectionConfig, token: str | None = None) -> httpx.AsyncClient:
+    headers = {} if token is None else {"Authorization": f"Bearer {token}"}
     timeout = httpx.Timeout(
         connect=connection.connect_timeout,
         read=connection.read_timeout,
@@ -1157,7 +1181,7 @@ def _estimate_context_tokens(
     if system_prompt and not (complete and complete[0].get("role") == "system"):
         complete.insert(0, {"role": "system", "content": system_prompt})
     fixed_chars = len(
-        json.dumps(_thaw(tools), ensure_ascii=False, separators=(",", ":"))
+        json.dumps(tools, ensure_ascii=False, separators=(",", ":"), default=dict)
     )
     return max(1, fixed_chars // 3 + _estimate_message_tokens(complete))
 
@@ -1219,7 +1243,7 @@ def _normalize_messages(
 
 
 def _merge_leading_system_messages(
-    messages: Sequence[Mapping[str, Any]],
+    messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     system_contents: list[str] = []
     index = 0
@@ -1233,8 +1257,9 @@ def _merge_leading_system_messages(
         if system_contents
         else []
     )
-    result.extend(_thaw_mapping(item) for item in messages[index:])
-    return result if result else [_thaw_mapping(item) for item in messages]
+    # 这些行由 _normalize_messages 新建；合并头部无需再次复制整份正文。
+    result.extend(messages[index:])
+    return result if result else messages
 
 
 def _estimate_message_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
@@ -1255,19 +1280,20 @@ def _estimate_message_tokens(messages: Sequence[Mapping[str, Any]]) -> int:
                     image_tokens += 1024 if detail == "low" else 8192
                     continue
                 text_chars += len(
-                    json.dumps(_thaw(block), ensure_ascii=False, separators=(",", ":"))
+                    json.dumps(block, ensure_ascii=False, separators=(",", ":"), default=dict)
                 )
         elif content is not None:
             text_chars += len(str(content))
         text_chars += len(
             json.dumps(
                 {
-                    key: _thaw(value)
+                    key: value
                     for key, value in message.items()
                     if key != "content"
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
+                default=dict,
             )
         )
     if not messages:
@@ -1280,6 +1306,8 @@ def _thaw_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _thaw(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
     if isinstance(value, Mapping):
         return {str(key): _thaw(item) for key, item in value.items()}
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):

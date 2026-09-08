@@ -572,6 +572,12 @@ class DriverConnection:
         DriverEmbeddingModel,
     ]
 
+    close: Callable[[], Awaitable[None]] | None = None
+
+    async def aclose(self) -> None:
+        if self.close is not None:
+            await self.close()
+
 
 DriverOpen: TypeAlias = Callable[
     [DriverConnectionDescriptor, CredentialHandle],

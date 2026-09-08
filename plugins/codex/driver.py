@@ -4,6 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+from core.net.http import HttpClient
+
 from agent.plugin_composition import (
     AuthenticationError,
     BoundModelDescriptor,
@@ -54,6 +57,13 @@ async def _open(
     if credential.auth_identity != descriptor.auth_identity:
         raise AuthenticationError("credential auth identity does not match")
 
+    http = HttpClient(lambda: httpx.AsyncClient(
+        base_url=config.endpoint,
+        timeout=httpx.Timeout(connect=config.connect_timeout, read=config.read_timeout,
+                              write=config.connect_timeout, pool=config.connect_timeout),
+        follow_redirects=False,
+    ))
+
     def bind_chat(
         model: BoundModelDescriptor,
         raw_config: Mapping[str, Any],
@@ -61,9 +71,7 @@ async def _open(
         if model.driver_id != "codex" or model.connection_id != descriptor.connection_id:
             raise ModelUnavailableError("model does not belong to this Codex connection")
         return CodexResponses(
-            endpoint=config.endpoint,
-            connect_timeout=config.connect_timeout,
-            read_timeout=config.read_timeout,
+            http=http,
             credential=credential,
             descriptor=model,
             config=_model_config(raw_config),
@@ -76,7 +84,7 @@ async def _open(
         _ = model, raw_config
         raise ModelUnavailableError("Codex driver does not provide embeddings")
 
-    return DriverConnection(bind_chat=bind_chat, bind_embedding=bind_embedding)
+    return DriverConnection(bind_chat=bind_chat, bind_embedding=bind_embedding, close=http.aclose)
 
 
 async def _discover(
