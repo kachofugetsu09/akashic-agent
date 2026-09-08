@@ -67,6 +67,7 @@ export function useDesktopChatController() {
   const [historyBeforeSeq, setHistoryBeforeSeq] = useState<number | null>(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyLoadingOlder, setHistoryLoadingOlder] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const messagesRef = useRef<ChatMessage[]>([]);
   const commitMessages = useCallback((action: SetStateAction<ChatMessage[]>) => {
     // 1. Resolve every WebSocket mutation against a synchronous immutable baseline.
@@ -170,6 +171,7 @@ export function useDesktopChatController() {
     olderMessagesRequestRef.current?.abort();
     const controller = new AbortController();
     messagesRequestRef.current = controller;
+    setHistoryLoading(true);
     const endpoint = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
     try {
       const page = chatHistoryPage(
@@ -190,7 +192,10 @@ export function useDesktopChatController() {
       setHistoryHasMore(page.hasMore);
       followSession(socketRef.current ?? connectRef.current?.() ?? null, sessionId, page.throughSeq);
     } finally {
-      if (messagesRequestRef.current === controller) messagesRequestRef.current = null;
+      if (messagesRequestRef.current === controller) {
+        messagesRequestRef.current = null;
+        setHistoryLoading(false);
+      }
     }
   }, [setMessages, setTimelineMessages, streamStore]);
 
@@ -605,7 +610,7 @@ export function useDesktopChatController() {
   return {
     surface, sidebarSessions, activeSessionId, pendingSessionId, chatReady, messages, timelineMessages, replyActivities, replyAvailable, status,
     streamStore, messageElementsRef, copiedMessageId, shellState, stopPending, modelState,
-    historyHasMore, historyLoadingOlder, loadOlderMessages,
+    historyHasMore, historyLoading, historyLoadingOlder, loadOlderMessages,
     selectedRuntimeId, selectedReasoningEffort, replyTarget, error: error || connectionError, mobilePairingOpen,
     activateSession, openRuntime, startNewChat, handleReplyMessage, handleCopiedMessage,
     reportError, handleModelChange, cancelReply, sendMessage, stopTurn, retry,

@@ -194,11 +194,13 @@ test("短暂健康失败不取消当前历史，重连成功清除连接提示",
   await act(async () => chat.controller().activateSession("akashic:test"));
   const history = chat.requests.find((item) => item.url.includes("/messages?"));
   assert.ok(history);
+  assert.equal(chat.controller().historyLoading, true);
   await chat.tick(1200);
   await act(async () => chat.requests.filter((item) => item.url === "/api/shell/state").at(-1)
     .finish({ status: "starting", configured: true, chatReady: false }));
   assert.equal(history.signal.aborted, false);
   await act(async () => history.finish({ version: 2, items: [], through_seq: -1, before_seq: null, has_more: false }));
+  assert.equal(chat.controller().historyLoading, false, "空会话加载完成后不再显示读取提示");
   await act(async () => { chat.sockets.at(-1).open(); chat.sockets.at(-1).close(1006); });
   assert.match(chat.controller().error, /重新连接/u);
   await chat.tick(1200);
