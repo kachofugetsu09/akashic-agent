@@ -160,7 +160,8 @@ def _wait_server_task(
 def _close_mobile_gateway(runtime: Any | None) -> Callable[[], Awaitable[None]]:
     async def close() -> None:
         if runtime is not None:
-            await asyncio.to_thread(runtime.close)
+            # Gateway 的 task 与 SQLite publication 都由当前 loop 线程创建。
+            runtime.close()
 
     return close
 

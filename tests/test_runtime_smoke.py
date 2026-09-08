@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import sqlite3
 import subprocess
 import sys
 import types
@@ -26,6 +27,7 @@ from agent.config import (
 from agent.persona import reset_veda
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
+from infra.mobile_webui.store import MobileWebUiStore
 
 
 class _FakeDashboardServer:
@@ -842,6 +844,17 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
 
     assert caught.value is startup_error
     assert caught.value.__cause__ is rollback_error
+
+
+@pytest.mark.asyncio
+async def test_mobile_gateway_close_keeps_publication_owner_thread(tmp_path: Path):
+    store = MobileWebUiStore(tmp_path / "mobile-webui", server_id="shutdown-test")
+    try:
+        await bootstrap_app._close_mobile_gateway(store)()
+        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+            store.get_release()
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio
