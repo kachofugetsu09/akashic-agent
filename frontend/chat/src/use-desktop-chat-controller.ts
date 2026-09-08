@@ -344,6 +344,7 @@ export function useDesktopChatController() {
         replyActivitiesRef.current = [];
         setReplyActivities([]);
         setReplyAvailable(null);
+        setStatusLive(replyChatStatus([], messagesRef.current.length));
         if (event.code !== 1000 && event.code !== 1013) setConnectionError("连接已断开，正在重新连接…");
         yield* reconnect.next(undefined);
         socket = yield* Effect.sync(() => new WebSocket(url));
@@ -354,14 +355,14 @@ export function useDesktopChatController() {
   }, [closeConnection, loadMessagesSafely, loadSessionsSafely, reconnect, reportError, setMessages, setStatusLive, setTimelineMessages]);
 
   useEffect(() => {
-    // 请求结束后再等待下一次轮询；中断任务会把 AbortSignal 传给 fetch。
+    // 只等待首次启动就绪；此后的断线与恢复由聊天连接负责。
     const task = Effect.runFork(Effect.tryPromise({
       try: (signal) => fetchChatJson<unknown>("/api/shell/state", { signal }).then(webShellState),
       catch: (error) => error,
     }).pipe(
       Effect.tap((next) => Effect.sync(() => setShellState(next))),
       Effect.catchAll((error) => Effect.sync(() => reportError(error))),
-      Effect.repeat(Schedule.spaced("1200 millis")),
+      Effect.repeat({ schedule: Schedule.spaced("1200 millis"), until: (next) => next?.chatReady === true }),
     ));
     return () => { Effect.runFork(Fiber.interrupt(task)); };
   }, [reportError]);

@@ -961,7 +961,6 @@ button.tool-step-summary:active {
 .timeline-meta { flex-wrap: wrap; overflow-wrap: anywhere; }
 .timeline-meta details { max-width: 100%; }
 .timeline-meta pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.timeline-input > .timeline-meta { justify-content: flex-end; }
 /* 首段内容到达前保持轻量反馈，不把网络等待伪装成推理内容。 */
 .thinking-placeholder {
   display: flex;
