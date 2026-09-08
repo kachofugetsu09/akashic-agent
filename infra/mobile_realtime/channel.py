@@ -656,7 +656,11 @@ class MobileRealtimeChannel:
                 isinstance(frame, AttachmentDownloadCommand)
                 and replay.type == "attachment.download.ok"
             ):
-                return await self._download_attachment(frame, replay)
+                try:
+                    return await self._download_attachment(frame, replay)
+                except MobileCommandError as error:
+                    return CommandReply(type="attachment.download.error",
+                        payload={"code": error.code, "message": str(error)}, session_id=frame.session_id)
             return CommandReply(
                 type=replay.type,
                 payload=replay.payload,
@@ -1831,11 +1835,15 @@ class MobileRealtimeChannel:
         store = self._channel_attachment_store
         if store is None:
             raise RuntimeError("Mobile channel attachment store 未绑定")
-        lease = await store.acquire(ref)
         try:
-            data = await lease.read_chunk(offset=offset, max_bytes=MAX_ATTACHMENT_CHUNK_BYTES)
-        finally:
-            await lease.aclose()
+            lease = await store.acquire(ref)
+            try:
+                data = await lease.read_chunk(offset=offset, max_bytes=MAX_ATTACHMENT_CHUNK_BYTES)
+            finally:
+                await lease.aclose()
+        except (OSError, ValueError) as error:
+            logger.exception("Mobile artifact read failed: %s", ref.artifact_id)
+            raise MobileCommandError("attachment_download_failed", f"附件暂时无法读取: {ref.artifact_id}") from error
         # 2. 回复使用同一份不可变 metadata；重放不建立第二份附件记录。
         next_offset = offset + len(data)
         payload: dict[str, object] = {

@@ -305,4 +305,24 @@ async def test_artifact_download_uses_message_reference_and_core_bytes(mobile, t
         rejected = await channel.handle_command(device_id=device, frame=request(other, 'message', 0, 901))
         assert rejected.type == 'attachment.download.error'
         assert rejected.payload['code'] == 'attachment_download_rejected'
+        path = tmp_path / metadata.get_attachment(artifact_id).storage_key
+        for counter, damage in ((902, 'missing'), (903, 'corrupt')):
+            if damage == 'missing':
+                path.unlink()
+            else:
+                path.write_bytes(b'changed bytes')
+            failed_frame = request(session, 'message', 0, counter)
+            failed = await channel.handle_command(device_id=device, frame=failed_frame)
+            assert failed.type == 'attachment.download.error'
+            assert failed.payload['code'] == 'attachment_download_failed'
+            assert str(tmp_path) not in failed.payload['message']
+            assert runtime.storage.read_command(device_id=device, command_id=failed_frame.id).status == 'completed'
+            repeated_failure = await channel.handle_command(device_id=device, frame=failed_frame)
+            assert repeated_failure.type == failed.type and repeated_failure.payload == failed.payload
+            # 已完成成功回执的 bytes 也可能暂时无法读取，只拒绝本次下载重放。
+            unavailable_replay = await channel.handle_command(device_id=device, frame=request(other, 'other-message', 0, 900))
+            assert unavailable_replay.type == 'attachment.download.error'
+            path.write_bytes(content)
+        history = await channel.handle_command(device_id=device, frame=command('history.get', session))
+        assert history.type == 'history.get.ok'
         assert snapshot(tmp_path / 'sessions.db') == before
