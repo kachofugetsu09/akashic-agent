@@ -774,3 +774,47 @@ def test_timing_migration_keeps_its_target_when_runtime_schema_evolves(store, mi
     with closing(sqlite3.connect(store.path)) as connection:
         columns = [row[1] for row in connection.execute('PRAGMA table_info(model_calls)')]
     assert columns[-2:] == ['first_token_ms', 'duration_ms']
+
+
+def test_grouped_call_reads_see_settlement_and_close(store, descriptor):
+    call_id = store.start_call(descriptor, ModelRequest(()))
+    with store.read_call.open() as read:
+        before = read(call_id)
+        assert before["state"] == "started"
+        store.finish_call(call_id, usage=None, failure=None)
+        assert read(call_id)["state"] == "success"
+        assert before["state"] == "started"
+        with store.read_call.open() as nested:
+            assert nested(call_id)["state"] == "success"
+        assert read(call_id)["state"] == "success"
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        read(call_id)
+    assert store.read_call(call_id)["state"] == "success"
+
+
+def test_grouped_call_reads_reuse_readonly_connection_and_close_on_error(store, descriptor):
+    from contextlib import contextmanager
+    from plugins.models.store import ModelCallReader
+
+    call_id = store.start_call(descriptor, ModelRequest(()))
+    connections = []
+
+    @contextmanager
+    def connect():
+        with store._connect(read_only=True) as connection:
+            connections.append(connection)
+            yield connection
+
+    reader = ModelCallReader(connect)
+    with pytest.raises(KeyError, match="missing"):
+        with reader.open() as read:
+            assert read(call_id)["state"] == "started"
+            assert read(call_id)["state"] == "started"
+            assert len(connections) == 1
+            assert not connections[0].in_transaction
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                connections[0].execute("DELETE FROM model_calls")
+            read("missing")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connections[0].execute("SELECT 1")
+    assert store.read_call(call_id)["state"] == "started"

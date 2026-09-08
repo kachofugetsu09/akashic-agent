@@ -474,9 +474,8 @@ class MessageCatalog:
         """单条查询取得同一数据库快照，不逐会话读取可能变化的 head。"""
         with self._log._lock:
             rows = self._log._connection.execute(
-                "SELECT s.key, COALESCE(MAX(m.seq), -1) AS head "
-                "FROM sessions s LEFT JOIN messages m ON m.session_key=s.key "
-                "GROUP BY s.key ORDER BY s.key"
+                "SELECT s.key, COALESCE((SELECT MAX(m.seq) FROM messages m "
+                "WHERE m.session_key=s.key), -1) AS head FROM sessions s ORDER BY s.key"
             ).fetchall()
         return MappingProxyType({row["key"]: row["head"] for row in rows})
 
@@ -621,11 +620,29 @@ class MessageReader:
             rows = self._log._connection.execute(sql, values).fetchall()
         return tuple(_message(row) for row in rows)
 
-    def snapshot(self, *, through_seq: int | None = None) -> tuple[Message, ...]:
-        """固定上界后分页读取完整前缀，供需要完整历史的只读投影消费。"""
+    def source_names(self) -> frozenset[str]:
+        """只读取本 Session 中出现过的来源，不解码消息正文。"""
+        with self._log._lock:
+            rows = self._log._connection.execute(
+                "SELECT DISTINCT source FROM messages WHERE session_key=?", (self._session_id,),
+            ).fetchall()
+        return frozenset(row[0] for row in rows)
+
+    def latest_input(self, source: str, *, through_seq: int) -> Message | None:
+        """读取指定前缀中最后一条同来源 Input，后来输入不改变旧回复的目的地。"""
+        with self._log._lock:
+            row = self._log._connection.execute(
+                "SELECT * FROM messages WHERE session_key=? AND source=? AND seq<=? "
+                "AND json_extract(body,'$.kind')='input' ORDER BY seq DESC LIMIT 1",
+                (self._session_id, source, through_seq),
+            ).fetchone()
+        return None if row is None else _message(row)
+
+    def snapshot(self, *, after_seq: int = -1, through_seq: int | None = None) -> tuple[Message, ...]:
+        """固定上界后分页读取消息区间，默认保留完整前缀。"""
         head = self.head() if through_seq is None else through_seq
         messages: list[Message] = []
-        cursor = -1
+        cursor = after_seq
         while cursor < head:
             page = self.read(after_seq=cursor, through_seq=head)
             if not page:

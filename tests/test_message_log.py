@@ -378,3 +378,28 @@ async def test_catalog_follow_discovers_new_sessions_and_closes(log, monkeypatch
     log.close()
     with pytest.raises(StopAsyncIteration):
         await asyncio.wait_for(pending, 1)
+
+
+def test_reader_ranges_keep_prefix_source_and_page_boundaries(log):
+    inputs = writer(log)
+    first = inputs.append("first", Input(()))
+    other = writer(log, source="wake").append("wake", Input(()))
+    output = writer(log, author="agent", bodies=(Output,))
+    for index in range(1002):
+        output.append(f"output-{index}", Output((), "complete"))
+    reader = log.reader("s")
+    head = reader.head()
+    later = inputs.append("later", Input(()))
+    before = tuple(log._connection.iterdump())
+    assert reader.source_names() == frozenset({"conversation", "wake"})
+    assert reader.latest_input("conversation", through_seq=head) == first
+    assert reader.latest_input("conversation", through_seq=later.seq) == later
+    assert reader.latest_input("wake", through_seq=head) == other
+    assert reader.latest_input("missing", through_seq=head) is None
+    assert reader.latest_input("conversation", through_seq=-1) is None
+    bounded = reader.snapshot(after_seq=other.seq, through_seq=head)
+    assert len(bounded) == 1002
+    assert [message.seq for message in bounded] == list(range(other.seq + 1, head + 1))
+    assert reader.snapshot(after_seq=head) == (later,)
+    assert reader.snapshot(after_seq=head, through_seq=head) == ()
+    assert tuple(log._connection.iterdump()) == before

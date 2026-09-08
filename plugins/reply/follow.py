@@ -71,7 +71,7 @@ async def follow(
             changed = [key for key, head in heads.items() if previous.get(key) != head]
             previous = dict(heads)
             for session_id in changed:
-                present = {message.source for message in catalog.reader(session_id).snapshot()}
+                present = catalog.reader(session_id).source_names()
                 for source in sources.entries():
                     if source.name not in present:
                         continue
