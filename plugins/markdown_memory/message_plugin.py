@@ -465,7 +465,7 @@ async def profile_lock(path: Path, *, create: bool = True) -> AsyncGenerator[Non
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _unapplied_messages(record: StoredSummary, lookup: SummaryLookup, reader: MessageReader,
+async def _unapplied_messages(record: StoredSummary, lookup: SummaryLookup, reader: MessageReader,
                         store: MarkdownProfileStore, sources: tuple[str, ...],
                         projection: TurnProjection) -> tuple[Message, ...] | None:
     """从最近已写入的祖先之后取原文，跳过未使用的摘要不会漏掉它覆盖的事实。"""
@@ -485,7 +485,8 @@ def _unapplied_messages(record: StoredSummary, lookup: SummaryLookup, reader: Me
         if record.generation <= generation:
             return None
         start = len(newer.source_message_ids)
-    snapshot = reader.snapshot()
+    # 归档 lookup 依赖当前 task 的 lease；只把独立 reader 的解码移出事件循环。
+    snapshot = await asyncio.to_thread(reader.snapshot)
     covered = summary_range(snapshot, record.source_message_ids)
     # 历史 suppress 是整个工作单元的资格，不能只删用户行后继续学习其回答。
     by_id = {message.message_id: message for message in snapshot[:covered.stop]}
@@ -523,7 +524,7 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
             if store.is_applied(record.reference):
                 return
             draft = store.read_draft(record.reference)
-            selected = _unapplied_messages(record, lookup, reader, store, sources, projection)
+            selected = await _unapplied_messages(record, lookup, reader, store, sources, projection)
             if not selected:
                 return
         # 模型属于当前 Markdown 作用域；先关闭旧摘要的只读归档 scope。
@@ -579,7 +580,13 @@ async def apply(ctx: Context, config: Config) -> None:
                 async with ctx.runtime_scope():
                     assert store is not None
                     reader = catalog.reader(session)
-                    for message in reader.snapshot():
+                    if reader.attributes.learning != "eligible":
+                        cursor[session] = head
+                        continue
+                    messages = await asyncio.to_thread(
+                        reader.snapshot, after_seq=cursor.get(session, -1), through_seq=head,
+                    )
+                    for message in messages:
                         if cursor.get(session, -1) < message.seq <= head:
                             await project(message, reader=reader, bindings=ctx.require(BINDINGS),
                                           store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
