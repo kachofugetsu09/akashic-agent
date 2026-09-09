@@ -398,7 +398,7 @@ def manifest_from_directory(
     bridge_protocol_max: int = 2,
     snapshot_protocol_min: int = 10,
     snapshot_protocol_max: int = 10,
-    minimum_native_build: int = 47,
+    minimum_native_build: int = 79,
     platforms: tuple[str, ...] = ("android",),
     source_repository: str,
     source_commit: str,

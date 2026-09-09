@@ -117,7 +117,7 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
-      {!draft?.thinking && !text && !process.length ? <ThinkingPlaceholder /> : null}
+      {!draft && !text && !process.length ? <ThinkingPlaceholder /> : null}
       {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
     </div>
   </div>;
@@ -239,7 +239,7 @@ function TimelineProcess({ process, streaming = false, draftThinking = "", draft
 }) {
   const blocks: AgentBlock[] = process.map((item) => item.block);
   if (draftThinking) blocks.push({ kind: "thinking", content: draftThinking });
-  if (!blocks.length) return draftSlot;
+  if (!blocks.length && !draftSlot) return null;
   return <ProcessTrace blocks={blocks} streaming={streaming} interrupted={false}
     startContent={process.length ? beforeReasoning?.(process[0].origin) : draftSlot}
     beforeBlock={(_block, index) => {
