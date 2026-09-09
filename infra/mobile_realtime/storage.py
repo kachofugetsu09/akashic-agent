@@ -123,7 +123,7 @@ class CommandReceipt:
     command_id: str
     command_type: str
     request_hash: str
-    status: Literal["processing", "completed", "outcome_unknown"]
+    status: Literal["processing", "completed"]
     reply_type: str | None
     reply_payload_json: str | None
     session_id: str | None
@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS mobile_command_receipts (
     command_type TEXT NOT NULL,
     request_hash TEXT NOT NULL,
     status TEXT NOT NULL CHECK(
-        status IN ('processing', 'completed', 'outcome_unknown')
+        status IN ('processing', 'completed')
     ),
     reply_type TEXT,
     reply_payload_json TEXT,
@@ -202,7 +202,7 @@ CREATE TABLE IF NOT EXISTS mobile_command_receipts (
     completed_at TEXT,
     PRIMARY KEY(device_id, command_id),
     CHECK(
-        ((status IN ('processing', 'outcome_unknown'))
+        ((status = 'processing')
          AND reply_type IS NULL
          AND reply_payload_json IS NULL AND completed_at IS NULL)
         OR
@@ -265,6 +265,12 @@ class MobileRealtimeStorage:
                     row = self._db.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
                     if row is not None and marker not in row[0]:
                         raise RuntimeError("Mobile 输入状态需要先运行 yoyo 20260906_05_mobile_input_rejections")
+                row = self._db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='mobile_command_receipts'").fetchone()
+                if row is not None:
+                    actual = "".join(row[0].replace('"mobile_command_receipts"', 'mobile_command_receipts').lower().split()).rstrip(';')
+                    expected = "".join(COMMAND_RECEIPT_SCHEMA.lower().split()).replace("ifnotexists", "").rstrip(';')
+                    if actual != expected:
+                        raise RuntimeError("Mobile 命令 schema 不匹配，需要先运行 yoyo 20260909_02_execution_failures")
                 self._init_schema()
             except BaseException:
                 self._db.close()
@@ -1872,44 +1878,6 @@ class MobileRealtimeStorage:
                 now=now,
             )
 
-    def mark_command_outcome_unknown(
-        self,
-        *,
-        device_id: str,
-        command_id: str,
-    ) -> CommandReceipt:
-        """把无法核对外部效果的 processing 收据持久化为 outcome_unknown。"""
-
-        device_key = _require_text(device_id, "device_id")
-        command_key = _require_text(command_id, "command_id")
-        with self._lock, self._db:
-            _ = self._db.execute("BEGIN IMMEDIATE")
-            updated = self._db.execute(
-                """
-                UPDATE mobile_command_receipts
-                SET status = 'outcome_unknown'
-                WHERE device_id = ? AND command_id = ? AND status = 'processing'
-                """,
-                (device_key, command_key),
-            )
-            if updated.rowcount != 1:
-                raise MobileStorageError(
-                    f"命令收据不处于 processing: {device_key}/{command_key}"
-                )
-            row = self._db.execute(
-                """
-                SELECT device_id, command_id, command_type, request_hash,
-                       status, reply_type, reply_payload_json, session_id, turn_id,
-                       created_at, completed_at
-                FROM mobile_command_receipts
-                WHERE device_id = ? AND command_id = ?
-                """,
-                (device_key, command_key),
-            ).fetchone()
-        if row is None:
-            raise RuntimeError("已标记 outcome_unknown 的收据在同一事务中消失")
-        return _command_receipt_from_row(row)
-
     def _cleanup_expired_command_receipts_locked(
         self,
         device_id: str,
@@ -2235,76 +2203,6 @@ class MobileRealtimeStorage:
             """
         )
         self._db.commit()
-        self._migrate_command_receipt_status()
-
-    def _migrate_command_receipt_status(self) -> None:
-        """把旧版 receipt CHECK 约束升级为可持久化 outcome_unknown。"""
-
-        row = self._db.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'mobile_command_receipts'"
-        ).fetchone()
-        if row is None or not isinstance(row[0], str):
-            raise RuntimeError("mobile_command_receipts schema 不存在")
-        if "outcome_unknown" in row[0]:
-            return
-        with self._lock:
-            try:
-                _ = self._db.execute("BEGIN IMMEDIATE")
-                _ = self._db.execute(
-                    "ALTER TABLE mobile_command_receipts "
-                    "RENAME TO mobile_command_receipts_legacy"
-                )
-                _ = self._db.execute(
-                    """
-                    CREATE TABLE mobile_command_receipts (
-                        device_id TEXT NOT NULL,
-                        command_id TEXT NOT NULL,
-                        command_type TEXT NOT NULL,
-                        request_hash TEXT NOT NULL,
-                        status TEXT NOT NULL CHECK(
-                            status IN ('processing', 'completed', 'outcome_unknown')
-                        ),
-                        reply_type TEXT,
-                        reply_payload_json TEXT,
-                        session_id TEXT,
-                        turn_id TEXT,
-                        created_at TEXT NOT NULL,
-                        completed_at TEXT,
-                        PRIMARY KEY(device_id, command_id),
-                        CHECK(
-                            ((status IN ('processing', 'outcome_unknown'))
-                             AND reply_type IS NULL
-                             AND reply_payload_json IS NULL
-                             AND completed_at IS NULL)
-                            OR
-                            (status = 'completed' AND reply_type IS NOT NULL
-                             AND reply_payload_json IS NOT NULL
-                             AND completed_at IS NOT NULL)
-                        ),
-                        FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
-                            ON DELETE CASCADE
-                    )
-                    """
-                )
-                _ = self._db.execute(
-                    """
-                    INSERT INTO mobile_command_receipts(
-                        device_id, command_id, command_type, request_hash,
-                        status, reply_type, reply_payload_json, session_id, turn_id,
-                        created_at, completed_at
-                    )
-                    SELECT device_id, command_id, command_type, request_hash,
-                           status, reply_type, reply_payload_json, session_id, turn_id,
-                           created_at, completed_at
-                    FROM mobile_command_receipts_legacy
-                    """
-                )
-                _ = self._db.execute("DROP TABLE mobile_command_receipts_legacy")
-                self._db.commit()
-            except sqlite3.Error:
-                self._db.rollback()
-                raise
 
     def _insert_device(self, device: DeviceRecord) -> None:
         if device.revoked_at is not None:
@@ -2425,7 +2323,7 @@ def _device_from_row(row: sqlite3.Row) -> DeviceRecord:
 
 def _command_receipt_from_row(row: sqlite3.Row) -> CommandReceipt:
     status = _row_text(row, "status")
-    if status not in {"processing", "completed", "outcome_unknown"}:
+    if status not in {"processing", "completed"}:
         raise ValueError(f"mobile_command_receipts.status 非法: {status}")
     optional: dict[str, str | None] = {}
     for field in ("reply_type", "reply_payload_json", "session_id", "turn_id"):
@@ -2433,7 +2331,7 @@ def _command_receipt_from_row(row: sqlite3.Row) -> CommandReceipt:
         if value is not None and not isinstance(value, str):
             raise TypeError(f"mobile_command_receipts.{field} 必须为文本或 NULL")
         optional[field] = value
-    if status in {"processing", "outcome_unknown"} and (
+    if status == "processing" and (
         optional["reply_type"] is not None
         or optional["reply_payload_json"] is not None
     ):
@@ -2448,7 +2346,7 @@ def _command_receipt_from_row(row: sqlite3.Row) -> CommandReceipt:
         command_type=_row_text(row, "command_type"),
         request_hash=_row_text(row, "request_hash"),
         status=cast(
-            Literal["processing", "completed", "outcome_unknown"],
+            Literal["processing", "completed"],
             status,
         ),
         reply_type=optional["reply_type"],

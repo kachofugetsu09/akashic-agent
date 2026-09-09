@@ -86,7 +86,7 @@ class InboundIdentity(StrEnum):
 class DeliveryStatus(StrEnum):
     DELIVERED = "delivered"
     REJECTED = "rejected"
-    UNKNOWN = "unknown"
+    FAILED = "failed"
 
 
 class ChannelCommitRole(StrEnum):

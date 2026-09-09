@@ -361,7 +361,7 @@ class ModelsStore:
         """只结算同一 started 记录；失败或取消不把未知 usage 记成零。"""
         if not self.writable:
             raise RuntimeError("只读 Model store 不能结算外部调用")
-        state = "success" if failure is None else "unknown"
+        state = "success" if failure is None else "error"
         encoded = None if usage is None else _strict_json(asdict(usage), "model usage")
         with self._connect() as connection, connection:
             cursor = connection.execute(
@@ -397,7 +397,7 @@ class ModelsStore:
         binding = record["binding"]
         model = binding.get("model") if isinstance(binding, Mapping) else None
         state = record["state"]
-        if not isinstance(model, str) or not model or state not in {"started", "success", "unknown"}:
+        if not isinstance(model, str) or not model or state not in {"started", "success", "error"}:
             raise ValueError("Model 调用的模型或状态无效")
         first_token = record["first_token_ms"]
         duration = record["duration_ms"]
@@ -422,7 +422,7 @@ class ModelsStore:
         return ModelCallStats(
             call_record_id=call_id,
             model=model,
-            state=cast(Literal["started", "success", "unknown"], state),
+            state=cast(Literal["started", "success", "error"], state),
             first_token_ms=first_token,
             duration_ms=duration,
             usage=None if usage is None else ModelUsage(
@@ -1495,7 +1495,7 @@ MODEL_CALLS_SCHEMA = """CREATE TABLE model_calls (
     id TEXT PRIMARY KEY NOT NULL,
     binding_json TEXT NOT NULL,
     request_digest TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('started','success','unknown')),
+    state TEXT NOT NULL CHECK (state IN ('started','success','error')),
     usage_json TEXT,
     failure TEXT,
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

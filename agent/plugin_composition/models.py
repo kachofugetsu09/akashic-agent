@@ -60,7 +60,7 @@ class ModelCallStats:
 
     call_record_id: str
     model: str
-    state: Literal["started", "success", "unknown"]
+    state: Literal["started", "success", "error"]
     first_token_ms: float | None
     duration_ms: float | None
     usage: ModelUsage | None

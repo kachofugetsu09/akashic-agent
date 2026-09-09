@@ -6,7 +6,38 @@ from contextlib import closing
 from pathlib import Path
 
 from agent.migrations.session_db_backup import backup_sqlite_database
-from infra.mobile_realtime.storage import ATTACHMENT_IMPORT_SCHEMA, COMMAND_RECEIPT_SCHEMA
+from infra.mobile_realtime.storage import ATTACHMENT_IMPORT_SCHEMA
+
+# 此迁移的历史目标不能随运行时状态合同变化。
+COMMAND_RECEIPT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mobile_command_receipts (
+    device_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    command_type TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(
+        status IN ('processing', 'completed', 'outcome_unknown')
+    ),
+    reply_type TEXT,
+    reply_payload_json TEXT,
+    handoff_pending INTEGER NOT NULL DEFAULT 0 CHECK(handoff_pending IN (0, 1)),
+    session_id TEXT,
+    turn_id TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    PRIMARY KEY(device_id, command_id),
+    CHECK(
+        ((status IN ('processing', 'outcome_unknown'))
+         AND reply_type IS NULL
+         AND reply_payload_json IS NULL AND completed_at IS NULL)
+        OR
+        (status = 'completed' AND reply_type IS NOT NULL
+         AND reply_payload_json IS NOT NULL AND completed_at IS NOT NULL)
+    ),
+    FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+        ON DELETE CASCADE
+);
+"""
 
 _PENDING_COLUMN = 'handoff_pending INTEGER NOT NULL DEFAULT 0 CHECK(handoff_pending IN (0, 1)),'
 _OLD_RECEIPT_SCHEMA = COMMAND_RECEIPT_SCHEMA.replace(_PENDING_COLUMN, '')

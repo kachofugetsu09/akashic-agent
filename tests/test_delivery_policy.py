@@ -112,26 +112,26 @@ async def test_failed_sink_does_not_cancel_other_sink_and_restart_keeps_original
         good.release.set()
         async with asyncio.timeout(3):
             await finished.wait()
-        assert records.read(message.message_id, "bad")[1].phase == "unknown"
+        assert records.read(message.message_id, "bad")[1].phase == "failed"
         watcher.cancel()
         with pytest.raises(asyncio.CancelledError):
             await watcher
-        queried = asyncio.Event()
-        query = bad.query
+        scanned = asyncio.Event()
+        cursor = DeliveryRecords.cursor
 
-        async def observe_query(key, address):
-            result = await query(key, address)
-            queried.set()
+        def observe_cursor(self, session_id):
+            result = cursor(self, session_id)
+            scanned.set()
             return result
 
-        bad.query = observe_query
+        monkeypatch.setattr(DeliveryRecords, "cursor", observe_cursor)
 
         def changed_policy(*_):
             pytest.fail("restart must not reselect the original message")
 
         watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, changed_policy))
         async with asyncio.timeout(3):
-            await queried.wait()
+            await scanned.wait()
         assert len(good.sent) == len(bad.sent) == 1
         assert records.selection(message.message_id).sinks == ("bad", "good")
     finally:

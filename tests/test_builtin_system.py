@@ -388,22 +388,18 @@ async def test_crash_at_tool_commit_preserves_effect_and_recovers_without_repeat
                                 (item["body"].get("finish") == "complete" or item["body"].get("action") == "failure") for item in event["items"]):
                                 break
                 rows = (await client.message_read(session))["items"]
-                assert tool_outcomes(rows) == (["unknown"] if phase == "before_tool_result" else ["success"])
+                assert tool_outcomes(rows) == (["error"] if phase == "before_tool_result" else ["success"])
                 assert len(rows) == 4 and rows[0]["id"] == "input-crash"
+                assert rows[-1]["body"]["finish"] == "complete"
                 if phase == "before_tool_result":
-                    assert rows[-1]["body"]["action"] == "failure"
-                    assert "工具效果需核对" in rows[-1]["body"]["reason"]
+                    assert any("error" in str(message["content"]) and "先检查当前状态" in str(message["content"])
+                               for request in model.requests for message in request["messages"]
+                               if message["role"] == "tool")
                 assert effect.stat().st_mtime_ns == original_write, "恢复重放了无法安全重试的文件写入"
                 assert effect.read_text() == "COMMITTED_EFFECT:原文🧪"
                 continued = await complete(client, session, "after_crash", after=rows[-1]["seq"])
                 assert continued[:len(rows)] == rows
-                if phase == "before_tool_result":
-                    # 新 Input 不是未知外部效果的确认，不得绕过原停止边界。
-                    assert continued[-1]["body"]["action"] == "failure"
-                    fresh = (await client.session_create())["session_id"]
-                    assert "DONE:fresh" in str((await complete(client, fresh, "fresh"))[-1])
-                else:
-                    assert "DONE:after_crash" in str(continued[-1])
+                assert "DONE:after_crash" in str(continued[-1])
                 assert effect.stat().st_mtime_ns == original_write
 
 

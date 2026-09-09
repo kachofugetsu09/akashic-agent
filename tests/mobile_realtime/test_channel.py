@@ -274,6 +274,11 @@ class _Bus:
         assert handoff_id
         self.pending_handoff = True
 
+    async def settle_rejected_mobile_input(self, *, session_key: str, client_message_id: str) -> None:
+        assert session_key and client_message_id
+        self.order.append("settle_rejected")
+        self.pending_handoff = False
+
     def has_pending_mobile_handoff(
         self,
         *,
@@ -717,7 +722,7 @@ async def test_native_v3_mobile_adapter_reports_unknown_if_durable_call_raises(
             session_message_id=message_id,
         )
     )
-    assert receipt.status is V3DeliveryStatus.UNKNOWN
+    assert receipt.status is V3DeliveryStatus.FAILED
     await adapter.stop()
     await channel.stop()
     manager.close()
@@ -1040,7 +1045,7 @@ async def test_native_v3_mobile_passive_keeps_file_after_post_commit_db_error(
             commit_role=ChannelCommitRole.PASSIVE,
         )
     )
-    assert receipt.status is V3DeliveryStatus.UNKNOWN
+    assert receipt.status is V3DeliveryStatus.FAILED
     row = storage._db.execute(  # pyright: ignore[reportPrivateUsage]
         "SELECT local_path FROM mobile_attachments WHERE direction = 'outbound'"
     ).fetchone()
@@ -1893,15 +1898,21 @@ async def test_message_send_keeps_current_owner_when_receipt_completion_fails(
     def fail_completion(**_: object) -> object:
         raise OSError("receipt write failed")
 
+    complete_command = storage.complete_command
     monkeypatch.setattr(storage, "complete_command", fail_completion)
     with pytest.raises(OSError, match="receipt write failed"):
         await channel.handle_command(device_id=device_id, frame=frame)
 
     assert len(bus.inbound) == 1
+    with pytest.raises(OSError, match="receipt write failed"):
+        await channel.handle_command(device_id=device_id, frame=frame)
+    assert len(bus.inbound) == 1
+    monkeypatch.setattr(storage, "complete_command", complete_command)
     replay = await channel.handle_command(device_id=device_id, frame=frame)
     assert replay.type == "message.send.error"
-    assert replay.payload["code"] == "command_outcome_unknown"
+    assert replay.payload["code"] == "command_interrupted"
     assert len(bus.inbound) == 1
+    assert bus.order[-1] == "settle_rejected"
     manager.close()
     storage.close()
 

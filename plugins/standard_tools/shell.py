@@ -195,7 +195,7 @@ class ShellTool:
             stop = PreparedStop.model_validate(raw)
             stopped = await processes.terminate_execution(self._ctx, stop.owner_key, stop.execution_id)
             return Result("success" if stopped else "error", (ContentPart("text", json.dumps({
-                "execution_id": stop.execution_id, "process_status": "stopped" if stopped else "unknown",
+                "execution_id": stop.execution_id, **({"process_status": "stopped"} if stopped else {}),
                 "status": "stopped" if stopped else "not_found",
             })),))
         if self._name == "write_stdin":

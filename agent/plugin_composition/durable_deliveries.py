@@ -72,7 +72,7 @@ class DurableDeliveryView:
         "projected",
         "settled",
         "rejected",
-        "uncertain",
+        "failed",
     ]
     attempt_id: str | None
     snapshot_id: str | None
@@ -222,8 +222,8 @@ class PluginDurableDeliveries:
             if started:
                 _ = store.mark_provider_result(
                     request.logical_delivery_id,
-                    state="uncertain",
-                    receipt={"status": "unknown", "error": "provider call interrupted"},
+                    state="failed",
+                    receipt={"status": "failed", "error": "provider call interrupted"},
                 )
             raise
         if not started:
@@ -231,7 +231,7 @@ class PluginDurableDeliveries:
         state = {
             DeliveryStatus.DELIVERED: "delivered",
             DeliveryStatus.REJECTED: "rejected",
-            DeliveryStatus.UNKNOWN: "uncertain",
+            DeliveryStatus.FAILED: "failed",
         }[receipt.status]
         return store.mark_provider_result(
             request.logical_delivery_id,
@@ -274,6 +274,9 @@ def _view(row: Mapping[str, object]) -> DurableDeliveryView:
         if provider_raw is None
         else MappingProxyType(dict(_mapping(provider_raw, "provider_receipt")))
     )
+    if provider_receipt is not None and provider_receipt.get("status") == "unknown":
+        # 旧 provider 回执正文保持原样；公开读取使用当前失败合同。
+        provider_receipt = MappingProxyType({**provider_receipt, "status": "failed"})
     return DurableDeliveryView(
         logical_delivery_id=_text(row["logical_delivery_id"], "logical_delivery_id"),
         accepted_turn=TurnAcceptedReceipt(
@@ -339,7 +342,7 @@ def _state(value: object) -> Literal[
     "projected",
     "settled",
     "rejected",
-    "uncertain",
+    "failed",
 ]:
     if value not in {
         "prepared",
@@ -348,7 +351,7 @@ def _state(value: object) -> Literal[
         "projected",
         "settled",
         "rejected",
-        "uncertain",
+        "failed",
     }:
         raise RuntimeError(f"durable delivery row state invalid: {value!r}")
     return cast(
@@ -359,7 +362,7 @@ def _state(value: object) -> Literal[
             "projected",
             "settled",
             "rejected",
-            "uncertain",
+            "failed",
         ],
         value,
     )

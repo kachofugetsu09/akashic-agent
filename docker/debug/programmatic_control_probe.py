@@ -3005,7 +3005,7 @@ def _inside_failure_matrix(report_dir: Path) -> int:
             and pc10_result.get("status") == "failure"
             and len(pc10_outputs) == 1
             and len(pc10_tools) == 1
-            and pc10_tools[0].get("body", {}).get("outcome") == "unknown"
+            and pc10_tools[0].get("body", {}).get("outcome") == "error"
             and pc10_tools[0].get("body", {}).get("call_ref", {}).get("message_id")
             == pc10_outputs[0].get("id")
             and pc10_tools[0].get("body", {}).get("call_ref", {}).get("part_index")

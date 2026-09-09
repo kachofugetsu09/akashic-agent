@@ -350,7 +350,7 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 不存在、空结果、合法跳过、明确降级、输入错误、数据损坏和内部故障必须可区分。只有拥有正确恢复动作的边界才能捕获异常并降级；其余错误 fail-fast、fail-loud。
 
-已持久化的工具 `unknown` 表示原调用效果不确定；保留原结果，禁止自动重放该调用。它不永久阻塞后续模型决策：模型必须看到该状态和先检查现场的提示，再在当前授权内决定下一步。内部异常仍明确失败，不通过改写历史结果伪装恢复。
+工具结果使用 `success / denied / error / interrupted`。error 和 interrupted 不证明外部效果为零；模型获得原错误与先检查现场的提示，不能自动重复原操作。Tools/Delivery 仅在原 key 查询或 provider 幂等合同下恢复；后台发送失败必须关闭本次业务等待，不保留 unknown 未决状态。数据库、binding 和内部契约异常仍向上传播。完整自愈、跳过、重试和中断规则见 [0063](decisions/0063-execution-failures-have-terminal-results.md)。
 
 ## 7. 上下文和会话
 
@@ -901,7 +901,7 @@ status 状态机。可更新的查询投影必须能从信封和 transition 确�
 ### PRO-005 Wake 每次实际触发都留下独立 attempt
 
 每次 Wake Timer 实际触发先追加 attempt，再读取冻结的 EventMail watermark。没有 due、Content
-不足、admission 拒绝、模型 skip、defer、触发后关闭、失败和 delivery unknown 都必须以可区分终态收口；
+不足、admission 拒绝、模型 skip、defer、触发后关闭、执行失败或发送失败都必须以明确终态和具体诊断收口；
 未进入 scoped Turn 不等于没有记录。Wake attempt 是执行事实，不作为第四种 EventMail，也不
 拥有 Content、Alert、Context 或 delivery 的领域状态。进程停机期间未实际触发的理论时间槽
 不由 Wake 伪造；如需补记，由 scheduler 的独立 durable missed-tick 合同拥有。
@@ -1014,7 +1014,7 @@ Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。
 
 ### SEC-006 Mobile receipt 与 plugin lease 保留
 
-有副作用或持久结果的 Mobile command 必须保存 receipt；completed receipt 从 `completed_at` 起保留 7 天，并受每设备 10,000 条和 64 MiB 高水位保护。只读取当前快照的启动查询不保存 receipt，重试时重新读取当前状态。高水位先清理已过期 completed；仍满时只拒绝当前需要 receipt 的新 command，不能删除有效 receipt 或结束 runtime。processing 不能按 TTL 盲删，必须根据真实外部效果恢复为 completed、可安全重试或 `outcome_unknown`。超时 plugin query 在真实 worker 结束前持续占用 quota 和 generation lease。
+有副作用或持久结果的 Mobile command 必须保存 receipt；completed receipt 从 `completed_at` 起保留 7 天，并受每设备 10,000 条和 64 MiB 高水位保护。只读取当前快照的启动查询不保存 receipt，重试时重新读取当前状态。高水位先清理已过期 completed；仍满时只拒绝当前需要 receipt 的新 command，不能删除有效 receipt 或结束 runtime。processing 不能按 TTL 盲删；原 owner 依据 Message、handoff 和执行证据恢复为 completed，无法找回结果则保存明确 command_interrupted 错误。只有确认原消息和交接都不存在时才可提示安全重试。超时 plugin query 在真实 worker 结束前持续占用 quota 和 generation lease。
 
 ### SEC-007 Shell 与 Subagent 准入有界
 

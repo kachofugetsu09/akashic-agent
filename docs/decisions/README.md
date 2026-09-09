@@ -69,6 +69,8 @@
 | [0061](0061-archive-stopped-legacy-executions.md) | accepted | 已停止旧执行完整归档，不自动续跑 | SES-001、SES-003、WSP-001、BAK-001 |
 | [0062](0062-tools-flow-through-provider-views.md) | accepted / implemented | 工具通过 provider view 流向消费者 | CTX-004、CTX-007、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016、PLG-018 |
 
+| [0063](0063-execution-failures-have-terminal-results.md) | accepted | 执行失败明确收尾，恢复依据原回执 | Tools、Delivery、Wake、Mobile、Models |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

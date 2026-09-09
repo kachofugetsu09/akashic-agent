@@ -434,7 +434,7 @@ async def test_v3_channel_outbound_exception_is_unknown_without_retry() -> None:
     bus.bind_channel_outbound_dispatcher(fail_after_effect)
     dispatch = asyncio.create_task(bus.dispatch_outbound())
     receipt = await bus.publish_channel_outbound_awaited(envelope, binding)
-    assert receipt.status is DeliveryStatus.UNKNOWN
+    assert receipt.status is DeliveryStatus.FAILED
     assert receipt.error == "provider receipt lost"
     assert calls == 1
     bus.stop()

@@ -10,7 +10,7 @@ from session.log import MessageReader, MessageWriter, OwnerStore
 from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
-Outcome = Literal["success", "denied", "error", "unknown", "interrupted"]
+Outcome = Literal["success", "denied", "error", "interrupted"]
 
 
 def result_message_id(call_ref: CallRef) -> str:
@@ -35,7 +35,7 @@ class Result:
     parts: tuple[ContentPart, ...]
 
     def __post_init__(self) -> None:
-        if self.outcome not in {"success", "denied", "error", "unknown", "interrupted"}:
+        if self.outcome not in {"success", "denied", "error", "interrupted"}:
             raise ValueError("工具结果状态无效")
         parts = tuple(self.parts)
         if any(not isinstance(part, ContentPart) for part in parts):
@@ -90,7 +90,7 @@ class MessageReply:
 
     def check(self, state: OwnerStore) -> None:
         state.check_access(self.reader, self.writer)
-        self.writer.check(ToolResult(self.call_ref, "unknown", ()))
+        self.writer.check(ToolResult(self.call_ref, "error", ()))
 
     def abandoned(self) -> bool:
         """放弃由同来源的持久前缀决定，普通取消不代表放弃。"""

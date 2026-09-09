@@ -90,6 +90,8 @@ Output 仍为 continue 并计入原步数上限，所以取消、重启或新输
                          └───────────────┘
 ```
 
+失败反馈、持久恢复和后台收尾统一遵循 [0063](../decisions/0063-execution-failures-have-terminal-results.md)，不再产生 unknown 工具状态。
+
 ## 4. 现有来源的工具范围
 
 | 来源 | 新工具范围 | 保留的固定事实 |

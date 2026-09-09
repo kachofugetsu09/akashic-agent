@@ -73,7 +73,7 @@ class Deliveries:
             if slot.current is not None:
                 return slot.current, False
             hold = self.activity(delivery.sink.name, delivery.sink.address)
-            claimed = selected.passive and delivery.phase not in {"delivered", "rejected"}
+            claimed = selected.passive and delivery.phase not in {"delivered", "rejected", "failed"}
             if claimed:
                 _ = hold.__enter__()
 
@@ -160,7 +160,7 @@ class Deliveries:
     async def _send(self, task: Task, message_id: str, sink: str, before_start: Callable[[], str | None] | None) -> Receipt:
         """先读耐久事实，再恢复未知效果；确认即将发送后才提交 started。"""
         record, delivery = self._records.read(message_id, sink)
-        if delivery.phase in {"delivered", "rejected"}:
+        if delivery.phase in {"delivered", "rejected", "failed"}:
             assert delivery.receipt is not None
             return delivery.receipt
         selection = self._records.selection(message_id)
@@ -179,24 +179,24 @@ class Deliveries:
             if not task.active:
                 raise asyncio.CancelledError
             record, delivery = self._records.read(message_id, sink)
-            if delivery.phase in {"delivered", "rejected"}:
+            if delivery.phase in {"delivered", "rejected", "failed"}:
                 assert delivery.receipt is not None
                 return delivery.receipt
             sender = await scope.enter_async_context(self._open_sender(delivery.sink.binding_id))
-            # 1. started/unknown 都表示可能已发出；没有幂等保证便只查询。
-            if delivery.phase in {"started", "unknown"}:
+            # 1. 恢复已开始的发送；查询原回执，只有幂等协议允许重发。
+            if delivery.phase == "started":
                 found = await sender.query(key, delivery.sink.address)
                 if found is not None:
                     found = Receipt.model_validate(found.model_dump())
-                if found is not None and found.status != "unknown":
+                if found is not None:
                     _ = self._records.save(message_id, record, Delivery(
                         sink=delivery.sink, phase=found.status, receipt=found,
                     ))
                     return found
                 if not sender.idempotent:
-                    result = found or delivery.receipt or Receipt(status="unknown", error="原发送缺少可确认回执")
+                    result = Receipt(status="failed", error="原发送中断且没有可查询回执；可能已送达，不自动重发")
                     _ = self._records.save(message_id, record, Delivery(
-                        sink=delivery.sink, phase="unknown", receipt=result,
+                        sink=delivery.sink, phase="failed", receipt=result,
                     ))
                     return result
 
@@ -223,8 +223,8 @@ class Deliveries:
                 result = Receipt.model_validate(response.model_dump())
             except BaseException:
                 _ = self._records.save(message_id, record, Delivery(
-                    sink=delivery.sink, phase="unknown",
-                    receipt=Receipt(status="unknown", error="发送已开始但未取得可确认回执"),
+                    sink=delivery.sink, phase="failed",
+                    receipt=Receipt(status="failed", error="发送已开始但未取得可确认回执"),
                 ))
                 raise
             _ = self._records.save(message_id, record, Delivery(

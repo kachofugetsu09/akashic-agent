@@ -355,6 +355,7 @@ class _WakeServices:
             "await_change",
             "invalidated",
             "abandoned",
+            "failed",
             "expired",
         }
         if action not in allowed:

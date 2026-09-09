@@ -223,7 +223,6 @@ class Runtime:
                 continue
             flow_id = self._begin(receipt)
             owner = None
-            accepted = False
             try:
                 async with self.ctx.runtime_scope():
                     now = self.now()
@@ -237,19 +236,18 @@ class Runtime:
                             "content_insufficient" if admission.pool.due_count or admission.pool.expired_count else "no_due")
                     else:
                         self.source.accept(original)
-                        accepted = True
                         result = await self._run(flow_id)
                         assert result is not None
                         outcome = result
                     self.state.finish_attempt(attempt_id=flow_id, outcome=outcome, owner=owner,
                         detail=admission.detail, completed_at=self.now())
             except asyncio.CancelledError:
-                self.state.finish_attempt(attempt_id=flow_id, outcome="delivery_unknown" if accepted else "cancelled_after_fire", owner=owner,
+                self.state.finish_attempt(attempt_id=flow_id, outcome="cancelled_after_fire", owner=owner,
                     detail="Timer 已触发，原消息与领域回执留待恢复", completed_at=self.now())
                 raise
             except Exception as error:
                 # 本层只闭合本次 Timer 诊断；原错误继续上抛，未完成来源仍由原记录恢复。
-                self.state.finish_attempt(attempt_id=flow_id, outcome="delivery_unknown" if accepted else "failed", owner=owner,
+                self.state.finish_attempt(attempt_id=flow_id, outcome="failed", owner=owner,
                     detail=f"{type(error).__name__}: {error}", completed_at=self.now())
                 raise
 

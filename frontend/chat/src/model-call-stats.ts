@@ -3,7 +3,7 @@ import type { ReplyActivity, TimelineMessage } from "./message-timeline.ts";
 export interface ModelCallStats {
   call_record_id: string;
   model: string;
-  state: "started" | "success" | "unknown";
+  state: "started" | "success" | "error";
   first_token_ms: number | null;
   duration_ms: number | null;
   usage: {
@@ -20,7 +20,7 @@ export type LoadModelCallStats = (callId: string, signal: AbortSignal) => Promis
 export function readModelCallStats(value: unknown, callId: string): ModelCallStats {
   const raw = record(value);
   if (!raw || raw.call_record_id !== callId || typeof raw.model !== "string" || !raw.model
-    || !["started", "success", "unknown"].includes(String(raw.state))
+    || !["started", "success", "error"].includes(String(raw.state))
     || !nullableTime(raw.first_token_ms) || !nullableTime(raw.duration_ms)
     || (typeof raw.first_token_ms === "number" && typeof raw.duration_ms === "number" && raw.duration_ms < raw.first_token_ms)) {
     throw new Error("模型调用统计无效");
@@ -65,7 +65,7 @@ export function formatModelCallStats(stats: ModelCallStats, active: boolean): st
     && usage.output_tokens !== null && usage.request_count > 0 && usage.covered_request_count === usage.request_count) {
     parts.push(`${(usage.output_tokens * 1000 / (stats.duration_ms - stats.first_token_ms)).toFixed(1)} tok/s`);
   } else if (stats.duration_ms !== null) parts.push(`耗时 ${(stats.duration_ms / 1000).toFixed(1)}s`);
-  if (stats.state === "unknown" || (stats.state === "started" && !active)) parts.push("用量未结算");
+  if ((stats.state === "error" && usage === null) || (stats.state === "started" && !active)) parts.push("用量未结算");
   if (!parts.length) return active ? "等待首 token…" : "暂无耗时数据";
   return parts.join(" · ");
 }

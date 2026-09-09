@@ -303,7 +303,7 @@ async def test_unknown_result_reaches_model_without_replaying_effect_even_after_
             return LLMResponse(None, [ModelToolCall("original", "example", {"action": "write"})])
         tool_rows = [row for row in request.messages if row["role"] == "tool"]
         assert tool_rows[0]["tool_call_id"] == "original"
-        assert any("unknown" in part["text"] and "先检查" in part["text"]
+        assert any("error" in part["text"] and "先检查" in part["text"]
                    for part in tool_rows[0]["content"])
         if len(requests) == 2:
             return LLMResponse(None, [ModelToolCall("inspect", "example", {"action": "inspect"})])
@@ -313,7 +313,7 @@ async def test_unknown_result_reaches_model_without_replaying_effect_even_after_
         if arguments["action"] == "write":
             if restart:
                 raise ConnectionError("effect happened but receipt was lost")
-            return Result("unknown", (ContentPart("text", "没有取得回执"),))
+            return Result("error", (ContentPart("text", "没有取得回执"),))
         return Result("success", (ContentPart("text", "已确认当前状态"),))
     async with runtime(tmp_path, complete, invoke) as (conversation, log, store, run):
         await conversation.accept("u1", Input(()))
@@ -528,7 +528,7 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["success", "denied", "error", "unknown"])
+@pytest.mark.parametrize("outcome", ["success", "denied", "error", "interrupted"])
 async def test_terminal_tool_closes_only_after_real_success_and_before_step_limit(tmp_path, outcome):
     calls = 0
     effects = []

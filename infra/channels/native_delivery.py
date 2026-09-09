@@ -77,7 +77,7 @@ class NativeChannelDeliveryAdapter(ChannelAdapter):
                 await self._send_attachment(request, attachment, payload)
         except Exception as error:
             status = (
-                DeliveryStatus.UNKNOWN if provider_called else DeliveryStatus.REJECTED
+                DeliveryStatus.FAILED if provider_called else DeliveryStatus.REJECTED
             )
             logger.warning(
                 "[%s] native delivery failed delivery_id=%s provider_called=%s error=%s",

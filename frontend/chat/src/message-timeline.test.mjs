@@ -25,7 +25,7 @@ test("unknown plugin metadata survives history and live merging without affectin
   assert.throws(() => mergeTimelineMessages(history, [{ ...message, metadata: { meme: {} } }]), /发生变化/u);
 });
 
-for (const outcome of ["unknown", "interrupted"]) test(`fixed history pages retain ${outcome} results after abandon without changing archives`, () => {
+for (const outcome of ["error", "interrupted"]) test(`fixed history pages retain ${outcome} results after abandon without changing archives`, () => {
   const archive = { raw: '[ {"result":null, "arguments": "old"} ]', completeness: "unknown" };
   const records = [
     row(0, { kind: "input", parts: [text("[后台任务完成] 保留原消息")] }),

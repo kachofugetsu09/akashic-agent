@@ -12,7 +12,7 @@ from session.log import MessageReader
 from session.message import Message
 
 Text = Annotated[str, Field(min_length=1)]
-Status = Literal["delivered", "rejected", "unknown"]
+Status = Literal["delivered", "rejected", "failed"]
 
 
 class Sink(BaseModel):

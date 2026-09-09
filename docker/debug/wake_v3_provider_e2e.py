@@ -1238,7 +1238,7 @@ def _selected_failure_evidence(
         provider_evidence["provider_terminal_counts"] = {
             **terminal_counts,
             "call_done": sum(state == "success" for state in model_call_states),
-            "call_error": sum(state == "unknown" for state in model_call_states),
+            "call_error": sum(state == "error" for state in model_call_states),
         }
     return {
         **provider_evidence,

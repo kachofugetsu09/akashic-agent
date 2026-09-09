@@ -670,7 +670,7 @@ class WebChatChannel:
                 if failed:
                     result = ProviderDeliveryReceipt(
                         request.delivery_id,
-                        V3DeliveryStatus.UNKNOWN,
+                        V3DeliveryStatus.FAILED,
                         error="Web WebSocket frame 发送状态未知",
                     )
                 elif delivered == 0:
@@ -713,7 +713,7 @@ class WebChatChannel:
                 if delivered > 0:
                     result = ProviderDeliveryReceipt(
                         request.delivery_id,
-                        V3DeliveryStatus.UNKNOWN,
+                        V3DeliveryStatus.FAILED,
                         error="Web attachment read lease 关闭状态未知",
                     )
             if cancellation is not None:

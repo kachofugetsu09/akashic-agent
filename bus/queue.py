@@ -1533,7 +1533,7 @@ class MessageBus:
                     _channel_delivery_receipt(
                         in_flight_channel.envelope,
                         (
-                            ChannelDeliveryStatus.UNKNOWN
+                            ChannelDeliveryStatus.FAILED
                             if in_flight_channel.provider_started
                             else ChannelDeliveryStatus.REJECTED
                         ),
@@ -1592,7 +1592,7 @@ class MessageBus:
             )
             return _channel_delivery_receipt(
                 item.envelope,
-                ChannelDeliveryStatus.UNKNOWN,
+                ChannelDeliveryStatus.FAILED,
                 str(error) or type(error).__name__,
             )
         if not isinstance(receipt, ChannelDeliveryReceipt):

@@ -1,5 +1,8 @@
 # 插件 v3 inbound/outbound channel capability 任务合同
 
+> 2026-09-09：本文历史执行状态 unknown/UNKNOWN/uncertain 已被 [0063](../decisions/0063-execution-failures-have-terminal-results.md) 的明确失败终态和收尾规则取代；其他合同不变。
+
+
 - 状态：proposed / independent review findings incorporated
 - 日期：2026-08-16
 - 实现起点：`19f2cca2`（只有 command catalog，C14 尚未实现）

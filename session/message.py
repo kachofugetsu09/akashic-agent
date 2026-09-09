@@ -146,7 +146,7 @@ class Output:
 @dataclass(frozen=True, slots=True)
 class ToolResult:
     call_ref: CallRef
-    outcome: Literal["success", "denied", "error", "unknown", "interrupted"]
+    outcome: Literal["success", "denied", "error", "interrupted"]
     parts: tuple[ContentPart, ...]
 
     def __post_init__(self) -> None:
@@ -156,7 +156,7 @@ class ToolResult:
         if any(not isinstance(part, ContentPart) for part in parts):
             raise TypeError("ToolResult 只能包含内容块")
         object.__setattr__(self, "parts", parts)
-        if self.outcome not in {"success", "denied", "error", "unknown", "interrupted"}:
+        if self.outcome not in {"success", "denied", "error", "interrupted"}:
             raise ValueError("ToolResult outcome 无效")
 
 

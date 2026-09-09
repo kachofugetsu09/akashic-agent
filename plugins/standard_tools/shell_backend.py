@@ -388,7 +388,7 @@ class ShellTaskStopTool(Tool):
         return json.dumps(
             {
                 "execution_id": execution_id,
-                "process_status": "stopped" if stopped else "unknown",
+                **({"process_status": "stopped"} if stopped else {}),
                 "status": "stopped" if stopped else "not_found",
             },
             ensure_ascii=False,

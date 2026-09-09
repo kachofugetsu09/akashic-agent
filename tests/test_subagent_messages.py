@@ -14,7 +14,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from session.log import MessageLog, MessageWriter
+from session.log import MessageLog, MessageWriter, OwnerTransaction
 from session.artifact_store import ArtifactStore
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
@@ -34,6 +34,7 @@ class ModelControl:
     main_entered: asyncio.Queue = field(default_factory=asyncio.Queue)
     main_release: asyncio.Event = field(default_factory=asyncio.Event)
     main_tool: bool = False
+    send_failure: str | None = None
     sent: asyncio.Queue = field(default_factory=asyncio.Queue)
 
 
@@ -114,6 +115,10 @@ async def apply(ctx, config):
         idempotent = True
         async def send(self, key, address, message):
             control.sent.put_nowait((key, address, message))
+            if control.send_failure == "raise":
+                raise TimeoutError("sender connection lost")
+            if control.send_failure == "failed":
+                return Receipt(status="failed", error="sender connection lost")
             return Receipt(status="delivered", provider_ids=(key,))
         async def query(self, key, address):
             return None
@@ -205,8 +210,18 @@ async def test_sync_spawn_persists_internal_flow_and_replays_original_result(tmp
 
 
 @pytest.mark.asyncio
-async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path):
+@pytest.mark.parametrize("send_failure", [None, "failed", "raise"])
+async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path, monkeypatch, send_failure):
+    closed = asyncio.Event()
+    save = OwnerTransaction.save
+    def observe(self, key, value, **kwargs):
+        result = save(self, key, value, **kwargs)
+        if value.get("settled") is True:
+            closed.set()
+        return result
+    monkeypatch.setattr(OwnerTransaction, "save", observe)
     async with application(tmp_path, background=True) as (host, log, execution, reply):
+        CONTROLS[str(tmp_path)].send_failure = send_failure
         result = await asyncio.wait_for(execution.execute_call(reply), 15)
         assert result.outcome == "success" and "已创建后台任务" in text_part(result.parts[0])
         async def completed():
@@ -221,6 +236,8 @@ async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path
         assert "main summary" in text_part(message.body.parts[0])
         _, address, sent = await asyncio.wait_for(CONTROLS[str(tmp_path)].sent.get(), 10)
         assert address == "parent" and sent == message
+        await asyncio.wait_for(closed.wait(), 10)
+        assert all(record.value["settled"] for _, record in log.owner("plugin:subagent").list())
         assert CONTROLS[str(tmp_path)].main_calls == 1
         assert await execution.execute_call(reply) == result
         assert len([row for row in log.reader("test:parent").snapshot() if isinstance(row.body, Input)]) == 1

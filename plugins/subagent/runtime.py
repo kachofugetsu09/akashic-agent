@@ -198,7 +198,7 @@ class Subagents:
             return True
         return False
 
-    async def _announce(self, request: Request, reader: MessageReader, outcome: tuple[str, str]) -> bool:
+    async def _announce(self, key: str, request: Request, reader: MessageReader, outcome: tuple[str, str]) -> bool:
         """主程序读取低信任结果；原最终消息和发送回执共同承担崩溃恢复。"""
         ctx = self.ctx
         parent = ctx.require(MESSAGE_CATALOG).reader(request.parent_session_id)
@@ -229,12 +229,23 @@ class Subagents:
                 return await ctx.require(REPLY_PROGRAM)(task, current, source, extra)
             message = await ctx.require(CONVERSATION)(parent.session_id).complete(report)
 
-        # 2. 主回复保存后，只恢复原目标的发送；unknown 不冒称已结算。
+        # 2. 原发送成功或失败都关闭通知；失败回执保留，不重复回传。
         assert request.sink is not None
         delivery = ctx.require(DELIVERY).open(ctx)
         selected = delivery.prepare(parent, message, (request.sink,))
-        receipts = [await delivery.send(message.message_id, sink) for sink in selected.sinks]
-        return all(receipt.status != "unknown" for receipt in receipts)
+        try:
+            receipts = [await delivery.send(message.message_id, sink) for sink in selected.sinks]
+        except Exception:
+            saved = [delivery.receipt(message.message_id, sink) for sink in selected.sinks]
+            if any(receipt is not None and receipt.status == "failed" for receipt in saved):
+                self._settle(key)
+                self._trace(request, "delivery_failed")
+            raise
+        for receipt in receipts:
+            if receipt.status != "delivered":
+                logger.error("子任务结果发送失败 job=%s reason=%s", request.job_id, receipt.error or receipt.status)
+                self._trace(request, "delivery_failed")
+        return True
 
     def jobs(self) -> tuple[Mapping[str, object], ...]:
         result: list[Mapping[str, object]] = []
@@ -266,14 +277,14 @@ class Subagents:
                         outcome = self.outcome(reader)
                         if outcome is None:
                             raise RuntimeError("子任务没有可回传的终态")
-                        if await self._announce(request, reader, outcome):
+                        if await self._announce(key, request, reader, outcome):
                             self._settle(key)
             except asyncio.CancelledError:
                 task.cancel()
                 await drain(task)
                 raise
             except Exception:
-                logger.exception("子任务未结算，保留原消息和恢复指针 key=%s", key)
+                logger.exception("子任务执行失败，原消息与发送回执已保留 key=%s", key)
             finally:
                 del active[key]
         try:

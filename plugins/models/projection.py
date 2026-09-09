@@ -426,7 +426,7 @@ class MessageProjection:
                 result_blocks: list[Mapping[str, Any]] = []
                 if result.outcome != "success":
                     status = f"工具状态: {result.outcome}"
-                    if result.outcome == "unknown":
+                    if result.outcome in {"error", "interrupted"}:
                         status += "。原调用可能已经产生效果；先检查当前状态，再决定下一步，不要直接重复执行原操作。"
                     result_blocks.append({"type": "text", "text": status})
                 for item in result.parts:

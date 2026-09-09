@@ -1210,7 +1210,7 @@ async def test_web_v3_native_delivery_marks_socket_failure_unknown() -> None:
         )
     )
 
-    assert receipt.status is V3DeliveryStatus.UNKNOWN
+    assert receipt.status is V3DeliveryStatus.FAILED
 
 
 @pytest.mark.asyncio
@@ -1232,7 +1232,7 @@ async def test_web_v3_native_delivery_marks_partial_broadcast_unknown() -> None:
         )
     )
 
-    assert receipt.status is V3DeliveryStatus.UNKNOWN
+    assert receipt.status is V3DeliveryStatus.FAILED
     assert len(delivered_socket.frames) == 1
 
 

@@ -129,12 +129,12 @@ class AkashicNativeAdapter:
             if isinstance(result, BaseException) or result.error is not None
         ]
         if any(
-            isinstance(result, BaseException) or result.status is DeliveryStatus.UNKNOWN
+            isinstance(result, BaseException) or result.status is DeliveryStatus.FAILED
             for result in results
         ):
             return ProviderDeliveryReceipt(
                 request.delivery_id,
-                DeliveryStatus.UNKNOWN,
+                DeliveryStatus.FAILED,
                 provider_ids=provider_ids,
                 error="; ".join(errors) or "Akashic adapter 投递结果未知",
             )

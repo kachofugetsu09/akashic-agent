@@ -203,7 +203,7 @@ async def test_mobile_large_messages_download_whole_json_and_page_budget_never_t
                                        'continuation': {'binding_id': 'model', 'payload': {'private': 'model-secret'}}})
     output = append(log, session, 'o', Output((facts, ToolCall('tool', {'query': text}), ContentPart('future.private', {'private': 'part-secret'})), 'continue'))
     append(log, session, 'c', Control('abandon', output.seq, text))
-    append(log, session, 'r', ToolResult(CallRef('o', 1), 'unknown', (ContentPart('text', text),)), CallRef('o', 1))
+    append(log, session, 'r', ToolResult(CallRef('o', 1), 'error', (ContentPart('text', text),)), CallRef('o', 1))
     append(log, session, 'a', Output((ContentPart('history.transcript', {'raw': text, 'completeness': 'unknown'}),), 'quiet'))
     for index in range(12):
         append(log, session, f'm{index}', Input((ContentPart('text', 'x' * 60000),)))

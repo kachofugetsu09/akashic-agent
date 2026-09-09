@@ -177,7 +177,7 @@ async def test_telegram_unknown_never_replays_a_successful_prefix(tmp_path, fail
             execution.prepare(log.reader("chat"), msg, (Sink(name="telegram", binding_id=binding, address="123"),))
             try:
                 receipt = await execution.send(msg.message_id, "telegram")
-                assert receipt.status == ("rejected" if failure == "rejected" else "unknown")
+                assert receipt.status == ("rejected" if failure == "rejected" else "failed")
                 assert len(calls) == (2 if failure == "partial" else 1)
                 count = len(calls)
                 await host.terminate_all()
@@ -241,7 +241,7 @@ async def test_qq_uncertain_receipt_does_not_resend(tmp_path, failure):
             execution.prepare(log.reader("chat"), msg, (Sink(name="qq", binding_id=binding, address="gqq:42"),))
             try:
                 receipt = await execution.send(msg.message_id, "qq")
-                assert receipt.status == ("rejected" if failure == "rejected" else "unknown")
+                assert receipt.status == ("rejected" if failure == "rejected" else "failed")
                 assert receipt.provider_ids == ()
                 assert len(calls) == (2 if failure == "partial" else 1)
                 count = len(calls)

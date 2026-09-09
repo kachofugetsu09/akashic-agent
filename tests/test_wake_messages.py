@@ -132,6 +132,10 @@ async def apply(ctx, config):
         idempotent = True
         async def send(self, key, address, message):
             control["sent"].append((key, address, message))
+            if control.get("send_error"):
+                raise TimeoutError("sender connection lost")
+            if control.get("send_failure"):
+                return Receipt(status="failed", provider_ids=("confirmed-prefix",), error="connection lost after partial send")
             return Receipt(status="delivered", provider_ids=(key,))
         async def query(self, key, address):
             return Receipt(status="delivered", provider_ids=(key,)) if any(row[0] == key for row in control["sent"]) else None
@@ -541,7 +545,7 @@ async def test_runtime_failure_closes_timer_audit_before_stopping_both_loops(tmp
         assert "controlled runtime failure" in str(failure.value.exceptions[0])
         attempts = runtime.state.list_attempts()
         assert len(attempts) == 1
-        assert attempts[0]["outcome"] == ("delivery_unknown" if where == "source" else "failed")
+        assert attempts[0]["outcome"] == "failed"
         assert bool(runtime.source.pending()) is (where == "source")
         assert not control["sent"]
 
@@ -569,7 +573,7 @@ async def test_runtime_stop_drains_its_active_source_before_returning(tmp_path, 
             await running
         assert len(started) == 1 and started[0].done and not started[0].active
         assert len(runtime.source.pending()) == 1 and not control["sent"]
-        assert runtime.state.list_attempts()[0]["outcome"] == "delivery_unknown"
+        assert runtime.state.list_attempts()[0]["outcome"] == "cancelled_after_fire"
         control["release"].set()
         flow_id = runtime.source.pending()[0]
         assert await runtime._run(flow_id) == "shared"
@@ -674,3 +678,65 @@ async def test_cancel_during_timer_cleanup_closes_fired_audit_and_drains_handle(
             await waiting
         assert runtime.state.list_attempts()[0]["outcome"] == "cancelled_after_fire"
         assert runtime.source.pending() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["content", "drift", "alert"])
+@pytest.mark.parametrize("interrupt, sender_error", [(False, False), (True, False), (False, True)])
+async def test_failed_notification_closes_original_flow_without_resend(tmp_path, monkeypatch, owner, interrupt, sender_error):
+    """发送失败必须释放领域领取，重复恢复不能再发送原通知。"""
+    from plugins.eventmail.plugin import EVENTMAIL_CONTENT_SOURCE, EVENTMAIL_ALERT_SOURCE
+    from plugins.wake.content import _candidate_id
+    async with application(tmp_path) as (_, log, ctx, source, control):
+        now = datetime.now(timezone.utc)
+        control["send_failure"] = True
+        control["send_error"] = sender_error
+        if owner == "drift":
+            ctx.require(DRIFT_PROPOSALS).propose("failed-duty", "1", {"summary": "check"}, now)
+            original = request(ctx, owner, now, proposals=ctx.require(DRIFT_WAKE).snapshot(now)["proposals"])
+        elif owner == "content":
+            producer = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("feed")
+            producer.submit("first", [{"item_id": "one", "revision": "1", "not_before": now,
+                "requires_ack": True, "payload": {"title": "useful"}}])
+            snapshot = ctx.require(EVENTMAIL_WAKE).snapshot(now)
+            control["content"] = True
+            control["candidate"] = _candidate_id(snapshot["items"][0]["ref"])
+            original = request(ctx, owner, now).model_copy(update={
+                "snapshot_seq": snapshot["snapshot_seq"], "items": tuple(dict(item) for item in snapshot["items"])})
+        else:
+            control["tool"] = "share_alert"
+            ctx.require(EVENTMAIL_ALERT_SOURCE).bind("source").report(
+                event_id="event", payload={"body": "alert"}, observed_at=now)
+            original = request(ctx, owner, now, alert_ref=dict(ctx.require(EVENTMAIL_WAKE).peek_alert(now)))
+        source.accept(original)
+        settled = source._settled
+        if interrupt:
+            def fail(*args):
+                raise OSError("closed domain before pointer commit")
+            monkeypatch.setattr(source, "_settled", fail)
+        task = await source.start(original.flow_id)
+        if interrupt:
+            with pytest.raises(OSError, match="pointer commit"):
+                await asyncio.wait_for(task.join(), 10)
+            monkeypatch.setattr(source, "_settled", settled)
+            source = Source(ctx, source.state)
+            task = await source.start(original.flow_id)
+        if sender_error:
+            with pytest.raises(TimeoutError, match="sender connection lost"):
+                await asyncio.wait_for(task.join(), 10)
+        else:
+            assert await asyncio.wait_for(task.join(), 10) == "failed"
+        assert source.pending() == ()
+        receipt = ctx.require(DELIVERY).open(ctx).receipt(original.notification_id, "test")
+        assert receipt.status == "failed" and receipt.provider_ids == (() if sender_error else ("confirmed-prefix",))
+        before = log.reader(original.session_id).snapshot()
+        assert await Source(ctx, source.state).start(original.flow_id) is None
+        assert len(control["sent"]) == 1 and log.reader(original.session_id).snapshot() == before
+        if owner == "drift":
+            assert ctx.require(DRIFT_WAKE).snapshot(now)["proposals"] == ()
+            ctx.require(DRIFT_PROPOSALS).propose("next-duty", "1", {"summary": "next"}, now)
+            assert ctx.require(DRIFT_WAKE).snapshot(now)["proposals"]
+        elif owner == "content":
+            assert ctx.require(EVENTMAIL_WAKE).snapshot(now)["items"] == ()
+        else:
+            assert ctx.require(EVENTMAIL_WAKE).alert_status("source", "event") == "skipped"

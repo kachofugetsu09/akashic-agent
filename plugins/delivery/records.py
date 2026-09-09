@@ -30,7 +30,7 @@ class Delivery(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     version: Literal[1] = 1
     sink: Sink
-    phase: Literal["prepared", "started", "delivered", "rejected", "unknown"]
+    phase: Literal["prepared", "started", "delivered", "rejected", "failed"]
     receipt: Receipt | None = None
     confirmed_at: AwareDatetime | None = None
 
@@ -44,6 +44,17 @@ class Delivery(BaseModel):
         if self.confirmed_at is not None and self.phase != "delivered":
             raise ValueError("只有已送达消息可以包含确认时间")
         return self
+
+
+def read_delivery(value: Mapping[str, object]) -> Delivery:
+    """只在持久读取边界解释旧失败状态，不改写原存储。"""
+    data = dict(value)
+    if data.get("phase") == "unknown":
+        receipt = data.get("receipt")
+        if not isinstance(receipt, Mapping) or receipt.get("status") != "unknown":
+            raise ValueError("旧发送阶段与回执不一致")
+        data = {**data, "phase": "failed", "receipt": {**receipt, "status": "failed"}}
+    return Delivery.model_validate_json(json.dumps(json_value(data)))
 
 
 class Cursor(BaseModel):
@@ -90,7 +101,7 @@ class DeliveryRecords:
         row = self._state.read(delivery_key(message_id, sink))
         if row is None:
             raise ValueError("发送尚未 prepared")
-        delivery = Delivery.model_validate_json(json.dumps(json_value(row.value)))
+        delivery = read_delivery(row.value)
         if delivery.sink.name != sink:
             raise ValueError("发送目的地与记录身份不一致")
         return row, delivery
@@ -188,7 +199,7 @@ class DeliveryRecords:
     def save(self, message_id: str, previous: OwnerRecord, delivery: Delivery) -> OwnerRecord:
         """真实回执与首个送达时间索引同事务提交；旧回执不补造历史时间。"""
         selection = self.check_owner(message_id)
-        old = Delivery.model_validate_json(json.dumps(json_value(previous.value)))
+        old = read_delivery(previous.value)
         if old.phase == "delivered" and delivery != old:
             raise MessageConflict("已送达回执不能改写")
         if delivery.phase == "delivered" and old.phase != "delivered":
@@ -228,6 +239,6 @@ class DeliveryRecords:
             if selection.recovery_owner != self.recovery_owner:
                 continue
             _, delivery = self.read(message_id, sink)
-            if delivery.phase not in {"delivered", "rejected"}:
+            if delivery.phase not in {"delivered", "rejected", "failed"}:
                 pending.append((message_id, sink))
         return tuple(pending)

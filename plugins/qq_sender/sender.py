@@ -73,27 +73,27 @@ class QQSender:
                     await self._connection.send(json.dumps({"action": request.action, "params": request.params, "echo": echo}))
                     result = await self._read_response(echo)
             except (ConnectionClosed, TimeoutError, OSError):
-                return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="QQ 连接或回执未确认")
+                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 连接或回执未确认")
             except (json.JSONDecodeError, ValueError):
-                return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="QQ 回执结构或 echo 无效")
+                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执结构或 echo 无效")
             if result.get("status") == "failed" and type(result.get("retcode")) is int and result["retcode"] != 0:
-                return Receipt(status="unknown" if completed else "rejected", provider_ids=tuple(provider_ids), error="QQ 拒绝请求")
+                return Receipt(status="failed" if completed else "rejected", provider_ids=tuple(provider_ids), error="QQ 拒绝请求")
             if result.get("status") != "ok" or type(result.get("retcode")) is not int or result["retcode"] != 0:
-                return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="QQ 回执未确认成功")
+                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执未确认成功")
             raw_data = result.get("data")
             data = cast(dict[str, object], raw_data) if isinstance(raw_data, dict) else raw_data
             if request.upload:
                 if data is not None and not isinstance(data, dict):
-                    return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="QQ 文件回执无效")
+                    return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 文件回执无效")
                 if isinstance(data, dict) and cast(dict[str, object], data).get("file_id") is not None:
                     file_id = cast(dict[str, object], data)["file_id"]
                     if type(file_id) not in (str, int) or str(file_id) == "":
-                        return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="QQ 文件 ID 无效")
+                        return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 文件 ID 无效")
                     provider_ids.append("file:" + str(file_id))
             else:
                 message_id = cast(dict[str, object], data).get("message_id") if isinstance(data, dict) else None
                 if type(message_id) not in (str, int) or str(message_id) == "":
-                    return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="QQ 回执缺少消息 ID")
+                    return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执缺少消息 ID")
                 provider_ids.append(str(message_id))
             completed += 1
         return Receipt(status="delivered", provider_ids=tuple(provider_ids))
