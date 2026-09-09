@@ -1905,6 +1905,8 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
           onNavigate={(id, index) => onNavigateToReply(source.id, id, index)} renderAttachment={renderAttachment}
           beforeReasoning={(origin) => !selectedSessionUnavailable && origin.body.kind === "output" ? <MobilePluginSlot
             name="turn.before_reasoning" sessionId={origin.session_id} messageId={origin.id} /> : null}
+          prefetchReasoning={(origin) => !selectedSessionUnavailable && origin.body.kind === "output" ? <MobilePluginSlot
+            name="turn.before_reasoning" sessionId={origin.session_id} messageId={origin.id} prefetch /> : null}
           beforePart={(part, index, origin) => !selectedSessionUnavailable && part.kind === "tool_call" && !("display" in part)
             ? <MobilePluginSlot name="turn.before_tool" sessionId={origin.session_id} messageId={origin.id}
               block={{ ...part, message_id: origin.id, part_index: index }} /> : null}
