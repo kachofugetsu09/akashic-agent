@@ -126,6 +126,7 @@ def test_active_ancestor_chain_survives_restart_and_reentry_without_fake_calls(
         head = records.head("s")
         assert head.content == last["summary"] and head.generation == 4
         assert head.source_message_ids == ("u0", "u1", "u2")
+        assert head.parent is not None
         assert records.read(head.parent).generation == 3
         assert head.legacy.row.model_dump() == last
         assert "model_call_ids" not in head.model_dump()

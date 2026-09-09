@@ -145,7 +145,11 @@ class ToolExecution:
     async def _wait_result(self, task: Task, key: str, fingerprint: str, reply: MessageReply) -> Result:
         """结果可先于物理清理提交；消息订阅只负责唤醒，回执仍是唯一结算事实。"""
         async def recorded() -> Result:
-            async for _ in reply.reader.follow():
+            call = reply.reader.get(reply.call_ref.message_id)
+            if call is None:
+                raise ValueError("工具调用消息缺失")
+            # 原调用触发首次回执检查；相关结果和 abandon 都只能在它之后提交。
+            async for _ in reply.reader.follow(after_seq=call.seq - 1):
                 record = self._record(key, fingerprint)
                 if record is not None and record.value["phase"] == "done":
                     result = reply.read(record.value["result"])

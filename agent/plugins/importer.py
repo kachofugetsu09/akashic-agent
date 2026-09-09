@@ -4,7 +4,14 @@ import importlib.abc
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import CodeType, ModuleType
+from functools import lru_cache
+
+
+@lru_cache(maxsize=128)
+def _compile_source(source: bytes, filename: str) -> CodeType:
+    """只复用相同路径和源码的字节码；模块字典与执行副作用仍每次独立。"""
+    return compile(source, filename, "exec")
 
 
 class FreshSourceLoader(importlib.abc.Loader):
@@ -16,7 +23,7 @@ class FreshSourceLoader(importlib.abc.Loader):
 
     def exec_module(self, module: ModuleType) -> None:
         source = self._path.read_bytes()
-        code = compile(source, str(self._path), "exec")
+        code = _compile_source(source, str(self._path))
         exec(code, module.__dict__)
 
 

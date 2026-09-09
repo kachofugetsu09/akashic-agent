@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict, Field
@@ -572,6 +573,24 @@ class DriverConnection:
         DriverEmbeddingModel,
     ]
 
+    close: Callable[[], Awaitable[None]] | None = None
+
+    async def aclose(self) -> None:
+        """等待资源关闭完成，再向调用方传回取消。"""
+        if self.close is not None:
+            # 1. 独立任务保护关闭过程，避免重复取消截断底层资源释放。
+            task = asyncio.ensure_future(self.close())
+            cancelled = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            # 2. 关闭失败必须可见；关闭成功后恢复调用方的取消。
+            task.result()
+            if cancelled:
+                raise asyncio.CancelledError
+
 
 DriverOpen: TypeAlias = Callable[
     [DriverConnectionDescriptor, CredentialHandle],
@@ -658,12 +677,38 @@ class ModelUnavailableError(ModelError): ...
 class RevisionConflictError(ModelError): ...
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _FrozenJson(Mapping[str, Any]):
+    """标记由本边界深冻结的对象；内部替换请求时可安全复用。"""
+
+    _data: Mapping[str, Any]
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
 def _freeze_json_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
     """Copy JSON data into immutable mappings and tuples."""
 
+    if isinstance(value, _FrozenJson):
+        return value
     active: set[int] = set()
 
     def freeze(item: Any) -> Any:
+        if item is None or isinstance(item, (str, int, bool)):
+            return item
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("JSON number 必须是有限值")
+            return item
+        if isinstance(item, _FrozenJson):
+            return item
         if isinstance(item, Mapping):
             identity = id(item)
             if identity in active:
@@ -675,7 +720,7 @@ def _freeze_json_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
                     if not isinstance(key, str):
                         raise TypeError("JSON object key 必须是字符串")
                     frozen[key] = freeze(nested)
-                return MappingProxyType(frozen)
+                return _FrozenJson(MappingProxyType(frozen))
             finally:
                 active.remove(identity)
         if isinstance(item, (list, tuple)):
@@ -687,10 +732,6 @@ def _freeze_json_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
                 return tuple(freeze(nested) for nested in item)
             finally:
                 active.remove(identity)
-        if isinstance(item, float) and not math.isfinite(item):
-            raise ValueError("JSON number 必须是有限值")
-        if item is None or isinstance(item, (str, int, float, bool)):
-            return item
         raise TypeError(f"不支持的 JSON value: {type(item).__name__}")
 
     return freeze(value)

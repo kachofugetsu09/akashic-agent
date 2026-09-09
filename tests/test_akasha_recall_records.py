@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 
@@ -235,9 +236,9 @@ def test_chat_recall_cards_follow_existing_turns_without_crossing_sources(tmp_pa
         before = log.reader("s").snapshot()
         completed = inspector.for_turn("s", "a", "ignored", TurnProjection())
         active = inspector.for_turn("s", "draft", "chat", TurnProjection())
-        assert [item["query_id"] for item in completed["items"]] == ["old"]
+        assert [item["query_id"] for item in cast(list[dict[str, object]], completed["items"])] == ["old"]
         assert completed["pending"] is False
-        assert [item["query_id"] for item in active["items"]] == ["active"]
+        assert [item["query_id"] for item in cast(list[dict[str, object]], active["items"])] == ["active"]
         assert active["pending"] is True
         assert log.reader("s").snapshot() == before
 
@@ -256,7 +257,7 @@ def test_abandoned_turn_keeps_recall_at_its_closed_input_head(tmp_path):
         writer.append("stop", Control("abandon", 0, None))
         inspector = RecallInspector(read=records.read, list_records=records.list, catalog=log.catalog())
         result = inspector.for_turn("s", "u1", "", TurnProjection())
-        assert [item["query_id"] for item in result["items"]] == ["last"]
+        assert [item["query_id"] for item in cast(list[dict[str, object]], result["items"])] == ["last"]
         assert result["pending"] is False
 
 
@@ -289,7 +290,7 @@ def test_recall_turn_cache_tracks_source_head_and_keeps_global_query_head(tmp_pa
             "other", Input((ContentPart("text", "background"),)))
         records.save("global-head", record(1).model_copy(update={"hits": ()}))
         result = inspector.for_turn("s", "draft", "chat", projection)
-        assert [item["query_id"] for item in result["items"]] == ["global-head"]
+        assert [item["query_id"] for item in cast(list[dict[str, object]], result["items"])] == ["global-head"]
         assert projection.calls == 1
         outputs.append("a", Output((ContentPart("text", "answer"),), "complete"))
         assert inspector.for_turn("s", "a", "", projection)["pending"] is False

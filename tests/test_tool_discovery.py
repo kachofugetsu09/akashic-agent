@@ -214,6 +214,7 @@ async def test_tool_search_invalid_call_returns_error_then_corrected_call_succee
             invalid = await execution.execute_call(reply(0))
             corrected = await execution.execute_call(reply(1))
             assert invalid.outcome == "error"
+            assert isinstance(invalid.parts[0].value, str)
             assert "query" in invalid.parts[0].value
             assert corrected.outcome == "success"
             assert corrected.parts[-1].value == (_candidate(bindings.describe(search_id, TOOLS), "example"),)

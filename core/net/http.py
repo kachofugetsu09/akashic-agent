@@ -2,13 +2,50 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import urljoin
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
+
+
+class HttpClient:
+    """首个请求才建客户端；持有者显式关闭，配置检查不创建网络资源。"""
+
+    def __init__(self, create: Callable[[], httpx.AsyncClient]) -> None:
+        self._create = create
+        self._client: httpx.AsyncClient | None = None
+        self._closed = False
+
+    def client(self) -> httpx.AsyncClient:
+        if self._closed:
+            raise RuntimeError("HTTP 连接已关闭")
+        if self._client is None:
+            self._client = self._create()
+        return self._client
+
+    async def aclose(self) -> None:
+        self._closed = True
+        if self._client is not None:
+            await self._client.aclose()
+
+
+async def finish_response(lines: AsyncIterator[str]) -> None:
+    """协议已确认成功后收尾 HTTP 正文；异常尾流最多占用 10 ms。"""
+    try:
+        async with asyncio.timeout(0.01):
+            async for _ in lines:
+                pass
+    except (TimeoutError, httpx.HTTPError) as error:
+        # 结果已经完整；放弃连接复用，stream 退出时关闭该连接。
+        logger.debug("响应已完成，尾流未结束，关闭连接: %s", type(error).__name__)
+
 
 HttpProfile = Literal["external_default", "feed_fetcher", "local_service"]
 

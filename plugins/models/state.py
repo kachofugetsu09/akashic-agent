@@ -6,12 +6,12 @@ import json
 import logging
 import math
 import secrets
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from time import monotonic_ns
 from types import MappingProxyType
-from typing import Any, AsyncIterator, Mapping, Protocol, Sequence, cast
+from typing import Any, AsyncGenerator, AsyncIterator, Mapping, Protocol, Sequence, cast
 
 from agent.plugin_composition.bindings import Bindings
 
@@ -189,6 +189,18 @@ class _AuthAttempt:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     cancelled: bool = False
     expiry_task: asyncio.Task[None] | None = field(default=None, repr=False)
+
+
+@asynccontextmanager
+async def _driver_scope() -> AsyncGenerator[dict[str, DriverConnection]]:
+    """在绑定结束或失败时关闭本次打开的全部连接。"""
+    async with AsyncExitStack() as stack:
+        opened: dict[str, DriverConnection] = {}
+        try:
+            yield opened
+        finally:
+            for driver in opened.values():
+                _ = stack.push_async_callback(driver.aclose)
 
 
 class _Execution:
@@ -404,13 +416,14 @@ class ModelsState:
             definition = self._driver_registrations.get(connection.driver_id)
             if definition is None:
                 continue
-            await definition.open(
+            driver = await definition.open(
                 _driver_connection_descriptor(connection),
                 self.store.credential_handle(
                     connection.connection_id,
                     connection.auth_identity,
                 ),
             )
+            await driver.aclose()
         self._drivers = MappingProxyType(dict(self._driver_registrations))
         self.sealed = True
 
@@ -498,17 +511,19 @@ class ModelsState:
                 ChatModelSelection(model_id, reasoning_effort)
             )
             snapshot = self._snapshot_required()
-            execution = await self._build_execution(
-                lease.snapshot.snapshot_id,
-                snapshot,
-                selection.model_id,
-                selection.reasoning_effort,
-            )
-            token = _CURRENT_EXECUTION.set(execution)
-            try:
-                yield execution
-            finally:
-                _CURRENT_EXECUTION.reset(token)
+            async with _driver_scope() as opened:
+                execution = await self._build_execution(
+                    lease.snapshot.snapshot_id,
+                    snapshot,
+                    selection.model_id,
+                    selection.reasoning_effort,
+                    opened,
+                )
+                token = _CURRENT_EXECUTION.set(execution)
+                try:
+                    yield execution
+                finally:
+                    _CURRENT_EXECUTION.reset(token)
         finally:
             await lease.release()
 
@@ -545,30 +560,33 @@ class ModelsState:
             )
         try:
             self._check_snapshot_service(lease.snapshot, EMBEDDINGS, self.embeddings)
-            existing = inherited
-            if existing is not None:
-                if existing.state is not self:
-                    raise RuntimeError("同一执行不能绑定两个 models Service")
-                selected = model_id or existing.snapshot.default_embedding_model_id
+            async with _driver_scope() as opened:
+                existing = inherited
+                if existing is not None:
+                    if existing.state is not self:
+                        raise RuntimeError("同一执行不能绑定两个 models Service")
+                    selected = model_id or existing.snapshot.default_embedding_model_id
+                    if selected is None:
+                        raise ModelUnavailableError("尚未配置默认 embedding 模型")
+                    bound = await self._bind_embedding(
+                        existing.plugin_snapshot_id,
+                        existing.snapshot,
+                        selected,
+                        opened,
+                    )
+                    yield bound
+                    return
+                snapshot = self._snapshot_required()
+                selected = model_id or snapshot.default_embedding_model_id
                 if selected is None:
                     raise ModelUnavailableError("尚未配置默认 embedding 模型")
                 bound = await self._bind_embedding(
-                    existing.plugin_snapshot_id,
-                    existing.snapshot,
+                    lease.snapshot.snapshot_id,
+                    snapshot,
                     selected,
+                    opened,
                 )
                 yield bound
-                return
-            snapshot = self._snapshot_required()
-            selected = model_id or snapshot.default_embedding_model_id
-            if selected is None:
-                raise ModelUnavailableError("尚未配置默认 embedding 模型")
-            bound = await self._bind_embedding(
-                lease.snapshot.snapshot_id,
-                snapshot,
-                selected,
-            )
-            yield bound
         finally:
             await lease.release()
 
@@ -623,10 +641,10 @@ class ModelsState:
         snapshot: StoredSnapshot,
         explicit_model_id: str | None,
         reasoning_effort: str | None,
+        opened: dict[str, DriverConnection],
     ) -> _Execution:
         _check_vision_binding(snapshot)
         chat: dict[ModelRole, BoundChatModel] = {}
-        opened: dict[str, DriverConnection] = {}
         for role in ModelRole:
             model_id = snapshot.role_bindings.get(role.value)
             binding_role = role.value
@@ -720,7 +738,7 @@ class ModelsState:
         plugin_snapshot_id: str,
         snapshot: StoredSnapshot,
         model_id: str,
-        opened: dict[str, DriverConnection] | None = None,
+        opened: dict[str, DriverConnection],
     ) -> BoundEmbeddingModel:
         model = snapshot.models.get(model_id)
         if model is None or model.kind is not ModelKind.EMBEDDING or not model.enabled:
@@ -729,7 +747,7 @@ class ModelsState:
         if dimensions is None or dimensions <= 0:
             raise ModelUnavailableError(f"embedding 模型缺少 dimensions: {model_id}")
         connection = snapshot.connections[model.connection_id]
-        definition, driver = await self._open_driver(connection, opened or {})
+        definition, driver = await self._open_driver(connection, opened)
         descriptor = _embedding_descriptor(
             plugin_snapshot_id,
             snapshot,
@@ -920,7 +938,8 @@ class ModelsState:
         if definition.probe is not None:
             await definition.probe(descriptor, credential)
         else:
-            await definition.open(descriptor, credential)
+            driver = await definition.open(descriptor, credential)
+            await driver.aclose()
 
     async def _probe_updated_connection(self, command: UpdateConnection) -> None:
         snapshot = self._snapshot_required()
@@ -952,21 +971,23 @@ class ModelsState:
         if definition.probe is not None:
             await definition.probe(descriptor, credential)
         else:
-            await definition.open(descriptor, credential)
+            driver = await definition.open(descriptor, credential)
+            await driver.aclose()
 
     async def _check_model(self, command: AddModel) -> None:
         snapshot = self._snapshot_required()
         connection = snapshot.connections.get(command.connection_id)
         if connection is None:
             raise ModelUnavailableError(f"模型连接不存在: {command.connection_id}")
-        definition, driver = await self._open_driver(connection, {})
-        await self._check_bound_model(
-            snapshot,
-            connection,
-            StoredModel.from_command(command),
-            definition,
-            driver,
-        )
+        async with _driver_scope() as opened:
+            definition, driver = await self._open_driver(connection, opened)
+            await self._check_bound_model(
+                snapshot,
+                connection,
+                StoredModel.from_command(command),
+                definition,
+                driver,
+            )
 
     async def _check_new_connection_model(
         self,
@@ -993,13 +1014,16 @@ class ModelsState:
                 connection_change.credential,
             ),
         )
-        await self._check_bound_model(
-            self._snapshot_or_empty(),
-            connection,
-            StoredModel.from_command(command.model),
-            definition,
-            driver,
-        )
+        try:
+            await self._check_bound_model(
+                self._snapshot_or_empty(),
+                connection,
+                StoredModel.from_command(command.model),
+                definition,
+                driver,
+            )
+        finally:
+            await driver.aclose()
 
     async def _check_bound_model(
         self,
