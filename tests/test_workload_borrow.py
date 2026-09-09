@@ -1,5 +1,8 @@
 import asyncio
 from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+import time
 
 import pytest
 import pytest_asyncio
@@ -14,7 +17,7 @@ from agent.plugin_composition.workload_slots import (
     WorkloadPort,
     _WorkloadDeclarations,
 )
-from agent.plugins.workload_generation_host import WorkloadGenerationHost
+from agent.plugins.workload_generation_host import WorkloadGenerationHost, _http_health
 from agent.workloads.model import (
     WorkloadEndpoint,
     WorkloadLease,
@@ -54,6 +57,33 @@ class Controller:
     async def cleanup_candidates(self, workspace_id: str) -> tuple[WorkloadStopReceipt, ...]:
         _ = workspace_id
         return ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 503])
+async def test_health_probe_does_not_mistake_busy_loop_for_unhealthy_workload(status):
+    """主循环停顿时，按健康接口的真实结果判定。"""
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    # 故意让主循环停顿超过探测预算，重现启动和同步插件代码造成的延迟。
+    pause = asyncio.get_running_loop().call_later(0.001, time.sleep, 0.2)
+    try:
+        result = await _http_health(f"http://localhost:{server.server_port}/health", 0.05)
+        assert result == (status == 200, f"HTTP {status}")
+    finally:
+        pause.cancel()
+        await asyncio.to_thread(server.shutdown)
+        server.server_close()
+        worker.join()
 
 
 @pytest_asyncio.fixture(loop_scope="session")
