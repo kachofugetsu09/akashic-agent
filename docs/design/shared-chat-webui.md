@@ -231,7 +231,7 @@ Core Message 日志和附件保持 append-only，只有既有 adapter 的读协�
 
 ### 9.3 回复过程与调用统计
 
-实时回复从等待首段起就把 `turn.before_reasoning` 插槽放在同一个思考面板内；思考到达后不移动插槽，避免 Akasha 卡片卸载重查。`model.selection` 是内部选择记录，不占正文布局，未知插件内容仍明确显示不可展示。
+每条过程轨迹只在开头挂载一次 `turn.before_reasoning`，工具调用后的消息和后续草稿不重复挂载。实时回复从等待首段起就把插槽放在同一个思考面板内；思考到达后不移动插槽，避免 Akasha 卡片卸载重查。`model.selection` 是内部选择记录，不占正文布局，未知插件内容仍明确显示不可展示。
 
 统计由 models 的调用记录拥有。Web 通过公共 `/api/settings/model/calls/{call_id}` 读取；Android build 79 起用 `readModelCallStats` 转发已有 `model.call.get`，共享页面校验与计算数值；没有数据或查询失败均不估算。
 
