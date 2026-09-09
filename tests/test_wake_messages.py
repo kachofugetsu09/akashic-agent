@@ -53,7 +53,7 @@ async def apply(ctx, config):
     if wake_delivery:
         text = text.replace("await _original_apply(ctx, config)",
             'await _original_apply(ctx, Config.model_validate({"delivery": {"channel": "test", "recipient": "room", "session_id": "test:room"}}))')
-    text += "\nfrom tests.test_wake_messages import CONTROLS\n_original_runtime = Runtime\ndef Runtime(ctx, config):\n    runtime = _original_runtime(ctx, config)\n    control = CONTROLS[" + repr(str(tmp_path)) + "]\n    control['runtime'] = runtime\n    deadline = runtime.duties.deadline\n    def observe(now):\n        value = deadline(now)\n        control.setdefault('deadlines', []).append(value)\n        control['due_read'].set()\n        return value\n    runtime.duties.deadline = observe\n    return runtime\n"
+    text += "\nfrom tests.test_wake_messages import CONTROLS\n_original_runtime = Runtime\ndef Runtime(ctx, config):\n    runtime = _original_runtime(ctx, config)\n    control = CONTROLS[" + repr(str(tmp_path)) + "]\n    control['runtime'] = runtime\n    deadline = runtime.duties.deadline\n    def observe(now):\n        value = deadline(now)\n        control.setdefault('deadlines', []).append(value)\n        control['due_read'].set()\n        return value\n    runtime.duties.deadline = observe\n    finish_attempt = runtime.state.finish_attempt\n    def observe_attempt(**kwargs):\n        finish_attempt(**kwargs)\n        control['attempts'].put_nowait(kwargs)\n    runtime.state.finish_attempt = observe_attempt\n    return runtime\n"
     module.write_text(text)
     provider = sources / "models_fixture"
     provider.mkdir()
@@ -108,6 +108,9 @@ async def apply(ctx, config):
             await control["release"].wait()
             if control["failure"] is not None:
                 raise control["failure"]
+            if control["thinking_only"]:
+                control["thinking_only"] -= 1
+                return LLMResponse(None, thinking="private reasoning")
             if control.get("content") and len(control["calls"]) == 1:
                 return LLMResponse(None, [ToolCall("screen", "screen_content", {"items": [{
                     "candidate_id": control["candidate"], "initial_interest": "relevant", "question": "verify this"}]})])
@@ -145,7 +148,8 @@ async def apply(ctx, config):
     await ctx.require(DELIVERY_SENDERS).register(ctx, name="test", idempotent=True, open=sender)
 '''.replace("CONTROL_PATH", repr(str(tmp_path))))
     control = {"calls": [], "sent": [], "entered": asyncio.Queue(), "release": asyncio.Event(),
-               "tool": "share_content", "failure": None, "due_read": asyncio.Event()}
+               "tool": "share_content", "failure": None, "thinking_only": 0,
+               "due_read": asyncio.Event(), "attempts": asyncio.Queue()}
     control["release"].set()
     CONTROLS[str(tmp_path)] = control
     try:
@@ -427,6 +431,39 @@ async def test_model_failure_keeps_real_control_and_original_retry_classificatio
         assert bool(ctx.require(DRIFT_WAKE).snapshot(now)["proposals"]) is can_retry
         assert not control["sent"] and len(control["calls"]) == 1
         assert await source.start(original.flow_id) is None
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_response_defers_one_flow_and_runtime_handles_the_next(tmp_path):
+    from plugins.wake.request import retryable
+    from session.message import Control
+
+    async with application(tmp_path, wake_delivery=True) as (host, log, ctx, source, control):
+        control["thinking_only"] = 1
+        now = datetime.now(timezone.utc)
+        ctx.require(DRIFT_PROPOSALS).propose(
+            "empty", "1", {"summary": "first duty"}, now,
+            next_due=now + timedelta(hours=1),
+        )
+        await host.start_runtime()
+        runtime = control["runtime"]
+
+        while True:
+            first = await asyncio.wait_for(control["attempts"].get(), 10)
+            if first["owner"] == "drift":
+                break
+        assert first["outcome"] == "deferred"
+        assert runtime.source.pending() == ()
+        rows = log.reader("wake:" + first["attempt_id"]).snapshot()
+        assert isinstance(rows[-1].body, Control) and retryable(rows[-1]) is True
+
+        ctx.require(DRIFT_PROPOSALS).propose("later", "1", {"summary": "next duty"}, now)
+        while True:
+            second = await asyncio.wait_for(control["attempts"].get(), 10)
+            if second["outcome"] == "shared":
+                break
+        assert len(control["calls"]) == 2 and len(control["sent"]) == 1
+        assert runtime.source.pending() == ()
 
 
 @pytest.mark.asyncio

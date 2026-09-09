@@ -15,7 +15,7 @@ from agent.migrations.context import current_migration_context
 from agent.migrations.session_db_backup import backup_sqlite_database
 from agent.plugins.manifest import builtin_plugin_data_dir
 
-__depends__ = {"20260909_01_tool_provider_views"}
+__depends__ = {"20260909_01_tool_provider_views", "20260909_01_close_empty_wake_responses"}
 __transactional__ = False
 
 _MOBILE_OLD = """CREATE TABLE mobile_command_receipts (

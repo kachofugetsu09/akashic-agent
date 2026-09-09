@@ -72,6 +72,8 @@ Delivery 却继续把它当待恢复状态；Wake 不关闭领域领取，schedu
 
 `20260909_02_execution_failures` 在正式 workspace 独占锁下迁移四个 owner 的旧表：
 Mobile command、Models 调用账、Wake attempt v8→v9、旧 Core Delivery v1→v2。
+它先等待 `20260909_01_close_empty_wake_responses` 补齐旧空响应的失败 Control，
+再解释 attempt 旧状态，避免先改状态而遗漏原恢复候选。
 每个数据库先验证已知 schema 和完整性，再用 SQLite backup 保存受保护的恢复目录、数据库与 manifest。
 表重建只解释旧失败终态，逐行核对其余字段；不删除行，不补造送达、usage 或时间测量。
 迁移保留 `started/processing`，不推断跨 generation 的存活事实；重复运行不生成第二份迁移。

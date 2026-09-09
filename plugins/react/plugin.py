@@ -9,7 +9,13 @@ from uuid import uuid4
 
 from agent.plugin_composition import Context, RuntimeScope, ServiceKey
 from agent.plugins.snapshot import get_current_runtime_lease
-from agent.plugin_composition.models import BoundChatModel, ContextLengthError, LLMResponse, StreamCallback
+from agent.plugin_composition.models import (
+    BoundChatModel,
+    ContextLengthError,
+    EmptyResponseError,
+    LLMResponse,
+    StreamCallback,
+)
 from plugins.context.api import ContextOverflow, Materials, SummaryReducer
 from plugins.tools.menu import InvalidToolCall
 from session.log import MessageReader, MessageWriter
@@ -255,7 +261,7 @@ async def react(
                 actual_calls.append(actual)
                 parts.append(actual)
             if not parts:
-                raise ValueError("模型没有产生内容或工具调用；空响应不是 quiet")
+                raise EmptyResponseError("模型没有产生内容或工具调用；空响应不是 quiet")
             parts.append(projection.facts(
                 response,
                 indices,

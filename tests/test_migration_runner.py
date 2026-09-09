@@ -68,6 +68,7 @@ _LEGACY_AGENT_CONFIG_ID = "20260907_02_retire_legacy_agent_config"
 _MESSAGE_METADATA_ID = "20260907_03_message_metadata"
 _SKILL_PROMPT_GRANT_ID = "20260907_03_skill_prompt_grant"
 _LEGACY_SUMMARIES_ID = "20260908_01_legacy_summaries"
+_CLOSE_EMPTY_WAKE_RESPONSES_ID = "20260909_01_close_empty_wake_responses"
 _TOOL_PROVIDER_VIEWS_ID = "20260909_01_tool_provider_views"
 _EXECUTION_FAILURES_ID = "20260909_02_execution_failures"
 _CURRENT_IDS = (
@@ -117,6 +118,7 @@ _CURRENT_IDS = (
     _MESSAGE_METADATA_ID,
     _SKILL_PROMPT_GRANT_ID,
     _LEGACY_SUMMARIES_ID,
+    _CLOSE_EMPTY_WAKE_RESPONSES_ID,
     _TOOL_PROVIDER_VIEWS_ID,
     _EXECUTION_FAILURES_ID,
 )
@@ -479,6 +481,7 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _MESSAGE_METADATA_ID,
         _SKILL_PROMPT_GRANT_ID,
         _LEGACY_SUMMARIES_ID,
+        _CLOSE_EMPTY_WAKE_RESPONSES_ID,
         _TOOL_PROVIDER_VIEWS_ID,
     _EXECUTION_FAILURES_ID,
     )
@@ -554,6 +557,7 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _MESSAGE_METADATA_ID,
         _SKILL_PROMPT_GRANT_ID,
         _LEGACY_SUMMARIES_ID,
+        _CLOSE_EMPTY_WAKE_RESPONSES_ID,
         _TOOL_PROVIDER_VIEWS_ID,
     _EXECUTION_FAILURES_ID,
     )
@@ -650,6 +654,7 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _MESSAGE_METADATA_ID,
         _SKILL_PROMPT_GRANT_ID,
         _LEGACY_SUMMARIES_ID,
+        _CLOSE_EMPTY_WAKE_RESPONSES_ID,
         _TOOL_PROVIDER_VIEWS_ID,
     _EXECUTION_FAILURES_ID,
     )
@@ -1015,6 +1020,7 @@ api_key = "secret"
         _MESSAGE_METADATA_ID,
         _SKILL_PROMPT_GRANT_ID,
         _LEGACY_SUMMARIES_ID,
+        _CLOSE_EMPTY_WAKE_RESPONSES_ID,
         _TOOL_PROVIDER_VIEWS_ID,
     _EXECUTION_FAILURES_ID,
     )

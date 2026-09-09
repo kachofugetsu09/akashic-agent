@@ -98,9 +98,11 @@ class Source:
             return await self._alert(task, request, reader)
         except Exception:
             # 原发送已失败便关闭来源领取；程序异常仍由 Task 报告。
-            receipt = self.ctx.require(DELIVERY).open(self.ctx).receipt(request.notification_id, request.sink.name)
-            if receipt is not None and receipt.status == "failed":
-                self._fail_notification(request, reader)
+            delivery = self.ctx.require(DELIVERY).open(self.ctx)
+            if delivery.selection(request.notification_id) is not None:
+                receipt = delivery.receipt(request.notification_id, request.sink.name)
+                if receipt is not None and receipt.status == "failed":
+                    self._fail_notification(request, reader)
             raise
 
     def _fail_notification(self, request: Request, reader: MessageReader) -> None:
