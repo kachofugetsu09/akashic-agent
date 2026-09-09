@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Literal
 from dataclasses import asdict
-import json
 
 from fastapi import FastAPI, HTTPException, Query
 
@@ -12,7 +11,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugins.snapshot import get_current_runtime_snapshot
 from infra.channels.message_view import session_row
 from session.log import InvalidPage, MessageCatalog
-from session.message_codec import encode_body
+from session.message_codec import body_to_dict
 
 
 def _catalog() -> MessageCatalog:
@@ -55,7 +54,7 @@ def register(app: FastAPI, context: DashboardContext) -> None:
         return {"version": 2, "session_id": session_id, "items": [{"id": message.message_id, "session_id": message.session_id,
                     "seq": message.seq, "timestamp": message.recorded_at.isoformat(),
                     "author": message.author, "source": message.source,
-                    "body": json.loads(encode_body(message.body))} for message in page.messages],
+                    "body": body_to_dict(message.body)} for message in page.messages],
                 "before_seq": before_seq, "through_seq": page.through_seq,
                 "next_before_seq": page.messages[0].seq if page.messages else None,
                 "has_more": page.has_more}

@@ -18,7 +18,7 @@ from session.message import (
     ToolCall,
     ToolResult,
 )
-from session.message_codec import decode_body, encode_body
+from session.message_codec import body_to_dict, decode_body, encode_body
 
 
 def text_schema(part):
@@ -526,3 +526,48 @@ def test_live_message_reuse_checks_entire_row_and_does_not_keep_history(log):
     del first, second
     gc.collect()
     assert held() is None
+
+
+def test_legacy_result_keeps_stored_identity_and_rejects_new_append(log):
+    """旧消息重放保持原始正文，新身份不得复制已退役的结果表示。"""
+    log.save_binding("legacy-binding", {"artifact": "v1"})
+    writer(log, author="agent", bodies=(Output,), check_call=lambda call: None).append(
+        "legacy-call", Output((ToolCall("legacy-binding", {}),), "continue"),
+    )
+    results = writer(log, author="tool", bodies=(ToolResult,), call_ref=CallRef("legacy-call", 0))
+    current = ToolResult(CallRef("legacy-call", 0), "error", (ContentPart("text", "回执丢失"),))
+    results.append("legacy-result", current)
+    raw = json.loads(encode_body(current))
+    raw["outcome"] = "unknown"
+    original = json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    # 模拟升级前已存在的数据库事实，不通过当前 writer 创建旧值域。
+    log._connection.execute("UPDATE messages SET body=? WHERE id='legacy-result'", (original,))
+    log._connection.commit()
+    legacy = decode_body(original)
+    assert isinstance(legacy, ToolResult) and legacy.outcome == "error"
+    assert body_to_dict(legacy)["outcome"] == "error"
+    assert encode_body(legacy) == original
+    assert results.append("legacy-result", legacy).body == current
+    with pytest.raises(MessageConflict):
+        results.append("legacy-result", current)
+    with pytest.raises(ValueError, match="不能作为新消息"):
+        results.append("new-result", legacy)
+    assert log._connection.execute("SELECT body FROM messages WHERE id='legacy-result'").fetchone()[0] == original
+    assert len(log.reader("s").snapshot()) == 2
+
+
+def test_akasha_source_digest_keeps_legacy_result_bytes():
+    """升级后的学习出处摘要仍匹配升级前保存的摘要。"""
+    import hashlib
+    from datetime import UTC, datetime
+    from plugins.akasha.projection import Sample, source_digest
+    from session.message import Message
+
+    original = '{"call_ref":{"message_id":"call","part_index":0},"kind":"tool_result","outcome":"unknown","parts":[{"kind":"text","value":"回执丢失"}]}'
+    stamp = datetime(2026, 9, 1, tzinfo=UTC)
+    observation = Message("result", "s", 1, stamp, "tool", "conversation", decode_body(original))
+    ending = Message("ending", "s", 2, stamp, "agent", "conversation", Output((), "complete"))
+    rows = [["s", 2, "ending", "agent", "conversation", stamp.isoformat(), encode_body(ending.body)],
+            ["s", 1, "result", "tool", "conversation", stamp.isoformat(), original]]
+    expected = hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    assert source_digest(Sample(ending, (ending,), (observation,))) == expected
