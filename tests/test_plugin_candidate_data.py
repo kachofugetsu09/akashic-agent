@@ -70,3 +70,104 @@ async def apply(ctx, config):
             assert writer.execute("SELECT value FROM records").fetchone()[0] == "latest committed"
         finally:
             await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_locked_candidate_database_fails_without_changing_stable(tmp_path, monkeypatch):
+    """真实独占锁必须拒绝候选并清理副本，不能挂住 Core 或改写原库。"""
+    import agent.plugins.manager as manager
+
+    source, workspace, home = (tmp_path / name for name in ("source", "workspace", "home"))
+    from tests.test_plugin_business_validation import MODULE
+    _write_v3_plugin(source, name="probe", module_source=MODULE)
+    _commit(source)
+    install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
+    try:
+        await host.load_all()
+        stable = host.current_snapshot
+        path = workspace / "plugin-data/probe-lab/locked.sqlite3"
+        with closing(sqlite3.connect(path)) as writer:
+            writer.execute("CREATE TABLE records(value TEXT)")
+            writer.execute("INSERT INTO records VALUES ('original')")
+            writer.commit()
+            writer.execute("BEGIN EXCLUSIVE")
+            (source / "plugin.py").write_text((source / "plugin.py").read_text() + "\nmarker = 'new'\n")
+            _commit(source)
+            monkeypatch.setattr(manager, "_SQLITE_BACKUP_LOCK_TIMEOUT_SECONDS", 0.0)
+            with pytest.raises(RuntimeError, match="SQLite.*等待锁超时"):
+                await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[], update_id="locked-copy")
+            assert host.current_snapshot is stable
+            assert host.read_update("locked-copy").phase == "rolled_back"
+            assert not list((workspace / "runtime/plugin-validation").rglob("locked.sqlite3"))
+            assert writer.execute("SELECT value FROM records").fetchall() == [("original",)]
+            writer.rollback()
+    finally:
+        await host.terminate_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["install", "validation"])
+async def test_candidate_copy_keeps_loop_live_and_finishes_before_cancel_cleanup(tmp_path, monkeypatch, phase):
+    """复制线程未退出时不释放 scope 或删除目录，且事件循环仍可处理其他工作。"""
+    import asyncio
+    import threading
+    import agent.plugins.manager as manager
+    from tests.test_plugin_business_validation import prepare, MODULE
+
+    source, workspace, _, log, host = prepare(tmp_path)
+    entered, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    copied = []
+    real_copy = manager._copy_validation_tree
+
+    def blocked_copy(*args, **kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        if not release.wait(10):
+            raise TimeoutError("test copy was not released by the event loop")
+        value = real_copy(*args, **kwargs)
+        copied.append(args[1])
+        return value
+
+    try:
+        await host.load_all()
+        stable = host.current_snapshot
+        (source / "plugin.py").write_text(MODULE + "\nmarker = 'new'\n")
+        _commit(source)
+        result = None
+        if phase == "validation":
+            result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
+
+        async def run():
+            if result is not None:
+                async with host.open_validation(result.update_id):
+                    pytest.fail("cancelled validation entered its body")
+            else:
+                await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
+        monkeypatch.setattr(manager, "_copy_validation_tree", blocked_copy)
+        task = asyncio.create_task(run())
+        try:
+            await asyncio.wait_for(entered.wait(), 3)
+            # 必须在 worker 仍受阻时执行主循环回调，再取消外层调用。
+            responsive = loop.create_future()
+            loop.call_soon(responsive.set_result, True)
+            assert await responsive
+            task.cancel()
+            cancelled = loop.create_future()
+            loop.call_soon(cancelled.set_result, True)
+            await cancelled
+            assert not task.done()
+            assert not copied
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert copied
+        assert all(not path.exists() for path in copied)
+        assert host.current_snapshot is stable
+        assert host._validation_hosts == {}
+        assert host.latest_snapshot.lease_count == 0
+    finally:
+        release.set()
+        await host.terminate_all()
+        log.close()

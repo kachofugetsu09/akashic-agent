@@ -12,6 +12,7 @@ import secrets
 import shutil
 import sqlite3
 import sys
+import time
 import tomllib
 from dataclasses import dataclass, replace
 from contextlib import ExitStack, asynccontextmanager, contextmanager
@@ -4973,7 +4974,7 @@ class PluginManager:
                     / generation.data_dir.name
                 )
                 validation_data_dir.parent.mkdir(parents=True, exist_ok=True)
-                generation.validation_data_inventory = _copy_validation_tree(
+                generation.validation_data_inventory = await _copy_in_thread(_copy_validation_tree,
                     generation.data_dir,
                     validation_data_dir,
                     _candidate_data_exclude_paths(generation.static_manifest),
@@ -5181,9 +5182,9 @@ class PluginManager:
         try:
             async with RuntimeScope(lease):
                 try:
-                    host = self._build_validation_host(lease)
+                    host = await self._build_validation_host(lease)
                     self._validation_hosts[host.identity] = host
-                    self._copy_validation_bindings(host)
+                    await self._copy_validation_bindings(host)
                     await self._copy_validation_artifacts(host)
                     self._reload_journal.annotate(cast(str, update.reload_tx_id), {
                         "event": "business_validation_opened", "validation_id": host.identity,
@@ -5248,7 +5249,7 @@ class PluginManager:
             self._notify_updates()
             raise
 
-    def _build_validation_host(
+    async def _build_validation_host(
         self, lease: RuntimeSnapshotLease,
     ) -> ValidationHost:
         """先固定声明数据，再保存完整消息库；验证只打开独立副本。"""
@@ -5258,9 +5259,13 @@ class PluginManager:
         workspace = self._workspace / "runtime" / "plugin-update-validation" / identity / "workspace"
         workspace.mkdir(parents=True)
         archive = PluginArchive(workspace / "runtime" / "plugin-archives")
-        self._copy_validation_components(lease.snapshot, workspace, archive)
-        # 图与 receipt 先复制；正常只追加的消息库随后覆盖它们已有的历史引用。
-        self._message_log.backup(workspace / "sessions.db")
+        try:
+            await self._copy_validation_components(lease.snapshot, workspace, archive)
+            # 图与 receipt 先复制；正常只追加的消息库随后覆盖它们已有的历史引用。
+            await _copy_in_thread(self._message_log.backup, workspace / "sessions.db")
+        except BaseException:
+            await _copy_in_thread(_remove_validation_data_dir, workspace.parent)
+            raise
         messages = MessageLog(workspace / "sessions.db")
         try:
             artifacts = ArtifactStore(workspace / "sessions.db")
@@ -5285,7 +5290,7 @@ class PluginManager:
         assert task is not None
         return ValidationHost(identity, workspace, child, messages, artifacts, bus, ExitStack(), task, lease.fork())
 
-    def _copy_validation_components(
+    async def _copy_validation_components(
         self, snapshot: RuntimeSnapshot, workspace: Path, archive: PluginArchive,
     ) -> None:
         """逐项保存声明数据；每个 SQLite 自身一致，不承诺跨文件的共同切点。"""
@@ -5302,12 +5307,12 @@ class PluginManager:
             validate_workspace_plugin_data_path(data_dir, workspace)
             # 日志副本形成后才能知道历史绑定；凭据文件先不进入验证目录。
             excluded = (*_candidate_data_exclude_paths(generation.static_manifest), "config.local.toml")
-            _ = _copy_validation_tree(generation.data_dir, data_dir, excluded)
+            _ = await _copy_in_thread(_copy_validation_tree, generation.data_dir, data_dir, excluded)
         plugins = tuple(cast(ComposablePlugin, item.instance) for item in snapshot.generations.values())
-        self._project_candidate_workspace_roots(plugins, workspace)
-        self._project_candidate_workspace_files(plugins, workspace)
+        await self._project_candidate_workspace_roots(plugins, workspace)
+        await self._project_candidate_workspace_files(plugins, workspace)
 
-    def _copy_validation_bindings(self, host: ValidationHost) -> None:
+    async def _copy_validation_bindings(self, host: ValidationHost) -> None:
         """按消息副本的实际绑定保存历史代码与数据，不从当前安装补齐旧实现。"""
         archive = host.manager._archive
         current = {item.archive_ref for item in host.parent_lease.snapshot.generations.values()}
@@ -5342,13 +5347,13 @@ class PluginManager:
             validate_workspace_plugin_data_path(target, host.workspace)
             excluded = tuple(sorted(exclusions[data]))
             if not target.exists():
-                _ = _copy_validation_tree(source, target, excluded)
+                _ = await _copy_in_thread(_copy_validation_tree, source, target, excluded)
             elif not _candidate_data_path_is_excluded(Path("config.local.toml"), excluded):
                 old_config, new_config = source / "config.local.toml", target / "config.local.toml"
                 if old_config.exists() and not new_config.exists():
                     if old_config.is_symlink() or not old_config.is_file():
                         raise RuntimeError(f"candidate 配置只能复制普通文件: {old_config}")
-                    _ = shutil.copy2(old_config, new_config)
+                    _ = await _copy_in_thread(shutil.copy2, old_config, new_config)
             if ref not in current:
                 # 只读取旧模块声明，不 apply，也不覆盖当前候选已固定的共享数据。
                 with self._archived_generations((ref,), secrets.token_hex(16)) as generations:
@@ -5356,16 +5361,16 @@ class PluginManager:
                     for name in plugin.workspace_roots:
                         old_root = resolve_declared_workspace_root(self._workspace, name)
                         if old_root.exists():
-                            _ = _copy_validation_tree(old_root, host.workspace / name, (), keep_existing=True)
+                            _ = await _copy_in_thread(_copy_validation_tree, old_root, host.workspace / name, (), keep_existing=True)
                     for name in plugin.workspace_files:
                         old_file = resolve_declared_workspace_file(self._workspace, name)
                         new_file = host.workspace / name
                         if old_file.exists() and not new_file.exists():
                             new_file.parent.mkdir(parents=True, exist_ok=True)
                             if _is_sqlite_database(old_file):
-                                _copy_sqlite_snapshot(old_file, new_file)
+                                await _copy_in_thread(_copy_sqlite_snapshot, old_file, new_file)
                             else:
-                                _ = shutil.copy2(old_file, new_file)
+                                _ = await _copy_in_thread(shutil.copy2, old_file, new_file)
 
     async def _copy_validation_artifacts(self, host: ValidationHost) -> None:
         """复制消息副本已引用的不可变文件，读取仍经过正式 Artifact owner 校验。"""
@@ -5377,8 +5382,10 @@ class PluginManager:
                 payload = await lease.read_bytes(max_bytes=record.ref.size_bytes)
                 path = host.workspace / record.storage_key
                 path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("xb") as output:
-                    _ = output.write(payload)
+                def write_payload() -> None:
+                    with path.open("xb") as output:
+                        _ = output.write(payload)
+                await _copy_in_thread(write_payload)
             finally:
                 await lease.aclose()
 
@@ -6099,11 +6106,11 @@ class PluginManager:
         attempt_workspace = attempt_root / "workspace"
         root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
             "candidate_attempt_data",
-            lambda: _remove_validation_data_dir(attempt_root),
+            lambda: _copy_in_thread(_remove_validation_data_dir, attempt_root),
         )
         clones: list[tuple[PluginGeneration, ComposablePlugin, Path, object]] = []
         for generation in selected:
-            clone, module_path, data_dir, config = self._clone_candidate_composable(
+            clone, module_path, data_dir, config = await self._clone_candidate_composable(
                 generation,
                 candidate_owner=candidate_owner,
                 attempt_workspace=attempt_workspace,
@@ -6124,11 +6131,11 @@ class PluginManager:
                     f"{generation.plugin_id}"
                 )
             clones.append((generation, clone, data_dir, config))
-        self._project_candidate_workspace_roots(
+        await self._project_candidate_workspace_roots(
             tuple(item[1] for item in clones),
             attempt_workspace,
         )
-        self._project_candidate_workspace_files(
+        await self._project_candidate_workspace_files(
             tuple(item[1] for item in clones),
             attempt_workspace,
         )
@@ -6151,7 +6158,7 @@ class PluginManager:
                 ),
             )
 
-    def _project_candidate_workspace_roots(
+    async def _project_candidate_workspace_roots(
         self,
         plugins: tuple[ComposablePlugin, ...],
         attempt_workspace: Path,
@@ -6168,9 +6175,9 @@ class PluginManager:
             source = resolve_declared_workspace_root(self._workspace, name)
             if not source.exists():
                 continue
-            _ = _copy_validation_tree(source, attempt_workspace / name, ())
+            _ = await _copy_in_thread(_copy_validation_tree, source, attempt_workspace / name, ())
 
-    def _project_candidate_workspace_files(
+    async def _project_candidate_workspace_files(
         self,
         plugins: tuple[ComposablePlugin, ...],
         attempt_workspace: Path,
@@ -6185,11 +6192,11 @@ class PluginManager:
             target = attempt_workspace / name
             target.parent.mkdir(parents=True, exist_ok=True)
             if _is_sqlite_database(source):
-                _copy_sqlite_snapshot(source, target)
+                await _copy_in_thread(_copy_sqlite_snapshot, source, target)
             else:
-                _ = shutil.copy2(source, target)
+                _ = await _copy_in_thread(shutil.copy2, source, target)
 
-    def _clone_candidate_composable(
+    async def _clone_candidate_composable(
         self,
         generation: PluginGeneration,
         *,
@@ -6204,7 +6211,7 @@ class PluginManager:
         plugin_dir = self._archive.open(cast(str, record["code"]))
         data_dir = attempt_workspace / "plugin-data" / generation.data_dir.name
         _ = data_dir.parent.mkdir(parents=True, exist_ok=True)
-        inventory = _copy_validation_tree(
+        inventory = await _copy_in_thread(_copy_validation_tree,
             generation.data_dir,
             data_dir,
             _candidate_data_exclude_paths(generation.static_manifest),
@@ -7628,6 +7635,14 @@ def _validate_candidate_formal_snapshot_identity(
         )
 
 
+async def _copy_in_thread(copy_files: Callable[..., U], *args: Any, **kwargs: Any) -> U:
+    """复制完成后才传播取消，避免清理目录时后台线程仍在写入。"""
+    result, cancelled = await _complete_critical(asyncio.to_thread(copy_files, *args, **kwargs))
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 def _copy_validation_tree(
     source: Path,
     target: Path,
@@ -7708,13 +7723,23 @@ def _is_sqlite_database(path: Path) -> bool:
         return stream.read(16) == b"SQLite format 3\x00"
 
 
+_SQLITE_BACKUP_LOCK_TIMEOUT_SECONDS = 5.0
+
+
 def _copy_sqlite_snapshot(source: Path, target: Path) -> None:
     """Copy one transactionally consistent SQLite snapshot."""
 
-    reader = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
-    writer = sqlite3.connect(target)
+    deadline = time.monotonic() + _SQLITE_BACKUP_LOCK_TIMEOUT_SECONDS
+
+    def check_progress(status: int, remaining: int, total: int) -> None:
+        # Chromium 等外部进程可持有独占锁；失败由候选 owner 撤销临时副本。
+        if status in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) and time.monotonic() >= deadline:
+            raise TimeoutError(f"候选 SQLite 备份等待锁超时: {source}")
+
+    reader = sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)
+    writer = sqlite3.connect(target, timeout=0.0)
     try:
-        reader.backup(writer)
+        reader.backup(writer, pages=256, progress=check_progress, sleep=0.05)
     finally:
         writer.close()
         reader.close()
