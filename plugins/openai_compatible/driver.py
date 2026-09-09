@@ -114,7 +114,7 @@ class _BoundChat:
                 "OpenAI-compatible Chat Completions does not support continuation state"
             )
         body = _chat_body(self._descriptor, self._connection, self._config, request)
-        if request.on_delta is None:
+        if request.on_delta is None and not _is_deepseek_v4(self._descriptor.model):
             payload = await _request_json(
                 self._connection,
                 self._credential,
@@ -124,6 +124,7 @@ class _BoundChat:
                 http=self._http,
             )
             return _parse_chat_response(payload)
+        # V4 长生成可能超过网关非流式等待窗口；无观察者时也完整聚合 SSE。
         body["stream"] = True
         body["stream_options"] = {"include_usage": True}
         return await _stream_chat(
@@ -401,6 +402,10 @@ def _model_config(config: Mapping[str, Any]) -> _ModelConfig:
     )
 
 
+def _is_deepseek_v4(model: str) -> bool:
+    return model.rsplit("/", 1)[-1].lower().startswith("deepseek-v4-")
+
+
 def _chat_body(
     descriptor: BoundModelDescriptor,
     connection: _ConnectionConfig,
@@ -425,6 +430,8 @@ def _chat_body(
     if request.disable_reasoning:
         for key in ("enable_thinking", "thinking", "reasoning_effort"):
             body.pop(key, None)
+        if _is_deepseek_v4(descriptor.model):
+            body["thinking"] = {"type": "disabled"}
     return body
 
 
@@ -563,7 +570,7 @@ async def _stream_chat(
     connection: _ConnectionConfig,
     credential: CredentialHandle,
     body: Mapping[str, Any],
-    on_delta: Callable[[dict[str, str]], Awaitable[None]],
+    on_delta: Callable[[dict[str, str]], Awaitable[None]] | None,
     http: HttpClient,
 ) -> LLMResponse:
     last_error: Exception | None = None
@@ -590,7 +597,10 @@ async def _stream_chat(
             mapped = _map_error(error)
             if mapped is error and not isinstance(error, ModelError):
                 raise
-            response_delta_seen = bool(getattr(error, "response_delta_seen", False))
+            # 无观察者时尚未交付任何结果，断流仍可从原请求重试。
+            response_delta_seen = on_delta is not None and bool(getattr(error, "response_delta_seen", False))
+            if on_delta is None and isinstance(error, _StreamReadError) and isinstance(mapped, TransportError):
+                setattr(mapped, "retry_safe", True)
             if response_delta_seen:
                 setattr(mapped, "retryable", False)
             if (
@@ -619,7 +629,7 @@ class _CallbackError(RuntimeError):
 
 async def _consume_stream(
     response: httpx.Response,
-    on_delta: Callable[[dict[str, str]], Awaitable[None]],
+    on_delta: Callable[[dict[str, str]], Awaitable[None]] | None,
 ) -> LLMResponse:
     content: list[str] = []
     thinking: list[str] = []
@@ -740,9 +750,11 @@ async def _consume_stream(
 
 
 async def _emit_delta(
-    on_delta: Callable[[dict[str, str]], Awaitable[None]],
+    on_delta: Callable[[dict[str, str]], Awaitable[None]] | None,
     delta: dict[str, str],
 ) -> None:
+    if on_delta is None:
+        return
     try:
         await on_delta(delta)
     except asyncio.CancelledError:
