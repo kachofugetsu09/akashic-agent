@@ -23,10 +23,11 @@ _CACHE_NAMES = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_ca
 class PluginArchive:
     """按内容保存插件文件树；不拥有安装指针、业务状态或自动回收。"""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, create: bool = True):
         if path.is_symlink():
             raise ValueError("插件归档目录不能是符号链接")
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if create:
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = path.resolve()
 
     def save(self, source: Path, *, exclude: frozenset[str] = frozenset()) -> str:

@@ -5,7 +5,8 @@ import asyncio
 import fcntl
 import hashlib
 import json
-from contextlib import asynccontextmanager
+import logging
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -21,7 +22,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.models import ChatModels
+from agent.plugin_composition.models import ChatModels, ModelError
 from agent.llm_json import load_json_object_loose
 from agent.turn_effects import PostCommitEffect
 from infra.persistence.json_store import atomic_write_text
@@ -35,6 +36,8 @@ from session.log import MessageCatalog, MessageReader
 from session.message import ContentPart, Input, Message, Output
 
 from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest
+
+logger = logging.getLogger("plugins.markdown_memory")
 
 api_version = 3
 name = "markdown_memory"
@@ -572,26 +575,46 @@ async def apply(ctx: Context, config: Config) -> None:
         return Materials("\n\n".join(parts))
 
     async def follow(catalog: MessageCatalog) -> None:
+        """模型暂时失败时保留原游标，关闭订阅后延时重读，其他会话继续处理。"""
         cursor: dict[str, int] = {}
-        async for heads in catalog.follow():
-            for session, head in heads.items():
-                if head <= cursor.get(session, -1):
-                    continue
-                async with ctx.runtime_scope():
-                    assert store is not None
-                    reader = catalog.reader(session)
-                    if reader.attributes.learning != "eligible":
-                        cursor[session] = head
-                        continue
-                    messages = await asyncio.to_thread(
-                        reader.snapshot, after_seq=cursor.get(session, -1), through_seq=head,
-                    )
-                    for message in messages:
-                        if cursor.get(session, -1) < message.seq <= head:
-                            await project(message, reader=reader, bindings=ctx.require(BINDINGS),
-                                          store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
-                                          sources=config.sources, projection=ctx.require(TURN_PROJECTION))
-                            cursor[session] = message.seq
+        while True:
+            retry = False
+            # 1. 每次重新订阅都先读完整 heads，不依赖失败后恰好出现新消息。
+            async with aclosing(catalog.follow()) as updates:
+                async for heads in updates:
+                    for session, head in heads.items():
+                        if head <= cursor.get(session, -1):
+                            continue
+                        async with ctx.runtime_scope():
+                            assert store is not None
+                            reader = catalog.reader(session)
+                            if reader.attributes.learning != "eligible":
+                                cursor[session] = head
+                                continue
+                            messages = await asyncio.to_thread(
+                                reader.snapshot, after_seq=cursor.get(session, -1), through_seq=head,
+                            )
+                            for message in messages:
+                                try:
+                                    await project(message, reader=reader, bindings=ctx.require(BINDINGS),
+                                                  store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
+                                                  sources=config.sources, projection=ctx.require(TURN_PROJECTION))
+                                except ModelError as error:
+                                    if not error.retryable:
+                                        raise
+                                    logger.warning(
+                                        "Markdown 模型暂时失败，将重试原消息: session=%s message=%s error=%s",
+                                        session, message.message_id, type(error).__name__, exc_info=True,
+                                    )
+                                    retry = True
+                                    break
+                                cursor[session] = message.seq
+                    if retry:
+                        break
+            if not retry:
+                return
+            # 2. 释放当前 lease 和订阅再等待，取消正常传播，成功写入仍由原 receipt 去重。
+            await asyncio.sleep(30)
 
     async def start(_event: object) -> None:
         nonlocal store, watcher

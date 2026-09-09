@@ -111,9 +111,12 @@ async def apply(ctx, config):
             if control["thinking_only"]:
                 control["thinking_only"] -= 1
                 return LLMResponse(None, thinking="private reasoning")
-            if control.get("content") and len(control["calls"]) == 1:
+            if control.get("content") and len(control["calls"]) <= 1 + control.get("truncated_id", False):
+                candidate = control["candidate"]
+                if control.get("truncated_id") and len(control["calls"]) == 1:
+                    candidate = candidate[:18]
                 return LLMResponse(None, [ToolCall("screen", "screen_content", {"items": [{
-                    "candidate_id": control["candidate"], "initial_interest": "relevant", "question": "verify this"}]})])
+                    "candidate_id": candidate, "initial_interest": "relevant", "question": "verify this"}]})])
             name = control["tool"]
             args = {"reason": "nothing useful"} if name == "skip_content" else {"message": "useful notification"}
             if name == "share_content":
@@ -353,7 +356,8 @@ async def test_alert_queue_rechecks_original_expiry_and_never_closes_new_envelop
 
 
 @pytest.mark.asyncio
-async def test_content_screen_and_investigation_keep_original_refs_until_provider_ack(tmp_path):
+@pytest.mark.parametrize("truncated_id", [False, True])
+async def test_content_screen_and_investigation_keep_original_refs_until_provider_ack(tmp_path, truncated_id):
     from plugins.eventmail.plugin import EVENTMAIL_CONTENT_SOURCE
     from plugins.wake.api import EVENTMAIL_DELIVERY
     from plugins.wake.content import _candidate_id
@@ -364,15 +368,22 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
             "requires_ack": True, "payload": {"title": "useful", "url": "https://example.com/original"}}])
         snapshot = ctx.require(EVENTMAIL_WAKE).snapshot(now)
         control["content"] = True
+        control["truncated_id"] = truncated_id
         control["candidate"] = _candidate_id(snapshot["items"][0]["ref"])
         original = request(ctx, "content", now).model_copy(update={
             "snapshot_seq": snapshot["snapshot_seq"], "items": tuple(dict(item) for item in snapshot["items"])})
         source.accept(original)
         task = await source.start(original.flow_id)
         assert await asyncio.wait_for(task.join(), 10) == "shared"
-        assert len(control["calls"]) == 2 and len(control["sent"]) == 1
+        assert len(control["calls"]) == 2 + truncated_id and len(control["sent"]) == 1
         rows = log.reader(original.session_id).snapshot()
-        assert [type(row.body) for row in rows] == [Input, Input, Output, ToolResult, Output, Input, Output, ToolResult, Output]
+        expected = [Input, Input] + [Output, ToolResult] * (1 + truncated_id) + [Output, Input, Output, ToolResult, Output]
+        assert [type(row.body) for row in rows] == expected
+        if truncated_id:
+            results = [row.body for row in rows if isinstance(row.body, ToolResult)]
+            assert results[0].outcome == "error"
+            assert "完整 ID" in str(results[0].parts)
+            assert results[1].outcome == "success"
         delivered = ctx.require(EVENTMAIL_DELIVERY).lookup(original.accepted)
         assert delivered["status"] == "delivered"
         assert len(producer.unsettled()) == 1  # 上游 ACK 仍由来源自己提交。
@@ -380,7 +391,7 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
         producer.ack(original.notification_id)
         assert ctx.require(EVENTMAIL_DELIVERY).lookup(original.accepted)["status"] == "settled"
         assert await source.start(original.flow_id) is None
-        assert len(control["calls"]) == 2
+        assert len(control["calls"]) == 2 + truncated_id
 
 
 @pytest.mark.asyncio

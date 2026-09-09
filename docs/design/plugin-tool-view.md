@@ -129,6 +129,15 @@ MCP `tools/list` 得到的工具必须注册进同一引用池并归到声明它
 
 ## 6. 本轮交付边界
 
-本轮只完成核心仓库内置 provider 与消费者。外部插件源码迁移、正式安装链验证和部署另行处理；
-核心回归通过不代表现有外部 fleet 已兼容新的 breaking 注册 API。外部 provider 后续须通过
-`declare_group(description=...)` 声明用途，并交付真实 view。
+外部 provider 必须通过 `declare_group(description=...)` 声明用途并交付真实 view。
+Calendar、Feed、Fitbit、Steam 和 GitHub Watch 在各自源码仓库迁移；Shell Restore 与
+Shell Safety 按 `STANDARD_TOOLS` 的 shell 引用挂载检查。Observe 在 JSON 持久化边界递归
+转换冻结参数，不能只复制最外层字典。正式交付须逐一固定这些仓库的 commit，再走安装链验证。
+
+线上配套恢复保持原 Message 与 receipt：Markdown 仅对可重试的模型失败保留游标，释放
+lease 后延时重订阅，即使没有新消息也会再读原消息；其他错误继续显式失败。Wake 筛选工具
+拒绝截短或未知的候选 ID，并允许最多三次模型输出供纠错。Skill doctor 验证链接所指归档
+的完整性和技能内容，不把正常的不可变归档路径误判为缓存链接偏移。
+
+固定顶层 schemas 与工具目录消除了旧 LRU 展示顺序对 provider 前缀的影响，对应 issue #551。
+本地测试、独立评审、正式安装与线上观察分别记录证据，不能互相替代。

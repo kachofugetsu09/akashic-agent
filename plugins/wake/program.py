@@ -56,8 +56,8 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             fixed_bindings=fixed,
             max_output_tokens=4096,
             max_steps=(
-                1
-                if phase.stage in {"screen", "alert"}
+                3 if phase.stage == "screen" else 1
+                if phase.stage == "alert"
                 else 20 if phase.stage == "investigate" else 40
             ),
             terminal_tools=frozenset(
