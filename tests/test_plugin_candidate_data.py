@@ -134,14 +134,15 @@ async def test_candidate_copy_keeps_loop_live_and_finishes_before_cancel_cleanup
         stable = host.current_snapshot
         (source / "plugin.py").write_text(MODULE + "\nmarker = 'new'\n")
         _commit(source)
+        result = None
         if phase == "validation":
             result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
 
-            async def run():
+        async def run():
+            if result is not None:
                 async with host.open_validation(result.update_id):
                     pytest.fail("cancelled validation entered its body")
-        else:
-            async def run():
+            else:
                 await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         monkeypatch.setattr(manager, "_copy_validation_tree", blocked_copy)
         task = asyncio.create_task(run())
