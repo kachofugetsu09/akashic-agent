@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, ConfigDict, Field
@@ -575,8 +576,20 @@ class DriverConnection:
     close: Callable[[], Awaitable[None]] | None = None
 
     async def aclose(self) -> None:
+        """等待资源关闭完成，再向调用方传回取消。"""
         if self.close is not None:
-            await self.close()
+            # 1. 独立任务保护关闭过程，避免重复取消截断底层资源释放。
+            task = asyncio.ensure_future(self.close())
+            cancelled = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            # 2. 关闭失败必须可见；关闭成功后恢复调用方的取消。
+            task.result()
+            if cancelled:
+                raise asyncio.CancelledError
 
 
 DriverOpen: TypeAlias = Callable[

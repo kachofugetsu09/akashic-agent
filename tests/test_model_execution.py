@@ -310,6 +310,66 @@ async def test_driver_scope_closes_all_connections_on_failure(failure):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_driver_close_finishes_before_releasing_lease_after_repeated_cancel(
+    scoped, close_fails,
+):
+    """重复取消不能截断关闭，关闭失败也必须在归还租约前报告。"""
+    from agent.plugin_composition import DriverConnection
+    from plugins.models.state import _driver_scope
+
+    entered = asyncio.Event()
+    closing = asyncio.Event()
+    finish_close = asyncio.Event()
+    events = []
+
+    async def close():
+        closing.set()
+        await finish_close.wait()
+        events.append("closed")
+        if close_fails:
+            raise LookupError("close failed")
+
+    def unused(*_args):
+        raise AssertionError("此例只检查生命周期")
+
+    driver = DriverConnection(unused, unused, close=close)
+
+    async def run():
+        try:
+            if scoped:
+                async with _driver_scope() as opened:
+                    opened["test"] = driver
+                    entered.set()
+                    await asyncio.Event().wait()
+            else:
+                try:
+                    entered.set()
+                    await asyncio.Event().wait()
+                finally:
+                    await driver.aclose()
+        finally:
+            events.append("lease released")
+
+    task = asyncio.create_task(run())
+    await entered.wait()
+    task.cancel()
+    await closing.wait()
+    task.cancel()
+    # 调度屏障让第二次取消先送达，再允许底层关闭完成。
+    barrier = asyncio.Event()
+    asyncio.get_running_loop().call_soon(barrier.set)
+    await barrier.wait()
+    assert not task.done()
+    assert events == []
+    finish_close.set()
+    with pytest.raises(LookupError if close_fails else asyncio.CancelledError):
+        await task
+    assert events == ["closed", "lease released"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [200, 500])
 async def test_opencode_discovery_closes_temporary_client(status, monkeypatch):
     """目录发现成功或失败都会归还临时 HTTP 资源。"""

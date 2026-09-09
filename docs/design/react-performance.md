@@ -52,7 +52,7 @@
 | Delivery | 收益主要来自上述读取与归档准备 | 目的地选择、prepared 回执、实际发送时机不变 |
 | Markdown 后台读取 | 最新 main 的 #572 已提供增量读取及线程转移，本 PR 不重复实现 | 继续等待 project 成功后推进 cursor |
 
-HTTP 客户端由 `DriverConnection.close` 归还。Models 的 chat/embedding scope、设置检查和 seal 都明确处理资源；部分绑定失败也关闭之前已打开的连接。不同 execution 不共用可变客户端状态。SSE 的结束标记只证明模型结果完成，HTTP 正文仍需收尾才能复用 socket；额外尾流最多等 10 ms，超时或传输失败会记录放弃复用，由 response scope 关闭连接，不重放已完成响应。该做法遵循 [HTTPX 的作用域客户端与响应关闭说明](https://www.python-httpx.org/async/)。
+HTTP 客户端由 `DriverConnection.close` 归还。`aclose()` 等待关闭完成后才传回取消，重复取消也不能提前释放运行时租约；关闭失败直接报告。Models 的 chat/embedding scope、设置检查和 seal 都明确处理资源；部分绑定失败也关闭之前已打开的连接。不同 execution 不共用可变客户端状态。SSE 的结束标记只证明模型结果完成，HTTP 正文仍需收尾才能复用 socket；额外尾流最多等 10 ms，超时或传输失败会记录放弃复用，由 response scope 关闭连接，不重放已完成响应。该做法遵循 [HTTPX 的作用域客户端与响应关闭说明](https://www.python-httpx.org/async/)。
 
 增量视图只在自己的连接未处于外部事务时推进缓存；`PRAGMA data_version` 检测其他连接的管理改写，同一个短读取事务固定 head 与该版本。正常 Message writer 在本连接只追加；直接任意 SQL 改写历史不属于这个窄接口。参见 [SQLite data_version](https://sqlite.org/pragma.html#pragma_data_version) 与 [读取隔离](https://www.sqlite.org/isolation.html)。
 
