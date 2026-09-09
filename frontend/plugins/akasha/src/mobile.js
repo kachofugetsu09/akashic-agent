@@ -128,7 +128,7 @@ export function mountRecall(host, context) {
     loading = true;
     clearTimeout(timer);
     status.hidden = true;
-    loadingTimer = setTimeout(() => {
+    if (!content.hasChildNodes()) loadingTimer = setTimeout(() => {
       status.textContent = "正在读取召回记录…";
       status.hidden = false;
     }, 150);
@@ -139,7 +139,9 @@ export function mountRecall(host, context) {
       content.innerHTML = result.items.length ? `<div class="akasha-mobile-recall-group">${[
         ["dense", "左脑 · 精确回忆", "precise"], ["completion", "右脑 · 模式补全", "completion"],
       ].map(([lane, title, style]) => {
-        const hits = result.items.flatMap((item) => item.hits.filter((hit) => hit.lane === lane));
+        // 多次真实查询可以命中同一回忆；卡片按消息成员展示一次，原查询留在 Inspector。
+        const hits = [...new Map(result.items.flatMap((item) => item.hits.filter((hit) => hit.lane === lane))
+          .map((hit) => [JSON.stringify(hit.messages.map((message) => message.message_id)), hit])).values()];
         return `<details data-lane="${lane}" class="akasha-mobile-recall akasha-mobile-recall--${style}">
           <summary><span>${title}</span><b>${hits.length}</b></summary>
           <ol class="akasha-mobile-memories">${hits.map((hit) => `<li><div>${hit.messages.map((message) =>

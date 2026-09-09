@@ -5,7 +5,8 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from dataclasses import replace
-from uuid import uuid4
+import hashlib
+import json
 
 from agent.plugin_composition.bindings import Bindings
 from plugins.context.api import Materials
@@ -110,10 +111,51 @@ async def prepare_materials(
         return Materials("")
     members = set(projected[-1].message_ids)
     inputs = tuple(message for message in snapshot
-                   if message.message_id in members and isinstance(message.body, Input))
-    if not any(learning.text(message).strip() for message in inputs):
-        return Materials("")
-    # 2. 空间身份必须在嵌入和写向量之前核对；历史向量只读取。
+                   if message.message_id in members and isinstance(message.body, Input)
+                   and message.author == "user")
+    material = Materials("")
+    if any(learning.text(message).strip() for message in inputs):
+        # 同一真实输入使用稳定身份；工具续步、Reminder 和重启只读原记录。
+        identity = "context:" + hashlib.sha256(json.dumps(
+            [session_id, source, inputs[-1].message_id], ensure_ascii=False,
+        ).encode()).hexdigest()
+        recall = records.read(identity)
+        if recall is None:
+            # 升级前的随机身份仍是实际查询证据；复用同一用户输入后的首次记录。
+            previous = next(((key, item) for key, item in reversed(records.list())
+                if isinstance(item.source, ContextSource)
+                and item.source.session_id == session_id and item.source.source == source
+                and inputs[-1].seq <= item.source.through_seq <= snapshot[-1].seq), None)
+            if previous is not None:
+                identity, recall = previous
+        if recall is not None:
+            async with bindings.open(recall.learning_binding, AKASHA_LEARNING) as (original, _):
+                material = render_materials(identity, recall, original, catalog, max_chars=recall.max_chars)
+        else:
+            material = await query_inputs(
+                inputs, snapshot, source, identity=identity, cycle=cycle, state=state,
+                catalog=catalog, embeddings=embeddings, learning_binding=learning_binding,
+                learning=learning, rule=rule, records=records, embed_batch=embed_batch,
+                limit=limit, max_chars=max_chars,
+            )
+    references = {ref.ref: ref for ref in material.references}
+    # 同一消息有多次真实查询时，当前工具结果的精确出处供后续 Citation 使用。
+    references.update((ref.ref, ref) for ref in tool_references(
+        snapshot, source, learning, bindings, records,
+    ))
+    return replace(material, references=tuple(references.values()))
+
+
+async def query_inputs(
+    inputs: tuple[Message, ...], snapshot: tuple[Message, ...], source: str, *, identity: str,
+    cycle: MemoryCycle, state: Consumption, catalog: MessageCatalog,
+    embeddings: MessageEmbeddings, learning_binding: str, learning: Learning,
+    rule: LearningConfig, records: RecallRecords,
+    embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]], limit: int, max_chars: int,
+) -> Materials:
+    """真实用户输入首次准备时检索并保存结果，包括未命中。"""
+    session_id = snapshot[0].session_id
+    # 1. 空间身份必须在嵌入和写向量之前核对；历史向量只读取。
     vectors = embeddings.bind(learning.text)
     missing = [message for message in inputs if learning.text(message).strip()
                and vectors.read(message, model=rule.embedding_model, dimension=rule.dimension) is None]
@@ -125,23 +167,17 @@ async def prepare_materials(
             vectors.save(message, model=rule.embedding_model, embedding=value)
     text, dense = input_features(inputs, text=learning.text, embeddings=vectors,
                                  embedding_model=rule.embedding_model, dimension=rule.dimension)
-    # 3. 图读取移出事件循环；取消仍先排空，再释放 binding 与串行锁。
+    # 2. 图读取移出事件循环；取消仍先排空，再释放 binding 与串行锁。
     stamp = datetime.now(UTC)
     origin = ContextSource(session_id=session_id, source=source, through_seq=snapshot[-1].seq)
     recall = await run_memory_job(lambda: query_memory(
         cycle, state, learning_binding=learning_binding,
         text=text, dense=dense, stamp=stamp, source=origin, limit=limit,
     ))
-    identity = uuid4().hex
     material = render_materials(identity, recall, learning, catalog, max_chars=max_chars)
     recall = recall.model_copy(update={
         "max_chars": max_chars,
         "presented_message_ids": tuple(dict.fromkeys(ref.ref for ref in material.references)),
     })
     _ = records.save(identity, recall)
-    references = {ref.ref: ref for ref in material.references}
-    # 同一消息有多次真实查询时，当前工具结果的精确出处供后续 Citation 使用。
-    references.update((ref.ref, ref) for ref in tool_references(
-        snapshot, source, learning, bindings, records,
-    ))
-    return replace(material, references=tuple(references.values()))
+    return material

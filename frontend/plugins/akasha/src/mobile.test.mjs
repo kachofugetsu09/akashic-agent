@@ -48,11 +48,16 @@ test("refresh failure keeps visible recall and open lane, retry settles without 
     assert.equal(host.textContent, "");
     await advance(150);
     assert.match(host.textContent, /正在读取召回记录/);
-    calls[0].resolve(result(true));
+    const duplicate = result(true);
+    duplicate.items.push(duplicate.items[0]);
+    calls[0].resolve(duplicate);
     await Promise.resolve();
+    assert.equal(host.querySelector("details b").textContent, "1");
     host.querySelector("details").open = true;
     await advance(1000);
     assert.equal(calls.length, 2);
+    await advance(200);
+    assert.equal(host.querySelector("[role='status']").hidden, true);
     calls[1].reject(new Error("插件请求超时"));
     await Promise.resolve();
     assert.match(host.textContent, /已召回的原消息/);
