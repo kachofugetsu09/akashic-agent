@@ -91,8 +91,8 @@ class ContextBuilder:
         window_start: str | None = None,
     ) -> ModelRequest:
         """纯函数式组装；容量不足明确报错，由调用程序取得更小视图。"""
-        if type(max_output_tokens) is not int or max_output_tokens <= 0:
-            raise ValueError("输出预算必须是正整数")
+        if type(max_output_tokens) is not int or max_output_tokens < 0:
+            raise ValueError("输出预算必须是非负整数")
         # 1. Model owner 保留自身的 call IDs 与 opaque replay，Context 不重造它们。
         snapshot = tuple(snapshot)
         cutoff = _summary_cutoff(snapshot, materials.summary)

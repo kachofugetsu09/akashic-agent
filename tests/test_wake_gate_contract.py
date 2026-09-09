@@ -182,7 +182,7 @@ async def test_wake_provider_200_keeps_v3_request_and_delivery_contract(
     for request in requests:
         assert request["model"] == "deepseek-v4-flash"
         assert request["reasoning_effort"] == "max"
-        assert request["max_tokens"] == 4096
+        assert "max_tokens" not in request
     tool_sets = [
         {
             cast(dict[str, object], tool["function"])["name"]

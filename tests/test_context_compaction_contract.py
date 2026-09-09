@@ -52,6 +52,15 @@ def test_context_overflow_keeps_real_messages_and_model_continuation() -> None:
     assert caught.value.request.continuation is projection.continuation
     assert projection.seen == snapshot
     assert snapshot[0].body.parts[0].value == "large"
+    request = ContextBuilder().build(
+        snapshot,
+        materials=Materials("trusted"),
+        model=projection,
+        max_output_tokens=0,
+    )
+    assert request.max_output_tokens == 0
+    assert request.continuation is projection.continuation
+    assert projection.seen == snapshot
 
 
 def test_summary_request_stops_at_current_soft_watermark() -> None:
