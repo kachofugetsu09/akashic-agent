@@ -180,7 +180,7 @@ TypeScript 固定为 5.9.3，沿用现有 strict、ES2022 和 bundler 配置。
 
 ### 9.1 已确认的正文展示
 
-同一 source 的 `continue` 正文只是执行中的当前正文；新正文接替旧正文，`complete` 结束后只展示最终正文。思考与工具合为一条过程轨迹，仍沿原 `message_id + part_index` 查看，最后正文使用最终 Message 的复制、引用和时间。`abandon` 隔开前后回复；其他 source 的输出不替换本来源正文。分页和实时追加使用同一展示规则，不改写任何 Message。
+同一 source 的 `continue` 正文只是执行中的当前正文；新正文接替旧正文，`complete` 结束后只展示最终正文。思考与工具合为一条过程轨迹，仍沿原 `message_id + part_index` 查看，最后正文使用最终 Message 的复制、引用和时间。`pause`、`failure`、`abandon` 按 `through_seq` 隔开前后展示过程，停止前的过程保留在末条输出上；这不改变持久 Turn 的划分。其他 source 的输出不替换本来源正文。分页和实时追加使用同一展示规则，不改写任何 Message。
 
 ```text
 Input → 等待 → 思考 / 工具 + 当前正文 → 最终正文
@@ -228,3 +228,9 @@ Core Message 日志和附件保持 append-only，只有既有 adapter 的读协�
 验收覆盖尾页帧预算、旧/新表示摘要、完整数据库未变、部分窗口与实时追加、Room 接收范围/ACK 原子性、旧引用定位、阅读锚、断线和未下载正文。性能分别记录首屏 bytes、接收行数和发送时刻，不能把本地输入接受当成服务器已发送。
 
 参考：[Matrix limited timeline 与向前补页](https://spec.matrix.org/latest/client-server-api/#syncing)、[Stream 消息 ID 分页](https://getstream.io/chat/docs/javascript/channel-pagination/)；使用本项目已有 `message_id + seq`，不引入第三方 token 模型。
+
+### 9.3 回复过程与调用统计
+
+实时回复从等待首段起就把 `turn.before_reasoning` 插槽放在同一个思考面板内；思考到达后不移动插槽，避免 Akasha 卡片卸载重查。`model.selection` 是内部选择记录，不占正文布局，未知插件内容仍明确显示不可展示。
+
+统计由 models 的调用记录拥有。Web 通过公共 `/api/settings/model/calls/{call_id}` 读取；Android build 79 起用 `readModelCallStats` 转发已有 `model.call.get`，共享页面校验与计算数值。新 WebUI 的最低原生 build 为 79；没有数据或查询失败均不估算。

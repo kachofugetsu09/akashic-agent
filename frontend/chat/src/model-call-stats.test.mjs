@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatModelCallStats, loadMobileModelCallStats, readModelCallStats, receiveMobileModelCallStats, selectModelCall } from "./model-call-stats.ts";
+import { formatModelCallStats, loadWebModelCallStats, loadMobileModelCallStats, readModelCallStats, receiveMobileModelCallStats, selectModelCall } from "./model-call-stats.ts";
 
 const stats = {
   call_record_id: "call", model: "fixture", state: "success", first_token_ms: 400, duration_ms: 1400,
@@ -64,4 +64,16 @@ test("native read correlates by request and ignores late replies after a session
   } finally {
     globalThis.window = original;
   }
+});
+
+test("web stats use the public settings route and retain cancellation", async () => {
+  const original = globalThis.fetch;
+  const controller = new AbortController();
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "/api/settings/model/calls/call");
+    assert.equal(options.signal, controller.signal);
+    return { ok: true, json: async () => stats };
+  };
+  try { assert.deepEqual(await loadWebModelCallStats("call", controller.signal), stats); }
+  finally { globalThis.fetch = original; }
 });
