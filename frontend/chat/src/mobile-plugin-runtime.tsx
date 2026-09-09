@@ -82,7 +82,7 @@ interface PendingQuery {
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
   ownerId: string;
-  timeout: number;
+  timeout?: number;
   cacheKey?: string;
   slot: MobilePluginSlotName;
   started: boolean;
@@ -488,24 +488,21 @@ function MountedPlugin({
               resolve(JSON.parse(cachedJson) as Record<string, unknown>);
               return;
             }
-            const timeout = window.setTimeout(() => {
-              const request = pendingQueries.get(requestId);
-              if (!request) return;
-              request.abort?.abort();
-              window.AkashicNative?.cancelPluginUiOwner(request.ownerId);
-              rejectOwnerPending(request.ownerId, "插件请求超时");
-            }, 30_000);
             const abort = window.AkashicNative ? undefined : new AbortController();
-            const request = {
+            const request: PendingQuery = {
               resolve,
               reject,
               ownerId,
-              timeout,
               cacheKey,
               slot,
               started: false,
               abort,
               send: () => {
+                // 排队不消耗传输期限，实际发出后才开始计时。
+                request.timeout = window.setTimeout(() => {
+                  window.AkashicNative?.cancelPluginUiOwner(ownerId);
+                  rejectOwnerPending(ownerId, "插件请求超时");
+                }, 30_000);
                 if (window.AkashicNative) {
                   window.AkashicNative.queryPluginUi(
                     requestId,
@@ -542,7 +539,6 @@ function MountedPlugin({
             try {
               pendingQueries.enqueue(requestId, request);
             } catch (error) {
-              window.clearTimeout(timeout);
               reject(error instanceof Error ? error : new Error("插件请求无法入队"));
               return;
             }

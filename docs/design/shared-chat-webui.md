@@ -233,4 +233,8 @@ Core Message 日志和附件保持 append-only，只有既有 adapter 的读协�
 
 实时回复从等待首段起就把 `turn.before_reasoning` 插槽放在同一个思考面板内；思考到达后不移动插槽，避免 Akasha 卡片卸载重查。`model.selection` 是内部选择记录，不占正文布局，未知插件内容仍明确显示不可展示。
 
-统计由 models 的调用记录拥有。Web 通过公共 `/api/settings/model/calls/{call_id}` 读取；Android build 79 起用 `readModelCallStats` 转发已有 `model.call.get`，共享页面校验与计算数值。新 WebUI 的最低原生 build 为 79；没有数据或查询失败均不估算。
+统计由 models 的调用记录拥有。Web 通过公共 `/api/settings/model/calls/{call_id}` 读取；Android build 79 起用 `readModelCallStats` 转发已有 `model.call.get`，共享页面校验与计算数值；没有数据或查询失败均不估算。
+
+Android build 80 起，断线、等待订阅或查看历史造成的观察缺失通过 Native→WebUI 的 `reply.clear` 事件清除临时回复状态；事件绑定当前 session 与 projection generation。服务端 `reply.status.available=false` 只表示真实能力不可用，两者不能互相代替。该事件不进入服务端协议或 Message 日志。最低原生 build 为 80。
+
+“加载更早的消息”位于已加载历史的最上端，占有独立行并随消息滚动，不悬浮遮挡正文。插件卡片查询从实际发出时开始计算 30 秒期限；本地排队不消耗传输期限，超时仍取消所属 UI owner 并释放容量。
