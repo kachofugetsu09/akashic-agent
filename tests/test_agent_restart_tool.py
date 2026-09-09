@@ -4,7 +4,7 @@ import asyncio
 import json
 import shutil
 import subprocess
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +13,7 @@ from typing import cast
 
 import pytest
 
-from agent.plugin_composition import CompositionOverlay
+from agent.plugin_composition import CompositionOverlay, Context
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
@@ -696,13 +696,6 @@ async def _wait_for_admission_pause(snapshot: RuntimeSnapshot) -> None:
         await asyncio.sleep(0)
 
 
-async def _wait_for_watcher_count(
-    watchers: list[asyncio.Task[None]], count: int,
-) -> None:
-    while len(watchers) < count:
-        await asyncio.sleep(0)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("supervised", [True, False], ids=["supervised", "unmanaged"])
 async def test_restart_provider_candidate_preserves_formal_root_identity(
@@ -794,41 +787,26 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     old_task: asyncio.Task[object] | None = None
     promotion_task: asyncio.Task[dict[str, object]] | None = None
     release_authorize: asyncio.Event | None = None
-    watcher_monitor: asyncio.Task[None] | None = None
-    stop_watcher_monitor: asyncio.Event | None = None
+    watcher_history: list[asyncio.Task[None]] = []
+    watcher_started: asyncio.Queue[asyncio.Task[None]] = asyncio.Queue()
+    spawn = Context.spawn
+
+    async def observe_spawn(
+        context: Context, coroutine: Coroutine[object, object, object], *, name: str,
+    ) -> asyncio.Task[object]:
+        """在真实任务创建完成时记录，避免忙轮询阻碍清理线程。"""
+        task = await spawn(context, coroutine, name=name)
+        if name == "agent-restart-watcher":
+            watcher = cast(asyncio.Task[None], task)
+            watcher_history.append(watcher)
+            watcher_started.put_nowait(watcher)
+        return task
+
+    monkeypatch.setattr(Context, "spawn", observe_spawn)
     try:
         await host.load_all()
         runtime_runner = asyncio.create_task(host.run_runtime_services())
-
-        async def watcher_task() -> asyncio.Task[None]:
-            async def find() -> asyncio.Task[None]:
-                while True:
-                    for task in asyncio.all_tasks():
-                        if task.get_name() == "plugin-task:agent-restart-watcher":
-                            return cast(asyncio.Task[None], task)
-                    await asyncio.sleep(0)
-
-            return await asyncio.wait_for(find(), 2)
-
-        old_watcher: asyncio.Task[None] | None = None
-        watcher_history: list[asyncio.Task[None]] = []
-        stop_watcher_monitor: asyncio.Event | None = None
-
-        async def monitor_watchers() -> None:
-            while not stop_watcher_monitor.is_set():
-                for task in asyncio.all_tasks():
-                    if (
-                        task.get_name() == "plugin-task:agent-restart-watcher"
-                        and task not in watcher_history
-                    ):
-                        watcher_history.append(cast(asyncio.Task[None], task))
-                await asyncio.sleep(0)
-
-        if supervised:
-            old_watcher = await watcher_task()
-            watcher_history.append(old_watcher)
-            stop_watcher_monitor = asyncio.Event()
-            watcher_monitor = asyncio.create_task(monitor_watchers())
+        old_watcher = await asyncio.wait_for(watcher_started.get(), 2) if supervised else None
         stable = host.current_snapshot
         assert stable is not None
         stable_generation_ids = {
@@ -994,11 +972,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         assert commits == []
         assert gate.permit_count == 0
         if supervised:
-            await asyncio.wait_for(_wait_for_watcher_count(watcher_history, 2), 2)
-            assert stop_watcher_monitor is not None
-            stop_watcher_monitor.set()
-            assert watcher_monitor is not None
-            await watcher_monitor
+            await asyncio.wait_for(watcher_started.get(), 2)
             new_watchers = [task for task in watcher_history if task is not old_watcher]
             assert new_watchers
             assert new_watchers[-1] is not old_watcher
@@ -1021,10 +995,6 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         if "runtime_runner" in locals():
             runtime_runner.cancel()
             await asyncio.gather(runtime_runner, return_exceptions=True)
-        if watcher_monitor is not None and not watcher_monitor.done():
-            assert stop_watcher_monitor is not None
-            stop_watcher_monitor.set()
-            await watcher_monitor
         await host.terminate_all()
         artifact_store.close()
         log.close()
