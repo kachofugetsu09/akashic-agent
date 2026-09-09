@@ -185,6 +185,36 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
         log.close()
 
 
+@pytest.mark.asyncio
+async def test_standard_web_is_directly_callable_without_search(tmp_path):
+    """conversation 的 Web 基础工具在首次模型请求中即可直接调用。"""
+    sources = _sources(tmp_path)
+    shutil.copytree(Path(__file__).parents[1] / "plugins/standard_web", sources / "standard_web",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    log = MessageLog(tmp_path / "sessions.db")
+    host = _manager(tmp_path, [sources], log)
+    try:
+        await host.load_all()
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            catalog = ctx.require(TOOLS)
+            view = ToolView.combine(ctx.require(ALL_TOOLS)(), ctx.require(TOOL_SEARCH_TOOLS))
+            menu = ToolMenu(catalog, ctx.require(BINDINGS),
+                           catalog.execution(lambda binding, arguments: _allow()), _unexpected_reply,
+                           view=view, presentation=ctx.require(TOOL_SEARCH_PRESENTATION)(view))
+            names = {row["function"]["name"] for row in menu.schemas}
+            assert {"web_fetch", "web_search"} <= names
+            assert "example" not in names
+            for name, arguments in (("web_fetch", {"url": "https://example.com"}),
+                                    ("web_search", {"query": "weather"})):
+                binding, _ = menu.decode(ModelToolCall("direct", name, arguments))
+                async with open_tool(ctx.require(BINDINGS), binding) as tool:
+                    assert await tool.prepare(arguments) == arguments
+    finally:
+        await host.terminate_all()
+        log.close()
+
+
 async def _allow() -> Mapping[str, object]:
     return {"allowed": True}
 
