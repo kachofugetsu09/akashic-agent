@@ -119,11 +119,22 @@ async def _start_provider(
         else:
             payload = {"error": {"message": "fixture-provider-body-marker"}}
         body = json.dumps(payload).encode()
+        content_type = "application/json"
+        if status == 200 and request.get("stream") is True:
+            choices = cast(list[dict[str, Any]], payload["choices"])
+            for choice in choices:
+                delta = choice.pop("message")
+                for index, call in enumerate(delta["tool_calls"]):
+                    call["index"] = index
+                choice["delta"] = delta
+            payload["object"] = "chat.completion.chunk"
+            body = b"data: " + json.dumps(payload).encode() + b"\n\ndata: [DONE]\n\n"
+            content_type = "text/event-stream"
         reason = {200: "OK", 400: "Bad Request", 503: "Service Unavailable"}[status]
         writer.write(
             f"HTTP/1.1 {status} {reason}\r\n".encode()
             + f"Content-Length: {len(body)}\r\n".encode()
-            + b"Content-Type: application/json\r\nConnection: close\r\n\r\n"
+            + f"Content-Type: {content_type}\r\nConnection: close\r\n\r\n".encode()
             + body
         )
         await writer.drain()

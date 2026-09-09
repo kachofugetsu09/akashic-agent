@@ -175,8 +175,13 @@ async def _noop_delta() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("driver_name", ["openai_compatible", "opencode_go", "codex"])
-async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, driver_name, caplog):
+@pytest.mark.parametrize("driver_name,model_name", [
+    ("openai_compatible", "fixture"),
+    ("openai_compatible", "deepseek-v4-flash"),
+    ("openai_compatible", "deepseek/deepseek-v4-flash-vision-exp"),
+    ("opencode_go", "fixture"), ("codex", "fixture"),
+])
+async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, driver_name, model_name, caplog):
     """同一连接的两次请求复用 socket，并使用各自读取到的凭据。"""
     from dataclasses import replace
     from agent.plugin_composition import DriverConnectionDescriptor
@@ -186,9 +191,11 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
     from tests.model_plugin_fakes import BoundChatModelFake
 
     seen = []
+    truncated = 0
     caplog.set_level("DEBUG", logger="core.net.http")
 
     async def complete(request):
+        nonlocal truncated
         seen.append((request.transport, request.headers["Authorization"]))
         assert "Cookie" not in request.headers
         if driver_name == "codex":
@@ -196,11 +203,21 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
                 text='data: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed","response":{}}\n\n',
                 content_type="text/event-stream",
             )
-        if streaming:
-            return web.Response(
-                text='data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
-                content_type="text/event-stream",
-            )
+        body = await request.json()
+        deepseek = driver_name == "openai_compatible" and "deepseek-v4-" in model_name
+        assert bool(body.get("stream")) == (streaming or deepseek)
+        if deepseek and not streaming:
+            assert body["thinking"] == {"type": "disabled"}
+            assert "reasoning_effort" not in body
+        elif driver_name == "openai_compatible":
+            assert "thinking" not in body
+        if streaming or deepseek:
+            payload = 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+            if truncated:
+                truncated -= 1
+            else:
+                payload += 'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n'
+            return web.Response(text=payload, content_type="text/event-stream")
         return web.json_response({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
 
     app = web.Application()
@@ -227,17 +244,23 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
                     "account_id": "test", "expires_at": "2099-01-01T00:00:00+00:00"}
 
     credential = Credential()
-    descriptor = replace(BoundChatModelFake(object()).descriptor, driver_id=driver_id)
+    descriptor = replace(BoundChatModelFake(object()).descriptor, driver_id=driver_id, model=model_name)
     driver = await definition().open(
         DriverConnectionDescriptor("test-connection", "local", driver_id,
-                                   f"http://127.0.0.1:{port}/v1", "test", {}),
+                                   f"http://127.0.0.1:{port}/v1", "test", {"max_retries": 1} if driver_name == "openai_compatible" else {}),
         credential,
     )
+    deltas = []
+
+    async def capture(delta):
+        deltas.append(dict(delta))
+
     try:
         bound = driver.bind_chat(descriptor, {})
         request = ModelRequest(
             messages=({"role": "user", "content": "hello"},),
-            on_delta=(lambda _delta: _noop_delta()) if streaming else None,
+            on_delta=capture if streaming else None,
+            disable_reasoning=not streaming,
         )
         assert (await bound.complete(request)).content == "ok"
         credential.token = "second"
@@ -246,6 +269,25 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
         if seen[0][0] is not seen[1][0]:
             assert "尾流未结束，关闭连接" in caplog.text
         assert [item[1] for item in seen] == ["Bearer first", "Bearer second"]
+        if driver_name == "openai_compatible" and "deepseek-v4-" in model_name:
+            from agent.plugin_composition.models import TransportError
+            truncated = 1
+            deltas.clear()
+            if streaming:
+                with pytest.raises(TransportError, match="terminal marker") as failure:
+                    await bound.complete(request)
+                assert not failure.value.retryable
+                assert len(seen) == 3, "an observed partial response must not replay"
+                assert deltas == [{"content_delta": "ok"}]
+            else:
+                assert (await bound.complete(request)).content == "ok"
+                assert len(seen) == 4, "unobserved partial bytes may retry without duplicate output"
+                truncated = 2
+                with pytest.raises(TransportError, match="terminal marker") as failure:
+                    await bound.complete(request)
+                assert failure.value.retryable, "the caller can retry after the driver's bounded attempts"
+                assert len(seen) == 6, "a partial response must not become a successful completion"
+                assert deltas == []
         await driver.aclose()
         with pytest.raises(RuntimeError, match="连接已关闭"):
             await bound.complete(request)
@@ -255,7 +297,8 @@ async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, dri
 
 
 @pytest.mark.asyncio
-async def test_done_does_not_wait_for_a_stalled_http_tail():
+@pytest.mark.parametrize("observe", [False, True])
+async def test_done_does_not_wait_for_a_stalled_http_tail(observe):
     """DONE 后服务端不结束正文时，仍交付已完成结果并关闭该连接。"""
     import httpx
     from plugins.openai_compatible.driver import _consume_stream
@@ -275,7 +318,7 @@ async def test_done_does_not_wait_for_a_stalled_http_tail():
     response = httpx.Response(200, stream=Body())
     try:
         async with asyncio.timeout(1):
-            result = await _consume_stream(response, lambda _delta: _noop_delta())
+            result = await _consume_stream(response, (lambda _delta: _noop_delta()) if observe else None)
         assert result.content == "ok"
         assert waiting.is_set() and cancelled.is_set()
     finally:

@@ -308,6 +308,7 @@ workspace 之外还有两组明确的全局状态：
 │   ├── consolidation_writes.db
 │   ├── markdown-profile-writes.db
 │   ├── markdown-profile.lock
+│   ├── markdown-profile-update.lock
 │   ├── memory2.db                     退役经典记忆归档
 │   ├── akasha.db                      akasha engine
 │   ├── MEMORY.bak.md / SELF.bak.md
@@ -621,6 +622,17 @@ Markdown `memory_writes` 保持无自动 retention。回执与 trace 一起包�
 ### 13.1 已存在的局部机制
 
 - Markdown plugin 在 `markdown-profile-writes.db` 中按文档保存 before-image、draft 和 applied receipt，并在启动时前向恢复。
+  `markdown-profile-update.lock` 只串行一次完整更新（选源、模型、提交或启动初始化/恢复）；既有 `markdown-profile.lock` 只保护两份文件的快照读取与安装。writer 总按 update → profile 的顺序取锁，模型等待只持 update，普通回复因此可以读取完整旧档案。两把锁只协调并发，不保存档案事实，不算初始态的持久业务数据。旧文件及 v2 回执不迁移、不减少。
+
+  ```text
+  ┌ 更新锁：同一时刻只有一次档案更新 ────────────────────┐
+  │ 文件锁：读旧档案 → 释放 → 模型分批生成 → 文件锁：提交 │
+  └─────────────────────────────────────────────────────┘
+                          ↑
+              普通回复在生成期间读取旧档案
+  ```
+
+  学习请求按完整 Turn 的切点分批；历史迁入消息只展示原文正文与已校验的出处角色，不重复投送原始 provider extra 和工具回放。原 Message、摘要来源与学习资格保持不变。模型只返回新增条目的文档、章节、单行正文和实际消息 ID；Markdown owner 保留既有档案，从同一条目生成完整 v2 草稿与证据表，不让模型重复抄写整份档案或改写旧事实。每批以当前内存草稿继续，全部批次及来源证据通过后才交给原 writer；失败或取消不写中间档案、不推进 receipt。单个完整 Turn 可以超过 32k token 的批次目标，但不能超过模型窗口预算；无法容纳时明确失败，不裁切原文。新增条目和模型推理共用输出预算，沿模型声明的生成上限；能力未知时交给 provider 默认值。模型草稿不满足格式或证据合同时，同一批原文与 before-image 只修正一次；连续不合格交回 follower 延时重试。持久草稿损坏和原文解析错误仍明确失败，不转换成模型重试。
 - PENDING 与 PENDING.snapshot 只由一次 legacy migration 读取；原始 bytes/digest 先进入 immutable receipt，并归档到 PENDING.retired 后才清空旧文件。
 - MCP 声明修改前创建历史备份，发布失败自动回滚。
 - 凭据覆盖前保留一个固定名称备份。
