@@ -447,3 +447,22 @@ async def test_fixed_menu_uses_original_directory_after_targets_are_uninstalled(
     finally:
         await host.terminate_all()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_risk_filtered_computer_reports_why_and_exact_name_can_be_selected():
+    import json
+    from plugins.tool_search.plugin import SearchTool
+    tool = SearchTool({"computer": {"binding_id": "computer-binding", "tool": {
+        "name": "computer", "risk": "external-side-effect", "search_hint": None,
+        "description": "Read or operate browser and desktop UI",
+    }}})
+    filtered = await tool.invoke("filtered", await tool.prepare({
+        "query": "computer browser", "allowed_risk": ["read-only", "read-write"],
+    }))
+    payload = json.loads(filtered.parts[0].value)
+    assert payload["selected"] == []
+    assert payload["excluded_by_risk"] == [{"name": "computer", "risk": "external-side-effect"}]
+    assert filtered.parts[-1].value == ()
+    selected = await tool.invoke("exact", await tool.prepare({"query": "select:computer"}))
+    assert selected.parts[-1].value == ("computer-binding",)

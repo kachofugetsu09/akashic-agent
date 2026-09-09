@@ -53,7 +53,7 @@ async def memory_runtime(tmp_path, *, max_chars=12000):
             parts = (ContentPart("text", text),)
             if kind is Input:
                 return log.writer(
-                    "s", author="test", source=source, body_types=(Input,),
+                    "s", author="user", source=source, body_types=(Input,),
                     content={"text": lambda part: ContentReferences()},
                 ).append(identity, Input(parts))
             return log.writer(
@@ -215,3 +215,45 @@ async def test_budget_records_exact_presented_members_without_losing_learning_me
         assert [hit.message_ids for hit in record.hits] == [("u2", "a2"), ("u1", "a1")]
         assert record.presented_message_ids == tuple(ref.ref for ref in material.references)
         assert record.presented_message_ids == ("u2",)
+
+
+@pytest.mark.asyncio
+async def test_real_input_recall_is_reused_after_continuation_reminder_and_restart(tmp_path, monkeypatch):
+    async with memory_runtime(tmp_path) as (runtime, consumer, log, records, calls, write):
+        write("old-u", "remember this")
+        write("old-a", "original answer", Output)
+        await runtime.consume()
+        write("q", "remember")
+        original = await runtime.prepare(log.reader("s").snapshot(), "chat")
+        saved = records.list()
+        count = len(calls)
+        log.writer("s", author="assistant", source="chat", body_types=(Output,), content={}).append(
+            "continue", Output((), "continue"))
+        log.writer("s", author="system", source="chat", body_types=(Input,),
+                   content={"text": lambda part: ContentReferences()}).append(
+            "reminder", Input((ContentPart("text", "system reminder must not query"),)))
+        # 新 runtime 对象只从持久记录恢复，不依赖内存缓存。
+        restored = MessageMemory(consumer, catalog=log.catalog(), embeddings=runtime._embeddings,
+            bindings=runtime._bindings, learning_binding=runtime._learning_binding,
+            records=RecallRecords(log.owner("plugin:akasha")), embed_batch=runtime._embed_batch)
+        def no_retrieve(*args, **kwargs):
+            raise AssertionError("same user input queried the graph again")
+        with monkeypatch.context() as patch:
+            patch.setattr(consumer.cycle, "retrieve", no_retrieve)
+            assert await restored.prepare(log.reader("s").snapshot(), "chat") == original
+        assert records.list() == saved and len(calls) == count
+        write("q2", "new user correction")
+        await runtime.prepare(log.reader("s").snapshot(), "chat")
+        assert len(records.list()) == len(saved) + 1
+        assert calls[-1] == ["new user correction"]
+
+
+@pytest.mark.asyncio
+async def test_background_input_never_triggers_automatic_recall(tmp_path):
+    async with memory_runtime(tmp_path) as (runtime, consumer, log, records, calls, write):
+        log.writer("s", author="system", source="chat", body_types=(Input,),
+                   content={"text": lambda part: ContentReferences()}).append(
+            "reminder", Input((ContentPart("text", "background task"),)))
+        material = await runtime.prepare(log.reader("s").snapshot(), "chat")
+        assert material.references == material.reminders == ()
+        assert calls == [] and records.list() == ()

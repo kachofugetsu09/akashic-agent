@@ -13,6 +13,10 @@ skill, connector, API, or CLI when available. Respect an explicit user request t
 
 Use the `computer` tool for browser and desktop work. It runs JavaScript inside the existing Computer
 container, using its logged-in Chromium profile. `browser`, `agent`, `sky`, and `nodeRepl` are ready.
+If the tool is not visible, call `tool_search` with `{"query":"select:computer"}`.
+Omit `allowed_risk`: Computer is marked `external-side-effect` because it can operate UI,
+even when this call only reads a page. Its exact tool name is `computer`.
+
 Bindings persist within this Akashic Session; a timeout, error, reset, or workload restart invalidates them.
 
 ```js

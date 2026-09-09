@@ -25,7 +25,9 @@ class Query(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     query: str = Field(min_length=1)
     top_k: int = Field(default=5, ge=1, le=10)
-    allowed_risk: list[Literal["read-only", "read-write", "external-side-effect"]] | None = None
+    allowed_risk: list[Literal["read-only", "read-write", "external-side-effect"]] | None = Field(
+        default=None, description="按工具整体能力过滤，通常省略。浏览器等通用工具即使只读页面也可能标为 external-side-effect；此字段不是本次操作的授权。",
+    )
 
 
 def search(candidates: Mapping[str, Mapping[str, object]], query: Query) -> tuple[str, ...]:
@@ -87,9 +89,19 @@ class SearchTool:
         query = Query.model_validate(json_value(arguments))
         selected = search(self._candidates, query)
         rows = [self._candidates[name] for name in selected]
+        excluded = []
+        if query.allowed_risk is not None:
+            unrestricted = query.model_copy(update={"allowed_risk": None})
+            excluded = [
+                {"name": name, "risk": self._candidates[name]["tool"]["risk"]}
+                for name in search(self._candidates, unrestricted)
+                if self._candidates[name]["tool"]["risk"] not in query.allowed_risk
+            ]
         text = json.dumps({
             "matched": [json_value(row["tool"]) for row in rows],
             "selected": selected,
+            "excluded_by_risk": excluded,
+            "risk_tip": "部分匹配工具被 allowed_risk 排除。若符合任务需要，省略该过滤重搜；执行仍须通过当前授权。" if excluded else "",
             "tip": "菜单按容量载入选中工具，优先保留最相关项；载入后可直接调用。" if selected else "没有匹配工具，请调整关键词或用 select:工具名。",
         }, ensure_ascii=False)
         return Result("success", (
