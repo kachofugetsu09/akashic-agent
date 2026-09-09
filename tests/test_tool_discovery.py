@@ -453,16 +453,24 @@ async def test_fixed_menu_uses_original_directory_after_targets_are_uninstalled(
 async def test_risk_filtered_computer_reports_why_and_exact_name_can_be_selected():
     import json
     from plugins.tool_search.plugin import SearchTool
-    tool = SearchTool({"computer": {"binding_id": "computer-binding", "tool": {
+    candidates = {f"unrelated_{number}": {"binding_id": f"other-{number}", "tool": {
+        "name": f"unrelated_{number}", "risk": "read-only", "search_hint": "打开网页读取 computer browser tab playwright",
+        "description": "打开网页读取 computer browser tab playwright",
+    }} for number in range(12)}
+    candidates["computer"] = {"binding_id": "computer-binding", "tool": {
         "name": "computer", "risk": "external-side-effect", "search_hint": None,
         "description": "Read or operate browser and desktop UI",
-    }}})
+    }}
+    tool = SearchTool(candidates)
+    mixed = {"query": "computer browser tab playwright 打开网页 读取", "top_k": 10}
+    ranked = await tool.invoke("mixed", await tool.prepare(mixed))
+    assert json.loads(ranked.parts[0].value)["selected"][0] == "computer"
     filtered = await tool.invoke("filtered", await tool.prepare({
-        "query": "computer browser", "allowed_risk": ["read-only", "read-write"],
+        **mixed, "allowed_risk": ["read-only", "read-write"],
     }))
     payload = json.loads(filtered.parts[0].value)
-    assert payload["selected"] == []
+    assert "computer" not in payload["selected"]
     assert payload["excluded_by_risk"] == [{"name": "computer", "risk": "external-side-effect"}]
-    assert filtered.parts[-1].value == ()
+    assert "computer-binding" not in filtered.parts[-1].value
     selected = await tool.invoke("exact", await tool.prepare({"query": "select:computer"}))
     assert selected.parts[-1].value == ("computer-binding",)
