@@ -9,7 +9,13 @@ from uuid import uuid4
 
 from agent.plugin_composition import Context, RuntimeScope, ServiceKey
 from agent.plugins.snapshot import get_current_runtime_lease
-from agent.plugin_composition.models import BoundChatModel, ContextLengthError, LLMResponse, StreamCallback
+from agent.plugin_composition.models import (
+    BoundChatModel,
+    ContextLengthError,
+    EmptyResponseError,
+    LLMResponse,
+    StreamCallback,
+)
 from plugins.context.api import ContextOverflow, Materials, SummaryReducer
 from session.log import MessageReader, MessageWriter
 from session.message import CallRef, Control, Message, Output, Part, ContentPart, ToolCall, ToolResult
@@ -244,7 +250,7 @@ async def react(
                 indices.append(len(parts))
                 parts.append(ToolCall(tools.bind(call.name), call.arguments))
             if not parts:
-                raise ValueError("模型没有产生内容或工具调用；空响应不是 quiet")
+                raise EmptyResponseError("模型没有产生内容或工具调用；空响应不是 quiet")
             parts.append(projection.facts(response, indices))
             if prepared.summary is not None:
                 parts.append(ContentPart("context.summary", {"reference": prepared.summary.reference}))
