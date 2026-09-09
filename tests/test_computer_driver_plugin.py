@@ -762,7 +762,7 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
 
         computer_source = harness.root / "computer" / "plugin.py"
         manifest_source = harness.root / "computer" / "akashic.plugin.toml"
-        old_digest = "9bd4f6e215b4848e91f0dbfea75a7b227faeba96268c422d62e81a9b64d5ac92"
+        old_digest = "4a4381b211024ac1fbf3730bd835a8cfa6cd7dd36996bf018437c13796ef0894"
         old_image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:" + old_digest
         new_image = old_image[:-1] + "a"
         new_digest = new_image.rsplit(":", 1)[1]
