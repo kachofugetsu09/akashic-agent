@@ -325,9 +325,10 @@ class MessageProjection:
                 result = cast(ToolResult, observation.body)
                 result_blocks: list[Mapping[str, Any]] = []
                 if result.outcome != "success":
-                    result_blocks.append(
-                        {"type": "text", "text": f"工具状态: {result.outcome}"}
-                    )
+                    status = f"工具状态: {result.outcome}"
+                    if result.outcome == "unknown":
+                        status += "。原调用可能已经产生效果；先检查当前状态，再决定下一步，不要直接重复执行原操作。"
+                    result_blocks.append({"type": "text", "text": status})
                 for item in result.parts:
                     result_blocks.extend(self._render_content(item))
                 observations.append(
