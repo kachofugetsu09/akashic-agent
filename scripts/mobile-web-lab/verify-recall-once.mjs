@@ -68,10 +68,28 @@ try {
       assert.equal(await page.locator(".akasha-mobile-recall-group").count(), 1, `${width}px phase ${index}`);
       if (index >= 2) assert.equal(await page.locator(".tool-step-title").filter({ hasText: "read" }).count() > 0, true);
     }
+    // 同 Turn 的真实追加输入分开两段过程，旧输入卡片仍可展开。
+    const correction = { ...structuredClone(input), author: "user", id: "correction-input", seq: 5 };
+    correction.body.parts = [{ kind: "text", value: "用户追加的新输入" }];
+    const corrected = structuredClone(base);
+    corrected.messages = [input, call, result, correction,
+      { ...second, seq: 6 }, { ...secondResult, seq: 7 }, { ...final, seq: 8 }];
+    corrected.throughSeq = 8;
+    corrected.projectionGeneration += 20;
+    corrected.history = { hasOlder: false, isLatest: true, loading: false };
+    corrected.replyStatus.items = [];
+    corrected.sessions[0].isRunning = false;
+    corrected.composer.isStreaming = false;
+    await page.evaluate(snapshot => window.AkashicMobile.receiveSnapshot(snapshot), corrected);
+    for (const button of await page.getByRole("button", { name: /已思考/ }).all()) {
+      if (await button.getAttribute("aria-expanded") !== "true") await button.click();
+    }
+    await page.waitForFunction(() => document.querySelectorAll(".akasha-mobile-recall-group").length === 2);
+    assert.equal(await page.locator(".akasha-mobile-recall-group").count(), 2);
     assert.deepEqual(errors, []);
     await page.close();
   }
-  console.log("Recall stays single through waiting, thinking, two tool calls and final history at 320/412px");
+  console.log("Recall stays single through tool steps and splits at a new real input at 320/412px");
 } finally {
   await browser.close();
   await lab.close();

@@ -298,3 +298,69 @@ def test_recall_turn_cache_tracks_source_head_and_keeps_global_query_head(tmp_pa
         inputs.append("new", Input((ContentPart("text", "next"),)))
         assert inspector.for_turn("s", "draft-next", "chat", projection)["pending"] is True
         assert projection.calls == 3
+
+
+def test_recall_cards_split_same_turn_inputs_and_page_explicit_queries(tmp_path):
+    import json
+    from contextlib import closing
+    from datetime import timedelta
+    from plugins.akasha.inspector import RecallInspector
+    from plugins.akasha.recalls import ToolSource
+    from plugins.turn_projection.plugin import TurnProjection
+    from session.message import CallRef, ToolCall, ToolResult
+
+    with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        inputs = log.writer("s", author="user", source="chat", body_types=(Input,),
+                            content={"text": lambda part: ContentReferences()})
+        outputs = log.writer("s", author="assistant", source="chat", body_types=(Output,),
+                             content={"text": lambda part: ContentReferences()}, check_call=lambda call: None)
+        records = RecallRecords(log.owner("akasha"))
+        inputs.append("u1", Input((ContentPart("text", "first" * 48),)))
+        outputs.append("step1", Output((), "continue"))
+        inputs.append("u2", Input((ContentPart("text", "new question" * 20),)))
+        log.writer("s", author="system", source="chat", body_types=(Input,),
+                   content={"text": lambda part: ContentReferences()}).append(
+            "reminder", Input((ContentPart("text", "system reminder"),)))
+        log.save_binding("recall", {"artifact": "test-recall"})
+        calls = []
+        for number in range(8):
+            call = outputs.append(f"call-{number}", Output((ToolCall("recall", {}),), "continue"))
+            ref = CallRef(call.message_id, 0)
+            calls.append(ref)
+            log.writer("s", author="tool", source="chat", body_types=(ToolResult,),
+                       content={}, call_ref=ref).append(f"result-{number}", ToolResult(ref, "success", ()))
+        outputs.append("a", Output((ContentPart("text", "answer" * 40),), "complete"))
+        records.save("first", record(0))
+        records.save("second", record(2))
+        records.save("old-duplicate", record(3).model_copy(update={
+            "timestamp": record(0).timestamp + timedelta(seconds=1)}))
+        # 多个主动查询累计超过一次 RPC，仍须逐页读全。
+        hit = record(0).hits[0]
+        for number in range(8):
+            records.save(f"explicit-{number}", record(4).model_copy(update={
+                "source": ToolSource(session_id="s", call_ref=calls[number]),
+                "timestamp": record(0).timestamp + timedelta(seconds=number + 2),
+                "graph_version": 45,
+                "hits": tuple(hit.model_copy(update={"node_id": index}) for index in range(45)),
+            }))
+        before = log.reader("s").snapshot()
+        saved = records.list()
+        inspector = RecallInspector(read=records.read, list_records=records.list, catalog=log.catalog())
+        projection = TurnProjection()
+        assert len(projection.project(before, "chat")) == 1
+        first = inspector.for_turn("s", "step1", "chat", projection)
+        assert first["pending"] is False
+        assert [item["query_id"] for item in first["items"]] == ["first"]
+        page = inspector.for_turn("s", "a", "chat", projection)
+        assert page["input_message_id"] == "u2"
+        assert page["next_offset"] is not None
+        ids = []
+        while True:
+            assert len(json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode()) < 192 * 1024
+            ids.extend(item["query_id"] for item in page["items"])
+            if page["next_offset"] is None:
+                break
+            page = inspector.for_turn("s", page["input_message_id"], "chat", projection,
+                                      offset=page["next_offset"])
+        assert ids == ["second", *(f"explicit-{number}" for number in range(8))]
+        assert records.list() == saved and log.reader("s").snapshot() == before

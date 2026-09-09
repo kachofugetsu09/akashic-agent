@@ -234,3 +234,18 @@ test("internal model selection stays hidden while unknown plugin content remains
   assert.equal(isTimelinePartVisible({ kind: "model.selection", display: "unavailable" }), false);
   assert.equal(isTimelinePartVisible({ kind: "plugin.custom", display: "unavailable" }), true);
 });
+
+test("真实追加输入分开前后思考，system reminder 仍留在当前过程", () => {
+  const first = row(0, { kind: "input", parts: [text("first")] }, { author: "user" });
+  const step1 = row(1, { kind: "output", finish: "continue", parts: [text("step one")] });
+  const second = row(2, { kind: "input", parts: [text("correction")] }, { author: "user" });
+  const step2 = row(3, { kind: "output", finish: "continue", parts: [text("step two")] });
+  const reminder = row(4, { kind: "input", parts: [text("reminder")] }, { author: "system" });
+  const answer = row(5, { kind: "output", finish: "complete", parts: [text("answer")] });
+  const messages = [first, step1, second, step2, reminder, answer];
+  const groups = timelineReplyGroups(messages);
+  assert.deepEqual(groups.completed.get(answer.id), [step2, answer]);
+  assert.equal(groups.moved.has(step1.id), false);
+  assert.equal(groups.hiddenBodies.has(step1.id), false);
+  assert.equal(timelineVisibleMessages(messages, groups).includes(step1), true);
+});

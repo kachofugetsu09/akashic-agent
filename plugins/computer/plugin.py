@@ -29,7 +29,7 @@ from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from session.log import MessageCatalog, OwnerRecord, OwnerStore
 from session.message import ContentPart, Input, Message, Output, ToolCall
 
-from .control import endpoint_name, request
+from .control import ComputerDriverError, endpoint_name, request
 
 COMPUTER_CONTROL = ServiceKey["ComputerControl"]("computer.control.v1")
 
@@ -73,16 +73,19 @@ class ComputerControl:
         elif existing.value != value:
             raise ValueError("Computer 调用回执身份不一致")
         async with self.ctx.require(MCP_SERVERS).open(self.ctx, "computer") as server:
-            return await request(
-                endpoint_name(self.ctx.data_root, server.generation_id),
-                {
-                    "op": "run",
-                    "context": _driver_context(server.generation_id, identity, key),
-                    "code": arguments["code"],
-                    "timeoutMs": arguments.get("timeout_ms", 60000),
-                    "reset": arguments.get("reset", False),
-                },
-            )
+            try:
+                return await request(
+                    endpoint_name(self.ctx.data_root, server.generation_id),
+                    {
+                        "op": "run",
+                        "context": _driver_context(server.generation_id, identity, key),
+                        "code": arguments["code"],
+                        "timeoutMs": arguments.get("timeout_ms", 60000),
+                        "reset": arguments.get("reset", False),
+                    },
+                )
+            except ComputerDriverError as error:
+                return {"kind": "driver_error", "error": str(error)}
 
     async def end_turn(self, identity: ComputerCall, call_id: str) -> None:
         """通过同一归档 MCP 关闭已结算 Turn。"""
@@ -203,6 +206,8 @@ class _ComputerTool:
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         value = await self._control.run(key, self._control_binding, arguments)
+        if value.get("kind") == "driver_error":
+            return Result("error", (ContentPart("text", cast(str, value["error"])),))
         return Result("success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
 
     async def query(self, key: str) -> Result | None:

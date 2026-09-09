@@ -71,7 +71,7 @@ async def memory_runtime(tmp_path, *, max_chars=12000):
 
 
 @pytest.mark.asyncio
-async def test_context_query_uses_fixed_multimessage_input_and_published_references(tmp_path):
+async def test_context_query_uses_latest_real_input_and_published_references(tmp_path):
     async with memory_runtime(tmp_path) as (runtime, consumer, log, records, calls, write):
         write("old-u1", "first detail")
         write("old-u2", "important correction")
@@ -87,7 +87,7 @@ async def test_context_query_uses_fixed_multimessage_input_and_published_referen
         write("later", "later input must stay out")
         material = await runtime.prepare(snapshot, "chat")
         assert material.system_prompt == ""
-        assert calls[-1] == ["remember the detail", "and the correction"]
+        assert calls[-1] == ["and the correction"]
         assert [ref.ref for ref in material.references] == ["old-u1", "old-u2", "old-a"]
         assert isinstance(material.reminders[0].text, str)
         assert "learned answer" in material.reminders[0].text
@@ -104,8 +104,8 @@ async def test_context_query_uses_fixed_multimessage_input_and_published_referen
         assert await runtime.consume() == 1
         assert records.read(identity) == record
         assert consumer.cycle.state_version == 2
-        # 消费复用查询阶段固定的两个向量，只补后来输入与答案。
-        assert calls[-1] == ["later input must stay out", "new answer"]
+        # 学习仍保留全部输入，只补未用于本次查询的输入与答案向量。
+        assert calls[-1] == ["remember the detail", "later input must stay out", "new answer"]
     with closing(MessageLog(tmp_path / "sessions.db")) as restored:
         assert RecallRecords(restored.owner("plugin:akasha")).read(identity) == record
 
