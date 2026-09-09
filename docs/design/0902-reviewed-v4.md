@@ -449,12 +449,12 @@ started ── 外部调用 ──▶ result / unknown
 
 - 当前没有 receipt：在验证权限、控制状态和已耐久固定的 binding 后可以 prepare；缺失旧绑定必须失败，不重绑最新版。
 - 已有 terminal ToolResult：返回原结果，不执行。
-- 有 started 而无结果：优先 query；provider 支持相同幂等 key 才可重试；否则产生真实 unknown 并停止自动继续。
+- 有 started 而无结果：优先 query；provider 支持相同幂等 key 才可重试；否则产生真实 unknown，终止该调用的自动重试，并把结果交给模型检查。
 - 工具异常只能由能解释它的边界转成 denied/error；内部不变量损坏 fail-loud。
 - 对话 result 追加与本地 receipt 的结果指针在同一存储事务完成；独立调用在其 receipt 提交结果。不同存储时必须有已验收的 outbox/handoff，不能默认跨库原子。
 - 取消与 effect start 由执行 owner 排序：普通取消先被接纳则不新发起；已开始则结算为真实结果或 unknown。明确 abandon 按第 7.4 节结算 interrupted，不能假称没执行。
 
-unknown 是自动执行路径的终止结果，不证明远端失败。人工核对后产生新的明确管理事实/新获授权调用；不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 持久引用其 exact generation，进程重启后按该引用打开所需目标。内存 lease 排空后释放资源，耐久归档没有自动 GC，也不另存 active claim 或 refcount。
+unknown 是原工具调用的终态，不证明远端失败，也不永久阻塞模型决策。模型投影保留原状态和正文，并明确提示先检查现场，不得直接重复原操作；检查后可在当前授权内提出新调用。不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 持久引用其 exact generation，进程重启后按该引用打开所需目标。内存 lease 排空后释放资源，耐久归档没有自动 GC，也不另存 active claim 或 refcount。
 
 Tool 与 Delivery 都需要外部效果记录，但各自拥有不同状态和查询协议。暂不创建统一 EffectManager；相同 SQL/锁 helper 只有在实现重复且合同相同时才共享。
 
@@ -471,7 +471,7 @@ Tool 与 Delivery 都需要外部效果记录，但各自拥有不同状态和�
 
 默认 conversation 的唤醒策略在本层明确为：`resume` 或新的 Input 都恢复该来源尚未关闭的工作，先按当前权限恢复原 prepared 调用，再读取全部输入继续推理。暂停期间只到达 ToolResult 不会唤醒；unknown 不因新 Input 获得重试授权。这保持来源有序，不建立“已经 final，却另有旧调用等 resume”的并行工作模型。后文“保留待 resume”也包括该默认来源由新 Input 明确唤醒后的恢复。
 
-pause/failure 后到达的 ToolResult 不解除暂停；abandon 后的 late result 不进入新段，按 4.1 的 call 归属规则处理。暂停尚未开始的调用可以保留待 resume；abandon 则必须明确拒绝再启动它。新输入不会自动授权重试 unknown 效果，解除该阻塞需要工具领域的明确核对结果或新授权。
+pause/failure 后到达的 ToolResult 不解除暂停；abandon 后的 late result 不进入新段，按 4.1 的 call 归属规则处理。暂停尚未开始的调用可以保留待 resume；abandon 则必须明确拒绝再启动它。新输入不授权重放旧 unknown 调用，但可以恢复模型决策，读取该结果并先检查现场。
 
 Tools 在正式启动后跟随日志消费 abandon，并在启动时追赶未处理控制；归档 Root 不启动该消费者。结算先在同一个 owner 事务中核对已有终态，再追加 ToolResult 和保存结果指针，随后协作取消原效果 Task。没有异步宽限窗口：先前已提交结果保留，尚未提交的 started 直接结算 interrupted。等待者可以从已提交结果与 Control 释放，不把实际工具的退出当作前置条件；同进程取消不是强杀或效果回滚。
 
@@ -479,7 +479,7 @@ Shell 清理 Task 先排空相关效果，再使用原 binding 清理放弃前�
 
 UI 的 scope handle 和来源 head 前置条件在控制提交时一起核对；过期则返回 conflict，不落控制事实。旧 scope 在失去所有权后报告的失败只进入该调用诊断，不能再写当前来源的 failure。发生重启后，仅按已接纳 Control 的持久边界恢复。若产品以后需要“忽略所有后续输入，直到解除”的整个来源开关，它属于来源插件配置；不能把一次 /stop 偷换成这种模式。
 
-活动 scope 与并发 admission 本身不持久化为 Attempt。进程重启时，来源插件从未完成输入和控制事实决定是否恢复；Tool/Delivery 先处理已开始的 effects，随后才允许运行新的决策。对无法确定的效果保持 unknown/需处理状态，不能用重新请求模型掩盖它。
+活动 scope 与并发 admission 本身不持久化为 Attempt。进程重启时，来源插件从未完成输入和控制事实决定是否恢复；Tool/Delivery 先处理已开始的 effects，随后才允许运行新的决策。对无法确定的效果保留 unknown，并在模型请求中明确呈现不确定性和先核对的要求，不伪造成功或自动重放。
 
 ### 7.5 插件更新与重启协议
 

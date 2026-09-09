@@ -21,7 +21,7 @@ from plugins.models.content import render_content
 from plugins.models.projection import MessageProjection, check_facts
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
-from plugins.react.plugin import react, UnknownToolEffect, StepLimit
+from plugins.react.plugin import react, StepLimit
 from plugins.tools.execution import ToolExecution, MessageReply, Result
 from plugins.tools.abandon import follow_abandon, reject_start
 from plugins.tools.menu import ToolMenu
@@ -293,25 +293,46 @@ async def test_stale_model_output_has_no_tool_effect_and_inputs_stay_open(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_unknown_tool_result_pauses_and_never_reexecutes_after_new_input(tmp_path):
+@pytest.mark.parametrize("restart", [False, True])
+async def test_unknown_result_reaches_model_without_replaying_effect_even_after_restart(tmp_path, restart):
     effects = []
     requests = []
     async def complete(request):
         requests.append(request)
-        return LLMResponse(None, [ModelToolCall("call", "example", {})])
+        if len(requests) == 1:
+            return LLMResponse(None, [ModelToolCall("original", "example", {"action": "write"})])
+        tool_rows = [row for row in request.messages if row["role"] == "tool"]
+        assert tool_rows[0]["tool_call_id"] == "original"
+        assert any("unknown" in part["text"] and "先检查" in part["text"]
+                   for part in tool_rows[0]["content"])
+        if len(requests) == 2:
+            return LLMResponse(None, [ModelToolCall("inspect", "example", {"action": "inspect"})])
+        return LLMResponse("已检查现场，继续完成任务")
     async def invoke(key, arguments):
-        effects.append(key)
-        return Result("unknown", ())
+        effects.append((key, arguments["action"]))
+        if arguments["action"] == "write":
+            if restart:
+                raise ConnectionError("effect happened but receipt was lost")
+            return Result("unknown", (ContentPart("text", "没有取得回执"),))
+        return Result("success", (ContentPart("text", "已确认当前状态"),))
     async with runtime(tmp_path, complete, invoke) as (conversation, log, store, run):
         await conversation.accept("u1", Input(()))
-        with pytest.raises(UnknownToolEffect):
-            await (await conversation.start(run)).join()
-        assert await conversation.start(run) is None
-        await conversation.accept("u2", Input(()))
-        with pytest.raises(UnknownToolEffect):
-            await (await conversation.start(run)).join()
-        assert len(effects) == len(requests) == 1
-        assert isinstance(log.reader("s").snapshot()[-1].body, Control)
+        task = await conversation.start(run)
+        if restart:
+            with pytest.raises(ConnectionError, match="receipt was lost"):
+                await task.join()
+            before = log.reader("s").snapshot()
+            assert len(effects) == len(requests) == 1
+        else:
+            assert (await task.join()).body.finish == "complete"
+    if restart:
+        async with runtime(tmp_path, complete, invoke) as (conversation, log, store, run):
+            await conversation.accept("u2", Input((ContentPart("text", "重新检查后继续"),)))
+            assert (await (await conversation.start(run)).join()).body.finish == "complete"
+            assert log.reader("s").snapshot()[:len(before)] == before
+    assert [action for _, action in effects] == ["write", "inspect"]
+    assert effects[0][0] != effects[1][0]
+    assert len(requests) == 3
 
 
 @pytest.mark.asyncio
@@ -532,7 +553,7 @@ async def test_terminal_tool_closes_only_after_real_success_and_before_step_limi
             await (await conversation.start(run)).join()
             assert calls == 2 and effects == [1, 2, 1, 2]
         else:
-            with pytest.raises(UnknownToolEffect if outcome == "unknown" else StepLimit):
+            with pytest.raises(StepLimit):
                 await task.join()
             assert not any(isinstance(m.body, Output) and m.body.finish == "quiet" for m in log.reader("s").snapshot())
             assert calls == 1

@@ -30,10 +30,6 @@ inject = ()
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
 
 
-class UnknownToolEffect(RuntimeError):
-    """已观察到无法确定的外部效果，不能自动继续或再次执行。"""
-
-
 class StepLimit(RuntimeError):
     """本次程序达到明确的模型请求上限，保留日志供来源继续控制。"""
 
@@ -65,8 +61,6 @@ def _pending_calls(messages: Sequence[Message], source: str) -> tuple[CallRef, .
         result = results.get(ref)
         if result is None:
             pending.append(ref)
-        elif result.outcome == "unknown":
-            raise UnknownToolEffect(f"工具效果需核对: {ref.message_id}/{ref.part_index}")
     return tuple(pending)
 
 
@@ -130,7 +124,7 @@ async def _settle(tools: ToolMenu, call: CallRef) -> None:
             operation.close()
             raise
         try:
-            result = await asyncio.shield(work)
+            _ = await asyncio.shield(work)
         except asyncio.CancelledError as cancellation:
             while not work.done():
                 try:
@@ -147,8 +141,6 @@ async def _settle(tools: ToolMenu, call: CallRef) -> None:
     finally:
         if scope is not None:
             await scope.close()
-    if result.outcome == "unknown":
-        raise UnknownToolEffect(f"工具效果需核对: {call.message_id}/{call.part_index}")
 
 
 @asynccontextmanager
