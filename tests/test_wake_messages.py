@@ -376,6 +376,7 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
         task = await source.start(original.flow_id)
         assert await asyncio.wait_for(task.join(), 10) == "shared"
         assert len(control["calls"]) == 2 + truncated_id and len(control["sent"]) == 1
+        assert all(call.max_output_tokens == 0 for call in control["calls"])
         rows = log.reader(original.session_id).snapshot()
         expected = [Input, Input] + [Output, ToolResult] * (1 + truncated_id) + [Output, Input, Output, ToolResult, Output]
         assert [type(row.body) for row in rows] == expected

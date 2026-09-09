@@ -54,7 +54,8 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             authorize=authorize,
             tool_view=None,
             fixed_bindings=fixed,
-            max_output_tokens=4096,
+            # 推理也占用输出预算，阶段不另设会截断工具决定的小上限。
+            max_output_tokens=0,
             max_steps=(
                 3 if phase.stage == "screen" else 1
                 if phase.stage == "alert"
