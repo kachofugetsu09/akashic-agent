@@ -36,7 +36,7 @@ async def apply(ctx, config):
         ctx.require(SESSION_ADMISSION).ensure(ctx, "validation", SessionAttributes("internal", "excluded"))
         reader = ctx.require(MESSAGE_CATALOG).reader("validation")
         writer = ctx.require(MESSAGE_WRITERS).bind(
-            ctx, author="probe", source="validation", body_types=(Input,),
+            ctx, author="user", source="validation", body_types=(Input,),
             content={"text": lambda part: ContentReferences()},
         )("validation")
         writer.append("input", Input((ContentPart("text", "verify updated candidate"),)))
