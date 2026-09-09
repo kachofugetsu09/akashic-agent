@@ -51,7 +51,7 @@ def search(candidates: Mapping[str, Mapping[str, object]], query: Query) -> tupl
     tokens.discard("")
 
     # 2. 相同公开描述得到相同排序，不为内置或 MCP 来源额外加分。
-    ranked: list[tuple[int, str]] = []
+    ranked: list[tuple[int, int, str]] = []
     for name, tool in allowed.items():
         parts = name.lower().split("_")
         hint = cast(str | None, tool["search_hint"]) or ""
@@ -69,8 +69,9 @@ def search(candidates: Mapping[str, Mapping[str, object]], query: Query) -> tupl
             if token in description:
                 score += 2
         if score:
-            ranked.append((-score, name))
-    return tuple(name for _, name in sorted(ranked)[:query.top_k])
+            # 查询明确写出完整工具名时，不能被长描述的模糊词频挤出结果。
+            ranked.append((-int(name.lower() in tokens), -score, name))
+    return tuple(name for _, _, name in sorted(ranked)[:query.top_k])
 
 
 class SearchTool:
