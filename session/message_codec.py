@@ -29,8 +29,8 @@ def json_value(value: object) -> object:
     return value
 
 
-def encode_body(body: Body) -> str:
-    """只编码一份消息事实，不创建 provider 或 UI 的平行持久模型。"""
+def body_to_dict(body: Body) -> dict[str, object]:
+    """返回当前运行时消息字段，供展示和上下文使用。"""
     data: dict[str, object]
     if isinstance(body, Control):
         data = {
@@ -70,6 +70,16 @@ def encode_body(body: Body) -> str:
                     "part_index": body.call_ref.part_index,
                 },
             }
+    return data
+
+
+def encode_body(body: Body, *, allow_legacy: bool = True) -> str:
+    """保留已读消息的历史编码；新写入可显式拒绝旧表示。"""
+    data = body_to_dict(body)
+    if isinstance(body, ToolResult) and body._legacy_unknown:
+        if not allow_legacy:
+            raise ValueError("旧 unknown 工具结果只能重放已有消息，不能作为新消息写入")
+        data["outcome"] = "unknown"
     return json.dumps(
         data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
@@ -137,9 +147,13 @@ def decode_body(payload: str) -> Body:
             cast(Literal["continue", "complete", "quiet"], row["finish"]),
         )
     call = _object(row["call_ref"], {"message_id", "part_index"})
-    return ToolResult(
+    result = ToolResult(
         CallRef(cast(str, call["message_id"]), cast(int, call["part_index"])),
         cast(Literal["success", "denied", "error", "interrupted"],
              "error" if row["outcome"] == "unknown" else row["outcome"]),
         cast(tuple[ContentPart, ...], parts),
     )
+
+    if row["outcome"] == "unknown":
+        object.__setattr__(result, "_legacy_unknown", True)
+    return result

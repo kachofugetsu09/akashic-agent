@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -22,7 +21,7 @@ from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.plugin import TOOLS, ToolView
 from session.log import MessageReader, OwnerRecord
 from session.message import Message
-from session.message_codec import encode_body
+from session.message_codec import body_to_dict
 
 from .admission import Admission, Duties
 from .api import Config, DRIFT_WAKE, EVENTMAIL_WAKE
@@ -110,7 +109,7 @@ class DashboardView:
 
     @staticmethod
     def _message(message: Message) -> Mapping[str, object]:
-        body = json.loads(encode_body(message.body))
+        body = body_to_dict(message.body)
         parts = body.get("parts", ()) if isinstance(body, dict) else ()
         text = "\n".join(
             str(part.get("value"))

@@ -145,6 +145,8 @@ class Output:
 
 @dataclass(frozen=True, slots=True)
 class ToolResult:
+    # 仅持久化解码器记录旧表示；运行时 outcome 仍遵守当前值域。
+    _legacy_unknown: bool = field(default=False, init=False, repr=False, compare=False)
     call_ref: CallRef
     outcome: Literal["success", "denied", "error", "interrupted"]
     parts: tuple[ContentPart, ...]

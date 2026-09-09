@@ -894,7 +894,6 @@ class MessageWriter:
     ) -> Message:
         # 1. 固定 writer 的能力范围；内容 schema 由其注册 owner 验证。
         self._check_grant(body)
-        payload = encode_body(body)
         message_metadata = freeze_metadata({} if metadata is None else metadata)
         if self._check_metadata is None and not message_metadata.keys() <= self._message_metadata_keys:
             raise PermissionError("writer 未获授这些 Message metadata 命名空间")
@@ -904,6 +903,7 @@ class MessageWriter:
         old = connection.execute(
             "SELECT * FROM messages WHERE id=?", (message_id,)
         ).fetchone()
+        payload = encode_body(body, allow_legacy=old is not None)
         if old is not None:
             if (old["session_key"], old["author"], old["source"], old["body"]) != (
                 self._session_id,

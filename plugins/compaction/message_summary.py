@@ -13,7 +13,7 @@ from agent.plugin_composition.models import (
 from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 from plugins.context.api import settled_prefixes
 from plugins.turn_projection.plugin import TurnProjection
-from session.message_codec import encode_body
+from session.message_codec import body_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ def source_text(messages: Sequence[Message]) -> str:
                 }
             ))
         rows.append({"message_id": message.message_id, "source": message.source, "author": message.author,
-                     "seq": message.seq, "body": json.loads(encode_body(body))})
+                     "seq": message.seq, "body": body_to_dict(body)})
     return json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
 
 
