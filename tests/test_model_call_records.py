@@ -89,7 +89,7 @@ def test_diagnostic_pages_keep_uncommitted_calls_and_later_settlement(store, des
     reopened = ModelsStore(store.path, store.backup_dir, writable=False)
     records = reopened.read_calls("", 100)
     assert next(row for row in records if row["id"] == first)["failure"] == "OSError"
-    assert next(row for row in records if row["id"] == first)["state"] == "unknown"
+    assert next(row for row in records if row["id"] == first)["state"] == "error"
     assert len(records) == 2
     with pytest.raises(TypeError):
         cast(dict[str, Any], records[0])["state"] = "success"
@@ -152,7 +152,7 @@ async def test_failure_and_cancel_record_unknown_cost_without_retry(
     assert len(seen) == 1
     (call_id,) = call_ids(store)
     record = store.read_call(call_id)
-    assert record["state"] == "unknown"
+    assert record["state"] == "error"
     assert record["usage"] is None
     assert record["failure"] == type(failure).__name__
 
@@ -241,6 +241,9 @@ def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
     run_migration(migration, store.path.parent)
     assert dump(store.path) == old_schema
     run_timing_migration(timing_migration, store.path.parent)
+    from tests.test_execution_failure_migration import load_migration
+    failure = load_migration()
+    failure["_migrate"](store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
     call_id = store.start_call(descriptor, ModelRequest(()))
     # 模拟 provider 已接到请求，进程在收到响应前崩溃；不会重放或把费用补成零。
     reopened = ModelsStore(store.path, store.backup_dir)
@@ -248,7 +251,7 @@ def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
     assert reopened.read_call(call_id)["state"] == "started"
     assert reopened.read_call(call_id)["usage"] is None
     after = dump(store.path)
-    run_timing_migration(timing_migration, store.path.parent)
+    failure["_migrate"](store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
     assert dump(store.path) == after
     assert store.read_snapshot().revision == 0
 
@@ -322,7 +325,7 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
         message(
             4,
             ToolResult(
-                CallRef("1", 1), "unknown", (ContentPart("text", "connection lost"),)
+                CallRef("1", 1), "error", (ContentPart("text", "connection lost"),)
             ),
         ),
     )
@@ -342,7 +345,7 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
     ]
     assert request.messages[1]["tool_calls"][0]["id"] == "provider-call"
     assert request.messages[2]["tool_call_id"] == "provider-call"
-    assert "unknown" in request.messages[2]["content"][0]["text"]
+    assert "error" in request.messages[2]["content"][0]["text"]
     assert request.messages[-1]["content"][0]["text"] == "u2 interruption"
     assert request.messages[1]["reasoning_content"] == "private reasoning"
     with pytest.raises(ValueError, match="未结算"):
@@ -680,7 +683,7 @@ async def test_call_timing_survives_reopen_and_preserves_delta_and_usage(store, 
     reopened = ModelsStore(store.path, store.backup_dir, writable=False)
     stats = reopened.read_call_stats(call_id)
     assert stats.first_token_ms == 400 and stats.duration_ms == 1400
-    assert stats.state == ("unknown" if cancel else "success")
+    assert stats.state == ("error" if cancel else "success")
     assert stats.usage == (None if cancel else usage)
     assert seen[1:] == [{"content_delta": ""}, {"thinking_delta": "thinking"}, {"content_delta": "text"}]
     assert set(asdict(stats)) == {"call_record_id", "model", "state", "first_token_ms", "duration_ms", "usage"}
@@ -727,9 +730,9 @@ def test_timing_migration_keeps_all_old_calls_unknown_and_backup_exact(store, de
     run_timing_migration(timing_migration, store.path.parent)
     backups = list((store.path.parent / "backups/model-call-timing").glob("*/model-registry.sqlite3"))
     assert len(backups) == 1 and dump(backups[0]) == before
-    for state in ("started", "success", "unknown"):
-        stats = store.read_call_stats(state)
-        assert stats.state == state and stats.first_token_ms is None and stats.duration_ms is None
+    with closing(sqlite3.connect(store.path)) as connection:
+        rows = connection.execute("SELECT state,first_token_ms,duration_ms FROM model_calls ORDER BY rowid").fetchall()
+    assert rows == [(state, None, None) for state in ("started", "success", "unknown")]
     after = dump(store.path)
     run_timing_migration(timing_migration, store.path.parent)
     assert dump(store.path) == after
@@ -764,7 +767,7 @@ async def test_failed_call_id_announcement_does_not_invent_provider_duration(sto
         await _BoundChat(descriptor, Driver(), store).complete(ModelRequest((), on_delta=receive))
     (call_id,) = call_ids(store)
     stats = store.read_call_stats(call_id)
-    assert stats.state == 'unknown' and stats.first_token_ms is None and stats.duration_ms is None
+    assert stats.state == 'error' and stats.first_token_ms is None and stats.duration_ms is None
     assert stats.usage is None
 
 
@@ -875,6 +878,6 @@ def test_repeated_projection_keeps_dynamic_content_and_live_call_validation(stor
     assert second.messages[0]["content"][0]["text"] is False
     assert type(third.messages[0]["content"][0]["text"]) is int
     with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("UPDATE model_calls SET state='unknown' WHERE id=?", (call,))
+        connection.execute("UPDATE model_calls SET state='error' WHERE id=?", (call,))
     with pytest.raises(ValueError, match="成功结算"):
         projection.render((message,), after_seq=-1)

@@ -12,7 +12,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
 from plugins.delivery.api import Sink
 from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import TOOLS, bind_saved_tool
 from session.message import ContentPart, Input
 from session.message_codec import json_value
 
@@ -86,8 +86,11 @@ class Spawn:
             if configuration is None:
                 fixed[name] = self.targets[name]
             else:
-                async with bindings.open(self.targets[name], TOOLS) as (tools, _):
-                    fixed[name] = tools.bind(name, bindings, configuration=configuration)
+                fixed[name] = await bind_saved_tool(
+                    bindings,
+                    self.targets[name],
+                    configuration=configuration,
+                )
         request = Request(job_id=job_id, label=(args.label or args.task[:30]).strip(), profile=args.profile,
             background=args.run_in_background, retry_count=args.retry_count,
             parent_session_id=source.messages[-1].session_id, parent_message_id=source.call_ref.message_id,

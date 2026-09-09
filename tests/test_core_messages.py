@@ -87,15 +87,26 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
         assert snapshot is not None
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as lease:
             async with lease.composition_root.context.runtime_scope():
-                conversation = lease.composition_root.context.require(CONVERSATION)("local:one")
-                message = await conversation.accept("input-one", Input((ContentPart("text", "尚未启动回复服务"),)))
-        assert MessageCatalog(core.message_log).reader("local:one").snapshot() == (message,)
-        from plugins.tools.plugin import TOOLS
+                conversation = lease.composition_root.context.require(CONVERSATION)(
+                    "local:one"
+                )
+                message = await conversation.accept(
+                    "input-one", Input((ContentPart("text", "尚未启动回复服务"),))
+                )
+        assert MessageCatalog(core.message_log).reader("local:one").snapshot() == (
+            message,
+        )
+        from plugins.tools.plugin import ALL_TOOLS, TOOLS
+
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as lease:
             ctx = lease.composition_root.context
             async with ctx.runtime_scope():
                 tools = ctx.require(TOOLS)
-                binding = tools.bind("message_push", ctx.require(BINDINGS))
+                binding = tools.bind(
+                    ctx.require(ALL_TOOLS)().select("message_push"),
+                    ctx.require(BINDINGS),
+                )
+
                 async def authorize(binding, arguments):
                     return {"approved": True}
                 result = await tools.execution(authorize).execute("offline-push", binding,
@@ -215,10 +226,13 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 assert all(item.healthy for item in snapshot.composition_root.receipt().health if item.owner == "akasha")
                 graph = workspace / "memory/akasha.db"
                 before = logical_state_sha256(graph)
-                from plugins.tools.plugin import TOOLS
+                from plugins.tools.plugin import ALL_TOOLS, TOOLS
                 from agent.plugins.archive import PluginArchive
                 tools = ctx.require(TOOLS)
-                binding = tools.bind("recall_memory", ctx.require(BINDINGS))
+                binding = tools.bind(
+                    ctx.require(ALL_TOOLS)().select("recall_memory"),
+                    ctx.require(BINDINGS),
+                )
                 binding_description = ctx.require(BINDINGS).describe(binding, TOOLS)
                 assert isinstance(binding_description, Mapping)
                 binding_state = binding_description.get("state")

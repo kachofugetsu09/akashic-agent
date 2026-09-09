@@ -156,13 +156,16 @@ async def test_archived_schedule_tool_recovers_original_operation_after_source_r
     from agent.plugin_composition.bindings import Bindings
     from agent.plugins.manager import PluginManager
     from bus.event_bus import EventBus
-    from plugins.tools.plugin import TOOLS, open_tool
+    from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 
     install(tmp_path)
     async with application(tmp_path, replying=False, start=False) as (log, host):
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            tool = snapshot.composition_root.context.require(TOOLS).bind("schedule", bindings)
+            ctx = snapshot.composition_root.context
+            tool = ctx.require(TOOLS).bind(
+                ctx.require(ALL_TOOLS)().select("schedule"), bindings
+            )
             async with open_tool(bindings, tool) as bound:
                 prepared = await bound.prepare({"tier": "instant", "trigger": "after", "when": "1h",
                     "channel": "test", "chat_id": "room", "timezone": "UTC", "message": "original"})
@@ -332,10 +335,30 @@ async def test_restart_preclaims_passive_effect_before_scheduler_or_archive_can_
                 fire = await settled(store, fire_key(job))
                 assert fire.status == "delivered"
                 records = DeliveryRecords(log.owner("plugin:delivery"), "delivery_policy")
-                assert records.read("original-output", "test")[1].phase == ("delivered" if confirmed else "unknown")
+                assert records.read("original-output", "test")[1].phase == ("delivered" if confirmed else "failed")
                 assert state["queries"] == 1
                 assert len(next((tmp_path / "workspace").rglob("sent.jsonl")).read_text().splitlines()) == 2
     finally:
         release.set()
         await host.terminate_all()
         log.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_sender_failure_closes_fire_in_same_runtime(tmp_path, raises):
+    """已落盘的发送失败立即结束调度，不等待服务重启。"""
+    install(tmp_path)
+    sender = tmp_path / "plugins/test_sender/plugin.py"
+    failure = 'raise TimeoutError("sender connection lost")' if raises else 'return Receipt(status="failed", error="sender connection lost")'
+    sender.write_text(sender.read_text().replace('return Receipt(status="delivered", provider_ids=("original-A",))', failure))
+    async with application(tmp_path, replying=False, start=False) as (log, host):
+        store = JobStore(tmp_path / "workspace/schedules.json")
+        job = ScheduledJob(trigger="after", tier="instant", fire_at=datetime.now(UTC) - timedelta(seconds=1),
+                           channel="test", chat_id="room", timezone="UTC", message="notice")
+        store.add("schedule", job, "created")
+        await host.start_runtime()
+        fire = await settled(store, fire_key(job))
+        assert fire.status == "failed" and fire.error
+        assert len(log.reader("test:room").snapshot()) == 1
+        assert len(next((tmp_path / "workspace").rglob("sent.jsonl")).read_text().splitlines()) == 1

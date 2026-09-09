@@ -129,7 +129,7 @@ async def test_duplicate_waiter_cancel_does_not_cancel_the_effect_owner(environm
 
 
 @pytest.mark.asyncio
-async def test_owner_cancel_records_unknown_and_never_blindly_retries(environment):
+async def test_owner_cancel_records_interrupted_and_never_blindly_retries(environment):
     _, state, tasks, probe, _, execution = environment
     probe.release.clear()
     running = asyncio.create_task(execution.execute("request", "fixed-A", {}))
@@ -138,8 +138,8 @@ async def test_owner_cancel_records_unknown_and_never_blindly_retries(environmen
         running.cancel()
         with pytest.raises(asyncio.CancelledError):
             await running
-        assert state.read("program:request").value["result"]["outcome"] == "unknown"
-        assert (await execution.execute("request", "fixed-A", {})).outcome == "unknown"
+        assert state.read("program:request").value["result"]["outcome"] == "interrupted"
+        assert (await execution.execute("request", "fixed-A", {})).outcome == "interrupted"
         assert len(probe.calls) == 1
     finally:
         probe.release.set()
@@ -148,7 +148,7 @@ async def test_owner_cancel_records_unknown_and_never_blindly_retries(environmen
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("query", [False, True])
-async def test_restart_started_call_queries_before_deciding_unknown(environment, query):
+async def test_restart_started_call_queries_before_closing_failure(environment, query):
     _, state, tasks, probe, _, execution = environment
     await execution.execute("request", "fixed-A", {})
     completed = state.read("program:request")
@@ -168,7 +168,7 @@ async def test_restart_started_call_queries_before_deciding_unknown(environment,
         probe.query_result = Result("success", (ContentPart("text", "queried output"),))
     try:
         result = await execution.execute("request", "fixed-A", {})
-        assert result.outcome == ("success" if query else "unknown")
+        assert result.outcome == ("success" if query else "error")
         assert probe.query_count == 1
         assert len(probe.calls) == 1
     finally:
@@ -333,7 +333,7 @@ async def test_idempotent_recovery_rechecks_permission_after_query(environment):
     execution._authorize = authorize
     try:
         result = await execution.execute("request", "fixed-A", {})
-        assert result.outcome == "unknown"
+        assert result.outcome == "interrupted"
         assert probe.query_count == 1
         assert len(probe.calls) == 1
     finally:
@@ -452,7 +452,7 @@ async def test_cancel_during_recovery_prevents_later_idempotent_reexecution(
         with pytest.raises(asyncio.CancelledError):
             await running
         assert state.read("program:request").value["phase"] == "done"
-        assert (await execution.execute("request", "fixed-A", {})).outcome == "unknown"
+        assert (await execution.execute("request", "fixed-A", {})).outcome == "interrupted"
         assert len(probe.calls) == 1
     finally:
         release.set()

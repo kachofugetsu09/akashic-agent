@@ -47,7 +47,7 @@ def message_id(key: str) -> str:
 
 def result(message_id: str, receipt: Receipt) -> Result:
     payload: dict[str, object] = {"message_id": message_id, **receipt.model_dump(mode="json")}
-    outcome = "success" if receipt.status == "delivered" else "error" if receipt.status == "rejected" else "unknown"
+    outcome = "success" if receipt.status == "delivered" else "error"
     return Result(outcome, (ContentPart("text", json.dumps(payload, ensure_ascii=False)),))
 
 

@@ -17,7 +17,7 @@ export type TimelinePart =
 export type TimelineBody =
   | { kind: "input"; parts: TimelinePart[] }
   | { kind: "output"; parts: TimelinePart[]; finish: "continue" | "complete" | "quiet" }
-  | { kind: "tool_result"; parts: TimelinePart[]; call_ref: { message_id: string; part_index: number }; outcome: "success" | "denied" | "error" | "unknown" | "interrupted" }
+  | { kind: "tool_result"; parts: TimelinePart[]; call_ref: { message_id: string; part_index: number }; outcome: "success" | "denied" | "error" | "interrupted" }
   | { kind: "control"; action: "pause" | "resume" | "abandon" | "failure"; through_seq: number; reason: string | null };
 
 /** 两端共用的展示合同；不把正文类型当作作者身份。 */
@@ -127,7 +127,7 @@ export function readTimelineMessage(value: unknown): TimelineMessage {
     if (body.kind === "tool_result") {
       const ref = object(body.call_ref);
       if (!ref || !nonempty(ref.message_id) || !integer(ref.part_index)
-        || !["success", "denied", "error", "unknown", "interrupted"].includes(String(body.outcome))) throw new Error("工具结果引用或状态无效");
+        || !["success", "denied", "error", "interrupted"].includes(String(body.outcome))) throw new Error("工具结果引用或状态无效");
     }
     // 2. 附件引用必须能从本行元数据解析，不猜存储路径。
     const ids = new Set(row.attachments.map((item) => (item as TimelineAttachment).artifact_id));

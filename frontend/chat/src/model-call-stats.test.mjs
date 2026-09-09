@@ -20,7 +20,8 @@ test("reconnect uses persisted timing, partial or missing usage never produces a
   assert.equal(formatModelCallStats({ ...stats, first_token_ms: null }, false), "耗时 1.4s");
   assert.equal(formatModelCallStats({ ...stats, first_token_ms: null, duration_ms: null, usage: null }, false), "暂无耗时数据");
   assert.equal(formatModelCallStats({ ...stats, state: "started", first_token_ms: null, duration_ms: null, usage: null }, true), "等待首 token…");
-  assert.match(formatModelCallStats({ ...stats, state: "unknown", usage: null }, false), /用量未结算/u);
+  assert.match(formatModelCallStats({ ...stats, state: "error", usage: null }, false), /用量未结算/u);
+  assert.doesNotMatch(formatModelCallStats({ ...stats, state: "error" }, false), /用量未结算/u);
   assert.doesNotMatch(formatModelCallStats({ ...stats, duration_ms: 400 }, false), /tok\/s/u);
 });
 

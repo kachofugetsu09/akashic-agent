@@ -25,7 +25,7 @@ from agent.plugins.archive import PluginArchive
 from agent.plugin_composition.mcp_slots import PluginMcpServers, _freeze_plugin_mcp_servers
 from plugins.tools import plugin as tools_plugin
 from plugins.tools.api import MessageReply
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection import plugin as turn_projection_plugin
 from session.log import MessageLog
 from agent.plugin_composition.tool_catalog import _freeze_plugin_tools
@@ -115,7 +115,9 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
                 data_dir=tmp_path / "computer-data", workspace=tmp_path, config={},
             ),
         )
-        assert [item["name"] for item in root.context.require(TOOLS).descriptions()] == ["computer"]
+        assert [ref.name for ref in root.context.require(ALL_TOOLS)().refs] == [
+            "computer"
+        ]
         registry = _freeze_plugin_mcp_servers(mcp, root.instance_token)
         assert registry["computer"].definition.workload_env[0].env == "COMPUTER_URL"
     finally:
@@ -419,7 +421,10 @@ class _ComputerHarness:
 
     async def bind_computer(self) -> str:
         async with lease_runtime_snapshot(self.manager.snapshot_store):
-            self.binding = self.tools.bind("computer", self.bindings)
+            self.binding = self.tools.bind(
+                self.composition_root.context.require(ALL_TOOLS)().select("computer"),
+                self.bindings,
+            )
         assert self.binding is not None
         return self.binding
 
@@ -743,7 +748,7 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
         reply = harness.add_call("failure", code="fail")
         result = await harness.execute(reply)
         assert result.outcome == "error"
-        assert "503" in result.parts[0].value
+        assert "503" in cast(str, result.parts[0].value)
         assert harness.owner(reply).value["phase"] == "started"
         state.fail_ends = 1
         harness.finish(reply, "complete")
@@ -874,12 +879,13 @@ async def test_computer_script_error_is_durable_and_next_call_can_continue(tmp_p
         reply = harness.add_call("script-error", code="browser.tabs.create()")
         result = await harness.execute(reply)
         assert result.outcome == "error"
-        assert "browser.tabs.create is not a function" in result.parts[0].value
-        assert "earlier effects may remain" in result.parts[0].value
-        assert "JS bindings for this session were reset" in result.parts[0].value
+        assert "browser.tabs.create is not a function" in cast(str, result.parts[0].value)
+        assert "earlier effects may remain" in cast(str, result.parts[0].value)
+        assert "JS bindings for this session were reset" in cast(str, result.parts[0].value)
         calls = len(harness.gateway_state.calls)
         assert await harness.execute(reply) == result
         assert len(harness.gateway_state.calls) == calls
+        assert harness.binding is not None
         output = harness._writer(reply.reader.session_id, "assistant", (Output,)).append(
             "corrected-call", Output((ToolCall(harness.binding, {"code": "browser.tabs.new()"}),), "continue"))
         ref = CallRef(output.message_id, 0)

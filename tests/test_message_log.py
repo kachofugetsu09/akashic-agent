@@ -130,7 +130,7 @@ def test_result_writer_is_bound_to_one_real_call_and_result(log):
     results = writer(log, author="tool", bodies=(ToolResult,), call_ref=ref)
     with pytest.raises(PermissionError):
         results.append("wrong", ToolResult(CallRef("call", 0), "success", ()))
-    result = results.append("result", ToolResult(ref, "unknown", ()))
+    result = results.append("result", ToolResult(ref, "error", ()))
     assert results.append("result", result.body) == result
     with pytest.raises(MessageConflict):
         results.append("second-result", result.body)

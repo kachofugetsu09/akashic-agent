@@ -318,6 +318,7 @@ class DriftStore:
         selection = _identity("selection_token", token)
         if action not in {
             "ready_for_delivery",
+            "failed",
             "defer",
             "await_change",
             "invalidated",
@@ -330,13 +331,19 @@ class DriftStore:
             ).fetchone()
             if row is None:
                 return {"changed": False, "reason": "selection_missing"}
-            if row["status"] != "selected":
+            if row["status"] != "selected" and not (action == "failed" and row["status"] == "ready_for_delivery"):
                 return {"changed": False, "reason": f"status:{row['status']}"}
             if action == "defer" and row["next_due"] is None:
                 raise RuntimeError("Drift defer 缺少 proposal owner 提供的 next_due")
             status = "deferred" if action == "defer" else action
             due_at = row["next_due"] if action == "defer" else None
-            if action == "ready_for_delivery":
+            if action == "failed":
+                # 保留原领取身份，崩溃恢复能读到失败且不会再次选择同一 revision。
+                connection.execute(
+                    "UPDATE proposals SET status='failed', state_version=state_version+1, updated_at=? WHERE selection_token=?",
+                    (datetime.now(UTC).isoformat(), selection),
+                )
+            elif action == "ready_for_delivery":
                 connection.execute(
                     """
                     UPDATE proposals

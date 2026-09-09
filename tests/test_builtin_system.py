@@ -115,6 +115,15 @@ class ScriptedModel:
                 assert task_dir is not None, "模型请求必须给出子任务实际目录"
                 arguments = {key: value.replace("{task_dir}", task_dir[0]) if isinstance(value, str) else value
                              for key, value in arguments.items()}
+            advertised = {
+                item["function"]["name"] for item in body.get("tools", [])
+            }
+            if name not in advertised:
+                assert "tool_call" in advertised, f"模型请求未展示工具: {name}"
+                name, arguments = "tool_call", {
+                    "name": name,
+                    "arguments": arguments,
+                }
             encoded = json.dumps(arguments, ensure_ascii=False)
             middle = max(1, len(encoded) // 2)
             deltas = [{"role": "assistant", "tool_calls": [{"index": 0, "id": f"{label}-{len(results)}",
@@ -219,7 +228,7 @@ async def test_schedule_and_child_complete_real_work_and_survive_reopen(tmp_path
                   ("read_file", {"path": "{task_dir}/child.txt"})],
         "scheduled": [("write_file", {"path": str(scheduled_file), "content": "SCHEDULED:独立原文🧪"})],
     }
-    settings = {"plugins": {"reply": 'tools = ["schedule", "spawn", "list_schedules"]\n'}}
+    settings: dict = {}
     async with model.serve() as endpoint:
         async with runtime(tmp_path, endpoint, settings=settings) as (first, address):
             async with await AsyncAkashic.connect(address) as client:
@@ -326,7 +335,7 @@ async def test_real_embedding_recall_and_dashboard_keep_original_messages_after_
     """实际 HTTP embedding 学习后跨进程召回，出处和详情必须指向原会话的完整消息。"""
     model = ScriptedModel(tmp_path)
     model.steps["recall"] = [("recall_memory", {"query": "ORIGINAL:雪山蓝莓", "limit": 5})]
-    settings = {"embedding": True, "plugins": {"reply": 'tools = ["recall_memory"]\n'}}
+    settings = {"embedding": True}
     async with model.serve() as endpoint:
         async with runtime(tmp_path, endpoint, settings=settings) as (_first, address):
             async with await AsyncAkashic.connect(address) as client:
@@ -379,22 +388,18 @@ async def test_crash_at_tool_commit_preserves_effect_and_recovers_without_repeat
                                 (item["body"].get("finish") == "complete" or item["body"].get("action") == "failure") for item in event["items"]):
                                 break
                 rows = (await client.message_read(session))["items"]
-                assert tool_outcomes(rows) == (["unknown"] if phase == "before_tool_result" else ["success"])
+                assert tool_outcomes(rows) == (["error"] if phase == "before_tool_result" else ["success"])
                 assert len(rows) == 4 and rows[0]["id"] == "input-crash"
+                assert rows[-1]["body"]["finish"] == "complete"
                 if phase == "before_tool_result":
-                    assert rows[-1]["body"]["action"] == "failure"
-                    assert "工具效果需核对" in rows[-1]["body"]["reason"]
+                    assert any("error" in str(message["content"]) and "先检查当前状态" in str(message["content"])
+                               for request in model.requests for message in request["messages"]
+                               if message["role"] == "tool")
                 assert effect.stat().st_mtime_ns == original_write, "恢复重放了无法安全重试的文件写入"
                 assert effect.read_text() == "COMMITTED_EFFECT:原文🧪"
                 continued = await complete(client, session, "after_crash", after=rows[-1]["seq"])
                 assert continued[:len(rows)] == rows
-                if phase == "before_tool_result":
-                    # 新 Input 不是未知外部效果的确认，不得绕过原停止边界。
-                    assert continued[-1]["body"]["action"] == "failure"
-                    fresh = (await client.session_create())["session_id"]
-                    assert "DONE:fresh" in str((await complete(client, fresh, "fresh"))[-1])
-                else:
-                    assert "DONE:after_crash" in str(continued[-1])
+                assert "DONE:after_crash" in str(continued[-1])
                 assert effect.stat().st_mtime_ns == original_write
 
 
@@ -406,7 +411,7 @@ async def test_compaction_projects_exact_facts_to_markdown_without_rewriting_his
     for label in ("long_a", "long_b", "long_c", "long_d"):
         model.answers[label] = "ANSWER:" + label + "\n" + padding
     settings = {"context_window": 20000, "plugins": {
-        "reply": 'tools = []\nmax_output_tokens = 1000\n',
+        "reply": 'max_output_tokens = 1000\n',
         "compaction": 'keep_recent_tokens = 128\n',
     }}
     async with model.serve() as endpoint:

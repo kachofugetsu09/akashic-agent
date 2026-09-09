@@ -29,10 +29,10 @@ from plugins.conversation.program import run_reply
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.api import MessageReply
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
-from plugins.standard_tools.web import WebTool
+from plugins.standard_web.web import WebTool
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import TOOLS, open_tool
-from agent.tools.web_search import WebSearchTool
+from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
+from plugins.standard_web.search import WebSearchTool
 from tests.test_message_push_plugin import storage
 from tests.model_plugin_fakes import build_test_chat_models
 
@@ -58,9 +58,18 @@ def _unexpected_call_read(identity: str) -> Mapping[str, object]:
 
 def environment(tmp_path, *, reply=False):
     source = tmp_path / "plugins"
-    for name in ("tools", "standard_tools", *(("content", "context", "turn_projection") if reply else ())):
-        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
-                        ignore=shutil.ignore_patterns("__pycache__"))
+    for name in (
+        "tools",
+        "content",
+        "context",
+        "standard_tools",
+        *(("turn_projection",) if reply else ()),
+    ):
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins" / name,
+            source / name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
     probe = source / "probe"
     probe.mkdir()
     (probe / "plugin.py").write_text('''from agent.plugin_composition import ServiceKey
@@ -73,10 +82,20 @@ async def apply(ctx, config):
 ''')
     workspace = tmp_path / "workspace"
     store, log = storage(workspace)
-    artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
-    host = PluginManager([source], event_bus=EventBus(), workspace=workspace,
-                         installed_cache_root=tmp_path / "cache", message_log=log,
-                         channel_attachment_store=artifacts)
+    context_config = workspace / "plugin-data/context-builtin/config.local.toml"
+    context_config.parent.mkdir(parents=True, exist_ok=True)
+    context_config.write_text('prompt_sources = {skills = "standard_tools"}\n')
+    artifacts = ChannelAttachmentArtifactStore(
+        workspace=workspace, metadata_store=store
+    )
+    host = PluginManager(
+        [source],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "cache",
+        message_log=log,
+        channel_attachment_store=artifacts,
+    )
     return host, store, log, artifacts, source
 
 
@@ -94,10 +113,20 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
         await host.load_all()
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            tools = snapshot.composition_root.context.require(TOOLS)
-            read = tools.bind("read_file", bindings)
-            write = tools.bind("write_file", bindings, configuration={"allowed_dir": str(tmp_path / "job")})
-            edit = tools.bind("edit_file", bindings, configuration={"allowed_dir": str(tmp_path / "job")})
+            ctx = snapshot.composition_root.context
+            tools = ctx.require(TOOLS)
+            view = ctx.require(ALL_TOOLS)()
+            read = tools.bind(view.select("read_file"), bindings)
+            write = tools.bind(
+                view.select("write_file"),
+                bindings,
+                configuration={"allowed_dir": str(tmp_path / "job")},
+            )
+            edit = tools.bind(
+                view.select("edit_file"),
+                bindings,
+                configuration={"allowed_dir": str(tmp_path / "job")},
+            )
         shutil.rmtree(source)
         execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize, task_key="effects")
         missing = await execution.execute("missing", read, {"path": str(tmp_path / "missing")})
@@ -145,11 +174,25 @@ async def test_standard_shell_config_and_cleanup_use_same_archived_job_owner(tmp
         await host.load_all()
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            catalog = snapshot.composition_root.context.require(TOOLS)
-            configuration = {"owner_key": "job-a", "working_dir": str(tmp_path), "allow_network": False}
-            command = catalog.bind("shell", bindings, configuration=configuration)
-            stdin = catalog.bind("write_stdin", bindings, configuration=configuration)
-            foreign = catalog.bind("write_stdin", bindings, configuration={**configuration, "owner_key": "job-b"})
+            ctx = snapshot.composition_root.context
+            catalog = ctx.require(TOOLS)
+            view = ctx.require(ALL_TOOLS)()
+            configuration = {
+                "owner_key": "job-a",
+                "working_dir": str(tmp_path),
+                "allow_network": False,
+            }
+            command = catalog.bind(
+                view.select("shell"), bindings, configuration=configuration
+            )
+            stdin = catalog.bind(
+                view.select("write_stdin"), bindings, configuration=configuration
+            )
+            foreign = catalog.bind(
+                view.select("write_stdin"),
+                bindings,
+                configuration={**configuration, "owner_key": "job-b"},
+            )
             cleanup = bindings.bind(SHELL_OWNERS, {})
         shutil.rmtree(source)
         execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize, task_key="effects")
@@ -233,7 +276,10 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
         await host.load_all()
         bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            tool = snapshot.composition_root.context.require(TOOLS).bind("shell", bindings)
+            root = snapshot.composition_root.context
+            tool = root.require(TOOLS).bind(
+                root.require(ALL_TOOLS)().select("shell"), bindings
+            )
             probe_binding = bindings.bind(probe, {})
         first = await start_shell_call(log, bindings, tasks, tool, "conversation", "first")
         second = await start_shell_call(log, bindings, tasks, tool, "wake", "second")
@@ -271,7 +317,13 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
             root = snapshot.composition_root.context
             ctx = root.require(ServiceKey("standard-tools-probe"))
             catalog = root.require(TOOLS)
-            binding = catalog.bind("shell", bindings, configuration={"owner_key": "explicit-job"} if case == "complete" else {})
+            binding = catalog.bind(
+                root.require(ALL_TOOLS)().select("shell"),
+                bindings,
+                configuration=(
+                    {"owner_key": "explicit-job"} if case == "complete" else {}
+                ),
+            )
             reader = log.reader("shared")
             log.writer("shared", author="user", source="conversation", body_types=(Input,), content={"text": check_text}).append(
                 "input", Input((ContentPart("text", "work"),)))
@@ -285,9 +337,22 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
                 nonlocal execution_id
                 if case != "recover":
                     assert tools.schemas
-                    message = output.append("call", Output((ToolCall(tools.bind("shell"), {
-                        "command": "sleep 30", "description": "reply lifecycle", "yield_time_ms": 250,
-                    }),), "continue"))
+                    message = output.append(
+                        "call",
+                        Output(
+                            (
+                                ToolCall(
+                                    binding,
+                                    {
+                                        "command": "sleep 30",
+                                        "description": "reply lifecycle",
+                                        "yield_time_ms": 250,
+                                    },
+                                ),
+                            ),
+                            "continue",
+                        ),
+                    )
                     result = await tools.execute(CallRef(message.message_id, 0))
                     execution_id = json.loads(result.parts[0].value)["execution_id"]
                 backend = host._plugin_processes._manager
@@ -311,11 +376,23 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
 
             async def program(task):
                 return await run_reply(
-                    ctx, task, reader, "conversation", models=models, content=root.require(CONTENT),
-                    context=root.require(CONTEXT), tools=catalog, react=controlled_react,
-                    materials=root.require(MATERIALS), turn_projection=root.require(TURN_PROJECTION),
-                    read_call=_unexpected_call_read, authorize=allow, tool_names=("shell",),
-                    fixed_bindings={"shell": binding}, max_output_tokens=100, max_steps=4,
+                    ctx,
+                    task,
+                    reader,
+                    "conversation",
+                    models=models,
+                    content=root.require(CONTENT),
+                    context=root.require(CONTEXT),
+                    tools=catalog,
+                    react=controlled_react,
+                    materials=root.require(MATERIALS),
+                    turn_projection=root.require(TURN_PROJECTION),
+                    read_call=_unexpected_call_read,
+                    authorize=allow,
+                    tool_view=None,
+                    fixed_bindings={"shell": binding},
+                    max_output_tokens=100,
+                    max_steps=4,
                 )
 
             task = await root.require(TASKS).open(ctx).admit("reply", lambda slot: slot.start(program))

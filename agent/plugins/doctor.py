@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
+from agent.plugins.archive import PluginArchive, tree_entries
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
@@ -274,7 +275,7 @@ def _check_capabilities(
         misdirected: list[str] = []
         stale: list[str] = []
         if links_required:
-            unlinked, misdirected = _check_expected_links(target, expected)
+            unlinked, misdirected = _check_expected_links(target, expected, workspace / "runtime" / "plugin-archives")
             stale = _stale_link_names(target, expected, projection_root, subpath)
         status = (
             "error"
@@ -393,6 +394,7 @@ def _expected_skill_links(
 def _check_expected_links(
     target: Path,
     expected: dict[str, Path],
+    archive_root: Path,
 ) -> tuple[list[str], list[str]]:
     unlinked: list[str] = []
     misdirected: list[str] = []
@@ -400,8 +402,22 @@ def _check_expected_links(
         link = target / name
         if not link.is_symlink():
             unlinked.append(name)
-        elif _link_target(link) != expected_target:
-            misdirected.append(name)
+        else:
+            actual = _link_target(link)
+            if actual == expected_target:
+                continue
+            if not actual.is_relative_to(archive_root.resolve()):
+                misdirected.append(name)
+                continue
+            relative = actual.relative_to(archive_root.resolve())
+            if len(relative.parts) < 3 or relative.parts[1] != "tree":
+                misdirected.append(name)
+                continue
+            # 归档 owner 验证完整对象；doctor 再核对声明的技能内容。
+            archive = PluginArchive(archive_root, create=False)
+            archive.open(relative.parts[0])
+            if tree_entries(actual) != tree_entries(expected_target):
+                misdirected.append(name)
     return unlinked, misdirected
 
 

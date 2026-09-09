@@ -37,7 +37,6 @@ interface WakeAttempt {
     | "model_skip"
     | "deferred"
     | "cancelled_after_fire"
-    | "delivery_unknown"
     | "failed";
   owner: "alert" | "content" | "drift" | null;
   detail: string | null;
@@ -86,7 +85,6 @@ function outcomeText(outcome: WakeAttempt["outcome"]): string {
     model_skip: "模型跳过",
     deferred: "已延期",
     cancelled_after_fire: "触发后关闭",
-    delivery_unknown: "送达未知",
     failed: "检查失败",
   }[outcome];
 }

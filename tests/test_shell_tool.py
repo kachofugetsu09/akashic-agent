@@ -13,12 +13,12 @@ import pytest
 
 from agent.control.context import running_turn_id
 from agent.plugin_composition import LLMResponse
-from agent.tools.shell import ShellTaskStopTool
-from agent.tools.shell import ShellTool
-from agent.tools.shell import ShellWriteStdinTool
-from agent.tools.shell import _shell_env
-from agent.tools.shell import _validate_command
-from agent.tools.shell import _validate_network_command
+from plugins.standard_tools.shell_backend import ShellTaskStopTool
+from plugins.standard_tools.shell_backend import ShellTool
+from plugins.standard_tools.shell_backend import ShellWriteStdinTool
+from plugins.standard_tools.shell_backend import _shell_env
+from plugins.standard_tools.shell_backend import _validate_command
+from plugins.standard_tools.shell_backend import _validate_network_command
 from agent.tools.shell_command import ResolvedShell
 from agent.tools.shell_command import ShellKind
 from agent.tools.shell_command import detect_shell_kind
@@ -86,7 +86,9 @@ async def test_shell_logs_joinable_metadata_without_command_text(
     command = "printf shell-log-private-marker"
     session_token = current_session_key.set("session:logging")
     try:
-        with caplog.at_level(logging.INFO, logger="agent.tools.shell"):
+        with caplog.at_level(
+            logging.INFO, logger="plugins.standard_tools.shell_backend"
+        ):
             result = _decode(
                 await ShellTool(manager).execute(
                     command=command,

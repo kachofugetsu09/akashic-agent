@@ -1,5 +1,8 @@
 # 插件 v3 Channel 附件持久化任务合同
 
+> 2026-09-09：本文历史执行状态 unknown/UNKNOWN/uncertain 已被 [0063](../decisions/0063-execution-failures-have-terminal-results.md) 的明确失败终态和收尾规则取代；其他合同不变。
+
+
 本文定义 C23：为 v3 Channel、Core built-in channel 与 Session message 提供唯一附件事实。
 它是 [Channel capability 合同](plugin-v3-channel-capability-task-contract.md) 从 text-only 进入能力等价的前置，
 也是 [持久化状态地图](persistence-state-map.md) 中 `uploads/` 禁止自动清理规则的可执行补充。

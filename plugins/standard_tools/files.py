@@ -12,9 +12,14 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.tools.base import Tool, normalize_tool_parameters
-from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from plugins.standard_tools.filesystem import (
+    EditFileTool,
+    ListDirTool,
+    ReadFileTool,
+    WriteFileTool,
+)
 from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import TOOLS, ToolRef
 from session.artifacts import AttachmentKind
 from session.message import ContentPart
 from session.message_codec import json_value
@@ -94,7 +99,9 @@ class FileTool:
         return None
 
 
-async def register_file(ctx: Context, backend_type: type[FileBackend], *, allowed_dir: Path | None) -> None:
+async def register_file(
+    ctx: Context, backend_type: type[FileBackend], *, allowed_dir: Path | None
+) -> ToolRef:
     """注册 schema 和配置；实际文件/Bridge 只在已打开工具中访问。"""
     prototype = backend_type(enable_bridge=False)
 
@@ -116,8 +123,14 @@ async def register_file(ctx: Context, backend_type: type[FileBackend], *, allowe
         "读取文件。文本带行号，支持 offset/limit 分页；图片保存为附件并交给当前模型查看。"
         if backend_type is ReadFileTool else prototype.description
     )
-    _ = await ctx.require(TOOLS).register(
-        ctx, name=prototype.name, description=description,
-        parameters=normalize_tool_parameters(prototype.parameters), open=open_tool, capture=capture,
-        risk="read-only" if backend_type in (ReadFileTool, ListDirTool) else "read-write", always_on=True,
+    return await ctx.require(TOOLS).register(
+        ctx,
+        name=prototype.name,
+        description=description,
+        parameters=normalize_tool_parameters(prototype.parameters),
+        open=open_tool,
+        capture=capture,
+        risk=(
+            "read-only" if backend_type in (ReadFileTool, ListDirTool) else "read-write"
+        ),
     )

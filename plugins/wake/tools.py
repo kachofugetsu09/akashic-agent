@@ -10,11 +10,13 @@ from session.message import ContentPart, Output, ToolCall
 from session.message_codec import json_value
 
 from .request import STAGE_TOOLS, read_phase, read_request
+from .content import _candidate_payloads
+from .selection import propose_content
 
 
 class ScreenedItem(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    candidate_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1, description="逐字复制本轮候选的完整 candidate_id，不得截短、改写或自行生成。")
     initial_interest: str = Field(min_length=1)
     question: str = Field(min_length=1)
 
@@ -83,6 +85,17 @@ class DecisionTool:
             result = SCHEMAS[self.name].model_validate(json_value(arguments))
         except ValidationError as error:
             raise InvalidArguments(str(error)) from error
+        if isinstance(result, Screen):
+            # 候选身份在模型输入边界核对，错误反馈给本轮模型纠正。
+            proposal = propose_content(request.items, now=request.now)
+            if proposal is None:
+                raise RuntimeError("Wake 初筛缺少原候选集合")
+            allowed = {item["candidate_id"] for item in _candidate_payloads(proposal)}
+            unknown = [item.candidate_id for item in result.items if item.candidate_id not in allowed]
+            if unknown:
+                raise InvalidArguments(
+                    f"candidate_id 不属于本轮候选: {unknown}。请逐字复制候选中的完整 ID，不得截短；本次决定未记录。"
+                )
         return result.model_dump(mode="json")
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:

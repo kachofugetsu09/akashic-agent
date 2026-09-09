@@ -231,6 +231,26 @@ disabled_builtin = ["subagent", "scheduler"]
     assert cfg.disabled_builtin_plugins == frozenset({"subagent", "scheduler"})
 
 
+def test_runtime_accepts_all_real_builtin_entrypoints_and_rejects_unknown(
+    monkeypatch,
+) -> None:
+    from agent.config_models import Config
+    from bootstrap.tools import _disabled_builtin_plugins_for_runtime
+
+    monkeypatch.setenv("AKASHIC_WORKLOAD_SOCKET", "/tmp/fixture.sock")
+    existing = frozenset(
+        {"akasha", "scheduler", "wake", "compaction", "markdown_memory"}
+    )
+    assert (
+        _disabled_builtin_plugins_for_runtime(Config(disabled_builtin_plugins=existing))
+        == existing
+    )
+    with pytest.raises(ValueError, match="未知内置插件: agent_restart, skills"):
+        _disabled_builtin_plugins_for_runtime(
+            Config(disabled_builtin_plugins=frozenset({"skills", "agent_restart"}))
+        )
+
+
 def test_load_config_rejects_removed_spawn_switch(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(

@@ -62,14 +62,14 @@ class DeliveryHistory:
             raise ValueError("送达查询需要非空 message_id 和 sink")
         # Import locally because DeliveryRecords owns the write-side models and
         # already imports the history index types above.
-        from .records import Delivery, delivery_key
+        from .records import delivery_key, read_delivery
 
         row = self._state().read(delivery_key(message_id, sink))
         if row is None:
             return None
         if row.version < 0:
             raise ValueError("送达记录版本无效")
-        delivery = Delivery.model_validate_json(json.dumps(json_value(row.value)))
+        delivery = read_delivery(row.value)
         if delivery.sink.name != sink:
             raise ValueError("送达记录目的地与查询身份不一致")
         return {

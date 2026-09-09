@@ -285,7 +285,8 @@ def test_provider_started_sigkill_recovers_uncertain_without_resend(
     store = DurableDeliveryStore(tmp_path / "settlements.sqlite")
     service = PluginDurableDeliveries(store, None, None)
     recovered = service.lookup(TurnAcceptedReceipt("session:crash", "turn:crash"))
-    assert recovered is not None and recovered.state == "uncertain"
+    assert recovered is not None and recovered.state == "failed"
+    assert recovered.provider_receipt == {"status": "failed", "error": "provider call interrupted; delivery may have occurred"}
     assert service.recoverable() == ()
 
 
@@ -546,7 +547,7 @@ def test_candidate_fence_keeps_akashic_crash_recovery_target(
     )
 
 
-@pytest.mark.parametrize("terminal", ("rejected", "uncertain"))
+@pytest.mark.parametrize("terminal", ("rejected", "failed"))
 def test_candidate_fence_ignores_nonrecoverable_terminal_rows(
     tmp_path: Path,
     terminal: str,

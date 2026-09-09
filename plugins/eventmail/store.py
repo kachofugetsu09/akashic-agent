@@ -1971,6 +1971,7 @@ class EventMailStore:
             "await_change",
             "invalidated",
             "abandoned",
+            "failed",
             "expired",
             "delivered",
         }:
@@ -2008,7 +2009,7 @@ class EventMailStore:
                 if action == "delivered"
                 else (
                     {"selected", "ready_for_delivery"}
-                    if action == "abandoned"
+                    if action in {"abandoned", "failed"}
                     else {"selected"}
                 )
             )
@@ -2049,6 +2050,18 @@ class EventMailStore:
                     )
                 else:
                     self._release_driver(connection, token, updated)
+            elif action == "failed" and row["status"] == "ready_for_delivery":
+                # 只关闭实际引用成员，避免部分已发送内容在下一轮再次选择。
+                members = self._delivery_member_rows(connection, token)
+                if not members:
+                    raise RuntimeError("Content ready batch 缺少 delivery members")
+                for member in members:
+                    connection.execute(
+                        "UPDATE items SET status='failed', item_state_version=item_state_version+1, updated_at=? "
+                        "WHERE source_id=? AND item_id=? AND revision=? "
+                        "AND status IN ('pending','deferred','selected','ready_for_delivery')",
+                        (updated, member["source_id"], member["item_id"], member["revision"]),
+                    )
             elif action == "release":
                 status = "released"
                 result_status = "pending"

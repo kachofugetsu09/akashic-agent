@@ -16,9 +16,10 @@ from agent.plugin_composition.tasks import Task
 from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary, summary_range
 from plugins.models.selection import selection
 from plugins.models.content import load_artifacts, render_content as render_model_content
-from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts
+from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts, check_tool_rejection
 from plugins.tools.api import Authorize, MessageReply, result_message_id
-from plugins.tools.menu import ToolMenu
+from plugins.tools.menu import ToolMenu, ToolPresentation
+from plugins.tools.plugin import ToolView
 from plugins.standard_tools.shell import shell_cleanup
 from session.log import MessageReader
 from session.message import CallRef, ContentPart, Input, Message, Output, ToolResult
@@ -49,18 +50,30 @@ async def run_reply(
     react: Callable[..., Awaitable[Message]],
     materials: ContextMaterials,
     turn_projection: TurnProjection,
-    render_content: ContentRenderer | None = None, read_call: CallReader, authorize: Authorize,
-    tool_names: Sequence[str], max_output_tokens: int, max_steps: int,
-    exclude_materials: frozenset[str] = frozenset(), prompt_hints: Sequence[str] = (),
+    render_content: ContentRenderer | None = None,
+    read_call: CallReader,
+    authorize: Authorize,
+    max_output_tokens: int,
+    max_steps: int,
+    tool_view: ToolView | None = None,
+    tool_names: Sequence[str] | None = None,
+    exclude_materials: frozenset[str] = frozenset(),
+    prompt_hints: Sequence[str] = (),
     fixed_bindings: Mapping[str, str] | None = None,
     preview: Preview | None = None,
     reminders: Sequence[Reminder] = (),
     terminal_tools: frozenset[str] = frozenset(),
+    presentation: ToolPresentation | None = None,
 ) -> Message:
     """普通组合拥有本次程序资源，Source 不必同步签发模型或内容 writer。"""
+    if tool_names is not None:
+        if tool_view is not None or fixed_bindings is None:
+            raise ValueError("旧工具名称只可核对原固定 binding")
+        if len(set(tool_names)) != len(tool_names) or set(tool_names) != set(
+            fixed_bindings
+        ):
+            raise ValueError("旧工具名称与原固定 binding 不一致")
     # 1. 内容检查器与模型绑定覆盖整个程序，取消时先排空已开始的工具。
-    if terminal_tools - set(tool_names):
-        raise ValueError("终结工具必须属于本次允许目录")
     prompt_hints = tuple(prompt_hints)
     reader = reader.incremental()
     source_head = reader.head(source=source)
@@ -91,7 +104,7 @@ async def run_reply(
                 result_message_id(ref), ref, reader,
                 writers.bind(
                     ctx, author="tool", source=source, body_types=(ToolResult,),
-                    content={**view.checks, "tool.selection": lambda part: menu.check_selection(ref, part)},
+                    content=view.checks,
                 )(reader.session_id, call_ref=ref),
                 lambda: check_source(task, reader, source, source_head),
             )
@@ -99,12 +112,14 @@ async def run_reply(
         menu = ToolMenu(tools, bindings, tools.execution(
             authorize, child_permit=task.child_permit if task.has_external_permit else None,
         ), reply,
-                        names=tool_names, reader=reader, source=source,
-                        limit=model.max_tool_schemas, fixed_bindings=fixed_bindings)
+                        view=tool_view, limit=model.max_tool_schemas,
+                        fixed_bindings=fixed_bindings, presentation=presentation)
+        if terminal_tools - menu.names:
+            raise ValueError("终结工具必须属于本次允许目录")
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
             check_metadata=view.check_metadata,
-            content={**view.checks, "model.facts": check_facts, "context.summary": check_summary}, check_call=menu.check_call,
+            content={**view.checks, "model.facts": check_facts, "model.tool_rejection": check_tool_rejection, "context.summary": check_summary}, check_call=menu.check_call,
         )(reader.session_id)
         task.on_close(output.expire)
         artifacts: Mapping[str, tuple[Mapping[str, Any], ...]] = {}
@@ -118,7 +133,9 @@ async def run_reply(
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
         async def build_materials(messages: tuple[Message, ...]) -> Materials:
             nonlocal artifacts
-            result = await material_view.prepare(messages, source, caller=ctx, reminders=tuple(reminders))
+            result = await material_view.prepare(
+                messages, source, caller=ctx, reminders=tuple(reminders),
+            )
             if render_content is None:
                 start = 0 if result.summary is None else summary_range(messages, result.summary.source_message_ids).stop
                 refs = reader.attachments_for(tuple(
@@ -132,7 +149,7 @@ async def run_reply(
                     )
             check_source(task, reader, source, source_head)
             return replace(result, system_prompt="\n\n".join(
-                part for part in (result.system_prompt, *view.prompts, *prompt_hints) if part
+                part for part in (result.system_prompt, *view.prompts, *prompt_hints, menu.system_prompt) if part
             ))
 
         async def reduce(

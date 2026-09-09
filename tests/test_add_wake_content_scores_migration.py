@@ -35,6 +35,8 @@ def _wake_v7(workspace: Path) -> Path:
     state = WakeState(path)
     state.initialize()
     with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute("DROP TABLE wake_attempts")
+        connection.execute(_load_migration()._ATTEMPT_SQL)
         connection.execute("DROP TABLE content_scores")
         connection.execute("ALTER TABLE admission_state RENAME TO admission_state_v8")
         connection.execute(
@@ -65,7 +67,6 @@ def test_migration_backs_up_v7_then_adds_empty_score_ledger(tmp_path: Path) -> N
     ):
         migration.add_wake_content_scores(object())
 
-    WakeState(path).initialize()
     with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (8,)
         assert connection.execute("SELECT count(*) FROM content_scores").fetchone() == (

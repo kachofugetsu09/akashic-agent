@@ -80,7 +80,7 @@ class ToolExecution:
                     "reply_id": reply.message_id,
                     "phase": "prepared", "arguments": call.arguments,
                 })
-            outcome: Outcome = "unknown" if record.value["phase"] == "started" else "denied"
+            outcome: Outcome = "interrupted" if record.value["phase"] == "started" else "denied"
             return finish(self._state, key, record, Result(outcome, (ContentPart("text", reason),)), reply)
 
         def admit(slot: TaskSlot) -> Task:
@@ -240,7 +240,7 @@ class ToolExecution:
                             key,
                             record,
                             Result(
-                                "unknown", (ContentPart("text", "原工具效果无法确定"),)
+                                "error", (ContentPart("text", "原工具调用中断且没有可查询结果；先检查当前状态，不要直接重复执行原操作。"),)
                             ),
                             reply,
                         )
@@ -254,7 +254,7 @@ class ToolExecution:
                         key,
                         record,
                         Result(
-                            "unknown" if started else "denied",
+                            "interrupted" if started else "denied",
                             (ContentPart("text", str(error)),),
                         ),
                         reply,
@@ -277,8 +277,8 @@ class ToolExecution:
                             key,
                             record,
                             Result(
-                                "unknown",
-                                (ContentPart("text", "工具调用未取得可确认结果"),),
+                                "interrupted" if isinstance(failure, asyncio.CancelledError) else "error",
+                                (ContentPart("text", "工具调用取消，已执行的效果不会撤销。" if isinstance(failure, asyncio.CancelledError) else f"工具执行失败: {type(failure).__name__}；已执行的效果不会撤销。"),),
                             ),
                             reply,
                         )
@@ -295,7 +295,7 @@ class ToolExecution:
                         key,
                         current,
                         Result(
-                            "unknown", (ContentPart("text", "原工具调用在恢复时取消"),)
+                            "interrupted", (ContentPart("text", "原工具调用在恢复时取消；已执行的效果不会撤销。"),)
                         ),
                         reply,
                     )
@@ -419,4 +419,4 @@ def _read_result(value: object) -> Result:
         if set(item) != {"kind", "value"}:
             raise ValueError("工具结果内容块损坏")
         content.append(ContentPart(cast(str, item["kind"]), item["value"]))
-    return Result(cast(Outcome, data["outcome"]), tuple(content))
+    return Result(cast(Outcome, "error" if data["outcome"] == "unknown" else data["outcome"]), tuple(content))

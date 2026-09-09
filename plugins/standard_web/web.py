@@ -9,16 +9,14 @@ import httpx
 
 from agent.plugin_composition import Context
 from agent.tools.base import normalize_tool_parameters
-from agent.tools.web_fetch import WebFetchTool
-from agent.tools.web_search import WebSearchTool
+from plugins.standard_web.fetch import WebFetchTool
+from plugins.standard_web.search import WebSearchTool
 from core.net.http import HttpRequester, RequestBudget, RetryPolicy
 from plugins.tools.api import CallSource, Result
-from plugins.tools.plugin import TOOLS
+from plugins.tools.api import InvalidArguments
+from plugins.tools.plugin import TOOLS, ToolRef
 from session.message import ContentPart
 from session.message_codec import json_value
-
-from .files import prepare_arguments
-
 
 class WebTool:
     idempotent = False
@@ -27,7 +25,13 @@ class WebTool:
         self._backend = backend
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
-        return prepare_arguments(self._backend, arguments)
+        raw = cast(dict[str, Any], json_value(arguments))
+        errors = self._backend.validate_params(
+            raw, schema=normalize_tool_parameters(self._backend.parameters)
+        )
+        if errors:
+            raise InvalidArguments("; ".join(errors))
+        return raw
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         text = await self._backend.execute(**cast(dict[str, Any], json_value(arguments)))
@@ -42,7 +46,7 @@ class WebTool:
         return None
 
 
-async def register_web(ctx: Context) -> None:
+async def register_web(ctx: Context) -> tuple[ToolRef, ...]:
     """复用 HTTP 预算与重试实现，每次资源 scope 自行关闭客户端。"""
     @asynccontextmanager
     async def open_fetch(_state: Mapping[str, object]) -> AsyncGenerator[WebTool]:
@@ -54,9 +58,11 @@ async def register_web(ctx: Context) -> None:
     async def open_search(_state: Mapping[str, object]) -> AsyncGenerator[WebTool]:
         yield WebTool(WebSearchTool())
 
+    refs: list[ToolRef] = []
     for backend, open_tool in ((WebFetchTool, open_fetch), (WebSearchTool, open_search)):
-        _ = await ctx.require(TOOLS).register(
+        refs.append(await ctx.require(TOOLS).register(
             ctx, name=backend.name, description=backend.description,
             parameters=normalize_tool_parameters(backend.parameters), open=open_tool,
-            risk="read-only", always_on=True,
-        )
+            risk="read-only",
+        ))
+    return tuple(refs)

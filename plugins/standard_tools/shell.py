@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from agent.tools.shell import _log_shell_execution, _shell_env
+from plugins.standard_tools.shell_backend import _log_shell_execution, _shell_env
 from agent.tools.shell_command import resolve_shell
 from agent.tools.shell_security import validate_command
 from agent.tools.unified_exec import (
@@ -23,7 +23,7 @@ from agent.tools.unified_exec import (
     clamp_initial_yield_time, clamp_write_stdin_yield_time, format_execution_result,
 )
 from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import TOOLS, ToolRef
 from session.log import MessageReader
 from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall
 from session.message_codec import json_value
@@ -195,7 +195,7 @@ class ShellTool:
             stop = PreparedStop.model_validate(raw)
             stopped = await processes.terminate_execution(self._ctx, stop.owner_key, stop.execution_id)
             return Result("success" if stopped else "error", (ContentPart("text", json.dumps({
-                "execution_id": stop.execution_id, "process_status": "stopped" if stopped else "unknown",
+                "execution_id": stop.execution_id, **({"process_status": "stopped"} if stopped else {}),
                 "status": "stopped" if stopped else "not_found",
             })),))
         if self._name == "write_stdin":
@@ -232,7 +232,7 @@ class ShellTool:
         return None
 
 
-async def register_shell(ctx: Context) -> None:
+async def register_shell(ctx: Context) -> tuple[ToolRef, ...]:
     """配置由 Shell owner 校验，所有操作与作业释放共用此插件身份。"""
     _ = await ctx.provide(SHELL_OWNERS, ShellOwners(ctx))
     definitions: tuple[tuple[Literal["shell", "write_stdin", "task_stop"], type[BaseModel], str], ...] = (
@@ -240,11 +240,18 @@ async def register_shell(ctx: Context) -> None:
         ("write_stdin", Stdin, "续接命令，等待新增输出或输入 PTY 字符；仅返回上次读取后的新增内容。"),
         ("task_stop", Stop, "确认终止命令的进程组并释放 execution_id。"),
     )
+    refs: list[ToolRef] = []
     for name, schema, description in definitions:
-        await _register(ctx, name, schema, description)
+        refs.append(await _register(ctx, name, schema, description))
+    return tuple(refs)
 
 
-async def _register(ctx: Context, name: Literal["shell", "write_stdin", "task_stop"], schema: type[BaseModel], description: str) -> None:
+async def _register(
+    ctx: Context,
+    name: Literal["shell", "write_stdin", "task_stop"],
+    schema: type[BaseModel],
+    description: str,
+) -> ToolRef:
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         return ShellSettings.model_validate(json_value(configuration)).model_dump()
 
@@ -252,9 +259,14 @@ async def _register(ctx: Context, name: Literal["shell", "write_stdin", "task_st
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[ShellTool]:
         yield ShellTool(ctx, name, ShellSettings.model_validate(json_value(state)))
 
-    _ = await ctx.require(TOOLS).register(
-        ctx, name=name, description=description, parameters=schema.model_json_schema(),
-        open=open_tool, capture=capture, risk="external-side-effect", always_on=True,
+    return await ctx.require(TOOLS).register(
+        ctx,
+        name=name,
+        description=description,
+        parameters=schema.model_json_schema(),
+        open=open_tool,
+        capture=capture,
+        risk="external-side-effect",
     )
 
 

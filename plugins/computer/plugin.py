@@ -256,6 +256,7 @@ async def _open_target(ctx: Context, state: Mapping[str, object]) -> AsyncIterat
 async def apply(ctx: Context, config: object) -> None:
     """注册唯一 Computer Tool、专属 control binding 与资源声明。"""
     _ = config
+    _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)
     control = ComputerControl(ctx)
     _ = await ctx.provide(COMPUTER_CONTROL, control)
     await ctx.require(TOOLS).register(

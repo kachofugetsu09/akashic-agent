@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Generator, Mapping, cast
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _TABLE_SQL = """
 CREATE TABLE deliveries(
     logical_delivery_id TEXT PRIMARY KEY,
@@ -21,7 +21,7 @@ CREATE TABLE deliveries(
     metadata_json TEXT NOT NULL,
     state TEXT NOT NULL CHECK(state IN (
         'prepared', 'provider_started', 'delivered', 'projected', 'settled',
-        'rejected', 'uncertain'
+        'rejected', 'failed'
     )),
     attempt_id TEXT,
     snapshot_id TEXT,
@@ -75,10 +75,11 @@ class DurableDeliveryStore:
         with self._transaction(write=True) as connection:
             cursor = connection.execute(
                 """
-                UPDATE deliveries SET state = 'uncertain', updated_at = ?
+                UPDATE deliveries SET state = 'failed', provider_receipt_json = ?, updated_at = ?
                 WHERE state = 'provider_started' AND channel != 'akashic'
                 """,
-                (now,),
+                (json.dumps({"status": "failed", "error": "provider call interrupted; delivery may have occurred"},
+                            separators=(",", ":"), sort_keys=True), now),
             )
             return cursor.rowcount
 
@@ -221,9 +222,9 @@ class DurableDeliveryStore:
         state: str,
         receipt: Mapping[str, object],
     ) -> dict[str, object]:
-        """Commit delivered, rejected, or uncertain provider outcome."""
+        """Commit delivered, rejected, or failed provider outcome."""
 
-        if state not in {"delivered", "rejected", "uncertain"}:
+        if state not in {"delivered", "rejected", "failed"}:
             raise ValueError(f"provider result state invalid: {state}")
         logical_id = _identity("logical_delivery_id", logical_delivery_id)
         receipt_json = json.dumps(
@@ -458,7 +459,7 @@ class DurableDeliveryStore:
     def _validate_schema(connection: sqlite3.Connection) -> None:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version != _SCHEMA_VERSION:
-            raise RuntimeError(f"unsupported durable delivery schema: {version}")
+            raise RuntimeError(f"unsupported durable delivery schema: {version}; run yoyo 20260909_02_execution_failures")
         tables = {
             str(row["name"]): str(row["sql"])
             for row in connection.execute(

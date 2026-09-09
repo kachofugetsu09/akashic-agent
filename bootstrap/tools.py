@@ -495,12 +495,23 @@ def _disabled_builtin_plugins_for_runtime(config: Config) -> frozenset[str]:
     """Disable built-in Workload plugins when this deployment has no Controller."""
 
     disabled = set(config.disabled_builtin_plugins)
+    builtin_root = Path(__file__).resolve().parent.parent / "plugins"
+    from agent.plugins.source_resolver import resolve_plugin_sources
+
+    known = {
+        source.plugin_name or source.plugin_root.name
+        for source in resolve_plugin_sources([builtin_root])
+    }
+    unknown = sorted(disabled - known)
+    if unknown:
+        raise ValueError(
+            "agent.plugins.disabled_builtin 包含未知内置插件: " + ", ".join(unknown)
+        )
     if os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip():
         return frozenset(disabled)
 
     from agent.plugins.static_manifest import load_static_plugin_manifest
 
-    builtin_root = Path(__file__).resolve().parent.parent / "plugins"
     unavailable = {
         manifest.name
         for path in builtin_root.glob("*/akashic.plugin.toml")

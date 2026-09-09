@@ -17,7 +17,9 @@ from plugins.akasha.interest import SEMANTIC_INTEREST
 from plugins.delivery.api import Sink
 from plugins.delivery.history import DELIVERY_READ
 from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.tools.plugin import TOOLS
+from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from plugins.tools.plugin import TOOLS, ToolView
 from session.log import MessageReader, OwnerRecord
 from session.message import Message
 from session.message_codec import encode_body
@@ -26,7 +28,7 @@ from .admission import Admission, Duties
 from .api import Config, DRIFT_WAKE, EVENTMAIL_WAKE
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
-from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
+from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, WAKE_TOOLS_VIEW
 from .source import Pointer, Source
 from .state import WakeState, WakeStateReader
 
@@ -168,10 +170,25 @@ class Runtime:
             binding_id=ctx.require(DELIVERY_SENDERS).bind(target.channel, bindings))
         metadata = ctx.require(MESSAGE_CATALOG).reader(target.session_id).metadata()
         model = read_session_model_selection(metadata if metadata is not None else {})
-        return Request(flow_id=flow_id, owner=owner, now=now, timezone=self.config.timezone,
-            target=target, sink=sink, program_binding=bindings.bind(WAKE_PROGRAM, {}),
-            tools={name: ctx.require(TOOLS).bind(name, bindings) for name in WAKE_TOOLS[owner]},
-            snapshot_seq=admission.pool.snapshot_seq, items=tuple(dict(item) for item in admission.pool.items),
+        view = ToolView.combine(
+            ctx.require(WAKE_TOOLS_VIEW),
+            ctx.require(AKASHA_TOOLS),
+            ctx.require(STANDARD_WEB_TOOLS),
+        )
+        return Request(
+            flow_id=flow_id,
+            owner=owner,
+            now=now,
+            timezone=self.config.timezone,
+            target=target,
+            sink=sink,
+            program_binding=bindings.bind(WAKE_PROGRAM, {}),
+            tools={
+                name: ctx.require(TOOLS).bind(view.select(name), bindings)
+                for name in WAKE_TOOLS[owner]
+            },
+            snapshot_seq=admission.pool.snapshot_seq,
+            items=tuple(dict(item) for item in admission.pool.items),
             proposals=tuple(dict(item) for item in admission.proposals),
             alert_ref=None if alert is None else cast(dict[str, str], dict(alert)),
             model_id=model.model_ref or None, reasoning_effort=model.reasoning_effort or None,
@@ -206,7 +223,6 @@ class Runtime:
                 continue
             flow_id = self._begin(receipt)
             owner = None
-            accepted = False
             try:
                 async with self.ctx.runtime_scope():
                     now = self.now()
@@ -220,19 +236,18 @@ class Runtime:
                             "content_insufficient" if admission.pool.due_count or admission.pool.expired_count else "no_due")
                     else:
                         self.source.accept(original)
-                        accepted = True
                         result = await self._run(flow_id)
                         assert result is not None
                         outcome = result
                     self.state.finish_attempt(attempt_id=flow_id, outcome=outcome, owner=owner,
                         detail=admission.detail, completed_at=self.now())
             except asyncio.CancelledError:
-                self.state.finish_attempt(attempt_id=flow_id, outcome="delivery_unknown" if accepted else "cancelled_after_fire", owner=owner,
+                self.state.finish_attempt(attempt_id=flow_id, outcome="cancelled_after_fire", owner=owner,
                     detail="Timer 已触发，原消息与领域回执留待恢复", completed_at=self.now())
                 raise
             except Exception as error:
                 # 本层只闭合本次 Timer 诊断；原错误继续上抛，未完成来源仍由原记录恢复。
-                self.state.finish_attempt(attempt_id=flow_id, outcome="delivery_unknown" if accepted else "failed", owner=owner,
+                self.state.finish_attempt(attempt_id=flow_id, outcome="failed", owner=owner,
                     detail=f"{type(error).__name__}: {error}", completed_at=self.now())
                 raise
 

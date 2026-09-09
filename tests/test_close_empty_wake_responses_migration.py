@@ -20,8 +20,8 @@ from session.message import ContentPart, Control, Input
 from tests.test_wake_messages import application, request
 
 
-def _migration(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    path = Path(__file__).parents[1] / "migrations/yoyo/20260909_01_close_empty_wake_responses.py"
+def _migration(monkeypatch: pytest.MonkeyPatch, name: str = "20260909_01_close_empty_wake_responses") -> ModuleType:
+    path = Path(__file__).parents[1] / "migrations/yoyo" / (name + ".py")
     spec = importlib.util.spec_from_file_location("close_empty_wake_responses_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -29,6 +29,19 @@ def _migration(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     return module
+
+
+def _legacy_attempts(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """用历史表约束构造旧 attempt，不让当前运行时再生产旧状态。"""
+    migration = _migration(monkeypatch, "20260909_02_execution_failures")
+    path = workspace / "plugin-data/wake-builtin/wake.sqlite3"
+    with closing(sqlite3.connect(path)) as connection, connection:
+        rows = connection.execute("SELECT * FROM wake_attempts").fetchall()
+        connection.execute("DROP TABLE wake_attempts")
+        connection.execute(migration._WAKE_OLD)
+        connection.executemany("INSERT INTO wake_attempts VALUES(?,?,?,?,?,?,?,?,?)", rows)
+        connection.execute("UPDATE wake_attempts SET outcome='delivery_unknown'")
+        connection.execute("PRAGMA user_version=8")
 
 
 def _raw_messages(path: Path) -> list[tuple[object, ...]]:
@@ -52,11 +65,12 @@ def test_migration_rejects_incomplete_sessions_without_writing(
     )
     state.finish_attempt(
         attempt_id="b" * 32,
-        outcome="delivery_unknown",
+        outcome="failed",
         owner="content",
         detail="ValueError: 模型没有产生内容或工具调用；空响应不是 quiet",
         completed_at=now,
     )
+    _legacy_attempts(workspace, monkeypatch)
     sessions = workspace / "sessions.db"
     sessions.touch()
 
@@ -123,11 +137,12 @@ async def test_migration_closes_only_exact_legacy_empty_response_and_source_reco
         detail = "ValueError: 模型没有产生内容或工具调用；空响应不是 quiet"
         source.state.finish_attempt(
             attempt_id=original.flow_id,
-            outcome="delivery_unknown",
+            outcome="failed",
             owner="content",
             detail=detail,
             completed_at=now,
         )
+        _legacy_attempts(workspace, monkeypatch)
         migrate = _migration(monkeypatch).migrate
         pointer = log.owner("plugin:wake").read("flow:" + original.flow_id)
         assert pointer is not None
@@ -155,7 +170,8 @@ async def test_migration_closes_only_exact_legacy_empty_response_and_source_reco
         assert isinstance(rows[-1].body, Control)
         assert rows[-1].body.action == "failure"
         assert retryable(rows[-1]) is True
-        assert source.state.get_attempt(original.flow_id)["detail"] == detail
+        with closing(sqlite3.connect(workspace / "plugin-data/wake-builtin/wake.sqlite3")) as database:
+            assert database.execute("SELECT detail FROM wake_attempts WHERE attempt_id=?", (original.flow_id,)).fetchone() == (detail,)
 
         backups = list((workspace / "backups/close-empty-wake-responses").glob("*"))
         assert len(backups) == 1
@@ -168,6 +184,10 @@ async def test_migration_closes_only_exact_legacy_empty_response_and_source_reco
 
         assert migrate(workspace) == 0
         assert list((workspace / "backups/close-empty-wake-responses").glob("*")) == backups
+        from agent.migrations.context import bind_migration_context
+        with bind_migration_context(config_path=tmp_path / "config.toml", workspace=workspace):
+            _migration(monkeypatch, "20260909_02_execution_failures").migrate_execution_failures(None)
+        assert source.state.get_attempt(original.flow_id)["outcome"] == "failed"
         task = await source.start(original.flow_id)
         assert task is not None
         assert await task.join() == "deferred"

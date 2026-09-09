@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { setImmediate as settle } from "node:timers/promises";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 
@@ -21,7 +22,7 @@ function loadRenderer() {
       const item = [...timers].sort((a, b) => a[1].due - b[1].due)[0];
       if (!item || item[1].due > end) break;
       now = item[1].due; timers.delete(item[0]); item[1].callback();
-      await Promise.resolve();
+      await settle();
     }
     now = end;
   };
@@ -51,7 +52,7 @@ test("refresh failure keeps visible recall and open lane, retry settles without 
     const duplicate = result(true);
     duplicate.items.push(duplicate.items[0]);
     calls[0].resolve(duplicate);
-    await Promise.resolve();
+    await settle();
     assert.equal(host.querySelector("details b").textContent, "1");
     host.querySelector("details").open = true;
     await advance(1000);
@@ -59,13 +60,13 @@ test("refresh failure keeps visible recall and open lane, retry settles without 
     await advance(200);
     assert.equal(host.querySelector("[role='status']").hidden, true);
     calls[1].reject(new Error("插件请求超时"));
-    await Promise.resolve();
+    await settle();
     assert.match(host.textContent, /已召回的原消息/);
     assert.equal(host.querySelector("details").open, true);
     host.querySelector("button").click();
     assert.equal(calls.length, 3);
     calls[2].resolve(result(false, "完整召回结果"));
-    await Promise.resolve();
+    await settle();
     assert.equal(host.querySelector("details").open, true);
     assert.equal(host.querySelector("[role='status']").hidden, true);
     await advance(10_000);

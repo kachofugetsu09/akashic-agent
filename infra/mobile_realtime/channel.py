@@ -835,7 +835,7 @@ class MobileRealtimeChannel:
         """从已持久化消息修复中断的 message.send 收据。"""
 
         # 1. 已完成或非消息命令继续复用稳定回复
-        if receipt.status in {"completed", "outcome_unknown"}:
+        if receipt.status == "completed":
             self._processing_commands.discard((device_id, frame.id))
             return _reply_from_receipt(receipt)
         if (device_id, frame.id) in self._processing_commands:
@@ -847,11 +847,7 @@ class MobileRealtimeChannel:
                 },
             )
         if not isinstance(frame, MessageSendCommand):
-            unknown = self._runtime.storage.mark_command_outcome_unknown(
-                device_id=device_id,
-                command_id=frame.id,
-            )
-            return _reply_from_receipt(unknown)
+            return self._complete_interrupted_command(receipt)
 
         # 2. 未完成的 handoff 仍由 Bus 恢复；Message ID 本身不能证明是同一请求。
         session_id = self._normalize_session_id(frame.session_id)
@@ -872,12 +868,9 @@ class MobileRealtimeChannel:
                     },
                 )
             if (device_id, frame.id) in self._receipt_completion_failures:
+                completed = self._complete_interrupted_command(receipt)
                 self._receipt_completion_failures.discard((device_id, frame.id))
-                unknown = self._runtime.storage.mark_command_outcome_unknown(
-                    device_id=device_id,
-                    command_id=frame.id,
-                )
-                return _reply_from_receipt(unknown)
+                return completed
             return self._complete_interrupted_message_send(
                 device_id=device_id,
                 frame=frame,
@@ -897,6 +890,19 @@ class MobileRealtimeChannel:
             return _reply_from_receipt(completed)
         finally:
             self._processing_commands.discard(key)
+
+    def _complete_interrupted_command(self, receipt: CommandReceipt) -> CommandReply:
+        """缺少效果证明时保存失败回复；同一命令 ID 不重新执行。"""
+        completed = self._runtime.storage.complete_command(
+            device_id=receipt.device_id, command_id=receipt.command_id,
+            reply_type=f"{receipt.command_type}.error",
+            reply_payload_json=json.dumps({
+                "code": "command_interrupted",
+                "message": "上次命令在终态记录前中断，外部效果可能已经发生，请先核对状态；不要自动重试",
+            }, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+            session_id=receipt.session_id, turn_id=receipt.turn_id, completed_at=_utc_now(),
+        )
+        return _reply_from_receipt(completed)
 
     def _complete_interrupted_message_send(
         self,
@@ -1109,13 +1115,13 @@ class MobileRealtimeChannel:
             )
             return ProviderDeliveryReceipt(
                 request.delivery_id,
-                ProviderDeliveryStatus.UNKNOWN,
+                ProviderDeliveryStatus.FAILED,
                 error=str(error),
             )
         if isinstance(recipient_count, bool) or not isinstance(recipient_count, int):
             return ProviderDeliveryReceipt(
                 request.delivery_id,
-                ProviderDeliveryStatus.UNKNOWN,
+                ProviderDeliveryStatus.FAILED,
                 error="Mobile durable publish 未返回有效 recipient count",
             )
         if recipient_count <= 0:
@@ -1182,7 +1188,7 @@ class MobileRealtimeChannel:
                     )
                     return ProviderDeliveryReceipt(
                         request.delivery_id,
-                        ProviderDeliveryStatus.UNKNOWN,
+                        ProviderDeliveryStatus.FAILED,
                         error=str(error),
                     )
                 records = cast(
@@ -1240,13 +1246,13 @@ class MobileRealtimeChannel:
             )
             return ProviderDeliveryReceipt(
                 request.delivery_id,
-                ProviderDeliveryStatus.UNKNOWN,
+                ProviderDeliveryStatus.FAILED,
                 error=str(error),
             )
         if receipt.status is not DeliveryStatus.SUCCESS:
             return ProviderDeliveryReceipt(
                 request.delivery_id,
-                ProviderDeliveryStatus.UNKNOWN,
+                ProviderDeliveryStatus.FAILED,
                 error=receipt.detail or "mobile passive delivery 未完成",
             )
         return ProviderDeliveryReceipt(
@@ -3573,13 +3579,7 @@ def _command_hash(frame: ClientCommand) -> str:
 
 def _reply_from_receipt(receipt: CommandReceipt) -> CommandReply:
     if receipt.status != "completed":
-        return CommandReply(
-            type=f"{receipt.command_type}.error",
-            payload={
-                "code": "command_outcome_unknown",
-                "message": "该命令上次执行时中断，请使用原命令 ID 核对状态",
-            },
-        )
+        raise ValueError("未完成命令不能作为最终回复")
     if receipt.reply_type is None or receipt.reply_payload_json is None:
         raise AssertionError("completed 命令收据缺少回复")
     return CommandReply(

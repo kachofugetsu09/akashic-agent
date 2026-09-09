@@ -718,8 +718,10 @@ from tests.model_plugin_fakes import _MODEL_PROVIDERS
     text = f'''from contextlib import asynccontextmanager, closing
 from agent.plugin_composition import Context
 from plugins.akasha.interest import SEMANTIC_INTEREST
+from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.delivery.api import Receipt
 from plugins.delivery.senders import DELIVERY_SENDERS
+from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.api import Result
 from plugins.tools.plugin import TOOLS
 from session.message import ContentPart
@@ -754,12 +756,15 @@ async def apply(ctx: Context, config: object):
     async def open_tool(state):
         del state
         yield NoopTool()
+    refs = {{}}
     for name in ("recall_memory", "web_fetch"):
-        await ctx.require(TOOLS).register(
+        refs[name] = await ctx.require(TOOLS).register(
             ctx, name=name, description="isolated Wake E2E fixture tool",
             parameters={{"type": "object", "additionalProperties": True}},
             open=open_tool, idempotent=True, public=False,
         )
+    await ctx.provide(AKASHA_TOOLS, ctx.require(TOOLS).view(refs["recall_memory"]))
+    await ctx.provide(STANDARD_WEB_TOOLS, ctx.require(TOOLS).view(refs["web_fetch"]))
     class RecordingSender:
         idempotent = True
         def __init__(self):
@@ -1233,7 +1238,7 @@ def _selected_failure_evidence(
         provider_evidence["provider_terminal_counts"] = {
             **terminal_counts,
             "call_done": sum(state == "success" for state in model_call_states),
-            "call_error": sum(state == "unknown" for state in model_call_states),
+            "call_error": sum(state == "error" for state in model_call_states),
         }
     return {
         **provider_evidence,

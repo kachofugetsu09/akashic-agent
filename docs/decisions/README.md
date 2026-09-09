@@ -52,7 +52,7 @@
 | [0044](0044-akashic-channel-uses-web-and-mobile-adapters.md) | accepted | Akashic Channel 使用 Web 与 Mobile 两个 Adapter | AKC-001～AKC-003、MOB-001～MOB-008、SES-001～SES-008 |
 | [0045](0045-akashic-direct-messages-commit-before-notify.md) | accepted | Akashic 主动消息先提交 Session 再通知客户端 | AKC-001～AKC-003、MOB-002、MOB-005、MOB-008、OUT-001、OUT-003～OUT-004 |
 | [0046](0046-plugin-candidate-validation-is-incremental.md) | accepted / implemented | 插件候选只重建依赖闭包 | PLG-001～PLG-004、PLG-008～PLG-010、PLG-014 |
-| [0047](0047-provides-may-bind-one-tool.md) | accepted / implementing | 一个 provide 可以绑定一个 Tool | PLG-001～PLG-014、PRO-001～PRO-002 |
+| [0047](0047-provides-may-bind-one-tool.md) | partially superseded | 一个 provide 可以绑定一个 Tool | PLG-001～PLG-014、PRO-001～PRO-002 |
 | [0048](0048-eventmail-keeps-three-mail-lifecycles.md) | accepted / implemented | EventMail 统一信封并保持三类生命周期 | PLG-014～PLG-016、PRO-001～PRO-005 |
 | [0049](0049-wake-content-is-a-decaying-eventmail-pool.md) | accepted / implemented | Wake Content 是 EventMail 中的衰减池 | PRO-004～PRO-006、PLG-014～PLG-016 |
 | [0050](0050-model-revision-lives-in-ordinary-plugin.md) | accepted | 模型 revision 由普通插件拥有 | RUN-005～RUN-012、ONB-001、PLG-003、PLG-014、PLG-016、WSP-001 |
@@ -67,6 +67,9 @@
 | [0059](0059-abandon-settles-tool-calls.md) | accepted | 明确放弃结算工具调用，不等待物理清理 | RUN-003、RUN-008、SES-003～SES-005、SH-002 |
 | [0060](0060-message-plugin-metadata.md) | accepted | 插件附加信息使用普通 Message metadata | SES-001、SES-003～SES-006、SES-009 |
 | [0061](0061-archive-stopped-legacy-executions.md) | accepted | 已停止旧执行完整归档，不自动续跑 | SES-001、SES-003、WSP-001、BAK-001 |
+| [0062](0062-tools-flow-through-provider-views.md) | accepted / implemented | 工具通过 provider view 流向消费者 | CTX-004、CTX-007、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016、PLG-018 |
+
+| [0063](0063-execution-failures-have-terminal-results.md) | accepted | 执行失败明确收尾，恢复依据原回执 | Tools、Delivery、Wake、Mobile、Models |
 
 ## 新增规则
 

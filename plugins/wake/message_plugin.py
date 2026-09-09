@@ -12,6 +12,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, 
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.timers import TIMERS
 from plugins.akasha.interest import SEMANTIC_INTEREST
+from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.delivery.history import DELIVERY_READ
 from plugins.drift.plugin import DRIFT_CHANGED
 from plugins.content.api import ContentSchema
@@ -22,14 +23,15 @@ from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
-from plugins.tools.plugin import TOOLS
+from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from plugins.tools.plugin import TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 
 from .api import Config, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_CHANGED
 from .program import run
 from .runtime import Runtime
 from .runtime import DashboardView
-from .request import WAKE_PROGRAM, check_phase, check_request
+from .request import WAKE_PROGRAM, WAKE_TOOLS_VIEW, check_phase, check_request
 from .tools import DecisionTool, SCHEMAS
 
 api_version = 3
@@ -43,27 +45,75 @@ web_provides = ()
 web_contract_digests = {
     "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
 }
-inject = (BINDINGS, TASKS, MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION,
-          TOOLS, CHAT_MODELS, CONTENT, CONTEXT, MATERIALS, REACT, MODEL_CALLS, TURN_PROJECTION,
-          DELIVERY, DELIVERY_SENDERS, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, TIMERS, SEMANTIC_INTEREST, DELIVERY_READ)
+inject = (
+    BINDINGS,
+    TASKS,
+    MESSAGE_CATALOG,
+    MESSAGE_WRITERS,
+    OWNER_STATE,
+    SESSION_ADMISSION,
+    TOOLS,
+    CHAT_MODELS,
+    CONTENT,
+    CONTEXT,
+    MATERIALS,
+    REACT,
+    MODEL_CALLS,
+    TURN_PROJECTION,
+    DELIVERY,
+    DELIVERY_SENDERS,
+    EVENTMAIL_WAKE,
+    EVENTMAIL_DELIVERY,
+    DRIFT_WAKE,
+    DRIFT_DELIVERY,
+    TIMERS,
+    SEMANTIC_INTEREST,
+    DELIVERY_READ,
+    AKASHA_TOOLS,
+    STANDARD_WEB_TOOLS,
+)
 
 WAKE_DASHBOARD = ServiceKey[Callable[[], DashboardView | None]]("wake.dashboard.v1")
 
 
 async def apply(ctx: Context, config: Config) -> None:
     """归档注册原程序和私有决定工具；消息与领域状态仅在正式来源执行时打开。"""
-    _ = await ctx.require(CONTENT).register(ctx, ContentSchema(name="wake", content={
-        "wake.request": check_request, "wake.phase": check_phase,
-    }))
-    descriptions = {"screen_content": "初筛本轮 Content 候选并写兴趣理由与调查问题",
-                    "share_content": "提交本轮分享正文与采用的 Content 候选 ID；Drift 使用空 items",
-                    "skip_content": "明确跳过本轮职责并说明原因", "share_alert": "提交原告警的用户通知正文"}
+    _ = await ctx.require(CONTENT).register(
+        ctx,
+        ContentSchema(
+            name="wake",
+            content={
+                "wake.request": check_request,
+                "wake.phase": check_phase,
+            },
+        ),
+    )
+    catalog = ctx.require(TOOLS)
+    _ = await catalog.declare_group(ctx, description=desc)
+    refs = []
+    descriptions = {
+        "screen_content": "初筛本轮 Content 候选并写兴趣理由与调查问题",
+        "share_content": "提交本轮分享正文与采用的 Content 候选 ID；Drift 使用空 items",
+        "skip_content": "明确跳过本轮职责并说明原因",
+        "share_alert": "提交原告警的用户通知正文",
+    }
     for name, schema in SCHEMAS.items():
         @asynccontextmanager
         async def open_tool(_state: Mapping[str, object], name: str = name) -> AsyncGenerator[DecisionTool]:
             yield DecisionTool(name)
-        _ = await ctx.require(TOOLS).register(ctx, name=name, description=descriptions[name],
-            parameters=schema.model_json_schema(), open=open_tool, idempotent=True, public=False)
+
+        refs.append(
+            await catalog.register(
+                ctx,
+                name=name,
+                description=descriptions[name],
+                parameters=schema.model_json_schema(),
+                open=open_tool,
+                idempotent=True,
+                public=False,
+            )
+        )
+    _ = await ctx.provide(WAKE_TOOLS_VIEW, catalog.view(*refs))
     _ = await ctx.provide(WAKE_PROGRAM, partial(run, ctx))
 
     runtime: Runtime | None = None

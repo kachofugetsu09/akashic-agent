@@ -268,10 +268,10 @@ def test_cursor_cannot_skip_and_explicit_new_sink_cannot_rebind(env):
 @pytest.mark.parametrize("phase,found,idempotent,expected,sends", [
     ("prepared", False, False, "delivered", 1),
     ("started", True, False, "delivered", 0),
-    ("started", False, False, "unknown", 0),
+    ("started", False, False, "failed", 0),
     ("started", False, True, "delivered", 1),
-    ("unknown", True, False, "delivered", 0),
-    ("unknown", False, False, "unknown", 0),
+    ("failed", True, False, "failed", 0),
+    ("failed", False, False, "failed", 0),
     ("delivered", True, False, "delivered", 0),
 ])
 async def test_restart_preserves_original_effect_and_queries_before_retry(env, tmp_path, phase, found, idempotent, expected, sends):
@@ -279,7 +279,7 @@ async def test_restart_preserves_original_effect_and_queries_before_retry(env, t
     try:
         records.consume(reader, message, (sink,))
         row, old = records.read(message.message_id, sink.name)
-        receipt = Receipt(status=phase) if phase in {"unknown", "delivered"} else None
+        receipt = Receipt(status=phase) if phase in {"failed", "delivered"} else None
         records.save(message.message_id, row, Delivery(sink=old.sink, phase=phase, receipt=receipt))
         if found:
             provider.receipt = Receipt(status="delivered", provider_ids=("already-sent",))
@@ -294,8 +294,8 @@ async def test_restart_preserves_original_effect_and_queries_before_retry(env, t
             result = await execution.send(message.message_id, sink.name)
             assert result.status == expected
             assert len(provider.sent) == sends
-            assert opened == ([] if phase == "delivered" else [sink.binding_id])
-            if phase in {"started", "unknown"}:
+            assert opened == ([] if phase in {"delivered", "failed"} else [sink.binding_id])
+            if phase == "started":
                 assert provider.queries == [(delivery_key(message.message_id, sink.name), sink.address)]
             if sends:
                 assert provider.sent[0] == (delivery_key(message.message_id, sink.name), sink.address, message)
@@ -329,8 +329,8 @@ async def test_timeout_is_unknown_and_does_not_resend_non_idempotent_provider(en
         provider.error = TimeoutError("ack lost")
         with pytest.raises(TimeoutError, match="ack lost"):
             await execution.send(message.message_id, sink.name)
-        assert records.read(message.message_id, sink.name)[1].phase == "unknown"
-        assert (await execution.send(message.message_id, sink.name)).status == "unknown"
+        assert records.read(message.message_id, sink.name)[1].phase == "failed"
+        assert (await execution.send(message.message_id, sink.name)).status == "failed"
         assert len(provider.sent) == 1
     finally:
         await tasks.close()
@@ -347,7 +347,7 @@ async def test_cancel_after_start_keeps_unknown_and_original_body(env):
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
-        assert records.read(message.message_id, sink.name)[1].phase == "unknown"
+        assert records.read(message.message_id, sink.name)[1].phase == "failed"
         assert reader.get(message.message_id) == message
         assert len(provider.sent) == 1
     finally:
@@ -593,9 +593,9 @@ async def test_passive_unknown_query_holds_idle_until_actual_probe_finishes(env)
         await idle_waiting.wait()
         assert not idle.done()
         release.set()
-        assert (await probe).status == "unknown"
+        assert (await probe).status == "failed"
         await idle
-        assert records.read(reply.message_id, sink.name)[1].phase == "unknown"
+        assert records.read(reply.message_id, sink.name)[1].phase == "failed"
         assert provider.sent == []
     finally:
         await tasks.close()
@@ -659,8 +659,7 @@ def test_unowned_message_advances_only_policy_cursor_and_preserves_explicit_rout
 @pytest.mark.parametrize("phase,idempotent,query_result,expected,sent", [
     ("prepared", True, None, "rejected", 0),
     ("started", True, None, "delivered", 1),
-    ("started", False, None, "unknown", 0),
-    ("unknown", False, "delivered", "delivered", 0),
+    ("started", False, None, "failed", 0),
 ])
 async def test_before_start_rechecks_after_queue_but_never_rejects_unknown_effect(
     env, phase, idempotent, query_result, expected, sent,
@@ -672,7 +671,7 @@ async def test_before_start_rechecks_after_queue_but_never_rejects_unknown_effec
         if phase != "prepared":
             row, _ = records.read(message.message_id, sink.name)
             records.save(message.message_id, row, Delivery(sink=sink, phase=phase,
-                receipt=Receipt(status="unknown") if phase == "unknown" else None))
+                receipt=Receipt(status="failed") if phase == "failed" else None))
         provider.idempotent = idempotent
         provider.receipt = Receipt(status=query_result) if query_result is not None else None
         expired = False
@@ -700,5 +699,30 @@ async def test_before_start_rechecks_after_queue_but_never_rejects_unknown_effec
         if phase == "prepared":
             assert (await execution.send(message.message_id, sink.name)).status == "rejected"
             assert not provider.sent
+    finally:
+        await tasks.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_failed_receipt_is_readable_without_mutation_or_resend(env):
+    """发送与只读查询共用旧回执解释，不产生第二次效果或改写旧记录。"""
+    log, records, state, reader, _, message, sink, tasks, provider, _, _, execution = env
+    try:
+        records.prepare(reader, message, (sink,))
+        key = delivery_key(message.message_id, sink.name)
+        row, _ = records.read(message.message_id, sink.name)
+        state.transact(lambda tx: tx.save(key, {
+            "version": 1, "sink": sink.model_dump(mode="json"), "phase": "unknown",
+            "receipt": {"status": "unknown", "provider_ids": ["confirmed-part"], "error": "lost response"},
+        }, expected_version=row.version))
+        original = state.read(key)
+        before = reader.snapshot()
+        status = DeliveryHistory(lambda: state, MessageCatalog(log)).status(message.message_id, sink.name)
+        assert status is not None and status["status"] == "failed"
+        receipt = status["receipt"]
+        assert isinstance(receipt, dict) and receipt["provider_ids"] == ["confirmed-part"]
+        assert (await execution.send(message.message_id, sink.name)).status == "failed"
+        assert state.read(key) == original and reader.snapshot() == before
+        assert provider.sent == [] and provider.queries == [] and records.pending() == ()
     finally:
         await tasks.close()

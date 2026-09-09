@@ -11,7 +11,7 @@ from typing import cast
 
 from .pool import WAKE_ADMISSION_FLOOR, PoolResult, measure_pool, rank_events
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 _ADMISSION_TABLE_SQL = """
     CREATE TABLE admission_state(
         singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -53,7 +53,7 @@ _ATTEMPT_TABLE_SQL = """
         outcome TEXT NOT NULL CHECK(outcome IN (
             'checking', 'no_due', 'content_insufficient', 'admission_rejected',
             'shared', 'model_skip', 'deferred', 'cancelled_after_fire',
-            'delivery_unknown', 'failed'
+            'failed'
         )),
         owner TEXT CHECK(owner IN ('alert', 'content', 'drift')),
         detail TEXT,
@@ -99,7 +99,7 @@ class WakeState:
                 connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             elif version != _SCHEMA_VERSION:
                 raise RuntimeError(
-                    "旧 Wake state 必须先由 EventMail 安装迁移处理: "
+                    "Wake state 必须先运行 yoyo 20260909_02_execution_failures: "
                     f"schema version {version}"
                 )
             self._validate_tables(
@@ -516,7 +516,6 @@ class WakeState:
             "model_skip",
             "deferred",
             "cancelled_after_fire",
-            "delivery_unknown",
             "failed",
         }:
             raise ValueError("Wake attempt outcome 无效")
@@ -546,8 +545,8 @@ class WakeState:
         self.initialize()
         with closing(sqlite3.connect(self.path)) as connection, connection:
             cursor = connection.execute(
-                "UPDATE wake_attempts SET outcome='delivery_unknown', "
-                "detail='进程重启前检查未闭合，外部效果未知', completed_at=? "
+                "UPDATE wake_attempts SET outcome='failed', "
+                "detail='检查因进程退出而中断；原工作由持久回执恢复', completed_at=? "
                 "WHERE outcome='checking'",
                 (instant,),
             )

@@ -90,11 +90,42 @@ class Source:
         return await self.ctx.require(TASKS).open(self.ctx).admit(("flow", flow_id), admit)
 
     async def run(self, task: Task, request: Request, reader: MessageReader) -> str:
-        if request.owner == "content":
-            return await self._content(task, request, reader)
-        if request.owner == "drift":
-            return await self._drift(task, request, reader)
-        return await self._alert(task, request, reader)
+        try:
+            if request.owner == "content":
+                return await self._content(task, request, reader)
+            if request.owner == "drift":
+                return await self._drift(task, request, reader)
+            return await self._alert(task, request, reader)
+        except Exception:
+            # 原发送已失败便关闭来源领取；程序异常仍由 Task 报告。
+            delivery = self.ctx.require(DELIVERY).open(self.ctx)
+            if delivery.selection(request.notification_id) is not None:
+                receipt = delivery.receipt(request.notification_id, request.sink.name)
+                if receipt is not None and receipt.status == "failed":
+                    self._fail_notification(request, reader)
+            raise
+
+    def _fail_notification(self, request: Request, reader: MessageReader) -> None:
+        """按原领取结束失败通知，不影响来源已经发布的新版本。"""
+        if request.owner == "alert":
+            domain = self.ctx.require(EVENTMAIL_WAKE)
+            ref = request.alert_ref
+            assert ref is not None
+            changed = domain.change_alert(ref, request.accepted, "skip", self.now())
+            if not changed and domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) == "selected":
+                raise RuntimeError("Alert 发送失败后没有关闭原领取")
+        else:
+            domain = self.ctx.require(EVENTMAIL_DELIVERY if request.owner == "content" else DRIFT_DELIVERY)
+            selected = domain.lookup(request.accepted)
+            if selected is None:
+                raise ValueError("Wake 发送失败缺少原领域领取")
+            if selected.get("status") == "ready_for_delivery":
+                token = _string(selected.get("selection_token"), "selection_token")
+                if request.owner == "content":
+                    self._change_content(token, "failed")
+                elif self.ctx.require(DRIFT_WAKE).transition(token, "failed").get("changed") is not True:
+                    raise RuntimeError("Drift 发送失败后没有关闭原领取")
+        self._settled(request, reader)
 
     async def _phase(self, task: Task, request: Request, reader: MessageReader,
                      stage: Stage, data: Mapping[str, object]) -> Message:
@@ -264,7 +295,7 @@ class Source:
             raise ValueError("Wake 完成缺少原领域领取")
         if selected.get("status") not in {"ready_for_delivery", "delivered", "settled"}:
             self._settled(request, reader)
-            return "deferred" if selected.get("status") == "deferred" else "model_skip"
+            return "failed" if selected.get("status") == "failed" else "deferred" if selected.get("status") == "deferred" else "model_skip"
         value = decision(reader, request, stage)
         if not isinstance(value, Share):
             raise ValueError("待送达领域状态缺少实际 share ToolResult")
@@ -274,7 +305,8 @@ class Source:
                         for item in request.items}
             text = _message_with_source_links(text, {"source_refs": [payloads[name] for name in value.items]})
         if not await self._notify(task, request, text):
-            return "delivery_unknown"
+            self._fail_notification(request, reader)
+            return "failed"
         result = domain.settle(_string(selected.get("selection_token"), "selection_token"), request.notification_id)
         if result.get("settled") is not True:
             raise RuntimeError("Wake 真实送达后的领域确认未提交")
@@ -351,7 +383,8 @@ class Source:
                     return "model_skip"
                 if domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"]) != "selected":
                     return await self._finish_old_alert(request, reader)
-            return "delivery_unknown"
+            self._fail_notification(request, reader)
+            return "failed"
         changed = domain.change_alert(ref, request.accepted, "deliver", self.now())
         status = domain.alert_status(ref["source_id"], ref["event_id"], mail_id=ref["mail_id"])
         if not changed and status not in {"delivered", "superseded"}:
@@ -368,7 +401,8 @@ class Source:
                 cancelled = await delivery.cancel_prepared(request.notification_id, sink, "原告警版本已结束")
                 if not cancelled:
                     result = await delivery.send(request.notification_id, sink)
-                    if result.status == "unknown":
-                        return "delivery_unknown"
+                    if result.status == "failed":
+                        self._settled(request, reader)
+                        return "failed"
         self._settled(request, reader)
         return "model_skip"

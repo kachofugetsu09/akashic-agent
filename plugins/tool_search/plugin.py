@@ -1,86 +1,117 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 import json
 import re
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition.models import ToolCall as ModelToolCall
 from plugins.tools.api import BoundTool, CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS
+from plugins.tools.menu import InvalidToolCall, ToolPresentation, tool_schema
+from plugins.tools.plugin import TOOLS, ToolCatalog, ToolRef, ToolView
 from session.message import ContentPart
 from session.message_codec import json_value
 
 api_version = 3
 name = "tool_search"
-version = "1.0.0"
-desc = "搜索本程序的固定工具目录，选择事实随工具结果保存"
+version = "2.0.0"
+desc = "在获授工具 view 内搜索完整 schema，并解码间接调用"
 inject = (TOOLS,)
+
+TOOL_SEARCH_TOOLS = ServiceKey[ToolView]("tool-search.tools.v1")
+TOOL_SEARCH_PRESENTATION = ServiceKey[
+    Callable[[ToolView], ToolPresentation]
+]("tool-search.presentation.v1")
 
 
 class Query(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     query: str = Field(min_length=1)
     top_k: int = Field(default=5, ge=1, le=10)
-    allowed_risk: list[Literal["read-only", "read-write", "external-side-effect"]] | None = Field(
-        default=None, description="按工具整体能力过滤，通常省略。浏览器等通用工具即使只读页面也可能标为 external-side-effect；此字段不是本次操作的授权。",
-    )
+    allowed_risk: list[
+        Literal["read-only", "read-write", "external-side-effect"]
+    ] | None = Field(default=None, description="按工具整体能力过滤，通常省略；此字段不是本次操作的授权。")
 
 
-def search(candidates: Mapping[str, Mapping[str, object]], query: Query) -> tuple[str, ...]:
-    """精确选择或按名称、提示和描述匹配；中文支持子串与双字词。"""
-    # 1. 筛选只影响发现，不代替 Tool 执行前的当前授权。
-    allowed = {
-        name: cast(Mapping[str, object], value["tool"])
-        for name, value in candidates.items()
-        if query.allowed_risk is None or cast(Mapping[str, object], value["tool"])["risk"] in query.allowed_risk
+class IndirectCall(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1)
+    arguments: dict[str, object]
+
+
+def _groups(catalog: ToolCatalog, view: ToolView) -> tuple[dict[str, object], ...]:
+    """按实际插件分组，只包含获授工具并固定目录顺序。"""
+    rows: dict[str, dict[str, object]] = {}
+    for ref in sorted(view.refs, key=lambda item: item.name):
+        owner = cast(str, ref.description["owner"])
+        if owner not in rows:
+            rows[owner] = {"owner": owner, "description": catalog.group_description(ref), "tools": []}
+        cast(list[Mapping[str, Any]], rows[owner]["tools"]).append({
+            "schema": tool_schema(ref.description),
+            "risk": ref.description["risk"],
+            "search_hint": ref.description["search_hint"],
+        })
+    return tuple(rows[owner] for owner in sorted(rows))
+
+
+def _search(groups: tuple[dict[str, object], ...], query: Query) -> tuple[dict[str, object], ...]:
+    """按 owner、工具名、描述和提示匹配，并返回完整插件组。"""
+    text = query.query.strip().lower()
+    tokens: set[str] = {
+        text,
+        *text.split(),
+        *(part.strip() for part in re.split(r"([\u4e00-\u9fff]+)", text)),
     }
-    text = query.query.strip()
-    if text.lower().startswith("select:"):
-        return tuple(dict.fromkeys(name.strip() for name in text[7:].split(",") if name.strip() in allowed))[:query.top_k]
-    if text in allowed:
-        return (text,)
-    text = text.lower()
-    tokens: set[str] = {text, *text.split(), *(part.strip() for part in re.split(r"([\u4e00-\u9fff]+)", text))}
     cjk = [char for char in text if "\u4e00" <= char <= "\u9fff"]
     tokens.update(cjk)
     tokens.update(left + right for left, right in zip(cjk, cjk[1:]))
     tokens.discard("")
-
-    # 2. 相同公开描述得到相同排序，不为内置或 MCP 来源额外加分。
-    ranked: list[tuple[int, int, str]] = []
-    for name, tool in allowed.items():
-        parts = name.lower().split("_")
-        hint = cast(str | None, tool["search_hint"]) or ""
-        description = cast(str, tool["description"]).lower()
+    ranked: list[tuple[int, int, str, dict[str, object]]] = []
+    for group in groups:
+        owner = cast(str, group["owner"])
         score = 0
-        for token in tokens:
-            if token in parts:
-                score += 10
-            elif any(token in part or part in token for part in parts):
-                score += 5
-            elif token in name.lower():
-                score += 3
-            if token in hint.lower():
-                score += 4
-            if token in description:
-                score += 2
-        if score:
-            # 查询明确写出完整工具名时，不能被长描述的模糊词频挤出结果。
-            ranked.append((-int(name.lower() in tokens), -score, name))
-    return tuple(name for _, _, name in sorted(ranked)[:query.top_k])
+        exact = False
+        allowed = False
+        for entry in cast(list[Mapping[str, Any]], group["tools"]):
+            schema = cast(Mapping[str, Any], entry["schema"])
+            tool = cast(Mapping[str, Any], schema["function"])
+            risk = entry["risk"]
+            if query.allowed_risk is not None and risk not in query.allowed_risk:
+                continue
+            allowed = True
+            name = cast(str, tool["name"]).lower()
+            description = cast(str, tool["description"]).lower()
+            hint = cast(str | None, entry["search_hint"]) or ""
+            exact |= owner.lower() in tokens or name in tokens
+            tool_score = 0
+            for token in tokens:
+                if token == owner.lower() or token == name:
+                    tool_score += 10
+                elif token in owner.lower() or token in name:
+                    tool_score += 5
+                if token in description:
+                    tool_score += 2
+                if token in hint.lower():
+                    tool_score += 4
+            score = max(score, tool_score)
+        if allowed and score:
+            ranked.append((-int(exact), -score, owner, group))
+    return tuple(row for _, _, _, row in sorted(ranked)[: query.top_k])
 
 
 class SearchTool:
     idempotent = True
 
-    def __init__(self, candidates: Mapping[str, Mapping[str, object]]):
-        self._candidates = candidates
+    def __init__(self, groups: tuple[dict[str, object], ...]):
+        self._groups = groups
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(
+        self, arguments: Mapping[str, object], source: CallSource | None = None
+    ) -> Mapping[str, object]:
         try:
             return Query.model_validate(json_value(arguments)).model_dump(mode="json")
         except ValidationError as error:
@@ -88,41 +119,135 @@ class SearchTool:
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         query = Query.model_validate(json_value(arguments))
-        selected = search(self._candidates, query)
-        rows = [self._candidates[name] for name in selected]
-        excluded = []
-        if query.allowed_risk is not None:
-            unrestricted = query.model_copy(update={"allowed_risk": None})
-            excluded = [
-                {"name": name, "risk": self._candidates[name]["tool"]["risk"]}
-                for name in search(self._candidates, unrestricted)
-                if self._candidates[name]["tool"]["risk"] not in query.allowed_risk
-            ]
-        text = json.dumps({
-            "matched": [json_value(row["tool"]) for row in rows],
-            "selected": selected,
-            "excluded_by_risk": excluded,
-            "risk_tip": "部分匹配工具被 allowed_risk 排除。若符合任务需要，省略该过滤重搜；执行仍须通过当前授权。" if excluded else "",
-            "tip": "菜单按容量载入选中工具，优先保留最相关项；载入后可直接调用。" if selected else "没有匹配工具，请调整关键词或用 select:工具名。",
-        }, ensure_ascii=False)
-        return Result("success", (
-            ContentPart("text", text),
-            ContentPart("tool.selection", tuple(row["binding_id"] for row in rows)),
-        ))
+        matched = _search(self._groups, query)
+        excluded = () if query.allowed_risk is None else tuple(
+            {"owner": group["owner"], "name": entry["schema"]["function"]["name"], "risk": entry["risk"]}
+            for group in _search(self._groups, query.model_copy(update={"allowed_risk": None}))
+            for entry in cast(tuple[Mapping[str, Any], ...], group["tools"])
+            if entry["risk"] not in query.allowed_risk
+        )
+        visible = tuple({
+            "owner": group["owner"],
+            "tools": tuple(
+                cast(Mapping[str, Any], entry)["schema"]
+                for entry in cast(tuple[Mapping[str, Any], ...], group["tools"])
+            ),
+        } for group in matched)
+        return Result(
+            "success",
+            (
+                ContentPart(
+                    "text",
+                    json.dumps(
+                        {
+                            "matched_groups": json_value(visible),
+                            "excluded_by_risk": json_value(excluded),
+                            "risk_tip": "部分匹配工具被风险过滤排除；需要时省略过滤重搜。返回组内保留完整 schema，执行仍须通过当前授权。" if excluded else "",
+                            "tip": (
+                                "使用 tool_call，并传入 name 与 arguments。"
+                                if matched
+                                else "没有匹配工具，请调整关键词。"
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            ),
+        )
 
     async def query(self, key: str) -> Result | None:
         return None
 
 
-async def apply(ctx: Context, config: object) -> None:
-    @asynccontextmanager
-    async def open(candidates: Mapping[str, object]) -> AsyncIterator[BoundTool]:
-        yield SearchTool(cast(Mapping[str, Mapping[str, object]], candidates))
+class SearchPresentation:
+    """固定搜索顶层 schema，并只解码获授 view 中的间接调用。"""
 
-    _ = await ctx.require(TOOLS).register(
-        ctx, name="tool_search", description=(
-            "搜索当前允许的工具并解锁。已可见的工具直接调用；不可见时用功能关键词或 "
-            "select:工具名 精确选择，可用逗号选择多个。结果中的工具随后可直接调用。"
-        ), parameters=Query.model_json_schema(), open=open, discovery=True,
-        idempotent=True, risk="read-only", always_on=True,
+    def __init__(self, catalog: ToolCatalog, view: ToolView, search_ref: ToolRef):
+        self._view = view
+        self._search_ref = search_ref
+        if any(ref.name == "tool_call" for ref in view.refs):
+            raise ValueError("获授 view 的原生工具名与间接调用协议冲突: tool_call")
+        direct = tuple(
+            ref
+            for ref in view.refs
+            if catalog.group_always_on(ref)
+        )
+        self._direct = ToolView(direct)
+        self._groups = _groups(catalog, view)
+
+    @property
+    def schemas(self) -> tuple[Mapping[str, Any], ...]:
+        return (
+            *(tool_schema(ref.description) for ref in self._direct.refs),
+            {
+                "type": "function",
+                "function": {
+                    "name": "tool_call",
+                    "description": "调用已获授 view 中已知名称和参数 schema 的工具。",
+                    "parameters": IndirectCall.model_json_schema(),
+                },
+            },
+        )
+
+    @property
+    def system_prompt(self) -> str:
+        lines = ["## 可搜索工具目录", "用 tool_search 获取插件组的完整 schema，再用 tool_call 传入 name 与 arguments。"]
+        for group in self._groups:
+            lines.append(f"{group['owner']}：{group['description']}")
+            for entry in cast(list[Mapping[str, Any]], group["tools"]):
+                tool = cast(Mapping[str, Any], entry["schema"])["function"]
+                description = " ".join(tool["description"].split())
+                short = description[:80] + ("…" if len(description) > 80 else "")
+                lines.append(f"   {tool['name']}：{short}")
+        return "\n".join(lines)
+
+    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
+        if call.name != "tool_call":
+            if call.name not in {ref.name for ref in self._direct.refs}:
+                raise InvalidToolCall(f"工具不属于当前直接调用目录: {call.name}；请用 tool_search 查询，再用 tool_call 调用。")
+            return call.name, cast(Mapping[str, object], call.arguments)
+        try:
+            decoded = IndirectCall.model_validate(json_value(call.arguments))
+        except ValidationError as error:
+            raise InvalidToolCall(f"tool_call 需要 name 和对象类型的 arguments：{error}") from error
+        if decoded.name not in {ref.name for ref in self._view.refs}:
+            raise InvalidToolCall(f"工具不属于获授 view: {decoded.name}；请用 tool_search 查询当前目录。")
+        return decoded.name, decoded.arguments
+
+    def configuration(self, name: str) -> Mapping[str, object] | None:
+        return {"groups": self._groups} if name == self._search_ref.name else None
+
+
+async def apply(ctx: Context, config: object) -> None:
+    catalog = ctx.require(TOOLS)
+    _ = await catalog.declare_group(ctx, always_on=True, description=desc)
+
+    def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
+        if set(configuration) != {"groups"} or not isinstance(configuration["groups"], tuple):
+            raise ValueError("工具搜索 binding 缺少固定组目录")
+        return configuration
+
+    @asynccontextmanager
+    async def open_tool(state: Mapping[str, object]) -> AsyncIterator[BoundTool]:
+        groups = state.get("groups")
+        if not isinstance(groups, tuple):
+            raise ValueError("工具搜索固定组目录损坏")
+        yield SearchTool(cast(tuple[dict[str, object], ...], groups))
+
+    search_ref = await catalog.register(
+        ctx,
+        name="tool_search",
+        description="搜索获授工具目录；命中后用 tool_call 调用返回的完整 schema。",
+        parameters=Query.model_json_schema(),
+        open=open_tool,
+        capture=capture,
+        public=False,
+        idempotent=True,
+        risk="read-only",
+    )
+    view = catalog.view(search_ref)
+    _ = await ctx.provide(TOOL_SEARCH_TOOLS, view)
+    _ = await ctx.provide(
+        TOOL_SEARCH_PRESENTATION,
+        lambda awarded: SearchPresentation(catalog, awarded, search_ref),
     )

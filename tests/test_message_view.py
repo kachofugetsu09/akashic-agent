@@ -36,7 +36,7 @@ def test_view_keeps_independent_facts_and_hides_private_configuration(storage):
                                        "thinking": "可读思考", "continuation": {"binding_id": "model", "payload": {"private": "model-secret"}}})
     output = append("output", Output((facts, ToolCall("tool", {"query": "原参数"})), "continue"))
     append("pause", Control("pause", output.seq))
-    append("result", ToolResult(CallRef("output", 1), "unknown", (ContentPart("text", "效果待确认"),)), CallRef("output", 1))
+    append("result", ToolResult(CallRef("output", 1), "error", (ContentPart("text", "效果待确认"),)), CallRef("output", 1))
     append("quiet", Output((ContentPart("history.future", {"private": "content-secret"}),), "quiet"))
     before = snapshot(path)
     rows = [_mapping(row) for row in message_rows(log.reader("s").read_tail())]
@@ -48,7 +48,7 @@ def test_view_keeps_independent_facts_and_hides_private_configuration(storage):
     assert _mapping(cast(list[object], body[1]["parts"])[0])["value"] == {"call_record_id": "call-record", "thinking": "可读思考"}
     assert _mapping(cast(list[object], body[1]["parts"])[1])["name"] == "original-name"
     assert body[3]["call_ref"] == {"message_id": "output", "part_index": 1}
-    assert body[3]["outcome"] == "unknown"
+    assert body[3]["outcome"] == "error"
     assert body[4]["parts"] == [{"kind": "history.future", "display": "unavailable"}]
     encoded = json.dumps(rows, ensure_ascii=False)
     assert "secret" not in encoded and "artifact.bin" not in encoded and "provider-call" not in encoded

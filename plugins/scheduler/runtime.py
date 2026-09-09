@@ -103,7 +103,7 @@ class SchedulerRuntime:
                 await self._fire(task, fire.key)
             except Exception:
                 # 未处理的磁盘或绑定错误不伪造业务终态，也不在本进程无界重试。
-                logger.exception("调度触发未结算，保留恢复事实 fire=%s", fire.key)
+                logger.exception("调度触发失败，原消息与发送回执已保留 fire=%s", fire.key)
             finally:
                 _ = self._active.pop(fire.key, None)
 
@@ -161,17 +161,25 @@ class SchedulerRuntime:
         try:
             receipts = [await delivery.send(notification.message_id, sink) for sink in selected.sinks]
         except asyncio.CancelledError:
-            # 领域取消已先落盘；单纯 shutdown 只保留 prepared/unknown，不冒充撤回。
+            # 领域取消已先落盘；单纯 shutdown 只保留 prepared/started，不冒充撤回。
             cancelled = self.store.read().fires[key]
             if cancelled.status == "cancelled":
                 for sink in selected.sinks:
                     _ = await delivery.cancel_prepared(notification.message_id, sink, cancelled.error or "任务已取消")
             raise
+        except Exception:
+            # Sender 已保存失败回执时，本次触发也结束；原异常继续向上传播。
+            saved = [delivery.receipt(notification.message_id, sink) for sink in selected.sinks]
+            failures = [receipt for receipt in saved if receipt is not None and receipt.status == "failed"]
+            if failures:
+                self.store.settle(key, "failed", now=self._now(),
+                                  error="; ".join(receipt.error or receipt.status for receipt in failures))
+            raise
         if all(receipt.status == "delivered" for receipt in receipts):
             self.store.settle(key, "delivered", now=self._now())
-        elif any(receipt.status == "rejected" for receipt in receipts):
-            self.store.settle(key, "failed", now=self._now(), error="调度通知被拒绝")
-        # unknown 不是失败或送达，保持原 fire 以便下次启动查询原发送。
+        else:
+            errors = "; ".join(receipt.error or receipt.status for receipt in receipts if receipt.status != "delivered")
+            self.store.settle(key, "failed", now=self._now(), error=errors)
 
     async def _content(self, task: Task, fire: Fire) -> tuple[ContentPart, ...]:
         """每次触发有独立内部 Session；已保存的完整输出足以恢复最终通知。"""

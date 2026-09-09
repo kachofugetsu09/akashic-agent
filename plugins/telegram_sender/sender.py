@@ -76,22 +76,22 @@ class TelegramSender:
             try:
                 status, body = await self._post(request)
             except (aiohttp.ClientError, TimeoutError):
-                return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="Telegram 连接或回执未确认")
+                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="Telegram 连接或回执未确认")
             try:
                 result = json.loads(body)
             except (json.JSONDecodeError, UnicodeDecodeError):
-                return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="Telegram 回执不是 JSON")
+                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="Telegram 回执不是 JSON")
             if not isinstance(result, dict):
-                return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="Telegram 回执结构无效")
+                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="Telegram 回执结构无效")
             result = cast(dict[str, object], result)
             if result.get("ok") is False and 400 <= status < 500:
-                return Receipt(status="unknown" if provider_ids else "rejected", provider_ids=tuple(provider_ids),
+                return Receipt(status="failed" if provider_ids else "rejected", provider_ids=tuple(provider_ids),
                                error=f"Telegram 拒绝请求（HTTP {status}）")
             raw_data = result.get("result")
             data = cast(dict[str, object], raw_data) if isinstance(raw_data, dict) else None
             if (status != 200 or result.get("ok") is not True or not isinstance(data, dict)
                     or type(data.get("message_id")) is not int):
-                return Receipt(status="unknown", provider_ids=tuple(provider_ids), error="Telegram 回执缺少已确认消息")
+                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="Telegram 回执缺少已确认消息")
             provider_ids.append(str(data["message_id"]))
         return Receipt(status="delivered", provider_ids=tuple(provider_ids))
 

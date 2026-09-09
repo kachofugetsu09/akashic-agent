@@ -26,14 +26,22 @@ from bus.event_bus import EventBus
 from agent.control.frame_book import FrameBook
 from bootstrap.app_server import build_control_service
 from bootstrap.tools import CoreRuntime
+from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.control.connection import NdjsonConnection
-from plugins.agent_restart.plugin import PendingRestart, RestartTool
-from plugins.tools.api import CallSource, ContentPart, Denied, MessageReply, durable_call_key
+from plugins.message_push.restart import PendingRestart, RestartTool
+from plugins.tools.api import (
+    CallSource,
+    ContentPart,
+    Denied,
+    MessageReply,
+    durable_call_key,
+)
 from plugins.content.plugin import check_text
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
 from session.log import MessageLog, MessageReader
+from session.artifact_store import ArtifactStore
 from session.message import (
     CallRef, ContentReferences, Input, Message, Output, ToolCall, ToolResult, freeze_json,
 )
@@ -135,7 +143,7 @@ async def apply(ctx, config):
             calls.append(request)
             if len(calls) in (1, 4):
                 return LLMResponse(None, [ToolCall(
-                    "search-call", "tool_search", {{"query": "select:agent_restart"}},
+                    "search-call", "tool_search", {{"query": "agent_restart"}},
                 )])
             if len(calls) in (2, 5):
                 return LLMResponse(None, [ToolCall(
@@ -230,13 +238,13 @@ from agent.plugin_composition import RUNTIME_STARTING
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from session.message import CallRef, Input, Output, ToolCall, ToolResult
 
 api_version = 3
 name = "startup_probe"
 version = "1.0.0"
-inject = (MESSAGE_WRITERS, BINDINGS, TOOLS, FINAL_OUTPUT_DELIVERY)
+inject = (MESSAGE_WRITERS, BINDINGS, TOOLS, ALL_TOOLS, FINAL_OUTPUT_DELIVERY)
 RUN_ID = {run_id!r}
 STATE_ROOT = {str(state_root)!r}
 
@@ -261,7 +269,7 @@ async def apply(ctx, config):
     bindings = ctx.require(BINDINGS)
 
     def append_after_prepare(_event):
-        binding = tools.bind("agent_restart", bindings)
+        binding = tools.bind(ctx.require(ALL_TOOLS)().select("agent_restart"), bindings)
         session = "startup-probe:" + RUN_ID
         inputs = writers.bind(
             ctx, author="user", source="startup-probe", body_types=(Input,), content={{}},
@@ -301,8 +309,17 @@ async def _restart_application(
 ):
     sources = tmp_path / ("plugins" if source_tag is None else f"plugins-{source_tag}")
     names = (
-        "sources", "content", "context", "tools", "conversation", "react",
-        "turn_projection", "reply", "tool_search", "delivery", "agent_restart",
+        "sources",
+        "content",
+        "context",
+        "tools",
+        "conversation",
+        "react",
+        "turn_projection",
+        "reply",
+        "tool_search",
+        "delivery",
+        "message_push",
     )
     names += ("delivery_policy",) if channel else ("programmatic",)
     _copy_plugin_sources(sources, names)
@@ -319,10 +336,14 @@ async def _restart_application(
         )
     owns_log = message_log is None
     log = MessageLog(tmp_path / "sessions.db") if message_log is None else message_log
+    artifact_store = ArtifactStore(tmp_path / "sessions.db")
     host = PluginManager(
         [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home/cache", message_log=log,
         restart_gate=gate,
+        channel_attachment_store=ChannelAttachmentArtifactStore(
+            workspace=tmp_path / "workspace", metadata_store=artifact_store
+        ),
     )
     try:
         await host.load_all()
@@ -330,6 +351,7 @@ async def _restart_application(
         yield log, host
     finally:
         await host.terminate_all()
+        artifact_store.close()
         if owns_log:
             log.close()
 
@@ -427,7 +449,10 @@ async def test_unmanaged_runtime_does_not_register_restart_tool(tmp_path: Path) 
     gate = RestartGate(boot_id="fixture-boot", supervised=False)
     async with _restart_application(tmp_path, gate, channel=False) as (_log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            names = {item["name"] for item in snapshot.composition_root.context.require(TOOLS).descriptions()}
+            names = {
+                ref.name
+                for ref in snapshot.composition_root.context.require(ALL_TOOLS)().refs
+            }
     assert "agent_restart" not in names
 
 
@@ -500,7 +525,10 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
             )
             await asyncio.wait_for(cleanup_blocked.wait(), 2)
             rows = log.reader("test:room").snapshot()
-            assert any(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows)
+            assert any(
+                isinstance(row.body, Output) and row.body.finish == "complete"
+                for row in rows
+            ), rows
             assert not commits
             assert not gate.accepting
 
@@ -601,7 +629,10 @@ async def test_manager_reload_hands_late_tool_result_to_new_watcher(
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 ctx = snapshot.composition_root.context
                 async with ctx.runtime_scope():
-                    binding = ctx.require(TOOLS).bind("agent_restart", ctx.require(BINDINGS))
+                    binding = ctx.require(TOOLS).bind(
+                        ctx.require(ALL_TOOLS)().select("agent_restart"),
+                        ctx.require(BINDINGS),
+                    )
                     descriptor = log.read_binding(binding)
                     generations = snapshot.generations
             metadata = descriptor["metadata"]
@@ -682,9 +713,18 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     _copy_plugin_sources(
         sources,
         (
-            "sources", "content", "context", "tools", "conversation", "react",
-            "turn_projection", "reply", "tool_search", "delivery", "programmatic",
-            "agent_restart",
+            "sources",
+            "content",
+            "context",
+            "tools",
+            "conversation",
+            "react",
+            "turn_projection",
+            "reply",
+            "tool_search",
+            "delivery",
+            "programmatic",
+            "message_push",
         ),
     )
 
@@ -724,6 +764,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         commit=commits.append if supervised else None,
     )
     log = MessageLog(tmp_path / "sessions.db")
+    artifact_store = ArtifactStore(tmp_path / "sessions.db")
     host = PluginManager(
         [sources],
         event_bus=EventBus(),
@@ -731,6 +772,9 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         installed_cache_root=tmp_path / "home" / "cache",
         message_log=log,
         restart_gate=gate,
+        channel_attachment_store=ChannelAttachmentArtifactStore(
+            workspace=tmp_path / "workspace", metadata_store=artifact_store
+        ),
     )
     observed: dict[str, RuntimeSnapshot] = {}
     original_check = plugin_manager_module._validate_candidate_formal_snapshot_identity
@@ -817,13 +861,16 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             if stable.generations[plugin_id].generation_id != generation.generation_id
         ]
         assert changed == ["restart_provider@fixture"]
-        assert latest.generations["agent_restart"].generation_id == stable_generation_ids["agent_restart"]
+        assert (
+            latest.generations["message_push"].generation_id
+            == stable_generation_ids["message_push"]
+        )
         assert latest.composition_root is not None
         candidate_overlay = latest.composition_root
         assert isinstance(candidate_overlay, CompositionOverlay)
         expected_replaced = {"reply", "restart_provider@fixture"}
         if supervised:
-            expected_replaced.add("agent_restart")
+            expected_replaced.add("message_push")
         assert expected_replaced <= candidate_overlay.replaced_plugin_ids
         assert expected_replaced <= candidate_overlay.candidate.active_plugin_ids()
         candidate_gate = candidate_overlay.context.require(RESTART_GATE)
@@ -835,9 +882,8 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             candidate_gate.prepare("candidate-request")
         with pytest.raises(RestartRejectedError, match="不允许重启效果"):
             await candidate_gate.commit("candidate-request")
-        candidate_tools = candidate_overlay.context.require(TOOLS)
         candidate_tool_names = {
-            str(description["name"]) for description in candidate_tools.descriptions()
+            ref.name for ref in candidate_overlay.context.require(ALL_TOOLS)().refs
         }
         if supervised:
             assert "agent_restart" in candidate_tool_names
@@ -860,7 +906,8 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
                 context = snapshot.composition_root.context
                 async with context.runtime_scope():
                     binding = context.require(TOOLS).bind(
-                        "agent_restart", context.require(BINDINGS),
+                        context.require(ALL_TOOLS)().select("agent_restart"),
+                        context.require(BINDINGS),
                     )
             call = output_writer.append(
                 "real-call", Output((ToolCall(binding, {"reason": "reload"}),), "continue"),
@@ -938,9 +985,9 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         }
         if supervised:
             expected_listeners |= {
-                "emit:runtime.starting:agent_restart",
-                "serial:runtime.started:agent_restart",
-                "serial:runtime.stopping:agent_restart",
+                "emit:runtime.starting:restart",
+                "serial:runtime.started:restart",
+                "serial:runtime.stopping:restart",
             }
         assert set(candidate_topology.listeners) == expected_listeners
         assert formal_topology.listeners == candidate_topology.listeners
@@ -979,6 +1026,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             stop_watcher_monitor.set()
             await watcher_monitor
         await host.terminate_all()
+        artifact_store.close()
         log.close()
 
 
@@ -1216,12 +1264,12 @@ def _loaded_restart_watcher(root: object) -> object:
             owner = getattr(callback, "__self__", None)
             runtime = getattr(getattr(entry, "owner", None), "runtime", None)
             if (
-                getattr(runtime, "plugin_id", None) == "agent_restart"
+                getattr(runtime, "plugin_id", None) == "message_push"
                 and owner is not None
                 and callable(getattr(owner, "_wait_for_request", None))
             ):
                 return owner
-    raise AssertionError("正式 Root 没有动态 agent_restart watcher")
+    raise AssertionError("正式 Root 没有动态 message_push restart watcher")
 
 
 def _is_restart_fixture_result(reader: MessageReader, result: ToolResult) -> bool:

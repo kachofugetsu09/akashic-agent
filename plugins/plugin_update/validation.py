@@ -17,8 +17,7 @@ from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
 from plugins.tools.api import Denied
-from plugins.tools.menu import check_menu
-from plugins.tools.plugin import TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import SessionAttributes
 from session.message import ContentPart, Input, Message, Output
@@ -47,12 +46,26 @@ class Validation:
         session_id = "plugin-validation:" + identity
         _ = ctx.require(SESSION_ADMISSION).ensure(ctx, session_id, SessionAttributes("internal", "excluded"))
         reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
-        writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="plugin_update", source="plugin_update",
-            body_types=(Input,), content={"text": check_text})(session_id)
-        names = (tuple(sorted(cast(str, item["name"]) for item in ctx.require(TOOLS).descriptions()))
-                 if request.validation_tools is None else tuple(request.validation_tools))
-        check_menu(ctx.require(TOOLS), names)
-        _ = writer.append(identity + ":input", Input((ContentPart("text", request.validation_prompt),)))
+        writer = ctx.require(MESSAGE_WRITERS).bind(
+            ctx,
+            author="plugin_update",
+            source="plugin_update",
+            body_types=(Input,),
+            content={"text": check_text},
+        )(session_id)
+        available = ctx.require(ALL_TOOLS)()
+        view = (
+            available
+            if request.validation_tools is None
+            else ToolView(
+                tuple(available.select(name) for name in request.validation_tools)
+            )
+        )
+        names = frozenset(ref.name for ref in view.refs)
+        _ = writer.append(
+            identity + ":input",
+            Input((ContentPart("text", request.validation_prompt),)),
+        )
 
         async def authorize(binding: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
             tool = cast(Mapping[str, object], ctx.require(BINDINGS).describe(binding, TOOLS)["tool"])
@@ -62,12 +75,24 @@ class Validation:
 
         async def program(task: Task) -> Message:
             task.on_close(writer.expire)
-            return await run_reply(ctx, task, reader, "plugin_update", models=ctx.require(CHAT_MODELS),
-                content=ctx.require(CONTENT), context=ctx.require(CONTEXT), tools=ctx.require(TOOLS),
-                react=ctx.require(REACT), materials=ctx.require(MATERIALS),
-                turn_projection=ctx.require(TURN_PROJECTION), read_call=ctx.require(MODEL_CALLS),
-                authorize=authorize, tool_names=names, max_output_tokens=self._max_output_tokens,
-                max_steps=self._max_steps, exclude_materials=frozenset(request.excluded_materials),
+            return await run_reply(
+                ctx,
+                task,
+                reader,
+                "plugin_update",
+                models=ctx.require(CHAT_MODELS),
+                content=ctx.require(CONTENT),
+                context=ctx.require(CONTEXT),
+                tools=ctx.require(TOOLS),
+                react=ctx.require(REACT),
+                materials=ctx.require(MATERIALS),
+                turn_projection=ctx.require(TURN_PROJECTION),
+                read_call=ctx.require(MODEL_CALLS),
+                authorize=authorize,
+                tool_view=view,
+                max_output_tokens=self._max_output_tokens,
+                max_steps=self._max_steps,
+                exclude_materials=frozenset(request.excluded_materials),
                 prompt_hints=(
                     '你正在验证插件候选。依据实际检查结果作结论。最终只返回 JSON：'
                     '{"passed": true 或 false, "reason": "实际证据和原因"}。',

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from typing import cast
+from collections.abc import Mapping
 
 import pytest
 
@@ -350,17 +351,17 @@ def test_recall_cards_split_same_turn_inputs_and_page_explicit_queries(tmp_path)
         assert len(projection.project(before, "chat")) == 1
         first = inspector.for_turn("s", "step1", "chat", projection)
         assert first["pending"] is False
-        assert [item["query_id"] for item in first["items"]] == ["first"]
+        assert [item["query_id"] for item in cast(list[Mapping[str, object]], first["items"])] == ["first"]
         page = inspector.for_turn("s", "a", "chat", projection)
         assert page["input_message_id"] == "u2"
         assert page["next_offset"] is not None
         ids = []
         while True:
             assert len(json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode()) < 192 * 1024
-            ids.extend(item["query_id"] for item in page["items"])
+            ids.extend(item["query_id"] for item in cast(list[Mapping[str, object]], page["items"]))
             if page["next_offset"] is None:
                 break
-            page = inspector.for_turn("s", page["input_message_id"], "chat", projection,
-                                      offset=page["next_offset"])
+            page = inspector.for_turn("s", cast(str, page["input_message_id"]), "chat", projection,
+                                      offset=cast(int, page["next_offset"]))
         assert ids == ["second", *(f"explicit-{number}" for number in range(8))]
         assert records.list() == saved and log.reader("s").snapshot() == before

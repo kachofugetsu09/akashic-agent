@@ -14,13 +14,13 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from session.log import MessageLog, MessageWriter
+from session.log import MessageLog, MessageWriter, OwnerTransaction
 from session.artifact_store import ArtifactStore
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.tools.api import MessageReply
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import TOOLS, open_tool
+from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from tests.test_standard_tools import environment
 
@@ -34,6 +34,7 @@ class ModelControl:
     main_entered: asyncio.Queue = field(default_factory=asyncio.Queue)
     main_release: asyncio.Event = field(default_factory=asyncio.Event)
     main_tool: bool = False
+    send_failure: str | None = None
     sent: asyncio.Queue = field(default_factory=asyncio.Queue)
 
 
@@ -57,7 +58,16 @@ def mapping_part(part: ContentPart | ToolCall) -> Mapping[str, object]:
 @asynccontextmanager
 async def application(tmp_path, *, background=False, start=True, block=False, block_main=False, main_tool=False):
     host, store, log, artifacts, sources = environment(tmp_path, reply=True)
-    for name in ("sources", "conversation", "react", "subagent", "reply", "delivery", "delivery_policy"):
+    for name in (
+        "sources",
+        "conversation",
+        "react",
+        "subagent",
+        "reply",
+        "tool_search",
+        "delivery",
+        "delivery_policy",
+    ):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     provider = sources / "models_fixture"
@@ -105,6 +115,10 @@ async def apply(ctx, config):
         idempotent = True
         async def send(self, key, address, message):
             control.sent.put_nowait((key, address, message))
+            if control.send_failure == "raise":
+                raise TimeoutError("sender connection lost")
+            if control.send_failure == "failed":
+                return Receipt(status="failed", error="sender connection lost")
             return Receipt(status="delivered", provider_ids=(key,))
         async def query(self, key, address):
             return None
@@ -134,7 +148,10 @@ async def apply(ctx, config):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             bindings = snapshot.composition_root.context.require(BINDINGS)
             tools = snapshot.composition_root.context.require(TOOLS)
-            binding = tools.bind("spawn", bindings)
+            binding = tools.bind(
+                snapshot.composition_root.context.require(ALL_TOOLS)().select("spawn"),
+                bindings,
+            )
         reader = log.reader("test:parent")
         inputs = log.writer(reader.session_id, author="user", source="fixture", body_types=(Input,),
                             content={"text": check_text, "channel.origin": check_origin})
@@ -193,8 +210,18 @@ async def test_sync_spawn_persists_internal_flow_and_replays_original_result(tmp
 
 
 @pytest.mark.asyncio
-async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path):
+@pytest.mark.parametrize("send_failure", [None, "failed", "raise"])
+async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path, monkeypatch, send_failure):
+    closed = asyncio.Event()
+    save = OwnerTransaction.save
+    def observe(self, key, value, **kwargs):
+        result = save(self, key, value, **kwargs)
+        if value.get("settled") is True:
+            closed.set()
+        return result
+    monkeypatch.setattr(OwnerTransaction, "save", observe)
     async with application(tmp_path, background=True) as (host, log, execution, reply):
+        CONTROLS[str(tmp_path)].send_failure = send_failure
         result = await asyncio.wait_for(execution.execute_call(reply), 15)
         assert result.outcome == "success" and "已创建后台任务" in text_part(result.parts[0])
         async def completed():
@@ -209,6 +236,8 @@ async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path
         assert "main summary" in text_part(message.body.parts[0])
         _, address, sent = await asyncio.wait_for(CONTROLS[str(tmp_path)].sent.get(), 10)
         assert address == "parent" and sent == message
+        await asyncio.wait_for(closed.wait(), 10)
+        assert all(record.value["settled"] for _, record in log.owner("plugin:subagent").list())
         assert CONTROLS[str(tmp_path)].main_calls == 1
         assert await execution.execute_call(reply) == result
         assert len([row for row in log.reader("test:parent").snapshot() if isinstance(row.body, Input)]) == 1
@@ -243,9 +272,18 @@ async def test_capacity_and_cancel_hold_until_original_child_is_drained(tmp_path
         request = next(mapping_part(part) for part in children[0].snapshot()[0].body.parts if isinstance(part, ContentPart) and part.kind == "subagent.request")
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            manage = ctx.require(TOOLS).bind("spawn_manage", ctx.require(BINDINGS))
-        cancelled = await asyncio.wait_for(execution.execute("cancel", manage, {"action": "cancel", "job_id": request["job_id"]}), 10)
-        assert cancelled.outcome == "success" and "cancel_requested" in text_part(cancelled.parts[0])
+            manage = ctx.require(TOOLS).bind(
+                ctx.require(ALL_TOOLS)().select("spawn_manage"), ctx.require(BINDINGS)
+            )
+        cancelled = await asyncio.wait_for(
+            execution.execute(
+                "cancel", manage, {"action": "cancel", "job_id": request["job_id"]}
+            ),
+            10,
+        )
+        assert cancelled.outcome == "success" and "cancel_requested" in text_part(
+            cancelled.parts[0]
+        )
         assert all(not isinstance(row.body, Output) for row in children[0].snapshot())
         control.release.set()
         async def completed():
@@ -352,7 +390,9 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                 context = root.context
                 # 真实管理工具重读已结算来源，无活动 job。
                 bindings = context.require(BINDINGS)
-                manage = context.require(TOOLS).bind("spawn_manage", bindings)
+                manage = context.require(TOOLS).bind(
+                    context.require(ALL_TOOLS)().select("spawn_manage"), bindings
+                )
                 async with open_tool(bindings, manage) as tool:
                     result = await tool.invoke("list", {"action": "list"})
                     assert '"running_count": 0' in text_part(result.parts[0])

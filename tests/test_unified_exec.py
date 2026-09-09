@@ -14,9 +14,9 @@ from typing import Any, cast
 import pytest
 
 import agent.tools.unified_exec as unified_exec_module
-from agent.tools.shell import ShellTaskStopTool
-from agent.tools.shell import ShellTool
-from agent.tools.shell import ShellWriteStdinTool
+from plugins.standard_tools.shell_backend import ShellTaskStopTool
+from plugins.standard_tools.shell_backend import ShellTool
+from plugins.standard_tools.shell_backend import ShellWriteStdinTool
 from agent.tools.unified_exec import HeadTailBuffer
 from agent.tools.unified_exec import OUTPUT_MAX_BYTES
 from agent.tools.unified_exec import ShellProcessManager

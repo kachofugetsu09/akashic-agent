@@ -22,7 +22,7 @@ from session.message import ContentPart, Input, Output
 
 
 @asynccontextmanager
-async def application(tmp_path, *, start=False):
+async def application(tmp_path, *, start=False, transient_failure=False):
     sources = tmp_path / "plugins"
     if not sources.exists():
         for name in ("context", "compaction", "markdown_memory", "turn_projection"):
@@ -97,6 +97,19 @@ async def apply(ctx, config):
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(ServiceKey("fixture.profile_response"), completed)
 '''.replace("TEST_ROOT", repr(str(tmp_path))))
+    if transient_failure:
+        # 仅测试副本用事件控制重试等待，不修改全局 asyncio 时序。
+        module = sources / "markdown_memory/message_plugin.py"
+        module.write_text(module.read_text().replace("await asyncio.sleep(30)",
+            'await ctx.require(ServiceKey("fixture.retry_release")).wait()').replace(
+                "    CHAT_MODELS,", "    CHAT_MODELS, ServiceKey,"))
+        fixture = sources / "fixture_models/plugin.py"
+        fixture.write_text(fixture.read_text().replace("    completed = asyncio.Event()",
+            "    completed = asyncio.Event()\n    failed = asyncio.Event()\n    release = asyncio.Event()").replace(
+            '            memory = (root / "workspace/memory/MEMORY.md").read_text()',
+            '            if not failed.is_set():\n                failed.set()\n                from agent.plugin_composition.models import TransportError\n                raise TransportError("temporary fixture failure")\n            memory = (root / "workspace/memory/MEMORY.md").read_text()').replace(
+            '    await ctx.provide(CHAT_MODELS, Models())',
+            '    await ctx.provide(ServiceKey("fixture.retry_failed"), failed)\n    await ctx.provide(ServiceKey("fixture.retry_release"), release)\n    await ctx.provide(CHAT_MODELS, Models())'))
     log = MessageLog(tmp_path / "sessions.db")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
@@ -562,3 +575,24 @@ async def test_background_discovery_reads_only_new_eligible_messages(tmp_path, m
             ("eligible", {"after_seq": -1, "through_seq": 0}),
             ("eligible", {"after_seq": 0, "through_seq": 1}),
         ]
+
+
+@pytest.mark.asyncio
+async def test_markdown_retries_transient_failure_without_new_messages(tmp_path):
+    async with application(tmp_path, transient_failure=True) as (log, host):
+        writer = log.writer("s", author="user", source="conversation", body_types=(Input,),
+                            content={"text": check_text})
+        writer.append("u1", Input((ContentPart("text", "fact-one"),)))
+        summary = publish(log, "retry-summary")
+        await record_use(log, host, summary, "used-summary")
+        original = log.reader("s").snapshot()
+        await host.start_runtime()
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            await asyncio.wait_for(ctx.require(ServiceKey("fixture.retry_failed")).wait(), 5)
+            assert not profile_store(tmp_path).is_applied(summary.reference)
+            ctx.require(ServiceKey("fixture.retry_release")).set()
+        await wait_applied(tmp_path, host, summary.reference)
+        assert log.reader("s").snapshot() == original
+        assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 2
+        assert profile_store(tmp_path).read_memory().count("fact-one") == 1

@@ -661,7 +661,7 @@ class _ChannelStreamSubscription:
         except _PresentationContractFailure:
             raise
         except asyncio.CancelledError:
-            receipt = self._host._unknown_presentation_receipt(
+            receipt = self._host._failed_presentation_receipt(
                 event,
                 "turn stream callback cancelled",
             )
@@ -671,7 +671,7 @@ class _ChannelStreamSubscription:
             )
             return receipt
         except BaseException as error:
-            receipt = self._host._unknown_presentation_receipt(event, str(error))
+            receipt = self._host._failed_presentation_receipt(event, str(error))
             self._host._mark_presentation_failed(
                 self._key,
                 event.presentation_id,
@@ -690,7 +690,7 @@ class _ChannelStreamSubscription:
         with _channel_entrypoint(state, "channel.turn_stream"):
             result = self._callback(event)
             if not inspect.isawaitable(result):
-                receipt = self._host._unknown_presentation_receipt(
+                receipt = self._host._failed_presentation_receipt(
                     event,
                     "turn stream callback 必须返回 awaitable",
                 )
@@ -704,7 +704,7 @@ class _ChannelStreamSubscription:
                 )
             result = await result
             if not isinstance(result, PresentationReceipt):
-                receipt = self._host._unknown_presentation_receipt(
+                receipt = self._host._failed_presentation_receipt(
                     event,
                     "turn stream callback 必须返回 PresentationReceipt",
                 )
@@ -717,7 +717,7 @@ class _ChannelStreamSubscription:
                     receipt,
                 )
             if result.presentation_id != event.presentation_id:
-                receipt = self._host._unknown_presentation_receipt(
+                receipt = self._host._failed_presentation_receipt(
                     event,
                     "presentation receipt identity 不匹配",
                 )
@@ -729,7 +729,7 @@ class _ChannelStreamSubscription:
                     "presentation receipt identity 不匹配",
                     receipt,
                 )
-            if result.status is DeliveryStatus.UNKNOWN:
+            if result.status is DeliveryStatus.FAILED:
                 self._host._mark_presentation_failed(
                     self._key,
                     event.presentation_id,
@@ -1449,13 +1449,13 @@ class ChannelGenerationHost:
         except asyncio.CancelledError:
             return ChannelDeliveryReceipt(
                 delivery_id,
-                DeliveryStatus.UNKNOWN,
+                DeliveryStatus.FAILED,
                 error="control response cancelled",
             )
         except Exception as error:
             return ChannelDeliveryReceipt(
                 delivery_id,
-                DeliveryStatus.UNKNOWN,
+                DeliveryStatus.FAILED,
                 error=str(error) or type(error).__name__,
             )
 
@@ -1467,7 +1467,7 @@ class ChannelGenerationHost:
         presentation_id = event.presentation_id
         if presentation_id in state.failed_presentations:
             raise RuntimeError(
-                f"presentation 已因 UNKNOWN 终止，禁止继续 patch: {presentation_id}"
+                f"presentation 已因发送失败终止，禁止继续 patch: {presentation_id}"
             )
         payload = event.payload
         turn_id = payload.turn_id
@@ -1497,14 +1497,14 @@ class ChannelGenerationHost:
         if event.kind is TurnStreamEventKind.TURN_OUTPUT_COMPLETED:
             state.completed_presentations.add(presentation_id)
 
-    def _unknown_presentation_receipt(
+    def _failed_presentation_receipt(
         self,
         event: TurnStreamEvent,
         error: str,
     ) -> PresentationReceipt:
         return PresentationReceipt(
             presentation_id=event.presentation_id,
-            status=DeliveryStatus.UNKNOWN,
+            status=DeliveryStatus.FAILED,
             error=error or "turn stream callback failed",
         )
 

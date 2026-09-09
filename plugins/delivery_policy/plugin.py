@@ -96,7 +96,7 @@ class DeliveryFinalOutput:
                 raise RestartRejectedError("最终 Output 没有 delivery provider")
             while True:
                 receipts = tuple(delivery.receipt(ending, sink) for sink in selection.sinks)
-                if any(receipt is not None and receipt.status in {"unknown", "rejected"} for receipt in receipts):
+                if any(receipt is not None and receipt.status in {"failed", "rejected"} for receipt in receipts):
                     raise RestartRejectedError("最终 Output delivery 未确认")
                 if len(receipts) == len(selection.sinks) and all(
                     receipt is not None and receipt.status == "delivered" for receipt in receipts

@@ -13,9 +13,17 @@ from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
-from plugins.tools.plugin import TOOLS
+from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.wake.api import DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
-from plugins.wake.request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
+from plugins.wake.request import (
+    Request,
+    TOOLS as WAKE_TOOLS,
+    WAKE_PROGRAM,
+    WAKE_TOOLS_VIEW,
+)
+from plugins.tools.plugin import ToolView
 from plugins.wake.source import Source
 from plugins.wake.state import WakeState
 from session.message import Input, Output, ToolResult
@@ -60,6 +68,8 @@ from plugins.models.store import ModelsStore
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 from plugins.tools.plugin import TOOLS
+from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS
 from plugins.akasha.interest import SEMANTIC_INTEREST, SemanticInterest
 from plugins.akasha.learning import Learning, LearningConfig
@@ -80,8 +90,12 @@ async def apply(ctx, config):
     async def unused_recall(state):
         raise AssertionError("this fixture never invokes memory recall")
         yield
-    await ctx.require(TOOLS).register(ctx, name="recall_memory", description="fixture unused recall boundary",
+    recall = await ctx.require(TOOLS).register(ctx, name="recall_memory", description="fixture unused recall boundary",
         parameters={"type": "object", "properties": {}}, open=unused_recall, idempotent=True)
+    web = await ctx.require(TOOLS).register(ctx, name="web_fetch", description="fixture unused web boundary",
+        parameters={"type": "object", "properties": {}}, open=unused_recall, idempotent=True)
+    await ctx.provide(AKASHA_TOOLS, ctx.require(TOOLS).view(recall))
+    await ctx.provide(STANDARD_WEB_TOOLS, ctx.require(TOOLS).view(web))
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
     class Driver:
@@ -97,9 +111,12 @@ async def apply(ctx, config):
             if control["thinking_only"]:
                 control["thinking_only"] -= 1
                 return LLMResponse(None, thinking="private reasoning")
-            if control.get("content") and len(control["calls"]) == 1:
+            if control.get("content") and len(control["calls"]) <= 1 + control.get("truncated_id", False):
+                candidate = control["candidate"]
+                if control.get("truncated_id") and len(control["calls"]) == 1:
+                    candidate = candidate[:18]
                 return LLMResponse(None, [ToolCall("screen", "screen_content", {"items": [{
-                    "candidate_id": control["candidate"], "initial_interest": "relevant", "question": "verify this"}]})])
+                    "candidate_id": candidate, "initial_interest": "relevant", "question": "verify this"}]})])
             name = control["tool"]
             args = {"reason": "nothing useful"} if name == "skip_content" else {"message": "useful notification"}
             if name == "share_content":
@@ -121,6 +138,10 @@ async def apply(ctx, config):
         idempotent = True
         async def send(self, key, address, message):
             control["sent"].append((key, address, message))
+            if control.get("send_error"):
+                raise TimeoutError("sender connection lost")
+            if control.get("send_failure"):
+                return Receipt(status="failed", provider_ids=("confirmed-prefix",), error="connection lost after partial send")
             return Receipt(status="delivered", provider_ids=(key,))
         async def query(self, key, address):
             return Receipt(status="delivered", provider_ids=(key,)) if any(row[0] == key for row in control["sent"]) else None
@@ -151,13 +172,29 @@ async def apply(ctx, config):
 
 def request(ctx, owner, now, *, proposals=(), alert_ref=None):
     bindings = ctx.require(BINDINGS)
-    return Request(flow_id="a" * 32, owner=owner, now=now, timezone="UTC",
+    view = ToolView.combine(
+        ctx.require(WAKE_TOOLS_VIEW),
+        ctx.require(AKASHA_TOOLS),
+        ctx.require(STANDARD_WEB_TOOLS),
+    )
+    return Request(
+        flow_id="a" * 32,
+        owner=owner,
+        now=now,
+        timezone="UTC",
         target=DeliveryTarget(channel="test", recipient="room", session_id="test:room"),
         sink=Sink(name="test", binding_id=ctx.require(DELIVERY_SENDERS).bind("test", bindings), address="room"),
         program_binding=bindings.bind(WAKE_PROGRAM, {}),
-        tools={name: ctx.require(TOOLS).bind(name, bindings) for name in WAKE_TOOLS[owner]},
-        snapshot_seq=0, proposals=tuple(dict(item) for item in proposals), alert_ref=alert_ref,
-        rules="", history="")
+        tools={
+            name: ctx.require(TOOLS).bind(view.select(name), bindings)
+            for name in WAKE_TOOLS[owner]
+        },
+        snapshot_seq=0,
+        proposals=tuple(dict(item) for item in proposals),
+        alert_ref=alert_ref,
+        rules="",
+        history="",
+    )
 
 
 def test_recent_context_keeps_legacy_dialogue_without_provenance(tmp_path):
@@ -213,7 +250,9 @@ async def test_drift_runs_actual_private_tool_and_settles_once(tmp_path, action)
         assert log.reader(original.session_id).attributes.visibility == "internal"
         assert log.reader(original.session_id).attributes.learning == "excluded"
         assert len(control["calls"]) == 1
-        assert set(tool["name"] for tool in ctx.require(TOOLS).descriptions()).isdisjoint(WAKE_TOOLS["drift"])
+        assert {ref.name for ref in ctx.require(ALL_TOOLS)().refs}.isdisjoint(
+            WAKE_TOOLS["drift"]
+        )
         assert len(control["sent"]) == (1 if action == "share_content" else 0)
         if action == "share_content":
             assert ctx.require(DRIFT_DELIVERY).lookup(original.accepted)["status"] == "settled"
@@ -317,7 +356,8 @@ async def test_alert_queue_rechecks_original_expiry_and_never_closes_new_envelop
 
 
 @pytest.mark.asyncio
-async def test_content_screen_and_investigation_keep_original_refs_until_provider_ack(tmp_path):
+@pytest.mark.parametrize("truncated_id", [False, True])
+async def test_content_screen_and_investigation_keep_original_refs_until_provider_ack(tmp_path, truncated_id):
     from plugins.eventmail.plugin import EVENTMAIL_CONTENT_SOURCE
     from plugins.wake.api import EVENTMAIL_DELIVERY
     from plugins.wake.content import _candidate_id
@@ -328,15 +368,22 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
             "requires_ack": True, "payload": {"title": "useful", "url": "https://example.com/original"}}])
         snapshot = ctx.require(EVENTMAIL_WAKE).snapshot(now)
         control["content"] = True
+        control["truncated_id"] = truncated_id
         control["candidate"] = _candidate_id(snapshot["items"][0]["ref"])
         original = request(ctx, "content", now).model_copy(update={
             "snapshot_seq": snapshot["snapshot_seq"], "items": tuple(dict(item) for item in snapshot["items"])})
         source.accept(original)
         task = await source.start(original.flow_id)
         assert await asyncio.wait_for(task.join(), 10) == "shared"
-        assert len(control["calls"]) == 2 and len(control["sent"]) == 1
+        assert len(control["calls"]) == 2 + truncated_id and len(control["sent"]) == 1
         rows = log.reader(original.session_id).snapshot()
-        assert [type(row.body) for row in rows] == [Input, Input, Output, ToolResult, Output, Input, Output, ToolResult, Output]
+        expected = [Input, Input] + [Output, ToolResult] * (1 + truncated_id) + [Output, Input, Output, ToolResult, Output]
+        assert [type(row.body) for row in rows] == expected
+        if truncated_id:
+            results = [row.body for row in rows if isinstance(row.body, ToolResult)]
+            assert results[0].outcome == "error"
+            assert "完整 ID" in str(results[0].parts)
+            assert results[1].outcome == "success"
         delivered = ctx.require(EVENTMAIL_DELIVERY).lookup(original.accepted)
         assert delivered["status"] == "delivered"
         assert len(producer.unsettled()) == 1  # 上游 ACK 仍由来源自己提交。
@@ -344,7 +391,7 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
         producer.ack(original.notification_id)
         assert ctx.require(EVENTMAIL_DELIVERY).lookup(original.accepted)["status"] == "settled"
         assert await source.start(original.flow_id) is None
-        assert len(control["calls"]) == 2
+        assert len(control["calls"]) == 2 + truncated_id
 
 
 @pytest.mark.asyncio
@@ -546,7 +593,7 @@ async def test_runtime_failure_closes_timer_audit_before_stopping_both_loops(tmp
         assert "controlled runtime failure" in str(failure.value.exceptions[0])
         attempts = runtime.state.list_attempts()
         assert len(attempts) == 1
-        assert attempts[0]["outcome"] == ("delivery_unknown" if where == "source" else "failed")
+        assert attempts[0]["outcome"] == "failed"
         assert bool(runtime.source.pending()) is (where == "source")
         assert not control["sent"]
 
@@ -574,7 +621,7 @@ async def test_runtime_stop_drains_its_active_source_before_returning(tmp_path, 
             await running
         assert len(started) == 1 and started[0].done and not started[0].active
         assert len(runtime.source.pending()) == 1 and not control["sent"]
-        assert runtime.state.list_attempts()[0]["outcome"] == "delivery_unknown"
+        assert runtime.state.list_attempts()[0]["outcome"] == "cancelled_after_fire"
         control["release"].set()
         flow_id = runtime.source.pending()[0]
         assert await runtime._run(flow_id) == "shared"
@@ -679,3 +726,65 @@ async def test_cancel_during_timer_cleanup_closes_fired_audit_and_drains_handle(
             await waiting
         assert runtime.state.list_attempts()[0]["outcome"] == "cancelled_after_fire"
         assert runtime.source.pending() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["content", "drift", "alert"])
+@pytest.mark.parametrize("interrupt, sender_error", [(False, False), (True, False), (False, True)])
+async def test_failed_notification_closes_original_flow_without_resend(tmp_path, monkeypatch, owner, interrupt, sender_error):
+    """发送失败必须释放领域领取，重复恢复不能再发送原通知。"""
+    from plugins.eventmail.plugin import EVENTMAIL_CONTENT_SOURCE, EVENTMAIL_ALERT_SOURCE
+    from plugins.wake.content import _candidate_id
+    async with application(tmp_path) as (_, log, ctx, source, control):
+        now = datetime.now(timezone.utc)
+        control["send_failure"] = True
+        control["send_error"] = sender_error
+        if owner == "drift":
+            ctx.require(DRIFT_PROPOSALS).propose("failed-duty", "1", {"summary": "check"}, now)
+            original = request(ctx, owner, now, proposals=ctx.require(DRIFT_WAKE).snapshot(now)["proposals"])
+        elif owner == "content":
+            producer = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("feed")
+            producer.submit("first", [{"item_id": "one", "revision": "1", "not_before": now,
+                "requires_ack": True, "payload": {"title": "useful"}}])
+            snapshot = ctx.require(EVENTMAIL_WAKE).snapshot(now)
+            control["content"] = True
+            control["candidate"] = _candidate_id(snapshot["items"][0]["ref"])
+            original = request(ctx, owner, now).model_copy(update={
+                "snapshot_seq": snapshot["snapshot_seq"], "items": tuple(dict(item) for item in snapshot["items"])})
+        else:
+            control["tool"] = "share_alert"
+            ctx.require(EVENTMAIL_ALERT_SOURCE).bind("source").report(
+                event_id="event", payload={"body": "alert"}, observed_at=now)
+            original = request(ctx, owner, now, alert_ref=dict(ctx.require(EVENTMAIL_WAKE).peek_alert(now)))
+        source.accept(original)
+        settled = source._settled
+        if interrupt:
+            def fail(*args):
+                raise OSError("closed domain before pointer commit")
+            monkeypatch.setattr(source, "_settled", fail)
+        task = await source.start(original.flow_id)
+        if interrupt:
+            with pytest.raises(OSError, match="pointer commit"):
+                await asyncio.wait_for(task.join(), 10)
+            monkeypatch.setattr(source, "_settled", settled)
+            source = Source(ctx, source.state)
+            task = await source.start(original.flow_id)
+        if sender_error:
+            with pytest.raises(TimeoutError, match="sender connection lost"):
+                await asyncio.wait_for(task.join(), 10)
+        else:
+            assert await asyncio.wait_for(task.join(), 10) == "failed"
+        assert source.pending() == ()
+        receipt = ctx.require(DELIVERY).open(ctx).receipt(original.notification_id, "test")
+        assert receipt.status == "failed" and receipt.provider_ids == (() if sender_error else ("confirmed-prefix",))
+        before = log.reader(original.session_id).snapshot()
+        assert await Source(ctx, source.state).start(original.flow_id) is None
+        assert len(control["sent"]) == 1 and log.reader(original.session_id).snapshot() == before
+        if owner == "drift":
+            assert ctx.require(DRIFT_WAKE).snapshot(now)["proposals"] == ()
+            ctx.require(DRIFT_PROPOSALS).propose("next-duty", "1", {"summary": "next"}, now)
+            assert ctx.require(DRIFT_WAKE).snapshot(now)["proposals"]
+        elif owner == "content":
+            assert ctx.require(EVENTMAIL_WAKE).snapshot(now)["items"] == ()
+        else:
+            assert ctx.require(EVENTMAIL_WAKE).alert_status("source", "event") == "skipped"

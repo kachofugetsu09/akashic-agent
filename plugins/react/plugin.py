@@ -17,6 +17,7 @@ from agent.plugin_composition.models import (
     StreamCallback,
 )
 from plugins.context.api import ContextOverflow, Materials, SummaryReducer
+from plugins.tools.menu import InvalidToolCall
 from session.log import MessageReader, MessageWriter
 from session.message import CallRef, Control, Message, Output, Part, ContentPart, ToolCall, ToolResult
 
@@ -246,12 +247,27 @@ async def react(
             decoded, metadata = await content.decode(response.content or "", prepared.references)
             parts: list[Part] = list(decoded)
             indices: list[int] = []
+            actual_calls: list[ToolCall | ContentPart] = []
             for call in response.tool_calls:
                 indices.append(len(parts))
-                parts.append(ToolCall(tools.bind(call.name), call.arguments))
+                try:
+                    binding_id, arguments = tools.decode(call)
+                except InvalidToolCall as error:
+                    actual = ContentPart("model.tool_rejection", {
+                        "name": call.name, "arguments": call.arguments, "error": str(error),
+                    })
+                else:
+                    actual = ToolCall(binding_id, arguments)
+                actual_calls.append(actual)
+                parts.append(actual)
             if not parts:
                 raise EmptyResponseError("模型没有产生内容或工具调用；空响应不是 quiet")
-            parts.append(projection.facts(response, indices))
+            parts.append(projection.facts(
+                response,
+                indices,
+                reminder=context.reminder_content(prepared),
+                actual_calls=actual_calls,
+            ))
             if prepared.summary is not None:
                 parts.append(ContentPart("context.summary", {"reference": prepared.summary.reference}))
             # 3. 内容完成后按来源 CAS 提交；失败的草稿绝不触发工具。

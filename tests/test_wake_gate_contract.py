@@ -214,7 +214,7 @@ async def test_wake_provider_error_is_terminal_and_redacted(
     assert evidence["wake_failure_count"] == 1
     assert evidence["wake_failure_retryable_counts"][retryable] == 1
     assert evidence["model_call_count"] == 1
-    assert evidence["model_call_state_counts"] == {"unknown": 1}
+    assert evidence["model_call_state_counts"] == {"error": 1}
     assert evidence["content_counts"] == {content_status: 1}
     assert evidence["delivery_count"] == 0
     encoded = json.dumps(payload, sort_keys=True)

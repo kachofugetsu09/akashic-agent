@@ -350,7 +350,7 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 不存在、空结果、合法跳过、明确降级、输入错误、数据损坏和内部故障必须可区分。只有拥有正确恢复动作的边界才能捕获异常并降级；其余错误 fail-fast、fail-loud。
 
-已持久化的工具 `unknown` 表示原调用效果不确定；保留原结果，禁止自动重放该调用。它不永久阻塞后续模型决策：模型必须看到该状态和先检查现场的提示，再在当前授权内决定下一步。内部异常仍明确失败，不通过改写历史结果伪装恢复。
+工具结果使用 `success / denied / error / interrupted`。error 和 interrupted 不证明外部效果为零；模型获得原错误与先检查现场的提示，不能自动重复原操作。Tools/Delivery 仅在原 key 查询或 provider 幂等合同下恢复；后台发送失败必须关闭本次业务等待，不保留 unknown 未决状态。数据库、binding 和内部契约异常仍向上传播。完整自愈、跳过、重试和中断规则见 [0063](decisions/0063-execution-failures-have-terminal-results.md)。
 
 ## 7. 上下文和会话
 
@@ -377,10 +377,12 @@ Turn 是按 source 过滤的 Message 日志上的无状态读投影：`Output.fi
 skills、长期记忆和检索结果必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
 
 请求使用“system → 已保存消息的模型投影（含当前输入与摘要）→ 一个末尾 user-role `<system-reminder>`”。
-VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则留在 system；时间、Akasha 召回和本次后台结果进入提醒。
-提醒不写入 Message 日志，不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
+VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则、固定工具目录留在 system；时间、Akasha 召回和本次后台结果进入提醒。
+提醒不另写独立 Message、不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
 提醒块身份为实际贡献插件 ID 与局部名称，同一身份重复时报错；priority 升序，仅决定排列，同优先级按插件 ID、名称的 UTF-8 字节升序。
 SELF/MEMORY 低频更新不要求迁出 system，也不承诺其异步发布与 compaction 只产生一次 provider 缓存失效。
+成功的模型 Output 在 `model.facts` 中保存当次 reminder 与 wire tool call replay；恢复旧请求时使用该
+已提交事实重建原 provider 前缀。它不新增 Input、授权或持久上下文副本，失败和取消也不伪造 replay。
 
 ### CTX-005 新设计不得使用无修饰的 history
 
@@ -569,7 +571,7 @@ Mobile durable inbound 的释放顺序固定为：Channel 先持久化与 Input 
 
 ### RUN-004 Linux 正式入口由 Supervisor 托管
 
-Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮 ToolSearch 授权、回复持久化与送达、boot-scoped 私有提交证据和约定退出码；旧 boot 清理尽力执行并记录未清空目标，但清理失败不阻止已合法提交的下一代。普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
+Linux 上无子命令执行 `python main.py` 是正式服务入口，必须先进入 workspace 唯一的 Supervisor，再由每个 boot 唯一的 Guardian 启动和清理 gateway。`supervise` 只作为 Linux 兼容别名；显式 `gateway` 只用于未托管调试，并且不得注册 `agent_restart`。非 Linux 默认入口必须明确警告并进入 unmanaged gateway，`supervise` 必须拒绝启动，且两者都不得提供 `agent_restart`、Supervisor settings、私有 readiness/commit 或 boot 进程树清理。Linux 自重启仍须经过当轮获授工具 view、回复持久化与送达、boot-scoped 私有提交证据和约定退出码；`agent_restart` 由 `message_push` 的 supervised-only child 提供，不以工具搜索结果作为授权。旧 boot 清理尽力执行并记录未清空目标，但清理失败不阻止已合法提交的下一代。普通退出、崩溃、伪造退出码或未知进程身份不得拉起下一代，也不得触发 crash auto-restart。
 
 ### RUN-005 Provider 插件拥有协议边界
 
@@ -790,6 +792,19 @@ Workload readiness 完成后，同 generation 的 MCP 才能取得其端点；�
 通道直达同一 Xvnc display，Agent 的 Browser Use、Computer Use 和 OpenCLI 也只操作这台桌面及其唯一
 Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪装成桌面控制。
 
+### PLG-018 工具依赖传递实际注册引用
+
+工具注册返回当前 Root 中的实际引用，provider 通过普通 `ServiceKey` 提供引用 view。工具池只按
+引用建立新 binding；持有工具池不能按全局名字取得未依赖的工具。确需完整目录的管理插件必须
+显式依赖 `ALL_TOOLS`。当前引用失效时 fail-loud；已提交 Message 中的 binding 继续打开原归档
+闭包，不因当前安装、卸载或重启重新选择实现。
+
+工具搜索只在获授 view 内展示完整 schema，并可把自身协议中的间接调用解码为唯一真实
+ToolCall。固定目录在 system 中按插件列出声明用途及各工具简述；搜索返回获授 view 内整组完整 schema，
+作为普通工具结果保留到其原文被摘要覆盖。搜索结果、目录和 compaction 不授予或撤销工具，不保存 loaded、grant、LRU、
+TTL 或 epoch。格式错误或当前目录中不存在的模型调用必须保存明确的未执行反馈，允许模型在原步数上限内纠正；
+不得伪造实际工具请求或执行成功。通用 ReAct、工具执行和回复程序不得按搜索工具、间接调用工具或来源名称分支。
+
 ## 11. Workspace、文件和进程
 
 ### WSP-001 Workspace 可写状态显式归属
@@ -886,7 +901,7 @@ status 状态机。可更新的查询投影必须能从信封和 transition 确�
 ### PRO-005 Wake 每次实际触发都留下独立 attempt
 
 每次 Wake Timer 实际触发先追加 attempt，再读取冻结的 EventMail watermark。没有 due、Content
-不足、admission 拒绝、模型 skip、defer、触发后关闭、失败和 delivery unknown 都必须以可区分终态收口；
+不足、admission 拒绝、模型 skip、defer、触发后关闭、执行失败或发送失败都必须以明确终态和具体诊断收口；
 未进入 scoped Turn 不等于没有记录。Wake attempt 是执行事实，不作为第四种 EventMail，也不
 拥有 Content、Alert、Context 或 delivery 的领域状态。进程停机期间未实际触发的理论时间槽
 不由 Wake 伪造；如需补记，由 scheduler 的独立 durable missed-tick 合同拥有。
@@ -999,7 +1014,7 @@ Schedule 在整个 workspace 维度默认最多同时存在 10 个 active job。
 
 ### SEC-006 Mobile receipt 与 plugin lease 保留
 
-有副作用或持久结果的 Mobile command 必须保存 receipt；completed receipt 从 `completed_at` 起保留 7 天，并受每设备 10,000 条和 64 MiB 高水位保护。只读取当前快照的启动查询不保存 receipt，重试时重新读取当前状态。高水位先清理已过期 completed；仍满时只拒绝当前需要 receipt 的新 command，不能删除有效 receipt 或结束 runtime。processing 不能按 TTL 盲删，必须根据真实外部效果恢复为 completed、可安全重试或 `outcome_unknown`。超时 plugin query 在真实 worker 结束前持续占用 quota 和 generation lease。
+有副作用或持久结果的 Mobile command 必须保存 receipt；completed receipt 从 `completed_at` 起保留 7 天，并受每设备 10,000 条和 64 MiB 高水位保护。只读取当前快照的启动查询不保存 receipt，重试时重新读取当前状态。高水位先清理已过期 completed；仍满时只拒绝当前需要 receipt 的新 command，不能删除有效 receipt 或结束 runtime。processing 不能按 TTL 盲删；原 owner 依据 Message、handoff 和执行证据恢复为 completed，无法找回结果则保存明确 command_interrupted 错误。只有确认原消息和交接都不存在时才可提示安全重试。超时 plugin query 在真实 worker 结束前持续占用 quota 和 generation lease。
 
 ### SEC-007 Shell 与 Subagent 准入有界
 

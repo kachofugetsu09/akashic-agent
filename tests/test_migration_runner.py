@@ -69,6 +69,8 @@ _MESSAGE_METADATA_ID = "20260907_03_message_metadata"
 _SKILL_PROMPT_GRANT_ID = "20260907_03_skill_prompt_grant"
 _LEGACY_SUMMARIES_ID = "20260908_01_legacy_summaries"
 _CLOSE_EMPTY_WAKE_RESPONSES_ID = "20260909_01_close_empty_wake_responses"
+_TOOL_PROVIDER_VIEWS_ID = "20260909_01_tool_provider_views"
+_EXECUTION_FAILURES_ID = "20260909_02_execution_failures"
 _CURRENT_IDS = (
     _ORIGIN_ID,
     _AKASHA_V9_ID,
@@ -117,6 +119,8 @@ _CURRENT_IDS = (
     _SKILL_PROMPT_GRANT_ID,
     _LEGACY_SUMMARIES_ID,
     _CLOSE_EMPTY_WAKE_RESPONSES_ID,
+    _TOOL_PROVIDER_VIEWS_ID,
+    _EXECUTION_FAILURES_ID,
 )
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
@@ -478,6 +482,8 @@ def test_toolset_wiring_migration_retires_only_the_exact_legacy_default(
         _SKILL_PROMPT_GRANT_ID,
         _LEGACY_SUMMARIES_ID,
         _CLOSE_EMPTY_WAKE_RESPONSES_ID,
+        _TOOL_PROVIDER_VIEWS_ID,
+    _EXECUTION_FAILURES_ID,
     )
     migrated = tomllib.loads(config.read_text(encoding="utf-8"))
     assert "agent" not in migrated
@@ -552,6 +558,8 @@ def test_toolset_wiring_migration_preserves_config_symlink_identity(
         _SKILL_PROMPT_GRANT_ID,
         _LEGACY_SUMMARIES_ID,
         _CLOSE_EMPTY_WAKE_RESPONSES_ID,
+        _TOOL_PROVIDER_VIEWS_ID,
+    _EXECUTION_FAILURES_ID,
     )
 
     assert config.is_symlink()
@@ -647,6 +655,8 @@ def test_embedding_backfill_runs_after_selection_is_already_recorded(
         _SKILL_PROMPT_GRANT_ID,
         _LEGACY_SUMMARIES_ID,
         _CLOSE_EMPTY_WAKE_RESPONSES_ID,
+        _TOOL_PROVIDER_VIEWS_ID,
+    _EXECUTION_FAILURES_ID,
     )
 
 
@@ -1011,6 +1021,8 @@ api_key = "secret"
         _SKILL_PROMPT_GRANT_ID,
         _LEGACY_SUMMARIES_ID,
         _CLOSE_EMPTY_WAKE_RESPONSES_ID,
+        _TOOL_PROVIDER_VIEWS_ID,
+    _EXECUTION_FAILURES_ID,
     )
     assert (
         CredentialStore.for_workspace(root / "workspace").api_key("model_deepseek_main")

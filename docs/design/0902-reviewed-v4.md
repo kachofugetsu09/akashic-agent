@@ -808,7 +808,7 @@ Observe 不依靠最终 Turn 事件夹带整份 context/tool/model 状态。Mode
 - `Content.register(..., prepare=...)` 在每次 `bind()` 内一次性固定动态 TextProtocol 的提示与 decoder。prepare 不能改变协议名或内容 schema；归档声明不保存可变分类提示。分类与选图仍由协议插件拥有。
 - `Tools.register_authorize(...)` 为工具登记最终参数的限制 owner。工具 prepare 后依次执行固定 binding 中的限制和调用程序的 authorize；缺少已固定的限制时明确失败，旧 binding 不借用当前规则。
 - `COMPACTION_SUMMARIES.head(session_id)` 只读当前发布摘要，状态命令用其确切 source message IDs 计算覆盖，不获得发布或模型权限。
-- Models 的 `MODEL_CALL_HISTORY(after_id, limit)` 返回调用账分页快照，包括尚未结算和未产生 Message 的请求；原 `MODEL_CALLS(id)` 仍负责点读。分页按 ID 排列，每轮必须从头开始，不能把 ID 或秒级时间戳当作跨轮提交游标。`started` 后续可更新，`unknown` 不能展示为已知零费用。
+- Models 的 `MODEL_CALL_HISTORY(after_id, limit)` 返回调用账分页快照，包括尚未结算和未产生 Message 的请求；原 `MODEL_CALLS(id)` 仍负责点读。分页按 ID 排列，每轮必须从头开始，不能把 ID 或秒级时间戳当作跨轮提交游标。`started` 后续可更新，`error` 不能展示为已知零费用。
 - Markdown Memory 的 `MEMORY_WRITES(after, limit)` 返回 `(source_ref, kind)` 排序的独立 receipt 副本，包含 payload 与 done_at。每轮重新扫描；消费者按双键去重。draft、backup、applied 分别陈述准备、恢复点和实际文件应用事实，不能把 draft 当作写入成功。
 
 分页上限为 1000。以上接口不授予 SQL、修改、删除或外部发送能力。Observe 自有幂等记录与统计在同一事务提交；无新 Message 的诊断通过定期读取 owner 记录发现。原 trace 历史继续由 Observe 保留，Core 不迁入第二份统计账。
@@ -956,7 +956,7 @@ Context 接收 `Materials` 中已取得的系统提示、低信任检索内容�
 
 `OwnerStore` 只授予一个状态空间。同步事务内可以用已获授权的 Message writer 追加，并以版本 CAS 更新本 owner 的 JSON 状态；不能执行任意 SQL、跨库写入或在 await 期间持锁。部分写入失败即使被调用方捕获，整个事务仍回滚。`owner_records` 正常增加记录，允许 owner 按其领域规则原位推进版本；没有自动减少路径，也不复制 Message 正文。公开服务和实际消费者在第 08 层一起接入。
 
-Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在构造边界冻结 messages/tools；Context 不重复拥有冻结规则。Model 在调用 driver 前向自有 `model-registry.sqlite3/model_calls` 追加 `started`，返回后原位记录实际 usage；异常或取消记为 `unknown` 并继续抛出原错误。成功响应带 `call_record_id`，没有 usage 就保留未知值，不能补零。进程崩溃留下的 started 只证明请求曾被接纳，不能证明没有费用或触发自动重放。配置 revision 不因模型调用变化，不通过配置修改的整库备份路径记账，也不持久保存请求正文、原始输出或 credential。调用记录没有自动删除路径。Model 的事实引用可从此记录读取 binding 与 usage，避免在 Message 再存一份计费账。
+Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在构造边界冻结 messages/tools；Context 不重复拥有冻结规则。Model 在调用 driver 前向自有 `model-registry.sqlite3/model_calls` 追加 `started`，返回后原位记录实际 usage；异常或取消记为 `error` 并继续抛出原错误。成功响应带 `call_record_id`，没有 usage 就保留未知值，不能补零。进程崩溃留下的 started 只证明请求曾被接纳，不能证明没有费用或触发自动重放。配置 revision 不因模型调用变化，不通过配置修改的整库备份路径记账，也不持久保存请求正文、原始输出或 credential。调用记录没有自动删除路径。Model 的事实引用可从此记录读取 binding 与 usage，避免在 Message 再存一份计费账。
 
 本层两个 yoyo 分别增加 `owner_records` 和 `model_calls`。已有库须先迁移，初始化只为新空库创建新表。迁移使用独立 SQLite 备份，重复执行保留既有记录；正常模型调用不因此重写旧会话、模型配置或学习状态。生产数据副本验收中，两项迁移均成功且重复运行返回 current；14613 条 Message、2244 条旧 Turn 及所有模型配置表的行数与内容摘要未变，两个数据库 integrity/FK 检查通过。原始数据、恢复副本及完整摘要只留在受限的本地 fixture，不进入 Git。
 
@@ -1604,7 +1604,7 @@ Content 初筛结果与调查决定都从已保存的实际工具调用读取。
 
 Alert 固定 `source_id/event_id/mail_id`，新 envelope 不会被旧请求领取或关闭。待发送告警在实际出站前重新核对原版本与到期时间；Delivery 仅在 prepared 阶段允许同步拒绝。started/unknown 始终先查询原效果，具备幂等保证时仍可用原 key 恢复，不能因当前过期把未知效果写成确定未发。发送拒绝与领域过期分别提交；两者之间崩溃后只补原 envelope 的过期，不重新调用模型或发送。
 
-Timer 到期先记录 attempt，再读邮件水位。到期检查和五分钟池维护共用维护锁；普通异常在当前点闭合诊断并原样上抛。尚未接纳来源的异常记 failed，已接纳的未完成来源记 delivery_unknown；循环取消时撤销并排空自己启动的 Task，原请求、工具和发送回执继续保存。
+Timer 到期先记录 attempt，再读邮件水位。到期检查和五分钟池维护共用维护锁；普通异常在当前点闭合诊断并原样上抛。异常统一记录 failed，不由诊断状态推断原效果；循环取消时撤销并排空自己启动的 Task，原请求、工具和发送回执继续保存。
 
 当前受控验证使用真实 MessageLog、模型调用账本、普通工具程序、EventMail/Drift 和 Delivery：Content 两阶段与上游 ACK、Drift 分享/跳过及多处提交中断、告警排队过期/换版/拒绝后崩溃、模型失败分类、目标模型冻结、Timer 失败和取消。关闭数据库后修改当前模型及发送者源码，input/ready/delivered 三个恢复切点仍只使用原归档和原通知。
 

@@ -366,7 +366,7 @@ function TimelineTranscript({ archive }: { archive: unknown; startContent?: Reac
 }
 
 const controlLabels = { pause: "已暂停", resume: "已恢复", abandon: "已放弃", failure: "执行失败" };
-const outcomeLabels = { success: "成功", denied: "已拒绝", error: "失败", unknown: "结果未知", interrupted: "已中断" };
+const outcomeLabels = { success: "成功", denied: "已拒绝", error: "失败", interrupted: "已中断" };
 
 const MessageAttachments = memo(function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
   return (

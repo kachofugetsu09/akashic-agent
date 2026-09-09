@@ -21,12 +21,22 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
                       output_tokens=4096, keep_recent_tokens=128, summary_padding=0, provider_effect_data=False,
                       updates=False, validation_passed=True, extra_sources=None):
     sources = tmp_path / "plugins"
-    for name in ("sources", "content", "context", "tools", "conversation", "react", "turn_projection", *(('reply',) if replying else ())):
-        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
-                        ignore=shutil.ignore_patterns("__pycache__"))
-    if discovery:
-        shutil.copytree(Path(__file__).parents[1] / "plugins/tool_search", sources / "tool_search",
-                        ignore=shutil.ignore_patterns("__pycache__"))
+    workspace = tmp_path / "workspace"
+    for name in (
+        "sources",
+        "content",
+        "context",
+        "tools",
+        "conversation",
+        "react",
+        "turn_projection",
+        *(("reply", "tool_search") if replying else ()),
+    ):
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins" / name,
+            sources / name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
     if updates:
         from tests.test_delivery_bindings import sources as delivery_sources
         delivery_sources(sources)
@@ -45,9 +55,9 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         reply = sources / 'reply/plugin.py'
         reply.write_text(reply.read_text().replace('Field(default=4096,', f'Field(default={output_tokens},'))
     if missing_tool:
-        reply = sources / "reply/plugin.py"
-        reply.write_text(reply.read_text().replace(
-            "tools: tuple[str, ...] | None = None", 'tools: tuple[str, ...] | None = ("gone",)'))
+        settings = tmp_path / "workspace/plugin-data/reply-builtin/config.local.toml"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text('tools = ["gone"]\n')
     provider = sources / "test_provider"
     provider.mkdir()
     (provider / "plugin.py").write_text('''
@@ -104,6 +114,7 @@ async def apply(ctx, config):
     @asynccontextmanager
     async def open(state):
         yield Target()
+    await ctx.require(TOOLS).declare_group(ctx, always_on=True)
     await ctx.require(TOOLS).register(ctx, name="write_evidence", description="record local test evidence",
         parameters={"type":"object"}, open=open)
     await ctx.provide(CHAT_MODELS, Models())
@@ -123,7 +134,9 @@ async def apply(ctx, config):
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
             'if len(calls) == 1:',
-            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("search-call", "tool_search", {"query": "select:write_evidence"})])\n            if len(calls) == 2:'))
+            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("search-call", "tool_search", {"query": "write_evidence"})])\n            if len(calls) == 2:').replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")').replace(
+            'ToolCall("provider-call", "write_evidence", {})',
+            'ToolCall("provider-call", "tool_call", {"name": "write_evidence", "arguments": {}})'))
     if compaction:
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace('calls = []', 'calls = []\n    business = []').replace(
@@ -134,9 +147,22 @@ async def apply(ctx, config):
             if len(business) == 1:''').replace("Preserved facts.", "Preserved facts." + "z" * summary_padding))
     if extra_sources is not None:
         extra_sources(sources)
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+    from session.artifact_store import ArtifactStore
+
     log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home/cache", message_log=log)
+    artifact_store = ArtifactStore(tmp_path / "sessions.db")
+    artifacts = ChannelAttachmentArtifactStore(
+        workspace=workspace, metadata_store=artifact_store
+    )
+    host = PluginManager(
+        [sources],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home/cache",
+        message_log=log,
+        channel_attachment_store=artifacts,
+    )
     try:
         await host.load_all()
         if start:
@@ -145,6 +171,7 @@ async def apply(ctx, config):
     finally:
         await host.terminate_all()
         log.close()
+        artifact_store.close()
 
 
 @pytest.mark.asyncio
@@ -179,9 +206,14 @@ async def test_installed_default_reply_is_an_independent_log_consumer(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_bad_reply_tool_configuration_fails_before_consuming_any_input(tmp_path):
-    async with application(tmp_path, replying=True, start=False, missing_tool=True) as (log, host):
-        with pytest.raises(ValueError, match="未安装的工具"):
-            await host.start_runtime()
+    async with application(tmp_path, replying=True, start=False, missing_tool=True) as (
+        log,
+        host,
+    ):
+        assert host.generation("reply") is None
+        gate = host.latest_gate("reply")
+        assert gate is not None and gate.status == "failed"
+        assert gate.failure_reason == "tools: Extra inputs are not permitted"
         assert log.catalog().snapshot_heads() == {}
 
 
@@ -244,13 +276,48 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
                     return rows
         rows = await asyncio.wait_for(completed(), 5)
         assert rows is not None
-        assert [type(row.body) for row in rows] == [Input, Output, ToolResult, Output, ToolResult, Output]
-        assert rows[2].body.parts[-1].kind == "tool.selection"
+        assert [type(row.body) for row in rows] == [
+            Input,
+            Output,
+            ToolResult,
+            Output,
+            ToolResult,
+            Output,
+        ]
+        assert rows[2].body.parts[-1].kind == "text"
         assert (tmp_path / "effect.txt").read_text() == "once\n"
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
-            assert [tool["function"]["name"] for tool in calls[0].tools] == ["tool_search"]
-            assert {tool["function"]["name"] for tool in calls[1].tools} == {"tool_search", "write_evidence"}
+            calls = snapshot.composition_root.context.require(
+                ServiceKey("fixture.calls")
+            )
+            expected = {"tool_search", "tool_call"}
+            assert {tool["function"]["name"] for tool in calls[0].tools} == expected
+            assert {tool["function"]["name"] for tool in calls[1].tools} == expected
+            import json
+            from agent.plugin_composition import CHAT_MODELS
+            from agent.plugin_composition.bindings import BINDINGS
+            from agent.plugin_composition.models import ModelRole
+            from plugins.models.content import render_content
+            from plugins.models.projection import MODEL_CALLS, MessageProjection
+            from plugins.tools.plugin import TOOLS
+            payload = json.loads(cast(str, rows[2].body.parts[0].value))
+            assert payload["matched_groups"][0]["tools"][0]["function"]["name"] == "write_evidence"
+            assert "matched_groups" in str(calls[1].messages)
+            ctx = snapshot.composition_root.context
+            # 新投影从持久日志重建；摘要覆盖搜索结果时，只有请求视图失去 schema。
+            async with ctx.require(CHAT_MODELS).execution() as execution:
+                model = execution.chat(ModelRole.AGENT)
+                bindings = ctx.require(BINDINGS)
+                def tool_name(binding):
+                    return cast(str, cast(Mapping[str, object], bindings.describe(binding, TOOLS)["tool"])["name"])
+                projection = MessageProjection(model, source="conversation", render_content=lambda part: render_content(part, artifacts={}),
+                                               tool_name=tool_name, read_call=ctx.require(MODEL_CALLS))
+                before = log.reader("s").snapshot()
+                retained = projection.render(before, after_seq=-1)
+                compacted = projection.render(before, after_seq=rows[2].seq)
+                assert "matched_groups" in str(retained.messages)
+                assert "matched_groups" not in str(compacted.messages)
+                assert log.reader("s").snapshot() == before
 
 
 @pytest.mark.asyncio
@@ -260,12 +327,9 @@ async def test_default_reply_applies_provider_tool_capacity_before_first_request
         source = module.read_text()
         assert source.count("max_tool_schemas = None") == 1
         assert source.count('parameters={"type":"object"}, open=open)') == 1
-        module.write_text(source.replace(
-            "max_tool_schemas = None", "max_tool_schemas = 1"
-        ).replace(
-            'parameters={"type":"object"}, open=open)',
-            'parameters={"type":"object"}, open=open, always_on=True)',
-        ))
+        module.write_text(
+            source.replace("max_tool_schemas = None", "max_tool_schemas = 1")
+        )
 
     from agent.plugin_composition import ServiceKey
     async with application(
@@ -352,4 +416,68 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
             assert all(all(f"old {role} {index}:" not in str(request.messages)
                            for role in ("input", "answer") for index in (0, 1)) for request in calls)
             assert all("current request" in str(request.messages) for request in calls[1:])
+        assert (tmp_path / "effect.txt").read_text() == "once\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_call", [
+    'ToolCall("bad-call", "tool_call", {"name": "write_evidence", "arguments": "{}"})',
+    'ToolCall("bad-call", "tool_call", {"name": "uninstalled_tool", "arguments": {}})',
+    'ToolCall("bad-call", "old_direct_tool", {})',
+])
+async def test_reply_recovers_rejected_protocol_without_creating_tool_effect(tmp_path, bad_call):
+    """真实 Reply 反馈格式或过期名称错误，修正后只执行有效调用并可重放。"""
+    from agent.plugin_composition import ServiceKey
+    from session.message import ContentPart, ToolCall
+
+    def extra(sources):
+        provider = sources / "test_provider/plugin.py"
+        code = provider.read_text().replace(
+            'return LLMResponse(None, [ToolCall("provider-call", "write_evidence", {})])',
+            f'return LLMResponse(None, [{bad_call}])\n'
+            '            if len(calls) == 2:\n'
+            '                return LLMResponse(None, [ToolCall("good-call", "tool_call", {"name": "write_evidence", "arguments": {}})])',
+        ).replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")')
+        provider.write_text(code)
+
+    async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            accept = ctx.require(CHANNEL_INPUT)
+            calls = ctx.require(ServiceKey("fixture.calls"))
+            await accept("test:room", "bad-input", ChannelInboundMessage(
+                "test", "user", "room", "do the work", datetime.now(UTC), {},
+            ))
+        async def completed(count):
+            async for _ in log.catalog().follow():
+                rows = log.reader("test:room").snapshot()
+                if any(isinstance(row.body, Control) and row.body.action == "failure" for row in rows):
+                    pytest.fail("模型协议错误终止了回复")
+                if sum(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows) == count:
+                    return rows
+        rows = await asyncio.wait_for(completed(1), 5)
+        assert rows is not None
+        assert (tmp_path / "effect.txt").read_text() == "once\n"
+        assert len(calls) == 3
+        assert [type(row.body) for row in rows] == [Input, Output, Output, ToolResult, Output]
+        rejected = rows[1].body
+        assert isinstance(rejected, Output) and rejected.finish == "continue"
+        assert not any(isinstance(part, ToolCall) for part in rejected.parts)
+        assert any(isinstance(part, ContentPart) and part.kind == "model.tool_rejection" for part in rejected.parts)
+        for request in calls[1:]:
+            rejection = [row for row in request.messages if row.get("tool_call_id") == "bad-call"]
+            assert len(rejection) == 1 and "调用未执行" in str(rejection[0]["content"])
+            system = [row for row in request.messages if row["role"] == "system"]
+            assert "test_provider：Write local evidence" in str(system)
+            assert all("可搜索工具目录" not in str(row) for row in request.messages if row["role"] != "system")
+        before = rows
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+                "test:room", "follow-up", ChannelInboundMessage(
+                    "test", "user", "room", "continue", datetime.now(UTC), {},
+                ),
+            )
+        await asyncio.wait_for(completed(2), 5)
+        assert log.reader("test:room").snapshot()[:len(before)] == before
+        assert any(row.get("tool_call_id") == "bad-call" for row in calls[-1].messages)
         assert (tmp_path / "effect.txt").read_text() == "once\n"
