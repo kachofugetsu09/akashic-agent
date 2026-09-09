@@ -101,7 +101,7 @@ test("control patches reject message and preview fields before snapshot conversi
     assert.throws(() => readMobileStateSnapshot({ ...raw, [field]: null }), /字段无效/);
   }
   assert.throws(() => readMobileStateSnapshot({ ...raw, protocolVersion: 1 }));
-  assert.deepEqual(readMobileStateSnapshot(raw), { ...raw, protocolVersion: 10, messages: [], throughSeq: -1, replyStatus: null });
+  assert.deepEqual(readMobileStateSnapshot(raw), { ...raw, protocolVersion: 11, messages: [], throughSeq: -1, replyStatus: null });
 });
 
 test("late full snapshots cannot roll back a newer session or sync generation", () => {

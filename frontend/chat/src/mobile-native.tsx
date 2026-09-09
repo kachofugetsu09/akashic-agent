@@ -193,7 +193,7 @@ interface MobilePendingMessage {
 }
 
 export interface MobileSnapshot extends MobileMessageLog {
-  protocolVersion: 10;
+  protocolVersion: 11;
   history?: { hasOlder: boolean; isLatest: boolean; loading: boolean };
   downloads: MobileDownload[];
   connection: {
@@ -540,7 +540,7 @@ function parseModelCatalog(value: unknown): MobileModelCatalog {
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 10) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 11) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -587,7 +587,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       };
     })();
   return {
-    protocolVersion: 10,
+    protocolVersion: 11,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,

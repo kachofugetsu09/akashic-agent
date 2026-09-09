@@ -82,7 +82,7 @@ export function readMobileStateSnapshot(value: unknown): Record<string, unknown>
   const fields = new Set(["protocolVersion", "connection", "sessions", "selectedSessionId", "readingPosition",
     "navigationTarget", "projectionGeneration", "downloads", "composer", "modelCatalog", "runtimeInspection", "history"]);
   if (raw.protocolVersion !== 2 || Object.keys(raw).some((key) => !fields.has(key))) throw new Error("状态 patch 版本或字段无效");
-  return { ...raw, protocolVersion: 10, messages: [], throughSeq: -1, replyStatus: null };
+  return { ...raw, protocolVersion: 11, messages: [], throughSeq: -1, replyStatus: null };
 }
 
 export function readMobileDownloads(value: unknown): MobileDownload[] {

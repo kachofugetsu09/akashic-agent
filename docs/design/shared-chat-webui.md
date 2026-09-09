@@ -169,7 +169,7 @@ TypeScript 固定为 5.9.3，沿用现有 strict、ES2022 和 bundler 配置。
 ```
 
 - `attachment.download` 请求携带 `message_id`、`artifact_id` 和 `offset`。Session reader 先确认该 Message 引用了文件，再由 Core ArtifactStore 核验和读取。回复保留完整附件 metadata；下载二进制头使用 `artifact_id`，上传头继续使用 Frame ID `attachment_id`。空文件允许零字节分片并按 SHA-256 验证。
-- Android 缓存键与远端 Artifact ID 分开。Native→Web snapshot v10 的下载状态同时提供 `artifactId`（匹配 Message 引用）和 `cacheId`（调用本地重试、打开和分享）。会话仅从 Message link 取得授权，不拥有共享文件缓存。
+- Android 缓存键与远端 Artifact ID 分开。Native→Web snapshot v11 的下载状态同时提供 `artifactId`（匹配 Message 引用）和 `cacheId`（调用本地重试、打开和分享）。会话仅从 Message link 取得授权，不拥有共享文件缓存。
 - `history.provenance`、`history.record`、`history.turn_input` 不进入普通聊天；纯归档 Message 不占布局和可见未读数量。`history.transcript` 的已知旧格式按原组顺序展示思考、说明和工具记录，不生成新消息或执行状态。原始数据和同步进度不减少。旧阅读或导航锚若指向隐藏行，定位到后续首个可见行；末尾则定位前一可见行，不能直接跳到最新消息。
 - 明确拒绝删除本地 outbox、保留失败正文并释放本地上传占用。结果未知保留原命令及其附件占用；核对复用原 ID。新一次发送创建新 Message，不迁移旧视觉身份。已落地 Input 或 ACK 都是接受证据，迟到错误不得将其降级。
 - 文件缓存写入失败只结束该下载并消费对应回复。Room 持久化失败停止消费和 ACK，等待用户处理存储后重连；自动重连不作为本地数据修复。
@@ -238,3 +238,5 @@ Core Message 日志和附件保持 append-only，只有既有 adapter 的读协�
 Android build 80 起，断线、等待订阅或查看历史造成的观察缺失通过 Native→WebUI 的 `reply.clear` 事件清除临时回复状态；事件绑定当前 session 与 projection generation。服务端 `reply.status.available=false` 只表示真实能力不可用，两者不能互相代替。该事件不进入服务端协议或 Message 日志。最低原生 build 为 80。
 
 “加载更早的消息”位于已加载历史的最上端，占有独立行并随消息滚动，不悬浮遮挡正文。插件卡片查询从实际发出时开始计算 30 秒期限；本地排队不消耗传输期限，超时仍取消所属 UI owner 并释放容量。
+
+Native→Web snapshot v11 包含本地 `reply.clear` 事件。APK 通过已有 manifest 兼容检查拒绝 snapshot v10 的 OTA 界面，改用内置界面，防止升级后向旧界面发送未知事件。
