@@ -22,7 +22,7 @@ from session.message import ContentPart, Input, Output
 
 
 @asynccontextmanager
-async def application(tmp_path, *, start=False, transient_failure=False):
+async def application(tmp_path, *, start=False, transient_failure=False, draft_failures=0):
     sources = tmp_path / "plugins"
     if not sources.exists():
         for name in ("context", "compaction", "markdown_memory", "turn_projection"):
@@ -79,8 +79,9 @@ async def apply(ctx, config):
             evidence = {line: [row["message_id"] for row in source if user_input(row) and line[2:] in json.dumps(row)]
                         for line in memory.splitlines() if line.startswith("- ") and line not in previous.splitlines()}
             completed.set()
-            return LLMResponse(json.dumps({"memory": memory, "self": (root / "workspace/memory/SELF.md").read_text(),
-                                           "evidence": {"memory": evidence, "self": {}}}))
+            return LLMResponse(json.dumps({"additions": [
+                {"document": "memory", "section": "## 用户明确要求长期记住的关键内容", "line": line, "message_ids": ids}
+                for line, ids in evidence.items()]}))
     descriptor = BoundModelDescriptor(
         binding_id="fixture", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture", driver_contract_version="1",
@@ -97,7 +98,15 @@ async def apply(ctx, config):
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(ServiceKey("fixture.profile_response"), completed)
 '''.replace("TEST_ROOT", repr(str(tmp_path))))
-    if transient_failure:
+    if draft_failures:
+        fixture = sources / "fixture_models/plugin.py"
+        fixture.write_text(fixture.read_text().replace("    completed = asyncio.Event()",
+            "    completed = asyncio.Event()\n    attempts = 0").replace(
+            "        async def complete(self, request):",
+            "        async def complete(self, request):\n            nonlocal attempts\n            attempts += 1").replace(
+            "            completed.set()",
+            f"            if attempts <= {draft_failures}:\n                evidence = {{line: [identity[:12] for identity in ids] for line, ids in evidence.items()}}\n            completed.set()"))
+    if transient_failure or draft_failures > 1:
         # 仅测试副本用事件控制重试等待，不修改全局 asyncio 时序。
         module = sources / "markdown_memory/message_plugin.py"
         module.write_text(module.read_text().replace("await asyncio.sleep(30)",
@@ -110,6 +119,19 @@ async def apply(ctx, config):
             '            if not failed.is_set():\n                failed.set()\n                from agent.plugin_composition.models import TransportError\n                raise TransportError("temporary fixture failure")\n            memory = (root / "workspace/memory/MEMORY.md").read_text()').replace(
             '    await ctx.provide(CHAT_MODELS, Models())',
             '    await ctx.provide(ServiceKey("fixture.retry_failed"), failed)\n    await ctx.provide(ServiceKey("fixture.retry_release"), release)\n    await ctx.provide(CHAT_MODELS, Models())'))
+    if draft_failures > 1:
+        fixture = sources / "fixture_models/plugin.py"
+        text = fixture.read_text()
+        start = text.index("            if not failed.is_set():")
+        end = text.index('            memory = (root / "workspace/memory/MEMORY.md").read_text()', start)
+        text = text[:start] + text[end:]
+        text = text.replace("            completed.set()",
+            f"            if attempts == {draft_failures}:\n                failed.set()\n            completed.set()")
+        fixture.write_text(text)
+    if draft_failures:
+        fixture = sources / "fixture_models/plugin.py"
+        fixture.write_text(fixture.read_text().replace("            completed.set()",
+            f"            if attempts > {draft_failures}:\n                completed.set()"))
     log = MessageLog(tmp_path / "sessions.db")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
@@ -648,8 +670,8 @@ async def test_profile_input_omits_large_legacy_replay_but_preserves_user_eviden
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail_second", [False, True])
-@pytest.mark.parametrize("window,text_size", [(32_000, 55_000), (200_000, 140_000)])
-async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed(tmp_path, fail_second, window, text_size):
+@pytest.mark.parametrize("window,text_size,large_profile", [(32_000, 55_000, False), (200_000, 140_000, False), (200_000, 140_000, True)])
+async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed(tmp_path, fail_second, window, text_size, large_profile):
     """两批真实完整 Turn 的档案和证据合并；后批失败不写文件或收据。"""
     import json
     from types import SimpleNamespace
@@ -668,6 +690,10 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
         original = log.reader("s").snapshot()
         groups = closed_groups(original, TurnProjection())
         store = profile_store(tmp_path)
+        if large_profile:
+            (tmp_path / "workspace/memory/MEMORY.md").write_text(
+                "# 用户长期记忆\n## 用户事实\n- " + "existing-fact " * 4_000
+                + "\n## 用户偏好\n## 用户明确要求长期记住的关键内容\n")
         before = (store.read_memory(), store.read_self(), store.read_writes(None, 20))
         requests = []
 
@@ -679,16 +705,13 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
             assert len(rows) == 3, "a complete Turn must stay in one request"
             if fail_second and len(requests) == 2:
                 raise TransportError("injected second batch failure")
-            memory = prompt.split("当前 MEMORY.md：\n", 1)[1].split("\n\n当前 SELF.md：", 1)[0]
-            if memory == "（空）":
-                memory = "# 用户长期记忆\n## 用户事实\n## 用户偏好\n## 用户明确要求长期记住的关键内容\n"
             fact = rows[0]["body"]["parts"][0]["value"].split()[0]
             line = "- " + fact
-            memory = memory.rstrip() + "\n" + line + "\n"
-            return LLMResponse(json.dumps({"memory": memory, "self": before[1],
-                "evidence": {"memory": {line: [rows[0]["message_id"]]}, "self": {}}}))
+            response = json.dumps({"additions": [{"document": "memory", "section": "## 用户事实",
+                "line": line, "message_ids": [rows[0]["message_id"]]}]})
+            return LLMResponse(response)
 
-        model = SimpleNamespace(descriptor=SimpleNamespace(capabilities=SimpleNamespace(context_window=window, max_output_tokens=4096)),
+        model = SimpleNamespace(descriptor=SimpleNamespace(capabilities=SimpleNamespace(context_window=window, max_output_tokens=32_768)),
                                 estimate_context_tokens=lambda messages: len(str(messages)) // 4, complete=complete)
 
         @asynccontextmanager
@@ -704,6 +727,8 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
             assert draft["memory_before"] == before[0]
             assert isinstance(draft["memory"], str)
             assert "- fact-0" in draft["memory"] and "- fact-1" in draft["memory"]
+            if large_profile:
+                assert "- " + "existing-fact " * 4_000 + "\n" in draft["memory"]
             assert draft["evidence"] == {"memory": {"- fact-0": ["input-0"], "- fact-1": ["input-1"]}, "self": {}}
         assert len(requests) == 2
         assert (store.read_memory(), store.read_self(), store.read_writes(None, 20)) == before
@@ -742,3 +767,112 @@ async def test_profile_keeps_allowed_turn_inside_mixed_source_group(tmp_path):
         assert "fact-one" not in prompt and "fact-two" not in prompt
         assert "fact-three" in store.read_memory() and store.is_applied(summary.reference)
         assert log.reader("s").snapshot()[:4] == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("draft_failures", [1, 2])
+async def test_invalid_model_draft_repairs_or_retries_without_partial_writes(tmp_path, draft_failures):
+    """缩短的证据 ID 不得提交；一轮修正失败后 follower 仍能从原回执重试。"""
+    async with application(tmp_path, draft_failures=draft_failures) as (log, host):
+        writer = log.writer("s", author="user", source="conversation", body_types=(Input,),
+                            content={"text": check_text})
+        writer.append("legacy-message:" + "a" * 64, Input((ContentPart("text", "fact-one"),)))
+        summary = publish(log, "draft-repair")
+        await record_use(log, host, summary, "used-summary")
+        original = log.reader("s").snapshot()
+        store = profile_store(tmp_path)
+        before = (store.read_memory(), store.read_self(), store.read_writes(None, 20))
+        await host.start_runtime()
+        if draft_failures == 2:
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                ctx = snapshot.composition_root.context
+                await asyncio.wait_for(ctx.require(ServiceKey("fixture.retry_failed")).wait(), 5)
+                assert (store.read_memory(), store.read_self(), store.read_writes(None, 20)) == before
+                assert not store.is_applied(summary.reference)
+                ctx.require(ServiceKey("fixture.retry_release")).set()
+        await wait_applied(tmp_path, host, summary.reference)
+        assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == draft_failures + 1
+        assert store.read_memory().count("fact-one") == 1
+        assert log.reader("s").snapshot() == original
+
+
+@pytest.mark.parametrize("case", ["no_change", "new_fact", "empty_memory", "self", "multiline", "move_existing", "assistant_claim", "truncated"])
+def test_profile_additions_preserve_owner_files_and_enforce_evidence(tmp_path, case):
+    """模型无法用增量绕过旧事实保留、单行出处与真实用户证据边界。"""
+    import json
+    from agent.plugin_composition.models import LLMResponse
+    from plugins.markdown_memory.message_plugin import _check_profile_response
+
+    log = MessageLog(tmp_path / "messages.db")
+    try:
+        user = log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
+        assistant = log.writer("s", author="assistant", source="conversation", body_types=(Output,), content={"text": check_text})
+        user.append("user-fact", Input((ContentPart("text", "请记住我喜欢红色"),)))
+        assistant.append("assistant-claim", Output((ContentPart("text", "用户喜欢红色"),), "complete"))
+        store = profile_store(tmp_path)
+        memory = "# 用户长期记忆\n## 用户事实\n## 用户偏好\n## 用户明确要求长期记住的关键内容\n## 助手操作上下文\n- 已有操作记录\n"
+        if case == "empty_memory":
+            memory = ""
+        before_self = store.read_self()
+        line = "- 用户喜欢红色"
+        if case == "multiline":
+            line += "\n- 没有证据的事实"
+        elif case == "move_existing":
+            line = "- 已有操作记录"
+        additions = [] if case == "no_change" else [{"document": "memory", "section": "## 用户偏好", "line": line,
+            "message_ids": ["assistant-claim" if case == "assistant_claim" else "user-fact"]}]
+        if case == "self":
+            additions[0].update(document="self", section="## 我对当前用户的理解")
+        response = LLMResponse(json.dumps({"additions": additions}), finish_reason="length" if case == "truncated" else "stop")
+        if case not in {"no_change", "new_fact", "empty_memory", "self"}:
+            with pytest.raises(ValueError):
+                _check_profile_response(response, log.reader("s").snapshot(), memory, before_self)
+        else:
+            draft = _check_profile_response(response, log.reader("s").snapshot(), memory, before_self)
+            assert draft["self_before"] == before_self
+            assert draft["memory_before"] == memory
+            if case == "no_change":
+                assert draft["memory"] == memory
+                assert draft["self"] == before_self
+                assert draft["evidence"] == {"memory": {}, "self": {}}
+            elif case == "self":
+                assert draft["memory"] == memory
+                assert isinstance(draft["self"], str)
+                assert before_self.split("## 我们关系的定义")[0] in draft["self"]
+                assert "- 用户喜欢红色\n## 我们关系的定义" in draft["self"]
+                assert draft["evidence"] == {"memory": {}, "self": {"- 用户喜欢红色": ["user-fact"]}}
+            else:
+                expected = memory or "# 用户长期记忆\n\n## 用户事实\n\n## 用户偏好\n\n## 用户明确要求长期记住的关键内容\n"
+                expected = expected.replace("## 用户明确要求长期记住的关键内容", "- 用户喜欢红色\n## 用户明确要求长期记住的关键内容")
+                assert draft["memory"] == expected
+                assert draft["self"] == before_self
+                assert draft["evidence"] == {"memory": {"- 用户喜欢红色": ["user-fact"]}, "self": {}}
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("case", ["envelope", "entry", "section", "ids", "duplicate"])
+def test_profile_rejects_invalid_model_additions_before_building_a_durable_draft(tmp_path, case):
+    """畸形外部增量只形成可重试错误，不能产生部分持久草稿。"""
+    import json
+    from agent.plugin_composition.models import LLMResponse
+    from plugins.markdown_memory.message_plugin import _check_profile_response, _InvalidDraft
+
+    store = profile_store(tmp_path)
+    before = (store.read_memory(), store.read_self(), store.read_writes(None, 10))
+    entry: dict[str, object] = {"document": "memory", "section": "## 用户事实", "line": "- 新事实", "message_ids": ["missing"]}
+    additions = [entry]
+    payload: dict[str, object] = {"additions": additions}
+    if case == "envelope":
+        payload = {"memory": "overwrite", "additions": []}
+    elif case == "entry":
+        entry["replace"] = "old fact"
+    elif case == "section":
+        entry["section"] = "# 用户长期记忆"
+    elif case == "ids":
+        entry["message_ids"] = [None]
+    else:
+        additions.append(entry)
+    with pytest.raises(_InvalidDraft):
+        _check_profile_response(LLMResponse(json.dumps(payload)), (), before[0], before[1])
+    assert (store.read_memory(), store.read_self(), store.read_writes(None, 10)) == before

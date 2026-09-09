@@ -23,7 +23,7 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextLengthError, ModelError
+from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextLengthError, LLMResponse, ModelError
 from agent.llm_json import load_json_object_loose
 from agent.turn_effects import PostCommitEffect
 from infra.persistence.json_store import atomic_write_text
@@ -70,6 +70,15 @@ _SELF_HEADINGS = (
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sources: tuple[str, ...] = Field(default=("conversation", "programmatic", "legacy-unattributed"), min_length=1)
+
+
+class _InvalidDraft(ValueError):
+    """档案自身的合同拒绝；原文或持久状态错误不属于模型重试。"""
+
+
+class ProfileDraftError(ModelError):
+    """外部模型连续提交了不合格草稿；保留回执边界供 follower 重试。"""
+    retryable = True
 
 
 def _profile_source_rows(messages: tuple[Message, ...]) -> tuple[str, ...]:
@@ -164,29 +173,65 @@ async def _prepare_profile_batch(messages: tuple[Message, ...], source: str,
                                  provider: BoundChatModel) -> dict[str, object]:
     """校验一批新增事实与当前内存档案，不写文件或推进 receipt。"""
     prompt = _profile_prompt(current_memory, current_self, source)
-    output_cap = provider.descriptor.capabilities.max_output_tokens or 4_096
-    response = await provider.complete(ModelRequest(
-        messages=[{"role": "user", "content": prompt}],
-        max_output_tokens=min(4_096, output_cap), disable_reasoning=True,
-    ))
+    # 新增条目与模型推理共享输出预算，采用 provider 已声明的生成上限。
+    output_cap = provider.descriptor.capabilities.max_output_tokens or 0
+    repaired = False
+    while True:
+        response = await provider.complete(ModelRequest(
+            messages=[{"role": "user", "content": prompt}],
+            max_output_tokens=output_cap, disable_reasoning=True,
+        ))
+        try:
+            return _check_profile_response(response, messages, current_memory, current_self)
+        except _InvalidDraft as error:
+            if repaired:
+                raise ProfileDraftError(str(error)) from error
+            # 原草稿没有提交；只反馈合同错误，不补写模型猜错的证据或消息 ID。
+            logger.warning("Markdown 模型草稿不合格，本批修正一次: %s", error)
+            prompt = "上次草稿没有提交，校验失败：" + str(error)
+            prompt += "\n重新生成新增条目；message_id 从本次来源逐字符完整复制，不缩写、不猜测。\n\n"
+            prompt += _profile_prompt(current_memory, current_self, source)
+            repaired = True
+
+
+def _check_profile_response(response: LLMResponse, messages: tuple[Message, ...],
+                            current_memory: str, current_self: str) -> dict[str, object]:
+    """只验证模型草稿；原始 Message 的解析错误保持原异常。"""
+    if response.finish_reason == "length":
+        raise _InvalidDraft("模型输出达到生成上限，草稿尚未完整")
     raw = load_json_object_loose(response.content or "")
     if not isinstance(raw, dict):
-        raise ValueError("Markdown memory 模型必须返回 JSON object")
-    memory = raw.get("memory")
-    self_profile = raw.get("self")
-    if not isinstance(memory, str) or not isinstance(self_profile, str):
-        raise ValueError("Markdown memory 模型缺少 memory/self 字符串")
-    memory = memory.strip()
-    self_profile = self_profile.strip() + "\n"
-    if memory:
-        memory += "\n"
-    _validate_memory(memory)
-    _validate_self(self_profile)
-    _validate_preserved_bullets(current_memory, memory, document="MEMORY.md")
-    _validate_preserved_bullets(current_self, self_profile, document="SELF.md")
+        raise _InvalidDraft("Markdown memory 模型必须返回 JSON object")
+    additions = raw.get("additions")
+    if set(raw) != {"additions"} or not isinstance(additions, list):
+        raise _InvalidDraft("Markdown 模型必须只返回 additions 数组")
+    documents = {"memory": current_memory, "self": current_self}
+    evidence: dict[str, dict[str, list[str]]] = {"memory": {}, "self": {}}
+    # 1. 外部响应只表达一次条目与出处，完整档案和 evidence 由同一 owner 生成。
+    for addition in additions:
+        if not isinstance(addition, dict) or set(addition) != {"document", "section", "line", "message_ids"}:
+            raise _InvalidDraft("新增条目必须包含 document、section、line、message_ids")
+        document, section, line, ids = (addition[key] for key in ("document", "section", "line", "message_ids"))
+        if not isinstance(document, str) or document not in documents:
+            raise _InvalidDraft("新增条目 document 必须是 memory 或 self")
+        headings = (*_MEMORY_HEADINGS[1:], _MEMORY_OPTIONAL_HEADING) if document == "memory" else _SELF_HEADINGS[1:]
+        if not isinstance(section, str) or section not in headings:
+            raise _InvalidDraft("新增条目 section 必须是目标档案允许的完整二级标题")
+        if not isinstance(line, str) or not line.startswith("- ") or line.strip() != line or len(line.splitlines()) != 1:
+            raise _InvalidDraft("新增条目 line 必须是以 '- ' 开头的完整单行条目")
+        if not isinstance(ids, list) or not ids or any(not isinstance(identity, str) for identity in ids):
+            raise _InvalidDraft("新增条目 message_ids 必须是非空消息 ID 数组")
+        content = documents[document]
+        if line in content.splitlines():
+            raise _InvalidDraft("additions 不得重复已有条目或本批新增条目")
+        if document == "memory" and not content:
+            content = "\n\n".join(_MEMORY_HEADINGS) + "\n"
+        documents[document] = _append_section_lines(content, section, [line])
+        evidence[document][line] = ids
+    memory, self_profile = documents["memory"], documents["self"]
     draft: dict[str, object] = {
         "version": 2,
-        "evidence": raw.get("evidence"),
+        "evidence": evidence,
         "memory": memory,
         "self": self_profile,
         "memory_before": current_memory,
@@ -196,6 +241,8 @@ async def _prepare_profile_batch(messages: tuple[Message, ...], source: str,
         "memory_after_digest": content_digest(memory),
         "self_after_digest": content_digest(self_profile),
     }
+    # 2. 持久草稿沿原结构、保留和来源资格检查；不接受模型自报的用户身份。
+    check_draft(draft)
     check_evidence(draft, messages)
     return draft
 
@@ -388,11 +435,14 @@ def _append_section_lines(content: str, heading: str, lines: list[str]) -> str:
 
 
 def _profile_prompt(memory: str, self_profile: str, source: str) -> str:
-    return f"""你维护两个长期 Markdown 档案。根据本次已提交的精确对话事实，返回完整的新档案。
+    return f"""你维护两个长期 Markdown 档案。根据本次已提交的精确对话事实，只返回需要新增的条目。
 
-只返回 JSON：{{"memory":"完整 MEMORY.md", "self":"完整 SELF.md", "evidence":{{"memory":{{"新增完整条目":["message_id"]}},"self":{{"新增完整条目":["message_id"]}}}}}}。
+只返回 JSON：{{"additions":[{{"document":"memory", "section":"## 用户事实", "line":"- 新增事实", "message_ids":["完整 message_id"]}}]}}。
+没有合格的新事实时返回 {{"additions":[]}}。当前档案是只读的；不要重写、修订、移动或重复已有条目。每个新增条目只返回一次。
+document 只能是 memory 或 self。memory 的 section 只能是 ## 用户事实、## 用户偏好、## 用户明确要求长期记住的关键内容、## 助手操作上下文；self 的 section 只能是 ## 人格与形象、## 我对当前用户的理解、## 我们关系的定义。
 
-新增内容必须是单行 Markdown 条目，每项引用本次来源中的真实 message_id。现有条目及章节位置逐字保留。
+新增内容必须是单行 Markdown 条目，每项引用本次来源中的真实 message_id。message_id 须逐字符完整复制，包括前缀和全部尾部，不缩写、不猜测。
+line 必须包含开头的 '- '，条目正文与出处只在这一项中出现，不另写 evidence 或完整档案。
 来源中的 history.provenance 只展示已校验的 schema 和 role；原始 extra 和历史工具回放不作为本次学习正文。
 用户事实、偏好、明确要求和 SELF 中对用户或关系的判断，只能以真实用户 Input 原文为依据：当前消息的 author=user；迁入旧消息须有 history.provenance 中 schema=sessions.messages.v0、role=user 的原始出处。
 助手转述、工具输出、后台报告、召回和摘要都不能代替用户的原话；即使助手把它重复成结论也不行。
@@ -423,7 +473,7 @@ def check_draft(payload: dict[str, object]) -> None:
         isinstance(value, str)
         for value in (memory, self_profile, memory_before, self_before)
     ):
-        raise ValueError("Markdown profile draft schema 无效")
+        raise _InvalidDraft("Markdown profile draft schema 无效")
     assert isinstance(memory, str)
     assert isinstance(self_profile, str)
     assert isinstance(memory_before, str)
@@ -440,7 +490,7 @@ def check_evidence(draft: dict[str, object], messages: tuple[Message, ...]) -> N
     by_id = {item.message_id: item for item in messages}
     evidence = draft.get("evidence")
     if not isinstance(evidence, dict) or set(evidence) != {"memory", "self"}:
-        raise ValueError("Markdown 新条目缺少 evidence")
+        raise _InvalidDraft("Markdown 新条目缺少 evidence")
     for document in ("memory", "self"):
         before, after = draft[document + "_before"], draft[document]
         assert isinstance(before, str) and isinstance(after, str)
@@ -454,7 +504,7 @@ def check_evidence(draft: dict[str, object], messages: tuple[Message, ...]) -> N
                 old_lines.add((old_heading, line))
         cited = evidence[document]
         if not isinstance(cited, dict):
-            raise ValueError("Markdown evidence 必须按完整条目列出消息 ID")
+            raise _InvalidDraft("Markdown evidence 必须按完整条目列出消息 ID")
         added: set[str] = set()
         heading = ""
         for line in after.splitlines():
@@ -466,19 +516,19 @@ def check_evidence(draft: dict[str, object], messages: tuple[Message, ...]) -> N
                 continue
             # 2. 不允许用段落或换行绕开按条目的证据检查。
             if not line.startswith("- "):
-                raise ValueError("Markdown 新内容必须是单行条目")
+                raise _InvalidDraft("Markdown 新内容必须是单行条目")
             added.add(line)
             ids = cited.get(line)
             if not isinstance(ids, list) or not ids or any(not isinstance(key, str) or key not in by_id for key in ids):
-                raise ValueError("Markdown 条目必须引用本次实际消息")
+                raise _InvalidDraft("Markdown 条目必须引用本次实际消息")
             user_fact = (document == "memory" and heading != _MEMORY_OPTIONAL_HEADING
                          or document == "self" and heading in _SELF_HEADINGS[2:])
             if user_fact and not any(
                 is_user_input(by_id[key]) for key in ids
             ):
-                raise ValueError("用户事实必须引用真实用户 Input，不能仅引用助手或后台结果")
+                raise _InvalidDraft("用户事实必须引用真实用户 Input，不能仅引用助手或后台结果")
         if set(cited) != added:
-            raise ValueError("Markdown evidence 必须与新增条目一一对应")
+            raise _InvalidDraft("Markdown evidence 必须与新增条目一一对应")
 
 
 def _validate_preserved_bullets(before: str, after: str, *, document: str) -> None:
@@ -492,7 +542,7 @@ def _validate_preserved_bullets(before: str, after: str, *, document: str) -> No
     }
     removed = sorted(old_facts - new_facts)
     if removed:
-        raise ValueError(f"{document} 不得隐式删除既有事实: {removed}")
+        raise _InvalidDraft(f"{document} 不得隐式删除既有事实: {removed}")
 
 
 def _headings(content: str) -> tuple[str, ...]:
@@ -511,22 +561,22 @@ def _validate_memory(content: str) -> None:
         _MEMORY_HEADINGS,
         _MEMORY_HEADINGS + (_MEMORY_OPTIONAL_HEADING,),
     } or "```" in content:
-        raise ValueError("MEMORY.md 模型输出格式无效")
+        raise _InvalidDraft("MEMORY.md 模型输出格式无效")
     if not any(line.lstrip().startswith("- ") for line in content.splitlines()):
-        raise ValueError("MEMORY.md 模型输出不包含记忆条目")
+        raise _InvalidDraft("MEMORY.md 模型输出不包含记忆条目")
 
 
 def _validate_self(content: str) -> None:
     lines = content.splitlines()
     if _headings(content) != _SELF_HEADINGS or "```" in content:
-        raise ValueError("SELF.md 模型输出格式无效")
+        raise _InvalidDraft("SELF.md 模型输出格式无效")
     positions = [lines.index(heading) for heading in _SELF_HEADINGS] + [len(lines)]
     for index in range(1, len(_SELF_HEADINGS)):
         if not any(
             line.lstrip().startswith("- ")
             for line in lines[positions[index] + 1 : positions[index + 1]]
         ):
-            raise ValueError(f"SELF.md section 为空: {_SELF_HEADINGS[index]}")
+            raise _InvalidDraft(f"SELF.md section 为空: {_SELF_HEADINGS[index]}")
 
 
 @asynccontextmanager
