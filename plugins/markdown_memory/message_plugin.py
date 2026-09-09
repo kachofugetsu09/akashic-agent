@@ -45,10 +45,12 @@ name = "markdown_memory"
 version = "4.0.0"
 desc = "把已使用摘要的确切原文投影到 MEMORY.md 和 SELF.md"
 inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, TURN_PROJECTION)
+_UPDATE_LOCK_NAME = "markdown-profile-update.lock"
 workspace_files = (
     "memory/MEMORY.md", "memory/SELF.md", "memory/markdown-profile-writes.db",
     "memory/markdown-profile.lock", "memory/PENDING.md", "memory/PENDING.snapshot.md",
     "memory/PENDING.retired.md",
+    f"memory/{_UPDATE_LOCK_NAME}",
 )
 
 
@@ -133,11 +135,11 @@ def _profile_batch_size(rows: tuple[tuple[str, ...], ...], memory: str, self_pro
 
 async def prepare_profile_draft(
     groups: tuple[tuple[Message, ...], ...],
-    store: MarkdownProfileStore,
+    before_memory: str,
+    before_self: str,
     chat_models: ChatModels,
 ) -> dict[str, object]:
     """分批核对精确正文；全部成功后才把完整草稿交给原持久 writer。"""
-    before_memory, before_self = store.read_memory(), store.read_self()
     memory, self_profile = before_memory, before_self
     messages = tuple(message for group in groups for message in group)
     rows = tuple(_profile_source_rows(group) for group in groups)
@@ -256,16 +258,17 @@ async def start_store(
 ) -> None:
     """Recover document commits, then retire the old pending queue."""
 
-    async with profile_lock(lock_path):
-        for source_ref in store.pending_source_refs():
-            store.apply_pending(source_ref)
-    await _migrate_pending(
-        store,
-        lock_path,
-        pending_path,
-        snapshot_path,
-        retired_path,
-    )
+    async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)):
+        async with profile_lock(lock_path):
+            for source_ref in store.pending_source_refs():
+                store.apply_pending(source_ref)
+        await _migrate_pending(
+            store,
+            lock_path,
+            pending_path,
+            snapshot_path,
+            retired_path,
+        )
 
 
 async def _migrate_pending(
@@ -581,7 +584,7 @@ def _validate_self(content: str) -> None:
 
 @asynccontextmanager
 async def profile_lock(path: Path, *, create: bool = True) -> AsyncGenerator[None]:
-    """跨 Session 和 generation 串行写档案；取消等待不会遗留持锁线程。"""
+    """按文件名提供跨 Session 和 generation 的排他锁；取消等待不会遗留持锁线程。"""
     if create:
         path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b" if create else "rb") as handle:
@@ -652,10 +655,12 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
     if len(refs) != 1:
         raise ValueError("一个 Output 只能声明实际使用的一份摘要")
     reference = check_summary(refs[0]).binding_ids[0]
-    async with profile_lock(lock_path):
-        # 1. 先完成已固定的文件写入；重复 Output 不重新调用模型。
-        for pending in store.pending_source_refs():
-            store.apply_pending(pending)
+    # 1. 更新串行；两文件锁只保护已提交档案的读取和安装，不覆盖模型等待。
+    async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)):
+        async with profile_lock(lock_path):
+            for pending in store.pending_source_refs():
+                store.apply_pending(pending)
+            before_memory, before_self = store.read_memory(), store.read_self()
         async with bindings.open(reference, COMPACTION_SUMMARIES) as (lookup, metadata):
             record = lookup.resolve(metadata, session_id=message.session_id)
             if store.is_applied(record.reference):
@@ -667,16 +672,17 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
             selected = tuple(message for group in groups for message in group)
         # 模型属于当前 Markdown 作用域；先关闭旧摘要的只读归档 scope。
         if draft is None:
-            draft = await prepare_profile_draft(groups, store, models)
+            draft = await prepare_profile_draft(groups, before_memory, before_self, models)
         if draft.get("version") == 2:
             check_evidence(draft, selected)
         elif draft.get("version") != 1:
             raise ValueError("不支持的 Markdown 草稿版本")
-        # model draft 后退出也可能缺 order；用实际摘要身份补齐整份准备再写文件。
-        _ = store.write_draft(record.reference, draft, session_key=record.session_id, generation=record.generation)
-        # 2. 取消前若已留下 draft，下一次沿同一恢复点继续，不重算 before-image。
-        check_draft(draft)
-        store.apply_draft(record.reference, draft)
+        # 2. 读者只会看到完整的旧档案或新档案；两次文件安装与回执在同一短锁内。
+        async with profile_lock(lock_path):
+            _ = store.write_draft(record.reference, draft, session_key=record.session_id, generation=record.generation)
+            # 取消前若已留下 draft，下一次沿同一恢复点继续，不重算 before-image。
+            check_draft(draft)
+            store.apply_draft(record.reference, draft)
 
 
 async def apply(ctx: Context, config: Config) -> None:
@@ -695,7 +701,7 @@ async def apply(ctx: Context, config: Config) -> None:
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
         # 完整初始态只投影 Store 的同一默认值；不创建文件或消费旧队列。
         state_files = tuple(ctx.workspace_file(name) for name in workspace_files
-                            if name != "memory/markdown-profile.lock")
+                            if not name.endswith(".lock"))
         if not any(path.exists() for path in state_files):
             self_profile, memory = DEFAULT_SELF_MD.strip(), ""
         else:
@@ -753,8 +759,10 @@ async def apply(ctx: Context, config: Config) -> None:
 
     async def start(_event: object) -> None:
         nonlocal store, watcher
-        store = MarkdownProfileStore(ctx.workspace_file("memory/MEMORY.md"), ctx.workspace_file("memory/SELF.md"),
-                                     ctx.workspace_file("memory/markdown-profile-writes.db"))
+        # 首次创建默认档案和 schema 也不能向读者暴露部分初始化。
+        async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)), profile_lock(lock_path):
+            store = MarkdownProfileStore(ctx.workspace_file("memory/MEMORY.md"), ctx.workspace_file("memory/SELF.md"),
+                                         ctx.workspace_file("memory/markdown-profile-writes.db"))
         await start_store(store, lock_path, ctx.workspace_file("memory/PENDING.md"),
                            ctx.workspace_file("memory/PENDING.snapshot.md"), ctx.workspace_file("memory/PENDING.retired.md"))
         watcher = await ctx.spawn(follow(ctx.require(MESSAGE_CATALOG)), name="markdown-memory")

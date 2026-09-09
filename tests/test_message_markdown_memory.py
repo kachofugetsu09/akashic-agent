@@ -335,6 +335,7 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
 
 @pytest.mark.asyncio
 async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(tmp_path, monkeypatch):
+    import fcntl
     from plugins.markdown_memory.message_plugin import project
 
     async with application(tmp_path) as (log, host):
@@ -347,6 +348,10 @@ async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(t
         apply_document = store._apply_document
         def fail_self(source_ref, document, path):
             if document == "self":
+                # 第一份文件已安装时，其他读者仍不能取得整对档案的锁。
+                with (tmp_path / "workspace/memory/markdown-profile.lock").open("rb") as lock:
+                    with pytest.raises(BlockingIOError):
+                        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 raise OSError("injected second document failure")
             apply_document(source_ref, document, path)
         monkeypatch.setattr(store, "_apply_document", fail_self)
@@ -485,6 +490,79 @@ async def test_profile_lock_cancellation_closes_its_handle_and_allows_next_write
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tmp_path, monkeypatch, cancel_first):
+    """模型停在确定性屏障时仍可读旧档案；另一次更新必须等待且可接替取消者。"""
+    from plugins.markdown_memory import message_plugin as plugin
+
+    async with application(tmp_path) as (log, host):
+        log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text}).append(
+            "u", Input((ContentPart("text", "fact-one"),)))
+        record = publish(log, "read-during-model")
+        used = await record_use(log, host, record, "used")
+        store = profile_store(tmp_path)
+        before = (store.read_memory(), store.read_self(), store.read_writes(None, 100))
+        entered, release, second_waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        prepare_calls = []
+        original_prepare, original_flock = plugin.prepare_profile_draft, plugin.fcntl.flock
+
+        async def paused_prepare(*args, **kwargs):
+            prepare_calls.append(asyncio.current_task())
+            entered.set()
+            await release.wait()
+            return await original_prepare(*args, **kwargs)
+
+        async def update():
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                ctx = snapshot.composition_root.context
+                await plugin.project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
+                    models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
+                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+
+        monkeypatch.setattr(plugin, "prepare_profile_draft", paused_prepare)
+        first = asyncio.create_task(update())
+        second = None
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            second = asyncio.create_task(update())
+
+            def tracked_flock(fd, operation):
+                try:
+                    return original_flock(fd, operation)
+                except BlockingIOError:
+                    if asyncio.current_task() is second:
+                        second_waiting.set()
+                    raise
+
+            monkeypatch.setattr(plugin.fcntl, "flock", tracked_flock)
+            await asyncio.wait_for(second_waiting.wait(), 5)
+            assert prepare_calls == [first]
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
+                    prepared = await asyncio.wait_for(materials.prepare((), "conversation"), 1)
+            assert before[1].strip() in prepared.system_prompt
+            assert "fact-one" not in prepared.system_prompt
+            assert (store.read_memory(), store.read_self(), store.read_writes(None, 100)) == before
+            if cancel_first:
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+                assert (store.read_memory(), store.read_self(), store.read_writes(None, 100)) == before
+                assert store.read_draft(record.reference) is None
+            release.set()
+            await asyncio.gather(*([second] if cancel_first else [first, second]))
+            assert len(prepare_calls) == (2 if cancel_first else 1)
+            assert store.is_applied(record.reference)
+            assert store.read_memory().count("fact-one") == 1
+            assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
+        finally:
+            tasks = [first, *([second] if second is not None else [])]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("existing", ["MEMORY.md", "markdown-profile-writes.db", "PENDING.md"])
 async def test_unstarted_markdown_does_not_treat_partial_state_as_initial(tmp_path, existing):
     async with application(tmp_path) as (log, host):
@@ -498,6 +576,19 @@ async def test_unstarted_markdown_does_not_treat_partial_state_as_initial(tmp_pa
                     await asyncio.wait_for(view.prepare((), "conversation"), 5)
         assert tuple(memory.iterdir()) == (path,)
         assert path.read_bytes() == b"preserved state"
+
+
+@pytest.mark.asyncio
+async def test_an_update_lock_alone_does_not_create_a_partial_profile_state(tmp_path):
+    async with application(tmp_path) as (_log, host):
+        path = tmp_path / "workspace/memory/markdown-profile-update.lock"
+        path.parent.mkdir()
+        path.touch()
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
+                prepared = await materials.prepare((), "conversation")
+        assert "# Akashic 的自我认知" in prepared.system_prompt
+        assert tuple(path.parent.iterdir()) == (path,)
 
 
 @pytest.mark.asyncio
@@ -721,9 +812,9 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
         models = cast(ChatModels, SimpleNamespace(independent_execution=execution))
         if fail_second:
             with pytest.raises(TransportError, match="second batch"):
-                await prepare_profile_draft(groups, store, models)
+                await prepare_profile_draft(groups, before[0], before[1], models)
         else:
-            draft = await prepare_profile_draft(groups, store, models)
+            draft = await prepare_profile_draft(groups, before[0], before[1], models)
             assert draft["memory_before"] == before[0]
             assert isinstance(draft["memory"], str)
             assert "- fact-0" in draft["memory"] and "- fact-1" in draft["memory"]
