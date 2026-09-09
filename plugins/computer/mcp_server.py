@@ -144,6 +144,10 @@ def driver_content(value: dict[str, Any]) -> dict[str, object]:
     return {"content": content, "call_id": value["call_id"]}
 
 
+class DriverResponseError(RuntimeError):
+    """HTTP 驱动已返回明确的失败响应。"""
+
+
 async def control_connection(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
@@ -168,7 +172,7 @@ async def control_connection(
             async def send(path, body):
                 response = await client.post(path, json=body)
                 if response.status_code >= 400:
-                    raise RuntimeError(
+                    raise DriverResponseError(
                         f"Computer returned {response.status_code}: {response.text[:16000]}"
                     )
                 if len(response.content) > 8 * 1024 * 1024:
@@ -217,7 +221,10 @@ async def control_connection(
         httpx.HTTPError,
     ) as error:
         if not writer.is_closing():
-            writer.write(json.dumps({"error": str(error)}).encode() + b"\n")
+            writer.write(json.dumps({
+                "error": str(error),
+                "kind": "driver_error" if isinstance(error, DriverResponseError) else "control_error",
+            }).encode() + b"\n")
             try:
                 await writer.drain()
             except (ConnectionError, BrokenPipeError):

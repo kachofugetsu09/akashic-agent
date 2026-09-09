@@ -112,7 +112,7 @@ async def prepare_materials(
     members = set(projected[-1].message_ids)
     inputs = tuple(message for message in snapshot
                    if message.message_id in members and isinstance(message.body, Input)
-                   and message.author == "user")
+                   and message.author == "user")[-1:]
     material = Materials("")
     if any(learning.text(message).strip() for message in inputs):
         # 同一真实输入使用稳定身份；工具续步、Reminder 和重启只读原记录。

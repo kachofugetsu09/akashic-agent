@@ -313,15 +313,17 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
         if (members.length > 1) completed.set(message.id, members);
         pending.delete(key);
       }
-    } else if (body.kind === "control" && body.action !== "resume") {
+    } else if ((body.kind === "input" && message.author === "user")
+      || (body.kind === "control" && body.action !== "resume")) {
+      const throughSeq = body.kind === "control" ? body.through_seq : message.seq - 1;
       const members = pending.get(key) ?? [];
-      const closed = members.filter((item) => item.seq <= body.through_seq);
+      const closed = members.filter((item) => item.seq <= throughSeq);
       const ending = closed.at(-1);
       if (ending) {
         hiddenBodies.delete(ending.id);
         if (closed.length > 1) completed.set(ending.id, closed);
       }
-      pending.set(key, members.filter((item) => item.seq > body.through_seq));
+      pending.set(key, members.filter((item) => item.seq > throughSeq));
     }
   }
   const active = new Map<string, TimelineMessage[]>();

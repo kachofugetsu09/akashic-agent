@@ -94,14 +94,25 @@ export function mount(host, context) {
 }
 
 /** 页面缓存只保留服务端确认不再变化的查询结果。 */
-function readRecall(context) {
-  return context.query("recall.turn", {
-    message_id: context.messageId, source: context.block?.source ?? "",
+async function readRecall(context) {
+  const query = (messageId, offset) => context.query("recall.turn", {
+    message_id: messageId, source: context.block?.source ?? "", ...(offset ? { offset } : {}),
   }, {
     // 旧 OTA Host 仍能正确查询；新 Host 才接管页面缓存，不向旧 Native 发送新枚举。
     cache: context.capabilities?.queryCacheModes?.includes("memory") ? "memory" : "none",
     transport: "https",
   });
+  const result = await query(context.messageId, 0);
+  const items = [...result.items];
+  let pending = result.pending;
+  let offset = result.next_offset;
+  while (offset != null) {
+    const page = await query(result.input_message_id, offset);
+    items.push(...page.items);
+    pending = page.pending;
+    offset = page.next_offset;
+  }
+  return { ...result, items, pending };
 }
 
 /** 预取只读一次，进行中的结果留给展开后的可见面板继续读取。 */

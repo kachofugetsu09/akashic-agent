@@ -1016,7 +1016,7 @@ class RecallInspector:
         self._read = read
         self._list = list_records
         self._catalog = catalog
-        self._turns: tuple[tuple[str, str, int], tuple[MessageTurn, ...]] | None = None
+        self._turns: tuple[tuple[str, str, int], tuple[MessageTurn, ...], tuple[tuple[str, int, bool], ...]] | None = None
 
     def recent(self, *, page: int = 1, page_size: int = 30, session_id: str = "") -> dict[str, object]:
         rows = tuple((identity, recall) for identity, recall in self._list()
@@ -1027,8 +1027,8 @@ class RecallInspector:
                                     "total": len(rows), "page": page, "page_size": page_size})
 
     def for_turn(self, session_id: str, message_id: str, source: str,
-                 projection: TurnProjection) -> dict[str, object]:
-        """按既有 Turn 区间展示真实检索，不把查询记录解释为模型使用证明。"""
+                 projection: TurnProjection, *, offset: int = 0) -> dict[str, object]:
+        """按真实用户输入展示首次自动召回和主动查询，并分批返回完整记录。"""
         # 1. 已提交消息从日志取得来源；草稿只能读取该来源仍未闭合的 Turn。
         reader = self._catalog.reader(session_id)
         message = reader.get(message_id)
@@ -1047,7 +1047,9 @@ class RecallInspector:
                 page = reader.read(after_seq=cursor, through_seq=source_head, source=source)
                 messages.extend(page)
                 cursor = page[-1].seq
-            cached = (key, projection.project(messages, source))
+            cached = (key, projection.project(messages, source),
+                      tuple((item.message_id, item.seq, isinstance(item.body, Input) and item.author == "user")
+                            for item in messages))
             self._turns = cached
         turns = cached[1]
         turn = next((item for item in turns if message_id in item.message_ids), None)
@@ -1055,25 +1057,57 @@ class RecallInspector:
             turn = next((item for item in reversed(turns) if item.status == "open"), None)
         if turn is None:
             return {"items": [], "pending": message is None}
-        # 2. 查询的上下文上界或工具引用必须属于同一来源的这个区间。
+        # 2. 回复归属它之前最近的真实输入；下一条输入划开同 Turn 的卡片。
+        member_ids = set(turn.message_ids)
+        inputs = [(identity, seq) for identity, seq, user_input in cached[2]
+                  if identity in member_ids and user_input]
+        anchor_seq = message.seq if message is not None else source_head
+        target = next((item for item in reversed(inputs) if item[1] <= anchor_seq), None)
+        if target is None:
+            return {"items": [], "pending": False}
+        following = next((item for item in inputs if item[1] > target[1]), None)
         through_seq = reader.head() if turn.status == "open" else turn.through_seq
         if turn.status in {"complete", "quiet"}:
             through_seq -= 1
+        if following is not None:
+            through_seq = following[1] - 1
+        call_ids = {identity for identity, seq, _ in cached[2]
+                    if identity in member_ids and target[1] <= seq <= through_seq}
         identities: list[str] = []
+        automatic_found = False
         for identity, recall in reversed(self._list()):
             origin = recall.source
             if isinstance(origin, ContextSource):
-                matches = (origin.session_id == session_id and origin.source == source
-                           and turn.after_seq < origin.through_seq <= through_seq)
+                matches = (not automatic_found and origin.session_id == session_id
+                           and origin.source == source and target[1] <= origin.through_seq <= through_seq)
+                automatic_found = automatic_found or matches
             elif isinstance(origin, ToolSource):
-                matches = (origin.session_id == session_id
-                           and origin.call_ref.message_id in turn.message_ids)
+                matches = (origin.session_id == session_id and origin.call_ref.message_id in call_ids)
             else:
                 matches = False
             if matches:
                 identities.append(identity)
-        return {"items": [self.mobile_detail(identity) for identity in identities],
-                "pending": turn.status == "open"}
+        # 3. 历史重复自动查询留在 Inspector；主动查询分页，不突破 RPC 字节边界。
+        items: list[dict[str, object]] = []
+        pending = turn.status == "open" and following is None
+        size = len(json.dumps({"items": [], "pending": pending,
+            "input_message_id": target[0], "next_offset": len(identities)},
+            ensure_ascii=False, separators=(",", ":")).encode()) + 4
+        for identity in identities[offset:]:
+            detail = self.mobile_detail(identity)
+            if detail is None:
+                raise ValueError(f"召回记录缺失: {identity}")
+            encoded_size = len(json.dumps(detail, ensure_ascii=False, separators=(",", ":")).encode())
+            if size + encoded_size > 192 * 1024:
+                if not items:
+                    raise MobileUiRpcInvalidRequest("本条检索出处过多，超出移动页面容量；查询记录仍完整保留")
+                break
+            items.append(detail)
+            size += encoded_size + 1
+        end = offset + len(items)
+        return {"items": items, "pending": pending,
+                "input_message_id": target[0],
+                "next_offset": end if end < len(identities) else None}
 
     @staticmethod
     def _summary(identity: str, recall: Recall) -> dict[str, object]:

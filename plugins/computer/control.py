@@ -9,6 +9,10 @@ from collections.abc import Mapping
 from pathlib import Path
 
 
+class ComputerDriverError(RuntimeError):
+    """驱动已返回失败，调用方可读取错误并纠正下一次操作。"""
+
+
 def endpoint_name(data_root: Path, generation_id: str) -> str:
     """按数据目录和实际 MCP generation 路由控制 socket。"""
     if not isinstance(generation_id, str) or not generation_id:
@@ -54,6 +58,8 @@ async def request(name: str, payload: Mapping[str, object]) -> dict[str, object]
         if not isinstance(value, dict):
             raise TypeError("Computer control returned an invalid response")
         if "error" in value:
+            if value.get("kind") == "driver_error":
+                raise ComputerDriverError(str(value["error"]))
             raise RuntimeError(str(value["error"]))
         return value
     finally:

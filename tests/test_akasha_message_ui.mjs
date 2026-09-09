@@ -49,6 +49,7 @@ test("chat recall mounts the old two lanes, escapes memory text and stops after 
   const dom = new JSDOM("<div id='host'></div>");
   const host = dom.window.document.getElementById("host");
   const calls = [];
+  globalThis.document = dom.window.document;
   const close = mountRecall(host, { messageId: "draft", block: { source: "conversation" },
     query: async (...args) => { calls.push(args); return { items: [detail], pending: false }; } });
   await new Promise((done) => setImmediate(done));
@@ -59,6 +60,26 @@ test("chat recall mounts the old two lanes, escapes memory text and stops after 
   assert.doesNotMatch(host.textContent, /conversation/);
   assert.deepEqual(calls[0], ["recall.turn", { message_id: "draft", source: "conversation" },
     { cache: "none", transport: "https" }]);
+  close();
+  dom.window.close();
+});
+
+test("recall pagination stays pinned to its input and leaves cached pages unchanged", async () => {
+  const dom = new JSDOM("<div id='host'></div>");
+  globalThis.document = dom.window.document;
+  const host = dom.window.document.getElementById("host");
+  const first = { items: [detail], pending: false, input_message_id: "user-input", next_offset: 1 };
+  const second = { items: [{ ...detail, hits: [{ ...detail.hits[0], messages: [
+    { message_id: "new", preview: "another memory" },
+  ] }] }], pending: false, next_offset: null };
+  const calls = [];
+  const close = mountRecall(host, { messageId: "output", block: { source: "conversation" },
+    query: async (method, payload) => { calls.push(payload); return payload.offset ? second : first; } });
+  await new Promise(done => setImmediate(done));
+  assert.deepEqual(calls, [{ message_id: "output", source: "conversation" },
+    { message_id: "user-input", source: "conversation", offset: 1 }]);
+  assert.match(host.textContent, /another memory/);
+  assert.equal(first.items.length, 1);
   close();
   dom.window.close();
 });
