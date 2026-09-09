@@ -16,7 +16,7 @@ from agent.plugin_composition.tasks import Task
 from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary, summary_range
 from plugins.models.selection import selection
 from plugins.models.content import load_artifacts, render_content as render_model_content
-from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts
+from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts, check_tool_rejection
 from plugins.tools.api import Authorize, MessageReply, result_message_id
 from plugins.tools.menu import ToolMenu, ToolPresentation
 from plugins.tools.plugin import ToolView
@@ -75,6 +75,7 @@ async def run_reply(
             raise ValueError("旧工具名称与原固定 binding 不一致")
     # 1. 内容检查器与模型绑定覆盖整个程序，取消时先排空已开始的工具。
     prompt_hints = tuple(prompt_hints)
+    reader = reader.incremental()
     source_head = reader.head(source=source)
     snapshot = reader.snapshot()
     turns = turn_projection.project(snapshot, source)
@@ -118,7 +119,7 @@ async def run_reply(
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
             check_metadata=view.check_metadata,
-            content={**view.checks, "model.facts": check_facts, "context.summary": check_summary}, check_call=menu.check_call,
+            content={**view.checks, "model.facts": check_facts, "model.tool_rejection": check_tool_rejection, "context.summary": check_summary}, check_call=menu.check_call,
         )(reader.session_id)
         task.on_close(output.expire)
         artifacts: Mapping[str, tuple[Mapping[str, Any], ...]] = {}
@@ -132,28 +133,15 @@ async def run_reply(
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
         async def build_materials(messages: tuple[Message, ...]) -> Materials:
             nonlocal artifacts
-            if menu.reminders:
-                result = await material_view.prepare(
-                    messages,
-                    source,
-                    caller=ctx,
-                    reminders=tuple(reminders),
-                    reminder_contributors=menu.reminders,
-                )
-            else:
-                result = await material_view.prepare(
-                    messages,
-                    source,
-                    caller=ctx,
-                    reminders=tuple(reminders),
-                )
+            result = await material_view.prepare(
+                messages, source, caller=ctx, reminders=tuple(reminders),
+            )
             if render_content is None:
                 start = 0 if result.summary is None else summary_range(messages, result.summary.source_message_ids).stop
-                refs = tuple(
-                    ref for index, message in enumerate(messages)
+                refs = reader.attachments_for(tuple(
+                    message.message_id for index, message in enumerate(messages)
                     if index >= start or message.message_id in keep_input_ids
-                    for ref in reader.attachments(message.message_id)
-                )
+                ))
                 if refs:
                     artifacts = await load_artifacts(
                         ctx.require(ARTIFACT_READ), refs,
@@ -161,7 +149,7 @@ async def run_reply(
                     )
             check_source(task, reader, source, source_head)
             return replace(result, system_prompt="\n\n".join(
-                part for part in (result.system_prompt, *view.prompts, *prompt_hints) if part
+                part for part in (result.system_prompt, *view.prompts, *prompt_hints, menu.system_prompt) if part
             ))
 
         async def reduce(

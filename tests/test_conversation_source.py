@@ -267,3 +267,26 @@ async def test_new_human_input_revokes_completion_then_result_resumes_after_repl
         assert result.message_id == "report"
         assert [m.message_id for m in log.reader("s").snapshot()] == ["previous-answer", "human", "human-answer", "report"]
         assert len(attempts) == 2
+
+
+def test_reply_wake_reads_only_latest_input_prefix_and_matches_full_history(tmp_path, monkeypatch):
+    from contextlib import closing
+    with closing(MessageLog(tmp_path / "wake.db")) as log:
+        def append(identity, body):
+            return log.writer("s", author="test", source="conversation", body_types=(type(body),),
+                              content={}).append(identity, body)
+        reader = log.reader("s")
+        assert not needs_reply(reader, "conversation")
+        bodies = (Input(()), Control("pause", 0), Control("resume", 1),
+                  Input(()), Control("abandon", 3), Input(()), Output((), "continue"),
+                  Control("failure", 6), Control("resume", 7), Output((), "complete"),
+                  Input(()), Control("pause", 9))
+        for index, body in enumerate(bodies):
+            append(str(index), body)
+            assert needs_reply(reader, "conversation") == needs_reply(reader.snapshot(), "conversation")
+        original = reader.snapshot
+        def narrow(**kwargs):
+            assert kwargs["after_seq"] == 10
+            return original(**kwargs)
+        monkeypatch.setattr(reader, "snapshot", narrow)
+        assert needs_reply(reader, "conversation")

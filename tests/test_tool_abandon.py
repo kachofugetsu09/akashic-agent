@@ -266,3 +266,57 @@ async def test_failed_abandon_transaction_does_not_cancel_or_partly_publish(envi
         probe.release.set()
         await tasks.close()
         await asyncio.gather(running, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_waiter_starts_at_call_and_sees_abandon_committed_before_subscription(environment, monkeypatch):
+    log, state, tasks, probe, _, execution = environment
+    inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content={})
+    for index in range(100):
+        inputs.append(f"old-{index}", Input(()))
+    reply = dialogue(log)
+    call = reply.reader.get(reply.call_ref.message_id)
+    entered, release = asyncio.Event(), asyncio.Event()
+    waiting, subscribe = asyncio.Event(), asyncio.Event()
+    seen = []
+    follow = reply.reader.follow
+
+    async def held_invoke(key, arguments):
+        probe.calls.append((key, arguments))
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        return Result("success", (ContentPart("text", "late return"),))
+
+    async def delayed_follow(**kwargs):
+        waiting.set()
+        await subscribe.wait()
+        async for message in follow(**kwargs):
+            seen.append(message.seq)
+            yield message
+
+    probe.invoke = held_invoke
+    monkeypatch.setattr(reply.reader, "follow", delayed_follow)
+    running = asyncio.create_task(execution.execute_call(reply))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(waiting.wait(), 1)
+        abandon(log, reply)
+        assert (await abandon_call(state, tasks, reply, task_key="tools")).outcome == "interrupted"
+        inputs.append("next-work", Input(()))
+        subscribe.set()
+        assert (await asyncio.wait_for(running, 1)).outcome == "interrupted"
+        assert seen and min(seen) >= call.seq
+        assert len(probe.calls) == 1
+        release.set()
+        await tasks.close()
+        results = [m.body for m in reply.reader.snapshot() if isinstance(m.body, ToolResult)]
+        assert len(results) == 1 and results[0].call_ref == reply.call_ref
+        assert results[0].outcome == "interrupted"
+    finally:
+        subscribe.set()
+        release.set()
+        await tasks.close()
+        await asyncio.gather(running, return_exceptions=True)

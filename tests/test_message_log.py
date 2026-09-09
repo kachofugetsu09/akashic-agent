@@ -403,3 +403,126 @@ def test_reader_ranges_keep_prefix_source_and_page_boundaries(log):
     assert reader.snapshot(after_seq=head) == (later,)
     assert reader.snapshot(after_seq=head, through_seq=head) == ()
     assert tuple(log._connection.iterdump()) == before
+
+
+def test_incremental_reader_decodes_only_new_messages(log, monkeypatch):
+    import session.log as message_log
+
+    inputs = writer(log)
+    first = inputs.append("first", Input((ContentPart("text", "first"),)))
+    reader = log.reader("s").incremental()
+    decoded = []
+    decode = message_log._message
+
+    def read_message(row):
+        decoded.append(row["id"])
+        return decode(row)
+
+    monkeypatch.setattr(message_log, "_message", read_message)
+    assert reader.snapshot() == (first,)
+    assert decoded == ["first"]
+    decoded.clear()
+    assert reader.snapshot(through_seq=first.seq) == (first,)
+    assert reader.snapshot(after_seq=first.seq) == ()
+    assert decoded == []
+    second = inputs.append("second", Input(()))
+    decoded.clear()
+    assert reader.snapshot(after_seq=first.seq) == (second,)
+    assert decoded == ["second"]
+    decoded.clear()
+    assert reader.snapshot() == (first, second)
+    assert reader.snapshot(through_seq=first.seq) == (first,)
+    assert decoded == []
+    assert not log._connection.in_transaction
+
+
+@pytest.mark.parametrize("operation", ["edit", "delete", "replace"])
+def test_incremental_reader_reloads_external_changes_with_same_head(log, tmp_path, operation):
+    inputs = writer(log)
+    first = inputs.append("first", Input((ContentPart("text", "old"),)))
+    last = inputs.append("last", Input(()))
+    reader = log.reader("s").incremental()
+    original = reader.snapshot()
+    with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+        if operation == "edit":
+            connection.execute("UPDATE messages SET body=? WHERE id='first'",
+                               (encode_body(Input((ContentPart("text", "edited"),))),))
+        elif operation == "delete":
+            connection.execute("DELETE FROM messages WHERE id='first'")
+        else:
+            connection.execute("UPDATE messages SET id='replacement' WHERE id='first'")
+    assert reader.head() == last.seq
+    # 即使先只请求尾部，后续完整读取也不能复用已失效的旧正文。
+    assert reader.snapshot(after_seq=first.seq) == (last,)
+    assert reader.snapshot() == log.reader("s").snapshot()
+    assert reader.snapshot() != original
+    assert original == (first, last)
+
+
+def test_incremental_reader_does_not_keep_rolled_back_rows(log):
+    inputs = writer(log)
+    first = inputs.append("first", Input(()))
+    reader = log.reader("s").incremental()
+    assert reader.snapshot() == (first,)
+    with pytest.raises(RuntimeError, match="rollback"):
+        with log._connection:
+            log._connection.execute("BEGIN")
+            log._connection.execute(
+                "INSERT INTO messages SELECT 'uncommitted',session_key,seq+1,ts,author,source,body,metadata "
+                "FROM messages WHERE id='first'"
+            )
+            assert [message.message_id for message in reader.snapshot()] == ["first", "uncommitted"]
+            raise RuntimeError("rollback")
+    assert reader.snapshot() == (first,)
+    second = inputs.append("committed", Input(()))
+    assert reader.snapshot() == (first, second)
+
+
+def test_incremental_reader_keeps_one_snapshot_during_external_edit(log, tmp_path, monkeypatch):
+    log._connection.execute("PRAGMA journal_mode=WAL")
+    inputs = writer(log)
+    for index in range(1001):
+        inputs.append(f"input-{index}", Input((ContentPart("text", "old"),)))
+    reader = log.reader("s").incremental()
+    read = reader.read
+    edited = False
+
+    def read_and_edit(**kwargs):
+        nonlocal edited
+        page = read(**kwargs)
+        if not edited:
+            edited = True
+            with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
+                connection.execute("UPDATE messages SET body=? WHERE id IN ('input-0','input-1000')",
+                                   (encode_body(Input((ContentPart("text", "new"),))),))
+        return page
+
+    monkeypatch.setattr(reader, "read", read_and_edit)
+    original = reader.snapshot()
+    assert len(original) == 1001
+    assert original[0].body.parts[0].value == original[-1].body.parts[0].value == "old"
+    updated = reader.snapshot()
+    assert updated[0].body.parts[0].value == updated[-1].body.parts[0].value == "new"
+    assert updated == log.reader("s").snapshot()
+    assert not log._connection.in_transaction
+
+
+def test_live_message_reuse_checks_entire_row_and_does_not_keep_history(log):
+    import gc
+    import weakref
+    import sqlite3
+    from contextlib import closing
+    inputs = log.writer("s", author="user", source="chat", body_types=(Input,), content={})
+    inputs.append("reused", Input(()))
+    first = log.reader("s").get("reused")
+    second = log.reader("s").get("reused")
+    assert second is first
+    held = weakref.ref(first)
+    with closing(sqlite3.connect(log._connection.execute("PRAGMA database_list").fetchone()[2])) as connection, connection:
+        connection.execute('UPDATE messages SET author=? WHERE id=?', ("changed", "reused"))
+    changed = log.reader("s").get("reused")
+    assert changed.author == "changed" and first.author == "user"
+    assert changed is not first
+    del first, second
+    gc.collect()
+    assert held() is None

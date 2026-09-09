@@ -85,6 +85,16 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 
 只读 `MessageCatalog.sessions` 与 `MessageReader.read_page/read_tail` 在固定读事务内返回目录、消息和资源引用；不增加、更新、逻辑失效或减少任何持久事实。统计来自真实行，历史空洞不填补。UI 展示只消费这一页事实，不能持有日志 writer、任意 SQL 或绑定打开能力；查询前后整库一致性与另一连接追加期间的固定前缀测试为证。
 
+一次回复可通过 `MessageReader.incremental()` 取得本程序共用的只读视图：首次按需读取前缀，后续按原 `seq` 补入已提交的新消息。旧前缀只保留不可变的解码对象，不保存新的持久事实或工具结算状态。完整上下文消费者仍取得原前缀，CallRef、晚到结果和 abandon 规则不变。
+
+工具结果等待从原调用的消息开始订阅，原调用触发首次回执检查，之后只追赶新增消息；订阅前已提交的结果或 abandon 仍可被发现。清理等待从本程序的起始序号订阅，旧消息不可能包含覆盖这段新工作的 abandon。两者仍读取原 owner 的回执并等待真实资源释放，不因结果晚到而改变调用归属。
+
+视图在每次读取的短事务内核对同一日志连接的 [SQLite `data_version`](https://sqlite.org/pragma.html#pragma_data_version)。MessageLog 自身正常只追加；其他连接提交的编辑、删除等变化使旧解码前缀失效，下次读取从数据库重建。调用方已有事务时直接读该事务，不保留可能回滚的新增行。视图随本程序及仍持有它的工具/清理调用释放，仅减少临时内存，不减少消息、调用账或其他权威状态。回归覆盖增量解码、同 head 外部修改、事务回滚和分页期间外部提交的一致性；不引入 schema 或迁移。
+
+消息读取还可共享已解码的不可变 `Message`：`MessageLog` 用实际 SQLite 行的全部字段作为弱引用键，每次读取仍执行 SQL，外部改写得到不同对象。缓存只在调用者仍持有 Message 时存在，不能阻止消息对象释放。metadata 的预算与命名空间规则由 Message 构造边界负责。
+
+模型请求也只有临时冻结视图。一次 `MessageProjection` 保存上一份请求的行；下一轮仍重读调用账、执行内容 renderer 和工具名称查询，只有新值完全相同时才复用已冻结行。附件批量读取只返回当前 Session 内的已有引用，模型调用批量读取只返回重放所需的状态与 binding identity；它们不获得新写入权限，不减少任何持久状态。
+
 ### 3.2 记忆
 
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
@@ -139,7 +149,7 @@ H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection �
 
 ### 新链路候选 Delivery 状态（第 09 层）
 
-`message_push` 的目标消息使用原工具 key 派生的稳定 ID，只通过 Delivery 的同库事务追加正文与首次选择。Tool owner 另存最终参数与工具结算，Delivery 保存原发送回执；没有第二份目标正文。Tools 的可选 binding state 由实际工具校验配置后固定（如当时的 Sender bindings），随既有不可变 binding descriptor 保存；未经处理的配置不另存，不增加业务状态表。程序的固定工具目录只引用原 binding ID，恢复不改写原 descriptor。当前 `ToolRef` 和 `ToolView` 只活在 composition Root 内；搜索结果是普通 ToolResult，目录 reminder 与成功 wire replay 进入既有 `model.facts` ContentPart，不新增 loaded、grant、LRU、TTL、epoch 或工具目录表。文件或 URL 在参数准备时导入 Artifact；参数失败或授权拒绝可以留下未引用的已发布附件，沿原无自动 GC 合同保留。新 `ARTIFACT_IMPORT` 只授权导入，不授权读取、删除、改消息或改其他 owner 状态。
+`message_push` 的目标消息使用原工具 key 派生的稳定 ID，只通过 Delivery 的同库事务追加正文与首次选择。Tool owner 另存最终参数与工具结算，Delivery 保存原发送回执；没有第二份目标正文。Tools 的可选 binding state 由实际工具校验配置后固定（如当时的 Sender bindings），随既有不可变 binding descriptor 保存；未经处理的配置不另存，不增加业务状态表。程序的固定工具目录只引用原 binding ID，恢复不改写原 descriptor。当前 `ToolRef` 和 `ToolView` 只活在 composition Root 内；搜索结果是普通 ToolResult，目录只进入本次 system；成功 wire replay 进入既有 `model.facts` ContentPart，不新增 loaded、grant、LRU、TTL、epoch 或工具目录表。 模型调用解码被拒绝时，ReAct 只向 Output 追加 `model.tool_rejection` 内容（原 wire 请求与拒绝原因），Model owner 校验和重放；不生成 ToolCall、ToolResult 或 effect。该内容不原位更新；摘要只令其退出请求视图，物理减少仍仅限明确撤销或删除会话，当前不得自动减少，恢复证据为原 Message 与 model 调用账。文件或 URL 在参数准备时导入 Artifact；参数失败或授权拒绝可以留下未引用的已发布附件，沿原无自动 GC 合同保留。新 `ARTIFACT_IMPORT` 只授权导入，不授权读取、删除、改消息或改其他 owner 状态。
 
 | 对象 | 正常增加 | 允许原位变化 | 物理减少、owner 与恢复 |
 |---|---|---|---|

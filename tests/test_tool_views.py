@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 import shutil
 from collections.abc import Mapping
+from typing import cast
 
 import pytest
 
@@ -12,7 +13,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.tools.api import MessageReply
-from plugins.tools.menu import ToolMenu
+from plugins.tools.menu import InvalidToolCall, ToolMenu
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView, open_tool
 from session.log import MessageLog
 from session.message import CallRef
@@ -151,7 +152,7 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
             ).execute("invalid", binding, {"value": 7})
             assert invalid.outcome == "error"
             assert invalid.parts[0].value == "value must be text"
-            with pytest.raises(PermissionError, match="获授 view"):
+            with pytest.raises(InvalidToolCall, match="获授 view"):
                 menu.decode(
                     ModelToolCall(
                         "unknown",
@@ -171,7 +172,7 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
                 view=narrow,
                 presentation=ctx.require(TOOL_SEARCH_PRESENTATION)(narrow),
             )
-            with pytest.raises(PermissionError, match="获授 view"):
+            with pytest.raises(InvalidToolCall, match="获授 view"):
                 narrow_menu.decode(
                     ModelToolCall(
                         "not-awarded",
@@ -251,3 +252,31 @@ async def test_fixed_bindings_use_archived_schema_without_rebinding_current_prov
     finally:
         await host.terminate_all()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_group_search_prioritizes_explicit_names_and_explains_risk_filter():
+    """大型模糊命中组不能挤走明确工具名；风险过滤不静默隐藏原因。"""
+    from plugins.tool_search.plugin import Query, SearchTool, _search
+
+    def entry(name, description, risk="read-only"):
+        return {"schema": {"type": "function", "function": {
+            "name": name, "description": description, "parameters": {"type": "object"},
+        }}, "risk": risk, "search_hint": None}
+    groups: tuple[dict[str, object], ...] = tuple(dict[str, object](owner=f"decoy_{number}", tools=tuple(
+        entry(f"unrelated_{number}_{index}", "computer browser tab playwright 打开网页 读取")
+        for index in range(12)
+    )) for number in range(12)) + ({"owner": "computer", "tools": (
+        entry("computer", "Read or operate browser and desktop UI", "external-side-effect"),
+        entry("status", "Read current status"),
+    )},)
+    for text in ("computer", "computer browser tab playwright 打开网页 读取"):
+        matched = _search(groups, Query(query=text))
+        assert matched[0]["owner"] == "computer"
+        assert len(cast(tuple[object, ...], matched[0]["tools"])) == 2
+    filtered = await SearchTool(groups).invoke("filtered", {
+        "query": "computer browser tab playwright 打开网页 读取", "allowed_risk": ["read-only"],
+    })
+    value = json.loads(cast(str, filtered.parts[0].value))
+    assert value["excluded_by_risk"] == [{"owner": "computer", "name": "computer", "risk": "external-side-effect"}]
+    assert value["risk_tip"]

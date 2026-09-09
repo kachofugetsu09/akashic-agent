@@ -11,6 +11,7 @@ from agent.plugin_composition import Context, RuntimeScope, ServiceKey
 from agent.plugins.snapshot import get_current_runtime_lease
 from agent.plugin_composition.models import BoundChatModel, ContextLengthError, LLMResponse, StreamCallback
 from plugins.context.api import ContextOverflow, Materials, SummaryReducer
+from plugins.tools.menu import InvalidToolCall
 from session.log import MessageReader, MessageWriter
 from session.message import CallRef, Control, Message, Output, Part, ContentPart, ToolCall, ToolResult
 
@@ -28,10 +29,6 @@ inject = ()
 
 
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
-
-
-class UnknownToolEffect(RuntimeError):
-    """已观察到无法确定的外部效果，不能自动继续或再次执行。"""
 
 
 class StepLimit(RuntimeError):
@@ -65,8 +62,6 @@ def _pending_calls(messages: Sequence[Message], source: str) -> tuple[CallRef, .
         result = results.get(ref)
         if result is None:
             pending.append(ref)
-        elif result.outcome == "unknown":
-            raise UnknownToolEffect(f"工具效果需核对: {ref.message_id}/{ref.part_index}")
     return tuple(pending)
 
 
@@ -130,7 +125,7 @@ async def _settle(tools: ToolMenu, call: CallRef) -> None:
             operation.close()
             raise
         try:
-            result = await asyncio.shield(work)
+            _ = await asyncio.shield(work)
         except asyncio.CancelledError as cancellation:
             while not work.done():
                 try:
@@ -147,8 +142,6 @@ async def _settle(tools: ToolMenu, call: CallRef) -> None:
     finally:
         if scope is not None:
             await scope.close()
-    if result.outcome == "unknown":
-        raise UnknownToolEffect(f"工具效果需核对: {call.message_id}/{call.part_index}")
 
 
 @asynccontextmanager
@@ -248,11 +241,17 @@ async def react(
             decoded, metadata = await content.decode(response.content or "", prepared.references)
             parts: list[Part] = list(decoded)
             indices: list[int] = []
-            actual_calls: list[ToolCall] = []
+            actual_calls: list[ToolCall | ContentPart] = []
             for call in response.tool_calls:
                 indices.append(len(parts))
-                binding_id, arguments = tools.decode(call)
-                actual = ToolCall(binding_id, arguments)
+                try:
+                    binding_id, arguments = tools.decode(call)
+                except InvalidToolCall as error:
+                    actual = ContentPart("model.tool_rejection", {
+                        "name": call.name, "arguments": call.arguments, "error": str(error),
+                    })
+                else:
+                    actual = ToolCall(binding_id, arguments)
                 actual_calls.append(actual)
                 parts.append(actual)
             if not parts:

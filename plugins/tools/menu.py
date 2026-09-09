@@ -3,24 +3,26 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol, cast
 
-from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import ToolCall as ModelToolCall
-from plugins.context.api import Reminder
 from session.message import CallRef, ToolCall
 
 from .execution import MessageReply, Result, ToolExecution
 from .plugin import TOOLS, ToolCatalog, ToolRef, ToolView
 
 
+class InvalidToolCall(ValueError):
+    """模型调用不符合当前展示协议；可反馈模型纠正，不代表工具效果。"""
+
+
 class ToolPresentation(Protocol):
-    """定义一次程序固定的 schema、wire 解码和目录提醒。"""
+    """定义一次程序固定的 schema、wire 解码和系统提示词。"""
 
     @property
     def schemas(self) -> tuple[Mapping[str, Any], ...]: ...
 
     @property
-    def reminders(self) -> tuple[tuple[Context, Reminder], ...]: ...
+    def system_prompt(self) -> str: ...
 
     def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]: ...
 
@@ -38,12 +40,12 @@ class NativePresentation:
         return tuple(tool_schema(self._descriptions[name]) for name in self._descriptions)
 
     @property
-    def reminders(self) -> tuple[tuple[Context, Reminder], ...]:
-        return ()
+    def system_prompt(self) -> str:
+        return ""
 
     def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
         if call.name not in self._descriptions:
-            raise PermissionError(f"工具不属于获授 view: {call.name}")
+            raise InvalidToolCall(f"工具不属于获授 view: {call.name}；请使用当前工具目录。")
         return call.name, cast(Mapping[str, object], call.arguments)
 
     def configuration(self, name: str) -> Mapping[str, object] | None:
@@ -129,8 +131,8 @@ class ToolMenu:
         return frozenset(self._bound)
 
     @property
-    def reminders(self) -> tuple[tuple[Context, Reminder], ...]:
-        return self._presentation.reminders
+    def system_prompt(self) -> str:
+        return self._presentation.system_prompt
 
     def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
         name, arguments = self._presentation.decode(call)

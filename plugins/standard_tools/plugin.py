@@ -25,7 +25,7 @@ STANDARD_TOOLS = ServiceKey[ToolView]("standard-tools.tools.v1")
 async def apply(ctx: Context, config: object) -> None:
     """注册既有工具的普通入口；安装和归档装配不访问文件、进程或网络。"""
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx, always_on=True)
+    _ = await catalog.declare_group(ctx, always_on=True, description=desc)
     refs = []
     for backend in (ReadFileTool, ListDirTool, WriteFileTool, EditFileTool):
         refs.append(

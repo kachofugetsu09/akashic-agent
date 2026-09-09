@@ -169,7 +169,7 @@ TypeScript 固定为 5.9.3，沿用现有 strict、ES2022 和 bundler 配置。
 ```
 
 - `attachment.download` 请求携带 `message_id`、`artifact_id` 和 `offset`。Session reader 先确认该 Message 引用了文件，再由 Core ArtifactStore 核验和读取。回复保留完整附件 metadata；下载二进制头使用 `artifact_id`，上传头继续使用 Frame ID `attachment_id`。空文件允许零字节分片并按 SHA-256 验证。
-- Android 缓存键与远端 Artifact ID 分开。Native→Web snapshot v10 的下载状态同时提供 `artifactId`（匹配 Message 引用）和 `cacheId`（调用本地重试、打开和分享）。会话仅从 Message link 取得授权，不拥有共享文件缓存。
+- Android 缓存键与远端 Artifact ID 分开。Native→Web snapshot v11 的下载状态同时提供 `artifactId`（匹配 Message 引用）和 `cacheId`（调用本地重试、打开和分享）。会话仅从 Message link 取得授权，不拥有共享文件缓存。
 - `history.provenance`、`history.record`、`history.turn_input` 不进入普通聊天；纯归档 Message 不占布局和可见未读数量。`history.transcript` 的已知旧格式按原组顺序展示思考、说明和工具记录，不生成新消息或执行状态。原始数据和同步进度不减少。旧阅读或导航锚若指向隐藏行，定位到后续首个可见行；末尾则定位前一可见行，不能直接跳到最新消息。
 - 明确拒绝删除本地 outbox、保留失败正文并释放本地上传占用。结果未知保留原命令及其附件占用；核对复用原 ID。新一次发送创建新 Message，不迁移旧视觉身份。已落地 Input 或 ACK 都是接受证据，迟到错误不得将其降级。
 - 文件缓存写入失败只结束该下载并消费对应回复。Room 持久化失败停止消费和 ACK，等待用户处理存储后重连；自动重连不作为本地数据修复。
@@ -180,7 +180,7 @@ TypeScript 固定为 5.9.3，沿用现有 strict、ES2022 和 bundler 配置。
 
 ### 9.1 已确认的正文展示
 
-同一 source 的 `continue` 正文只是执行中的当前正文；新正文接替旧正文，`complete` 结束后只展示最终正文。思考与工具合为一条过程轨迹，仍沿原 `message_id + part_index` 查看，最后正文使用最终 Message 的复制、引用和时间。`abandon` 隔开前后回复；其他 source 的输出不替换本来源正文。分页和实时追加使用同一展示规则，不改写任何 Message。
+同一 source 的 `continue` 正文只是执行中的当前正文；新正文接替旧正文，`complete` 结束后只展示最终正文。思考与工具合为一条过程轨迹，仍沿原 `message_id + part_index` 查看，最后正文使用最终 Message 的复制、引用和时间。`pause`、`failure`、`abandon` 按 `through_seq` 隔开前后展示过程，停止前的过程保留在末条输出上；这不改变持久 Turn 的划分。其他 source 的输出不替换本来源正文。分页和实时追加使用同一展示规则，不改写任何 Message。
 
 ```text
 Input → 等待 → 思考 / 工具 + 当前正文 → 最终正文
@@ -228,3 +228,26 @@ Core Message 日志和附件保持 append-only，只有既有 adapter 的读协�
 验收覆盖尾页帧预算、旧/新表示摘要、完整数据库未变、部分窗口与实时追加、Room 接收范围/ACK 原子性、旧引用定位、阅读锚、断线和未下载正文。性能分别记录首屏 bytes、接收行数和发送时刻，不能把本地输入接受当成服务器已发送。
 
 参考：[Matrix limited timeline 与向前补页](https://spec.matrix.org/latest/client-server-api/#syncing)、[Stream 消息 ID 分页](https://getstream.io/chat/docs/javascript/channel-pagination/)；使用本项目已有 `message_id + seq`，不引入第三方 token 模型。
+
+### 9.3 回复过程与调用统计
+
+每条过程轨迹只在开头挂载一次 `turn.before_reasoning`，工具调用后的消息和后续草稿不重复挂载。实时回复从等待首段起就把插槽放在同一个思考面板内；思考到达后不移动插槽，避免 Akasha 卡片卸载重查。`model.selection` 是内部选择记录，不占正文布局，未知插件内容仍明确显示不可展示。
+
+统计由 models 的调用记录拥有。Web 通过公共 `/api/settings/model/calls/{call_id}` 读取；Android build 79 起用 `readModelCallStats` 转发已有 `model.call.get`，共享页面校验与计算数值；没有数据或查询失败均不估算。
+
+Android build 80 起，断线、等待订阅或查看历史造成的观察缺失通过 Native→WebUI 的 `reply.clear` 事件清除临时回复状态；事件绑定当前 session 与 projection generation。服务端 `reply.status.available=false` 只表示真实能力不可用，两者不能互相代替。该事件不进入服务端协议或 Message 日志。最低原生 build 为 80。
+
+“加载更早的消息”位于已加载历史的最上端，占有独立行并随消息滚动，不悬浮遮挡正文。插件卡片查询从实际发出时开始计算 30 秒期限；本地排队不消耗传输期限，超时仍取消所属 UI owner 并释放容量。
+
+Native→Web snapshot v11 包含本地 `reply.clear` 事件。APK 通过已有 manifest 兼容检查拒绝 snapshot v10 的 OTA 界面，改用内置界面，防止升级后向旧界面发送未知事件。
+
+
+### 9.4 召回卡片的页面缓存
+
+`cache: "memory"` 由共享 Web Host 拥有：复用现有最多 128 项、8 MiB 的结果缓存，只保存 `pending !== true` 的成功结果。相同插件 revision、方法、参数、session/turn 身份的在途读取共享一个请求。该模式向 Native 发送既有 `cache: "none"`，不改变原生磁盘缓存合同，也不把进行中的结果持久保存。插件通过 `capabilities.queryCacheModes` 判断 Host 是否支持该优化；旧 OTA Host 继续使用原来的无缓存读取。
+
+UI owner 只拥有订阅。最后一个订阅卸载时，尚未发送的读取取消；已经发送的页面缓存读取由独立 wire owner 完成，最多等待现有 30 秒期限。catalog 切换取消所有在途读取，旧结果不能污染新版本。普通非缓存查询仍随原 UI owner 撤销。
+
+renderer 可提供 `prefetch(context)`，只执行一次轻量读取，不挂载卡片内容；Host 仅保留近视口观察节点。已提交过程在邻近可视区域预取首个思考卡片；未展开的预取不轮询，主动展开可以提升尚在网页队列中的同一读取优先级。进行中的可见卡片仍按已有间隔刷新，失败保留已显示内容并提供局部重试。页面重载会丢弃内存结果，缓存不是新的召回权威状态。
+
+网页 `[akashic-trace] webui.plugin_query.*` 与服务端 `mobile.plugin_query.*` 以 `owner_id` 对齐，分别记录排队、实际发出/执行和回执阶段，不记录正文、参数或授权材料。服务端执行成功不等于网页收到；缺失阶段仍需结合手机日志定位。

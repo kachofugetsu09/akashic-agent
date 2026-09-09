@@ -46,7 +46,7 @@ _RESTART_DEPS = (
 async def apply(ctx: Context, config: object) -> None:
     """普通工具注册不取得附件、Message writer 或发送资源。"""
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx, always_on=True)
+    _ = await catalog.declare_group(ctx, always_on=True, description=desc)
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[MessagePush]:

@@ -178,7 +178,7 @@ class Control:
 type Body = Input | Output | ToolResult | Control
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class Message:
     """一条已接纳事实；作者、来源与消息用途分别表达独立信息。"""
 
@@ -192,7 +192,12 @@ class Message:
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "metadata", freeze_metadata(self.metadata))
+        try:
+            object.__setattr__(self, "metadata", freeze_metadata(self.metadata))
+        except (TypeError, ValueError) as error:
+            raise type(error)(
+                f"Session {self.session_id} Message {self.message_id} metadata 损坏: {error}"
+            ) from error
         if not all(
             isinstance(value, str) and value
             for value in (self.message_id, self.session_id, self.author, self.source)

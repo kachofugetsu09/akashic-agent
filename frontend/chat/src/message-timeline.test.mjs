@@ -209,3 +209,43 @@ test("工具结果回到原调用面板，分页缺少调用时仍可阅读和�
   assert.deepEqual(messages, original);
 
 });
+
+for (const action of ["pause", "failure", "abandon"]) test(`${action} keeps earlier process before the next input and active reply`, () => {
+  const first = row(1, { kind: "output", finish: "continue", parts: [text("old"),
+    { kind: "tool_call", name: "tool", binding_id: "b", arguments: {} }] });
+  const second = row(3, { kind: "output", finish: "continue", parts: [text("old end")] });
+  const stop = row(4, { kind: "control", action, through_seq: 3, reason: null });
+  const input = row(5, { kind: "input", parts: [text("new")] });
+  const next = row(6, { kind: "output", finish: "continue", parts: [text("new reply")] });
+  const messages = [first, second, stop, input, next];
+  const snapshot = structuredClone(messages);
+  const groups = timelineReplyGroups(messages, [{ handle: "h", session_id: first.session_id, source: first.source, active: true }]);
+  assert.deepEqual(groups.completed.get(second.id), [first, second]);
+  assert.deepEqual(groups.active.get("h"), [next]);
+  assert.equal(groups.hiddenBodies.has(second.id), false);
+  assert.deepEqual(timelineVisibleMessages(messages, groups), [second, stop, input]);
+  const anchors = timelineAnchorIndexes(messages, groups);
+  assert.equal(anchors.get(first.id), anchors.get(second.id));
+  assert.ok(anchors.get(first.id) < anchors.get(input.id));
+  assert.deepEqual(messages, snapshot);
+});
+
+test("internal model selection stays hidden while unknown plugin content remains visible", () => {
+  assert.equal(isTimelinePartVisible({ kind: "model.selection", display: "unavailable" }), false);
+  assert.equal(isTimelinePartVisible({ kind: "plugin.custom", display: "unavailable" }), true);
+});
+
+test("真实追加输入分开前后思考，system reminder 仍留在当前过程", () => {
+  const first = row(0, { kind: "input", parts: [text("first")] }, { author: "user" });
+  const step1 = row(1, { kind: "output", finish: "continue", parts: [text("step one")] });
+  const second = row(2, { kind: "input", parts: [text("correction")] }, { author: "user" });
+  const step2 = row(3, { kind: "output", finish: "continue", parts: [text("step two")] });
+  const reminder = row(4, { kind: "input", parts: [text("reminder")] }, { author: "system" });
+  const answer = row(5, { kind: "output", finish: "complete", parts: [text("answer")] });
+  const messages = [first, step1, second, step2, reminder, answer];
+  const groups = timelineReplyGroups(messages);
+  assert.deepEqual(groups.completed.get(answer.id), [step2, answer]);
+  assert.equal(groups.moved.has(step1.id), false);
+  assert.equal(groups.hiddenBodies.has(step1.id), false);
+  assert.equal(timelineVisibleMessages(messages, groups).includes(step1), true);
+});

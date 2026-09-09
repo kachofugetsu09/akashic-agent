@@ -29,7 +29,7 @@ from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from session.log import MessageCatalog, OwnerRecord, OwnerStore
 from session.message import ContentPart, Input, Message, Output, ToolCall
 
-from .control import endpoint_name, request
+from .control import ComputerDriverError, endpoint_name, request
 
 COMPUTER_CONTROL = ServiceKey["ComputerControl"]("computer.control.v1")
 
@@ -73,16 +73,19 @@ class ComputerControl:
         elif existing.value != value:
             raise ValueError("Computer 调用回执身份不一致")
         async with self.ctx.require(MCP_SERVERS).open(self.ctx, "computer") as server:
-            return await request(
-                endpoint_name(self.ctx.data_root, server.generation_id),
-                {
-                    "op": "run",
-                    "context": _driver_context(server.generation_id, identity, key),
-                    "code": arguments["code"],
-                    "timeoutMs": arguments.get("timeout_ms", 60000),
-                    "reset": arguments.get("reset", False),
-                },
-            )
+            try:
+                return await request(
+                    endpoint_name(self.ctx.data_root, server.generation_id),
+                    {
+                        "op": "run",
+                        "context": _driver_context(server.generation_id, identity, key),
+                        "code": arguments["code"],
+                        "timeoutMs": arguments.get("timeout_ms", 60000),
+                        "reset": arguments.get("reset", False),
+                    },
+                )
+            except ComputerDriverError as error:
+                return {"kind": "driver_error", "error": str(error)}
 
     async def end_turn(self, identity: ComputerCall, call_id: str) -> None:
         """通过同一归档 MCP 关闭已结算 Turn。"""
@@ -157,7 +160,7 @@ web_contract_digests = {
 
 _IMAGE = (
     "ghcr.io/kachofugetsu09/akashic-computer@"
-    "sha256:9bd4f6e215b4848e91f0dbfea75a7b227faeba96268c422d62e81a9b64d5ac92"
+    "sha256:4a4381b211024ac1fbf3730bd835a8cfa6cd7dd36996bf018437c13796ef0894"
 )
 
 
@@ -203,6 +206,8 @@ class _ComputerTool:
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         value = await self._control.run(key, self._control_binding, arguments)
+        if value.get("kind") == "driver_error":
+            return Result("error", (ContentPart("text", cast(str, value["error"])),))
         return Result("success", (ContentPart("text", json.dumps(value, ensure_ascii=False)),))
 
     async def query(self, key: str) -> Result | None:
@@ -251,7 +256,7 @@ async def _open_target(ctx: Context, state: Mapping[str, object]) -> AsyncIterat
 async def apply(ctx: Context, config: object) -> None:
     """注册唯一 Computer Tool、专属 control binding 与资源声明。"""
     _ = config
-    _ = await ctx.require(TOOLS).declare_group(ctx)
+    _ = await ctx.require(TOOLS).declare_group(ctx, description=desc)
     control = ComputerControl(ctx)
     _ = await ctx.provide(COMPUTER_CONTROL, control)
     await ctx.require(TOOLS).register(

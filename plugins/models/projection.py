@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import nullcontext
 from typing import Any, cast
 
 from agent.plugin_composition import ServiceKey
@@ -72,6 +71,20 @@ def response_facts(
             ),
         },
     )
+
+
+def check_tool_rejection(part: ContentPart) -> ContentReferences:
+    """模型协议拒绝只保存原始请求与错误，不引用 binding 或工具效果。"""
+    value = part.value
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"name", "arguments", "error"}
+        or not isinstance(value["name"], str) or not value["name"]
+        or not isinstance(value["arguments"], Mapping)
+        or not isinstance(value["error"], str) or not value["error"]
+    ):
+        raise ValueError("模型工具协议拒绝字段无效")
+    return ContentReferences()
 
 
 def check_facts(part: ContentPart) -> ContentReferences:
@@ -160,6 +173,7 @@ class MessageProjection:
         self._tool_name = tool_name
         self._read_call = read_call
         self._keep_input_ids = keep_input_ids
+        self._last_rows: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def context_window(self) -> int | None:
@@ -178,7 +192,7 @@ class MessageProjection:
         call_indices: Sequence[int],
         *,
         reminder: str | None = None,
-        actual_calls: Sequence[ToolCall] | None = None,
+        actual_calls: Sequence[ToolCall | ContentPart] | None = None,
     ) -> ContentPart:
         """只为当前模型已成功结算的响应生成可持久 replay 内容。"""
         if actual_calls is not None and len(actual_calls) != len(response.tool_calls):
@@ -189,6 +203,9 @@ class MessageProjection:
             response.tool_calls,
             () if actual_calls is None else actual_calls,
         ):
+            if isinstance(actual, ContentPart):
+                _ = check_tool_rejection(actual)
+                continue
             actual_name = self._tool_name(actual.binding_id)
             if (
                 original.name != actual_name
@@ -252,67 +269,71 @@ class MessageProjection:
         continuation_summary: str | None = None
         continuation_seq = -1
         results: dict[CallRef, Message] = {}
-        # models 的读取器提供连接范围；既有插件传入的普通 callable 仍逐条读取。
-        reads = (self._read_call.open() if isinstance(self._read_call, ModelCallReader)
-                 else nullcontext(self._read_call))
-        with reads as read_call:
-            for message in messages:
-                body = message.body
-                if isinstance(body, Control) and body.action == "abandon" and message.source == self._source:
-                    continuation = None
-                if isinstance(body, ToolResult):
-                    if body.call_ref in abandoned_calls:
-                        continue
-                    if body.call_ref in results:
-                        raise ValueError("同一工具调用出现多个结果")
-                    results[body.call_ref] = message
-                if not isinstance(body, Output) or message.message_id in abandoned:
-                    continue
-                recorded = [
-                    part
-                    for part in body.parts
-                    if isinstance(part, ContentPart) and part.kind == "model.facts"
-                ]
-                if len(recorded) > 1:
-                    raise ValueError("同一 Output 出现多个 model.facts")
-                if not recorded:
-                    continue
+        recorded_facts: dict[str, Mapping[str, Any]] = {}
+        for message in messages:
+            if not isinstance(message.body, Output) or message.message_id in abandoned:
+                continue
+            recorded = [part for part in message.body.parts
+                        if isinstance(part, ContentPart) and part.kind == "model.facts"]
+            if len(recorded) > 1:
+                raise ValueError("同一 Output 出现多个 model.facts")
+            if recorded:
                 _ = check_facts(recorded[0])
-                value = cast(Mapping[str, Any], recorded[0].value)
-                receipt = read_call(value["call_record_id"])
-                if receipt["state"] != "success":
-                    raise ValueError("已提交模型事实必须引用成功结算的真实调用")
-                indices = {
-                    str(index)
-                    for index, part in enumerate(body.parts)
-                    if isinstance(part, ToolCall)
-                }
-                if set(value["tool_ids"]) != indices:
-                    raise ValueError("模型工具 ID 不匹配实际 Output 调用位置")
-                state = value["continuation"]
-                message_continuation = (
-                    None
-                    if state is None
-                    else ModelContinuation(state["binding_id"], state["payload"])
+                recorded_facts[message.message_id] = cast(Mapping[str, Any], recorded[0].value)
+        # 调用账 owner 批量读取窄字段；插件自带 reader 保持原调用合同。
+        read_call = self._read_call
+        if isinstance(read_call, ModelCallReader):
+            receipts = read_call.replay(tuple(value["call_record_id"] for value in recorded_facts.values()))
+            read_call = receipts.__getitem__
+        for message in messages:
+            body = message.body
+            if isinstance(body, Control) and body.action == "abandon" and message.source == self._source:
+                continuation = None
+            if isinstance(body, ToolResult):
+                if body.call_ref in abandoned_calls:
+                    continue
+                if body.call_ref in results:
+                    raise ValueError("同一工具调用出现多个结果")
+                results[body.call_ref] = message
+            if not isinstance(body, Output) or message.message_id in abandoned:
+                continue
+            value = recorded_facts.get(message.message_id)
+            if value is None:
+                continue
+            receipt = read_call(value["call_record_id"])
+            if receipt["state"] != "success":
+                raise ValueError("已提交模型事实必须引用成功结算的真实调用")
+            indices = {
+                str(index)
+                for index, part in enumerate(body.parts)
+                if isinstance(part, ToolCall) or (isinstance(part, ContentPart) and part.kind == "model.tool_rejection")
+            }
+            if set(value["tool_ids"]) != indices:
+                raise ValueError("模型工具 ID 不匹配实际 Output 调用位置")
+            state = value["continuation"]
+            message_continuation = (
+                None
+                if state is None
+                else ModelContinuation(state["binding_id"], state["payload"])
+            )
+            if (
+                message_continuation is not None
+                and message_continuation.binding_id != receipt["binding"]["binding_id"]
+            ):
+                raise ValueError("continuation 不属于记录中的模型")
+            if message.source == self._source:
+                continuation = message_continuation
+                continuation_seq = message.seq
+                summaries = [
+                    part for part in body.parts
+                    if isinstance(part, ContentPart) and part.kind == "context.summary"
+                ]
+                if len(summaries) > 1:
+                    raise ValueError("同一模型 Output 只能使用一份摘要")
+                continuation_summary = (
+                    check_summary(summaries[0]).binding_ids[0] if summaries else None
                 )
-                if (
-                    message_continuation is not None
-                    and message_continuation.binding_id != receipt["binding"]["binding_id"]
-                ):
-                    raise ValueError("continuation 不属于记录中的模型")
-                if message.source == self._source:
-                    continuation = message_continuation
-                    continuation_seq = message.seq
-                    summaries = [
-                        part for part in body.parts
-                        if isinstance(part, ContentPart) and part.kind == "context.summary"
-                    ]
-                    if len(summaries) > 1:
-                        raise ValueError("同一模型 Output 只能使用一份摘要")
-                    continuation_summary = (
-                        check_summary(summaries[0]).binding_ids[0] if summaries else None
-                    )
-                facts[message.message_id] = value
+            facts[message.message_id] = value
         # 摘要明确开启新请求；原 opaque 保存在日志，只续接同一摘要后的响应。
         if fresh or summary_reference is not None and (
             continuation_summary != summary_reference or continuation_seq <= after_seq
@@ -343,7 +364,24 @@ class MessageProjection:
                 rows.append({"role": "user", "content": model_facts["reminder"]})
             for index, part in enumerate(body.parts):
                 if isinstance(part, ContentPart):
-                    if part.kind != "model.facts":
+                    if part.kind == "model.tool_rejection":
+                        _ = check_tool_rejection(part)
+                        if message.message_id in abandoned:
+                            continue
+                        if model_facts is None:
+                            raise ValueError("模型协议拒绝缺少 model.facts")
+                        identity = model_facts["tool_ids"][str(index)]
+                        rejected = cast(Mapping[str, Any], part.value)
+                        calls.append({
+                            "id": identity, "type": "function",
+                            "function": {"name": rejected["name"], "arguments": json.dumps(
+                                json_value(rejected["arguments"]), ensure_ascii=False, separators=(",", ":"),
+                            )},
+                        })
+                        observations.append({"role": "tool", "tool_call_id": identity, "content": [
+                            {"type": "text", "text": "调用未执行：" + rejected["error"]},
+                        ]})
+                    elif part.kind != "model.facts":
                         blocks.extend(self._render_content(part))
                     continue
                 if message.message_id in abandoned:
@@ -387,9 +425,10 @@ class MessageProjection:
                 result = cast(ToolResult, observation.body)
                 result_blocks: list[Mapping[str, Any]] = []
                 if result.outcome != "success":
-                    result_blocks.append(
-                        {"type": "text", "text": f"工具状态: {result.outcome}"}
-                    )
+                    status = f"工具状态: {result.outcome}"
+                    if result.outcome == "unknown":
+                        status += "。原调用可能已经产生效果；先检查当前状态，再决定下一步，不要直接重复执行原操作。"
+                    result_blocks.append({"type": "text", "text": status})
                 for item in result.parts:
                     result_blocks.extend(self._render_content(item))
                 observations.append(
@@ -412,4 +451,32 @@ class MessageProjection:
             for message in results.values()
         ):
             raise ValueError("工具结果缺少本次视图中的真实调用")
-        return ModelRequest(messages=rows, continuation=continuation)
+        # 本轮仍重读账本和渲染动态内容；值未变的行复用已冻结表示。
+        prior = self._last_rows
+        rows = [prior[index] if index < len(prior) and _same_json(row, prior[index]) else row
+                for index, row in enumerate(rows)]
+        request = ModelRequest(messages=rows, continuation=continuation)
+        self._last_rows = tuple(request.messages)
+        return request
+
+
+def _same_json(value: Any, saved: Any) -> bool:
+    """与已冻结 JSON 比较；数组忽略容器形式，标量保留准确类型。"""
+    if value is saved:
+        return True
+    if isinstance(saved, Mapping):
+        if not isinstance(value, Mapping):
+            return False
+        current = cast(Mapping[object, Any], value)
+        previous = cast(Mapping[str, Any], saved)
+        return (len(current) == len(previous)
+                and all(isinstance(key, str) and key in previous and _same_json(item, previous[key])
+                        for key, item in current.items()))
+    if isinstance(saved, tuple):
+        if not isinstance(value, (list, tuple)):
+            return False
+        items = cast(Sequence[Any], value)
+        old_items = cast(tuple[Any, ...], saved)
+        return len(items) == len(old_items) and all(
+            _same_json(item, old) for item, old in zip(items, old_items))
+    return type(value) is type(saved) and value == saved

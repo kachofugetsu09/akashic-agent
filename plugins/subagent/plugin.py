@@ -73,7 +73,7 @@ async def apply(ctx: Context, config: Config) -> None:
     watcher: asyncio.Task[None] | None = None
     jobs = Subagents(ctx)
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx)
+    _ = await catalog.declare_group(ctx, description=desc)
 
     @asynccontextmanager
     async def open_spawn(state: Mapping[str, object]) -> AsyncGenerator[Spawn]:

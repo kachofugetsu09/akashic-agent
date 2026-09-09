@@ -374,7 +374,7 @@ async def shell_cleanup(
 async def _wait_cleanup(task: Task, reader: MessageReader, source: str, from_seq: int) -> None:
     """普通停止排空；若随后明确放弃，只释放等待者，原清理 Task 继续持有资源。"""
     async def abandoned() -> None:
-        async for message in reader.follow():
+        async for message in reader.follow(after_seq=from_seq - 1):
             if (message.source == source and isinstance(message.body, Control)
                     and message.body.action == "abandon" and message.body.through_seq >= from_seq):
                 return

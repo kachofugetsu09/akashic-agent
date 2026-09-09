@@ -350,6 +350,8 @@ D 类效果只能由拥有 prepared、committed、failed 和必要补偿语义�
 
 不存在、空结果、合法跳过、明确降级、输入错误、数据损坏和内部故障必须可区分。只有拥有正确恢复动作的边界才能捕获异常并降级；其余错误 fail-fast、fail-loud。
 
+已持久化的工具 `unknown` 表示原调用效果不确定；保留原结果，禁止自动重放该调用。它不永久阻塞后续模型决策：模型必须看到该状态和先检查现场的提示，再在当前授权内决定下一步。内部异常仍明确失败，不通过改写历史结果伪装恢复。
+
 ## 7. 上下文和会话
 
 ### CTX-001 上下文裁切是非破坏性投影
@@ -375,7 +377,7 @@ Turn 是按 source 过滤的 Message 日志上的无状态读投影：`Output.fi
 skills、长期记忆和检索结果必须带来源和信任级别，作为 system context 或独立数据块进入请求。当前 user message 始终独立；工具授权不能由提示词内容决定。
 
 请求使用“system → 已保存消息的模型投影（含当前输入与摘要）→ 一个末尾 user-role `<system-reminder>`”。
-VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则留在 system；时间、Akasha 召回和本次后台结果进入提醒。
+VEDA、SELF/MEMORY、技能目录与常驻指令、渠道规则、固定工具目录留在 system；时间、Akasha 召回和本次后台结果进入提醒。
 提醒不另写独立 Message、不制造用户 Input。每次模型请求固定一份材料，超出完整请求预算明确报错，不能按优先级静默丢弃。
 提醒块身份为实际贡献插件 ID 与局部名称，同一身份重复时报错；priority 升序，仅决定排列，同优先级按插件 ID、名称的 UTF-8 字节升序。
 SELF/MEMORY 低频更新不要求迁出 system，也不承诺其异步发布与 compaction 只产生一次 provider 缓存失效。
@@ -538,6 +540,8 @@ session compaction ledger 的派生 checkpoint，不替代上述记忆状态；�
 ### MEM-010 Akasha 对同一 Turn 投影建立一个确定性样本
 
 Akasha 按固定版本的 Turn 投影取得全部 Input 与唯一完成 Output，且为每个参与的非空 user/assistant Message 使用已持久化的固定 embedding，建立一个学习样本。多条 Input 按固定版本的规范化文本连接和向量聚合规则处理；Control、未完成工具和失败开放段只按 Akasha 明确的来源规则处理，不从相邻角色推断归属。在线提交和离线 builder 必须共用相同 Message IDs、规范化文本、向量和 digest 规则。旧数据只能走名称明确的 legacy 兼容路径。
+
+自动召回只由真实用户 Input（`author=user`）触发；同一输入首次准备后保存并复用实际 Recall，工具续步、system reminder、重试和重启不得重复检索。新的真实用户输入只以该条输入构造召回 cue，不混入同 Turn 的旧输入；聊天卡片按对应输入展示其自动与主动查询。主动调用 `recall_memory` 独立触发检索，并按原调用身份复用结果；后台 Input 不触发自动召回。查询记录只追加，不因复用而改写或删除历史记录。
 
 ### MEM-011 历史投影按完整 Turn 和 token tail 保留
 
@@ -796,8 +800,10 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 闭包，不因当前安装、卸载或重启重新选择实现。
 
 工具搜索只在获授 view 内展示完整 schema，并可把自身协议中的间接调用解码为唯一真实
-ToolCall。搜索结果、目录提醒和 compaction 不授予或撤销工具，不保存 loaded、grant、LRU、
-TTL 或 epoch。通用 ReAct、工具执行和回复程序不得按搜索工具、间接调用工具或来源名称分支。
+ToolCall。固定目录在 system 中按插件列出声明用途及各工具简述；搜索返回获授 view 内整组完整 schema，
+作为普通工具结果保留到其原文被摘要覆盖。搜索结果、目录和 compaction 不授予或撤销工具，不保存 loaded、grant、LRU、
+TTL 或 epoch。格式错误或当前目录中不存在的模型调用必须保存明确的未执行反馈，允许模型在原步数上限内纠正；
+不得伪造实际工具请求或执行成功。通用 ReAct、工具执行和回复程序不得按搜索工具、间接调用工具或来源名称分支。
 
 ## 11. Workspace、文件和进程
 

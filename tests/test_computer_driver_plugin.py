@@ -538,6 +538,12 @@ def _start_test_gateway(
                 self.end_headers()
                 self.wfile.write(b"temporary end failure")
                 return
+            if body.get("code") == "browser.tabs.create()":
+                self.send_response(500)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "TypeError: browser.tabs.create is not a function; earlier effects may remain; JS bindings for this session were reset"}).encode())
+                return
             if body.get("code") == "hold":
                 state.hold_release.wait(10)
                 state.events.append(("released", body))
@@ -740,8 +746,9 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
     try:
         state.fail_runs = 1
         reply = harness.add_call("failure", code="fail")
-        with pytest.raises(RuntimeError, match="503"):
-            await harness.execute(reply)
+        result = await harness.execute(reply)
+        assert result.outcome == "error"
+        assert "503" in cast(str, result.parts[0].value)
         assert harness.owner(reply).value["phase"] == "started"
         state.fail_ends = 1
         harness.finish(reply, "complete")
@@ -760,7 +767,7 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
 
         computer_source = harness.root / "computer" / "plugin.py"
         manifest_source = harness.root / "computer" / "akashic.plugin.toml"
-        old_digest = "9bd4f6e215b4848e91f0dbfea75a7b227faeba96268c422d62e81a9b64d5ac92"
+        old_digest = "4a4381b211024ac1fbf3730bd835a8cfa6cd7dd36996bf018437c13796ef0894"
         old_image = "ghcr.io/kachofugetsu09/akashic-computer@sha256:" + old_digest
         new_image = old_image[:-1] + "a"
         new_digest = new_image.rsplit(":", 1)[1]
@@ -863,3 +870,29 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
         if new_gateway is not None:
             new_gateway.shutdown()
             new_gateway.server_close()
+
+
+@pytest.mark.asyncio
+async def test_computer_script_error_is_durable_and_next_call_can_continue(tmp_path: Path) -> None:
+    harness = await _computer_harness(tmp_path)
+    try:
+        reply = harness.add_call("script-error", code="browser.tabs.create()")
+        result = await harness.execute(reply)
+        assert result.outcome == "error"
+        assert "browser.tabs.create is not a function" in cast(str, result.parts[0].value)
+        assert "earlier effects may remain" in cast(str, result.parts[0].value)
+        assert "JS bindings for this session were reset" in cast(str, result.parts[0].value)
+        calls = len(harness.gateway_state.calls)
+        assert await harness.execute(reply) == result
+        assert len(harness.gateway_state.calls) == calls
+        assert harness.binding is not None
+        output = harness._writer(reply.reader.session_id, "assistant", (Output,)).append(
+            "corrected-call", Output((ToolCall(harness.binding, {"code": "browser.tabs.new()"}),), "continue"))
+        ref = CallRef(output.message_id, 0)
+        following = MessageReply("corrected-result", ref, reply.reader,
+            harness._writer(reply.reader.session_id, "tool", (ToolResult,), call_ref=ref), lambda: None)
+        assert (await harness.execute(following)).outcome == "success"
+        assert len(harness.gateway_state.calls) == calls + 1
+        harness.finish(following, "complete")
+    finally:
+        await harness.close()

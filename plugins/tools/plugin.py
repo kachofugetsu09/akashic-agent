@@ -137,13 +137,15 @@ class ToolCatalog:
     def __init__(self, ctx: Context):
         self._ctx = ctx
         self._tools: dict[str, _Registration] = {}
-        self._groups: dict[str, bool] = {}
+        self._groups: dict[str, tuple[bool, str]] = {}
 
-    async def declare_group(self, ctx: Context, *, always_on: bool = False) -> Effect:
+    async def declare_group(self, ctx: Context, *, always_on: bool = False, description: str = "未声明用途") -> Effect:
         """由真实插件 owner 在注册工具前声明唯一组级展示事实。"""
         self._check_context(ctx)
         if type(always_on) is not bool:
             raise TypeError("工具组 always_on 必须是 bool")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError("工具组用途不能为空")
         owner = ctx.runtime.plugin_id
         if any(item.context.runtime.plugin_id == owner for item in self._tools.values()):
             raise ValueError("工具组必须在工具注册前声明")
@@ -151,7 +153,7 @@ class ToolCatalog:
         def setup() -> Callable[[], None]:
             if owner in self._groups:
                 raise ValueError(f"工具组重复声明: {owner}")
-            self._groups[owner] = always_on
+            self._groups[owner] = (always_on, description)
 
             def cleanup() -> None:
                 _ = self._groups.pop(owner)
@@ -307,7 +309,11 @@ class ToolCatalog:
 
     def group_always_on(self, ref: ToolRef) -> bool:
         registration = self._registration(ref)
-        return self._groups.get(registration.context.runtime.plugin_id, False)
+        return self._groups.get(registration.context.runtime.plugin_id, (False, "未声明用途"))[0]
+
+    def group_description(self, ref: ToolRef) -> str:
+        registration = self._registration(ref)
+        return self._groups.get(registration.context.runtime.plugin_id, (False, "未声明用途"))[1]
 
     async def drain_calls(self, calls: tuple[CallRef, ...]) -> None:
         """清理 owner 等待原效果退出；终态结果不等于资源已经释放。"""

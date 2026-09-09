@@ -61,7 +61,7 @@ async def apply(ctx: Context, config: Config) -> None:
     watcher: asyncio.Task[None] | None = None
     tool_view = ToolView(())
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx)
+    _ = await catalog.declare_group(ctx, description=desc)
 
     for action, schema, description in (
         ("schedule", ScheduleInput.model_json_schema(), "新增一次或周期定时任务"),

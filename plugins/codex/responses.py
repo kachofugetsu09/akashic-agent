@@ -11,6 +11,8 @@ from typing import Any, cast
 
 import httpx
 
+from core.net.http import HttpClient, finish_response
+
 from agent.plugin_composition import (
     AuthenticationError,
     BoundModelDescriptor,
@@ -39,16 +41,12 @@ class CodexResponses:
     def __init__(
         self,
         *,
-        endpoint: str,
-        connect_timeout: float,
-        read_timeout: float,
+        http: HttpClient,
         credential: CredentialHandle,
         descriptor: BoundModelDescriptor,
         config: Mapping[str, Any],
     ) -> None:
-        self._endpoint = endpoint
-        self._connect_timeout = connect_timeout
-        self._read_timeout = read_timeout
+        self._http = http
         self._credential = credential
         self._descriptor = descriptor
         self._lite = bool(config.get("use_responses_lite", False))
@@ -88,31 +86,21 @@ class CodexResponses:
             if self._lite:
                 request_headers["x-openai-internal-codex-responses-lite"] = "true"
             try:
-                timeout = httpx.Timeout(
-                    connect=self._connect_timeout,
-                    read=self._read_timeout,
-                    write=self._connect_timeout,
-                    pool=self._connect_timeout,
-                )
-                async with httpx.AsyncClient(
-                    base_url=self._endpoint,
-                    timeout=timeout,
-                    follow_redirects=False,
-                    headers=request_headers,
-                ) as client:
-                    async with client.stream("POST", "/responses", json=payload) as response:
-                        if response.status_code >= 400:
-                            _ = await response.aread()
-                        if response.status_code == 401 and attempt == 0:
-                            rejected = token
-                            continue
-                        _raise_status(response, token)
-                        return await _consume_stream(
-                            response,
-                            request,
-                            self._descriptor.binding_id,
-                            previous_items,
-                        )
+                client = self._http.client()
+                # OAuth 头由本次凭据生成，不继承前次响应的 Cookie。
+                client.cookies.clear()
+                async with client.stream(
+                    "POST", "/responses", json=payload, headers=request_headers,
+                ) as response:
+                    if response.status_code >= 400:
+                        _ = await response.aread()
+                    if response.status_code == 401 and attempt == 0:
+                        rejected = token
+                        continue
+                    _raise_status(response, token)
+                    return await _consume_stream(
+                        response, request, self._descriptor.binding_id, previous_items,
+                    )
             except asyncio.CancelledError:
                 raise
             except _CallbackError as exc:
@@ -222,7 +210,8 @@ async def _consume_stream(
     completed = False
     delta_seen = False
     try:
-        async for line in response.aiter_lines():
+        lines = response.aiter_lines()
+        async for line in lines:
             if not line.startswith("data:"):
                 continue
             raw = line[5:].strip()
@@ -294,6 +283,7 @@ async def _consume_stream(
                     else None
                 )
                 completed = True
+                await finish_response(lines)
                 break
             elif event_type in {"response.failed", "response.incomplete"}:
                 response_payload = event.get("response")

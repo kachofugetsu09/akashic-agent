@@ -242,7 +242,7 @@ export function historyTranscript(archive: unknown): HistoryTranscriptGroup[] | 
 
 /** 聊天可见性只影响布局，原始 Message、part index 和同步 seq 不变。 */
 export function isTimelinePartVisible(part: TimelinePart): boolean {
-  if ("display" in part) return !["channel.origin", "context.summary", "tool.selection", "command.result", "akasha.recall", "akasha.feedback"].includes(part.kind);
+  if ("display" in part) return !["channel.origin", "context.summary", "tool.selection", "model.selection", "command.result", "akasha.recall", "akasha.feedback"].includes(part.kind);
   if ("archive" in part) {
     if (part.kind !== "history.transcript") return false;
     const groups = historyTranscript(part.archive);
@@ -295,7 +295,7 @@ export function timelineToolResults(messages: TimelineMessage[]): Map<string, Ti
     ? [[`${message.body.call_ref.message_id}:${message.body.call_ref.part_index}`, message] as const] : []));
 }
 
-/** 完成后把同来源的过程归到最终消息；成员只保存原消息引用。 */
+/** 完成或停止展示时，把同来源的过程归到末条输出；不改变 Turn。 */
 export function timelineReplyGroups(messages: TimelineMessage[], activities: ReplyActivity[] = []) {
   const pending = new Map<string, TimelineMessage[]>();
   const completed = new Map<string, TimelineMessage[]>();
@@ -313,11 +313,17 @@ export function timelineReplyGroups(messages: TimelineMessage[], activities: Rep
         if (members.length > 1) completed.set(message.id, members);
         pending.delete(key);
       }
-    } else if (body.kind === "control" && body.action === "abandon") {
+    } else if ((body.kind === "input" && message.author === "user")
+      || (body.kind === "control" && body.action !== "resume")) {
+      const throughSeq = body.kind === "control" ? body.through_seq : message.seq - 1;
       const members = pending.get(key) ?? [];
-      const closed = members.filter((item) => item.seq <= body.through_seq).at(-1);
-      if (closed) hiddenBodies.delete(closed.id);
-      pending.set(key, members.filter((item) => item.seq > body.through_seq));
+      const closed = members.filter((item) => item.seq <= throughSeq);
+      const ending = closed.at(-1);
+      if (ending) {
+        hiddenBodies.delete(ending.id);
+        if (closed.length > 1) completed.set(ending.id, closed);
+      }
+      pending.set(key, members.filter((item) => item.seq > throughSeq));
     }
   }
   const active = new Map<string, TimelineMessage[]>();

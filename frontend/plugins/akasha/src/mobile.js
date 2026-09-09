@@ -93,34 +93,99 @@ export function mount(host, context) {
   return () => { active = false; };
 }
 
-/** 在原思考面板展示本轮真实查询，两条记忆通道保持原来的折叠卡片。 */
-export function mountRecall(host, context) {
-  let active = true;
-  let timer;
-  const load = async () => {
-    const result = await context.query("recall.turn", {
-      message_id: context.messageId, source: context.block?.source ?? "",
-    }, { cache: "none", transport: "https" });
-    if (!active) return;
-    const opened = new Set(Array.from(host.querySelectorAll("details[open]"), (item) => item.dataset.lane));
-    host.innerHTML = result.items.length ? `<div class="akasha-mobile-recall-group">${[
-      ["dense", "左脑 · 精确回忆", "precise"], ["completion", "右脑 · 模式补全", "completion"],
-    ].map(([lane, title, style]) => {
-      const hits = result.items.flatMap((item) => item.hits.filter((hit) => hit.lane === lane));
-      return `<details data-lane="${lane}" class="akasha-mobile-recall akasha-mobile-recall--${style}">
-        <summary><span>${title}</span><b>${hits.length}</b></summary>
-        <ol class="akasha-mobile-memories">${hits.map((hit) => `<li><div>${hit.messages.map((message) =>
-          `<p>${escapeHtml(message.preview || "（非文本消息）")}${message.truncated ? "…" : ""}</p>`).join("")}</div></li>`).join("")
-          || '<li class="akasha-mobile-empty">本次没有命中</li>'}</ol></details>`;
-    }).join("")}</div>` : "";
-    host.querySelectorAll("details").forEach((item) => { item.open = opened.has(item.dataset.lane); });
-    if (result.pending) timer = setTimeout(() => { void load().catch(failed); }, 1000);
-  };
-  const failed = (error) => {
-    if (active) host.innerHTML = `<p class="akasha-mobile-error">${escapeHtml(error.message)}</p>`;
-  };
-  void load().catch(failed);
-  return () => { active = false; clearTimeout(timer); };
+/** 页面缓存只保留服务端确认不再变化的查询结果。 */
+async function readRecall(context) {
+  const query = (messageId, offset) => context.query("recall.turn", {
+    message_id: messageId, source: context.block?.source ?? "", ...(offset ? { offset } : {}),
+  }, {
+    // 旧 OTA Host 仍能正确查询；新 Host 才接管页面缓存，不向旧 Native 发送新枚举。
+    cache: context.capabilities?.queryCacheModes?.includes("memory") ? "memory" : "none",
+    transport: "https",
+  });
+  const result = await query(context.messageId, 0);
+  const items = [...result.items];
+  let pending = result.pending;
+  let offset = result.next_offset;
+  while (offset != null) {
+    const page = await query(result.input_message_id, offset);
+    items.push(...page.items);
+    pending = page.pending;
+    offset = page.next_offset;
+  }
+  return { ...result, items, pending };
 }
 
-export default { slots: { "turn.before_reasoning": { mount: mountRecall } }, dashboard: { mount } };
+/** 预取只读一次，进行中的结果留给展开后的可见面板继续读取。 */
+async function prefetchRecall(context) {
+  await readRecall(context);
+}
+
+/** 在原思考面板展示真实查询，刷新失败时保留已读内容。 */
+export function mountRecall(host, context) {
+  let active = true;
+  let loading = false;
+  let timer;
+  let loadingTimer;
+  const content = document.createElement("div");
+  const status = document.createElement("p");
+  status.className = "akasha-mobile-query-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  host.replaceChildren(content, status);
+
+  // 1. 只在可见 mount 内轮询；内存命中不闪现加载占位。
+  const load = async () => {
+    if (!active || loading) return;
+    loading = true;
+    clearTimeout(timer);
+    status.hidden = true;
+    if (!content.hasChildNodes()) loadingTimer = setTimeout(() => {
+      status.textContent = "正在读取召回记录…";
+      status.hidden = false;
+    }, 150);
+    try {
+      const result = await readRecall(context);
+      if (!active) return;
+      const opened = new Set(Array.from(content.querySelectorAll("details[open]"), (item) => item.dataset.lane));
+      content.innerHTML = result.items.length ? `<div class="akasha-mobile-recall-group">${[
+        ["dense", "左脑 · 精确回忆", "precise"], ["completion", "右脑 · 模式补全", "completion"],
+      ].map(([lane, title, style]) => {
+        // 多次真实查询可以命中同一回忆；卡片按消息成员展示一次，原查询留在 Inspector。
+        const hits = [...new Map(result.items.flatMap((item) => item.hits.filter((hit) => hit.lane === lane))
+          .map((hit) => [JSON.stringify(hit.messages.map((message) => message.message_id)), hit])).values()];
+        return `<details data-lane="${lane}" class="akasha-mobile-recall akasha-mobile-recall--${style}">
+          <summary><span>${title}</span><b>${hits.length}</b></summary>
+          <ol class="akasha-mobile-memories">${hits.map((hit) => `<li><div>${hit.messages.map((message) =>
+            `<p>${escapeHtml(message.preview || "（非文本消息）")}${message.truncated ? "…" : ""}</p>`).join("")}</div></li>`).join("")
+            || '<li class="akasha-mobile-empty">本次没有命中</li>'}</ol></details>`;
+      }).join("")}</div>` : "";
+      content.querySelectorAll("details").forEach((item) => { item.open = opened.has(item.dataset.lane); });
+      status.hidden = true;
+      if (result.pending) timer = setTimeout(() => { void load(); }, 1000);
+    } catch (error) {
+      // 2. 失败只更新局部状态，重试沿同一查询入口走，不销毁召回卡片。
+      if (active) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.textContent = "重试";
+        retry.addEventListener("click", () => { void load(); });
+        status.replaceChildren(document.createTextNode(`${error.message} `), retry);
+        status.hidden = false;
+      }
+    } finally {
+      loading = false;
+      clearTimeout(loadingTimer);
+    }
+  };
+  void load();
+  return () => {
+    active = false;
+    clearTimeout(timer);
+    clearTimeout(loadingTimer);
+  };
+}
+
+export default {
+  slots: { "turn.before_reasoning": { mount: mountRecall, prefetch: prefetchRecall } },
+  dashboard: { mount },
+};

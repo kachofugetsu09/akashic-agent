@@ -10,9 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ToolCall as ModelToolCall
-from plugins.context.api import Reminder
 from plugins.tools.api import BoundTool, CallSource, InvalidArguments, Result
-from plugins.tools.menu import ToolPresentation, tool_schema
+from plugins.tools.menu import InvalidToolCall, ToolPresentation, tool_schema
 from plugins.tools.plugin import TOOLS, ToolCatalog, ToolRef, ToolView
 from session.message import ContentPart
 from session.message_codec import json_value
@@ -35,7 +34,7 @@ class Query(BaseModel):
     top_k: int = Field(default=5, ge=1, le=10)
     allowed_risk: list[
         Literal["read-only", "read-write", "external-side-effect"]
-    ] | None = None
+    ] | None = Field(default=None, description="按工具整体能力过滤，通常省略；此字段不是本次操作的授权。")
 
 
 class IndirectCall(BaseModel):
@@ -44,18 +43,19 @@ class IndirectCall(BaseModel):
     arguments: dict[str, object]
 
 
-def _groups(view: ToolView) -> tuple[dict[str, object], ...]:
-    rows: dict[str, list[Mapping[str, Any]]] = {}
-    for ref in view.refs:
-        rows.setdefault(cast(str, ref.description["owner"]), []).append({
+def _groups(catalog: ToolCatalog, view: ToolView) -> tuple[dict[str, object], ...]:
+    """按实际插件分组，只包含获授工具并固定目录顺序。"""
+    rows: dict[str, dict[str, object]] = {}
+    for ref in sorted(view.refs, key=lambda item: item.name):
+        owner = cast(str, ref.description["owner"])
+        if owner not in rows:
+            rows[owner] = {"owner": owner, "description": catalog.group_description(ref), "tools": []}
+        cast(list[Mapping[str, Any]], rows[owner]["tools"]).append({
             "schema": tool_schema(ref.description),
             "risk": ref.description["risk"],
             "search_hint": ref.description["search_hint"],
         })
-    return tuple(
-        {"owner": owner, "tools": tools}
-        for owner, tools in sorted(rows.items())
-    )
+    return tuple(rows[owner] for owner in sorted(rows))
 
 
 def _search(groups: tuple[dict[str, object], ...], query: Query) -> tuple[dict[str, object], ...]:
@@ -70,10 +70,11 @@ def _search(groups: tuple[dict[str, object], ...], query: Query) -> tuple[dict[s
     tokens.update(cjk)
     tokens.update(left + right for left, right in zip(cjk, cjk[1:]))
     tokens.discard("")
-    ranked: list[tuple[int, str, dict[str, object]]] = []
+    ranked: list[tuple[int, int, str, dict[str, object]]] = []
     for group in groups:
         owner = cast(str, group["owner"])
         score = 0
+        exact = False
         allowed = False
         for entry in cast(list[Mapping[str, Any]], group["tools"]):
             schema = cast(Mapping[str, Any], entry["schema"])
@@ -85,18 +86,21 @@ def _search(groups: tuple[dict[str, object], ...], query: Query) -> tuple[dict[s
             name = cast(str, tool["name"]).lower()
             description = cast(str, tool["description"]).lower()
             hint = cast(str | None, entry["search_hint"]) or ""
+            exact |= owner.lower() in tokens or name in tokens
+            tool_score = 0
             for token in tokens:
                 if token == owner.lower() or token == name:
-                    score += 10
+                    tool_score += 10
                 elif token in owner.lower() or token in name:
-                    score += 5
+                    tool_score += 5
                 if token in description:
-                    score += 2
+                    tool_score += 2
                 if token in hint.lower():
-                    score += 4
+                    tool_score += 4
+            score = max(score, tool_score)
         if allowed and score:
-            ranked.append((-score, owner, group))
-    return tuple(row for _, _, row in sorted(ranked)[: query.top_k])
+            ranked.append((-int(exact), -score, owner, group))
+    return tuple(row for _, _, _, row in sorted(ranked)[: query.top_k])
 
 
 class SearchTool:
@@ -114,7 +118,14 @@ class SearchTool:
             raise InvalidArguments(str(error)) from error
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        matched = _search(self._groups, Query.model_validate(json_value(arguments)))
+        query = Query.model_validate(json_value(arguments))
+        matched = _search(self._groups, query)
+        excluded = () if query.allowed_risk is None else tuple(
+            {"owner": group["owner"], "name": entry["schema"]["function"]["name"], "risk": entry["risk"]}
+            for group in _search(self._groups, query.model_copy(update={"allowed_risk": None}))
+            for entry in cast(tuple[Mapping[str, Any], ...], group["tools"])
+            if entry["risk"] not in query.allowed_risk
+        )
         visible = tuple({
             "owner": group["owner"],
             "tools": tuple(
@@ -130,6 +141,8 @@ class SearchTool:
                     json.dumps(
                         {
                             "matched_groups": json_value(visible),
+                            "excluded_by_risk": json_value(excluded),
+                            "risk_tip": "部分匹配工具被风险过滤排除；需要时省略过滤重搜。返回组内保留完整 schema，执行仍须通过当前授权。" if excluded else "",
                             "tip": (
                                 "使用 tool_call，并传入 name 与 arguments。"
                                 if matched
@@ -149,8 +162,7 @@ class SearchTool:
 class SearchPresentation:
     """固定搜索顶层 schema，并只解码获授 view 中的间接调用。"""
 
-    def __init__(self, ctx: Context, catalog: ToolCatalog, view: ToolView, search_ref: ToolRef):
-        self._ctx = ctx
+    def __init__(self, catalog: ToolCatalog, view: ToolView, search_ref: ToolRef):
         self._view = view
         self._search_ref = search_ref
         if any(ref.name == "tool_call" for ref in view.refs):
@@ -161,7 +173,7 @@ class SearchPresentation:
             if catalog.group_always_on(ref)
         )
         self._direct = ToolView(direct)
-        self._groups = _groups(view)
+        self._groups = _groups(catalog, view)
 
     @property
     def schemas(self) -> tuple[Mapping[str, Any], ...]:
@@ -178,26 +190,29 @@ class SearchPresentation:
         )
 
     @property
-    def reminders(self) -> tuple[tuple[Context, Reminder], ...]:
-        lines = ["## 可搜索工具目录"]
+    def system_prompt(self) -> str:
+        lines = ["## 可搜索工具目录", "用 tool_search 获取插件组的完整 schema，再用 tool_call 传入 name 与 arguments。"]
         for group in self._groups:
-            lines.append(cast(str, group["owner"]))
+            lines.append(f"{group['owner']}：{group['description']}")
             for entry in cast(list[Mapping[str, Any]], group["tools"]):
-                schema = cast(Mapping[str, Any], entry["schema"])
-                tool = cast(Mapping[str, Any], schema["function"])
-                description = cast(str, tool["description"])
-                short = description[:20] + ("…" if len(description) > 20 else "")
-                lines.append(f"- {tool['name']}: {short}")
-        return ((self._ctx, Reminder("directory", "\n".join(lines), 500)),)
+                tool = cast(Mapping[str, Any], entry["schema"])["function"]
+                description = " ".join(tool["description"].split())
+                short = description[:80] + ("…" if len(description) > 80 else "")
+                lines.append(f"   {tool['name']}：{short}")
+        return "\n".join(lines)
 
     def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
         if call.name != "tool_call":
-            return self._direct.select(call.name).name, cast(Mapping[str, object], call.arguments)
+            if call.name not in {ref.name for ref in self._direct.refs}:
+                raise InvalidToolCall(f"工具不属于当前直接调用目录: {call.name}；请用 tool_search 查询，再用 tool_call 调用。")
+            return call.name, cast(Mapping[str, object], call.arguments)
         try:
             decoded = IndirectCall.model_validate(json_value(call.arguments))
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
-        return self._view.select(decoded.name).name, decoded.arguments
+            raise InvalidToolCall(f"tool_call 需要 name 和对象类型的 arguments：{error}") from error
+        if decoded.name not in {ref.name for ref in self._view.refs}:
+            raise InvalidToolCall(f"工具不属于获授 view: {decoded.name}；请用 tool_search 查询当前目录。")
+        return decoded.name, decoded.arguments
 
     def configuration(self, name: str) -> Mapping[str, object] | None:
         return {"groups": self._groups} if name == self._search_ref.name else None
@@ -205,7 +220,7 @@ class SearchPresentation:
 
 async def apply(ctx: Context, config: object) -> None:
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx, always_on=True)
+    _ = await catalog.declare_group(ctx, always_on=True, description=desc)
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if set(configuration) != {"groups"} or not isinstance(configuration["groups"], tuple):
@@ -234,5 +249,5 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(TOOL_SEARCH_TOOLS, view)
     _ = await ctx.provide(
         TOOL_SEARCH_PRESENTATION,
-        lambda awarded: SearchPresentation(ctx, catalog, awarded, search_ref),
+        lambda awarded: SearchPresentation(catalog, awarded, search_ref),
     )

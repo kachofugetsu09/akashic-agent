@@ -104,7 +104,7 @@ AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
 async def apply(ctx: Context, config: Config) -> None:
     """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx)
+    _ = await catalog.declare_group(ctx, description=desc)
     tool_refs: list[ToolRef] = []
 
     async def request_reindex(_invocation: CommandInvocation) -> CommandResult:
@@ -154,12 +154,15 @@ async def apply(ctx: Context, config: Config) -> None:
               turn_id: str | None) -> dict[str, object]:
         inspector = get_inspector()
         if method == "recall.turn":
-            if (not session_id or set(payload) != {"message_id", "source"}
+            offset = payload.get("offset", 0)
+            if (not session_id or set(payload) - {"message_id", "source", "offset"}
+                or not {"message_id", "source"} <= set(payload)
+                or not isinstance(offset, int) or isinstance(offset, bool) or offset < 0
                 or not isinstance(payload["message_id"], str) or not payload["message_id"]
                 or not isinstance(payload["source"], str)):
                 raise MobileUiRpcInvalidRequest("检索卡片缺少消息或会话")
             return inspector.for_turn(session_id, payload["message_id"], payload["source"],
-                                      ctx.require(TURN_PROJECTION))
+                                      ctx.require(TURN_PROJECTION), offset=offset)
         if method == "inspector.recent":
             try:
                 page = InspectorPage.model_validate(payload)

@@ -89,7 +89,7 @@ async def apply(ctx: Context, config: Config) -> None:
         ),
     )
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx)
+    _ = await catalog.declare_group(ctx, description=desc)
     refs = []
     descriptions = {
         "screen_content": "初筛本轮 Content 候选并写兴趣理由与调查问题",

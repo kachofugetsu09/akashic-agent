@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from contextlib import asynccontextmanager
 
 import pytest
 from aiohttp import web
@@ -35,11 +36,13 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
     """模型 execution 固定一次 descriptor，不能被默认切换或子 task 改写。"""
 
     calls: list[dict[str, object]] = []
+    transports: list[object] = []
 
     async def models(_request):
         return web.json_response({"data": [{"id": "first"}, {"id": "second"}]})
 
     async def completions(request):
+        transports.append(request.transport)
         body = await request.json()
         calls.append(body)
         chunks = [
@@ -139,6 +142,12 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
                 await asyncio.create_task(child_execution())
                 assert snapshot.lease_count == lease_count
                 assert len(calls) == 2
+                assert transports[0] is transports[1]
+
+            with pytest.raises(RuntimeError, match="连接已关闭"):
+                await first_execution.chat(ModelRole.AGENT).complete(
+                    ModelRequest(messages=({"role": "user", "content": "closed"},))
+                )
 
             async with models_service.execution() as second_execution:
                 second_descriptor = second_execution.chat(ModelRole.AGENT).descriptor
@@ -152,6 +161,7 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
                 )
 
         assert [call["model"] for call in calls] == ["first", "first", "second"]
+        assert transports[2] is not transports[0]
     finally:
         await core.bus.aclose()
         await core.stop()
@@ -161,3 +171,249 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
 
 async def _noop_delta() -> None:
     """为真实流式 provider 请求提供最小 delta consumer。"""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("driver_name", ["openai_compatible", "opencode_go", "codex"])
+async def test_driver_reuses_socket_and_reads_rotated_credentials(streaming, driver_name, caplog):
+    """同一连接的两次请求复用 socket，并使用各自读取到的凭据。"""
+    from dataclasses import replace
+    from agent.plugin_composition import DriverConnectionDescriptor
+    from importlib import import_module
+    definition = import_module(f"plugins.{driver_name}.driver").definition
+    driver_id = driver_name.replace("_", "-")
+    from tests.model_plugin_fakes import BoundChatModelFake
+
+    seen = []
+    caplog.set_level("DEBUG", logger="core.net.http")
+
+    async def complete(request):
+        seen.append((request.transport, request.headers["Authorization"]))
+        assert "Cookie" not in request.headers
+        if driver_name == "codex":
+            return web.Response(
+                text='data: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed","response":{}}\n\n',
+                content_type="text/event-stream",
+            )
+        if streaming:
+            return web.Response(
+                text='data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+                content_type="text/event-stream",
+            )
+        return web.json_response({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    app = web.Application()
+    async def add_cookie(_request, response):
+        response.headers["Set-Cookie"] = "provider-session=previous-credential; Path=/"
+
+    app.on_response_prepare.append(add_cookie)
+    app.router.add_post("/v1/chat/completions", complete)
+    app.router.add_post("/v1/responses", complete)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+
+    class Credential:
+        connection_id = "test-connection"
+        auth_identity = "test"
+        token = "first"
+
+        async def read(self):
+            return {"driver": "codex", "api_key": self.token, "access_token": self.token,
+                    "account_id": "test", "expires_at": "2099-01-01T00:00:00+00:00"}
+
+    credential = Credential()
+    descriptor = replace(BoundChatModelFake(object()).descriptor, driver_id=driver_id)
+    driver = await definition().open(
+        DriverConnectionDescriptor("test-connection", "local", driver_id,
+                                   f"http://127.0.0.1:{port}/v1", "test", {}),
+        credential,
+    )
+    try:
+        bound = driver.bind_chat(descriptor, {})
+        request = ModelRequest(
+            messages=({"role": "user", "content": "hello"},),
+            on_delta=(lambda _delta: _noop_delta()) if streaming else None,
+        )
+        assert (await bound.complete(request)).content == "ok"
+        credential.token = "second"
+        assert (await bound.complete(request)).content == "ok"
+        # 负载可让尾流超过 10 ms；只有明确记录放弃复用时才允许新 socket。
+        if seen[0][0] is not seen[1][0]:
+            assert "尾流未结束，关闭连接" in caplog.text
+        assert [item[1] for item in seen] == ["Bearer first", "Bearer second"]
+        await driver.aclose()
+        with pytest.raises(RuntimeError, match="连接已关闭"):
+            await bound.complete(request)
+    finally:
+        await driver.aclose()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_done_does_not_wait_for_a_stalled_http_tail():
+    """DONE 后服务端不结束正文时，仍交付已完成结果并关闭该连接。"""
+    import httpx
+    from plugins.openai_compatible.driver import _consume_stream
+
+    waiting = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+            waiting.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    response = httpx.Response(200, stream=Body())
+    try:
+        async with asyncio.timeout(1):
+            result = await _consume_stream(response, lambda _delta: _noop_delta())
+        assert result.content == "ok"
+        assert waiting.is_set() and cancelled.is_set()
+    finally:
+        await response.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [ValueError, asyncio.CancelledError])
+async def test_driver_scope_closes_all_connections_on_failure(failure):
+    """部分绑定失败或取消仍释放全部已打开连接，包括关闭自身报错的情况。"""
+    from agent.plugin_composition import DriverConnection
+    from plugins.models.state import _driver_scope
+
+    closed = []
+
+    async def first():
+        closed.append("first")
+
+    async def second():
+        closed.append("second")
+        raise LookupError("close failed")
+
+    def unused(*_args):
+        raise AssertionError("此例只检查生命周期")
+
+    with pytest.raises(LookupError, match="close failed"):
+        async with _driver_scope() as opened:
+            opened["first"] = DriverConnection(unused, unused, close=first)
+            opened["second"] = DriverConnection(unused, unused, close=second)
+            raise failure()
+    assert closed == ["second", "first"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_driver_close_finishes_before_releasing_lease_after_repeated_cancel(
+    scoped, close_fails,
+):
+    """重复取消不能截断关闭，关闭失败也必须在归还租约前报告。"""
+    from agent.plugin_composition import DriverConnection
+    from plugins.models.state import _driver_scope
+
+    entered = asyncio.Event()
+    closing = asyncio.Event()
+    finish_close = asyncio.Event()
+    events = []
+
+    async def close():
+        closing.set()
+        await finish_close.wait()
+        events.append("closed")
+        if close_fails:
+            raise LookupError("close failed")
+
+    def unused(*_args):
+        raise AssertionError("此例只检查生命周期")
+
+    driver = DriverConnection(unused, unused, close=close)
+
+    async def run():
+        try:
+            if scoped:
+                async with _driver_scope() as opened:
+                    opened["test"] = driver
+                    entered.set()
+                    await asyncio.Event().wait()
+            else:
+                try:
+                    entered.set()
+                    await asyncio.Event().wait()
+                finally:
+                    await driver.aclose()
+        finally:
+            events.append("lease released")
+
+    task = asyncio.create_task(run())
+    await entered.wait()
+    task.cancel()
+    await closing.wait()
+    task.cancel()
+    # 调度屏障让第二次取消先送达，再允许底层关闭完成。
+    barrier = asyncio.Event()
+    asyncio.get_running_loop().call_soon(barrier.set)
+    await barrier.wait()
+    assert not task.done()
+    assert events == []
+    finish_close.set()
+    with pytest.raises(LookupError if close_fails else asyncio.CancelledError):
+        await task
+    assert events == ["closed", "lease released"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 500])
+async def test_opencode_discovery_closes_temporary_client(status, monkeypatch):
+    """目录发现成功或失败都会归还临时 HTTP 资源。"""
+    import httpx
+    from agent.plugin_composition import DriverConnectionDescriptor, ModelError
+    from plugins.opencode_go import driver
+
+    def respond(request):
+        assert request.url.path == "/v1/models"
+        assert request.headers["Authorization"] == "Bearer fixture"
+        return httpx.Response(status, json={"data": [{"id": "fixture"}]})
+
+    client = httpx.AsyncClient(base_url="http://local.test/v1", transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(driver, "_client", lambda _connection: client)
+
+    async def cli_catalog():
+        return {}
+
+    monkeypatch.setattr(driver, "_load_cli_catalog", cli_catalog)
+
+    class Credential:
+        connection_id = "local"
+        auth_identity = "fixture"
+
+        async def read(self):
+            return {"api_key": "fixture"}
+
+        async def refresh(self, payload):
+            raise AssertionError("目录发现不刷新凭据")
+
+        @asynccontextmanager
+        async def exclusive(self):
+            yield
+
+    descriptor = DriverConnectionDescriptor(
+        "local", "local", "opencode-go", "http://local.test/v1", "fixture", {"max_retries": 0},
+    )
+    try:
+        if status == 200:
+            models = await driver.definition().discover(descriptor, Credential())
+            assert [model.model for model in models] == ["fixture"]
+        else:
+            with pytest.raises(ModelError):
+                await driver.definition().discover(descriptor, Credential())
+        assert client.is_closed
+    finally:
+        await client.aclose()

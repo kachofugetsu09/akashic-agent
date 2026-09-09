@@ -33,10 +33,15 @@ LRU 混在日志投影中。于是工具名字可以绕过 provider 依赖，搜
 
 ## 影响
 
-`register()`、prepare/authorize 贡献、按名字配置和搜索选择协议是 breaking API。全部真实
-消费者迁移到 view；旧 `tool.selection` 只作为历史内容读取。数据库 schema 不变。workspace
+`register()`、prepare/authorize 贡献、按名字配置和搜索选择协议是 breaking API。核心仓库内消费者迁移到 view，外部插件迁移另行交付；旧 `tool.selection` 只作为历史内容读取。数据库 schema 不变。workspace
 迁移只把既有 `context.prompt_sources.skills = "skills"` 精确改为 `"standard_tools"`，并在同目录
 保留 `config.before-tool-provider-views.toml` 恢复点；其他值不猜测、不改写。
 
-完整调用链、来源范围、reminder/replay 合同和验收见
+完整调用链、来源范围、system 目录与 replay 合同和验收见
 [插件工具引用与模型展示设计](../design/plugin-tool-view.md)。
+
+## 2026-09-09 澄清
+
+固定工具目录进入 system，并展示 provider 声明用途。完整 schema 随普通搜索结果保留，
+直到对应原文被摘要覆盖。模型协议拒绝保存为普通内容与可重放反馈，不产生假的工具效果；
+有效调用继续使用唯一 ToolCall/ToolResult 链。详见关联设计的失败与恢复合同。

@@ -1,6 +1,7 @@
 name: Computer image
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - docker/computer/**

@@ -1,7 +1,7 @@
 # 插件工具引用与模型展示设计
 
 - 状态：implemented
-- 日期：2026-09-08
+- 日期：2026-09-09
 - 关联条款：CTX-004、CTX-007、RUN-003、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016
 - 决策：[0062](../decisions/0062-tools-flow-through-provider-views.md)
 
@@ -25,7 +25,8 @@ provider ── register ──▶ ToolRef ── provide ToolView ──▶ con
   以及 exact ref 对应的 prepare/authorize，在 view、binding 和贡献注册边界核对引用仍属于当前
   Root 的同一个注册。工具卸载后，同名新注册不会继承旧贡献。
 - `ToolView` 只是一组引用。工具池用引用描述中的实际 provider plugin ID 分组，并保存 provider
-  声明的唯一组级 `always_on`。组没有独立简介；目录只使用插件 ID 和工具描述摘要。
+  声明的组级 `always_on` 与用途。内置 provider 复用模块声明的 `desc`；未声明用途时明确显示
+  “未声明用途”，不从工具名称猜测插件用途。
 - `ALL_TOOLS` 是显式能力。确实需要完整池的插件必须 inject 它；持有 `TOOLS` 本身不能列出、
   按名称绑定或取得完整池。
 - `Bindings` 继续保存实际归档闭包。当前 `ToolRef` 只用于新绑定；Message 中已经提交的
@@ -42,7 +43,7 @@ TOML；缺字段、不同 owner 或结构错误分别保持不变或 fail-loud�
 ## 3. 模型展示与搜索
 
 `ToolPresentation` 只拥有三件事：本次固定顶层 schema、把 provider 返回的 wire tool call
-解码为一个真实 `ToolRef + arguments`，以及本次程序需要的目录 reminder。`react` 只调用这个
+解码为一个真实 `ToolRef + arguments`，以及本次程序固定的 system 工具目录。`react` 只调用这个
 接口，不识别 `tool_search`、间接调用工具或来源名称。
 
 Native presentation 把获授 view 中的工具直接放入固定 schema。Search presentation 固定展示
@@ -54,13 +55,40 @@ conversation 基础组中 `always_on` 的真实工具、`tool_search` 和 tool-s
 `model.facts` 的 wire replay 材料保存，Message 日志只提交解码后的真实 `ToolCall`，因此
 prepare、authorize、invoke 和 receipt 都只执行一次。
 
-目录通过当前 Search presentation 交给现有 `system-reminder`。Wake、Scheduler、Subagent
-和其他 native presentation 不得到该提醒。顶层 schemas 在搜索前后严格相同。
+目录通过当前 Search presentation 加入 system，按插件 ID 和工具名稳定排序，使用“插件名：声明用途”
+及缩进的“工具名：简述”。Wake、Scheduler、Subagent 和其他 native presentation 不得到该目录。
+顶层 schemas 在搜索前后严格相同。查询明确包含插件名或完整工具名时优先返回该组；其余匹配
+使用组内最佳工具得分，组大小本身不增加排名。风险过滤只筛选匹配候选，命中后仍返回获授组内
+全部 schema，并提示被过滤的匹配工具；它不是调用授权。
 
 `model.facts` 兼容旧字段；新成功 Output 额外保存本次实际请求末尾的 reminder replay 和原
 wire tool calls。下一次同一摘要下重放这些请求事实，避免把后来生成的末尾 reminder 插入旧
 provider 前缀。失败或取消不保存成功 replay。新 Summary 正常开启新上下文，旧搜索结果只是
-普通 ToolResult；不专门删除 raw tail，也不改变调用权限。
+普通 ToolResult；保留原文中的 schema 继续可见，只有摘要覆盖它后才不再提供原 schema。
+不专门删除 raw tail，也不改变调用权限。工具目录不写入新的 reminder replay。
+
+模型调用格式或名称不属于当前展示时，展示层抛出 `InvalidToolCall`；ReAct 将原 wire 请求和
+拒绝原因作为 `model.tool_rejection` 内容随同一个成功模型 Output 提交，不生成 binding、
+真实 ToolCall、ToolResult 或 effect。Model 投影重放原请求与“调用未执行”的协议反馈。
+Output 仍为 continue 并计入原步数上限，所以取消、重启或新输入不能重置纠错预算。混合响应
+中的有效调用继续走唯一的 Tools 执行链。展示实现返回未获授 binding 等内部契约错误仍直接失败。
+
+```text
+┌───────────────┐     ┌───────────────────┐
+│ 模型 wire 调用 │ ──▶ │ 展示协议校验与解码 │
+└───────────────┘     └──────┬─────┬──────┘
+                       有效 │     │ 拒绝
+                 ┌─────────▼──┐ ┌▼────────────────────┐
+                 │ ToolCall   │ │ model.tool_rejection │
+                 │ → Tools    │ │ 原请求 + 未执行原因  │
+                 │ → 回执     │ └──────────┬───────────┘
+                 └─────┬──────┘            │
+                       └────────┬──────────┘
+                         ┌──────▼────────┐
+                         │ Model 历史投影 │
+                         │ → 下一次纠正   │
+                         └───────────────┘
+```
 
 ## 4. 现有来源的工具范围
 
@@ -87,7 +115,7 @@ MCP `tools/list` 得到的工具必须注册进同一引用池并归到声明它
 
 - 未获 view 的消费者即使猜对名称也不能 bind；获授 view 内可不经搜索直接调用。
 - provider 消失导致硬依赖 consumer 不激活；已提交 binding 仍打开原归档闭包。
-- 搜索返回整组完整 schema，下一轮目录截断正确，顶层 schema 搜索前后相同。
+- 搜索返回整组完整 schema，精确名称不被大组挤出；system 目录与顶层 schema 搜索前后相同。
 - 间接调用只生成一个真实 ToolCall 和一个最终 ToolResult；wrapper wire call 可重放。
 - compaction 不修改 Message、不撤销工具权限，也不把旧搜索结果当成新的授权事实。
 - Scheduler、Wake、Subagent、Plugin validation 和 Programmatic 保留上述范围。
@@ -96,3 +124,9 @@ MCP `tools/list` 得到的工具必须注册进同一引用池并归到声明它
   `Input → Input → Output(ToolCall) → ToolResult(success) → Output(quiet)`，证明旧
   `tool_names`、旧 ReAct wire 和原 binding 仍跨升级执行；兼容入口只接受与 fixed bindings
   完全一致的旧名称集合。
+
+## 6. 本轮交付边界
+
+本轮只完成核心仓库内置 provider 与消费者。外部插件源码迁移、正式安装链验证和部署另行处理；
+核心回归通过不代表现有外部 fleet 已兼容新的 breaking 注册 API。外部 provider 后续须通过
+`declare_group(description=...)` 声明用途，并交付真实 view。

@@ -64,6 +64,23 @@ test("stale session and generation events cannot replace current activities", ()
   assert.equal(unavailable.replyStatus.available, false);
 });
 
+test("native observation loss clears only the current preview without declaring the reply plugin absent", () => {
+  const input = message("input", 0, { kind: "input", parts: [text("开始")] });
+  const current = { ...baseline([input]), replyStatus: status([activity]) };
+  const clear = { type: "reply.clear", session_id: session };
+  assert.equal(applyMobileMessageEvent(current, event(clear, 3)), null);
+  assert.equal(applyMobileMessageEvent(current, event({ ...clear, session_id: "other" })), null);
+  assert.throws(() => applyMobileMessageEvent(current, event({ type: "reply.clear" })), /缺少会话/);
+  const waiting = applyMobileMessageEvent(current, event(clear));
+  assert.equal(waiting.replyStatus, null);
+  assert.equal(waiting.messages, current.messages);
+  assert.equal(waiting.throughSeq, current.throughSeq);
+  const restored = applyMobileMessageEvent(waiting, event(status([activity])));
+  assert.deepEqual(restored.replyStatus.items, [activity]);
+  const absent = applyMobileMessageEvent(restored, event({ ...status(), available: false }));
+  assert.equal(absent.replyStatus.available, false);
+});
+
 test("device download progress remains separate from attachment facts", () => {
   const artifact = { artifact_id: "a", kind: "file", filename: "report.txt", media_type: "text/plain",
     size_bytes: 200, sha256: "a".repeat(64) };
@@ -84,7 +101,7 @@ test("control patches reject message and preview fields before snapshot conversi
     assert.throws(() => readMobileStateSnapshot({ ...raw, [field]: null }), /字段无效/);
   }
   assert.throws(() => readMobileStateSnapshot({ ...raw, protocolVersion: 1 }));
-  assert.deepEqual(readMobileStateSnapshot(raw), { ...raw, protocolVersion: 10, messages: [], throughSeq: -1, replyStatus: null });
+  assert.deepEqual(readMobileStateSnapshot(raw), { ...raw, protocolVersion: 11, messages: [], throughSeq: -1, replyStatus: null });
 });
 
 test("late full snapshots cannot roll back a newer session or sync generation", () => {

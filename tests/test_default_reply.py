@@ -134,7 +134,9 @@ async def apply(ctx, config):
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace(
             'if len(calls) == 1:',
-            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("search-call", "tool_search", {"query": "select:write_evidence"})])\n            if len(calls) == 2:'))
+            'if len(calls) == 1:\n                return LLMResponse(None, [ToolCall("search-call", "tool_search", {"query": "write_evidence"})])\n            if len(calls) == 2:').replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")').replace(
+            'ToolCall("provider-call", "write_evidence", {})',
+            'ToolCall("provider-call", "tool_call", {"name": "write_evidence", "arguments": {}})'))
     if compaction:
         module = provider / "plugin.py"
         module.write_text(module.read_text().replace('calls = []', 'calls = []\n    business = []').replace(
@@ -288,9 +290,34 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             calls = snapshot.composition_root.context.require(
                 ServiceKey("fixture.calls")
             )
-            expected = {"tool_search", "tool_call", "write_evidence"}
+            expected = {"tool_search", "tool_call"}
             assert {tool["function"]["name"] for tool in calls[0].tools} == expected
             assert {tool["function"]["name"] for tool in calls[1].tools} == expected
+            import json
+            from agent.plugin_composition import CHAT_MODELS
+            from agent.plugin_composition.bindings import BINDINGS
+            from agent.plugin_composition.models import ModelRole
+            from plugins.models.content import render_content
+            from plugins.models.projection import MODEL_CALLS, MessageProjection
+            from plugins.tools.plugin import TOOLS
+            payload = json.loads(cast(str, rows[2].body.parts[0].value))
+            assert payload["matched_groups"][0]["tools"][0]["function"]["name"] == "write_evidence"
+            assert "matched_groups" in str(calls[1].messages)
+            ctx = snapshot.composition_root.context
+            # 新投影从持久日志重建；摘要覆盖搜索结果时，只有请求视图失去 schema。
+            async with ctx.require(CHAT_MODELS).execution() as execution:
+                model = execution.chat(ModelRole.AGENT)
+                bindings = ctx.require(BINDINGS)
+                def tool_name(binding):
+                    return cast(str, cast(Mapping[str, object], bindings.describe(binding, TOOLS)["tool"])["name"])
+                projection = MessageProjection(model, source="conversation", render_content=lambda part: render_content(part, artifacts={}),
+                                               tool_name=tool_name, read_call=ctx.require(MODEL_CALLS))
+                before = log.reader("s").snapshot()
+                retained = projection.render(before, after_seq=-1)
+                compacted = projection.render(before, after_seq=rows[2].seq)
+                assert "matched_groups" in str(retained.messages)
+                assert "matched_groups" not in str(compacted.messages)
+                assert log.reader("s").snapshot() == before
 
 
 @pytest.mark.asyncio
@@ -389,4 +416,68 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
             assert all(all(f"old {role} {index}:" not in str(request.messages)
                            for role in ("input", "answer") for index in (0, 1)) for request in calls)
             assert all("current request" in str(request.messages) for request in calls[1:])
+        assert (tmp_path / "effect.txt").read_text() == "once\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_call", [
+    'ToolCall("bad-call", "tool_call", {"name": "write_evidence", "arguments": "{}"})',
+    'ToolCall("bad-call", "tool_call", {"name": "uninstalled_tool", "arguments": {}})',
+    'ToolCall("bad-call", "old_direct_tool", {})',
+])
+async def test_reply_recovers_rejected_protocol_without_creating_tool_effect(tmp_path, bad_call):
+    """真实 Reply 反馈格式或过期名称错误，修正后只执行有效调用并可重放。"""
+    from agent.plugin_composition import ServiceKey
+    from session.message import ContentPart, ToolCall
+
+    def extra(sources):
+        provider = sources / "test_provider/plugin.py"
+        code = provider.read_text().replace(
+            'return LLMResponse(None, [ToolCall("provider-call", "write_evidence", {})])',
+            f'return LLMResponse(None, [{bad_call}])\n'
+            '            if len(calls) == 2:\n'
+            '                return LLMResponse(None, [ToolCall("good-call", "tool_call", {"name": "write_evidence", "arguments": {}})])',
+        ).replace('declare_group(ctx, always_on=True)', 'declare_group(ctx, description="Write local evidence")')
+        provider.write_text(code)
+
+    async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            accept = ctx.require(CHANNEL_INPUT)
+            calls = ctx.require(ServiceKey("fixture.calls"))
+            await accept("test:room", "bad-input", ChannelInboundMessage(
+                "test", "user", "room", "do the work", datetime.now(UTC), {},
+            ))
+        async def completed(count):
+            async for _ in log.catalog().follow():
+                rows = log.reader("test:room").snapshot()
+                if any(isinstance(row.body, Control) and row.body.action == "failure" for row in rows):
+                    pytest.fail("模型协议错误终止了回复")
+                if sum(isinstance(row.body, Output) and row.body.finish == "complete" for row in rows) == count:
+                    return rows
+        rows = await asyncio.wait_for(completed(1), 5)
+        assert rows is not None
+        assert (tmp_path / "effect.txt").read_text() == "once\n"
+        assert len(calls) == 3
+        assert [type(row.body) for row in rows] == [Input, Output, Output, ToolResult, Output]
+        rejected = rows[1].body
+        assert isinstance(rejected, Output) and rejected.finish == "continue"
+        assert not any(isinstance(part, ToolCall) for part in rejected.parts)
+        assert any(isinstance(part, ContentPart) and part.kind == "model.tool_rejection" for part in rejected.parts)
+        for request in calls[1:]:
+            rejection = [row for row in request.messages if row.get("tool_call_id") == "bad-call"]
+            assert len(rejection) == 1 and "调用未执行" in str(rejection[0]["content"])
+            system = [row for row in request.messages if row["role"] == "system"]
+            assert "test_provider：Write local evidence" in str(system)
+            assert all("可搜索工具目录" not in str(row) for row in request.messages if row["role"] != "system")
+        before = rows
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            await snapshot.composition_root.context.require(CHANNEL_INPUT)(
+                "test:room", "follow-up", ChannelInboundMessage(
+                    "test", "user", "room", "continue", datetime.now(UTC), {},
+                ),
+            )
+        await asyncio.wait_for(completed(2), 5)
+        assert log.reader("test:room").snapshot()[:len(before)] == before
+        assert any(row.get("tool_call_id") == "bad-call" for row in calls[-1].messages)
         assert (tmp_path / "effect.txt").read_text() == "once\n"

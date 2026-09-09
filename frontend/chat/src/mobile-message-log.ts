@@ -60,6 +60,13 @@ export function applyMobileMessageEvent<T extends MobileMessageLog>(current: T, 
   const raw = record(value);
   if (raw.protocolVersion !== 1 || !Number.isSafeInteger(raw.projectionGeneration)
     || (raw.projectionGeneration as number) < 0) throw new Error("消息事件协议无效");
+  const event = record(raw.event);
+  // 原生失去当前观察只清除草稿，不替服务端声明插件不可用。
+  if (event.type === "reply.clear") {
+    if (typeof event.session_id !== "string" || !event.session_id) throw new Error("回复清除事件缺少会话");
+    if (raw.projectionGeneration !== current.projectionGeneration || event.session_id !== current.selectedSessionId) return null;
+    return { ...current, replyStatus: null };
+  }
   const frame = readMessageLogFrame(raw.event);
   if (!frame) throw new Error("消息事件类型无效");
   if (raw.projectionGeneration !== current.projectionGeneration || frame.session_id !== current.selectedSessionId) return null;
@@ -75,7 +82,7 @@ export function readMobileStateSnapshot(value: unknown): Record<string, unknown>
   const fields = new Set(["protocolVersion", "connection", "sessions", "selectedSessionId", "readingPosition",
     "navigationTarget", "projectionGeneration", "downloads", "composer", "modelCatalog", "runtimeInspection", "history"]);
   if (raw.protocolVersion !== 2 || Object.keys(raw).some((key) => !fields.has(key))) throw new Error("状态 patch 版本或字段无效");
-  return { ...raw, protocolVersion: 10, messages: [], throughSeq: -1, replyStatus: null };
+  return { ...raw, protocolVersion: 11, messages: [], throughSeq: -1, replyStatus: null };
 }
 
 export function readMobileDownloads(value: unknown): MobileDownload[] {

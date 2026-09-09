@@ -4,7 +4,7 @@ from contextlib import closing
 
 import pytest
 
-from plugins.compaction.records import ImportedSummaryRecord, SummaryLookup, SummaryRecord, SummaryRecords
+from plugins.compaction.records import ImportedSummaryRecord, LegacySummarySource, SummaryLookup, SummaryRecord, SummaryRecords
 from plugins.content.plugin import check_text
 from session.log import MessageConflict, MessageLog, OwnerTransaction
 from session.message import ContentPart, Input
@@ -46,8 +46,10 @@ def imported(reference, *, generation, parent, cumulative_ids, own_ids):
         version=0, reference=reference, session_id="s", generation=generation,
         parent=None if parent is None else parent.reference,
         source_message_ids=cumulative_ids, content=row["summary"],
-        legacy={"schema": "sessions.session_compactions.v1", "row": row,
-                "sha256": hashlib.sha256(raw.encode()).hexdigest()},
+        legacy=LegacySummarySource.model_validate({
+            "schema": "sessions.session_compactions.v1", "row": row,
+            "sha256": hashlib.sha256(raw.encode()).hexdigest(),
+        }),
     )
 
 

@@ -65,7 +65,7 @@ async def apply(ctx: Context, config: Config) -> None:
     """工具只准备候选；普通来源拥有验证策略和通知，发布由 Core 排空。"""
     watcher: asyncio.Task[None] | None = None
     catalog = ctx.require(TOOLS)
-    _ = await catalog.declare_group(ctx)
+    _ = await catalog.declare_group(ctx, description=desc)
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[InstallPlugin]:

@@ -13,7 +13,31 @@ skill, connector, API, or CLI when available. Respect an explicit user request t
 
 Use the `computer` tool for browser and desktop work. It runs JavaScript inside the existing Computer
 container, using its logged-in Chromium profile. `browser`, `agent`, `sky`, and `nodeRepl` are ready.
+If the tool is not visible, call `tool_search` with `{"query":"select:computer"}`.
+Omit `allowed_risk`: Computer is marked `external-side-effect` because it can operate UI,
+even when this call only reads a page. Its exact tool name is `computer`.
+
 Bindings persist within this Akashic Session; a timeout, error, reset, or workload restart invalidates them.
+After a tool error, read the error and API, then re-list tabs and acquire fresh bindings.
+Earlier actions may have taken effect: inspect the current page before retrying an action.
+Correct an invalid method and continue; do not treat a script error as task completion.
+
+Before the first browser action, read the installed API in a separate call:
+
+```js
+nodeRepl.write(await browser.documentation());
+```
+
+Use only methods shown by that API. Create a tab with `await browser.tabs.new()`;
+`browser.tabs.create()` does not exist. For example:
+
+```js
+var tab = await browser.tabs.new();
+await tab.goto("about:blank");
+await tab.ax.write();
+```
+
+To inspect an existing tab:
 
 ```js
 var tabs = await browser.tabs.list();
@@ -22,7 +46,7 @@ var tab = await browser.tabs.get(tabs[0].id);
 await tab.ax.write();
 ```
 
-Read the API when needed: `nodeRepl.write(await browser.documentation())`. Read additional documents
+Read additional documents
 with `agent.documentation.get(name)` using names listed in that guidance. The bundled API is the reference Browser API; optional capabilities must be
 listed before use. macOS application AX and optional desktop audio are unavailable here.
 

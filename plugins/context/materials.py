@@ -46,7 +46,6 @@ class MaterialView:
     async def prepare(
         self, snapshot: tuple[Message, ...], source: str, *,
         caller: Context | None = None, reminders: tuple[Reminder, ...] = (),
-        reminder_contributors: tuple[tuple[Context, Reminder], ...] = (),
     ) -> Materials:
         """按固定贡献者收集；同优先级按实际插件 ID 和块名称的 UTF-8 字节排序。"""
         self._check_active()
@@ -64,10 +63,6 @@ class MaterialView:
             if caller is None or caller.root_instance_token is not self._ctx.root_instance_token:
                 raise ValueError("调用程序的提醒需要同一 Root 的实际 Context owner")
             collect(caller.runtime.plugin_id, reminders)
-        for contributor, reminder in reminder_contributors:
-            if contributor.root_instance_token is not self._ctx.root_instance_token:
-                raise ValueError("提醒贡献者必须属于同一 Root")
-            collect(contributor.runtime.plugin_id, (reminder,))
         summary: Summary | None = None
         references: dict[str, Reference] = {}
         for name, owner in self._sources:

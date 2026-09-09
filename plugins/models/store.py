@@ -157,6 +157,26 @@ class ModelCallReader:
 
             yield read
 
+    def replay(self, call_ids: tuple[str, ...]) -> Mapping[str, Mapping[str, Any]]:
+        """一次读取历史重放所需的结算和 binding；每次调用都看当前账本。"""
+        if not call_ids:
+            return {}
+        with self._connect() as connection:
+            require_model_calls_schema(connection)
+            rows = connection.execute(
+                "SELECT id,state,json_extract(binding_json,'$.binding_id') AS binding_id "
+                "FROM model_calls WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(call_ids),),
+            ).fetchall()
+        records: dict[str, Mapping[str, Any]] = {
+            row["id"]: {"state": row["state"], "binding": {"binding_id": row["binding_id"]}}
+            for row in rows
+        }
+        for identity in call_ids:
+            if identity not in records:
+                raise KeyError(identity)
+        return records
+
 
 class ModelsStore:
     """Own the ordinary models plugin's durable registry and write protocol."""
@@ -307,7 +327,9 @@ class ModelsStore:
             ),
         }
         digest = hashlib.sha256(
-            _strict_json(payload, "model request").encode()
+            # ModelRequest 已在构造边界深冻结；编码不再逐层重复校验。
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                       sort_keys=True, allow_nan=False, default=dict).encode()
         ).hexdigest()
         binding = _strict_json(asdict(descriptor), "model binding")
         call_id = uuid.uuid4().hex

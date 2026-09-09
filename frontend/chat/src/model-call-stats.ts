@@ -71,7 +71,7 @@ export function formatModelCallStats(stats: ModelCallStats, active: boolean): st
 }
 
 export const loadWebModelCallStats: LoadModelCallStats = async (callId, signal) => {
-  const response = await fetch(`/api/chat/model-settings/calls/${encodeURIComponent(callId)}`, { signal });
+  const response = await fetch(`/api/settings/model/calls/${encodeURIComponent(callId)}`, { signal });
   if (!response.ok) throw new Error("统计暂不可用");
   return readModelCallStats(await response.json(), callId);
 };

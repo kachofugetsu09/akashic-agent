@@ -193,7 +193,7 @@ interface MobilePendingMessage {
 }
 
 export interface MobileSnapshot extends MobileMessageLog {
-  protocolVersion: 10;
+  protocolVersion: 11;
   history?: { hasOlder: boolean; isLatest: boolean; loading: boolean };
   downloads: MobileDownload[];
   connection: {
@@ -540,7 +540,7 @@ function parseModelCatalog(value: unknown): MobileModelCatalog {
 function parseMobileSnapshot(value: unknown): MobileSnapshot {
   // 1. 校验协议版本与根对象
   const raw = requireRecord(value, "snapshot");
-  if (raw.protocolVersion !== 10) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
+  if (raw.protocolVersion !== 11) throw new Error(`不支持的移动端协议版本: ${String(raw.protocolVersion)}`);
   const connection = requireRecord(raw.connection, "connection");
   const status = requireString(connection.status, "connection.status");
   if (!["connecting", "ready", "degraded", "reconnecting", "disconnected"].includes(status)) {
@@ -587,7 +587,7 @@ function parseMobileSnapshot(value: unknown): MobileSnapshot {
       };
     })();
   return {
-    protocolVersion: 10,
+    protocolVersion: 11,
     connection: {
       label: requireString(connection.label, "connection.label"),
       status: status as ConnectionStatus,
@@ -1905,6 +1905,8 @@ const MobileMessageRow = React.memo(function MobileMessageRow({
           onNavigate={(id, index) => onNavigateToReply(source.id, id, index)} renderAttachment={renderAttachment}
           beforeReasoning={(origin) => !selectedSessionUnavailable && origin.body.kind === "output" ? <MobilePluginSlot
             name="turn.before_reasoning" sessionId={origin.session_id} messageId={origin.id} /> : null}
+          prefetchReasoning={(origin) => !selectedSessionUnavailable && origin.body.kind === "output" ? <MobilePluginSlot
+            name="turn.before_reasoning" sessionId={origin.session_id} messageId={origin.id} prefetch /> : null}
           beforePart={(part, index, origin) => !selectedSessionUnavailable && part.kind === "tool_call" && !("display" in part)
             ? <MobilePluginSlot name="turn.before_tool" sessionId={origin.session_id} messageId={origin.id}
               block={{ ...part, message_id: origin.id, part_index: index }} /> : null}
@@ -3544,6 +3546,17 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     const sourceMessagesRef = useRef(visibleMessages);
     sourceMessagesRef.current = visibleMessages;
     const activities = snapshot.replyStatus?.items ?? [];
+    const hasHistoryControls = Boolean(snapshot.history && (snapshot.history.hasOlder || !snapshot.history.isLatest));
+    const [historyControlsHeight, setHistoryControlsHeight] = useState(0);
+    const measureHistoryControls = useCallback((node: HTMLDivElement | null) => {
+      if (!node) return;
+      // 字号或窄屏换行改变按钮高度时，同步虚拟列表的顶部留白。
+      const measure = () => setHistoryControlsHeight(node.getBoundingClientRect().height);
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(node);
+      return () => observer.disconnect();
+    }, []);
     const activitiesRef = useRef(activities);
     activitiesRef.current = activities;
     const committed = useMemo(() => new Set(snapshot.messages.map((message) => message.id)), [snapshot.messages]);
@@ -3581,6 +3594,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
       getScrollElement,
       estimateSize,
       getItemKey,
+      paddingStart: hasHistoryControls ? historyControlsHeight : 0,
       anchorTo: "end",
       followOnAppend: suspended ? false : "auto",
       scrollEndThreshold: 48,
@@ -3717,13 +3731,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
     };
     const virtualItems = virtualizer.getVirtualItems();
     return (
-      <div className={`mobile-conversation-frame${snapshot.history ? " has-history" : ""}`}>
-        {snapshot.history && (snapshot.history.hasOlder || !snapshot.history.isLatest) ? <div className="mobile-history-controls">
-          {snapshot.history.hasOlder ? <button type="button" disabled={snapshot.history.loading} onClick={loadOlder}>
-            {snapshot.history.loading ? "正在加载历史…" : "加载更早的消息"}
-          </button> : <span>已到最早的消息</span>}
-          {!snapshot.history.isLatest ? <button type="button" onClick={() => window.AkashicNative?.loadLatestHistory()}>回到最新</button> : null}
-        </div> : null}
+      <div className="mobile-conversation-frame">
         <div ref={scrollRef} className="mobile-conversation mobile-virtual-conversation" role="log"
           onWheel={(event) => { if (event.deltaY < 0 && event.currentTarget.scrollTop < 80) loadOlder(); }}
           onTouchStart={(event) => { touchStartY.current = event.touches[0]?.clientY ?? null; }}
@@ -3733,7 +3741,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
               loadOlder();
             }
           }}>
-          {rowCount === 0 ? (
+          {rowCount === 0 && !hasHistoryControls ? (
             <div className="mobile-empty">
               <h1>开始一段新对话</h1>
               <p>消息会通过电脑上的 Akashic 实时处理。</p>
@@ -3743,6 +3751,12 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
               className="mobile-virtual-conversation__content"
               style={{ height: virtualizer.getTotalSize() }}
             >
+              {hasHistoryControls && snapshot.history ? <div className="mobile-history-controls" ref={measureHistoryControls}>
+                {snapshot.history.hasOlder ? <button type="button" disabled={snapshot.history.loading} onClick={loadOlder}>
+                  {snapshot.history.loading ? "正在加载历史…" : "加载更早的消息"}
+                </button> : <span>已到最早的消息</span>}
+                {!snapshot.history.isLatest ? <button type="button" onClick={() => window.AkashicNative?.loadLatestHistory()}>回到最新</button> : null}
+              </div> : null}
               {virtualItems.map((virtualItem) => {
                 const index = virtualItem.index;
                 const source = visibleMessages[index];

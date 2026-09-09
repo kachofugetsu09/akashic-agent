@@ -18,13 +18,13 @@ from plugins.context.api import ContextModel, Materials, Reminder, Summary, chec
 from plugins.context.plugin import ContextBuilder
 from plugins.conversation.source import Conversation, needs_reply
 from plugins.models.content import render_content
-from plugins.models.projection import MessageProjection, check_facts
+from plugins.models.projection import MessageProjection, check_facts, check_tool_rejection
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
-from plugins.react.plugin import react, UnknownToolEffect, StepLimit
+from plugins.react.plugin import react, StepLimit
 from plugins.tools.execution import ToolExecution, MessageReply, Result
 from plugins.tools.abandon import follow_abandon, reject_start
-from plugins.tools.menu import ToolMenu
+from plugins.tools.menu import NativePresentation, ToolMenu
 from session.log import MessageConflict, MessageLog
 from session.message import (
     CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall,
@@ -59,7 +59,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
     def writer(body, call_ref=None):
         return log.writer(
             "s", author="test", source="conversation", body_types=(body,),
-            content={"text": check_text, "model.facts": check_facts, "context.summary": check_summary} if body is Output else {"text": check_text},
+            content={"text": check_text, "model.facts": check_facts, "model.tool_rejection": check_tool_rejection, "context.summary": check_summary} if body is Output else {"text": check_text},
             call_ref=call_ref, check_call=lambda call: None,
         )
     class Target:
@@ -93,8 +93,8 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             if call.name == "tool_call":
                 assert call.arguments["name"] == "example"
                 return "tool", call.arguments["arguments"]
-            assert call.name == "example"
-            return "tool", call.arguments
+            _, arguments = NativePresentation({"example": {}}).decode(call)
+            return "tool", arguments
 
         def name(self, binding: str) -> str:
             assert binding == "tool"
@@ -293,25 +293,46 @@ async def test_stale_model_output_has_no_tool_effect_and_inputs_stay_open(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_unknown_tool_result_pauses_and_never_reexecutes_after_new_input(tmp_path):
+@pytest.mark.parametrize("restart", [False, True])
+async def test_unknown_result_reaches_model_without_replaying_effect_even_after_restart(tmp_path, restart):
     effects = []
     requests = []
     async def complete(request):
         requests.append(request)
-        return LLMResponse(None, [ModelToolCall("call", "example", {})])
+        if len(requests) == 1:
+            return LLMResponse(None, [ModelToolCall("original", "example", {"action": "write"})])
+        tool_rows = [row for row in request.messages if row["role"] == "tool"]
+        assert tool_rows[0]["tool_call_id"] == "original"
+        assert any("unknown" in part["text"] and "先检查" in part["text"]
+                   for part in tool_rows[0]["content"])
+        if len(requests) == 2:
+            return LLMResponse(None, [ModelToolCall("inspect", "example", {"action": "inspect"})])
+        return LLMResponse("已检查现场，继续完成任务")
     async def invoke(key, arguments):
-        effects.append(key)
-        return Result("unknown", ())
+        effects.append((key, arguments["action"]))
+        if arguments["action"] == "write":
+            if restart:
+                raise ConnectionError("effect happened but receipt was lost")
+            return Result("unknown", (ContentPart("text", "没有取得回执"),))
+        return Result("success", (ContentPart("text", "已确认当前状态"),))
     async with runtime(tmp_path, complete, invoke) as (conversation, log, store, run):
         await conversation.accept("u1", Input(()))
-        with pytest.raises(UnknownToolEffect):
-            await (await conversation.start(run)).join()
-        assert await conversation.start(run) is None
-        await conversation.accept("u2", Input(()))
-        with pytest.raises(UnknownToolEffect):
-            await (await conversation.start(run)).join()
-        assert len(effects) == len(requests) == 1
-        assert isinstance(log.reader("s").snapshot()[-1].body, Control)
+        task = await conversation.start(run)
+        if restart:
+            with pytest.raises(ConnectionError, match="receipt was lost"):
+                await task.join()
+            before = log.reader("s").snapshot()
+            assert len(effects) == len(requests) == 1
+        else:
+            assert (await task.join()).body.finish == "complete"
+    if restart:
+        async with runtime(tmp_path, complete, invoke) as (conversation, log, store, run):
+            await conversation.accept("u2", Input((ContentPart("text", "重新检查后继续"),)))
+            assert (await (await conversation.start(run)).join()).body.finish == "complete"
+            assert log.reader("s").snapshot()[:len(before)] == before
+    assert [action for _, action in effects] == ["write", "inspect"]
+    assert effects[0][0] != effects[1][0]
+    assert len(requests) == 3
 
 
 @pytest.mark.asyncio
@@ -532,7 +553,7 @@ async def test_terminal_tool_closes_only_after_real_success_and_before_step_limi
             await (await conversation.start(run)).join()
             assert calls == 2 and effects == [1, 2, 1, 2]
         else:
-            with pytest.raises(UnknownToolEffect if outcome == "unknown" else StepLimit):
+            with pytest.raises(StepLimit):
                 await task.join()
             assert not any(isinstance(m.body, Output) and m.body.finish == "quiet" for m in log.reader("s").snapshot())
             assert calls == 1
@@ -618,3 +639,58 @@ async def test_indirect_wire_call_and_request_reminder_replay_exactly(tmp_path):
         position = replay.index(assistant)
         assert replay[position - 1]["role"] == "user"
         assert "example directory" in replay[position - 1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_protocol_rejection_step_limit_survives_restart(tmp_path):
+    """拒绝反馈与 Output 一起提交；重启不能绕开纠错步数上限。"""
+    requests = []
+    async def complete(request):
+        requests.append(request)
+        return LLMResponse(None, [ModelToolCall("invalid", "unavailable", {})])
+    async def invoke(key, arguments):
+        pytest.fail("协议拒绝不应执行任何工具")
+    async with runtime(tmp_path, complete, invoke, max_steps=1) as (conversation, log, _, run):
+        await conversation.accept("u1", Input(()))
+        with pytest.raises(StepLimit):
+            await (await conversation.start(run)).join()
+        before = log.reader("s").snapshot()
+        assert [type(row.body) for row in before] == [Input, Output, Control]
+    async with runtime(tmp_path, complete, invoke, max_steps=1) as (conversation, log, _, run):
+        await conversation.accept("u2", Input((ContentPart("text", "continue"),)))
+        with pytest.raises(StepLimit):
+            await (await conversation.start(run)).join()
+        assert log.reader("s").snapshot()[:len(before)] == before
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_mixed_valid_and_rejected_calls_replay_after_restart(tmp_path):
+    """重启后保留混合响应的原协议顺序，已结算工具不重复执行。"""
+    requests = []
+    effects = []
+    async def complete(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return LLMResponse(None, [
+                ModelToolCall("invalid", "unavailable", {}),
+                ModelToolCall("valid", "example", {}),
+            ])
+        tool_rows = [row for row in request.messages if row["role"] == "tool"]
+        assert [row["tool_call_id"] for row in tool_rows] == ["invalid", "valid"]
+        assert "调用未执行" in str(tool_rows[0]["content"])
+        assert "written" in str(tool_rows[1]["content"])
+        return LLMResponse("finished")
+    async def invoke(key, arguments):
+        effects.append(key)
+        return Result("success", (ContentPart("text", "written"),))
+    async with runtime(tmp_path, complete, invoke, max_steps=1) as (conversation, log, _, run):
+        await conversation.accept("u1", Input(()))
+        with pytest.raises(StepLimit):
+            await (await conversation.start(run)).join()
+        before = log.reader("s").snapshot()
+    async with runtime(tmp_path, complete, invoke) as (conversation, log, _, run):
+        await conversation.accept("u2", Input((ContentPart("text", "continue"),)))
+        assert (await (await conversation.start(run)).join()).body.finish == "complete"
+        assert log.reader("s").snapshot()[:len(before)] == before
+    assert len(effects) == 1 and len(requests) == 2
