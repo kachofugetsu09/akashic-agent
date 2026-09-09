@@ -71,6 +71,14 @@ TLS 只是最稳定的触发器。任何由旧进程延迟读取的解释器文�
 - `PluginManager._on_snapshot_drained()` 只在 snapshot 没有 lease 后处理旧 generation；`PluginScope.aclose()` 逆序执行 cleanup。
 - `McpGenerationHost.prepare()` 把每个 `McpClient.disconnect()` 登记到 generation scope；scope 排空会关闭旧 MCP catalog 和进程。
 
+### 候选数据复制与外部数据库锁
+
+候选准备和显式验证会复制声明的 plugin-data、workspace 文件与目录。文件和 SQLite 复制在线程中完成；Context、RuntimeSnapshotLease、归档模块导入及挂载仍留在所属异步任务。收到取消后先等待复制线程退出，再按原 scope 清理临时副本，不能让线程继续写已被释放的目录。
+
+SQLite 使用只读源连接和 backup API 保存已提交状态；外部进程持续持锁时，在五秒锁等待期限后报告源路径并拒绝候选。失败不会改写原库或提升 stable，也不会通过跳过数据库制造完整副本。业务验证宿主尚未建成时的失败同样清理本次临时目录。
+
+真实独占锁回归及受控线程回归见 `tests/test_plugin_candidate_data.py`：覆盖锁超时、正式数据不变、事件循环继续运行、安装与显式验证取消后才清理副本。
+
 ### 3.3 事故专项证据
 
 `tests/test_plugin_runtime_control.py::test_installed_mcp_update_keeps_old_artifact_until_lease_drains` 已把原来分散的机制接成一个边界回归：
