@@ -380,11 +380,11 @@ async def test_dynamic_protocol_freezes_prompt_and_decoder_until_next_bind(tmp_p
                 assert first.prompts == ("first",)
                 current[0] = "second"
                 assert first.prompts == ("first",)
-                assert (await first.decode("reply"))[1]["dynamic"]["selected"] == "first"
+                assert cast(Mapping[str, object], (await first.decode("reply"))[1]["dynamic"])["selected"] == "first"
                 async with content.bind() as second:
                     assert second.prompts == ("second",)
-                    assert (await second.decode("reply"))[1]["dynamic"]["selected"] == "second"
-                assert (await first.decode("reply"))[1]["dynamic"]["selected"] == "first"
+                    assert cast(Mapping[str, object], (await second.decode("reply"))[1]["dynamic"])["selected"] == "second"
+                assert cast(Mapping[str, object], (await first.decode("reply"))[1]["dynamic"])["selected"] == "first"
             assert prepared == ["first", "first", "second"]
         finally:
             reset_runtime_snapshot(token)

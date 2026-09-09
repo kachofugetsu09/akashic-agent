@@ -4,7 +4,7 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -27,6 +27,9 @@ from agent.migrations.context import bind_migration_context
 
 class _DriverContract:
     max_tool_schemas = None
+
+    async def complete(self, request: ModelRequest) -> LLMResponse:
+        raise AssertionError("此 fixture 不应调用模型")
 
     def estimate_context_tokens(
         self, messages: Sequence[Mapping[str, object]],
@@ -89,7 +92,7 @@ def test_diagnostic_pages_keep_uncommitted_calls_and_later_settlement(store, des
     assert next(row for row in records if row["id"] == first)["state"] == "unknown"
     assert len(records) == 2
     with pytest.raises(TypeError):
-        records[0]["state"] = "success"
+        cast(dict[str, Any], records[0])["state"] = "success"
 
 
 @pytest.mark.asyncio
@@ -109,7 +112,7 @@ async def test_started_is_durable_before_io_and_usage_survives_without_message(
             assert store.read_call(call_id)["state"] == "started"
             assert store.read_call(call_id)["usage"] is None
             with pytest.raises(TypeError):
-                request.messages[0]["content"] = "changed"
+                cast(dict[str, Any], request.messages[0])["content"] = "changed"
             return LLMResponse("uncommitted output", usage=usage)
 
     messages = [{"role": "user", "content": "input"}]
@@ -859,7 +862,7 @@ def test_repeated_projection_keeps_dynamic_content_and_live_call_validation(stor
     facts = response_facts(LLMResponse("reply", call_record_id=call), ())
     message = Message("answer", "s", 0, datetime.now(UTC), "assistant", "chat",
                       Output((ContentPart("text", "body"), facts), "complete"))
-    block = {"type": "text", "text": "first"}
+    block: dict[str, object] = {"type": "text", "text": "first"}
     projection = MessageProjection(_BoundChat(descriptor, _DriverContract(), store), source="chat",
         render_content=lambda part: (block,), tool_name=lambda binding: "unused", read_call=store.read_call)
     first = projection.render((message,), after_seq=-1)

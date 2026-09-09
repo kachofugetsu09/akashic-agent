@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from contextlib import asynccontextmanager
 
 import pytest
 from aiohttp import web
@@ -335,6 +336,13 @@ async def test_opencode_discovery_closes_temporary_client(status, monkeypatch):
 
         async def read(self):
             return {"api_key": "fixture"}
+
+        async def refresh(self, payload):
+            raise AssertionError("目录发现不刷新凭据")
+
+        @asynccontextmanager
+        async def exclusive(self):
+            yield
 
     descriptor = DriverConnectionDescriptor(
         "local", "local", "opencode-go", "http://local.test/v1", "fixture", {"max_retries": 0},

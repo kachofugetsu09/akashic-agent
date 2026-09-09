@@ -158,7 +158,6 @@ def request(ctx, owner, now, *, proposals=(), alert_ref=None):
 
 def test_recent_context_keeps_legacy_dialogue_without_provenance(tmp_path):
     import json
-    from types import SimpleNamespace
 
     from plugins.content.plugin import check_text
     from plugins.wake.messages import recent_context
@@ -178,7 +177,8 @@ def test_recent_context_keeps_legacy_dialogue_without_provenance(tmp_path):
     other.append("other", Input((ContentPart("text", "其他来源正文"),)))
     before = log.reader("s").snapshot()
     now = datetime.now(timezone.utc)
-    history = SimpleNamespace(recent=lambda **kwargs: ())
+    from plugins.delivery.history import DeliveryHistory
+    history = DeliveryHistory(lambda: log.owner("plugin:delivery"), log.catalog())
 
     result = json.loads(recent_context(MessageCatalog(log), history, target="s", now=now))
 
