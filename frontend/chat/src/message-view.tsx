@@ -105,13 +105,14 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
   const process = timelineProcessBlocks(processMessages, toolResults);
   const latest = processMessages.at(-1);
   const text = draft?.text || (latest ? timelineText(latest) : "");
-  const beforeReasoning = (message: TimelineMessage) => <MobilePluginSlot name="turn.before_reasoning"
-    sessionId={message.session_id} messageId={message.id} />;
+  const beforeReasoning = (message: TimelineMessage, prefetch = false) => <MobilePluginSlot name="turn.before_reasoning"
+    sessionId={message.session_id} messageId={message.id} prefetch={prefetch} />;
   return <div className="message-row agent-row reply-activity" data-reply-handle={activity.handle}
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
     <div className="agent-content">
       <TimelineProcess process={process} draftThinking={draft?.thinking} streaming={activity.active}
         beforeReasoning={beforeReasoning}
+        prefetchReasoning={(message) => beforeReasoning(message, true)}
         draftSlot={draft ? <MobilePluginSlot name="turn.before_reasoning" sessionId={activity.session_id}
           messageId={draft.message_id} block={{ source: activity.source }} /> : undefined}
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
@@ -229,18 +230,21 @@ function timelineProcessBlocks(messages: TimelineMessage[], toolResults: Readonl
 }
 
 /** 历史与实时回复共用一条轨迹，节点继续引用原消息和 part。 */
-function TimelineProcess({ process, streaming = false, draftThinking = "", draftSlot, beforeReasoning, beforePart }: {
+function TimelineProcess({ process, streaming = false, draftThinking = "", draftSlot, beforeReasoning, prefetchReasoning, beforePart }: {
   process: TimelineProcessBlock[];
   streaming?: boolean;
   draftThinking?: string;
   draftSlot?: ReactNode;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
+  prefetchReasoning?: (message: TimelineMessage) => ReactNode;
   beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
 }) {
   const blocks: AgentBlock[] = process.map((item) => item.block);
   if (draftThinking) blocks.push({ kind: "thinking", content: draftThinking });
   if (!blocks.length && !draftSlot) return null;
-  return <ProcessTrace blocks={blocks} streaming={streaming} interrupted={false}
+  return <>
+    {!streaming && process.length ? prefetchReasoning?.(process[0].origin) : null}
+    <ProcessTrace blocks={blocks} streaming={streaming} interrupted={false}
     startContent={process.length ? beforeReasoning?.(process[0].origin) : draftSlot}
     beforeBlock={(_block, index) => {
       const item = process[index];
@@ -249,17 +253,19 @@ function TimelineProcess({ process, streaming = false, draftThinking = "", draft
         {index > 0 && process[index - 1].origin.id !== item.origin.id ? beforeReasoning?.(item.origin) : null}
         {beforePart?.(item.part, item.index, item.origin)}
       </div>;
-    }} />;
+    }} />
+  </>;
 }
 
 /** 保留消息引用与 part 位置，复用原聊天的过程和正文组件。 */
-export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, canLoadReferences = false }: {
+export function TimelineMessageView({ message, lookupMessage, toolResults, onNavigate, onError, beforeReasoning, prefetchReasoning, beforePart, afterBody, renderAttachment, hideBody = false, processMessages = [message], hideProcess = false, canLoadReferences = false }: {
   message: TimelineMessage;
   hideBody?: boolean;
   canLoadReferences?: boolean;
   toolResults: ReadonlyMap<string, TimelineMessage>;
   renderAttachment?: (attachment: TimelineAttachment) => ReactNode;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
+  prefetchReasoning?: (message: TimelineMessage) => ReactNode;
   processMessages?: TimelineMessage[];
   hideProcess?: boolean;
   beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
@@ -284,7 +290,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
     <div className={body.kind === "input" ? "user-bubble" : "agent-content"}>
       {process.length === 0 ? leadingContent : null}
       {body.kind === "output" && process.length ? <TimelineProcess process={process}
-        beforeReasoning={beforeReasoning} beforePart={beforePart} /> : null}
+        beforeReasoning={beforeReasoning} prefetchReasoning={prefetchReasoning} beforePart={beforePart} /> : null}
       {body.kind === "control" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from time import monotonic
 from dataclasses import dataclass
 
 from agent.plugins.mobile_ui import MobileUiProvider, MobileUiQueryOverloaded
+
+logger = logging.getLogger(__name__)
 
 _MAX_DEVICE_QUERIES = 4
 _MAX_BACKGROUND_DEVICE_QUERIES = 2
@@ -53,6 +57,9 @@ class PluginUiQueryScheduler:
     ) -> dict[str, object]:
         """登记、调度并清理一次查询。"""
 
+        queued_at = monotonic()
+        _trace_query("received", query, queued_at)
+
         # 1. 在设备边界限制全部运行中和排队中的请求
         task = asyncio.current_task()
         if task is None:
@@ -83,15 +90,20 @@ class PluginUiQueryScheduler:
             )
 
         # 2. dashboard 和 drawer 不占后台 gate，始终保留两个交互槽
+        completed = False
         try:
             async with plugin_gate:
                 if query.slot in {"dashboard.main", "drawer.panel"}:
                     async with device_gates.total:
-                        return await self._run(query)
-                async with device_gates.background:
-                    async with device_gates.total:
-                        return await self._run(query)
+                        result = await self._run(query, queued_at)
+                else:
+                    async with device_gates.background:
+                        async with device_gates.total:
+                            result = await self._run(query, queued_at)
+            completed = True
+            return result
         finally:
+            _trace_query("completed" if completed else "interrupted", query, queued_at)
             async with self._lock:
                 _ = self._queries.pop(key, None)
 
@@ -129,7 +141,9 @@ class PluginUiQueryScheduler:
                 if key[0] == device_id:
                     del self._plugins[key]
 
-    async def _run(self, query: PluginUiQuery) -> dict[str, object]:
+    async def _run(self, query: PluginUiQuery, queued_at: float) -> dict[str, object]:
+        """记录真实开始执行的时间，再调用已验证的插件查询。"""
+        _trace_query("started", query, queued_at)
         return await self._provider.query(
             query.plugin_id,
             query.plugin_revision,
@@ -138,3 +152,13 @@ class PluginUiQueryScheduler:
             session_id=query.session_id,
             turn_id=query.turn_id,
         )
+
+
+def _trace_query(phase: str, query: PluginUiQuery, queued_at: float) -> None:
+    """用 wire owner 关联网页与服务端的等待，不记录查询正文或授权。"""
+    event = f"mobile.plugin_query.{phase}"
+    logger.info(event, extra={
+        "event": event, "request_id": query.request_id, "owner_id": query.owner_id,
+        "plugin_id": query.plugin_id, "method": query.method,
+        "elapsed_ms": round((monotonic() - queued_at) * 1000, 3),
+    })

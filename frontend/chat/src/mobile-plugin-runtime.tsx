@@ -19,6 +19,7 @@ export interface MobilePluginContext {
   block?: unknown;
   capabilities: {
     queryTransports: readonly ("inline" | "https")[];
+    queryCacheModes?: readonly ("none" | "memory" | "immutable")[];
   };
   query(
     method: string,
@@ -28,11 +29,12 @@ export interface MobilePluginContext {
 }
 
 export interface MobilePluginQueryOptions {
-  cache?: "none" | "immutable";
+  cache?: "none" | "memory" | "immutable";
   transport?: "inline" | "https";
 }
 
 export interface MobilePluginRenderer {
+  prefetch?(context: MobilePluginContext): Promise<void>;
   mount(host: HTMLElement, context: MobilePluginContext): void | (() => void);
 }
 
@@ -79,11 +81,16 @@ const definitions = new Map<string, {
 const styleNodes = new Map<string, HTMLLinkElement>();
 const listeners = new Set<() => void>();
 interface PendingQuery {
+  pluginId: string;
+  method: string;
+  queuedAt: number;
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
   ownerId: string;
   timeout?: number;
   cacheKey?: string;
+  sharedKey?: string;
+  interactive: boolean;
   slot: MobilePluginSlotName;
   started: boolean;
   abort?: AbortController;
@@ -91,9 +98,14 @@ interface PendingQuery {
 }
 
 const pendingQueries = new MobilePluginQueryQueue<PendingQuery>(
-  (request) => isInteractiveSlot(request.slot),
+  (request) => request.interactive,
 );
 const immutableResults = new MobilePluginResultCache();
+const sharedQueries = new Map<string, {
+  requestId: string;
+  promise: Promise<Record<string, unknown>>;
+  owners: Set<string>;
+}>();
 let catalog: MobilePluginCatalog = {
   catalogRevision: "",
   updating: true,
@@ -313,7 +325,10 @@ function parseDefinition(value: unknown, plugin: MobilePluginCatalogItem): Mobil
 }
 
 function isRenderer(value: unknown): value is MobilePluginRenderer {
-  return !!value && typeof value === "object" && typeof (value as { mount?: unknown }).mount === "function";
+  if (!value || typeof value !== "object") return false;
+  const renderer = value as { mount?: unknown; prefetch?: unknown };
+  return typeof renderer.mount === "function"
+    && (renderer.prefetch === undefined || typeof renderer.prefetch === "function");
 }
 
 export function useMobilePluginDashboards(): MobilePluginDashboardEntry[] {
@@ -352,6 +367,7 @@ export function MobilePluginDashboard({ pluginId }: { pluginId: string }) {
 export function receiveMobilePluginResult(response: MobilePluginResult) {
   const request = pendingQueries.get(response.requestId);
   if (!request) return;
+  tracePluginQuery(response.requestId, request, response.error ? "failed" : "received");
   completePending(response.requestId, request);
   if (response.error) {
     request.reject(new Error(response.error));
@@ -379,8 +395,10 @@ export function MobilePluginSlot({
   messageId,
   turnId,
   block,
+  prefetch = false,
 }: {
   name: Exclude<MobilePluginSlotName, "dashboard.main">;
+  prefetch?: boolean;
   sessionId?: string;
   messageId?: string;
   turnId?: string;
@@ -395,16 +413,17 @@ export function MobilePluginSlot({
     const renderer = loaded?.revision === plugin.revision
       ? loaded.definition.slots[name]
       : undefined;
-    return renderer ? [{ plugin, renderer }] : [];
+    return renderer && (!prefetch || renderer.prefetch) ? [{ plugin, renderer }] : [];
   });
   return renderers.length ? (
-    <div className="mobile-plugin-slot" data-slot={name} data-version={version}>
+    <div className={prefetch ? "mobile-plugin-prefetch" : "mobile-plugin-slot"} data-slot={name} data-version={version}>
       {renderers.map(({ plugin, renderer }) => (
         <ViewportMountedPlugin
           key={`${plugin.id}:${plugin.revision}:${name}`}
           pluginId={plugin.id}
           pluginRevision={plugin.revision}
           renderer={renderer}
+          prefetch={prefetch}
           context={{ slot: name, sessionId, messageId, turnId, block }}
         />
       ))}
@@ -433,10 +452,12 @@ function MountedPlugin({
   pluginRevision,
   renderer,
   context,
+  prefetch = false,
 }: {
   pluginId: string;
   pluginRevision: string;
   renderer: MobilePluginRenderer;
+  prefetch?: boolean;
   context: Omit<MobilePluginContext, "query" | "capabilities">;
 }) {
   const hostRef = React.useRef<HTMLDivElement>(null);
@@ -453,106 +474,26 @@ function MountedPlugin({
     const ownerId = ownerIdRef.current;
     let cleanup: void | (() => void);
     try {
-      cleanup = renderer.mount(host, {
-        slot,
-        sessionId,
-        messageId,
-        turnId,
-        block: stableBlock,
-        capabilities: {
-          queryTransports: ["inline", "https"],
-        },
-        query(method, payload = {}, options = {}) {
-          const requestId = createRequestId();
-          return new Promise((resolve, reject) => {
-            if (method.length < 1 || method.length > 256) {
-              reject(new Error("插件方法名无效"));
-              return;
-            }
-            let encoded: string;
-            try {
-              encoded = JSON.stringify(payload);
-            } catch (error) {
-              reject(error instanceof Error ? error : new Error("插件参数无法序列化"));
-              return;
-            }
-            if (new TextEncoder().encode(encoded).byteLength > 64 * 1024) {
-              reject(new Error("插件参数超过 64 KiB"));
-              return;
-            }
-            const cacheKey = options.cache === "immutable"
-              ? pluginQueryCacheKey(pluginId, pluginRevision, method, encoded, sessionId, turnId)
-              : undefined;
-            const cachedJson = cacheKey === undefined ? undefined : immutableResults.get(cacheKey);
-            if (cachedJson !== undefined) {
-              resolve(JSON.parse(cachedJson) as Record<string, unknown>);
-              return;
-            }
-            const abort = window.AkashicNative ? undefined : new AbortController();
-            const request: PendingQuery = {
-              resolve,
-              reject,
-              ownerId,
-              cacheKey,
-              slot,
-              started: false,
-              abort,
-              send: () => {
-                // 排队不消耗传输期限，实际发出后才开始计时。
-                request.timeout = window.setTimeout(() => {
-                  window.AkashicNative?.cancelPluginUiOwner(ownerId);
-                  rejectOwnerPending(ownerId, "插件请求超时");
-                }, 30_000);
-                if (window.AkashicNative) {
-                  window.AkashicNative.queryPluginUi(
-                    requestId,
-                    ownerId,
-                    slot,
-                    sessionId ?? null,
-                    turnId ?? null,
-                    pluginId,
-                    method,
-                    encoded,
-                    options.cache ?? "none",
-                    options.transport ?? "inline",
-                  );
-                  return;
-                }
-                void queryWebPluginUi({
-                  pluginId,
-                  pluginRevision,
-                  method,
-                  payload,
-                  slot,
-                  sessionId,
-                  turnId,
-                  signal: abort!.signal,
-                }).then(
-                  (result) => receiveMobilePluginResult({ requestId, resultJson: JSON.stringify(result) }),
-                  (error: unknown) => receiveMobilePluginResult({
-                    requestId,
-                    error: error instanceof Error ? error.message : "插件查询失败",
-                  }),
-                );
-              },
-            };
-            try {
-              pendingQueries.enqueue(requestId, request);
-            } catch (error) {
-              reject(error instanceof Error ? error : new Error("插件请求无法入队"));
-              return;
-            }
-            drainQueryQueue();
-          });
-        },
-      });
+      const queryContext: MobilePluginContext = {
+        slot, sessionId, messageId, turnId, block: stableBlock,
+        capabilities: { queryTransports: ["inline", "https"], queryCacheModes: ["none", "memory", "immutable"] },
+        query: (method, payload = {}, options = {}) => queryPlugin({
+          pluginId, pluginRevision, ownerId, slot, sessionId, turnId, method, payload, options, prefetch,
+        }),
+      };
+      if (prefetch) {
+        void renderer.prefetch!(queryContext).catch((error: unknown) => {
+          console.debug(`[plugin-ui] prefetch failed: ${pluginId}`, error);
+        });
+      } else {
+        cleanup = renderer.mount(host, queryContext);
+      }
     } catch (error) {
       host.textContent = error instanceof Error ? `插件界面错误：${error.message}` : "插件界面错误";
       host.classList.add("mobile-plugin-host--error");
     }
     return () => {
-      window.AkashicNative?.cancelPluginUiOwner(ownerId);
-      rejectOwnerPending(ownerId, "插件界面已卸载");
+      releaseQueryOwner(ownerId);
       try {
         cleanup?.();
       } catch (error) {
@@ -560,8 +501,97 @@ function MountedPlugin({
       }
       host.replaceChildren();
     };
-  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId]);
+  }, [messageId, pluginId, pluginRevision, renderer, sessionId, slot, stableBlock, turnId, prefetch]);
   return <div ref={hostRef} className="mobile-plugin-host" data-plugin={pluginId} />;
+}
+
+/** 页面缓存查询拥有独立请求，折叠只释放订阅，不打断已经发出的读取。 */
+function queryPlugin({ pluginId, pluginRevision, ownerId, slot, sessionId, turnId, method, payload, options, prefetch }: {
+  pluginId: string; pluginRevision: string; ownerId: string; slot: MobilePluginSlotName;
+  sessionId?: string; turnId?: string; method: string; payload: Record<string, unknown>;
+  options: MobilePluginQueryOptions; prefetch: boolean;
+}): Promise<Record<string, unknown>> {
+  // 1. 参数只在插件调用边界校验；缓存沿用原有插件、消息与版本身份。
+  if (method.length < 1 || method.length > 256) return Promise.reject(new Error("插件方法名无效"));
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(payload);
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error("插件参数无法序列化"));
+  }
+  if (new TextEncoder().encode(encoded).byteLength > 64 * 1024) {
+    return Promise.reject(new Error("插件参数超过 64 KiB"));
+  }
+  const cacheKey = options.cache === "immutable" || options.cache === "memory"
+    ? pluginQueryCacheKey(pluginId, pluginRevision, method, encoded, sessionId, turnId) : undefined;
+  const cachedJson = cacheKey === undefined ? undefined : immutableResults.get(cacheKey);
+  if (cachedJson !== undefined) return Promise.resolve(JSON.parse(cachedJson) as Record<string, unknown>);
+  const sharedKey = options.cache === "memory" ? cacheKey : undefined;
+  const shared = sharedKey === undefined ? undefined : sharedQueries.get(sharedKey);
+  if (shared) {
+    shared.owners.add(ownerId);
+    const request = pendingQueries.get(shared.requestId)!;
+    if (!prefetch && !request.started) request.interactive = true;
+    drainQueryQueue();
+    return shared.promise;
+  }
+
+  // 2. 同一内存缓存键共享一个有界请求；原生仍使用已有 none 模式，不缓存 pending。
+  const requestId = createRequestId();
+  const requestOwnerId = sharedKey === undefined ? ownerId : createOwnerId();
+  const promise = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const abort = window.AkashicNative ? undefined : new AbortController();
+    const request: PendingQuery = {
+      resolve, reject, ownerId: requestOwnerId, cacheKey, sharedKey, slot, started: false, abort,
+      pluginId, method, queuedAt: performance.now(),
+      interactive: isInteractiveSlot(slot) || (sharedKey !== undefined && !prefetch),
+      send: () => {
+        tracePluginQuery(requestId, request, "sent");
+        request.timeout = window.setTimeout(() => {
+          tracePluginQuery(requestId, request, "timeout");
+          window.AkashicNative?.cancelPluginUiOwner(requestOwnerId);
+          rejectOwnerPending(requestOwnerId, "插件请求超时");
+        }, 30_000);
+        if (window.AkashicNative) {
+          window.AkashicNative.queryPluginUi(requestId, requestOwnerId, slot, sessionId ?? null,
+            turnId ?? null, pluginId, method, encoded,
+            options.cache === "immutable" ? "immutable" : "none", options.transport ?? "inline");
+          return;
+        }
+        void queryWebPluginUi({ pluginId, pluginRevision, method, payload, slot, sessionId, turnId,
+          signal: abort!.signal }).then(
+          (result) => receiveMobilePluginResult({ requestId, resultJson: JSON.stringify(result) }),
+          (error: unknown) => receiveMobilePluginResult({ requestId,
+            error: error instanceof Error ? error.message : "插件查询失败" }),
+        );
+      },
+    };
+    try {
+      pendingQueries.enqueue(requestId, request);
+      tracePluginQuery(requestId, request, "queued");
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error("插件请求无法入队"));
+    }
+  });
+  if (sharedKey !== undefined && pendingQueries.get(requestId)) {
+    sharedQueries.set(sharedKey, { requestId, promise, owners: new Set([ownerId]) });
+  }
+  drainQueryQueue();
+  return promise;
+}
+
+/** 未发出的孤立预取直接撤销；在途读取最多继续到现有传输期限。 */
+function releaseQueryOwner(ownerId: string) {
+  for (const shared of sharedQueries.values()) {
+    shared.owners.delete(ownerId);
+    const request = pendingQueries.get(shared.requestId)!;
+    if (shared.owners.size === 0 && !request.started) {
+      completePending(shared.requestId, request, false);
+      request.reject(new Error("插件界面已卸载"));
+    }
+  }
+  window.AkashicNative?.cancelPluginUiOwner(ownerId);
+  rejectOwnerPending(ownerId, "插件界面已卸载");
 }
 
 async function queryWebPluginUi({
@@ -624,6 +654,7 @@ function pluginQueryCacheKey(
 function rejectOwnerPending(ownerId: string, message: string) {
   const owned = pendingQueries.removeOwner(ownerId);
   for (const [, request] of owned) {
+    if (request.sharedKey) sharedQueries.delete(request.sharedKey);
     window.clearTimeout(request.timeout);
     request.abort?.abort();
     request.reject(new Error(message));
@@ -633,7 +664,9 @@ function rejectOwnerPending(ownerId: string, message: string) {
 
 function rejectAllPending(message: string) {
   const requests = pendingQueries.clear();
+  sharedQueries.clear();
   for (const [, request] of requests) {
+    if (request.sharedKey) window.AkashicNative?.cancelPluginUiOwner(request.ownerId);
     window.clearTimeout(request.timeout);
     request.abort?.abort();
     request.reject(new Error(message));
@@ -659,6 +692,7 @@ function completePending(requestId: string, request: PendingQuery, shouldDrain =
   if (pendingQueries.complete(requestId) !== request) {
     throw new Error("插件请求完成状态失配");
   }
+  if (request.sharedKey) sharedQueries.delete(request.sharedKey);
   window.clearTimeout(request.timeout);
   if (shouldDrain) drainQueryQueue();
 }
@@ -669,4 +703,13 @@ function isInteractiveSlot(slot: MobilePluginSlotName): boolean {
 
 function createOwnerId(): string {
   return `owner:${createRequestId()}`;
+}
+
+/** 复用原生已有的结构日志入口，只记录请求身份和阶段耗时。 */
+function tracePluginQuery(requestId: string, request: PendingQuery, phase: string) {
+  console.log(`[akashic-trace] ${JSON.stringify({
+    event: `webui.plugin_query.${phase}`, request_id: requestId, owner_id: request.ownerId,
+    plugin_id: request.pluginId, method: request.method, wall_ms: Date.now(),
+    elapsed_ms: Math.round((performance.now() - request.queuedAt) * 1000) / 1000,
+  })}`);
 }

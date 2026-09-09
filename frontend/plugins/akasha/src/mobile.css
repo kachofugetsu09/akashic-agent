@@ -45,3 +45,25 @@
   outline: 2px solid var(--akasha-mobile-accent);
   outline-offset: 2px;
 }
+
+.akasha-mobile-query-status {
+  margin-block: 8px;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.8125rem;
+}
+
+.akasha-mobile-query-status button {
+  min-height: 44px;
+  padding-inline: 12px;
+  border: 0;
+  border-radius: var(--akasha-mobile-radius-sm);
+  background: transparent;
+  color: var(--akasha-mobile-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.akasha-mobile-query-status button:focus-visible {
+  outline: 2px solid var(--akasha-mobile-accent);
+  outline-offset: 2px;
+}
