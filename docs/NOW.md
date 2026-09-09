@@ -25,13 +25,6 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 - 建立受保护路径 policy：`semantic_delta: none` 的普通实现改动不能同时修改 P0 oracle、mutant 或 coverage baseline 来获得全绿。
 - 建立轻量 `change-intent` 校验，检查实际 diff、允许路径、受保护状态和副作用是否超出声明。
 
-## P1 · Message 日志与回复链插件化
-
-- 用户已批准[完整设计与分层合同](design/0902-reviewed-v4.md)：Message 独立保存，Turn 由普通无状态插件投影，Akasha 是消费者；完整回复链由非特权插件组合，替换旧的执行身份模型。
-- 仓库内重构以 stacked draft PR 交付，持久变化的 yoyo 脚本与引入变化的 PR 同步；禁止灰度、shadow、双 writer 和旧 hook 兼容壳。已核实冗余的删除记录在既有账本，代码删除不授权减少历史消息、学习、附件和插件数据。
-- hua-home 上 Citation、Meme、反馈、诊断、命令和工具检查的功能按设计第 15 节保留并重组。外部插件候选由 Fleet PR #1 固定，各自源码 PR 与 Core PR #563 一起评审；正式 workspace 尚未迁移。
-- 正式切换窗口及线上验收仍是切换前提。Android 原生配套已由 Mobile PR #90 与正式版本 0.8.37 交付。已完成的服务器副本转换、历史摘要/旧效果与联合 E2E 证据见设计末尾的真实副本与联合验收；本地副本证据不授权正式部署。
-
 ## P1 · 工作流扩展
 
 - 按 [`容器与 Host Bridge 非迁移实验合同`](design/akashic-container-host-bridge-experiment-contract.md) 完成 mise/锁文件前置、本机 Local/Bridge/容器分层验证和 hua-home 隔离候选运行时；在 capability matrix、Supervisor 故障注入、OpenCode V4 Flash High 与正式状态零写入证据齐全前，不启动正式 workspace 迁移。
