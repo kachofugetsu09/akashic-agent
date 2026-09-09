@@ -2629,16 +2629,12 @@ button {
 .mobile-message-anchor .agent-content h4 { font-size: 1rem; }
 
 .mobile-history-controls {
-  position: absolute;
-  z-index: 2;
-  inset: calc(64px + env(safe-area-inset-top)) 16px auto;
   display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: space-between;
-  pointer-events: none;
-}
-
-.mobile-conversation-frame.has-history .mobile-conversation {
-  padding-block-start: calc(112px + env(safe-area-inset-top));
+  padding-block-end: 8px;
 }
 
 .mobile-history-controls button,

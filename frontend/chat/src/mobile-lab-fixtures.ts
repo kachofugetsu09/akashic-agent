@@ -17,7 +17,7 @@ export function createLabSnapshot(scenario: LabScenarioId): LabSnapshot {
   const status: "ready" | "reconnecting" = scenario === "reconnecting" ? "reconnecting" : "ready";
   const messages = scenario === "long" ? longConversation() : dailyConversation();
   return {
-    protocolVersion: 10,
+    protocolVersion: 11,
     downloads: [],
     throughSeq: messages.at(-1)?.seq ?? -1,
     replyStatus: status === "reconnecting" ? null : replyStatus(streaming ? `lab-preview-${messages.length}` : undefined),
