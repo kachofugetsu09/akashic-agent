@@ -596,3 +596,149 @@ async def test_markdown_retries_transient_failure_without_new_messages(tmp_path)
         assert log.reader("s").snapshot() == original
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 2
         assert profile_store(tmp_path).read_memory().count("fact-one") == 1
+
+
+@pytest.mark.asyncio
+async def test_profile_input_omits_large_legacy_replay_but_preserves_user_evidence(tmp_path):
+    """历史回放大小不再放大档案请求；学习资格和完整原文仍由原 Message 证明。"""
+    import json
+    from session.message import CallRef, ContentReferences, ToolCall, ToolResult
+    from plugins.markdown_memory.message_plugin import project
+
+    async with application(tmp_path) as (log, host):
+        writer = log.writer("s", author="legacy-attribution-unknown", source="legacy-unattributed",
+            body_types=(Input, Output), content={"text": check_text,
+                "history.provenance": lambda part: ContentReferences(),
+                "history.transcript": lambda part: ContentReferences(),
+                "history.record": lambda part: ContentReferences()})
+        writer.append("old-user", Input((ContentPart("text", "fact-one"),
+            legacy_part(json.dumps({"provider_replay": "opaque-extra" * 100_000})),
+            ContentPart("history.record", {"row": "opaque-record" * 100_000})) ))
+        writer.append("old-answer", Output((ContentPart("text", "acknowledged"),
+            ContentPart("history.transcript", {"raw": "opaque-tools" * 100_000})), "complete"))
+        log.save_binding("fixture:replay", {"fixture": "read-only-history"})
+        caller = log.writer("s", author="assistant", source="legacy-unattributed", body_types=(Output,),
+                            content={"text": check_text}, check_call=lambda call: None)
+        caller.append("replay-call", Output((ToolCall("fixture:replay", {}),), "continue"))
+        call_ref = CallRef("replay-call", 0)
+        log.writer("s", author="fixture", source="legacy-unattributed", body_types=(ToolResult,),
+            call_ref=call_ref, content={"text": check_text, "history.transcript": lambda part: ContentReferences()}).append(
+                "replay-result", ToolResult(call_ref, "success", (ContentPart("text", "result text"),
+                    ContentPart("history.transcript", {"raw": "opaque-result" * 100_000}))))
+        caller.append("replay-done", Output((ContentPart("text", "done"),), "complete"))
+        original = log.reader("s").snapshot()
+        summary = publish(log, "large-legacy")
+        used = await record_use(log, host, summary, "use", source="legacy-unattributed")
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            store = profile_store(tmp_path)
+            await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
+                models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
+                sources=("legacy-unattributed",), projection=ctx.require(TURN_PROJECTION))
+        prompts = (tmp_path / "requests.jsonl").read_text()
+        request = json.loads(prompts.splitlines()[0])
+        rows = json.loads(request.split("本次精确来源：\n", 1)[1])
+        assert rows[0]["body"]["parts"][1]["value"] == {"schema": "sessions.messages.v0", "role": "user"}
+        assert len(prompts) < 20_000
+        assert all(value not in prompts for value in ("opaque-extra", "opaque-tools", "opaque-result", "opaque-record"))
+        assert "result text" in prompts
+        assert "fact-one" in store.read_memory() and store.is_applied(summary.reference)
+        assert log.reader("s").snapshot()[:len(original)] == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_second", [False, True])
+@pytest.mark.parametrize("window,text_size", [(32_000, 55_000), (200_000, 140_000)])
+async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed(tmp_path, fail_second, window, text_size):
+    """两批真实完整 Turn 的档案和证据合并；后批失败不写文件或收据。"""
+    import json
+    from types import SimpleNamespace
+    from plugins.markdown_memory.message_plugin import prepare_profile_draft
+    from plugins.compaction.message_summary import closed_groups
+    from plugins.turn_projection.plugin import TurnProjection
+    from agent.plugin_composition.models import ChatModels, LLMResponse, TransportError
+
+    log = MessageLog(tmp_path / "messages.db")
+    try:
+        writer = log.writer("s", author="user", source="conversation", body_types=(Input, Output), content={"text": check_text})
+        for index in range(2):
+            writer.append(f"input-{index}", Input((ContentPart("text", f"fact-{index} " + "x" * text_size),)))
+            writer.append(f"step-{index}", Output((ContentPart("text", "continue"),), "continue"))
+            writer.append(f"answer-{index}", Output((ContentPart("text", "done"),), "complete"))
+        original = log.reader("s").snapshot()
+        groups = closed_groups(original, TurnProjection())
+        store = profile_store(tmp_path)
+        before = (store.read_memory(), store.read_self(), store.read_writes(None, 20))
+        requests = []
+
+        async def complete(request):
+            prompt = request.messages[0]["content"]
+            rows = json.loads(prompt.split("本次精确来源：\n", 1)[1])
+            requests.append(rows)
+            assert (store.read_memory(), store.read_self(), store.read_writes(None, 20)) == before
+            assert len(rows) == 3, "a complete Turn must stay in one request"
+            if fail_second and len(requests) == 2:
+                raise TransportError("injected second batch failure")
+            memory = prompt.split("当前 MEMORY.md：\n", 1)[1].split("\n\n当前 SELF.md：", 1)[0]
+            if memory == "（空）":
+                memory = "# 用户长期记忆\n## 用户事实\n## 用户偏好\n## 用户明确要求长期记住的关键内容\n"
+            fact = rows[0]["body"]["parts"][0]["value"].split()[0]
+            line = "- " + fact
+            memory = memory.rstrip() + "\n" + line + "\n"
+            return LLMResponse(json.dumps({"memory": memory, "self": before[1],
+                "evidence": {"memory": {line: [rows[0]["message_id"]]}, "self": {}}}))
+
+        model = SimpleNamespace(descriptor=SimpleNamespace(capabilities=SimpleNamespace(context_window=window, max_output_tokens=4096)),
+                                estimate_context_tokens=lambda messages: len(str(messages)) // 4, complete=complete)
+
+        @asynccontextmanager
+        async def execution():
+            yield SimpleNamespace(chat=lambda role: model)
+
+        models = cast(ChatModels, SimpleNamespace(independent_execution=execution))
+        if fail_second:
+            with pytest.raises(TransportError, match="second batch"):
+                await prepare_profile_draft(groups, store, models)
+        else:
+            draft = await prepare_profile_draft(groups, store, models)
+            assert draft["memory_before"] == before[0]
+            assert isinstance(draft["memory"], str)
+            assert "- fact-0" in draft["memory"] and "- fact-1" in draft["memory"]
+            assert draft["evidence"] == {"memory": {"- fact-0": ["input-0"], "- fact-1": ["input-1"]}, "self": {}}
+        assert len(requests) == 2
+        assert (store.read_memory(), store.read_self(), store.read_writes(None, 20)) == before
+        assert log.reader("s").snapshot() == original
+    finally:
+        log.close()
+
+
+@pytest.mark.asyncio
+async def test_profile_keeps_allowed_turn_inside_mixed_source_group(tmp_path):
+    """交错来源共用批次切点，不把被抑制来源的资格传播给用户 Turn。"""
+    from plugins.markdown_memory.message_plugin import Config, project
+    from session.message import ContentReferences
+
+    async with application(tmp_path) as (log, host):
+        legacy = log.writer("s", author="legacy-attribution-unknown", source="legacy-unattributed",
+            body_types=(Input, Output), content={"text": check_text,
+                "history.provenance": lambda part: ContentReferences()})
+        user = log.writer("s", author="user", source="conversation", body_types=(Input, Output),
+            content={"text": check_text})
+        legacy.append("excluded-input", Input((ContentPart("text", "fact-one"),
+            legacy_part('{"effects":{"post_commit":"suppress"}}'))))
+        user.append("allowed-input", Input((ContentPart("text", "fact-three"),)))
+        legacy.append("excluded-answer", Output((ContentPart("text", "fact-two"),), "complete"))
+        user.append("allowed-answer", Output((ContentPart("text", "done"),), "complete"))
+        original = log.reader("s").snapshot()
+        summary = publish(log, "mixed-source")
+        used = await record_use(log, host, summary, "used")
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            store = profile_store(tmp_path)
+            await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
+                models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
+                sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
+        prompt = (tmp_path / "requests.jsonl").read_text()
+        assert "fact-one" not in prompt and "fact-two" not in prompt
+        assert "fact-three" in store.read_memory() and store.is_applied(summary.reference)
+        assert log.reader("s").snapshot()[:4] == original

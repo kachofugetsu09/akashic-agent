@@ -8,7 +8,8 @@ import json
 import logging
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator
+from dataclasses import replace
+from typing import AsyncGenerator, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,18 +23,18 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.models import ChatModels, ModelError
+from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextLengthError, ModelError
 from agent.llm_json import load_json_object_loose
 from agent.turn_effects import PostCommitEffect
 from infra.persistence.json_store import atomic_write_text
 from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, StoredSummary
-from plugins.compaction.message_summary import source_text, summary_groups
+from plugins.compaction.message_summary import source_text, summary_groups, window_starts
 from plugins.content.api import is_user_input, legacy_post_commit_effect
 from plugins.context.api import Materials, check_summary, summary_range
 from plugins.context.materials import MATERIALS
 from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from session.log import MessageCatalog, MessageReader
-from session.message import ContentPart, Input, Message, Output
+from session.message import ContentPart, Input, Message, Output, ToolResult
 
 from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest
 
@@ -71,25 +72,103 @@ class Config(BaseModel):
     sources: tuple[str, ...] = Field(default=("conversation", "programmatic", "legacy-unattributed"), min_length=1)
 
 
+def _profile_source_rows(messages: tuple[Message, ...]) -> tuple[str, ...]:
+    """正文逐字保留；历史回放与原始 extra 不重复投送，证据仍核对完整 Message。"""
+    rows: list[str] = []
+    for message in messages:
+        # 1. 只缩小本次模型展示，不改变日志、摘要来源或证据资格。
+        if isinstance(message.body, (Input, Output, ToolResult)):
+            body = replace(message.body, parts=tuple(
+                part for part in message.body.parts
+                if not isinstance(part, ContentPart) or part.kind not in {
+                    "history.transcript", "history.record", "history.turn_input",
+                }
+            ))
+            message_view = replace(message, body=body)
+        else:
+            message_view = message
+        row = json.loads(source_text((message_view,)))[0]
+        for part in row["body"].get("parts", []):
+            if part["kind"] == "history.provenance":
+                provenance = part["value"]
+                part["value"] = {key: provenance[key] for key in ("schema", "role")}
+        rows.append(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+    return tuple(rows)
+
+
+def _profile_batch_size(rows: tuple[tuple[str, ...], ...], memory: str, self_profile: str,
+                        provider: BoundChatModel) -> int:
+    """按完整 Turn 前缀估算分批；原文不截断，仍须满足模型窗口。"""
+    window = provider.descriptor.capabilities.context_window
+    if window is None:
+        raise ValueError("Markdown 模型缺少已确认的 context_window")
+    hard_limit = int(window * 0.74)
+    # 2. 每批限制待核对证据量，避免超长历史再次形成巨大请求体。
+    limit = min(32_768, hard_limit)
+
+    def tokens(size: int) -> int:
+        prompt = _profile_prompt(memory, self_profile, "[" + ",".join(row for group in rows[:size] for row in group) + "]")
+        return provider.estimate_context_tokens([{"role": "user", "content": prompt}])
+
+    if tokens(1) > hard_limit:
+        raise ContextLengthError("Markdown 完整 Turn 和现有档案超出模型窗口，未减少原文")
+    low, high = 1, len(rows)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if tokens(middle) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
 async def prepare_profile_draft(
-    messages: tuple[Message, ...],
+    groups: tuple[tuple[Message, ...], ...],
     store: MarkdownProfileStore,
     chat_models: ChatModels,
 ) -> dict[str, object]:
-    """按真实消息准备完整档案及逐条证据，验证后才交给持久 writer。"""
-    current_memory = store.read_memory()
-    current_self = store.read_self()
-    prompt = _profile_prompt(current_memory, current_self, source_text(messages))
+    """分批核对精确正文；全部成功后才把完整草稿交给原持久 writer。"""
+    before_memory, before_self = store.read_memory(), store.read_self()
+    memory, self_profile = before_memory, before_self
+    messages = tuple(message for group in groups for message in group)
+    rows = tuple(_profile_source_rows(group) for group in groups)
+    evidence: dict[str, dict[str, list[str]]] = {"memory": {}, "self": {}}
+    offset = 0
     async with chat_models.independent_execution() as execution:
         provider = execution.chat(ModelRole.DEFAULT)
-        output_cap = provider.descriptor.capabilities.max_output_tokens or 4_096
-        response = await provider.complete(
-            ModelRequest(
-                messages=[{"role": "user", "content": prompt}],
-                max_output_tokens=min(4_096, output_cap),
-                disable_reasoning=True,
-            )
-        )
+        while offset < len(groups):
+            size = _profile_batch_size(rows[offset:], memory, self_profile, provider)
+            source = "[" + ",".join(row for group in rows[offset:offset + size] for row in group) + "]"
+            selected = tuple(message for group in groups[offset:offset + size] for message in group)
+            batch = await _prepare_profile_batch(selected, source, memory, self_profile, provider)
+            memory, self_profile = cast(str, batch["memory"]), cast(str, batch["self"])
+            batch_evidence = cast(dict[str, dict[str, list[str]]], batch["evidence"])
+            for document in evidence:
+                if evidence[document].keys() & batch_evidence[document].keys():
+                    raise ValueError("Markdown 跨批新增条目重复，不能覆盖已有证据")
+                evidence[document].update(batch_evidence[document])
+            offset += size
+    # 3. 中间结果只在内存；失败重试仍从同一 before-image 开始。
+    draft: dict[str, object] = {
+        "version": 2, "evidence": evidence, "memory": memory, "self": self_profile,
+        "memory_before": before_memory, "self_before": before_self,
+        "memory_before_digest": content_digest(before_memory), "self_before_digest": content_digest(before_self),
+        "memory_after_digest": content_digest(memory), "self_after_digest": content_digest(self_profile),
+    }
+    check_evidence(draft, messages)
+    return draft
+
+
+async def _prepare_profile_batch(messages: tuple[Message, ...], source: str,
+                                 current_memory: str, current_self: str,
+                                 provider: BoundChatModel) -> dict[str, object]:
+    """校验一批新增事实与当前内存档案，不写文件或推进 receipt。"""
+    prompt = _profile_prompt(current_memory, current_self, source)
+    output_cap = provider.descriptor.capabilities.max_output_tokens or 4_096
+    response = await provider.complete(ModelRequest(
+        messages=[{"role": "user", "content": prompt}],
+        max_output_tokens=min(4_096, output_cap), disable_reasoning=True,
+    ))
     raw = load_json_object_loose(response.content or "")
     if not isinstance(raw, dict):
         raise ValueError("Markdown memory 模型必须返回 JSON object")
@@ -313,7 +392,8 @@ def _profile_prompt(memory: str, self_profile: str, source: str) -> str:
 
 只返回 JSON：{{"memory":"完整 MEMORY.md", "self":"完整 SELF.md", "evidence":{{"memory":{{"新增完整条目":["message_id"]}},"self":{{"新增完整条目":["message_id"]}}}}}}。
 
-新增内容必须是单行 Markdown 条目，每项引用本次来源中的真实 message_id。
+新增内容必须是单行 Markdown 条目，每项引用本次来源中的真实 message_id。现有条目及章节位置逐字保留。
+来源中的 history.provenance 只展示已校验的 schema 和 role；原始 extra 和历史工具回放不作为本次学习正文。
 用户事实、偏好、明确要求和 SELF 中对用户或关系的判断，只能以真实用户 Input 原文为依据：当前消息的 author=user；迁入旧消息须有 history.provenance 中 schema=sessions.messages.v0、role=user 的原始出处。
 助手转述、工具输出、后台报告、召回和摘要都不能代替用户的原话；即使助手把它重复成结论也不行。
 助手操作上下文和自身人格变化可以引用其他实际消息，但不得借这些章节存放用户资料。
@@ -468,10 +548,10 @@ async def profile_lock(path: Path, *, create: bool = True) -> AsyncGenerator[Non
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-async def _unapplied_messages(record: StoredSummary, lookup: SummaryLookup, reader: MessageReader,
+async def _unapplied_groups(record: StoredSummary, lookup: SummaryLookup, reader: MessageReader,
                         store: MarkdownProfileStore, sources: tuple[str, ...],
-                        projection: TurnProjection) -> tuple[Message, ...] | None:
-    """从最近已写入的祖先之后取原文，跳过未使用的摘要不会漏掉它覆盖的事实。"""
+                        projection: TurnProjection) -> tuple[tuple[Message, ...], ...] | None:
+    """从最近已写入的祖先之后取完整组的原文，跳过未使用的摘要不会漏掉它覆盖的事实。"""
     start = 0
     latest = store.latest_applied(record.session_id)
     if latest is not None:
@@ -500,10 +580,14 @@ async def _unapplied_messages(record: StoredSummary, lookup: SummaryLookup, read
             effects = tuple(legacy_post_commit_effect(by_id[identity]) for identity in ids)
             if PostCommitEffect.SUPPRESS in effects:
                 excluded.update(ids)
-    selected = tuple(message for message in snapshot[covered.start + start:covered.stop]
-                     if message.source in sources and message.message_id not in excluded)
-    # 摘要使用了哪些原始 ID 不等于每条原文都可沉淀；迟到结果沿同一放弃边界排除。
-    return tuple(message for group in summary_groups((selected,), snapshot[:covered.stop]) for message in group)
+    after = covered.start + start
+    cuts = (after, *(index for index in window_starts(snapshot[:covered.stop], projection) if index > after), covered.stop)
+    groups = tuple(snapshot[left:right] for left, right in zip(cuts, cuts[1:]))
+    selected = tuple(tuple(message for message in group
+                           if message.source in sources and message.message_id not in excluded)
+                     for group in groups)
+    # 批次切点来自完整前缀；学习资格与迟到结果沿原 source/放弃边界过滤。
+    return summary_groups(selected, snapshot[:covered.stop])
 
 
 async def project(message: Message, *, reader: MessageReader, bindings: Bindings,
@@ -527,12 +611,13 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
             if store.is_applied(record.reference):
                 return
             draft = store.read_draft(record.reference)
-            selected = await _unapplied_messages(record, lookup, reader, store, sources, projection)
-            if not selected:
+            groups = await _unapplied_groups(record, lookup, reader, store, sources, projection)
+            if not groups:
                 return
+            selected = tuple(message for group in groups for message in group)
         # 模型属于当前 Markdown 作用域；先关闭旧摘要的只读归档 scope。
         if draft is None:
-            draft = await prepare_profile_draft(selected, store, models)
+            draft = await prepare_profile_draft(groups, store, models)
         if draft.get("version") == 2:
             check_evidence(draft, selected)
         elif draft.get("version") != 1:
