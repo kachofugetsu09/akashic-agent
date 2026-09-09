@@ -554,21 +554,27 @@ def _check_stop_receipt(
 
 
 async def _http_health(url: str, timeout_seconds: float) -> tuple[bool, str]:
+    """在工作线程中探测，避免主循环停顿被误判为网络超时。"""
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     last = "health deadline exceeded"
-    async with httpx.AsyncClient() as client:
-        while True:
-            try:
-                response = await client.get(url, timeout=min(2.0, timeout_seconds))
-                if 200 <= response.status_code < 300:
-                    return True, f"HTTP {response.status_code}"
-                last = f"HTTP {response.status_code}"
-            except httpx.HTTPError as error:
-                last = _error_text(error)
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                return False, last
-            await asyncio.sleep(min(0.2, remaining))
+    while True:
+        try:
+            status = await asyncio.to_thread(_health_status, url, min(2.0, timeout_seconds))
+            if 200 <= status < 300:
+                return True, f"HTTP {status}"
+            last = f"HTTP {status}"
+        except httpx.HTTPError as error:
+            last = _error_text(error)
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False, last
+        await asyncio.sleep(min(0.2, remaining))
+
+
+def _health_status(url: str, timeout_seconds: float) -> int:
+    # 客户端只由本次请求持有；取消等待后，线程仍能关闭自己的连接。
+    with httpx.Client() as client:
+        return client.get(url, timeout=timeout_seconds).status_code
 
 
 async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
