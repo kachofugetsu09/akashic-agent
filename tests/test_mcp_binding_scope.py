@@ -422,3 +422,63 @@ async def test_candidate_scoped_mcp_uses_candidate_environment_and_tool_permissi
             assert (await route.call("mutate", {})).output == "formal"
     finally:
         await owner.terminate_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_scoped_mcp_waits_for_eof_grace_and_process_group_cleanup(tmp_path, monkeypatch, cancel):
+    """成功调用后，忽略 EOF 的真实进程仍完成 TERM 回收，取消不遗留资源。"""
+    import agent.mcp.client as client_module
+    from utils.process_group import process_group_exists
+
+    plugins = tmp_path / "plugins"
+    write_plugin(plugins / "probe")
+    script = plugins / "probe/first/server.py"
+    script.write_text(script.read_text().replace(
+        "for raw in sys.stdin:", "own_count = int(count.read_text())\nfor raw in sys.stdin:"
+    ) + '''
+if own_count > 1:
+    import signal
+    count.with_suffix(".eof-pid").write_text(str(os.getpid()))
+    signal.pause()
+''')
+    owner = manager(tmp_path, [plugins])
+    log = MessageLog(tmp_path / "messages.db")
+    waiting_for_exit = asyncio.Event()
+    original_wait = client_module._wait_for_leader_exit
+
+    async def wait_for_exit(process):
+        waiting_for_exit.set()
+        return await original_wait(process)
+
+    monkeypatch.setattr(client_module, "_wait_for_leader_exit", wait_for_exit)
+    try:
+        # 1. 正式进程正常退出；只有绑定调用创建的第二个进程忽略 EOF。
+        await owner.load_all()
+        snapshot = owner.current_snapshot
+        data = snapshot.generations["probe"].data_dir
+        bindings = Bindings(log, owner._archive, owner.open_binding)
+        async with lease_runtime_snapshot(owner.snapshot_store):
+            identity = bindings.bind(SERVICE, {})
+
+        async def call():
+            async with bindings.open(identity, SERVICE) as (open_server, _):
+                async with open_server() as server:
+                    async with server.route() as route:
+                        assert (await route.call("ping", {})).output == "fixed A"
+
+        # 2. 在真实 EOF 清理阶段取消；正常和取消路径都必须等进程组消失。
+        task = asyncio.create_task(call())
+        await asyncio.wait_for(waiting_for_exit.wait(), 10)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+        assert not process_group_exists(int((data / "first.eof-pid").read_text()))
+        assert owner.resource_failures() == ()
+        assert owner.current_snapshot is snapshot
+    finally:
+        await owner.terminate_all()
+        log.close()
