@@ -3739,7 +3739,7 @@ const MobileVirtualConversation = React.forwardRef<MobileConversationHandle, Mob
               loadOlder();
             }
           }}>
-          {rowCount === 0 ? (
+          {rowCount === 0 && !hasHistoryControls ? (
             <div className="mobile-empty">
               <h1>开始一段新对话</h1>
               <p>消息会通过电脑上的 Akashic 实时处理。</p>
