@@ -42,7 +42,6 @@ HealthCallback = Callable[[str, str, bool, str], Awaitable[None] | None]
 IncidentCallback = Callable[[str, str, str, str], Awaitable[None] | None]
 
 _POLL_SECONDS = 0.02
-_STOP_TIMEOUT_SECONDS = 5.0
 _READINESS_TIMEOUT_SECONDS = 8.0
 _MAX_LOG_LINES = 8
 
@@ -331,17 +330,13 @@ class McpGenerationHost:
         on_health: HealthReporter | None = None,
         on_incident: IncidentReporter | None = None,
         on_failure: FailureCallback | None = None,
-        stop_timeout_seconds: float = _STOP_TIMEOUT_SECONDS,
         readiness_timeout_seconds: float = _READINESS_TIMEOUT_SECONDS,
     ) -> None:
-        if stop_timeout_seconds <= 0:
-            raise ValueError("stop_timeout_seconds must be positive")
         if readiness_timeout_seconds <= 0:
             raise ValueError("readiness_timeout_seconds must be positive")
         self._on_health = on_health
         self._on_incident = on_incident
         self._on_failure = on_failure
-        self._stop_timeout_seconds = stop_timeout_seconds
         self._readiness_timeout_seconds = readiness_timeout_seconds
         self._generations: dict[str, _Generation] = {}
         self._tombstones: dict[str, McpCleanupTombstone] = {}
@@ -831,6 +826,7 @@ class McpGenerationHost:
             ) from errors[0]
 
     async def _cleanup_entry(self, entry: _McpEntry) -> None:
+        """等待 client 完成进程组回收，再发布停止状态。"""
         entry.stopping = True
         watcher = entry.watcher
         if watcher is not None and watcher is not asyncio.current_task():
@@ -838,15 +834,8 @@ class McpGenerationHost:
                 _ = watcher.cancel()
             await _await_task_after_cancellation(watcher)
             entry.watcher = None
-        try:
-            await asyncio.wait_for(
-                entry.client.disconnect(),
-                timeout=self._stop_timeout_seconds,
-            )
-        except TimeoutError as error:
-            raise RuntimeError(
-                f"MCP server {entry.name!r} stop 超时: {self._stop_timeout_seconds}s"
-            ) from error
+        # client 自己限定 EOF、TERM 与 KILL 阶段；外层计时会抢先取消正常回收。
+        await entry.client.disconnect()
         try:
             await self._emit_health(entry.generation_id, entry.name, False, "stopped")
         except (asyncio.CancelledError, Exception) as error:

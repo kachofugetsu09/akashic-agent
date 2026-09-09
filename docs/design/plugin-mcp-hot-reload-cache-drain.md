@@ -166,6 +166,17 @@ promote 不等待调用者自己持有的 S1 lease，也不取消 T。新 turn �
 
 取消不能截断 generation cleanup。scope 继续逆序尝试全部 cleanup，并聚合失败。旧 MCP 未确认退出时保留 process ownership 和结构化失败；不得从 draining registry 提前移除后报告完成。
 
+Linux stdio MCP 退出宽限由 `McpClient` 统一拥有：关闭 stdin 后等待自然退出，再由进程组 owner 完成 TERM → KILL 与存活检查。generation host 直接等待该清理结果，不另加与 EOF 宽限相同的总超时；否则刚进入 TERM 阶段就会被误判为清理失败。真实进程组回收失败仍保留 tombstone，可由原 owner 重试；取消仍先等待回收，再向调用者传播。
+
+```text
+┌─────────────────────┐    ┌─────────────────────────────────┐
+│ generation / scope  │───▶│ McpClient: EOF → TERM → KILL     │
+│ 等结果、保留失败证据 │◀───│ Linux 分阶段有界，确认组已退出  │
+└─────────────────────┘    └─────────────────────────────────┘
+```
+
+`tests/test_mcp_binding_scope.py` 使用成功调用后忽略 EOF 的真实 stdio 子进程，验证普通返回和取消都等待进程组回收，且不会产生虚假的 cleanup tombstone。
+
 MCP 子进程恢复预算耗尽时，`McpGenerationHost` 在对应 generation 上保留不可恢复故障。候选
 generation 因健康检查失败不能晋升；active generation 的后续工具调用明确失败，但该故障不进入
 Core primary task，也不终止无关 turn、其他插件或本地 runtime。只有 Core owner、权威状态或整体
