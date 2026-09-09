@@ -668,6 +668,12 @@ class TransportError(ModelError):
     retryable = True
 
 
+class EmptyResponseError(ModelError):
+    """模型调用成功，但没有可提交的正文或工具调用。"""
+
+    retryable = True
+
+
 class DriverUnavailableError(ModelError): ...
 
 
