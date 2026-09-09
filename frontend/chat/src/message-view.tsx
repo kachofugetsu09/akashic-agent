@@ -248,9 +248,8 @@ function TimelineProcess({ process, streaming = false, draftThinking = "", draft
     startContent={process.length ? beforeReasoning?.(process[0].origin) : draftSlot}
     beforeBlock={(_block, index) => {
       const item = process[index];
-      if (!item) return process.length ? draftSlot : null;
+      if (!item) return null;
       return <div data-process-message-id={item.origin.id} data-part-index={item.index} tabIndex={-1}>
-        {index > 0 && process[index - 1].origin.id !== item.origin.id ? beforeReasoning?.(item.origin) : null}
         {beforePart?.(item.part, item.index, item.origin)}
       </div>;
     }} />
