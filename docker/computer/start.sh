@@ -87,6 +87,7 @@ chromium \
   --test-type \
   --disable-dev-shm-usage \
   --disable-gpu \
+  --disable-quic \
   --hide-crash-restore-bubble \
   --no-first-run \
   --no-default-browser-check \
