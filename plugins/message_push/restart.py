@@ -17,7 +17,8 @@ from agent.plugin_composition import (
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.control.frame_book import CONTROL_FRAMES, FrameBook, FrameClaim, FrameRouteReleased
-from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
+from agent.plugin_composition.restart import RESTART_GATE
+from agent.plugin_contracts.restart import RestartGate, RestartRejectedError
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
 from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durable_call_key
 from plugins.tools.plugin import TOOLS, ToolRef

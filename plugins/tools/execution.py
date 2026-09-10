@@ -7,7 +7,7 @@ from collections.abc import Callable, Hashable, Mapping
 from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from agent.restart import ExternalRootPermit
+from agent.plugin_contracts.restart import ExternalRootPermit
 from session.log import (
     OwnerRecord,
     OwnerStore,

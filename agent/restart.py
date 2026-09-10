@@ -7,35 +7,18 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from agent.plugin_composition.model import ServiceKey
+from agent.plugin_composition.restart import RESTART_GATE
+from agent.plugin_contracts.restart import (
+    ExternalRootPermit,
+    RestartGate as _RestartGateContract,
+    RestartPendingError,
+    RestartRejectedError,
+)
 
-class RestartRejectedError(RuntimeError):
-    """表示当前 runtime 明确拒绝了一次重启请求。"""
-
-
-class RestartPendingError(RestartRejectedError):
-    """表示重启已等待提交，暂时不接纳新的外部 Root。"""
-
-
-@dataclass(frozen=True, slots=True)
-class ExternalRootPermit:
-    """一次外部 Root 接纳；释放后才允许提交重启。"""
-
-    _gate: "RestartGate"
-    request_id: str
-    _released: bool = False
-
-    def release(self) -> None:
-        if self._released:
-            return
-        object.__setattr__(self, "_released", True)
-        self._gate._release(self.request_id)
-
-    def child(self) -> "ExternalRootPermit":
-        """取得由当前已接纳 Root 明确转交给外部效果的子 permit。"""
-        if self._released:
-            raise RestartRejectedError("已释放的 Root permit 不能派生子 permit")
-        return self._gate._acquire_child(self.request_id)
+# 公开合同层拥有异常与 `ExternalRootPermit`，组合内核拥有 `RESTART_GATE`；本模块
+# 按原路径再导出，保证既有调用点与 `ServiceKey`/类型身份不变。插件侧改依赖
+# `agent.plugin_contracts` / `agent.plugin_composition`，不再 import `agent.restart`。
+_ = _RestartGateContract
 
 
 class RestartGate:
@@ -160,7 +143,6 @@ class RestartGate:
         changed.set()
 
 
-RESTART_GATE = ServiceKey[RestartGate]("core.restart_gate.v1")
 
 
 class SupervisorCommitChannel:

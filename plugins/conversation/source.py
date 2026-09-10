@@ -8,7 +8,7 @@ from typing import cast
 
 from agent.model_runtime.session_selection import SessionModelSelection, write_session_model_selection
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from agent.restart import RestartGate
+from agent.plugin_contracts.restart import RestartGate
 from session.log import MessageConflict, MessageReader, MessageWriter
 from agent.plugin_contracts import Body, Control, Input, Message, Output
 

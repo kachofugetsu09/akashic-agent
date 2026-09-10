@@ -1,4 +1,5 @@
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
+from agent.plugin_composition.restart import RESTART_GATE
 from agent.plugin_composition.context import (
     CompositionRoot,
     Context,

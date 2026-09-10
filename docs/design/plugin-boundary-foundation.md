@@ -244,6 +244,8 @@ reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 �
 | 3/6 | `session.message` 76 处改经 `agent.plugin_contracts` | 8 | 168 | 238 |
 | 4/6 | `session.message_codec` 移入 `agent.plugin_contracts`（move & re-export） | 8 | 138 | 238 |
 | 5/6 | 修掉 `types` 假违规（标准库被当成 core 深路径） | 8 | 133 | 238 |
+| 5b/6 | 修复 `message_codec` 再导出漏掉私有 `_unique_fields` | 8 | 133 | 238 |
+| 6/6 | 重启 seam 归位：`RESTART_GATE` → 组合内核，类型 → 结构合同 | 8 | 122 | 238 |
 
 第 3/6 批的做法：第 1 步已经把消息词汇表移入 `agent.plugin_contracts`、
 `session/message.py` 只做再导出，因此本批是纯文本改写
@@ -275,6 +277,19 @@ core，必须先有真实 `__init__.py`。
 
 因此后续任何 move & re-export 都必须：**按全库实际被 import 的名字集合导出**（含私有名），
 而不是按原模块的公开 API 或 `__all__`。这一步不能省，因为不可变迁移会依赖私有名。
+
+第 6/6 批执行设计文档原定的第 4 项（`core.restart_gate.v1` 归位）：
+
+- `RESTART_GATE = ServiceKey[RestartGate]("core.restart_gate.v1")` 从 `agent.restart`
+  移到 `agent/plugin_composition/restart.py`，并由组合内核包再导出。`ServiceKey` 只按
+  name 相等，归位是零运行时语义的文本操作。
+- `RestartRejectedError` / `RestartPendingError` / `ExternalRootPermit` 移入
+  `agent/plugin_contracts/restart.py`；`ExternalRootPermit` 是真实的 frozen dataclass
+  （不是 Protocol），因为它带行为（`release()`/`child()`），插件会实际调用。
+- `RestartGate` 有状态机与 commit channel，实现留在 `agent.restart`；合同层用
+  Protocol 描述插件可见的方法子集（`accepting`/`check_open`/`acquire`/`prepare`/
+  `commit`/`abort`/`wait_until_open` + `supervised`/`execution_enabled`）。
+- `agent.restart` 按原路径再导出全部名字，既有 Core 调用点与类型身份不变。
 
 把 R1～R3 的欠账降到 0：
 

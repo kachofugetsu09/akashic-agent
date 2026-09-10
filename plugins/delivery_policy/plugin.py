@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.plugin_composition import Context, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.restart import ExternalRootPermit, RestartRejectedError
+from agent.plugin_contracts.restart import ExternalRootPermit, RestartRejectedError
 from plugins.conversation.plugin import check_origin
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.delivery.api import Sink

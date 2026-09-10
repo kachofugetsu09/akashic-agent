@@ -2937,3 +2937,18 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 守护：新增 `test_legacy_message_codec_shim_exports_every_consumed_name`，逐一断言被消费的 5 个名字（含私有）在 shim 上存在。
 - 全库核对：`session.message_codec` 被消费的私有名只有 `_unique_fields` 一个；`session.message` 无私有名消费者。
 - 经验（已写入设计文档）：做 move & re-export 时，必须按「全库实际被 import 的名字集合」导出，而不是按原模块的 `__all__` 或公开 API。私有名同样可能被不可变迁移依赖。
+
+## 2026-09-10 插件边界第 3 步（6/6）：重启 seam 归位到组合内核与结构合同
+
+- 基线：stacked base `55163029`；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：设计文档原定第 4 项「`core.restart_gate.v1` 归位到组合内核」。
+  - `RESTART_GATE` ServiceKey 由 `agent.restart` 移到 `agent/plugin_composition/restart.py`（组合内核包再导出）。`ServiceKey` 只按 name 相等，归位零运行时语义。
+  - `RestartRejectedError` / `RestartPendingError` / `ExternalRootPermit` 移入 `agent/plugin_contracts/restart.py`。
+  - `RestartGate` 实现（状态机 + commit channel + drain）留在 `agent.restart`；合同层用 `RestartGate` Protocol 描述插件可见子集。
+  - `agent.restart` 按原路径再导出全部名字。
+- 关键取舍：`ExternalRootPermit` 用**真实 frozen dataclass**而不是 Protocol —— 插件不只是标注类型，还调用 `permit.release()` / `permit.child`（见 `plugins/conversation/source.py`、`plugins/delivery_policy/plugin.py`）。若用 Protocol，pyright 会因 `RestartGate.acquire()` 返回具体类型与协议返回类型不协变而报错（本次实测 3 条）。改为让 permit 的私有回调经 `_PermitOwner` Protocol 描述，契约层就能拥有这个值对象且保持单一实现。
+- 插件侧：11 处 import 改写，按名字拆分到两个公开面（`RESTART_GATE` → `agent.plugin_composition.restart`；类型 → `agent.plugin_contracts.restart`）。11/11 模块可 import。
+- 身份守护：`RESTART_GATE` 新旧同对象；`ExternalRootPermit` 新旧同类；`RestartPendingError` 仍是 `RestartRejectedError` 子类；具体闸门 `isinstance(..., RestartGate Protocol)` 与 permit 同样成立。
+- 账本：删除 11 条 R2，R2 由 133 降到 122。
+- 验证：`pyright --level error`（主配置与 tests 配置）均 0 errors；`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_plugin_runtime_control.py tests/test_plugin_hot_reload.py tests/test_message_push_plugin.py tests/test_agent_restart_tool.py tests/test_programmatic_control.py` = `148 passed, 6 failed`，6 项全部是已核对的既有 socket 集成失败（父提交同样失败）。
+- 持久化/运行 workspace 变化：`none`。

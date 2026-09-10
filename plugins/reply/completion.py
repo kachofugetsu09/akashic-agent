@@ -3,7 +3,7 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from typing import Protocol
 
 from agent.plugin_composition import ServiceKey
-from agent.restart import ExternalRootPermit
+from agent.plugin_contracts.restart import ExternalRootPermit
 from session.log import MessageReader
 
 

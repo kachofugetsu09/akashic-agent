@@ -11,7 +11,7 @@ from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTE
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts import CallRef, ToolResult, freeze_json
 from session.log import MessageReader
-from agent.restart import ExternalRootPermit
+from agent.plugin_contracts.restart import ExternalRootPermit
 from plugins.content.plugin import check_text
 
 from plugins.tools.api import Authorize, BoundTool, CallSource, MessageReply, Result, display_name, result_message_id

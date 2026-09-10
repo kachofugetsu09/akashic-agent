@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.tasks import Task
-from agent.restart import RestartGate
+from agent.plugin_contracts.restart import RestartGate
 from plugins.sources.plugin import Source, Sources
 from session.log import MessageCatalog, MessageReader
 

@@ -6,7 +6,7 @@ from typing import cast
 from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS
-from agent.restart import RESTART_GATE
+from agent.plugin_composition.restart import RESTART_GATE
 from agent.control.frame_book import CONTROL_FRAMES
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.content.plugin import check_text

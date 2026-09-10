@@ -7,7 +7,7 @@ from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
 from agent.plugin_composition.tasks import TASKS, Task
-from agent.restart import RESTART_GATE
+from agent.plugin_composition.restart import RESTART_GATE
 from session.log import MessageConflict, MessageReader
 from plugins.content.plugin import check_text
 from plugins.content.api import check_artifact
