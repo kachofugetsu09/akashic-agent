@@ -11,7 +11,7 @@ from agent.control.protocol.method import RequestTransport
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import MessageReader, SessionAttributes
-from session.message import ContentPart, Input
+from agent.plugin_contracts import ContentPart, Input
 
 from .result import read_result, read_result_snapshot
 

@@ -2896,3 +2896,13 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 验证：`pytest tests/test_yoyo_migration_append_only.py tests/test_migration_runner.py tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/test_change_gate.py` = `74 passed`；`plugin_boundary.py check` 通过（R1=8/8 R2=244/244 R3=238/238）；`audit_catalog` 为 `passed/current`。
 - 持久化/运行 workspace 变化：`none`；未修改任何 workspace 数据、SQLite、schema 或迁移账本。
 - 残余风险：历史 checkpoint 或未跟踪副本可能保留旧脚本文本；当前 Git source 与 runner 读取面无 consumer。
+
+## 2026-09-10 插件边界第 3 步（3/6）：session.message 改经公开结构合同
+
+- 基线：stacked base `e4970822`；分支 `feature/plugin-boundary-step3-migration-20260910`。正式 workspace 未改写。
+- 范围：`plugins/**` 中 76 个文件、78 处 `from session.message import X` 改为 `from agent.plugin_contracts import X`。仅改 import 目标，不改任何调用点、符号名或行为。
+- 为什么是纯文本改写：第 1 步已把消息词汇表移入 `agent/plugin_contracts/message.py`，`session/message.py` 只做再导出。核对了插件实际 import 的 13 个名字（Message/ContentPart/Input/Output/Control/ToolCall/ToolResult/CallRef/ContentReferences/Body/Part/freeze_json/freeze_metadata）全部已在 `agent.plugin_contracts.__all__` 中，无新增合同面。
+- 身份守护：`session.message.X is agent.plugin_contracts.X` 对全部 13 个名字成立；`compileall` 通过；76/76 改动模块可 import。
+- 账本：`plugin_boundary_baseline.toml` 删除 76 条 R2 条目，R2 由 244 降到 168。
+- 验证：`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_message_log_migration.py tests/test_message_metadata.py tests/test_message_embeddings.py tests/test_message_artifacts.py tests/test_reply_program.py tests/test_akasha_learning_binding.py tests/test_context_compaction_contract.py tests/test_wake_messages.py` = `187 passed`。
+- 持久化/运行 workspace 变化：`none`。

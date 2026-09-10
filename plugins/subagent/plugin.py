@@ -26,7 +26,7 @@ from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageReader
-from session.message import Message
+from agent.plugin_contracts import Message
 
 from .prompts import build_spawn_subagent_prompt
 from .request import PROFILE_TOOLS, Request, SpawnInput

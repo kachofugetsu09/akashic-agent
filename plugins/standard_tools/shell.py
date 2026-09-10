@@ -25,7 +25,7 @@ from agent.tools.unified_exec import (
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS, ToolRef
 from session.log import MessageReader
-from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall
+from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall
 from session.message_codec import json_value
 
 

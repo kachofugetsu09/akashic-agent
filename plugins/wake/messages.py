@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from plugins.delivery.history import DeliveryHistory
 from plugins.models.content import render_content
 from session.log import MessageCatalog, MessageReader
-from session.message import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from session.message_codec import json_value
 
 from .content import _candidate_payloads, _string

@@ -34,7 +34,7 @@ from plugins.context.api import Materials, check_summary, summary_range
 from plugins.context.materials import MATERIALS
 from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from session.log import MessageCatalog, MessageReader
-from session.message import ContentPart, Input, Message, Output, ToolResult
+from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
 
 from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest
 

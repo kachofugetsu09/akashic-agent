@@ -10,7 +10,7 @@ from agent.plugin_composition.models import (
     BoundChatModel, ContextLengthError, ModelRequest, ModelTimeoutError,
     RateLimitError, TransportError,
 )
-from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 from plugins.context.api import settled_prefixes
 from plugins.turn_projection.plugin import TurnProjection
 from session.message_codec import body_to_dict

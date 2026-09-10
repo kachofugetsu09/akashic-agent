@@ -5,7 +5,7 @@ from typing import cast
 from agent.plugin_composition.artifacts import ArtifactRead
 from session.artifacts import AttachmentRef
 from session.log import MessageCatalog
-from session.message import ContentPart, Control, Message
+from agent.plugin_contracts import ContentPart, Control, Message
 
 
 class AttachmentReadError(ValueError):

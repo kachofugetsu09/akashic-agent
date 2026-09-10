@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from plugins.tools.api import CallSource, InvalidArguments, Result
-from session.message import ContentPart
+from agent.plugin_contracts import ContentPart
 
 from .schedule import ScheduledJob, compute_fire_at, is_cron_expr, parse_duration
 from .store import JobStore, Operation

@@ -22,7 +22,7 @@ from plugins.tools.api import Denied
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
-from session.message import Message
+from agent.plugin_contracts import Message
 
 from .runtime import SchedulerRuntime
 from .store import JobStore

@@ -22,7 +22,7 @@ from plugins.tools.menu import ToolMenu, ToolPresentation
 from plugins.tools.plugin import ToolView
 from plugins.standard_tools.shell import shell_cleanup
 from session.log import MessageReader
-from session.message import CallRef, ContentPart, Input, Message, Output, ToolResult
+from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output, ToolResult
 
 if TYPE_CHECKING:
     from plugins.content.plugin import Content
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 def check_source(task: Task, reader: MessageReader, source: str, through_seq: int) -> None:
     """新输入或控制已接纳时禁止新效果，不依赖后台取消信号及时送达。"""
-    from session.message import Control, Input
+    from agent.plugin_contracts import Control, Input
 
     if not task.active or any(
         message.source == source and isinstance(message.body, (Input, Control))

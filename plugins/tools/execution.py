@@ -13,7 +13,7 @@ from session.log import (
     OwnerStore,
     OwnerTransaction,
 )
-from session.message import (
+from agent.plugin_contracts import (
     ContentPart,
     ToolResult,
     freeze_json,

@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugins.snapshot import get_current_runtime_snapshot
-from session.message import ContentPart, Message
+from agent.plugin_contracts import ContentPart, Message
 
 from .message_plugin import AKASHA_RECORDS_VIEW
 from .recalls import ContextSource, Hit, ProgramSource, Recall, RecallRecordsRead, ToolSource

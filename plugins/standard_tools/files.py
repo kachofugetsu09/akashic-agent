@@ -21,7 +21,7 @@ from plugins.standard_tools.filesystem import (
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS, ToolRef
 from session.artifacts import AttachmentKind
-from session.message import ContentPart
+from agent.plugin_contracts import ContentPart
 from session.message_codec import json_value
 
 FileBackend = ReadFileTool | ListDirTool | WriteFileTool | EditFileTool

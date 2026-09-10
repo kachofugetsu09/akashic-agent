@@ -139,7 +139,7 @@ class MessageConsumer:
         embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]],
     ) -> int:
         """追赶一个固定日志前缀；在线只补缺向量，学习与进度仍一次发布。"""
-        from session.message import Input, Output
+        from agent.plugin_contracts import Input, Output
         from ..projection import applied_source
 
         from ..learning import AKASHA_LEARNING, LearningConfig

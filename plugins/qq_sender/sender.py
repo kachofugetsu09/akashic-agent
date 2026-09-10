@@ -14,7 +14,7 @@ from plugins.delivery.api import Receipt
 from plugins.delivery.content import AttachmentReadError, read_content
 from session.artifacts import AttachmentKind
 from session.log import MessageCatalog
-from session.message import Message
+from agent.plugin_contracts import Message
 
 
 @dataclass(frozen=True, slots=True)

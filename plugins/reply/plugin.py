@@ -28,7 +28,7 @@ from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
-from session.message import Message
+from agent.plugin_contracts import Message
 
 from .api import REPLY_PROGRAM
 from .follow import follow

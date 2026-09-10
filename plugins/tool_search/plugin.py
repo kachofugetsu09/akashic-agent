@@ -13,7 +13,7 @@ from agent.plugin_composition.models import ToolCall as ModelToolCall
 from plugins.tools.api import BoundTool, CallSource, InvalidArguments, Result
 from plugins.tools.menu import InvalidToolCall, ToolPresentation, tool_schema
 from plugins.tools.plugin import TOOLS, ToolCatalog, ToolRef, ToolView
-from session.message import ContentPart
+from agent.plugin_contracts import ContentPart
 from session.message_codec import json_value
 
 api_version = 3

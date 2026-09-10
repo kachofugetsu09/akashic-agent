@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent.plugin_composition import Context, ServiceKey
-from session.message import (
+from agent.plugin_contracts import (
     CallRef,
     Input,
     Message,

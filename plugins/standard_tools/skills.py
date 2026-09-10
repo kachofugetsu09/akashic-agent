@@ -17,7 +17,7 @@ from plugins.context.api import Materials
 from plugins.context.materials import MATERIALS
 from plugins.tools.api import CallSource, Result
 from plugins.tools.plugin import TOOLS, ToolRef
-from session.message import ContentPart, Message
+from agent.plugin_contracts import ContentPart, Message
 from session.message_codec import json_value
 
 class SkillQuery(BaseModel):

@@ -20,7 +20,7 @@ from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.plugin import TOOLS, ToolView
 from session.log import MessageReader, OwnerRecord
-from session.message import Message
+from agent.plugin_contracts import Message
 from session.message_codec import body_to_dict
 
 from .admission import Admission, Duties

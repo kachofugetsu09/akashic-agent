@@ -15,7 +15,7 @@ from plugins.conversation.source import Conversation
 from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
-from session.message import Control, Input
+from agent.plugin_contracts import Control, Input
 
 from .control import PROGRAMMATIC, Programmatic, check_session
 

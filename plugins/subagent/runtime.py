@@ -17,7 +17,7 @@ from plugins.delivery.plugin import DELIVERY
 from plugins.reply.api import REPLY_PROGRAM
 from plugins.context.api import Reminder
 from session.log import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from session.message import ContentPart, Control, Input, Message, Output
+from agent.plugin_contracts import ContentPart, Control, Input, Message, Output
 from session.message_codec import json_value
 
 from .request import Request, check_request

@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.tasks import Task
 from session.log import MessageReader
-from session.message import Message
+from agent.plugin_contracts import Message
 
 
 # 原子材料入口；来源不改写用户 Input，也不复制主回复的配置与工具策略。

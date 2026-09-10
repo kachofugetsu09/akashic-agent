@@ -20,7 +20,7 @@ from plugins.tools.api import Denied
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import SessionAttributes
-from session.message import ContentPart, Input, Message, Output
+from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .tool import InstallInput
 

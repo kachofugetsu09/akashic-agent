@@ -9,7 +9,7 @@ from agent.persona import read_veda_file
 from agent.plugin_composition import Context
 from plugins.context.api import Materials, Reminder
 from plugins.context.materials import MATERIALS
-from session.message import Input, Message
+from agent.plugin_contracts import Input, Message
 from session.message_codec import json_value
 
 from .text import build_behavior_rules, build_identity, build_telegram_rendering_prompt

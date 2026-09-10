@@ -8,7 +8,7 @@ from typing import Annotated, Literal, Self, cast
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from session.log import MessageConflict, MessageReader, MessageWriter, OwnerRecord, OwnerStore, OwnerTransaction
-from session.message import Body, Message
+from agent.plugin_contracts import Body, Message
 from session.message_codec import json_value
 
 from .api import Receipt, Sink, Text

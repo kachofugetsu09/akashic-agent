@@ -10,7 +10,7 @@ from typing import cast
 
 from agent.turn_effects import PostCommitEffect, post_commit_effect
 from session.artifacts import check_artifact_id
-from session.message import ContentPart, ContentReferences, Control, Input, Message
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
 
 
 def _history_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

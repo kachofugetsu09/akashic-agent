@@ -13,7 +13,7 @@ from plugins.content.plugin import check_text
 from plugins.content.api import check_artifact
 from plugins.models.selection import check_selection
 from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
-from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
 
 from .source import Conversation, update_selection
 from .commands import CONVERSATION_COMMANDS, run_commands

@@ -12,7 +12,7 @@ from agent.plugin_composition.models import (
     ModelContinuation,
     ModelRequest,
 )
-from session.message import (
+from agent.plugin_contracts import (
     ContentReferences,
     CallRef,
     ContentPart,

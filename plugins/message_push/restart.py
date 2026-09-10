@@ -23,7 +23,7 @@ from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durabl
 from plugins.tools.plugin import TOOLS, ToolRef
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import Message, MessageCatalog, MessageReader
-from session.message import CallRef, Input, Output, ToolCall, ToolResult, freeze_json
+from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult, freeze_json
 
 logger = logging.getLogger(__name__)
 

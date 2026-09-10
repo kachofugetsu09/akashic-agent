@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from session.message import ContentPart, Control, Input, Message, Output
+from agent.plugin_contracts import ContentPart, Control, Input, Message, Output
 
 
 @dataclass(frozen=True, slots=True)

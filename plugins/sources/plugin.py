@@ -7,7 +7,7 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.effect import Effect
 from plugins.conversation.source import Changed, Conversation
-from session.message import Message
+from agent.plugin_contracts import Message
 
 api_version = 3
 name = "sources"

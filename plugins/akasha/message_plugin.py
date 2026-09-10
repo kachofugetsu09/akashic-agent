@@ -20,7 +20,7 @@ from plugins.context.api import Materials, Reminder
 from plugins.context.materials import MATERIALS
 from plugins.tools.plugin import TOOLS, ToolRef, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.message import Message
+from agent.plugin_contracts import Message
 from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
 from .domain.model import EmbeddingSpaceMismatchError
 

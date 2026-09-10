@@ -2,7 +2,7 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from agent.plugin_composition.models import ChatModelSelection
-from session.message import ContentPart, ContentReferences, Input, Message
+from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message
 
 
 def check_selection(part: ContentPart) -> ContentReferences:

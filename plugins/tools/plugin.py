@@ -9,7 +9,7 @@ from typing import Literal, cast
 
 from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import Bindings
-from session.message import CallRef, ToolResult, freeze_json
+from agent.plugin_contracts import CallRef, ToolResult, freeze_json
 from session.log import MessageReader
 from agent.restart import ExternalRootPermit
 from plugins.content.plugin import check_text

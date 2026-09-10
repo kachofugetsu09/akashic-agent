@@ -15,7 +15,7 @@ from plugins.context.api import ContextModel, ContextOverflow, Materials, Summar
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.message import Message
+from agent.plugin_contracts import Message
 
 from .records import COMPACTION_SUMMARIES, StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, closed_groups, summarize, summary_groups, window_starts

@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from plugins.turn_projection.plugin import Turn, TurnProjection
 from session.log import MessageReader
-from session.message import Control, Input, Message
+from agent.plugin_contracts import Control, Input, Message
 
 
 def read_result_snapshot(

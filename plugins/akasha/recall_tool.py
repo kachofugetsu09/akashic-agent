@@ -17,7 +17,7 @@ from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS
 from session.embedding_store import MessageEmbeddings
 from session.log import MessageCatalog
-from session.message import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
 from session.message_codec import json_value
 
 from .application.consumer import run_memory_job

@@ -15,7 +15,7 @@ from core.net.http import HttpRequester, RequestBudget, RetryPolicy
 from plugins.tools.api import CallSource, Result
 from plugins.tools.api import InvalidArguments
 from plugins.tools.plugin import TOOLS, ToolRef
-from session.message import ContentPart
+from agent.plugin_contracts import ContentPart
 from session.message_codec import json_value
 
 class WebTool:

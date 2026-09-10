@@ -13,7 +13,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from plugins.delivery.api import Sink
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS, bind_saved_tool
-from session.message import ContentPart, Input
+from agent.plugin_contracts import ContentPart, Input
 from session.message_codec import json_value
 
 from .request import PROFILE_TOOLS, Request, SpawnInput

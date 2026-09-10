@@ -10,7 +10,7 @@ from agent.plugin_composition.tasks import Task
 from session.log import MessageReader
 
 from plugins.delivery.api import Sink
-from session.message import ContentPart, ContentReferences, Control, Input, Message
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
 from session.message_codec import json_value
 
 from .api import DeliveryTarget

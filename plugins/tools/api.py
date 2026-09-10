@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
 from session.log import MessageReader, MessageWriter, OwnerStore
-from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
 Outcome = Literal["success", "denied", "error", "interrupted"]

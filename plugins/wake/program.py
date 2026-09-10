@@ -18,7 +18,7 @@ from plugins.tools.api import Denied
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
-from session.message import Control, Message
+from agent.plugin_contracts import Control, Message
 
 from .messages import HINTS, render
 from .request import Request, STAGE_TOOLS, WakeFailure, read_phase

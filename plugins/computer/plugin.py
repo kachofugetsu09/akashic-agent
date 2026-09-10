@@ -27,7 +27,7 @@ from plugins.tools.api import BoundTool, CallSource, Result
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from session.log import MessageCatalog, OwnerRecord, OwnerStore
-from session.message import ContentPart, Input, Message, Output, ToolCall
+from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
 
 from .control import ComputerDriverError, endpoint_name, request
 

@@ -234,6 +234,21 @@ reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 �
 
 ### 第 3 步 · 机械迁移（需独立授权）
 
+**执行进度（2026-09-10，stacked PR 第 3 层）**
+
+| 批次 | 内容 | R1 | R2 | R3 |
+|---|---|---|---|---|
+| 起点（第 2 步后） | — | 25 | 244 | 238 |
+| 1/6 | R1 范围裁决 + 迁移豁免（决策 0064 决定 6） | 8 | 244 | 238 |
+| 2/6 | 删除四个非 Yoyo 遗留迁移目录 | 8 | 244 | 238 |
+| 3/6 | `session.message` 76 处改经 `agent.plugin_contracts` | 8 | 168 | 238 |
+
+第 3/6 批的做法：第 1 步已经把消息词汇表移入 `agent.plugin_contracts`、
+`session/message.py` 只做再导出，因此本批是纯文本改写
+`from session.message import X` → `from agent.plugin_contracts import X`（76 文件 78 处），
+导出对象身份由 `session.message.Message is agent.plugin_contracts.Message` 守护，
+不改任何运行时语义。
+
 把 R1～R3 的欠账降到 0：
 
 1. `session.*` 深路径（172 处）改经结构合同。

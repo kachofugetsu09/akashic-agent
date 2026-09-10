@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ModelRequest
-from session.message import (
+from agent.plugin_contracts import (
     Message,
 )
 from plugins.context.api import ContextModel, ContextOverflow, Materials, Summary, settled_prefixes, summary_range
