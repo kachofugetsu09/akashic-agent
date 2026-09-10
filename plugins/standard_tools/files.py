@@ -20,7 +20,7 @@ from plugins.standard_tools.filesystem import (
 )
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS, ToolRef
-from session.artifacts import AttachmentKind
+from agent.plugin_contracts.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
 

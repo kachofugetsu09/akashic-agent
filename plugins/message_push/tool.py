@@ -15,7 +15,7 @@ from plugins.content.plugin import check_text
 from plugins.delivery.api import Receipt, Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.tools.api import CallSource, InvalidArguments, Result
-from session.artifacts import AttachmentKind
+from agent.plugin_contracts.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart, Output
 from agent.plugin_contracts import decode_body, encode_body, json_value
 

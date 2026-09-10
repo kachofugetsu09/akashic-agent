@@ -12,7 +12,7 @@ from agent.plugin_composition.artifacts import ArtifactRead
 from infra.channels.telegram_utils import strip_chunk
 from plugins.delivery.api import Receipt
 from plugins.delivery.content import AttachmentReadError, File, read_content
-from session.artifacts import AttachmentKind
+from agent.plugin_contracts.artifacts import AttachmentKind
 from session.log import MessageCatalog
 from agent.plugin_contracts import Message
 

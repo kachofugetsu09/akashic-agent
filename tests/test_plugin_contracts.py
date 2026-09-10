@@ -105,3 +105,18 @@ def test_legacy_message_codec_shim_exports_every_consumed_name() -> None:
 
     for name in ("json_value", "body_to_dict", "encode_body", "decode_body", "_unique_fields"):
         assert hasattr(shim, name), f"session.message_codec 缺少 {name}"
+
+
+def test_legacy_artifacts_shim_exports_every_consumed_name() -> None:
+    """再导出必须覆盖所有被消费的名字，包括 Core 内部再导出用的名字。"""
+
+    import session.artifacts as shim
+
+    for name in (
+        "AttachmentKind",
+        "AttachmentReadLease",
+        "AttachmentReadPort",
+        "AttachmentRef",
+        "check_artifact_id",
+    ):
+        assert hasattr(shim, name), f"session.artifacts 缺少 {name}"

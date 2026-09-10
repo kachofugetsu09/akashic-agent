@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from agent.plugin_composition.artifacts import ArtifactRead
-from session.artifacts import AttachmentRef
+from agent.plugin_contracts.artifacts import AttachmentRef
 from session.log import MessageCatalog
 from agent.plugin_contracts import ContentPart, Control, Message
 

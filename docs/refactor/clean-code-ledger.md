@@ -2967,3 +2967,15 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：删除 6 条 R2，R2 由 122 降到 116。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_akasha_learning_binding.py tests/test_scheduler_tools.py tests/test_default_reply.py` = `118 passed`；`tests/test_message_markdown_memory.py tests/test_akasha_recall_records.py` = `60 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（8/8）：附件值词汇表移入结构合同
+
+- 基线：stacked base `da646d20`；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：move & re-export。`session/artifacts.py` → `agent/plugin_contracts/artifacts.py`，旧路径保留再导出。该模块零仓库内 import（只用 `re`/`dataclasses`/`enum`/`typing`），定义不可变附件值词汇，符合合同层职责。
+- **再次踩到 5b 的同一类坑**：首次 shim 只导出代码里显式使用的 3 个名字（`AttachmentKind`/`AttachmentRef`/`check_artifact_id`），漏了 `AttachmentReadLease`/`AttachmentReadPort` —— 它们由 `agent/plugin_composition/artifacts.py`、`channels.py` 消费。`python -c "import agent.plugin_composition"` 立即暴露 `ImportError`。
+- 修正方式与规则化：按「全库实际被 import 的名字集合」导出全部 5 个名字，并新增 `test_legacy_artifacts_shim_exports_every_consumed_name` 守护。这印证了 5b 写下的规则必须**在每次 move 前先跑一次全库名字扫描**，而不是事后补。
+- 消费者改写：插件侧 6 处改 `agent.plugin_contracts.artifacts`；Core 侧保持旧路径（shim）不变，缩小 diff。
+- 身份守护：5 个名字新旧路径 `is` 同一对象；`import agent.plugin_composition`、`agent.control.service`、`session.artifact_store`、`session.log` 全部可 import。
+- 账本：删除 6 条 R2，R2 由 116 降到 110。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_message_artifacts.py tests/test_artifact_store.py tests/test_channel_attachment_store.py tests/test_content_protocols.py tests/test_native_senders.py` = `155 passed`。
+- 持久化/运行 workspace 变化：`none`。
