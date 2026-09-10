@@ -2,6 +2,24 @@
 
 这份文件只保存 Akashic Agent 当前仍未完成的工作。事项完成后删除，不保留“已完成”记录。
 
+## P0 · 插件边界第 2、3 步
+
+[0064 插件边界由机器强制](decisions/0064-plugin-boundary-is-machine-enforced.md) 已接受，
+第 1 步（能力角色表、import 门、公开结构合同模块）已实现。以下两步各自需要独立授权与 Gate，
+不能合并推进：
+
+- **第 2 步 · 删死代码**：删除不可达的 `agent/tools/` 副本（`RuntimeSnapshot.tool_registry`
+  只声明不赋值，生产调用方从不传入）、只剩 `__pycache__` 的插件目录、`plugin_packages/` 残留。
+  删除前逐项确认「无 importer + 无动态入口 + 无测试依赖」；确需预留的按
+  [插件边界地基](design/plugin-boundary-foundation.md#6-分阶段实施方案) 要求写明理由。
+- **第 3 步 · 机械迁移**：把 `plugin_boundary_baseline.toml` 的 R1（28 条）、R2（244 处）、
+  R3（238 处）降到 0，并完成 `core.restart_gate.v1`、`core.control_frames.v1` 归位与
+  `agent.plugins.snapshot` 去全局。每批只做一种改写、单独 commit、跑 targeted tests，
+  移动定义时必须 move & re-export 而不是复制。
+
+不可机械化的部分（Turn 原子、压缩 surface replacement、Channel 双栈收敛、外部插件仓库迁移）
+不在上述两步范围内，需要各自的设计与差分 Gate。
+
 ## P0 · Akashic Channel 与 Web/Mobile Adapter 实现
 
 [Akashic Channel 与 Web/Mobile Adapter 规格](design/akashic-channel-client-adapters.md) 已确认

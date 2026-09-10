@@ -1,7 +1,7 @@
-"""兼容入口；公开消息词汇表由 `agent.plugin_contracts` 拥有。
+"""插件公开结构合同。
 
-本模块保留原导入路径，避免一次性改动既有调用点。新代码和插件应导入
-`agent.plugin_contracts`（或经 `agent.plugin_composition` 的公开导出）。
+插件只能依赖本模块和 `agent.plugin_composition`；本模块只定义不可变值词汇表
+和不依赖实现的 Protocol，不导入服务实现、存储层或 bootstrap。
 """
 
 from agent.plugin_contracts.message import (

@@ -70,6 +70,7 @@
 | [0062](0062-tools-flow-through-provider-views.md) | accepted / implemented | 工具通过 provider view 流向消费者 | CTX-004、CTX-007、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016、PLG-018 |
 
 | [0063](0063-execution-failures-have-terminal-results.md) | accepted | 执行失败明确收尾，恢复依据原回执 | Tools、Delivery、Wake、Mobile、Models |
+| [0064](0064-plugin-boundary-is-machine-enforced.md) | accepted | 插件边界由机器强制：能力角色表与 import 门 | PLG-001～PLG-017、GOV-001～GOV-005、TST-001～TST-008 |
 
 ## 新增规则
 
