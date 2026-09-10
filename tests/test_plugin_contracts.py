@@ -96,3 +96,12 @@ def test_message_identity_survives_both_paths() -> None:
     assert isinstance(message, contracts.Message)
     assert isinstance(message.body, contracts.Input)
     assert isinstance(message.body.parts[0], contracts.ContentPart)
+
+
+def test_legacy_message_codec_shim_exports_every_consumed_name() -> None:
+    """再导出必须覆盖所有被消费的名字，包括 yoyo 迁移用的私有 helper。"""
+
+    import session.message_codec as shim
+
+    for name in ("json_value", "body_to_dict", "encode_body", "decode_body", "_unique_fields"):
+        assert hasattr(shim, name), f"session.message_codec 缺少 {name}"

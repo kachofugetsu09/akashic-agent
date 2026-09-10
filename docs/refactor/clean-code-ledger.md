@@ -2927,3 +2927,13 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：`plugin_boundary_baseline.toml` 删除 5 条 R2 假条目，R2 由 138 降到 133。这不是「放宽门」——被删除的条目本来就不是违规，留着会让「只许减少」的账本失真。
 - 验证：`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_message_log.py` = `114 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（5b/6）：修复 message_codec 再导出漏掉私有 helper
+
+- 发现方式：change-impact Gate 的 `model_owner_contract` 场景失败（17 failed / 58 passed），报 `ImportError: cannot import name '_unique_fields' from 'session.message_codec'`。这是第 4/6 批 move & re-export 引入的真实回归。
+- 根因：不可变的 yoyo 迁移 `migrations/yoyo/20260907_03_message_metadata.py` 直接 `from session.message_codec import _unique_fields`。再导出 shim 只列了 4 个公开名字，漏了私有 helper。`from x import _name` 不受 `__all__` 限制，但名字必须实际存在于模块命名空间。
+- 修复：`session/message_codec.py` 再导出 `_unique_fields` 并在注释中写明原因（不放进 `__all__`，但必须可 import）。
+- 复现与验证：`pytest tests/test_migration_runner.py` 由 17 failed 变为 `22 passed`；Gate 的完整失败命令（含 `test_model_owner_contract.py` 等 6 个目标）由 17 failed/58 passed 变为 `75 passed`；`_unique_fields` 在新旧路径下 `is` 同一对象。
+- 守护：新增 `test_legacy_message_codec_shim_exports_every_consumed_name`，逐一断言被消费的 5 个名字（含私有）在 shim 上存在。
+- 全库核对：`session.message_codec` 被消费的私有名只有 `_unique_fields` 一个；`session.message` 无私有名消费者。
+- 经验（已写入设计文档）：做 move & re-export 时，必须按「全库实际被 import 的名字集合」导出，而不是按原模块的 `__all__` 或公开 API。私有名同样可能被不可变迁移依赖。

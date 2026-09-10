@@ -267,6 +267,15 @@ reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 �
 `test_core_top_levels_do_not_shadow_stdlib` 守护：将来若有与标准库同名的顶层要登记为
 core，必须先有真实 `__init__.py`。
 
+**move & re-export 的强制检查（第 4/6 批的真实教训）。** 该批首次提交时漏掉了私有 helper
+`_unique_fields` —— 不可变的 yoyo 迁移 `20260907_03_message_metadata.py` 直接 import 它，
+`from x import _name` 不受 `__all__` 限制但名字必须存在。结果 change-impact Gate 的
+`model_owner_contract` 场景 17 项失败。修复后 Gate 目标命令由 `17 failed / 58 passed`
+变为 `75 passed`。
+
+因此后续任何 move & re-export 都必须：**按全库实际被 import 的名字集合导出**（含私有名），
+而不是按原模块的公开 API 或 `__all__`。这一步不能省，因为不可变迁移会依赖私有名。
+
 把 R1～R3 的欠账降到 0：
 
 1. `session.*` 深路径（172 处）改经结构合同。
