@@ -13,7 +13,7 @@ from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.conversation.source import Conversation
 from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from session.log import MessageReader
 from agent.plugin_contracts import Control, Input
 

@@ -21,7 +21,7 @@ from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts import ContentPart, Output
 from agent.plugin_contracts import json_value
 

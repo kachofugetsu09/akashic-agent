@@ -7,7 +7,7 @@ from typing import Annotated, Literal, Protocol
 from agent.plugin_composition import ServiceKey
 from pydantic import BaseModel, ConfigDict, Field
 
-from plugins.turn_projection.plugin import Turn
+from agent.plugin_contracts.turn_projection import Turn
 from session.log import MessageReader
 from agent.plugin_contracts import Message
 

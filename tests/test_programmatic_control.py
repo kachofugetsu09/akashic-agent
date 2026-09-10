@@ -93,7 +93,7 @@ async def test_programmatic_resume_rebinds_output_to_new_connection_after_discon
     """旧连接断开后，显式 resume 必须把最终 Output 观察交给新连接。"""
     from agent.plugins.snapshot import lease_runtime_snapshot
     from plugins.programmatic.control import PROGRAMMATIC
-    from plugins.turn_projection.plugin import TURN_PROJECTION
+    from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 
     async with endpoint(tmp_path, monkeypatch) as (address, core):
         session = "programmatic:resume"

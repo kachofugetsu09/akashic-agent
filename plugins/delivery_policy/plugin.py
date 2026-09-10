@@ -21,7 +21,7 @@ from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.reply.completion import REPLY_COMPLETION
 from session.log import MessageReader
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
-from plugins.turn_projection.plugin import Turn
+from agent.plugin_contracts.turn_projection import Turn
 
 from .follow import follow
 

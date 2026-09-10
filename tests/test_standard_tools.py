@@ -26,7 +26,7 @@ from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from plugins.tools.api import MessageReply
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from plugins.standard_web.web import WebTool

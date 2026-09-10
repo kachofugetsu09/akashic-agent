@@ -11,7 +11,7 @@ from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts.turn_effects import PostCommitEffect
 from plugins.content.api import legacy_post_commit_effect
 from agent.plugin_contracts.tools import TOOLS
-from plugins.turn_projection.plugin import TurnProjection
+from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
 from session.embedding_store import MessageEmbeddings
 from session.log import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall, ToolResult

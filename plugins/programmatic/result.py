@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from plugins.turn_projection.plugin import Turn, TurnProjection
+from agent.plugin_contracts.turn_projection import Turn
+from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
 from session.log import MessageReader
 from agent.plugin_contracts import Control, Input, Message
 

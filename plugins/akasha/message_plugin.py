@@ -19,7 +19,7 @@ from plugins.content.plugin import CONTENT
 from plugins.context.api import Materials, Reminder
 from plugins.context.materials import MATERIALS
 from agent.plugin_contracts.tools import TOOLS, ToolRef, ToolView
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts import Message
 from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
 from .domain.model import EmbeddingSpaceMismatchError

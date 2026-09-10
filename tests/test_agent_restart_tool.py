@@ -38,7 +38,7 @@ from agent.plugin_contracts.tool_api import (
 from plugins.tools.api import MessageReply
 from plugins.content.plugin import check_text
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
 from session.log import MessageLog, MessageReader
 from session.artifact_store import ArtifactStore

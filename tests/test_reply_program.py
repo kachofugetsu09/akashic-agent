@@ -26,7 +26,7 @@ from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.react.plugin import react
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from session.log import MessageLog
 from session.message import ContentPart, Control, Input, Output, ToolResult
 

@@ -16,7 +16,7 @@ from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT, StepLimit
 from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import TOOLS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from session.log import MessageReader
 from agent.plugin_contracts import Control, Message
 

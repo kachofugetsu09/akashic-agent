@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from plugins.context.plugin import ContextBuilder
     from plugins.context.materials import ContextMaterials
     from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog
-    from plugins.turn_projection.plugin import TurnProjection
+    from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
     from plugins.react.plugin import Preview
 
 

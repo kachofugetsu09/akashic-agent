@@ -3025,3 +3025,13 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：R1 由 6 降到 5（`infra/channels/message_view.py|plugins.tools.api`）；R3 由 228 降到 184。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/tool_views/tool_bindings/tool_abandon/standard_tools/shell_tool/subagent_messages/message_push_plugin/scheduler_messages/reply_program/akasha_learning_binding/agent_restart_tool/computer_driver_plugin/plugin_update_source）= `221 passed, 1 skipped`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（11）：Turn 投影合同化
+
+- 基线：stacked base `3f183b73`；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam。`plugins.turn_projection.plugin` 是 R3 最大目标（23 条）：`Turn` 值模型 + `TurnProjectionPort` + `TURN_PROJECTION` 移入 `agent/plugin_contracts/turn_projection.py`，实现留在插件；登记为 `seam`。
+- 消费者注解统一为 Port：从 `ctx.require(TURN_PROJECTION)` 取到的值一律注解为 `TurnProjectionPort`（`as TurnProjection`），插件里不再 import 实现类。**只有提供方** `plugins/turn_projection/plugin.py` 实例化具体类。
+- 值语义不变：`Turn` 是纯 frozen dataclass，`TURN_PROJECTION` 只按 name 相等，归位零运行时语义。
+- 账本：R3 由 184 降到 161。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/turn_projection/akasha_message_projection/akasha_message_consumption/akasha_recall_records/akasha_semantic_interest/programmatic_result/message_compaction_summary/message_markdown_memory）= `177 passed`。
+- 持久化/运行 workspace 变化：`none`。

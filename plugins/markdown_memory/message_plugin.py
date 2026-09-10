@@ -32,7 +32,8 @@ from plugins.compaction.message_summary import source_text, summary_groups, wind
 from plugins.content.api import is_user_input, legacy_post_commit_effect
 from plugins.context.api import Materials, check_summary, summary_range
 from plugins.context.materials import MATERIALS
-from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
 from session.log import MessageCatalog, MessageReader
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
 

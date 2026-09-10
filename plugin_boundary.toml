@@ -168,6 +168,10 @@ note = "模型调用统计读取"
 # 由插件提供、Core 与其它插件共同消费的 well-known 能力：key 与 Protocol 由
 # 结构合同层拥有，实现留在对应插件。消费者只依赖名字与合同，不依赖实现模块，
 # 因此 Core 可以在 plugins/ 缺席时正常启动（少了 provider 只影响该能力）。
+[capabilities."turn.projection.v1"]
+role = "seam"
+note = "只读 Turn 投影；实现由 plugins/turn_projection 提供"
+
 [capabilities."tools.v1"]
 role = "seam"
 note = "工具注册表；实现由 plugins/tools 提供，消费者只依赖合同与 key"

@@ -15,7 +15,7 @@ from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryRecord, Summ
 from plugins.content.plugin import check_text
 from plugins.context.api import check_summary
 from plugins.context.materials import MATERIALS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from plugins.markdown_memory.store import MarkdownProfileStore
 from session.log import MessageLog, SessionAttributes
 from session.message import ContentPart, Input, Output

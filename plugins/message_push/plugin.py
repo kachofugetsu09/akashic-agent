@@ -12,7 +12,7 @@ from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.delivery.plugin import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from agent.plugin_contracts.tools import TOOLS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 
 from .tool import MessagePush, PushInput
 from .restart import register_restart

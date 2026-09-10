@@ -9,7 +9,8 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResolver
 from agent.control.protocol.method import RequestTransport
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
-from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION, Turn
+from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
 from session.log import MessageReader, SessionAttributes
 from agent.plugin_contracts import ContentPart, Input
 

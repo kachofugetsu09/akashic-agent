@@ -14,7 +14,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from plugins.context.api import ContextModel, ContextOverflow, Materials, Summary, summary_range
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts import Message
 
 from .records import COMPACTION_SUMMARIES, StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords

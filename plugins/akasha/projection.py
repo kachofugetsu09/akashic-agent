@@ -19,7 +19,7 @@ from .infrastructure.consumption import Applied
 from .infrastructure.sparse_index.encoding import tokenize
 
 if TYPE_CHECKING:
-    from plugins.turn_projection.plugin import TurnProjection
+    from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
 
 
 type CausalKey = tuple[datetime, str, int, str]

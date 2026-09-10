@@ -486,7 +486,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
     from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     from plugins.akasha.learning import Learning
-    from plugins.turn_projection.plugin import TURN_PROJECTION
+    from agent.plugin_contracts.turn_projection import TURN_PROJECTION
     from session.message import ContentPart
     async with application(tmp_path) as (host, log, ctx, source, control):
         now = datetime.now(timezone.utc)
