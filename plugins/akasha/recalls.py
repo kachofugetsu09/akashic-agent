@@ -9,7 +9,7 @@ from collections.abc import Mapping
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, FiniteFloat, model_validator
 
-from plugins.content.api import Reference
+from agent.plugin_contracts.content import Reference
 from plugins.context.api import Materials, Reminder
 from .application.cycle import MemoryCycle, RetrievalTicket
 from .domain.model import Turn

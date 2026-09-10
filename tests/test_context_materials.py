@@ -6,7 +6,7 @@ import pytest
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, lease_runtime_snapshot
-from plugins.content.api import Reference
+from agent.plugin_contracts.content import Reference
 from agent.plugin_composition.models import BoundChatModel, LLMResponse, ModelRequest
 from plugins.context.api import ContextModel, Materials, Reminder, Summary
 from plugins.context.materials import ContextMaterials

@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.messages import MESSAGE_WRITERS
-from plugins.content.api import check_artifact
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_artifact
+from agent.plugin_contracts.content import check_text
 from plugins.delivery.api import Receipt, Sink
 from plugins.delivery.plugin import DELIVERY
 from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result

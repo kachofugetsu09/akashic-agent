@@ -22,7 +22,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.standard_tools.shell import SHELL_OWNERS, shell_cleanup
-from plugins.content.plugin import CONTENT, check_text
+from agent.plugin_contracts.content import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply

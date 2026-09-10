@@ -11,7 +11,7 @@ from agent.migrations.context import bind_migration_context
 from infra.channels.message_view import follow_messages, message_rows
 from session.log import MessageConflict, MessageLog
 from session.message import ContentPart, MAX_METADATA_BYTES, Output
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 
 
 def writer(log, namespaces=frozenset({"citation", "meme"})):

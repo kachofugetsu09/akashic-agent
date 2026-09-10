@@ -11,8 +11,8 @@ from uuid import uuid4
 
 from agent.migrations.session_db_backup import backup_sqlite_database
 from agent.turn_effects import post_commit_effect
-from plugins.content.api import check_artifact, check_turn_input, legacy_post_commit_effect
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_artifact, check_turn_input, legacy_post_commit_effect
+from agent.plugin_contracts.content import check_text
 from plugins.conversation.plugin import check_origin
 from session.log import MessageLog, OwnerTransaction, _sql  # pyright: ignore[reportPrivateUsage]
 from session.message import ContentPart, ContentReferences, Control, Input, Message, Output

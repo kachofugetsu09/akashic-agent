@@ -8,7 +8,7 @@ import pytest
 
 from akashic_sdk import AsyncAkashic, RemoteError
 from infra.control.socket import SocketAppServer
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from session.log import SessionAttributes
 from session.message import CallRef, ContentPart, Input, Output
 from tests.test_message_control import runtime

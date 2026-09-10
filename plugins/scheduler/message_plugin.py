@@ -11,7 +11,7 @@ from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNT
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.timers import TIMERS
-from plugins.content.plugin import CONTENT
+from agent.plugin_contracts.content import CONTENT
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
 from plugins.conversation.program import run_reply

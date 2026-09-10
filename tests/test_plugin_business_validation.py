@@ -405,7 +405,7 @@ async def test_validation_reply_reads_real_memory_without_starting_learning(tmp_
     from plugins.akasha.infrastructure.persistence import logical_state_sha256
     from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
     from plugins.akasha.recalls import RecallRecords
-    from plugins.content.plugin import CONTENT
+    from agent.plugin_contracts.content import CONTENT
     from plugins.markdown_memory.message_plugin import start_store
     from plugins.markdown_memory.store import MarkdownProfileStore
     from session.message import Output

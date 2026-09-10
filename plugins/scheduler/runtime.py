@@ -10,8 +10,8 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_composition.timers import TIMERS
-from plugins.content.api import check_artifact
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_artifact
+from agent.plugin_contracts.content import check_text
 from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS

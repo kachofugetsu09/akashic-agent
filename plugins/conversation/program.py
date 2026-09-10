@@ -26,7 +26,7 @@ from session.log import MessageReader
 from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output, ToolResult
 
 if TYPE_CHECKING:
-    from plugins.content.plugin import Content
+    from agent.plugin_contracts.content import ContentView as Content
     from plugins.context.plugin import ContextBuilder
     from plugins.context.materials import ContextMaterials
     from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog

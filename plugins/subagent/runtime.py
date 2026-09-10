@@ -11,7 +11,7 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from plugins.conversation.plugin import CONVERSATION
 from plugins.delivery.plugin import DELIVERY
 from plugins.reply.api import REPLY_PROGRAM

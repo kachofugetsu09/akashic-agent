@@ -13,7 +13,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from agent.plugin_composition.tasks import TASKS
-from plugins.content.plugin import CONTENT, check_text
+from agent.plugin_contracts.content import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.delivery.plugin import DELIVERY

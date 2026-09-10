@@ -15,8 +15,8 @@ from plugins.akasha.interest import SEMANTIC_INTEREST
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.delivery.history import DELIVERY_READ
 from plugins.drift.plugin import DRIFT_CHANGED
-from plugins.content.api import ContentSchema
-from plugins.content.plugin import CONTENT
+from agent.plugin_contracts.content import ContentSchema
+from agent.plugin_contracts.content import CONTENT
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.delivery.plugin import DELIVERY

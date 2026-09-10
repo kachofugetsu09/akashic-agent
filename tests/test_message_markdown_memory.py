@@ -12,7 +12,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryRecord, SummaryRecords
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from plugins.context.api import check_summary
 from plugins.context.materials import MATERIALS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
@@ -254,7 +254,7 @@ async def test_markdown_does_not_reintroduce_abandoned_late_result_from_raw_rang
 ])
 def test_legacy_effect_reader_rejects_unproven_or_ambiguous_metadata(raw, digest, error):
     from datetime import UTC, datetime
-    from plugins.content.api import legacy_post_commit_effect
+    from agent.plugin_contracts.content import legacy_post_commit_effect
     from session.message import Message
     row = Message("old", "s", 0, datetime.now(UTC), "migration", "legacy-unattributed",
                   Input((legacy_part(raw, digest=digest),)))

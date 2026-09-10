@@ -160,7 +160,7 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
     from bootstrap.init_workspace import init_workspace
     from plugins.context.materials import MATERIALS
     from plugins.akasha.infrastructure.persistence import logical_state_sha256
-    from plugins.content.plugin import CONTENT
+    from agent.plugin_contracts.content import CONTENT
     from session.message import Output
 
     import asyncio

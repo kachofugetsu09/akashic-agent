@@ -16,7 +16,7 @@ from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.log import MessageLog, MessageWriter, OwnerTransaction
 from session.artifact_store import ArtifactStore
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.tools.api import MessageReply
 from plugins.tools.execution import ToolExecution

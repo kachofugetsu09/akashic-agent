@@ -22,7 +22,7 @@ from session.log import MessageReader, MessageWriter
 from agent.plugin_contracts import CallRef, Control, Message, Output, Part, ContentPart, ToolCall, ToolResult
 
 if TYPE_CHECKING:
-    from plugins.content.plugin import ContentView
+    from agent.plugin_contracts.content import ContentView
     from plugins.context.plugin import ContextBuilder
     from plugins.models.projection import MessageProjection
     from plugins.tools.menu import ToolMenu

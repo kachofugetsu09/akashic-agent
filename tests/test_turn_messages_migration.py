@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from agent.migrations.turn_messages import migrate_turn_messages
-from plugins.content.api import legacy_post_commit_effect
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import legacy_post_commit_effect
+from agent.plugin_contracts.content import check_text
 from plugins.conversation.source import needs_reply
 from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Control, Input, Output

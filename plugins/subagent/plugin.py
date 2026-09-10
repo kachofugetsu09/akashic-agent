@@ -9,7 +9,7 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING
-from plugins.content.plugin import CONTENT
+from agent.plugin_contracts.content import CONTENT
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
 from plugins.conversation.plugin import CONVERSATION

@@ -14,8 +14,8 @@ from agent.plugin_composition import EMBEDDINGS, RUNTIME_STARTED, RUNTIME_STOPPI
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.commands import COMMANDS, CommandDefinition, CommandInvocation, CommandResult
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE
-from plugins.content.api import ContentSchema
-from plugins.content.plugin import CONTENT
+from agent.plugin_contracts.content import ContentSchema
+from agent.plugin_contracts.content import CONTENT
 from plugins.context.api import Materials, Reminder
 from plugins.context.materials import MATERIALS
 from agent.plugin_contracts.tools import TOOLS, ToolRef, ToolView

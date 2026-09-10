@@ -37,10 +37,6 @@ desc = "按固定协议组装内容，各解析器只读取同一份原文"
 inject = ()
 
 
-def check_text(part: ContentPart) -> ContentReferences:
-    if not isinstance(part.value, str):
-        raise TypeError("text 内容必须是字符串")
-    return ContentReferences()
 
 
 def _literal_ranges(text: str) -> tuple[tuple[int, int], ...]:
@@ -147,18 +143,6 @@ async def _decode_text(
     return tuple(parts), freeze_metadata(metadata)
 
 
-class ContentView(Protocol):
-    def check_metadata(self, metadata: Mapping[str, object]) -> None: ...
-
-    @property
-    def prompts(self) -> tuple[str, ...]: ...
-
-    @property
-    def checks(self) -> Mapping[str, ContentCheck]: ...
-
-    async def decode(
-        self, text: str, references: tuple[Reference, ...] = ()
-    ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]: ...
 
 
 class _ContentView:
@@ -315,6 +299,14 @@ async def open_content(
         async with content.bind() as view:
             yield view
 
+
+
+# `check_text` 与 `ContentView` 的拥有者已移到结构合同层；这里保留再导出。
+from agent.plugin_contracts.content import (  # noqa: E402,F401
+    CONTENT,
+    ContentView,
+    check_text,
+)
 
 async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(CONTENT, Content(ctx))

@@ -12,7 +12,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
-from plugins.content.plugin import CONTENT
+from agent.plugin_contracts.content import CONTENT
 from plugins.context.materials import MATERIALS
 from plugins.tools.api import MessageReply
 from agent.plugin_contracts.tools import TOOLS
@@ -369,7 +369,7 @@ async def test_mobile_inspector_bounds_long_messages_without_dropping_hit_member
 
 @pytest.mark.asyncio
 async def test_default_akasha_learns_only_explicitly_eligible_programmatic_session(tmp_path):
-    from plugins.content.plugin import check_text
+    from agent.plugin_contracts.content import check_text
     from session.log import SessionAttributes
 
     async with application(tmp_path) as (log, host):

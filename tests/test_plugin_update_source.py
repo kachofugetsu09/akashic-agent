@@ -10,7 +10,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.tools.api import MessageReply
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from agent.plugin_composition.models import LLMResponse
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from plugins.models.projection import check_facts
 from session.embedding_store import MessageEmbeddingStore
 from session.log import MessageLog

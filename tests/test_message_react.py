@@ -13,7 +13,8 @@ from agent.plugin_composition.models import (
     ModelRole, ToolCall as ModelToolCall,
 )
 from agent.plugin_composition.tasks import Task, Tasks
-from plugins.content.plugin import _decode_text, check_text
+from agent.plugin_contracts.content import check_text
+from plugins.content.plugin import _decode_text
 from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary
 from plugins.context.plugin import ContextBuilder
 from plugins.conversation.source import Conversation, needs_reply

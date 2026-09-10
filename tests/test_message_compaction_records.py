@@ -5,7 +5,7 @@ from contextlib import closing
 import pytest
 
 from plugins.compaction.records import ImportedSummaryRecord, LegacySummarySource, SummaryLookup, SummaryRecord, SummaryRecords
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from session.log import MessageConflict, MessageLog, OwnerTransaction
 from session.message import ContentPart, Input
 

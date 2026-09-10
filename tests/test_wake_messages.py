@@ -200,7 +200,7 @@ def request(ctx, owner, now, *, proposals=(), alert_ref=None):
 def test_recent_context_keeps_legacy_dialogue_without_provenance(tmp_path):
     import json
 
-    from plugins.content.plugin import check_text
+    from agent.plugin_contracts.content import check_text
     from plugins.wake.messages import recent_context
     from session.log import MessageCatalog, MessageLog
     from session.message import ContentPart, ContentReferences
@@ -480,7 +480,7 @@ async def test_reasoning_only_response_defers_one_flow_and_runtime_handles_the_n
 
 @pytest.mark.asyncio
 async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory_cue(tmp_path):
-    from plugins.content.plugin import check_text
+    from agent.plugin_contracts.content import check_text
     from plugins.conversation.source import update_selection
     from plugins.models.selection import check_selection
     from plugins.wake.api import Config

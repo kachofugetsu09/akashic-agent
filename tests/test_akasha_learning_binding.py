@@ -162,7 +162,7 @@ async def test_archived_learning_restores_complete_interrupted_turn_and_feedback
         write(Output, "call", Output((ToolCall(feedback_tool, {"message_ids": ["u2"]}),), "continue"))
         ref = CallRef("call", 0)
         from plugins.tools.api import MessageReply
-        from plugins.content.plugin import CONTENT
+        from agent.plugin_contracts.content import CONTENT
         async def authorize(binding, arguments):
             return {"allowed": True}
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
@@ -364,7 +364,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
     ("", "remember_memory", "error"),
 ])
 async def test_feedback_uses_prepared_message_identity_after_interrupt_and_reports_invalid_targets(tmp_path, target, tool_name, expected):
-    from plugins.content.plugin import CONTENT
+    from agent.plugin_contracts.content import CONTENT
     from plugins.tools.api import MessageReply
     root = tmp_path / "plugins"
     sources(root)
@@ -429,7 +429,7 @@ async def test_feedback_uses_prepared_message_identity_after_interrupt_and_repor
 
 @pytest.mark.asyncio
 async def test_other_tool_owner_cannot_contribute_akasha_feedback(tmp_path):
-    from plugins.content.plugin import CONTENT
+    from agent.plugin_contracts.content import CONTENT
     from plugins.tools.api import MessageReply
     root = tmp_path / "plugins"
     sources(root)
@@ -515,7 +515,7 @@ async def apply(ctx, config):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("conflict", [True, False])
 async def test_same_output_feedback_checks_all_member_targets_before_authorization(tmp_path, conflict):
-    from plugins.content.plugin import CONTENT
+    from agent.plugin_contracts.content import CONTENT
     from plugins.tools.api import MessageReply
     root = tmp_path / "plugins"
     sources(root)

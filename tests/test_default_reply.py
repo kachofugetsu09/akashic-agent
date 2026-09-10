@@ -360,7 +360,7 @@ async def test_default_reply_applies_provider_tool_capacity_before_first_request
 async def test_actual_reply_compacts_history_before_provider_and_records_each_successful_use(tmp_path, has_cut, soft_only, large_summary):
     from agent.plugin_composition import ServiceKey
     from plugins.compaction.records import SummaryRecords
-    from plugins.content.plugin import check_text
+    from agent.plugin_contracts.content import check_text
     from plugins.models.projection import MODEL_CALLS
     from session.message import ContentPart, Control
 

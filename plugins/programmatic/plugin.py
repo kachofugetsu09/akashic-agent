@@ -9,7 +9,7 @@ from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.restart import RESTART_GATE
 from agent.control.frame_book import CONTROL_FRAMES
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.conversation.source import Conversation
 from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source

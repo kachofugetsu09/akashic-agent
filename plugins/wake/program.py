@@ -7,7 +7,7 @@ from agent.plugin_composition import CHAT_MODELS, Context
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import ModelError
 from agent.plugin_composition.tasks import Task
-from plugins.content.plugin import CONTENT
+from agent.plugin_contracts.content import CONTENT
 from plugins.context.plugin import CONTEXT
 from plugins.context.api import ContextOverflow
 from plugins.context.materials import MATERIALS

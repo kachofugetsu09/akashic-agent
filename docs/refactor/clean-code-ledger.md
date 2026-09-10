@@ -3065,3 +3065,17 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 数据文件（`workspace/schedules.json`），
 属于「Core 解析插件私有数据格式」。正确解法是让调度插件经版本化 `ServiceKey` 提供只读检查服务、
 在插件缺席时返回空，而不是把 storage 搬进合同层。该决定影响诊断结果在有/无调度插件时的语义，需单独批次与 Gate。
+
+## 2026-09-10 插件边界第 3 步（14）：内容能力合同化
+
+- 基线：stacked base `befc3d54`（第 13 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam + move & re-export。`plugins.content.api` 与 `plugins.content.plugin` 合计 29 条 R3，是内容簇的核心：
+  - `agent/plugin_contracts/content.py`（新）：`Reference`/`Span`/`TextSource`/`ContentSchema`/`TextProtocol` 值模型、`check_turn_input`/`legacy_post_commit_effect`/`is_user_input`/`check_artifact`/`check_text` 纯校验函数、`ContentView` Protocol、`ContentCheck`/`TextDecoder` 别名、`CONTENT` key。
+  - 实现在 `plugins/content/{api,plugin}.py`，两处保留再导出，对象身份不变；`CONTENT` 登记为 `seam`。
+  - `plugins/conversation/program.py` 的 TYPE_CHECKING 注解从具体 `Content` 改为 `ContentView`（它只读内容）。
+- **第三次踩「批量抽取」的坑**：用 AST 抽取定义时以 `node.lineno` 为起点，**丢掉了 `@dataclass` 装饰器行**，导致 `ContentSchema`/`TextProtocol` 变成普通类，`TextProtocol(name=..., prompt=..., decode=...)` 全部报错（47 failed）。修正为以 `min(decorator.lineno)` 为起点后重建合同模块。
+  - 规则化：**任何 AST 抽取/删除定义的操作，起点必须包含 decorator 行**（`min(d.lineno for d in node.decorator_list) - 1`）。第 8/9 批的「漏名」与本批的「丢装饰器」同属「机械变换没覆盖语法全部组成部分」。
+- 消费者改写：`plugins.content.api` 15 处、`plugins.content.plugin` 43 处。凡从实现模块 import 的、已在合同中的名字，改指 `agent.plugin_contracts.content`；`Content`/`open_content`/`_decode_text` 等实现名仍从插件取。
+- 账本：R3 由 161 降到 132。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/content_protocols/akasha_message_plugin/akasha_learning_binding/tool_views/reply_program/message_markdown_memory）= `188 passed`。
+- 持久化/运行 workspace 变化：`none`。

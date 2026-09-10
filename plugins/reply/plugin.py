@@ -14,7 +14,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.restart import RESTART_GATE
-from plugins.content.plugin import CONTENT
+from agent.plugin_contracts.content import CONTENT
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
 from plugins.sources.plugin import SOURCES, SOURCE_CHANGED

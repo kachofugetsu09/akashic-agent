@@ -10,7 +10,7 @@ from agent.plugin_composition import CHAT_MODELS, Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task
-from plugins.content.plugin import CONTENT, check_text
+from agent.plugin_contracts.content import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply

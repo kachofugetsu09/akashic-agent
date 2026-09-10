@@ -9,7 +9,7 @@ import pytest
 from agent.migrations.legacy_summaries import migrate_legacy_summaries
 from agent.migrations.session_attributes import migrate as migrate_attributes
 from plugins.compaction.records import SummaryLookup, SummaryRecords
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from session.log import MessageLog, OwnerTransaction
 from session.message import ContentPart, Input
 from session.store import SessionStore

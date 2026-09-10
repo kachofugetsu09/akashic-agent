@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Protocol, cast
 
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
-from plugins.content.api import Reference
+from agent.plugin_contracts.content import Reference
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Message, Output, ToolCall, ToolResult
 
 

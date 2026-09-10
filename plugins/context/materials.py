@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
-from plugins.content.api import Reference
+from agent.plugin_contracts.content import Reference
 from agent.plugin_contracts import Message
 
 from .api import ContextModel, Materials, Reminder, Summary, SummaryReducer

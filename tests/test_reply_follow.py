@@ -72,7 +72,7 @@ async def accept(host, session, identity):
 
 def output(ctx, task, reader, source):
     from agent.plugin_composition.messages import MESSAGE_WRITERS
-    from plugins.content.plugin import check_text
+    from agent.plugin_contracts.content import check_text
 
     writer = ctx.require(MESSAGE_WRITERS).bind(
         ctx, author="assistant", source=source, body_types=(Output,), content={"text": check_text}

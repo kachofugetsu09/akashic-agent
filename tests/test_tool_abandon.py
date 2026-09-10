@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from agent.restart import RestartGate
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from plugins.tools.abandon import abandon_call, follow_abandon, reject_start
 from agent.plugin_contracts.tool_api import Result, durable_call_key, result_message_id
 from plugins.tools.api import MessageReply

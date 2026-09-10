@@ -19,7 +19,7 @@ from agent.plugin_contracts.tools import (
 )
 from session.log import MessageReader
 from agent.plugin_contracts.restart import ExternalRootPermit
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 
 from plugins.tools.api import Authorize, BoundTool, CallSource, MessageReply, Result, display_name, result_message_id
 from plugins.tools.abandon import follow_abandon, reject_start

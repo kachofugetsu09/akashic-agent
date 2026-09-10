@@ -440,7 +440,8 @@ async def apply(ctx, config):
 async def test_content_binding_keeps_registered_protocol_owner_after_source_removal(
     tmp_path,
 ):
-    from plugins.content.plugin import CONTENT, open_content
+    from agent.plugin_contracts.content import CONTENT
+    from plugins.content.plugin import open_content
 
     sources = tmp_path / "plugins"
     sources.mkdir()

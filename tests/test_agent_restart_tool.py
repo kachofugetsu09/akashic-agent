@@ -36,7 +36,7 @@ from agent.plugin_contracts.tool_api import (
     durable_call_key,
 )
 from plugins.tools.api import MessageReply
-from plugins.content.plugin import check_text
+from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
