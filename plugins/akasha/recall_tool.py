@@ -18,7 +18,7 @@ from plugins.tools.plugin import TOOLS
 from session.embedding_store import MessageEmbeddings
 from session.log import MessageCatalog
 from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from .application.consumer import run_memory_job
 from .application.snapshot import read_memory

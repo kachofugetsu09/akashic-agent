@@ -18,7 +18,7 @@ from plugins.context.materials import MATERIALS
 from plugins.tools.api import CallSource, Result
 from plugins.tools.plugin import TOOLS, ToolRef
 from agent.plugin_contracts import ContentPart, Message
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 class SkillQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)

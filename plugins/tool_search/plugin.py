@@ -14,7 +14,7 @@ from plugins.tools.api import BoundTool, CallSource, InvalidArguments, Result
 from plugins.tools.menu import InvalidToolCall, ToolPresentation, tool_schema
 from plugins.tools.plugin import TOOLS, ToolCatalog, ToolRef, ToolView
 from agent.plugin_contracts import ContentPart
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 api_version = 3
 name = "tool_search"

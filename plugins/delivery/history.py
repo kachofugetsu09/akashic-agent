@@ -11,7 +11,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict
 from agent.plugin_composition import ServiceKey
 from session.log import MessageCatalog, OwnerStore
 from agent.plugin_contracts import Message
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from .api import Text
 

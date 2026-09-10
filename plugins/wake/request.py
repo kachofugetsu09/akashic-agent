@@ -11,7 +11,7 @@ from session.log import MessageReader
 
 from plugins.delivery.api import Sink
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from .api import DeliveryTarget
 from plugins.tools.plugin import ToolView

@@ -242,12 +242,22 @@ reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 �
 | 1/6 | R1 范围裁决 + 迁移豁免（决策 0064 决定 6） | 8 | 244 | 238 |
 | 2/6 | 删除四个非 Yoyo 遗留迁移目录 | 8 | 244 | 238 |
 | 3/6 | `session.message` 76 处改经 `agent.plugin_contracts` | 8 | 168 | 238 |
+| 4/6 | `session.message_codec` 移入 `agent.plugin_contracts`（move & re-export） | 8 | 138 | 238 |
 
 第 3/6 批的做法：第 1 步已经把消息词汇表移入 `agent.plugin_contracts`、
 `session/message.py` 只做再导出，因此本批是纯文本改写
 `from session.message import X` → `from agent.plugin_contracts import X`（76 文件 78 处），
 导出对象身份由 `session.message.Message is agent.plugin_contracts.Message` 守护，
 不改任何运行时语义。
+
+第 4/6 批的做法：`session/message_codec.py` 只依赖消息词汇表与标准库（纯编解码，无存储，
+无 bootstrap），因此按第 1 步 `message.py` 的同一形态 **move & re-export**：
+实现移到 `agent/plugin_contracts/message_codec.py`，旧路径保留为再导出，导出对象身份不变。
+不是所有 `session.*` 都能这样处理——`session.log` 的 50 处 import 全是
+`MessageReader`/`MessageCatalog`/`OwnerStore` 等**存储实现类**的运行时导入，
+把它们塞进结构合同会让合同层依赖存储，违反本层职责；正确做法是让插件经
+`core.message_catalog` / `core.message_writers` / `core.owner_state` 消费，
+属于独立批次。
 
 把 R1～R3 的欠账降到 0：
 

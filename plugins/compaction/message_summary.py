@@ -13,7 +13,7 @@ from agent.plugin_composition.models import (
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 from plugins.context.api import settled_prefixes
 from plugins.turn_projection.plugin import TurnProjection
-from session.message_codec import body_to_dict
+from agent.plugin_contracts import body_to_dict
 
 logger = logging.getLogger(__name__)
 

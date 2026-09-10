@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from plugins.tools.api import CallSource, Denied, InvalidArguments, Result
 from agent.plugin_contracts import ContentPart, Output, ToolCall
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from .request import STAGE_TOOLS, read_phase, read_request
 from .content import _candidate_payloads

@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from plugins.delivery.api import Sink
 from agent.plugin_contracts import ContentPart, ContentReferences
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 
 PROFILE_TOOLS: dict[str, tuple[str, ...]] = {

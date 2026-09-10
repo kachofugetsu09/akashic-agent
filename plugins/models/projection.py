@@ -23,7 +23,7 @@ from agent.plugin_contracts import (
     ToolCall,
     ToolResult,
 )
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 from plugins.context.api import check_summary
 from .store import ModelCallReader
 

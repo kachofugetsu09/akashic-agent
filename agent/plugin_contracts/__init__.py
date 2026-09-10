@@ -4,6 +4,12 @@
 和不依赖实现的 Protocol，不导入服务实现、存储层或 bootstrap。
 """
 
+from agent.plugin_contracts.message_codec import (
+    body_to_dict,
+    decode_body,
+    encode_body,
+    json_value,
+)
 from agent.plugin_contracts.message import (
     MAX_METADATA_BYTES,
     Body,
@@ -36,4 +42,8 @@ __all__ = [
     "ToolResult",
     "freeze_json",
     "freeze_metadata",
+    "body_to_dict",
+    "decode_body",
+    "encode_body",
+    "json_value",
 ]

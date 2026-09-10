@@ -14,7 +14,7 @@ from plugins.delivery.api import Sink
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS, bind_saved_tool
 from agent.plugin_contracts import ContentPart, Input
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from .request import PROFILE_TOOLS, Request, SpawnInput
 from .runtime import SUBAGENT_PROGRAM, SubagentBusy, Subagents, completion

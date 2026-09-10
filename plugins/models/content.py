@@ -18,7 +18,7 @@ from agent.plugin_composition.channels import (
     ChannelAttachmentReadPort,
 )
 from agent.plugin_contracts import ContentPart, Control, Message, ToolCall, freeze_json
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 
 async def load_artifacts(

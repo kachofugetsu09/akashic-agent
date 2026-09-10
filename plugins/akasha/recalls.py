@@ -17,7 +17,7 @@ from .infrastructure.consumption import Consumption
 from .infrastructure.sparse_index.encoding import tokenize
 from session.log import MessageCatalog, OwnerStore
 from agent.plugin_contracts import CallRef
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 if TYPE_CHECKING:
     from .learning import Learning

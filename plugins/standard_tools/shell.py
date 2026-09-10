@@ -26,7 +26,7 @@ from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS, ToolRef
 from session.log import MessageReader
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 
 class ShellSettings(BaseModel):

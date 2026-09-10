@@ -2906,3 +2906,14 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：`plugin_boundary_baseline.toml` 删除 76 条 R2 条目，R2 由 244 降到 168。
 - 验证：`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_message_log_migration.py tests/test_message_metadata.py tests/test_message_embeddings.py tests/test_message_artifacts.py tests/test_reply_program.py tests/test_akasha_learning_binding.py tests/test_context_compaction_contract.py tests/test_wake_messages.py` = `187 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（4/6）：session.message_codec 移入公开结构合同
+
+- 基线：stacked base `e9eedd54`；分支 `feature/plugin-boundary-step3-migration-20260910`。正式 workspace 未改写。
+- 形态：**move & re-export**。`session/message_codec.py` → `agent/plugin_contracts/message_codec.py`；`session/message_codec.py` 保留为再导出入口。移动的模块自身 import 从 `session.message` 改为 `agent.plugin_contracts.message`，不再经由 session 层。
+- 依据：该模块只依赖消息词汇表与标准库（`json`/`typing`），是纯编解码，不含存储、bootstrap 或服务实现，符合结构合同层的准入条件。导出 4 个名字：`json_value`、`body_to_dict`、`encode_body`、`decode_body`。
+- 身份守护：4 个名字在旧路径与新路径下 `is` 同一对象；插件侧 30 处 `from session.message_codec import X` 改为 `from agent.plugin_contracts import X`，30/30 模块可 import。
+- 账本：`plugin_boundary_baseline.toml` 删除 30 条 R2，R2 由 168 降到 138。
+- 验证：`pytest tests/test_message_log.py tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/test_default_reply.py tests/semantic/ tests/test_context_compaction_contract.py tests/test_wake_messages.py tests/test_tool_provider_views_migration.py` = `166 passed`。
+- 持久化/运行 workspace 变化：`none`。
+- 边界说明：`session.log` 的 50 处 import 全是存储实现类的运行时导入，不能照搬本法；已记入设计文档，需经 ServiceKey 消费，属独立批次。

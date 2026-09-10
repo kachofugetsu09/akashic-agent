@@ -16,7 +16,7 @@ from plugins.tools.api import CallSource, Result
 from plugins.tools.api import InvalidArguments
 from plugins.tools.plugin import TOOLS, ToolRef
 from agent.plugin_contracts import ContentPart
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 class WebTool:
     idempotent = False

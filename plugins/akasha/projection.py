@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from session.log import MessageCatalog
 from agent.plugin_contracts import Message, Output
 from agent.plugin_contracts import Input
-from session.message_codec import encode_body
+from agent.plugin_contracts import encode_body
 from session.embedding_store import EmbeddingRecords
 import numpy as np
 

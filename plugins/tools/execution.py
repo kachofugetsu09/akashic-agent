@@ -18,7 +18,7 @@ from agent.plugin_contracts import (
     ToolResult,
     freeze_json,
 )
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from plugins.tools.api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,

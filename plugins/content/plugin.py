@@ -17,7 +17,7 @@ from markdown_it import MarkdownIt
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts import ContentPart, ContentReferences, freeze_metadata
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 # 类型属于 Content 的公开 API；不同归档实现共享当前已校验的 binding ABI。
 from plugins.content.api import (

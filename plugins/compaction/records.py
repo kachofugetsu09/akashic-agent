@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from agent.plugin_composition import ServiceKey
 
 from session.log import MessageConflict, MessageReader, OwnerStore, OwnerTransaction
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 from plugins.context.api import summary_range
 
 Text = Annotated[str, Field(min_length=1)]

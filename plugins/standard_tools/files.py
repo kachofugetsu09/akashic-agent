@@ -22,7 +22,7 @@ from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS, ToolRef
 from session.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 FileBackend = ReadFileTool | ListDirTool | WriteFileTool | EditFileTool
 
