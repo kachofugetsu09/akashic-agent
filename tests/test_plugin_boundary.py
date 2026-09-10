@@ -70,6 +70,28 @@ def test_r1_exemptions_are_declared_in_policy() -> None:
     assert "agent/migrations/**" in result.stdout
 
 
+def test_stdlib_import_is_not_treated_as_core() -> None:
+    """`from types import MappingProxyType` 是标准库，不是仓库深路径。"""
+
+    violations = boundary.check_plugin_deep_core([
+        _import("plugins/models/state.py", "types"),
+        _import("plugins/models/state.py", "session.log"),
+    ])
+    assert [item.key for item in violations] == ["plugins/models/state.py|session.log"]
+
+
+def test_core_top_levels_do_not_shadow_stdlib() -> None:
+    """与标准库同名的 core 顶层必须有真实包，否则 import 会歧义。"""
+
+    import sys
+
+    shadowed = boundary.CORE_TOP_LEVELS & set(sys.stdlib_module_names)
+    for name in sorted(shadowed):
+        assert (REPO_ROOT / name / "__init__.py").is_file(), (
+            f"{name} 与标准库模块同名，必须是仓库内真实包才能登记为 core 顶层"
+        )
+
+
 def test_plugin_deep_core_import_is_flagged() -> None:
     violations = boundary.check_plugin_deep_core([
         _import("plugins/reply/plugin.py", "session.log"),

@@ -49,8 +49,13 @@ PLUGIN_ALLOWED_PREFIXES = (
 )
 
 # 插件不得 import 的 core 顶层包（用于 R2 的归属判定）。
+# 注意：这里只放仓库里真实存在的 core 顶层 Python 包/命名空间。
+# `types` 不在其中——它是 Python 标准库模块，仓库的 types/ 只放 .d.ts 声明，
+# 不含任何 .py，因此 `from types import MappingProxyType` 是标准库用法，
+# 把它算成 core 深路径会产生假违规。test_core_top_levels_do_not_shadow_stdlib
+# 守护这条：新增与标准库同名的顶层时，必须有真实 __init__.py 才能登记。
 CORE_TOP_LEVELS = frozenset(
-    {"agent", "session", "infra", "core", "bootstrap", "bus", "utils", "mcp_servers", "types", "sdk"}
+    {"agent", "session", "infra", "core", "bootstrap", "bus", "utils", "mcp_servers", "sdk"}
 )
 
 SCAN_SUFFIX = ".py"

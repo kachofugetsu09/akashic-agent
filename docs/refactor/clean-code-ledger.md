@@ -2917,3 +2917,13 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 验证：`pytest tests/test_message_log.py tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/test_default_reply.py tests/semantic/ tests/test_context_compaction_contract.py tests/test_wake_messages.py tests/test_tool_provider_views_migration.py` = `166 passed`。
 - 持久化/运行 workspace 变化：`none`。
 - 边界说明：`session.log` 的 50 处 import 全是存储实现类的运行时导入，不能照搬本法；已记入设计文档，需经 ServiceKey 消费，属独立批次。
+
+## 2026-09-10 插件边界第 3 步（5/6）：修正 types 假违规
+
+- 基线：stacked base `dc6ce6bc`；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 问题：`scripts/plugin_boundary.py` 的 `CORE_TOP_LEVELS` 含 `types`，于是 `plugins/content/api.py` 等 5 个文件的 `from types import MappingProxyType` 被判成「插件 import core 深路径」。但仓库的 `types/` 只有 `assets.d.ts`、零个 `.py`，`types` 是 Python 标准库模块，这些是标准库用法。
+- 判断依据：`git ls-files types/ | grep -c '\.py$'` 为 0；`sys.stdlib_module_names` 含 `types`；`MappingProxyType` 只在 stdlib `types` 中提供。
+- 处理：从 `CORE_TOP_LEVELS` 移除 `types` 并写明理由；新增 `test_core_top_levels_do_not_shadow_stdlib`，要求任何与标准库同名的 core 顶层必须有真实 `__init__.py`，否则测试失败。保留 `test_stdlib_import_is_not_treated_as_core` 锁定 `types` 不被重新误判，同时确认 `session.log` 仍被判违规。
+- 账本：`plugin_boundary_baseline.toml` 删除 5 条 R2 假条目，R2 由 138 降到 133。这不是「放宽门」——被删除的条目本来就不是违规，留着会让「只许减少」的账本失真。
+- 验证：`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_message_log.py` = `114 passed`。
+- 持久化/运行 workspace 变化：`none`。

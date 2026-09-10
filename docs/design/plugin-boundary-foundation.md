@@ -243,6 +243,7 @@ reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 �
 | 2/6 | 删除四个非 Yoyo 遗留迁移目录 | 8 | 244 | 238 |
 | 3/6 | `session.message` 76 处改经 `agent.plugin_contracts` | 8 | 168 | 238 |
 | 4/6 | `session.message_codec` 移入 `agent.plugin_contracts`（move & re-export） | 8 | 138 | 238 |
+| 5/6 | 修掉 `types` 假违规（标准库被当成 core 深路径） | 8 | 133 | 238 |
 
 第 3/6 批的做法：第 1 步已经把消息词汇表移入 `agent.plugin_contracts`、
 `session/message.py` 只做再导出，因此本批是纯文本改写
@@ -258,6 +259,13 @@ reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 �
 把它们塞进结构合同会让合同层依赖存储，违反本层职责；正确做法是让插件经
 `core.message_catalog` / `core.message_writers` / `core.owner_state` 消费，
 属于独立批次。
+
+第 5/6 批修正了门自身的一个假违规：`CORE_TOP_LEVELS` 曾把 `types` 当成 core 顶层，
+但仓库的 `types/` 只有 `assets.d.ts`、没有任何 `.py`，插件的
+`from types import MappingProxyType` 是**标准库**用法。这类假违规会让账本虚高、
+让「只许减少」的账本失去意义，必须修掉而不是留在账本里。新增
+`test_core_top_levels_do_not_shadow_stdlib` 守护：将来若有与标准库同名的顶层要登记为
+core，必须先有真实 `__init__.py`。
 
 把 R1～R3 的欠账降到 0：
 
