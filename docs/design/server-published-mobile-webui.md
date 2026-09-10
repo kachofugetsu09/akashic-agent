@@ -65,6 +65,7 @@
 | [Expo error recovery](https://docs.expo.dev/eas-update/error-recovery/) | 首次内容出现前失败可以回退；已经运行后的回退不能假装撤销持久副作用 | candidate 健康前不开放有副作用 bridge；回退只切换 UI，不回滚原生业务事实 |
 | [Ionic Appflow Live Updates](https://ionic.io/docs/appflow/deploy/deploy-live-update) | background 方式先下载，关闭再打开应用时采用；auto 方式才在启动时立即切换 | 页面 modal、手势和选区不进入原生状态机，只保留一个 `canReplaceUi` 原生判定 |
 | [Ionic differential updates](https://ionic.io/docs/appflow/deploy/differentials) | manifest 为每个文件保存 hash，只下载变化文件 | `Ensure(Target)` 按 content hash 复用 blobs，不在 serving 目录原位打补丁 |
+| [Capgo (`@capgo/capacitor-updater`)](https://capgo.app) | 渠道分发与失败自动回滚；可配合任意已有 CI/CD 发布 OTA（不绑定专属构建平台） | `Ensure` 后台下载、`Present` 在 session 边界切换、失败回 fallback 的同类不变量 |
 | [OCI Distribution Spec](https://github.com/opencontainers/distribution-spec/blob/main/spec.md) | blob 由 digest 标识，manifest 引用 blobs，可变 tag 选择不可变内容 | generation 是不可变内容；Stable/Preview 只组成当前 `ReleaseView` |
 | [Android WebViewAssetLoader](https://developer.android.com/reference/androidx/webkit/WebViewAssetLoader) | 应用私有资源以 HTTPS 语义的本地 origin 加载，保留 same-origin 隔离；官方同时建议关闭不需要的 file/content access | 下载和校验由原生完成，WebView 只看本地 generation |
 | [Android WebView termination handling](https://developer.android.com/develop/ui/views/layout/webapps/handle-termination) | renderer 退出后不得复用旧 WebView；重复崩溃不能无限重载同一页面 | 单次重建 serving，重复失败回 fallback并 `RejectTarget` |
