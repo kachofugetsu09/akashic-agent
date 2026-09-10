@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
-from agent.turn_effects import PostCommitEffect
+from agent.plugin_contracts.turn_effects import PostCommitEffect
 from plugins.content.api import legacy_post_commit_effect
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TurnProjection

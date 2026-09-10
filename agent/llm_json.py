@@ -1,15 +1,9 @@
-from __future__ import annotations
+"""兼容入口；LLM JSON 解析由 `agent.plugin_contracts.llm_json` 拥有。
 
-from typing import Any
+本模块保留原导入路径，避免一次性改动既有调用点。新代码和插件应导入
+`agent.plugin_contracts.llm_json`。
+"""
 
-import json_repair
+from agent.plugin_contracts.llm_json import load_json_object_loose
 
-
-def load_json_object_loose(text: str) -> dict[str, Any] | None:
-    payload = text.strip()
-    if payload.startswith("```"):
-        payload = payload.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    data = json_repair.loads(payload)
-    if isinstance(data, dict):
-        return data
-    return None
+__all__ = ["load_json_object_loose"]

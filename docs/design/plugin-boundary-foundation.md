@@ -246,6 +246,7 @@ reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 �
 | 5/6 | 修掉 `types` 假违规（标准库被当成 core 深路径） | 8 | 133 | 238 |
 | 5b/6 | 修复 `message_codec` 再导出漏掉私有 `_unique_fields` | 8 | 133 | 238 |
 | 6/6 | 重启 seam 归位：`RESTART_GATE` → 组合内核，类型 → 结构合同 | 8 | 122 | 238 |
+| 7/8 | 纯值级模块移入结构合同（`turn_effects` / `timekit` / `llm_json`） | 8 | 116 | 238 |
 
 第 3/6 批的做法：第 1 步已经把消息词汇表移入 `agent.plugin_contracts`、
 `session/message.py` 只做再导出，因此本批是纯文本改写

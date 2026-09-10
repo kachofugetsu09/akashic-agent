@@ -2952,3 +2952,18 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：删除 11 条 R2，R2 由 133 降到 122。
 - 验证：`pyright --level error`（主配置与 tests 配置）均 0 errors；`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_plugin_runtime_control.py tests/test_plugin_hot_reload.py tests/test_message_push_plugin.py tests/test_agent_restart_tool.py tests/test_programmatic_control.py` = `148 passed, 6 failed`，6 项全部是已核对的既有 socket 集成失败（父提交同样失败）。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（7/8）：纯值级模块移入结构合同
+
+- 基线：stacked base `feb6e5ee`；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：move & re-export。三个模块**零仓库内 import**（只依赖标准库/`json_repair`），且被插件消费的是纯值词汇或纯函数，因此移入 `agent/plugin_contracts/`，旧路径保留再导出：
+  - `agent/turn_effects.py` → `agent/plugin_contracts/turn_effects.py`（`TurnStorage`/`PostCommitEffect` 枚举 + 3 个纯函数）
+  - `core/common/timekit.py` → `agent/plugin_contracts/timekit.py`（`utcnow`/`parse_iso`/`format_iso`/`safe_zone`/`local_now`）
+  - `agent/llm_json.py` → `agent/plugin_contracts/llm_json.py`（`load_json_object_loose`）
+- 准入依据：三者都不 import 任何仓库模块（实测 import 行数 0），不持有状态，不依赖存储/bootstrap。合同层因此可以拥有它们而不引入实现依赖。
+- 全库私有名核对：三个模块被 import 的名字里没有任何 `_` 前缀名，再导出按公开名清单编写（不是 `import *`），避免重演 `_unique_fields` 那类遗漏。
+- 消费者改写：插件侧 6 处改 `agent.plugin_contracts.*`；`agent/plugin_composition/__init__.py` 的 `turn_effects` 再导出也改指新路径，使组合内核只依赖合同层。
+- 身份守护：`PostCommitEffect`/`parse_iso`/`load_json_object_loose` 新旧路径 `is` 同一对象；`plugin_composition.PostCommitEffect is plugin_contracts.turn_effects.PostCommitEffect` 成立。
+- 账本：删除 6 条 R2，R2 由 122 降到 116。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_akasha_learning_binding.py tests/test_scheduler_tools.py tests/test_default_reply.py` = `118 passed`；`tests/test_message_markdown_memory.py tests/test_akasha_recall_records.py` = `60 passed`。
+- 持久化/运行 workspace 变化：`none`。

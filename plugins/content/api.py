@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import cast
 
-from agent.turn_effects import PostCommitEffect, post_commit_effect
+from agent.plugin_contracts.turn_effects import PostCommitEffect, post_commit_effect
 from session.artifacts import check_artifact_id
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
 

@@ -24,8 +24,8 @@ from agent.plugin_composition import (
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextLengthError, LLMResponse, ModelError
-from agent.llm_json import load_json_object_loose
-from agent.turn_effects import PostCommitEffect
+from agent.plugin_contracts.llm_json import load_json_object_loose
+from agent.plugin_contracts.turn_effects import PostCommitEffect
 from infra.persistence.json_store import atomic_write_text
 from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, StoredSummary
 from plugins.compaction.message_summary import source_text, summary_groups, window_starts
