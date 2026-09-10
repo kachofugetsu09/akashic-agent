@@ -861,7 +861,7 @@ inbound 丢失 exact lease、`UNKNOWN` 被盲重试、rollback 只改 pointer、
    fixed contribution 与 live snapshot path。
 
 Core 真实入口包括 `agent/plugins/manager.py`、`agent/plugins/snapshot.py`、`bootstrap/app.py`、
-`bootstrap/channel_host.py`、`bootstrap/channels.py`、`agent/tools/message_push.py`、`bus/queue.py`、`bus/events.py`、
+`bootstrap/channel_host.py`、`bootstrap/channels.py`、`plugins/message_push/`、`bus/queue.py`、`bus/events.py`、
 `infra/channels/contract.py`、`infra/channels/delivery.py`、`agent/looping/core.py`、`agent/turns/outbound.py` 与
 `bootstrap/passive_worker.py`；还必须迁移 `agent/core/passive_turn.py`、`agent/lifecycle/phases/after_turn.py`、
 `agent/turns/orchestrator.py` 的 normal/error/cancel/proactive outbound，以及

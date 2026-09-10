@@ -157,7 +157,6 @@ paths = [
   "agent/plugins/model_*.py",
   "agent/plugins/snapshot.py",
   "agent/tools/filesystem.py",
-  "agent/tools/vision.py",
   "agent/migrations/akasha_*.py",
   "agent/model_runtime/**",
   "bootstrap/app.py",
@@ -186,7 +185,7 @@ paths = [
   "tests/test_*model*.py",
   "tests/semantic/test_model_owner_contract.py",
 ]
-deleted_paths = ["agent/provider.py", "bootstrap/providers.py"]
+deleted_paths = ["agent/provider.py", "agent/tools/vision.py", "bootstrap/providers.py"]
 depends_on = ["plugin", "runtime"]
 scenarios = ["model_owner_contract"]
 
@@ -201,7 +200,6 @@ paths = [
   "agent/plugin_composition/session_read.py",
   "agent/plugin_composition/tasks.py",
   "agent/plugins/**",
-  "agent/tools/message_push.py",
   "bootstrap/tools.py",
   "bus/queue.py",
   "infra/control/**",
@@ -213,6 +211,7 @@ paths = [
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_runtime_control.py",
 ]
+deleted_paths = ["agent/tools/message_push.py"]
 depends_on = ["plugin", "control", "session_persistence", "channel", "memory"]
 scenarios = ["recursive_plugin_self_validation_contract"]
 
@@ -261,11 +260,13 @@ requirements = ["MEM-001", "MEM-002", "MEM-003", "SES-005", "WSP-004"]
 paths = [
   "core/memory/**",
   "memory2/**",
+  "plugins/compaction/**",
+  "plugins/markdown_memory/**",
+]
+deleted_paths = [
   "agent/tools/forget_memory.py",
   "agent/tools/memorize.py",
   "agent/tools/recall_memory.py",
-  "plugins/compaction/**",
-  "plugins/markdown_memory/**",
 ]
 depends_on = ["session_persistence"]
 scenarios = ["memory_persistence_contract"]
@@ -345,9 +346,9 @@ requirements = ["SH-002", "RUN-003", "OUT-001", "ERR-001", "TST-001", "TST-003"]
 paths = [
   "agent/background/boot_guardian.py",
   "agent/supervisor.py",
-  "agent/tools/shell.py",
   "agent/tools/unified_exec.py",
 ]
+deleted_paths = ["agent/tools/shell.py"]
 depends_on = ["events", "session_persistence"]
 scenarios = ["shell_privileged_cleanup_contract", "shell_turn_finality_contract"]
 
@@ -394,9 +395,6 @@ scenarios = ["contract_catalog"]
 priority = "p0"
 requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
 paths = [
-  "agent/tools/memorize.py",
-  "agent/tools/recall_memory.py",
-  "agent/tools/message_push.py",
   "agent/tools/registry.py",
   "agent/tools/base.py",
   "agent/tool_runtime.py",
@@ -406,14 +404,15 @@ paths = [
   "plugins/reply/**",
   "agent/turns/outbound.py",
 ]
-deleted_paths = ["agent/looping/handlers.py"]
+deleted_paths = ["agent/looping/handlers.py", "agent/tools/memorize.py", "agent/tools/recall_memory.py", "agent/tools/message_push.py"]
 depends_on = ["memory", "channel"]
 scenarios = ["companion_tool_context_contract"]
 
 [groups.companion_external_io]
 priority = "p0"
 requirements = ["SEC-002", "FS-001", "SES-006", "ERR-001", "TST-001", "TST-003"]
-paths = ["core/net/http.py", "agent/tools/web_fetch.py", "bootstrap/chat_api.py", "infra/channels/base.py", "infra/channels/delivery.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
+paths = ["core/net/http.py", "bootstrap/chat_api.py", "infra/channels/base.py", "infra/channels/delivery.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
+deleted_paths = ["agent/tools/web_fetch.py"]
 depends_on = ["runtime", "mobile_realtime"]
 scenarios = ["companion_external_io_contract"]
 
@@ -443,7 +442,8 @@ scenarios = ["companion_mobile_receipt_contract"]
 [groups.companion_shell]
 priority = "p0"
 requirements = ["SEC-007", "SH-001", "SH-002", "RUN-003", "ERR-001", "TST-001", "TST-003"]
-paths = ["agent/tools/shell.py", "agent/tools/unified_exec.py", "agent/background/**"]
+paths = ["agent/tools/unified_exec.py", "agent/background/**"]
+deleted_paths = ["agent/tools/shell.py"]
 depends_on = ["shell_finality", "runtime"]
 scenarios = ["companion_shell_admission_contract"]
 

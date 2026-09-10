@@ -204,6 +204,18 @@ R4、R5 没有基线，因此新增 Core 能力必须同时登记角色，实现
 是某个工作 checkout 中的**未跟踪本地残留**，不是仓库内容（仓库实际跟踪 37 个插件目录，
 `git ls-files plugin_packages` 为 0）。它们不属于任何仓库 PR，也不得被当作已确认的可删除对象。
 
+**2026-09-10 实施结果（stacked 第 2 步）。** 11 个「无代码消费者」模块已按上述流程删除：
+`forget_memory.py`、`memorize.py`、`message_lookup.py`、`message_push.py`、`recall_memory.py`、
+`skill_loader.py`、`tool_search.py`、`vision.py`、`web_fetch.py`、`web_search.py`、`shell.py`。
+`impact.toml` 中 7 个组的对应路径已从 `paths` 移入 `deleted_paths`，`coverage-baseline.json`
+的 `catalogDigest` 已重算；R1 由 28 降到 25，`plugin_boundary_baseline.toml` 同步删除 3 条已还清条目。
+
+`executor.py` 与 `events.py` 本次**保留**：`events.py` 是 R10
+[插件 Tool 组合事件任务合同](plugin-tool-composition-events-task-contract.md) 声明 owner 的
+reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 项合同测试覆盖，符合本步
+「有任一消费者即保留」规则。两者是否退场、以及 seam 是否必须迁入 `agent/plugin_contracts/`
+（R2 目前不允许插件 import `agent.tools.events`），属于独立归属决定，留到第 3 步。
+
 ### 第 3 步 · 机械迁移（需独立授权）
 
 把 R1～R3 的欠账降到 0：
