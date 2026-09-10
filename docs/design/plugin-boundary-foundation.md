@@ -3,8 +3,8 @@
 - 状态：proposed foundation / step 1 of 3
 - 日期：2026-09-10
 - 基线：`origin/main@4f9173c188a16289f0ac08d786f667e75df185d4`
+- 关联设计：[React Core 与 Scheduler/Subagent](react-core-scheduler-subagent.md)、[插件 V3 能力手册](plugin-v3-capabilities.md)
 - 关联决策：[0064 插件边界由机器强制](../decisions/0064-plugin-boundary-is-machine-enforced.md)
-- 关联设计：[Agent 插件组合长期方向](agent-plugin-composition-direction.md)、[React Core 与 Scheduler/Subagent](react-core-scheduler-subagent.md)、[插件 V3 能力手册](plugin-v3-capabilities.md)
 - 参考实现：`/mnt/data/source-code/deepseek-harness`（2026-09-08 checkout，只作为设计输入）
 - 本文权限：只批准第 1 步（地基）。第 2、3 步需要各自的独立授权与 Gate。
 
@@ -175,9 +175,34 @@ R4、R5 没有基线，因此新增 Core 能力必须同时登记角色，实现
 
 ### 第 2 步 · 删死代码（需独立授权）
 
-机械、零语义：删除不可达的 `agent/tools/` 副本（`RuntimeSnapshot.tool_registry`
-只声明不赋值，生产调用方从不传入）、只剩 `__pycache__` 的插件目录、`plugin_packages/`
-残留。删除前按 `plugin_boundary.toml` 的幽灵名规则处理预留项：确实预留的必须写明理由。
+**2026-09-10 勘误。** 本文初版写「删除不可达的 `agent/tools/` 副本（`RuntimeSnapshot.tool_registry`
+只声明不赋值，生产调用方从不传入）」，该论断**错误**，已作废。正确的可达性事实如下。
+
+`snapshot.tool_registry` 在生产路径被赋值：`agent/plugins/manager.py` 的
+`_compile_snapshot_tools` 编译它并挂到每个 `RuntimeSnapshot`（赋值点见
+`_refresh_composition_runtime_tools`、`_compile_generation_snapshot` 与 reload 分支），
+读取方包括 `infra/mobile_realtime/runtime_inspection.py` 与 `agent/tools/registry.py` 自身。
+按模块路径 `agent.tools.<name>` / `agent/tools/<name>.py` 静态扫描，20 个被跟踪文件的真实分布是：
+
+| 状态 | 模块 | 证据 |
+|---|---|---|
+| 活代码，必须保留 | `base.py`、`filesystem.py`、`registry.py`、`search_backend.py`、`shell_command.py`、`shell_security.py`、`unified_exec.py`、`events.py` | 有生产 importer；`host_bridge/`、`plugins/standard_tools/`、`agent/skills.py` 等 |
+| 无代码消费者，删除候选 | `forget_memory.py`、`memorize.py`、`message_lookup.py`、`message_push.py`、`recall_memory.py`、`skill_loader.py`、`tool_search.py`、`vision.py`、`web_fetch.py`、`web_search.py`、`shell.py` | 零生产 importer；仅出现在 `impact.toml`、设计文档或本门账本中 |
+| 仅测试消费者 | `executor.py`（`tests/test_tool_executor.py`）、随之受影响的 `events.py` | 删除需要同时处置测试与 `events.py` 的归属 |
+
+其中 `shell.py`、`web_fetch.py`、`web_search.py` 同时是 R1 违规来源（它们 import 插件），
+删除它们会让 R1 减少 3 条，是第 2 步与第 3 步的天然交界。
+
+因此第 2 步不是「整片删除」，而是**逐项可达性审计 + 目录登记联动**：
+
+1. 对每个候选确认「无生产 importer + 无动态/字符串入口 + 无测试依赖」；有任一消费者即保留。
+2. 删除时必须同步修改 `tests_scenarios/contracts/impact.toml` 的路径列表，并更新
+   `coverage-baseline.json` 的 `catalogDigest`（catalog 变更会使 digest 失效，这是设计如此）。
+3. 清理设计文档中指向被删模块的引用；确实需要预留的，按 `plugin_boundary.toml` 的幽灵名规则写明理由。
+
+**不在仓库范围内。** 起初列出的「只剩 `__pycache__` 的插件目录」与 `plugin_packages/` 经核实
+是某个工作 checkout 中的**未跟踪本地残留**，不是仓库内容（仓库实际跟踪 37 个插件目录，
+`git ls-files plugin_packages` 为 0）。它们不属于任何仓库 PR，也不得被当作已确认的可删除对象。
 
 ### 第 3 步 · 机械迁移（需独立授权）
 

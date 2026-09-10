@@ -8,10 +8,12 @@
 第 1 步（能力角色表、import 门、公开结构合同模块）已实现。以下两步各自需要独立授权与 Gate，
 不能合并推进：
 
-- **第 2 步 · 删死代码**：删除不可达的 `agent/tools/` 副本（`RuntimeSnapshot.tool_registry`
-  只声明不赋值，生产调用方从不传入）、只剩 `__pycache__` 的插件目录、`plugin_packages/` 残留。
-  删除前逐项确认「无 importer + 无动态入口 + 无测试依赖」；确需预留的按
-  [插件边界地基](design/plugin-boundary-foundation.md#6-分阶段实施方案) 要求写明理由。
+- **第 2 步 · 删死代码**：逐项可达性审计 `agent/tools/`，确认「无生产 importer + 无动态入口 +
+  无测试依赖」后才删除；删除必须同步 `impact.toml` 路径与 `coverage-baseline.json` 的
+  `catalogDigest`。**注意**：`snapshot.tool_registry` 在生产路径被赋值（`_compile_snapshot_tools`），
+  因此 `base.py`、`filesystem.py`、`registry.py`、`search_backend.py`、`shell_command.py`、
+  `shell_security.py`、`unified_exec.py`、`events.py` 是活代码，不得删除；候选清单与勘误见
+  [插件边界地基 §第 2 步](design/plugin-boundary-foundation.md#第-2-步--删死代码需独立授权)。
 - **第 3 步 · 机械迁移**：把 `plugin_boundary_baseline.toml` 的 R1（28 条）、R2（244 处）、
   R3（238 处）降到 0，并完成 `core.restart_gate.v1`、`core.control_frames.v1` 归位与
   `agent.plugins.snapshot` 去全局。每批只做一种改写、单独 commit、跑 targeted tests，

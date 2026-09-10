@@ -120,4 +120,4 @@ TypeScript project references 做物理边界，那是约 200 个包的发布矩
 7. 既有测试全量通过，证明本次搬迁无语义变化。
 
 终点验收（三步全部完成，需各自独立授权）见
-[插件边界地基](plugin-boundary-foundation.md#7-验收标准)。
+[插件边界地基](../design/plugin-boundary-foundation.md#7-验收标准)。

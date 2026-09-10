@@ -127,6 +127,19 @@ def test_phantom_name_appearing_fails(monkeypatch, tmp_path: Path) -> None:
     assert "SCOPED_TURNS" in errors[0]
 
 
+def test_phantom_names_ignore_tests(monkeypatch, tmp_path: Path) -> None:
+    """守护测试会合法地写出幽灵名；R5 只断言实现里不存在。"""
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "guard.py").write_text("SCOPED_TURNS = 1\n", encoding="utf-8")
+    monkeypatch.setattr(boundary, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        boundary, "tracked_python_files", lambda: ["tests/guard.py"]
+    )
+    assert boundary.implementation_python_files() == []
+    assert boundary.check_phantom_names(_policy({}, {"SCOPED_TURNS": {"note": "x"}})) == []
+
+
 # ── 端到端：门真的会因为新增违规而失败 ────────────────────────
 
 def _synthetic_repo(tmp_path: Path, *, plugin_import_line: str, baseline: str = "") -> None:

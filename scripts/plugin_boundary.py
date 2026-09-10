@@ -280,8 +280,22 @@ def check_capability_table(policy: dict[str, object]) -> list[str]:
     return errors
 
 
+def implementation_python_files() -> list[str]:
+    """只返回实现代码，排除测试。
+
+    R5 断言的是「这些名字没有在实现里出现」。测试为了守护策略表会合法地写出
+    这些名字，把 tests/ 计入会把守护测试本身判成违规。
+    """
+
+    return [
+        rel
+        for rel in tracked_python_files()
+        if not rel.startswith(("tests/", "tests_scenarios/"))
+    ]
+
+
 def check_phantom_names(policy: dict[str, object]) -> list[str]:
-    """R5：文档承诺但未实现的名字必须保持不存在。"""
+    """R5：文档承诺但未实现的名字必须保持不存在于实现代码。"""
 
     phantoms = policy.get("phantom", {})
     if not isinstance(phantoms, dict):
@@ -289,7 +303,8 @@ def check_phantom_names(policy: dict[str, object]) -> list[str]:
     if not phantoms:
         return []
     text = "\n".join(
-        (REPO_ROOT / rel).read_text(encoding="utf-8") for rel in tracked_python_files()
+        (REPO_ROOT / rel).read_text(encoding="utf-8")
+        for rel in implementation_python_files()
     )
     errors: list[str] = []
     for name, entry in sorted(phantoms.items()):
@@ -297,7 +312,7 @@ def check_phantom_names(policy: dict[str, object]) -> list[str]:
         if re.search(rf"\b{re.escape(name)}\b", text):
             note = entry.get("note", "") if isinstance(entry, dict) else ""
             errors.append(
-                f"{name} 已在代码中出现，但 plugin_boundary.toml 仍把它记为未实现"
+                f"{name} 已在实现代码中出现，但 plugin_boundary.toml 仍把它记为未实现"
                 f"（{note}）；实现后请更新文档并把该条从 [phantom] 移除"
             )
     return errors
