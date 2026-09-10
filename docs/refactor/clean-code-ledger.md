@@ -2979,3 +2979,21 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：删除 6 条 R2，R2 由 116 降到 110。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_message_artifacts.py tests/test_artifact_store.py tests/test_channel_attachment_store.py tests/test_content_protocols.py tests/test_native_senders.py` = `155 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步：迁移判据固化（第 1 批收尾）
+
+- 背景：第 1 批完成 9 个 commit 后，R1 由 25 降到 8、R2 由 244 降到 110、R3 保持 238，剩余 356 条。
+- 已固化的判据（写入设计文档，后续批次必须照此分类，不允许「搬得动就搬」）：
+  1. 零仓库内 import、无状态、无 I/O → move 到 `agent/plugin_contracts/` + 再导出。
+  2. 有状态/持有注册表或权威事实/需要 I/O 或环境态 → 登记 `ServiceKey`，消费者经 `ctx.require`。
+  3. 描述可替换实现的接口 → seam：合同层放 Protocol，实现留原处。
+- 已确认不可 move 的样本：`session.log`、`session.embedding_store`（存储实现）、
+  `core.common.diagnostic_log`（contextvars + 日志配置）、`core.error_context`（contextvar 环境态）、
+  `agent.control.context`（铸造 capability）、`agent.plugins.snapshot`（运行时全局）。
+- move 的强制前置动作：先跑全库名字扫描（含私有名与 Core 内部再导出名），再按清单写再导出。
+  第 5b 批（`_unique_fields`）与第 8 批（`AttachmentReadLease`/`AttachmentReadPort`）都是漏了这一步；
+  前者被 change-impact Gate 以 17 项失败挡下。
+- 本批验证：change-impact Gate `GATE PASSED`（27 scenarios / 27 checks，base `b588baca`），
+  `sourceDigest=7d4ff972e04683112eefda49e6a85ed04b80ca3ef79d2c5fd1bae5fdd3881a92`，
+  `planDigest=f62bf6957c221a1d99dc586678d1e676f6ca4fd5d526428bfa95bc1eb31d2956`。
+- 持久化/运行 workspace 变化：`none`。

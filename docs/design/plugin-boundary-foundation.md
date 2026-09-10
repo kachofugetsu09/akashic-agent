@@ -293,6 +293,25 @@ core，必须先有真实 `__init__.py`。
   `commit`/`abort`/`wait_until_open` + `supervised`/`execution_enabled`）。
 - `agent.restart` 按原路径再导出全部名字，既有 Core 调用点与类型身份不变。
 
+**迁移判据（第 3 步执行中固化，后续批次必须照此分类）。** 每个 R2/R3 目标模块先过三问，
+再选动作；不允许「搬得动就搬」：
+
+| 判据 | 动作 |
+|---|---|
+| 零仓库内 import、无状态、无 I/O（纯值词汇 / 枚举 / 纯函数 / 值模型） | **move 到 `agent/plugin_contracts/`** + 旧路径再导出 |
+| 有状态、持有注册表或权威事实、需要 I/O 或环境态 | **登记为 `ServiceKey`**（core/seam 角色），消费者经 `ctx.require` |
+| 描述可替换实现的接口（有第二种实现或结构合同 + stub） | **seam**：合同层放 Protocol，实现留在原处 |
+
+已确认**不可 move** 的例子（留待 ServiceKey 批次）：`session.log`（存储实现类）、
+`session.embedding_store`（存储）、`core.common.diagnostic_log`（contextvars + 日志配置）、
+`core.error_context`（contextvar 环境态）、`agent.control.context`（铸造 capability）、
+`agent.plugins.snapshot`（运行时全局）。
+
+**move 的强制前置动作**：先跑一次全库名字扫描，列出该模块被 import 的**全部名字（含私有名、
+含 Core 内部再导出名）**，再按该清单写再导出。第 5b 批（`_unique_fields`）与第 8 批
+（`AttachmentReadLease`/`AttachmentReadPort`）都是没做这一步而漏名，前者被 change-impact Gate
+以 17 项失败挡下。drop-in 的判据是：`python -c "import <所有消费者模块>"` 全部成功。
+
 把 R1～R3 的欠账降到 0：
 
 1. `session.*` 深路径（172 处）改经结构合同。
