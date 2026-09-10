@@ -3035,3 +3035,18 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：R3 由 184 降到 161。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/turn_projection/akasha_message_projection/akasha_message_consumption/akasha_recall_records/akasha_semantic_interest/programmatic_result/message_compaction_summary/message_markdown_memory）= `177 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（12）：控制协议合同化 + 移除文件系统兼容 shim
+
+- 基线：stacked base `b4e2f1b2`（第 11 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态一（move & re-export）：控制协议是两个**纯 pydantic 值模型/Protocol 模块**，属于 wire contract：
+  - `agent/control/protocol/models.py` → `agent/plugin_contracts/control_models.py`（METHOD_PARAMS/StrictModel/SessionIdParams 等全套 RPC 参数）
+  - `agent/control/protocol/method.py` → `agent/plugin_contracts/control_method.py`（RequestTransport/RpcMethod/TransportCall）
+  - 两个旧路径保留再导出，对象身份不变。
+- 形态二（seam）：新增 `agent/plugin_contracts/programmatic.py` —— RPC 参数模型、`PARAMS` 表、`ProgrammaticPort` 与 `programmatic.v1` key；实现在 `plugins/programmatic`。登记为 `seam`。修 R1 `bootstrap/app_server.py`。
+- 形态三（删死代码）：`agent/tools/filesystem.py` 的 `__getattr__` 兼容 shim 懒加载 `plugins.standard_tools`。全库静态扫描确认**零消费者**（没有任何文件执行 `filesystem.ReadFileTool` 等属性访问）。它只是让旧插件归档仍能按 `agent.tools.filesystem.<X>` 读到模型类；按「有任一消费者即保留」的判定没有消费者，故删除。
+  - **已知代价（须让维护者看见）**：若某个已归档的历史插件 generation 里写了 `from agent.tools.filesystem import ReadFileTool`，它会失效；这类归档在 workspace 数据里，不在仓库范围，本次不触碰。仓库内 `plugins/**` 与测试均无此用法。
+- **又一次踩到「批量改名漏名」**：`plugins/programmatic/control.py` 被测试**逐字复制成插件归档**，因此它必须自洽（`SessionIdParams`、`AdmitParams` 等仍需可导入）。批处理删掉参数模型定义后测试报 NameError/ImportError。已在 `plugins/programmatic/control.py` 重新导出全部参数模型与 `SessionIdParams`。教训：**插件模块可能被原文复制进归档**，不能只保证「当前调用点」可用，还要保证模块自身可独立 import。
+- 账本：R1 由 5 降到 3；R2 由 110 降到 108（`agent.control.protocol.models`、`agent.control.protocol.method`）。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/standard_tools/shell_tool/tool_executor/programmatic_result/message_sdk/socket_security）= `146 passed, 6 failed`，6 项全是已核对的既有 socket 集成失败；`tests/test_programmatic_control.py` 与父提交逐项一致（`5 failed, 3 passed`）。
+- 持久化/运行 workspace 变化：`none`。

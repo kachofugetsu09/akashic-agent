@@ -23,15 +23,6 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-def __getattr__(name: str):
-    """旧归档按原路径读取模型类；共享文件操作本身不依赖插件。"""
-    if name not in {"ReadFileTool", "ListDirTool", "WriteFileTool", "EditFileTool"}:
-        raise AttributeError(name)
-    from plugins.standard_tools import filesystem
-
-    return getattr(filesystem, name)
-
-
 @dataclass
 class _FileMutationState:
     lock: asyncio.Lock

@@ -4,10 +4,20 @@ from typing import cast
 
 from pydantic import Field
 
-from agent.control.protocol.models import StrictModel, SessionIdParams
+from agent.plugin_contracts.programmatic import (
+    PARAMS,
+    PROGRAMMATIC,
+    AdmitParams,
+    PauseParams,
+    ProgrammaticPort,
+    ResultParams,
+    ResumeParams,
+    SendParams,
+)
+from agent.plugin_contracts.control_models import SessionIdParams, StrictModel
 from agent.plugin_composition import Context, ServiceKey
 from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResolver
-from agent.control.protocol.method import RequestTransport
+from agent.plugin_contracts.control_method import RequestTransport
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION, Turn
 from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
@@ -15,36 +25,6 @@ from session.log import MessageReader, SessionAttributes
 from agent.plugin_contracts import ContentPart, Input
 
 from .result import read_result, read_result_snapshot
-
-
-class AdmitParams(SessionIdParams):
-    persist_memory: bool = False
-
-
-class SendParams(SessionIdParams):
-    message_id: str = Field(min_length=1, max_length=256)
-    text: str = Field(min_length=1, max_length=1_048_576)
-
-
-class PauseParams(SessionIdParams):
-    message_id: str = Field(min_length=1, max_length=256)
-
-
-class ResumeParams(PauseParams):
-    input_id: str = Field(min_length=1, max_length=256)
-
-
-class ResultParams(SessionIdParams):
-    input_id: str = Field(min_length=1, max_length=256)
-
-
-PARAMS: dict[str, type[StrictModel]] = {
-    "programmatic/session/admit": AdmitParams,
-    "programmatic/message/send": SendParams,
-    "programmatic/message/pause": PauseParams,
-    "programmatic/message/resume": ResumeParams,
-    "programmatic/message/result": ResultParams,
-}
 
 
 def check_session(session_id: str) -> None:
@@ -206,4 +186,3 @@ class Programmatic:
                 "message_id": message.message_id, "seq": message.seq}
 
 
-PROGRAMMATIC = ServiceKey[Programmatic]("programmatic.v1")

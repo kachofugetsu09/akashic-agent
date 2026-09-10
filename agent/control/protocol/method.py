@@ -1,30 +1,10 @@
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Protocol
+"""兼容入口；控制协议 RPC 方法边界由 `agent.plugin_contracts.control_method` 拥有。"""
 
-from .models import StrictModel
+from agent.plugin_contracts.control_method import (
+    RequestTransport,
+    RpcMethod,
+    TransportCall,
+    StrictModel,
+)
 
-
-class RequestTransport(Protocol):
-    """动态 RPC 可使用的当前连接窄传输端口。"""
-
-    connection_id: str
-
-
-TransportCall = Callable[[StrictModel, RequestTransport], Awaitable[object]]
-
-
-@dataclass(frozen=True)
-class RpcMethod:
-    """一个固定协议入口的参数边界与处理函数。"""
-
-    params: type[StrictModel]
-    call: Callable[[StrictModel], Awaitable[object]]
-    call_with_transport: TransportCall | None = None
-
-    async def invoke(self, params: StrictModel, transport: RequestTransport | None) -> object:
-        if self.call_with_transport is not None:
-            if transport is None:
-                raise RuntimeError("动态 RPC 缺少 RequestTransport")
-            return await self.call_with_transport(params, transport)
-        return await self.call(params)
+__all__ = ["RequestTransport", "RpcMethod", "TransportCall", "StrictModel"]

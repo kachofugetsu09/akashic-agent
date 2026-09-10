@@ -20,7 +20,7 @@ from core.net.http import SharedHttpResources
 from infra.control.stdio import StdioAppServer
 from session.log import MessageCatalog
 from session.message import Message
-from plugins.programmatic.control import PARAMS as PROGRAMMATIC_PARAMS, PROGRAMMATIC
+from agent.plugin_contracts.programmatic import PARAMS as PROGRAMMATIC_PARAMS, PROGRAMMATIC
 
 
 def build_control_service(
