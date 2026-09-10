@@ -2884,3 +2884,15 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - Gate：`docker/debug/gate.py` 的 `audit_catalog` 为 `passed/current`，无 unmapped executable、无 catalog issue；公开 change-impact Gate 以 stacked base 运行，`sourceDigest`/`planDigest` 由交付报告记录。
 - 迁移/持久化/运行 workspace 变化：`none`；未修改 migration、SQLite、正式 workspace、服务、网络、外部发送、generation/snapshot/lease/event 或 Git refs。
 - 残余风险：历史 checkpoint 或工作 checkout 的未跟踪副本可能保留旧模块文本；当前 Git source 与动态调用面已证实无 consumer。
+
+## 2026-09-10 插件边界第 3 步（2/6）：删除四个非 Yoyo 遗留迁移目录
+
+- 基线：stacked base `a2add169`（PR #594 head）；分支 `feature/plugin-boundary-step3-migration-20260910`。正式 workspace 未改写。
+- 删除 `migrations/` 下 9 个文件：`akasha_sparse_index_v8/{__init__,migration}.py`、`provider_runtimes_and_akasha/{__init__,migration}.py`、`workspace_veda/{__init__,migration}.py` + `veda.md`、`workspace_veda_uppercase/{__init__,migration}.py`。
+- 可达性证据：`migrations/README.md` 明确这四个目录「不进入 Yoyo catalog，也不再承诺自动执行或兼容当前 runtime」；`agent/migrations/runner.py` 只读取 `repo_root/migrations/yoyo`；全库字符串扫描确认无 production 引用（`tests/test_yoyo_migration_append_only.py` 中的同名路径由 `_repository(tmp_path)` 在临时仓库自建 fixture，不依赖仓库真实目录）。
+- 迁移语义不变：被删目录从不被 `read_migrations` 读取，也不出现在任何 workspace 的 `migrations.sqlite3`；`scripts/check_yoyo_migrations.py --base origin/main` 通过，证明未触碰不可变的 yoyo 目录。
+- 登记联动：`impact.toml` 把 `groups.model_owner` 的 `migrations/akasha_*/**`（删除后无匹配）替换为能匹配真实文件的 `migrations/yoyo/*akasha*.py`；`coverage-baseline.json` 的 `catalogDigest` 更新为 `71c331d4`。
+- **发现的 Gate 约束（供后续批次参考）**：`deleted_paths` 由 `gate._commit_tree_paths()` 校验于 `coverage-baseline.json.base`（`683b4791`，2026-07-18），该 base 早于 `migrations/` 引入，因此任何 `migrations/**` 路径都**不能**登记为 `deleted_paths`。删除更晚引入的路径时需改用「保留一个仍能匹配现存文件的 pattern」或走维护者批准的 base 迁移，不能直接照抄 `deleted_paths` 用法。
+- 验证：`pytest tests/test_yoyo_migration_append_only.py tests/test_migration_runner.py tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/test_change_gate.py` = `74 passed`；`plugin_boundary.py check` 通过（R1=8/8 R2=244/244 R3=238/238）；`audit_catalog` 为 `passed/current`。
+- 持久化/运行 workspace 变化：`none`；未修改任何 workspace 数据、SQLite、schema 或迁移账本。
+- 残余风险：历史 checkpoint 或未跟踪副本可能保留旧脚本文本；当前 Git source 与 runner 读取面无 consumer。
