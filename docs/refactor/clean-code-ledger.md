@@ -3050,3 +3050,18 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：R1 由 5 降到 3；R2 由 110 降到 108（`agent.control.protocol.models`、`agent.control.protocol.method`）。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/standard_tools/shell_tool/tool_executor/programmatic_result/message_sdk/socket_security）= `146 passed, 6 failed`，6 项全是已核对的既有 socket 集成失败；`tests/test_programmatic_control.py` 与父提交逐项一致（`5 failed, 3 passed`）。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（13）：模型 facts 合同化
+
+- 基线：stacked base `9f2c8de1`（第 12 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：move & re-export。`check_facts` / `display_facts` 是只读纯函数（只解释内容块的值，不读写会话、不调用模型、不执行工具），被 Core 通道视图与多个业务插件共用，移入 `agent/plugin_contracts/model_facts.py`；`plugins/models/projection.py` 保留再导出，对象身份不变。
+- 修 R1 `infra/channels/message_view.py`（此前通道视图直接 import 业务插件的投影实现）。
+- 账本：R1 由 3 降到 2。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/akasha_message_projection/message_control/mobile_realtime）= `222 passed`。
+- 持久化/运行 workspace 变化：`none`。
+
+**R1 剩余 2 条（本轮未做，需要独立设计）**：`infra/mobile_realtime/runtime_inspection.py` 直接 import
+`plugins.scheduler.store.JobStore` 与 `plugins.scheduler.schedule.ScheduledJob`。这不是文本可消除的耦合：
+Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 数据文件（`workspace/schedules.json`），
+属于「Core 解析插件私有数据格式」。正确解法是让调度插件经版本化 `ServiceKey` 提供只读检查服务、
+在插件缺席时返回空，而不是把 storage 搬进合同层。该决定影响诊断结果在有/无调度插件时的语义，需单独批次与 Gate。

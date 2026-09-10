@@ -172,6 +172,9 @@ def test_every_contract_import_resolves() -> None:
                 missing.append(f"{relative}: 无法 import {node.module}: {error}")
                 continue
             for alias in node.names:
+                if alias.name == "*":
+                    # 通配再导出：模块可 import 已由上面的 import_module 覆盖。
+                    continue
                 if not hasattr(module, alias.name):
                     missing.append(f"{relative}: {node.module} 缺少 {alias.name}")
     assert missing == []

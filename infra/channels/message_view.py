@@ -5,7 +5,7 @@ from contextlib import aclosing
 from dataclasses import asdict
 from typing import cast
 
-from plugins.models.projection import display_facts
+from agent.plugin_contracts.model_facts import display_facts
 from agent.plugin_contracts.tool_api import display_name
 from session.log import MessagePage, MessageReader, SessionEntry
 from session.message import ContentPart, Control, Input, Message, Output, ToolCall

@@ -4,7 +4,6 @@
 
 [baseline]
 R1 = [
-    "infra/channels/message_view.py|plugins.models.projection",
     "infra/mobile_realtime/runtime_inspection.py|plugins.scheduler.schedule",
     "infra/mobile_realtime/runtime_inspection.py|plugins.scheduler.store",
 ]
