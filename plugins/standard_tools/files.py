@@ -18,8 +18,8 @@ from plugins.standard_tools.filesystem import (
     ReadFileTool,
     WriteFileTool,
 )
-from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS, ToolRef
+from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result
+from agent.plugin_contracts.tools import TOOLS, ToolRef
 from agent.plugin_contracts.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value

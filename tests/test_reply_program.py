@@ -25,7 +25,7 @@ from plugins.models.content import render_content
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.react.plugin import react
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageLog
 from session.message import ContentPart, Control, Input, Output, ToolResult
@@ -44,7 +44,7 @@ async def test_ordinary_program_keeps_content_live_until_real_tool_settlement(tm
 import asyncio
 from contextlib import asynccontextmanager
 from agent.plugin_composition import ServiceKey
-from plugins.tools.api import Result
+from agent.plugin_contracts.tool_api import Result
 from session.message import ContentPart
 api_version = 3
 name = "probe"

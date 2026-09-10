@@ -8,8 +8,8 @@ from typing import Annotated, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition.bindings import Bindings
-from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS
+from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result
+from agent.plugin_contracts.tools import TOOLS
 from agent.plugin_contracts import ContentPart, ContentReferences, Input, Output, ToolCall
 from agent.plugin_contracts import json_value
 from .learning import Feedback, Learning, resolve_feedback

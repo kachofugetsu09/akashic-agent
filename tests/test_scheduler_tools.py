@@ -9,7 +9,7 @@ from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore
 from plugins.scheduler.tools import ScheduleTool
 from plugins.tools.menu import ToolMenu
-from plugins.tools.api import Result
+from agent.plugin_contracts.tool_api import Result
 from session.message import CallRef
 
 

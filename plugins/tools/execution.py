@@ -20,10 +20,11 @@ from agent.plugin_contracts import (
 )
 from agent.plugin_contracts import json_value
 
-from plugins.tools.api import (
-    Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
+from agent.plugin_contracts.tool_api import (
+    Authorize, Denied, InvalidArguments, OpenTool, Outcome, Result,
     durable_call_key,
 )
+from plugins.tools.api import MessageReply
 
 
 class ToolExecution:

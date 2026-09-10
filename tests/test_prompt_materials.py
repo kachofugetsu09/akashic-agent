@@ -21,7 +21,7 @@ from plugins.content.plugin import check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import Config
 from plugins.conversation.plugin import check_origin
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from session.log import MessageLog
 from session.artifact_store import ArtifactStore
 from session.message import ContentPart, Input, Output, ToolResult

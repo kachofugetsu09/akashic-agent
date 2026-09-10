@@ -14,7 +14,8 @@ from bus.event_bus import EventBus
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.tools.api import MessageReply
 from plugins.tools.menu import InvalidToolCall, ToolMenu
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView, open_tool
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
+from plugins.tools.plugin import open_tool
 from session.log import MessageLog
 from session.message import CallRef
 from tests.test_tool_bindings import write_plugins

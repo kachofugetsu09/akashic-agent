@@ -14,8 +14,8 @@ from plugins.context.materials import MATERIALS
 from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT, StepLimit
-from plugins.tools.api import Denied
-from plugins.tools.plugin import TOOLS
+from agent.plugin_contracts.tool_api import Denied
+from agent.plugin_contracts.tools import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
 from agent.plugin_contracts import Control, Message

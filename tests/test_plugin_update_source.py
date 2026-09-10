@@ -13,7 +13,7 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.tools.api import MessageReply
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from session.log import MessageLog, OwnerTransaction
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from tests.test_default_reply import application

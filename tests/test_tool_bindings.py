@@ -14,13 +14,12 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import (
+from agent.plugin_contracts.tools import (
     ALL_TOOLS,
     TOOL_DISPLAY_NAME,
-    ToolCatalog,
     ToolRef,
-    open_tool,
 )
+from plugins.tools.plugin import ToolCatalog, open_tool
 from session.log import MessageLog
 
 TOOLS = ServiceKey("tools.v1")
@@ -92,7 +91,7 @@ def add_authorize(path):
     policy.mkdir()
     (policy / "plugin.py").write_text("""
 from agent.plugin_composition import ServiceKey
-from plugins.tools.api import Denied
+from agent.plugin_contracts.tool_api import Denied
 api_version = 3
 name = "authorize"
 version = "1.0.0"

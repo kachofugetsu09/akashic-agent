@@ -22,8 +22,8 @@ from agent.tools.unified_exec import (
     MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError,
     clamp_initial_yield_time, clamp_write_stdin_yield_time, format_execution_result,
 )
-from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS, ToolRef
+from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result
+from agent.plugin_contracts.tools import TOOLS, ToolRef
 from session.log import MessageReader
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall
 from agent.plugin_contracts import json_value

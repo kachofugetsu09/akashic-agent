@@ -19,7 +19,7 @@ from plugins.akasha.domain.model import EmbeddingSpaceMismatchError, MemoryConfi
 from plugins.akasha.infrastructure.persistence import load_consumption, logical_state_sha256
 from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
 from plugins.akasha.projection import applied_source
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from session.embedding_store import MessageEmbeddings
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
@@ -34,7 +34,7 @@ def sources(path):
 from contextlib import asynccontextmanager
 from agent.plugin_composition import RUNTIME_STARTED
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from plugins.tools.plugin import TOOLS
+from agent.plugin_contracts.tools import TOOLS
 from agent.plugin_composition.bindings import BINDINGS
 from plugins.content.plugin import CONTENT
 from plugins.content.api import ContentSchema
@@ -437,8 +437,8 @@ async def test_other_tool_owner_cannot_contribute_akasha_feedback(tmp_path):
     foreign.mkdir()
     (foreign / "plugin.py").write_text('''
 from contextlib import asynccontextmanager
-from plugins.tools.plugin import TOOLS
-from plugins.tools.api import Result
+from agent.plugin_contracts.tools import TOOLS
+from agent.plugin_contracts.tool_api import Result
 from session.message import ContentPart
 api_version = 3
 name = "foreign"

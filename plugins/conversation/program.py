@@ -17,9 +17,10 @@ from plugins.context.api import ContextModel, Materials, Reminder, Summary, chec
 from plugins.models.selection import selection
 from plugins.models.content import load_artifacts, render_content as render_model_content
 from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts, check_tool_rejection
-from plugins.tools.api import Authorize, MessageReply, result_message_id
+from agent.plugin_contracts.tool_api import Authorize, result_message_id
+from plugins.tools.api import MessageReply
 from plugins.tools.menu import ToolMenu, ToolPresentation
-from plugins.tools.plugin import ToolView
+from agent.plugin_contracts.tools import ToolView
 from plugins.standard_tools.shell import shell_cleanup
 from session.log import MessageReader
 from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output, ToolResult
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
     from plugins.content.plugin import Content
     from plugins.context.plugin import ContextBuilder
     from plugins.context.materials import ContextMaterials
-    from plugins.tools.plugin import ToolCatalog
+    from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog
     from plugins.turn_projection.plugin import TurnProjection
     from plugins.react.plugin import Preview
 

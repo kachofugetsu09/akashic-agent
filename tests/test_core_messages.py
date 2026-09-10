@@ -96,7 +96,7 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
         assert MessageCatalog(core.message_log).reader("local:one").snapshot() == (
             message,
         )
-        from plugins.tools.plugin import ALL_TOOLS, TOOLS
+        from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as lease:
             ctx = lease.composition_root.context
@@ -226,7 +226,7 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 assert all(item.healthy for item in snapshot.composition_root.receipt().health if item.owner == "akasha")
                 graph = workspace / "memory/akasha.db"
                 before = logical_state_sha256(graph)
-                from plugins.tools.plugin import ALL_TOOLS, TOOLS
+                from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
                 from agent.plugins.archive import PluginArchive
                 tools = ctx.require(TOOLS)
                 binding = tools.bind(

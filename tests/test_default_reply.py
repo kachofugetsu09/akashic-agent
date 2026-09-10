@@ -69,8 +69,8 @@ from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySour
 from plugins.models.projection import MODEL_CALLS
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
-from plugins.tools.api import Result
-from plugins.tools.plugin import TOOLS
+from agent.plugin_contracts.tool_api import Result
+from agent.plugin_contracts.tools import TOOLS
 from session.message import ContentPart
 api_version = 3
 name = "test_provider"
@@ -299,7 +299,7 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             from agent.plugin_composition.models import ModelRole
             from plugins.models.content import render_content
             from plugins.models.projection import MODEL_CALLS, MessageProjection
-            from plugins.tools.plugin import TOOLS
+            from agent.plugin_contracts.tools import TOOLS
             payload = json.loads(cast(str, rows[2].body.parts[0].value))
             assert payload["matched_groups"][0]["tools"][0]["function"]["name"] == "write_evidence"
             assert "matched_groups" in str(calls[1].messages)

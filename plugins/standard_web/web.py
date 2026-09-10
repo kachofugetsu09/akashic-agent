@@ -12,9 +12,9 @@ from agent.tools.base import normalize_tool_parameters
 from plugins.standard_web.fetch import WebFetchTool
 from plugins.standard_web.search import WebSearchTool
 from core.net.http import HttpRequester, RequestBudget, RetryPolicy
-from plugins.tools.api import CallSource, Result
-from plugins.tools.api import InvalidArguments
-from plugins.tools.plugin import TOOLS, ToolRef
+from agent.plugin_contracts.tool_api import CallSource, Result
+from agent.plugin_contracts.tool_api import InvalidArguments
+from agent.plugin_contracts.tools import TOOLS, ToolRef
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
 

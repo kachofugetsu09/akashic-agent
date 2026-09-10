@@ -7,7 +7,7 @@ from plugins.standard_tools.filesystem import (
     WriteFileTool,
 )
 from plugins.context.materials import MATERIALS
-from plugins.tools.plugin import TOOLS, ToolView
+from agent.plugin_contracts.tools import TOOLS, ToolView
 
 from .files import register_file
 from .shell import register_shell

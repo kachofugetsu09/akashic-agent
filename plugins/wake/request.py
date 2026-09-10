@@ -14,7 +14,7 @@ from agent.plugin_contracts import ContentPart, ContentReferences, Control, Inpu
 from agent.plugin_contracts import json_value
 
 from .api import DeliveryTarget
-from plugins.tools.plugin import ToolView
+from agent.plugin_contracts.tools import ToolView
 
 WAKE_TOOLS_VIEW = ServiceKey[ToolView]("wake.tools.v1")
 

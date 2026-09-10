@@ -3011,3 +3011,17 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
 - 账本：R1 由 8 降到 6；R3 由 238 降到 228。（`docker/debug/*` 探针里的同类 import 不在 R1 范围内，按决策 0064 决定 6 的 `docker/` 排除处理。）
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_native_senders.py tests/test_reply_preview.py tests/test_message_follow.py tests/test_delivery_bindings.py tests/test_wake_messages.py tests/test_subagent_messages.py` = `168 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（10）：工具 ABI 与注册表合同化
+
+- 基线：stacked base `db301325`；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：按判据 3（seam）。`plugins.tools.plugin` 与 `plugins.tools.api` 是 R3 最大的两个目标（25 + 20 条），把 key、值模型与 Protocol 归合同层，实现留在插件：
+  - `agent/plugin_contracts/tool_api.py`（新）：工具调用 ABI —— `Outcome`、`Result`、`CallSource`、`InvalidArguments`、`Denied`、`BoundTool`、`OpenTool`、`Authorize`、`display_name`、`result_message_id`、`durable_call_key`、`MessageReplyPort`。
+  - `agent/plugin_contracts/tools.py`（新）：`ToolRef`、`ToolView` 值模型 + `ToolCatalogPort`、`ToolExecutionPort` Protocol + 三个 key；登记为 `seam`。
+- **命名冲突处理**：合同里的注册表 Protocol 命名为 `ToolCatalogPort` 而非 `ToolCatalog`，因为插件里仍有具体的 `ToolCatalog` 类，且测试会实例化它。凡是从 `require(TOOLS)` 取到的值，注解统一用 Port 名（`from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog`），具体类与 `open_tool` 仍从 `plugins.tools.plugin` 取。
+- **补上一处真实缺口**：`plugins/subagent/tools.py` 原本直接 import 实现函数 `bind_saved_tool`。已把它提升为 `ToolCatalogPort.bind_saved(...)` 公开方法，subagent 改经 `ctx.require(TOOLS)` 消费 —— 这是 R3「插件之间不得 import 实现」的正当解法，而不是把函数塞进合同层。
+- **发现并记录一处未完成的真欠账**：`plugins/conversation/program.py` 实际**构造** `MessageReply`（存储写入位置），它需要 `MessageReader`/`MessageWriter`，属于存储 seam，不能进合同层。批处理脚本一度把它误删为漏名（会 NameError），已恢复 import 并把 `plugins/conversation/program.py|plugins.tools.api` 记回账本，等存储 seam 批次处理。
+- `MessageReply` 显式实现 `MessageReplyPort`（nominal），使 pyright 认可「具体实现满足协议」；否则 `execute_call(reply)` 的调用点全部报协变错误。
+- 账本：R1 由 6 降到 5（`infra/channels/message_view.py|plugins.tools.api`）；R3 由 228 降到 184。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/tool_views/tool_bindings/tool_abandon/standard_tools/shell_tool/subagent_messages/message_push_plugin/scheduler_messages/reply_program/akasha_learning_binding/agent_restart_tool/computer_driver_plugin/plugin_update_source）= `221 passed, 1 skipped`。
+- 持久化/运行 workspace 变化：`none`。

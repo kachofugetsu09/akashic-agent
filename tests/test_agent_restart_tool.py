@@ -29,15 +29,15 @@ from bootstrap.tools import CoreRuntime
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.control.connection import NdjsonConnection
 from plugins.message_push.restart import PendingRestart, RestartTool
-from plugins.tools.api import (
+from agent.plugin_contracts.tool_api import (
     CallSource,
     ContentPart,
     Denied,
-    MessageReply,
     durable_call_key,
 )
+from plugins.tools.api import MessageReply
 from plugins.content.plugin import check_text
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.programmatic.control import AdmitParams, PROGRAMMATIC, SendParams
 from session.log import MessageLog, MessageReader
@@ -238,7 +238,7 @@ from agent.plugin_composition import RUNTIME_STARTING
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from session.message import CallRef, Input, Output, ToolCall, ToolResult
 
 api_version = 3

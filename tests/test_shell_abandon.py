@@ -14,7 +14,7 @@ from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
 from tests.model_plugin_fakes import build_test_chat_models

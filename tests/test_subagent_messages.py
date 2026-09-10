@@ -20,7 +20,8 @@ from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.tools.api import MessageReply
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
+from plugins.tools.plugin import open_tool
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from tests.test_standard_tools import environment
 

@@ -18,7 +18,8 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.delivery.records import DeliveryRecords
 from plugins.message_push.tool import message_id
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
+from plugins.tools.plugin import open_tool
 from agent.plugin_composition.tasks import Tasks
 from session.log import MessageLog, OwnerTransaction
 from session.store import SessionStore

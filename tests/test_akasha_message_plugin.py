@@ -15,7 +15,7 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT
 from plugins.context.materials import MATERIALS
 from plugins.tools.api import MessageReply
-from plugins.tools.plugin import TOOLS
+from agent.plugin_contracts.tools import TOOLS
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageLog

@@ -6,7 +6,8 @@ import pytest
 from agent.restart import RestartGate
 from plugins.content.plugin import check_text
 from plugins.tools.abandon import abandon_call, follow_abandon, reject_start
-from plugins.tools.api import MessageReply, Result, durable_call_key, result_message_id
+from agent.plugin_contracts.tool_api import Result, durable_call_key, result_message_id
+from plugins.tools.api import MessageReply
 from plugins.tools.execution import ToolExecution, _fingerprint
 from session.log import OwnerTransaction
 from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult

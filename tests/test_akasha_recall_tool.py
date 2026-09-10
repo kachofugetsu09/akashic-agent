@@ -6,7 +6,7 @@ from agent.plugin_composition.models import EmbeddingResult, EmbeddingSpaceDescr
 
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.recall_tool import RecallTool
-from plugins.tools.api import InvalidArguments
+from agent.plugin_contracts.tool_api import InvalidArguments
 from session.message import Output
 from tests.test_akasha_message_queries import memory_runtime
 

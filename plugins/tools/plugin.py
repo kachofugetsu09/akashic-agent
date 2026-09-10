@@ -10,6 +10,13 @@ from typing import Literal, cast
 from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts import CallRef, ToolResult, freeze_json
+from agent.plugin_contracts.tools import (
+    ALL_TOOLS,
+    TOOL_DISPLAY_NAME,
+    TOOLS,
+    ToolRef,
+    ToolView,
+)
 from session.log import MessageReader
 from agent.plugin_contracts.restart import ExternalRootPermit
 from plugins.content.plugin import check_text
@@ -33,14 +40,6 @@ OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[BoundT
 Capture = Callable[[Mapping[str, object]], Mapping[str, object]]
 
 
-@dataclass(frozen=True, slots=True)
-class ToolRef:
-    """引用当前 composition Root 中的一次真实工具注册。"""
-
-    name: str
-    description: Mapping[str, object]
-
-
 @dataclass(slots=True)
 class _Registration:
     ref: ToolRef
@@ -49,33 +48,6 @@ class _Registration:
     capture: Capture | None
     preparation: _Preparation | None = None
     authorization: _Authorization | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ToolView:
-    """消费者获授的一组真实工具引用。"""
-
-    refs: tuple[ToolRef, ...]
-
-    def __post_init__(self) -> None:
-        refs = tuple(self.refs)
-        names = tuple(ref.name for ref in refs)
-        if len(set(names)) != len(names):
-            raise ValueError("工具 view 不能包含重复名称")
-        object.__setattr__(self, "refs", refs)
-
-    def select(self, name: str) -> ToolRef:
-        for ref in self.refs:
-            if ref.name == name:
-                return ref
-        raise PermissionError(f"工具不属于获授 view: {name}")
-
-    def without(self, names: frozenset[str]) -> ToolView:
-        return ToolView(tuple(ref for ref in self.refs if ref.name not in names))
-
-    @classmethod
-    def combine(cls, *views: ToolView) -> ToolView:
-        return cls(tuple(ref for view in views for ref in view.refs))
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +339,21 @@ class ToolCatalog:
             contributors=contributors,
         )
 
+    async def bind_saved(
+        self,
+        bindings: Bindings,
+        binding_id: str,
+        *,
+        configuration: Mapping[str, object],
+    ) -> str:
+        """从真实原 binding 派生新配置，并保留它的归档 provider 闭包。"""
+        async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
+            return catalog._bind_saved(
+                metadata,
+                bindings,
+                configuration=configuration,
+            )
+
     def _bind_saved(
         self,
         metadata: Mapping[str, object],
@@ -470,9 +457,6 @@ class ToolCatalog:
         async with self._ctx.runtime_scope():
             await authorization.authorize(arguments)
 
-TOOLS = ServiceKey[ToolCatalog]("tools.v1")
-ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")
-TOOL_DISPLAY_NAME = ServiceKey[Callable[[str], str]]("tools.display-name.v1")
 
 
 @asynccontextmanager
@@ -489,7 +473,7 @@ async def bind_saved_tool(
     *,
     configuration: Mapping[str, object],
 ) -> str:
-    """从真实原 binding 派生新配置，并保留它的归档 provider 闭包。"""
+    """兼容入口；新代码应经 `TOOLS` 能力调用 `bind_saved`。"""
     async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
         return catalog._bind_saved(
             metadata,

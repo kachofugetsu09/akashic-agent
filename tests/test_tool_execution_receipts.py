@@ -509,7 +509,7 @@ async def test_abandon_waits_for_started_owner_and_retains_real_success(environm
 
 @pytest.mark.asyncio
 async def test_invalid_arguments_result_and_receipt_roll_back_together(environment, monkeypatch):
-    from plugins.tools.api import InvalidArguments
+    from agent.plugin_contracts.tool_api import InvalidArguments
     log, state, tasks, probe, permissions, execution = environment
     reply = dialogue(log)
     prepares = []

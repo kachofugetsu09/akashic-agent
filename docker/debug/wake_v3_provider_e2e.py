@@ -722,8 +722,8 @@ from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.delivery.api import Receipt
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
-from plugins.tools.api import Result
-from plugins.tools.plugin import TOOLS
+from agent.plugin_contracts.tool_api import Result
+from agent.plugin_contracts.tools import TOOLS
 from session.message import ContentPart
 from session.message_codec import encode_body
 {models}

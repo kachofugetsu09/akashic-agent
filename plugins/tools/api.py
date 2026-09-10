@@ -1,58 +1,29 @@
 from __future__ import annotations
 
-import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from typing import Protocol, cast
 
 from session.log import MessageReader, MessageWriter, OwnerStore
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
-
-
-Outcome = Literal["success", "denied", "error", "interrupted"]
-
-
-def result_message_id(call_ref: CallRef) -> str:
-    """调用结果的默认消息身份；恢复消费者与普通程序共用。"""
-    return f"tool-result:{call_ref.message_id}:{call_ref.part_index}"
-
-
-def durable_call_key(call_ref: CallRef) -> str:
-    """Return the stable effect key already used by a submitted ToolCall."""
-    if not isinstance(call_ref, CallRef):
-        raise TypeError("工具调用引用无效")
-    return "message:" + json.dumps(
-        [call_ref.message_id, call_ref.part_index],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
+from agent.plugin_contracts.tool_api import (
+    Authorize,
+    BoundTool,
+    CallSource,
+    Denied,
+    InvalidArguments,
+    OpenTool,
+    Outcome,
+    Result,
+    display_name,
+    durable_call_key,
+    MessageReplyPort,
+    result_message_id,
+)
 
 @dataclass(frozen=True, slots=True)
-class Result:
-    outcome: Outcome
-    parts: tuple[ContentPart, ...]
-
-    def __post_init__(self) -> None:
-        if self.outcome not in {"success", "denied", "error", "interrupted"}:
-            raise ValueError("工具结果状态无效")
-        parts = tuple(self.parts)
-        if any(not isinstance(part, ContentPart) for part in parts):
-            raise TypeError("工具结果必须是内容块")
-        object.__setattr__(self, "parts", parts)
-
-
-@dataclass(frozen=True, slots=True)
-class CallSource:
-    """实际调用的不可变消息前缀；不携带 reader 或任何写入能力。"""
-
-    call_ref: CallRef
-    messages: tuple[Message, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class MessageReply:
+class MessageReply(MessageReplyPort):
     """已获授的调用结果写入位置；独立程序调用不需要它。"""
 
     message_id: str
@@ -123,39 +94,3 @@ class MessageReply:
         return Result(body.outcome, body.parts)
 
 
-def display_name(metadata: Mapping[str, object]) -> str:
-    """从原 binding 读取工具名称，不打开工具或暴露其恢复配置。"""
-    tool = metadata.get("tool")
-    if not isinstance(tool, Mapping):
-        raise ValueError("工具 binding 描述无效")
-    name = cast(Mapping[str, object], tool).get("name")
-    if not isinstance(name, str) or not name:
-        raise ValueError("工具 binding 缺少工具名")
-    return name
-
-
-class InvalidArguments(ValueError):
-    """工具明确拒绝请求参数；可以返回错误结果供调用者修正。"""
-
-
-class Denied(Exception):
-    """授权 owner 明确拒绝当前最终参数；没有发生本次调用。"""
-
-
-class BoundTool(Protocol):
-    @property
-    def idempotent(self) -> bool: ...
-
-    async def prepare(
-        self, arguments: Mapping[str, object], source: CallSource | None = None
-    ) -> Mapping[str, object]: ...
-
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result: ...
-
-    async def query(self, key: str) -> Result | None:
-        """查询原调用；None 只表示无法确定，不能解释为没有效果。"""
-        ...
-
-
-OpenTool = Callable[[str], AbstractAsyncContextManager[BoundTool]]
-Authorize = Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object]]]

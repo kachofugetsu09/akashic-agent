@@ -8,7 +8,8 @@ from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugin_contracts import CallRef, ToolCall
 
 from .execution import MessageReply, Result, ToolExecution
-from .plugin import TOOLS, ToolCatalog, ToolRef, ToolView
+from .plugin import TOOLS, ToolRef, ToolView
+from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog, ToolExecutionPort
 
 
 class InvalidToolCall(ValueError):
@@ -70,7 +71,7 @@ class ToolMenu:
         self,
         catalog: ToolCatalog,
         bindings: Bindings,
-        execution: ToolExecution,
+        execution: ToolExecutionPort,
         reply: Callable[[CallRef], MessageReply],
         *,
         view: ToolView | None = None,

@@ -19,8 +19,8 @@ from plugins.delivery.plugin import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.reply.api import REPLY_PROGRAM
 from plugins.react.plugin import REACT
-from plugins.tools.api import Denied
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tool_api import Denied
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION

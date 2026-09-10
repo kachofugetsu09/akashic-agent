@@ -22,7 +22,7 @@ from plugins.context.materials import MATERIALS
 from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import SessionAttributes
 from session.message import ContentPart, ContentReferences, Input

@@ -18,7 +18,7 @@ from plugins.content.api import ContentSchema
 from plugins.content.plugin import CONTENT
 from plugins.context.api import Materials, Reminder
 from plugins.context.materials import MATERIALS
-from plugins.tools.plugin import TOOLS, ToolRef, ToolView
+from agent.plugin_contracts.tools import TOOLS, ToolRef, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from agent.plugin_contracts import Message
 from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError

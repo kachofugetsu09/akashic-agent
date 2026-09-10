@@ -10,9 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ToolCall as ModelToolCall
-from plugins.tools.api import BoundTool, CallSource, InvalidArguments, Result
+from agent.plugin_contracts.tool_api import BoundTool, CallSource, InvalidArguments, Result
 from plugins.tools.menu import InvalidToolCall, ToolPresentation, tool_schema
-from plugins.tools.plugin import TOOLS, ToolCatalog, ToolRef, ToolView
+from agent.plugin_contracts.tools import TOOLS, ToolRef, ToolView
+from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
 

@@ -23,8 +23,8 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
-from plugins.tools.api import BoundTool, CallSource, Result
-from plugins.tools.plugin import TOOLS
+from agent.plugin_contracts.tool_api import BoundTool, CallSource, Result
+from agent.plugin_contracts.tools import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from session.log import MessageCatalog, OwnerRecord, OwnerStore
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall

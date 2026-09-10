@@ -20,8 +20,8 @@ from agent.control.frame_book import CONTROL_FRAMES, FrameBook, FrameClaim, Fram
 from agent.plugin_composition.restart import RESTART_GATE
 from agent.plugin_contracts.restart import RestartGate, RestartRejectedError
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
-from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durable_call_key
-from plugins.tools.plugin import TOOLS, ToolRef
+from agent.plugin_contracts.tool_api import BoundTool, CallSource, ContentPart, Result, durable_call_key
+from agent.plugin_contracts.tools import TOOLS, ToolRef
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import Message, MessageCatalog, MessageReader
 from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult, freeze_json

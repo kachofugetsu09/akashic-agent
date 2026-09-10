@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import cast
 
 from plugins.models.projection import display_facts
-from plugins.tools.api import display_name
+from agent.plugin_contracts.tool_api import display_name
 from session.log import MessagePage, MessageReader, SessionEntry
 from session.message import ContentPart, Control, Input, Message, Output, ToolCall
 from session.message_codec import json_value

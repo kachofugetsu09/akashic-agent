@@ -25,7 +25,7 @@ from agent.plugins.archive import PluginArchive
 from agent.plugin_composition.mcp_slots import PluginMcpServers, _freeze_plugin_mcp_servers
 from plugins.tools import plugin as tools_plugin
 from plugins.tools.api import MessageReply
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from plugins.turn_projection import plugin as turn_projection_plugin
 from session.log import MessageLog
 from agent.plugin_composition.tool_catalog import _freeze_plugin_tools

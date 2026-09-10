@@ -156,7 +156,8 @@ async def test_archived_schedule_tool_recovers_original_operation_after_source_r
     from agent.plugin_composition.bindings import Bindings
     from agent.plugins.manager import PluginManager
     from bus.event_bus import EventBus
-    from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
+    from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
+    from plugins.tools.plugin import open_tool
 
     install(tmp_path)
     async with application(tmp_path, replying=False, start=False) as (log, host):

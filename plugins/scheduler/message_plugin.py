@@ -18,8 +18,8 @@ from plugins.conversation.program import run_reply
 from plugins.delivery.plugin import DELIVERY
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
-from plugins.tools.api import Denied
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
+from agent.plugin_contracts.tool_api import Denied
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
 from agent.plugin_contracts import Message

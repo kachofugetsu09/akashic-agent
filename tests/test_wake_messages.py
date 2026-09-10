@@ -15,7 +15,7 @@ from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from plugins.wake.api import DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
 from plugins.wake.request import (
     Request,
@@ -23,7 +23,7 @@ from plugins.wake.request import (
     WAKE_PROGRAM,
     WAKE_TOOLS_VIEW,
 )
-from plugins.tools.plugin import ToolView
+from agent.plugin_contracts.tools import ToolView
 from plugins.wake.source import Source
 from plugins.wake.state import WakeState
 from session.message import Input, Output, ToolResult
@@ -67,7 +67,7 @@ from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
-from plugins.tools.plugin import TOOLS
+from agent.plugin_contracts.tools import TOOLS
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS

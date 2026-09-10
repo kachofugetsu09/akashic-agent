@@ -5,7 +5,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from plugins.tools.api import CallSource, Denied, InvalidArguments, Result
+from agent.plugin_contracts.tool_api import CallSource, Denied, InvalidArguments, Result
 from agent.plugin_contracts import ContentPart, Output, ToolCall
 from agent.plugin_contracts import json_value
 

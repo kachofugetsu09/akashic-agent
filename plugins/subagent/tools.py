@@ -11,8 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
 from plugins.delivery.api import Sink
-from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS, bind_saved_tool
+from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result
+from agent.plugin_contracts.tools import TOOLS
 from agent.plugin_contracts import ContentPart, Input
 from agent.plugin_contracts import json_value
 
@@ -38,6 +38,7 @@ class Spawn:
     idempotent = True
 
     def __init__(self, ctx: Context, targets: Mapping[str, str], senders: Mapping[str, str]):
+        self._catalog = ctx.require(TOOLS)
         self.ctx = ctx
         self.targets = targets
         self.senders = senders
@@ -86,7 +87,7 @@ class Spawn:
             if configuration is None:
                 fixed[name] = self.targets[name]
             else:
-                fixed[name] = await bind_saved_tool(
+                fixed[name] = await self._catalog.bind_saved(
                     bindings,
                     self.targets[name],
                     configuration=configuration,

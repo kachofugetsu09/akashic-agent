@@ -6,7 +6,8 @@ from dataclasses import replace
 from typing import cast
 
 from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
-from plugins.tools.api import Denied, MessageReply, Result, durable_call_key
+from agent.plugin_contracts.tool_api import Denied, Result, durable_call_key
+from plugins.tools.api import MessageReply
 from plugins.tools.execution import _fingerprint, finish
 from session.log import MessageCatalog, MessageReader, OwnerStore
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult

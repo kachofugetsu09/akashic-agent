@@ -24,7 +24,7 @@ from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
-from plugins.tools.plugin import TOOLS, ToolView
+from agent.plugin_contracts.tools import TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 
 from .api import Config, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_CHANGED

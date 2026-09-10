@@ -31,7 +31,8 @@ from plugins.tools.api import MessageReply
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from plugins.standard_web.web import WebTool
 from plugins.tools.execution import ToolExecution
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
+from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
+from plugins.tools.plugin import open_tool
 from plugins.standard_web.search import WebSearchTool
 from tests.test_message_push_plugin import storage
 from tests.model_plugin_fakes import build_test_chat_models
