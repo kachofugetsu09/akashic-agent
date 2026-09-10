@@ -5,27 +5,17 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 
-from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.models import StreamCallback
 from agent.plugin_composition.tasks import Task
+from agent.plugin_contracts.reply import (
+    REPLY_STATUS,
+    ReplyActivity,
+    ReplyPreview,
+    ReplyRead,
+)
 from plugins.react.plugin import Preview
 
-
-@dataclass(frozen=True, slots=True)
-class ReplyPreview:
-    message_id: str
-    text: str = ""
-    thinking: str = ""
-    call_record_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ReplyActivity:
-    session_id: str
-    source: str
-    handle: str
-    active: bool
-    preview: ReplyPreview | None = None
+__all__ = ["REPLY_STATUS", "ReplyActivity", "ReplyPreview", "ReplyRead", "ReplyState"]
 
 
 class ReplyRead:
@@ -130,4 +120,3 @@ class ReplyState:
             self._notify()
 
 
-REPLY_STATUS = ServiceKey[ReplyRead]("reply.status.v1")

@@ -13,7 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_DIR = REPO_ROOT / "agent" / "plugin_contracts"
 
 # 词汇表只允许依赖标准库与本层自身。
-ALLOWED_TOP_LEVEL = {"agent.plugin_contracts"}
+# 合同层可以依赖 `agent.plugin_composition.model`：它只定义 ServiceKey / CompositionError
+# 等纯值身份原语，且自身零仓库内 import（实测）。合同层需要 ServiceKey 才能声明公开 key，
+# 而 ServiceKey 只按 name 相等，不引入任何实现依赖。其它 composition 子模块仍不允许。
+ALLOWED_TOP_LEVEL = {"agent.plugin_contracts", "agent.plugin_composition.model"}
 
 VOCABULARY_NAMES = (
     "Body",
@@ -33,9 +36,23 @@ VOCABULARY_NAMES = (
 
 
 def _imported_modules(path: Path) -> set[str]:
+    """返回运行时 import 的模块；`if TYPE_CHECKING:` 下的只作类型标注，不算依赖。"""
+
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        is_type_checking = (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+        )
+        if is_type_checking:
+            guarded.update(id(child) for child in ast.walk(node))
     modules: set[str] = set()
     for node in ast.walk(tree):
+        if id(node) in guarded:
+            continue
         if isinstance(node, ast.Import):
             modules.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
@@ -120,3 +137,41 @@ def test_legacy_artifacts_shim_exports_every_consumed_name() -> None:
         "check_artifact_id",
     ):
         assert hasattr(shim, name), f"session.artifacts 缺少 {name}"
+
+
+def test_every_contract_import_resolves() -> None:
+    """全库 `from agent.plugin_contracts* import X` 的名字与模块都必须真实存在。
+
+    这是 move & re-export 的兜底：历史上漏过 `_unique_fields`（yoyo 迁移依赖）
+    与 `AttachmentReadLease`/`AttachmentReadPort`（composition 依赖），两次都是
+    「再导出没按全库被 import 的名字集合来写」。本测试把它变成一次静态全量校验。
+    """
+
+    import importlib
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    files = subprocess.run(
+        ["git", "ls-files", "*.py"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.split()
+    missing: list[str] = []
+    for relative in files:
+        try:
+            tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            if not node.module.startswith("agent.plugin_contracts"):
+                continue
+            try:
+                module = importlib.import_module(node.module)
+            except ImportError as error:  # pragma: no cover
+                missing.append(f"{relative}: 无法 import {node.module}: {error}")
+                continue
+            for alias in node.names:
+                if not hasattr(module, alias.name):
+                    missing.append(f"{relative}: {node.module} 缺少 {alias.name}")
+    assert missing == []

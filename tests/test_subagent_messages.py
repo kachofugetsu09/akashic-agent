@@ -77,7 +77,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 import json
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall

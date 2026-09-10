@@ -3,7 +3,7 @@ from collections.abc import AsyncGenerator
 
 from agent.plugin_composition import Context
 from plugins.delivery.api import Receipt
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from agent.plugin_contracts import Message
 
 api_version = 3

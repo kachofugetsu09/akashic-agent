@@ -20,7 +20,7 @@ from plugins.content.plugin import CONTENT
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS

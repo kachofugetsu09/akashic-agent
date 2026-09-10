@@ -17,7 +17,7 @@ from plugins.conversation.plugin import check_origin
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.reply.completion import REPLY_COMPLETION
 from session.log import MessageReader
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall

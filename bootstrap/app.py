@@ -374,7 +374,7 @@ class AppRuntime:
             # 对账只读取 exact 注册名；缺少出站时不能先启动外部收件。
             if self.channel_host.required_delivery_senders:
                 from agent.plugins.snapshot import lease_runtime_snapshot
-                from plugins.delivery.senders import DELIVERY_SENDERS
+                from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 
                 async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
                     available = snapshot.composition_root.context.require(DELIVERY_SENDERS).registered_names()

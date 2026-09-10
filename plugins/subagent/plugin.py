@@ -16,7 +16,7 @@ from plugins.conversation.plugin import CONVERSATION
 from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS
 from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.reply.api import REPLY_PROGRAM
 from plugins.react.plugin import REACT
 from plugins.tools.api import Denied

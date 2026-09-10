@@ -6,7 +6,7 @@ from contextlib import suppress
 from dataclasses import asdict
 
 from agent.plugins.snapshot import RuntimeSnapshotStore
-from plugins.reply.status import REPLY_STATUS, ReplyActivity
+from agent.plugin_contracts.reply import REPLY_STATUS, ReplyActivity
 
 
 class RuntimeReplyStatus:

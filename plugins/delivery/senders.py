@@ -7,7 +7,8 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.plugin_composition import Context, Effect, ServiceKey
+from agent.plugin_composition import Context, Effect
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts import Message
 
@@ -117,7 +118,6 @@ class Senders:
                     view.close()
 
 
-DELIVERY_SENDERS = ServiceKey[Senders]("delivery.senders.v1")
 
 
 @asynccontextmanager

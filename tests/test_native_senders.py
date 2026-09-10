@@ -21,7 +21,8 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.delivery.api import Sink
 from plugins.delivery.execution import Deliveries
 from plugins.delivery.records import DeliveryRecords
-from plugins.delivery.senders import DELIVERY_SENDERS, open_sender
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
+from plugins.delivery.senders import open_sender
 from session.artifact_store import ArtifactStore
 from session.artifacts import AttachmentKind
 from session.log import MessageLog

@@ -14,7 +14,7 @@ from plugins.content.api import check_artifact
 from plugins.content.plugin import check_text
 from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageReader, SessionAttributes
 from agent.plugin_contracts import ContentPart, Input, Message, Output

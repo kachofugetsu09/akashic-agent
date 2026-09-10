@@ -183,7 +183,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from agent.plugin_composition import ServiceKey
 from plugins.delivery.api import Receipt
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 
 api_version = 3
 name = "fixture_sender"

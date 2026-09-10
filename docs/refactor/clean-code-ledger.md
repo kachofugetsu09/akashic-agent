@@ -2997,3 +2997,17 @@ SLOC 是有内容的源码行：Python 使用 AST 标出完整 docstring 表达�
   `sourceDigest=7d4ff972e04683112eefda49e6a85ed04b80ca3ef79d2c5fd1bae5fdd3881a92`，
   `planDigest=f62bf6957c221a1d99dc586678d1e676f6ca4fd5d526428bfa95bc1eb31d2956`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（9）：well-known 能力 key 移入结构合同
+
+- 基线：stacked base `e374f89e`；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：**能力 key + Protocol 归合同层**（判据 3 的 seam 分支）。选这三个是因为它们同时是 R1（Core 直接 import 插件）与 R3（插件互相 import 实现）的来源，一笔修两类。
+  - `delivery.senders.v1`：key + `DeliverySenders` Protocol 移入 `agent/plugin_contracts/delivery.py`；实现 `Senders` 留在 `plugins/delivery/senders.py`。修 R1 `bootstrap/app.py` + R3 10 条。
+  - `reply.status.v1`：key + `ReplyPreview`/`ReplyActivity` 值模型 + `ReplyRead` Protocol 移入 `agent/plugin_contracts/reply.py`。修 R1 `bootstrap/reply_status.py`。
+  - 两者都在 `plugin_boundary.toml` 登记为 `seam`：由插件提供实现、消费者只依赖名字与合同，因此 Core 在 `plugins/` 缺席时仍能启动（少 provider 只影响该能力）。
+- 架构取舍：合同层需要 `ServiceKey` 才能声明公开 key，因此允许合同层依赖 `agent.plugin_composition.model`（纯值身份原语，零仓库内 import，实测 0）。其余 composition 子模块仍禁止；合同层对它们的引用一律走 `TYPE_CHECKING`。`test_contracts_module_has_no_implementation_dependency` 已相应升级为「忽略 `TYPE_CHECKING` 守卫下的 import」，因为那不是运行时依赖。
+- **第三次踩到同类坑（漏名/混名）**：`tests/test_native_senders.py` 原本是 `from plugins.delivery.senders import DELIVERY_SENDERS, open_sender`，批量替换模块名时把 `open_sender` 一起带进了合同层，导致 `ImportError`。
+- 防护升级：新增 `test_every_contract_import_resolves` —— 全库扫描每一条 `from agent.plugin_contracts* import X`，逐一验证模块可 import 且 `X` 真实存在。这把 5b、8、9 三次漏名都变成一次静态全量校验。
+- 账本：R1 由 8 降到 6；R3 由 238 降到 228。（`docker/debug/*` 探针里的同类 import 不在 R1 范围内，按决策 0064 决定 6 的 `docker/` 排除处理。）
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest tests/test_plugin_boundary.py tests/test_plugin_contracts.py tests/semantic/ tests/test_native_senders.py tests/test_reply_preview.py tests/test_message_follow.py tests/test_delivery_bindings.py tests/test_wake_messages.py tests/test_subagent_messages.py` = `168 passed`。
+- 持久化/运行 workspace 变化：`none`。

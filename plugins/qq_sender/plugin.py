@@ -12,7 +12,7 @@ from websockets.exceptions import InvalidHandshake
 from agent.plugin_composition import CREDENTIALS, Context, CredentialRef
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 
 from .sender import QQSender
 

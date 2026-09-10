@@ -11,7 +11,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
@@ -65,7 +65,7 @@ from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySour
 from plugins.models.projection import MODEL_CALLS
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 from plugins.tools.plugin import TOOLS
 from plugins.akasha.message_plugin import AKASHA_TOOLS

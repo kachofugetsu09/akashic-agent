@@ -10,7 +10,7 @@ from agent.control.frame_book import CONTROL_FRAMES
 from agent.plugin_composition.restart import RESTART_GATE
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 

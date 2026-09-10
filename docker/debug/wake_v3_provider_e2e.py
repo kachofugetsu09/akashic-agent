@@ -720,7 +720,7 @@ from agent.plugin_composition import Context
 from plugins.akasha.interest import SEMANTIC_INTEREST
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.delivery.api import Receipt
-from plugins.delivery.senders import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.api import Result
 from plugins.tools.plugin import TOOLS
