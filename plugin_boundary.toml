@@ -180,3 +180,23 @@ note = "content-wake 设计列为现有原子；代码中无此 ServiceKey"
 
 [phantom.BACKGROUND_JOBS]
 note = "插件手册与 skill 文档仍在教学使用；代码中无此 ServiceKey"
+
+# ── R1 的迁移豁免 ─────────────────────────────────────────────
+# R1 保护的是「Core 运行时不得依赖具体插件」，让 plugins/ 可整体移除。
+# 迁移不是运行时：它在 runtime 启动前一次性改写由某个插件拥有的持久数据，
+# 必须使用该插件自己的 schema 与读写实现。若把 schema 复制进 Core，
+# 同一事实就会出现第二个 owner，违反本仓库的「同一事实只有一个 owner」。
+#
+# 因此迁移 payload 按设计依赖插件，且无法通过迁移消除：
+#   - migrations/yoyo/** 已进入 main 的迁移不可修改、移动或删除
+#     （scripts/check_yoyo_migrations.py 强制），而已应用的 ledger 仍要求
+#     它们可导入；yoyo 的 backend.to_apply() 会 import 每个迁移模块来解析
+#     __depends__，所以从零安装的 workspace 也必须有对应插件在场。
+#   - agent/migrations/** 是这些不可变迁移的 payload，只被迁移与迁移测试引用。
+#
+# 这不是欠账，是结构性豁免：它不进 plugin_boundary_baseline.toml（那是「只许
+# 减少」的债务），而是被显式登记并在每次 check 输出中打印，避免变成隐藏豁免。
+# 详见 docs/decisions/0064-plugin-boundary-is-machine-enforced.md 的「R1 范围裁决」。
+[R1_exemptions]
+paths = ["agent/migrations/**", "migrations/**"]
+reason = "迁移 payload 按设计依赖被迁移插件的数据 schema；yoyo 迁移不可变且启动时被 import"

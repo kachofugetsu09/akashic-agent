@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import re
 import subprocess
 import sys
@@ -155,13 +156,47 @@ def module_plugin_package(module: str) -> str | None:
     return f"{PLUGIN_ROOT}.{parts[1]}"
 
 
-def check_core_imports_plugin(imports: list[Import]) -> list[Import]:
-    """R1：core 直接 import 插件。"""
+def r1_exemption_patterns(policy: dict[str, object]) -> list[str]:
+    """读取 [R1_exemptions].paths；缺失或类型错误直接 fail-loud。"""
 
+    section = policy.get("R1_exemptions")
+    if not isinstance(section, dict):
+        return []
+    raw = section.get("paths")
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise SystemExit("plugin_boundary.toml: [R1_exemptions].paths 必须是字符串数组")
+    return list(raw)
+
+
+def is_r1_exempt(rel: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+
+
+def check_r1_exemptions(policy: dict[str, object], files: list[str]) -> list[str]:
+    """豁免必须是真实、非空的路径规则，避免留下永不命中的僵尸豁免。"""
+
+    errors: list[str] = []
+    for pattern in r1_exemption_patterns(policy):
+        if not any(fnmatch.fnmatch(rel, pattern) for rel in files):
+            errors.append(
+                f"R1_exemptions: 路径规则 {pattern} 没有匹配任何被跟踪的 Python 文件"
+            )
+    return errors
+
+
+def check_core_imports_plugin(
+    imports: list[Import],
+    exempt_patterns: list[str] | None = None,
+) -> list[Import]:
+    """R1：core 直接 import 插件（迁移 payload 见 [R1_exemptions]）。"""
+
+    patterns = exempt_patterns or []
     return [
         item
         for item in imports
-        if is_core_file(item.importer) and item.module.split(".")[0] == PLUGIN_ROOT
+        if is_core_file(item.importer)
+        and item.module.split(".")[0] == PLUGIN_ROOT
+        and not is_r1_exempt(item.importer, patterns)
     ]
 
 
@@ -339,8 +374,9 @@ def run_check() -> int:
     baseline = load_baseline()
     imports = collect_imports(tracked_python_files())
 
+    r1_exempt = r1_exemption_patterns(policy)
     findings: dict[str, list[Import]] = {
-        "R1": check_core_imports_plugin(imports),
+        "R1": check_core_imports_plugin(imports, r1_exempt),
         "R2": check_plugin_deep_core(imports),
         "R3": check_cross_plugin(imports),
     }
@@ -361,6 +397,7 @@ def run_check() -> int:
 
     errors.extend(check_capability_table(policy))
     errors.extend(check_phantom_names(policy))
+    errors.extend(check_r1_exemptions(policy, tracked_python_files()))
 
     if errors:
         print("插件边界门未通过：", file=sys.stderr)
@@ -376,13 +413,25 @@ def run_check() -> int:
         f"R3={counts['R3']}/{len(baseline.get('R3', []))} "
         "（当前/债务基线）"
     )
+    # 豁免永远打印，避免变成看不见的例外。
+    exempt_total = sum(
+        1
+        for item in imports
+        if is_core_file(item.importer)
+        and item.module.split(".")[0] == PLUGIN_ROOT
+        and is_r1_exempt(item.importer, r1_exempt)
+    )
+    for pattern in r1_exempt:
+        print(f"R1 豁免（迁移 payload，见决策 0064）：{pattern}")
+    if r1_exempt:
+        print(f"R1 豁免命中 {exempt_total} 条 Core→插件 import")
     return 0
 
 
 def write_baseline() -> int:
     imports = collect_imports(tracked_python_files())
     findings = {
-        "R1": check_core_imports_plugin(imports),
+        "R1": check_core_imports_plugin(imports, r1_exemption_patterns(load_policy())),
         "R2": check_plugin_deep_core(imports),
         "R3": check_cross_plugin(imports),
     }

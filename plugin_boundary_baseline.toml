@@ -4,23 +4,6 @@
 
 [baseline]
 R1 = [
-    "agent/migrations/akasha_consumption.py|plugins.akasha.domain.model",
-    "agent/migrations/akasha_consumption.py|plugins.akasha.infrastructure.consumption",
-    "agent/migrations/akasha_consumption.py|plugins.akasha.infrastructure.loader",
-    "agent/migrations/akasha_consumption.py|plugins.akasha.infrastructure.persistence",
-    "agent/migrations/akasha_consumption.py|plugins.akasha.infrastructure.sparse_index",
-    "agent/migrations/akasha_embedding_backfill.py|plugins.akasha.infrastructure.sparse_index",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.application.rebuild",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.config",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.infrastructure.loader",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.infrastructure.persistence",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.infrastructure.sparse_index",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.infrastructure.sparse_index.schema",
-    "agent/migrations/legacy_summaries.py|plugins.compaction.records",
-    "agent/migrations/legacy_summaries.py|plugins.context.api",
-    "agent/migrations/turn_messages.py|plugins.content.api",
-    "agent/migrations/turn_messages.py|plugins.content.plugin",
-    "agent/migrations/turn_messages.py|plugins.conversation.plugin",
     "agent/tools/filesystem.py|plugins.standard_tools",
     "bootstrap/app.py|plugins.delivery.senders",
     "bootstrap/app_server.py|plugins.programmatic.control",

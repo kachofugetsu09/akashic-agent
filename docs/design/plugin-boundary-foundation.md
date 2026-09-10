@@ -137,7 +137,7 @@ Service，不依赖具体执行实现。** 没有这条规则，`run_reply` 被�
 
 | 规则 | 内容 | 基线 |
 |---|---|---|
-| R1 | Core 不得 import `plugins.*` | 28 条，只许减少 |
+| R1 | Core **运行时**不得 import `plugins.*`（范围与迁移豁免见决策 0064 决定 6） | 8 条，只许减少 |
 | R2 | `plugins/**` 只能 import `agent.plugin_composition`、`agent.plugin_contracts` | 244 处，只许减少 |
 | R3 | 插件之间只能经公开结构合同连接，不得 import 对方实现模块 | 238 处，只许减少 |
 | R4 | 每个 Core-owned `ServiceKey` 必须在策略表登记角色 | 无基线，立即全绿 |
@@ -216,6 +216,22 @@ reviewed 公开 seam，`executor.py` 由 `tests/test_tool_executor.py` 的 11 �
 「有任一消费者即保留」规则。两者是否退场、以及 seam 是否必须迁入 `agent/plugin_contracts/`
 （R2 目前不允许插件 import `agent.tools.events`），属于独立归属决定，留到第 3 步。
 
+**2026-09-10 R1 范围裁决（第 3 步前置）。** 第 3 步开工前先把 R1 的文件范围写死，
+否则「降到 0」无法验收。裁决与理由见
+[决策 0064 决定 6](../decisions/0064-plugin-boundary-is-machine-enforced.md#6-r1-范围裁决与迁移豁免2026-09-10-补充)：
+
+- `docker/`、`scripts/` 排除（复用 `measure_production_sloc.py` 的生产源码定义；`docker/`
+  的多数命中是探针里生成插件源码的字符串字面量，不是 import）。
+- `migrations/**` 与 `agent/migrations/**` 作为**迁移 payload 结构性豁免**，
+  登记在 `plugin_boundary.toml` 的 `[R1_exemptions]`，每次 `check` 打印命中条数。
+- `migrations/` 下四个非 yoyo 历史脚本目录按第 2 步流程删除。
+
+豁免后 R1 由 25 降到 8。**关键后果**：终点验收第 1 条「清空 `plugins/` 后 Core 仍能启动」
+**不可达**——yoyo 的 `to_apply()` 会 import 每个迁移模块解析 `__depends__`（已实测），
+所以从零安装的 workspace 必须能 import 迁移引用的插件。诚实的验收表述改为：
+「迁移账本已应用到当前版本后，移除 `plugins/` 不影响 runtime 启动；从零安装的 workspace
+仍需要迁移所引用的插件在场。」此条必须在第 3 步收尾时同步更新，不得放宽门伪造绿色。
+
 ### 第 3 步 · 机械迁移（需独立授权）
 
 把 R1～R3 的欠账降到 0：
@@ -245,7 +261,10 @@ Channel 双栈收敛、外部插件仓库迁移。这些是不可机械化的重
 
 **终点（三步全部完成）**
 
-1. 清空 `plugins/` 目录后 Core 仍能启动。
+1. 清空 `plugins/` 目录后 Core 仍能启动。**（2026-09-10 修订）** 由于不可变 yoyo 迁移
+   在 `to_apply()` 阶段被 import，本条按「迁移账本已应用到当前版本后移除 `plugins/`
+   不影响 runtime 启动」验收；从零安装的 workspace 仍需要迁移引用的插件在场。
+   理由见决策 0064 决定 6。
 2. 任一插件目录原样安装到外部 cache，不改 Core，admission 通过。
 3. `plugins/**` 中不存在指向 Core 内部或兄弟插件实现的 import。
 4. 新增一个来源插件不需要修改任何已有插件。

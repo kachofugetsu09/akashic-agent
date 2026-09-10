@@ -47,6 +47,8 @@ import 系统解析仓库根的命名空间包。
 | R4 | 每个 Core-owned `ServiceKey` 必须在 `plugin_boundary.toml` 登记角色 |
 | R5 | 已记录为「文档承诺、代码未实现」的名字必须保持不存在 |
 
+R1 的作用范围与迁移豁免见下方决定 6。
+
 ### 2. 既有欠账用只减不增的账本
 
 R1～R3 的既有违规精确登记在 `plugin_boundary_baseline.toml`，条目标识为
@@ -83,6 +85,48 @@ Core 侧对具体插件的依赖改为经 Service 消费；插件侧对 Core 与
 结构合同或版本化 `ServiceKey`。`ServiceKey` 按 `name` 相等（`model.py` 中
 `ServiceKey` 是只有 `name` 字段的 frozen dataclass），因此 key 归位与词汇表搬移是
 零运行时语义的文本操作。
+
+### 6. R1 范围裁决与迁移豁免（2026-09-10 补充）
+
+**问题。** R1 原本只说「Core 不得 import `plugins.*`」，但没有定义「Core 侧」的文件范围。
+`CORE_ROOTS` 只含 `agent/session/infra/core/bootstrap/bus/utils/mcp_servers` + `main.py`，
+于是 `migrations/`、`docker/`、`scripts/` 是否纳入从未被写清。第 3 步的验收标准是
+「R1 降到 0」，范围不定会让这个验收反复被质疑。
+
+**裁决一：`docker/`、`scripts/` 排除。**
+它们不是生产运行源码——`scripts/measure_production_sloc.py::is_production_source_path`
+早已把两者判为 `False`，本决定复用同一份机器可读定义，不再新造第二份。
+（`docker/` 另有 20 处 `plugins.*` 命中，其中一半是探针文件里**生成插件源码的字符串字面量**，
+不是 import；纳入只会制造假违规。）
+
+**裁决二：`migrations/**` 与 `agent/migrations/**` 从 R1 豁免，且是结构性豁免。**
+R1 保护的是「具体插件可以整体移除，Core 运行时不受影响」。迁移不是运行时：它在 runtime
+启动前一次性改写**某个插件拥有的**持久数据，必须使用该插件自己的 schema 与读写实现。
+把 schema 复制进 Core 会让同一事实出现第二个 owner，违反本仓库的
+「同一事实只有一个 owner」。三点事实支持无法通过迁移消除：
+
+1. `migrations/yoyo/**` 已进入 main 的迁移不可修改、移动或删除
+   （`scripts/check_yoyo_migrations.py` 强制），而 workspace 账本仍要求它们存在。
+2. yoyo 的 `DatabaseBackend.to_apply()` 会 import 每个迁移模块来解析 `__depends__`
+   （已实测：模块内 `import` 失败会让 `to_apply` 抛 `BadMigration`），
+   所以**从零安装的 workspace 必须有对应插件在场**。
+3. `agent/migrations/**` 是这些不可变迁移的 payload，只被迁移与迁移测试引用。
+
+因此这是**豁免而非欠账**：不进「只许减少」的 `plugin_boundary_baseline.toml`，
+而是登记在 `plugin_boundary.toml` 的 `[R1_exemptions]`，每次 `check` 都打印命中的
+路径规则与条数，并有测试禁止「匹配不到任何文件」的僵尸豁免。
+
+**必须一起知道的后果。** 因为第 2 点，终点验收第 1 条「清空 `plugins/` 目录后 Core 仍能启动」
+**在保留不可变 yoyo 迁移的前提下不可达**。诚实的表述是：
+「迁移账本已应用到当前版本后，移除 `plugins/` 不影响 runtime 启动；但从零安装的
+workspace 仍需要迁移所引用的插件在场。」第 3 步收尾时必须按此更新验收标准，
+不得用放宽门的方式伪造绿色。
+
+**裁决三：`migrations/` 下的非 yoyo 历史脚本应删除。**
+`migrations/README.md` 明说 `akasha_sparse_index_v8/`、`provider_runtimes_and_akasha/`、
+`workspace_veda/`、`workspace_veda_uppercase/` 「不进入 Yoyo catalog，也不再承诺自动执行
+或兼容当前 runtime」，只供调查旧实现。它们不属于豁免要保护的对象，按第 2 步的可达性
+审计流程删除。
 
 ## 理由
 

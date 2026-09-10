@@ -34,6 +34,42 @@ def test_core_importing_plugin_is_flagged() -> None:
     ]
 
 
+def test_r1_exemption_applies_only_to_listed_paths() -> None:
+    """迁移 payload 豁免只覆盖登记路径，其它 Core 文件仍然受 R1 约束。"""
+
+    imports = [
+        _import("agent/migrations/akasha_sidecar.py", "plugins.akasha.config"),
+        _import("migrations/yoyo/20260905_04_akasha_consumption.py", "plugins.akasha.config"),
+        _import("bootstrap/app.py", "plugins.delivery.senders"),
+    ]
+    exempt = ["agent/migrations/**", "migrations/**"]
+    assert [item.key for item in boundary.check_core_imports_plugin(imports, exempt)] == [
+        "bootstrap/app.py|plugins.delivery.senders"
+    ]
+
+
+def test_r1_exemption_rule_that_matches_nothing_fails() -> None:
+    """僵尸豁免必须失败，避免留下永不命中的例外。"""
+
+    policy = _policy({}, r1_exemptions={"paths": ["agent/nowhere/**"]})
+    errors = boundary.check_r1_exemptions(policy, ["agent/migrations/akasha_sidecar.py"])
+    assert len(errors) == 1 and "agent/nowhere/**" in errors[0]
+
+
+def test_r1_exemptions_are_declared_in_policy() -> None:
+    """真实仓库必须显式登记豁免；豁免命中数在 check 输出中可见。"""
+
+    result = subprocess.run(
+        [sys.executable, "scripts/plugin_boundary.py", "check"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "R1 豁免（迁移 payload，见决策 0064）" in result.stdout
+    assert "agent/migrations/**" in result.stdout
+
+
 def test_plugin_deep_core_import_is_flagged() -> None:
     violations = boundary.check_plugin_deep_core([
         _import("plugins/reply/plugin.py", "session.log"),
@@ -80,8 +116,15 @@ def test_relative_import_resolution() -> None:
 
 # ── 规则 R4：角色表与代码双向一致 ─────────────────────────────
 
-def _policy(capabilities: dict[str, dict[str, str]], phantom: dict | None = None) -> dict:
-    return {"capabilities": capabilities, "phantom": phantom or {}}
+def _policy(
+    capabilities: dict[str, dict[str, str]],
+    phantom: dict | None = None,
+    r1_exemptions: dict | None = None,
+) -> dict:
+    policy: dict = {"capabilities": capabilities, "phantom": phantom or {}}
+    if r1_exemptions is not None:
+        policy["R1_exemptions"] = r1_exemptions
+    return policy
 
 
 def test_capability_table_rejects_unregistered_key(monkeypatch) -> None:
