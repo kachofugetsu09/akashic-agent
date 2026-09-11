@@ -19,7 +19,7 @@ from plugins.react.plugin import REACT
 from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
-from session.log import SessionAttributes
+from agent.plugin_composition.messages import SessionAttributes
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .tool import InstallInput

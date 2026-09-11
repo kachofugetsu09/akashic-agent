@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from plugins.delivery.history import DeliveryHistory
 from plugins.models.content import render_content
-from session.log import MessageCatalog, MessageReader
+from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import json_value
 

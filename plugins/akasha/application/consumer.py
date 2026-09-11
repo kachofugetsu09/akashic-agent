@@ -10,7 +10,7 @@ from functools import partial
 from pathlib import Path
 
 from agent.plugin_composition.bindings import Bindings
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 from session.embedding_store import MessageEmbeddings
 
 from ..domain.features import BurstAwareFeaturePool

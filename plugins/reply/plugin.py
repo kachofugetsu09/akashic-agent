@@ -27,7 +27,7 @@ from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
 
 from .api import REPLY_PROGRAM

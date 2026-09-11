@@ -17,7 +17,7 @@ from agent.plugin_contracts.tools import (
     ToolRef,
     ToolView,
 )
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts.restart import ExternalRootPermit
 from agent.plugin_contracts.content import check_text
 

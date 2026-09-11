@@ -6,7 +6,23 @@ from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
 from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog, MessageLog, MessageWriter, OwnerStore, SessionAttributes, WriterExpired
+# 这些名字是 Core 消息服务的**接口词汇**：`core.message_catalog` 返回的就是
+# `MessageCatalog`，`core.owner_state` 返回的就是 `OwnerStore`。插件需要在注解与
+# 异常捕获里命名它们，但不应该 import `session/` 的存储实现模块。服务定义在本文件，
+# 因此接口词汇也在这里再导出，作为插件的唯一入口。
+from session.log import (
+    InvalidPage,
+    MessageCatalog,
+    MessageConflict,
+    MessageLog,
+    MessageReader,
+    MessageWriter,
+    OwnerRecord,
+    OwnerStore,
+    OwnerTransaction,
+    SessionAttributes,
+    WriterExpired,
+)
 from session.message import Body, CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 
 
@@ -117,3 +133,25 @@ MESSAGE_CATALOG = ServiceKey[MessageCatalog]("core.message_catalog")
 
 MESSAGE_EMBEDDINGS = ServiceKey[MessageEmbeddings]("core.message_embeddings")
 SESSION_ADMISSION = ServiceKey[SessionAdmission]("core.session_admission")
+
+
+__all__ = [
+    "InvalidPage",
+    "MESSAGE_CATALOG",
+    "MESSAGE_EMBEDDINGS",
+    "MESSAGE_WRITERS",
+    "OWNER_STATE",
+    "SESSION_ADMISSION",
+    "MessageCatalog",
+    "MessageConflict",
+    "MessageReader",
+    "MessageWriters",
+    "MessageWriter",
+    "OwnerRecord",
+    "OwnerState",
+    "OwnerStore",
+    "OwnerTransaction",
+    "SessionAdmission",
+    "SessionAttributes",
+    "WriterExpired",
+]

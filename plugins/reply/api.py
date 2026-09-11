@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable, Sequence
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.tasks import Task
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
 
 

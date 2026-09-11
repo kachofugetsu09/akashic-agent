@@ -18,7 +18,7 @@ from agent.plugin_composition.models import (
 )
 from agent.plugin_contracts.context import ContextOverflow, Materials, SummaryReducer
 from plugins.tools.menu import InvalidToolCall
-from session.log import MessageReader, MessageWriter
+from agent.plugin_composition.messages import MessageReader, MessageWriter
 from agent.plugin_contracts import CallRef, Control, Message, Output, Part, ContentPart, ToolCall, ToolResult
 
 if TYPE_CHECKING:

@@ -19,7 +19,7 @@ import numpy as np
 from agent.plugin_composition import MobileUiRpcInvalidRequest
 from agent.plugin_contracts.turn_projection import Turn as MessageTurn
 from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Output
 from .recalls import ContextSource, ProgramSource, Recall, ToolSource
 from .config import AkashaConfig, resolve_memory_path

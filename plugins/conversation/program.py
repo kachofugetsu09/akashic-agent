@@ -22,7 +22,7 @@ from plugins.tools.api import MessageReply
 from plugins.tools.menu import ToolMenu, ToolPresentation
 from agent.plugin_contracts.tools import ToolView
 from plugins.standard_tools.shell import shell_cleanup
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output, ToolResult
 
 if TYPE_CHECKING:

@@ -10,7 +10,7 @@ from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugins.snapshot import get_current_runtime_snapshot
 from infra.channels.message_view import session_row
-from session.log import InvalidPage, MessageCatalog
+from agent.plugin_composition.messages import InvalidPage, MessageCatalog
 from agent.plugin_contracts import body_to_dict
 
 

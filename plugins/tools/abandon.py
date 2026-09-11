@@ -9,7 +9,7 @@ from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
 from agent.plugin_contracts.tool_api import Denied, Result, durable_call_key
 from plugins.tools.api import MessageReply
 from plugins.tools.execution import _fingerprint, finish
-from session.log import MessageCatalog, MessageReader, OwnerStore
+from agent.plugin_composition.messages import MessageCatalog, MessageReader, OwnerStore
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 

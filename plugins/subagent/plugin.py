@@ -25,7 +25,7 @@ from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.bindings import BINDINGS
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
 
 from .prompts import build_spawn_subagent_prompt

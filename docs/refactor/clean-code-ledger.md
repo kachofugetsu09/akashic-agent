@@ -3135,3 +3135,17 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
   `pytest`（boundary/contracts/semantic/mobile_realtime/scheduler_tools/scheduler_*/job_store）= `257 passed`；
   另手工确认无 snapshot 时 `list_jobs()` 返回 `{'items': []}`、`get_job()` 报 `job_not_found`。
 - 持久化/运行 workspace 变化：`none`（仍读同一 `schedules.json`，只是改由插件 owner 读）。
+
+## 2026-09-10 插件边界第 3 步（19）：消息服务接口词汇归位
+
+- 基线：stacked base `ba326816`（第 18 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 清掉 R2 最大的一块（`session.log` 50 条）。这 50 条**不能 move 到合同层**：`MessageReader`/`MessageCatalog`/`OwnerStore`/`MessageWriter`/`OwnerTransaction` 是 Core 权威存储的实现类，搬进合同层等于宣称它们可替换，与事实相反。
+- 判定依据（先做了消费者普查再决定）：
+  1. 全库确认**没有任何插件构造 `MessageLog`** —— 插件只 import 这些名字做注解、类型判断与异常捕获。
+  2. 这些名字正是 Core 消息服务的**接口词汇**：`core.message_catalog` 返回的就是 `MessageCatalog`，`core.owner_state` 返回的就是 `OwnerStore`。
+  3. 插件本来就已经从 `agent.plugin_composition.messages` import `MESSAGE_CATALOG`/`MESSAGE_WRITERS`/`OWNER_STATE` 三个 key —— 该模块已经是合法的插件入口。
+- 做法：由**服务定义模块** `agent/plugin_composition/messages.py` 再导出这套接口词汇（`MessageReader`/`MessageCatalog`/`MessageWriter`/`OwnerStore`/`OwnerTransaction`/`OwnerRecord`/`SessionAttributes`/`MessageConflict`/`InvalidPage`/`WriterExpired`），并补 `__all__`；插件侧 50 个文件改指该模块。
+- 为什么不放进 `agent/plugin_contracts`：合同层的定位是「可替换实现的公开结构」；消息存储是 Core 独占的权威事实，把它放进去会给出错误的所有权暗示。放在服务定义处，读者看到的语义是「这是这个服务的数据类型」。
+- 账本：R2 由 102 降到 52。
+- 验证：`plugin_boundary.py check` → `R1=0/0 R2=52/52 R3=92/92`；`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/akasha_message_plugin/message_log/message_markdown_memory/scheduler_messages/reply_program/akasha_recall_records/wake_messages）= `236 passed`。
+- 持久化/运行 workspace 变化：`none`（纯 import 目标改写）。

@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 
 from agent.plugin_composition.bindings import Bindings
 from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 
 from ..domain.model import MemoryConfig
 from ..infrastructure.consumption import Consumption

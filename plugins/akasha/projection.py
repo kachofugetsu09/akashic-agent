@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING
 
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import Message, Output
 from agent.plugin_contracts import Input
 from agent.plugin_contracts import encode_body

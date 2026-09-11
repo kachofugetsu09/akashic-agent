@@ -22,7 +22,7 @@ from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts.scheduler import SCHEDULER_JOBS, JobView
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
 
 from .runtime import SchedulerRuntime

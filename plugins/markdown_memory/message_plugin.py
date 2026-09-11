@@ -34,7 +34,7 @@ from agent.plugin_contracts.context import Materials, check_summary, summary_ran
 from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
-from session.log import MessageCatalog, MessageReader
+from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
 
 from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest

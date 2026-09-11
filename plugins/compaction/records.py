@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from agent.plugin_composition import ServiceKey
 
-from session.log import MessageConflict, MessageReader, OwnerStore, OwnerTransaction
+from agent.plugin_composition.messages import MessageConflict, MessageReader, OwnerStore, OwnerTransaction
 from agent.plugin_contracts import json_value
 from agent.plugin_contracts.context import summary_range
 

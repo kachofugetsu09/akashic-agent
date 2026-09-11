@@ -27,7 +27,7 @@ from agent.plugin_contracts.tool_api import BoundTool, CallSource, Result
 from agent.plugin_contracts.tools import TOOLS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
-from session.log import MessageCatalog, OwnerRecord, OwnerStore
+from agent.plugin_composition.messages import MessageCatalog, OwnerRecord, OwnerStore
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
 
 from .control import ComputerDriverError, endpoint_name, request

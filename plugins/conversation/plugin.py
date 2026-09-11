@@ -8,7 +8,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.restart import RESTART_GATE
-from session.log import MessageConflict, MessageReader
+from agent.plugin_composition.messages import MessageConflict, MessageReader
 from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.content import check_artifact
 from plugins.models.selection import check_selection

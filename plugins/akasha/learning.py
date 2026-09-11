@@ -13,7 +13,7 @@ from agent.plugin_contracts.content import legacy_post_commit_effect
 from agent.plugin_contracts.tools import TOOLS
 from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
 from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall, ToolResult
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied, Consumption, message_nodes

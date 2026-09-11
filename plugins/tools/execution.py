@@ -8,7 +8,7 @@ from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts.restart import ExternalRootPermit
-from session.log import (
+from agent.plugin_composition.messages import (
     OwnerRecord,
     OwnerStore,
     OwnerTransaction,

@@ -8,7 +8,7 @@ from agent.plugin_composition import ServiceKey
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_contracts.turn_projection import Turn
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
 
 Text = Annotated[str, Field(min_length=1)]

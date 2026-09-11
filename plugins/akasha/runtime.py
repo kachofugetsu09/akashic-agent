@@ -11,7 +11,7 @@ import json
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts.context import Materials
 from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import Input, Message
 
 from .application.consumer import MessageConsumer, run_memory_job

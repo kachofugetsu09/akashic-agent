@@ -13,7 +13,7 @@ from agent.plugin_composition.commands import COMMANDS, CommandExecution, Comman
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts.content import check_text
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
 from agent.plugin_contracts import json_value
 

@@ -13,7 +13,7 @@ from agent.plugin_composition.artifacts import ArtifactRead
 from plugins.delivery.api import Receipt
 from plugins.delivery.content import AttachmentReadError, read_content
 from agent.plugin_contracts.artifacts import AttachmentKind
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import Message
 
 
