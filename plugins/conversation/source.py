@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from uuid import uuid4
 from typing import cast
 
+from agent.plugin_contracts.conversation import Changed  # noqa: F401  (再导出)
 from agent.plugin_contracts.session_selection import SessionModelSelection, write_session_model_selection
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts.restart import RestartGate
@@ -14,7 +15,6 @@ from agent.plugin_contracts import Body, Control, Input, Message, Output
 
 
 logger = logging.getLogger(__name__)
-Changed = Callable[[MessageReader, str], None]
 
 
 def update_selection(body: Body) -> Mapping[str, object | None]:

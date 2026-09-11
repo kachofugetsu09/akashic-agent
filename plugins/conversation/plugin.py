@@ -13,7 +13,7 @@ from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.content import check_artifact
 from agent.plugin_contracts.conversation import CONVERSATION, check_origin  # noqa: F401  (再导出)
 from plugins.models.selection import check_selection
-from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
+from agent.plugin_contracts.sources import SOURCES, SOURCE_CHANGED, Source
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
 
 from .source import Conversation, update_selection

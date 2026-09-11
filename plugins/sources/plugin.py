@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.effect import Effect
-from plugins.conversation.source import Changed, Conversation
+from agent.plugin_contracts.conversation import ConversationPort
+from agent.plugin_contracts.sources import (  # noqa: F401  (再导出)
+    SOURCE_CHANGED,
+    SOURCES,
+    Accept,
+    Source,
+)
 from agent.plugin_contracts import Message
 
 api_version = 3
@@ -15,21 +21,18 @@ version = "1.0.0"
 desc = "按来源注册接纳与控制，供渠道和默认回复组合使用"
 inject = ()
 
-Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
 
 
-@dataclass(frozen=True)
-class Source:
-    name: str
-    open: Callable[[str], Conversation]
-    accept: Accept | None = None
-    channels: tuple[str, ...] | None = ()
 
 
-class Sources:
+
+
+
+
+class _SourcesRegistry:
     """每个来源和输入渠道只绑定一个 owner；不拥有 Message 或活动 Task。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._items: dict[str, Source] = {}
 
     async def register(self, ctx: Context, source: Source) -> Effect:
@@ -77,11 +80,7 @@ class Sources:
         return await default.accept(session_id, message_id, message)
 
 
-SOURCES = ServiceKey[Sources]("sources.v1")
-SOURCE_CHANGED = ServiceKey[Changed]("source.changed.v1")
-
-
 async def apply(ctx: Context, config: object) -> None:
-    sources = Sources()
+    sources = _SourcesRegistry()
     _ = await ctx.provide(SOURCES, sources)
     _ = await ctx.provide(CHANNEL_INPUT, sources.accept)

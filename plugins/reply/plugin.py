@@ -17,7 +17,7 @@ from agent.plugin_composition.restart import RESTART_GATE
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.context import CONTEXT
 from agent.plugin_contracts.context import MATERIALS
-from plugins.sources.plugin import SOURCES, SOURCE_CHANGED
+from agent.plugin_contracts.sources import SOURCES, SOURCE_CHANGED
 from plugins.conversation.source import needs_reply
 from plugins.conversation.commands import CONVERSATION_COMMANDS
 from plugins.conversation.program import run_reply

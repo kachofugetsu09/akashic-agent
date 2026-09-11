@@ -3342,3 +3342,24 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 45 降到 40。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/channel_input/programmatic_result/subagent_messages/delivery_bindings）= `120 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（30）：来源注册与渠道接纳合同化
+
+- 基线：stacked base `4642f22a`（第 29 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam。清掉 `plugins.sources.plugin`(4) 与 `plugins.conversation.source` 的对外词汇：
+  - 新增 `agent/plugin_contracts/sources.py`：`Source` 值模型、`SourcesPort` Protocol
+    （只声明消费者调用的 `register`/`entries`）、`Accept` 别名（`ChannelInboundMessage` 经
+    `TYPE_CHECKING`）、`SOURCES`/`SOURCE_CHANGED` key（登记 `seam`）。
+  - `plugins/sources/plugin.py` 的具体注册表改名为 `_SourcesRegistry`（实现留在插件），
+    按原路径再导出合同名字；`Changed` 归位到 `agent/plugin_contracts/conversation.py`。
+  - 消费者注解改 Port：`plugins/reply/follow.py` 的 `Sources` → `SourcesPort as Sources`，
+    `plugins/programmatic/plugin.py` 的 `Conversation` → `ConversationPort as Conversation`。
+- 账本：R3 由 40 降到 34。
+- **留下一处已定性条目**：`plugins/reply/plugin.py` 仍 import `needs_reply`。该函数在运行时用
+  `isinstance(messages, MessageReader)` 区分「消息序列」与「reader」，因此不能直接搬进合同层；
+  正解是改成一个不依赖存储类型的判据，属行为细节变更，已登记待处理。
+- **过程教训（写下来避免重犯）**：本批期间我在 Gate 运行中并发编辑了源码，导致 Gate 用
+  「混合快照」构建镜像并报出与实际提交不符的错误。已按提交后的干净 head 重跑 Gate 取证。
+  WORKFLOW 的「源码在计划生成后发生变化会使原计划失效」在同进程内编辑时同样适用。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/channel_input/reply_program/subagent_messages/programmatic_result/wake_messages）= `159 passed`。
+- 持久化/运行 workspace 变化：`none`。

@@ -11,7 +11,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from agent.plugin_contracts.conversation import CONVERSATION
 from plugins.reply.follow import follow
-from plugins.sources.plugin import SOURCES
+from agent.plugin_contracts.sources import SOURCES
 from session.log import MessageLog
 from session.message import ContentPart, Input, Output
 

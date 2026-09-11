@@ -11,8 +11,8 @@ from agent.plugin_composition.frames import CONTROL_FRAMES
 from agent.plugin_contracts.delivery_api import FINAL_OUTPUT_DELIVERY
 from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.conversation import check_origin
-from plugins.conversation.source import Conversation
-from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
+from agent.plugin_contracts.conversation import ConversationPort as Conversation
+from agent.plugin_contracts.sources import SOURCES, SOURCE_CHANGED, Source
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Control, Input
