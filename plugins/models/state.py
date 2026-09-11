@@ -15,6 +15,7 @@ from typing import Any, AsyncGenerator, AsyncIterator, Mapping, Protocol, Sequen
 
 from agent.plugin_composition.bindings import Bindings
 
+from agent.plugin_composition.runtime_snapshot import RuntimeSnapshotAccessPort
 from agent.plugin_composition import (
     AddConnection,
     AddModel,
@@ -59,7 +60,6 @@ from agent.plugin_composition import (
     SyncModels,
     UpdateConnection,
 )
-from agent.plugins.snapshot import lease_current_runtime_snapshot
 
 from .store import ModelsStore, StoredConnection, StoredModel, StoredSnapshot
 
@@ -354,10 +354,13 @@ class ModelsState:
         store: ModelsStore,
         *,
         root_instance_token: object,
+        runtime_snapshot: RuntimeSnapshotAccessPort,
         capability_catalog: _CapabilityCatalog | None = None,
     ) -> None:
         self.store = store
         self.root_instance_token = root_instance_token
+        # 运行时边界访问器由装配方注入；读取仍在执行期发生（原语义）。
+        self._runtime_snapshot = runtime_snapshot
         self.capability_catalog = capability_catalog
         self._driver_registrations: dict[str, ModelDriverDefinition] = {}
         self._driver_contexts: dict[str, Context] = {}
@@ -486,7 +489,7 @@ class ModelsState:
         inherited = _CURRENT_EXECUTION.get()
         if inherited is not None and inherited.owner_task is not asyncio.current_task():
             raise RuntimeError("model execution 不能由子 task 继承")
-        lease = lease_current_runtime_snapshot()
+        lease = self._runtime_snapshot.lease()
         if lease is None:
             raise RuntimeError(
                 "model execution 缺少当前 task 的 runtime snapshot lease"
@@ -553,7 +556,7 @@ class ModelsState:
         inherited = _CURRENT_EXECUTION.get()
         if inherited is not None and inherited.owner_task is not asyncio.current_task():
             raise RuntimeError("model execution 不能由子 task 继承")
-        lease = lease_current_runtime_snapshot()
+        lease = self._runtime_snapshot.lease()
         if lease is None:
             raise RuntimeError(
                 "embedding execution 缺少当前 task 的 runtime snapshot lease"
@@ -600,9 +603,8 @@ class ModelsState:
     def save_embedding_binding(self, bindings: Bindings, model_id: str | None) -> str:
         """由实际注册表选择 driver owner，调用者不能自己拼归档闭包。"""
         from agent.plugin_composition.models import SavedEmbedding
-        from agent.plugins.snapshot import get_current_runtime_snapshot
 
-        snapshot = get_current_runtime_snapshot()
+        snapshot = self._runtime_snapshot.current_snapshot()
         self._check_snapshot_service(snapshot, EMBEDDINGS, self.embeddings)
         descriptor = self.describe_embedding(model_id)
         saved = SavedEmbedding(model_id=descriptor.model_id, space_identity=descriptor.identity,
@@ -784,7 +786,7 @@ class ModelsState:
     async def apply_change(self, command: ModelChange) -> SettingsReceipt:
         """Keep the exact driver generation alive across settings network I/O."""
 
-        lease = lease_current_runtime_snapshot()
+        lease = self._runtime_snapshot.lease()
         if lease is None:
             raise RuntimeError("model settings 缺少当前 task 的 runtime snapshot lease")
         try:
@@ -799,7 +801,7 @@ class ModelsState:
     ) -> tuple[DiscoveredModel, ...]:
         """Discover one unsaved connection without publishing durable state."""
 
-        lease = lease_current_runtime_snapshot()
+        lease = self._runtime_snapshot.lease()
         if lease is None:
             raise RuntimeError("model settings 缺少当前 task 的 runtime snapshot lease")
         try:

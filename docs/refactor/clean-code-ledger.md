@@ -3596,3 +3596,19 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
     动作必须留在执行期。** 注入的应当是访问器本身，而不是它读到的值。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/standard_tools/adopt_legacy_plugin_skill_links/message_artifacts/akasha_message_plugin）= `119 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（41）：ModelsState 改为注入运行时边界
+
+- 基线：stacked base `44aac9c4`（第 40 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：显式注入。R2 由 11 降到 10：
+  - `ModelsState` 增加构造参数 `runtime_snapshot: RuntimeSnapshotAccessPort`；
+    5 处 `lease_current_runtime_snapshot()` 改为 `self._runtime_snapshot.lease()`，
+    1 处 `get_current_runtime_snapshot()` 改为 `self._runtime_snapshot.current_snapshot()`。
+    **读取仍发生在执行期**（`execution()` 与 `save_embedding_binding()`），与原先一致。
+  - `plugins/models/plugin.py` 装配时注入 `ctx.require(RUNTIME_SNAPSHOT)`，`inject` 补该 key。
+  - `RuntimeSnapshotAccessPort` 恢复 `current_snapshot()`（第 40 批把它换成了
+    `plugin_skill_index()`；两者都需要，前者给 ModelsState、后者给 skills）。
+  - 测试 `test_retire_core_model_config_migration.py` 的 `ModelsState(...)` 同步注入
+    `RuntimeSnapshotAccess()`。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（retire_core_model_config_migration/model_execution/boundary/contracts/semantic）= `112 passed`。
+- 持久化/运行 workspace 变化：`none`。

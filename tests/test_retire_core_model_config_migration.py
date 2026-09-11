@@ -15,6 +15,7 @@ import pytest
 from agent.migrations.context import bind_migration_context
 from agent.model_runtime.auth.store import Credential, CredentialStore
 from agent.model_runtime.store import ModelRegistryStore
+from agent.plugins.snapshot import RuntimeSnapshotAccess
 from plugins.models.store import ModelsStore
 from plugins.models.state import ModelsState
 from plugins.openai_compatible.driver import definition as openai_driver_definition
@@ -140,7 +141,9 @@ api_key = "embedding-secret"
         CredentialStore.for_workspace(workspace).api_key("legacy_memory_embedding")
         == "embedding-secret"
     )
-    state = ModelsState(store, root_instance_token=object())
+    state = ModelsState(
+        store, root_instance_token=object(), runtime_snapshot=RuntimeSnapshotAccess(),
+    )
     driver = openai_driver_definition()
     state._driver_registrations[driver.driver_id] = driver  # noqa: SLF001
     await state.seal(None)  # type: ignore[arg-type]

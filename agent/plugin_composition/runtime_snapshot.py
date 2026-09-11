@@ -36,6 +36,10 @@ class RuntimeSnapshotAccessPort(Protocol):
         """当前 task 绑定快照的组合 Root；没有绑定或未发布时返回 None。"""
         ...
 
+    def current_snapshot(self) -> object | None:
+        """当前 task 绑定的 runtime snapshot；没有绑定时返回 None。"""
+        ...
+
     def plugin_skill_index(self) -> SkillIndex | None:
         """当前 task 绑定快照的插件技能索引；没有绑定或索引时为 None。
 

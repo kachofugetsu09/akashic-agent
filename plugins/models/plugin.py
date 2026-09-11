@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent.plugin_composition import (
+    RUNTIME_SNAPSHOT,
     CHAT_MODELS,
     EMBEDDINGS,
     MODEL_CATALOG,
@@ -21,7 +22,7 @@ name = "models"
 version = "1.0.0"
 desc = "Provider-neutral model connections, selection, and execution"
 author = "Akashic Core"
-inject = ()
+inject = (RUNTIME_SNAPSHOT,)
 skill_roots = ()
 drift_skill_roots = ()
 workspace_roots = ()
@@ -48,6 +49,7 @@ async def apply(ctx: Context, config: object) -> None:
     state = ModelsState(
         store,
         root_instance_token=ctx.root_instance_token,
+        runtime_snapshot=ctx.require(RUNTIME_SNAPSHOT),
         capability_catalog=LiteLlmCapabilityCatalog(
             ctx.data_root / "litellm-capabilities.json",
             writable=True,
