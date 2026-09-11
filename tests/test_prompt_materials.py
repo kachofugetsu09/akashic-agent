@@ -20,7 +20,7 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.context import MATERIALS
 from plugins.context.plugin import Config
-from plugins.conversation.plugin import check_origin
+from agent.plugin_contracts.conversation import check_origin
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from session.log import MessageLog
 from session.artifact_store import ArtifactStore

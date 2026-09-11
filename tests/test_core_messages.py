@@ -11,7 +11,7 @@ from agent.config_models import Config
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bootstrap import tools as bootstrap
 from core.net.http import SharedHttpResources
-from plugins.conversation.plugin import CONVERSATION
+from agent.plugin_contracts.conversation import CONVERSATION
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageCatalog, MessageLog
 from session.message import ContentPart, Input

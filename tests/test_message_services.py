@@ -209,7 +209,7 @@ async def apply(ctx, config):
 @pytest.mark.asyncio
 async def test_actual_conversation_plugin_accepts_without_model_or_reply_and_shares_source_task(tmp_path):
     import shutil
-    from plugins.conversation.plugin import CONVERSATION
+    from agent.plugin_contracts.conversation import CONVERSATION
     from session.message import Control
 
     sources = tmp_path / "plugins"

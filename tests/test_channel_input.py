@@ -265,7 +265,7 @@ async def test_retry_uses_message_identity_without_copying_transport_clock_or_ha
 async def test_stop_commits_pause_before_draining_and_duplicate_does_not_pause_new_work(tmp_path):
     from agent.plugin_composition.channels import CHANNEL_INPUT
     from agent.plugins.snapshot import lease_runtime_snapshot
-    from plugins.conversation.plugin import CONVERSATION
+    from agent.plugin_contracts.conversation import CONVERSATION
     from plugins.conversation.source import needs_reply
     from session.message import Control
 

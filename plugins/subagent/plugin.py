@@ -12,7 +12,7 @@ from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNT
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.context import CONTEXT
 from agent.plugin_contracts.context import MATERIALS
-from plugins.conversation.plugin import CONVERSATION
+from agent.plugin_contracts.conversation import CONVERSATION
 from plugins.conversation.program import run_reply
 from agent.plugin_contracts.models import MODEL_CALLS
 from agent.plugin_contracts.delivery_api import DELIVERY

@@ -15,7 +15,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
-from plugins.conversation.plugin import CONVERSATION
+from agent.plugin_contracts.conversation import CONVERSATION
 from session.log import MessageLog, SessionAttributes, WriterExpired
 from session.message import ContentPart, Control, Input, Output
 from tests.test_default_reply import application

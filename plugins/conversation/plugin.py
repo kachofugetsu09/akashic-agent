@@ -11,6 +11,7 @@ from agent.plugin_composition.restart import RESTART_GATE
 from agent.plugin_composition.messages import MessageConflict, MessageReader
 from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.content import check_artifact
+from agent.plugin_contracts.conversation import CONVERSATION, check_origin  # noqa: F401  (再导出)
 from plugins.models.selection import check_selection
 from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
@@ -24,7 +25,6 @@ version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
 inject = (MESSAGE_WRITERS, SOURCES, RESTART_GATE)
 
-CONVERSATION = ServiceKey[Callable[[str], Conversation]]("conversation.v1")
 
 
 async def apply(ctx: Context, config: object) -> None:
@@ -113,19 +113,6 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION, open)
     _ = await ctx.require(SOURCES).register(ctx, Source("conversation", open, accept, None))
-
-
-def check_origin(part: ContentPart) -> ContentReferences:
-    """来源保存原始传输事实；metadata 不获得 source、角色或路由覆盖权。"""
-    raw_value = part.value
-    if not isinstance(raw_value, Mapping):
-        raise ValueError("channel.origin 必须是对象")
-    value = cast(Mapping[str, object], raw_value)
-    if set(value) != {"channel", "chat_id", "sender"} or any(
-        not isinstance(item, str) or not item for item in value.values()
-    ):
-        raise ValueError("channel.origin 身份无效")
-    return ContentReferences()
 
 
 def check_reply(part: ContentPart) -> ContentReferences:

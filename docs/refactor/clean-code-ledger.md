@@ -3330,3 +3330,15 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 50 降到 45。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/akasha_message_plugin/standard_tools/reply_program/wake_messages/computer_driver_plugin/model_execution）= `178 passed, 1 skipped`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（29）：会话接纳能力合同化
+
+- 基线：stacked base `416fca1b`（第 28 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam + move。清掉 `plugins.conversation.plugin`（5 条，含 18 处 import）：
+  - 新增 `agent/plugin_contracts/conversation.py`：`ConversationPort`（只声明消费者实际调用的
+    `accept`/`pause`/`resume`/`complete`）、`Changed` 别名（`MessageReader` 经 `TYPE_CHECKING` 引用，
+    保持合同层运行时纯性）、`check_origin` 纯校验函数、`CONVERSATION` key（登记 `seam`）。
+  - `plugins/conversation/plugin.py` 按原路径再导出，`Conversation` 实现留在原处。
+- 账本：R3 由 45 降到 40。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/channel_input/programmatic_result/subagent_messages/delivery_bindings）= `120 passed`。
+- 持久化/运行 workspace 变化：`none`。

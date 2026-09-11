@@ -17,7 +17,7 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.log import MessageLog, MessageWriter, OwnerTransaction
 from session.artifact_store import ArtifactStore
 from agent.plugin_contracts.content import check_text
-from plugins.conversation.plugin import check_origin
+from agent.plugin_contracts.conversation import check_origin
 from plugins.tools.api import MessageReply
 from plugins.tools.execution import ToolExecution
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
@@ -408,7 +408,7 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
 
 @pytest.mark.asyncio
 async def test_background_main_program_keeps_tools_and_new_input_interrupts_it(tmp_path):
-    from plugins.conversation.plugin import CONVERSATION
+    from agent.plugin_contracts.conversation import CONVERSATION
     async with application(tmp_path, background=True, block_main=True, main_tool=True) as (host, log, execution, reply):
         control = CONTROLS[str(tmp_path)]
         await execution.execute_call(reply)

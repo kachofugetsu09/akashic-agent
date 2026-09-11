@@ -12,7 +12,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_contracts.content import check_text
-from plugins.conversation.plugin import CONVERSATION
+from agent.plugin_contracts.conversation import CONVERSATION
 from agent.plugin_contracts.delivery_api import DELIVERY
 from plugins.reply.api import REPLY_PROGRAM
 from agent.plugin_contracts.context import Reminder

@@ -304,7 +304,7 @@ async def test_input_commit_blocks_idle_before_reply_program_starts(tmp_path, mo
     async with application(tmp_path, replying=True) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             root = snapshot.composition_root.context
-            from plugins.conversation.plugin import CONVERSATION
+            from agent.plugin_contracts.conversation import CONVERSATION
             kind = type(root.require(CONVERSATION)("test:room"))
             start = kind.start
             entering, release = asyncio.Event(), asyncio.Event()

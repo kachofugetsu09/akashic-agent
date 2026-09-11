@@ -180,6 +180,10 @@ note = "预置上下文组装器；定义在合同层，实现由 plugins/contex
 role = "seam"
 note = "预置上下文材料注册表；定义在合同层，实现由 plugins/context 提供"
 
+[capabilities."conversation.v1"]
+role = "seam"
+note = "按来源打开已获授权会话；定义在合同层，实现由 plugins/conversation 提供"
+
 [capabilities."content.v1"]
 role = "seam"
 note = "内容读写与 schema；定义在合同层，实现由 plugins/content 提供"

@@ -9,7 +9,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
-from plugins.conversation.plugin import CONVERSATION
+from agent.plugin_contracts.conversation import CONVERSATION
 from plugins.reply.follow import follow
 from plugins.sources.plugin import SOURCES
 from session.log import MessageLog

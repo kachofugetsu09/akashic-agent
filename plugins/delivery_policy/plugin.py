@@ -13,7 +13,7 @@ from agent.plugin_composition import Context, RUNTIME_STARTING, RUNTIME_STARTED,
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_contracts.restart import ExternalRootPermit, RestartRejectedError
-from plugins.conversation.plugin import check_origin
+from agent.plugin_contracts.conversation import check_origin
 from agent.plugin_contracts.delivery_api import FINAL_OUTPUT_DELIVERY
 from agent.plugin_contracts.delivery_api import Sink
 from agent.plugin_contracts.delivery_api import DELIVERY

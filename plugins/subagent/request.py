@@ -56,7 +56,7 @@ def check_request(part: ContentPart) -> ContentReferences:
     if set(request.tools) != set(PROFILE_TOOLS[request.profile]):
         raise ValueError("子任务工具选择与 profile 不一致")
     if request.origin is not None:
-        from plugins.conversation.plugin import check_origin
+        from agent.plugin_contracts.conversation import check_origin
         _ = check_origin(ContentPart("channel.origin", request.origin))
     if request.background and (request.origin is None or request.sink is None):
         raise ValueError("后台子任务缺少原发送目标")
