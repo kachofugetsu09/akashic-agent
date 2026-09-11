@@ -3220,3 +3220,26 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_push_plugin/agent_restart_tool/programmatic_control/programmatic_result）
   = `105 passed, 5 failed`，5 项与父提交逐项一致（既有 socket 集成失败）。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（24）：诊断与 shell 执行合同化
+
+- 基线：stacked base `71142413`（第 23 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态一（能力定义处再导出，同第 19 批）：`core.common.diagnostic_log` 与 `core.error_context`
+  **不搬**（前者含 contextvars + logging 配置，后者是环境态 ContextVar），改为由诊断能力的定义处
+  `agent/plugin_composition/diagnostics.py` 再导出 `diagnostic_line`/`log_event`/`current_session_key`；
+  `plugins/standard_tools/shell_backend.py` 改指该模块。
+- 形态二（seam）：新增 `agent/plugin_contracts/shell_execution.py`，承载
+  `ShellProcessManagerProtocol`（原在 `agent/host_bridge/factory.py`）、`ExecutionResult`/
+  `ExecutionCleanupFailure`/`ExecutionCleanupReport`（值）、`UnknownExecutionError`（异常）、
+  `format_execution_result`/`clamp_initial_yield_time`/`clamp_write_stdin_yield_time`（纯函数），
+  以及 8 个预算常量（含 clamp 的上/下界 —— 它们必须随函数一起移动，否则合同层无法自洽）。
+  具体实现（`ShellProcessManager`、host 后端）留在原处；`agent/tools/unified_exec.py` 与
+  `agent/host_bridge/factory.py` 按原路径再导出。
+- **留下一处显式未完成项**：`plugins/standard_tools/shell_backend.py` 仍 import
+  `agent.tools.unified_exec.ShellProcessManager`，因为它直接**构造** Core 的 local 后端。
+  正确做法是经 `core.processes`（`PluginProcesses`）消费，让它统一持有进程与 owner 记账；
+  但那会改变进程记账与 owner key 生成路径，属**行为变更**，需要单独的设计与差分 Gate。
+  因此该条**保留在 `plugin_boundary_baseline.toml`** 并在代码处写明原因，不混进本批纯搬迁。
+- 账本：R2 由 34 降到 30。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/shell_tool/unified_exec/host_bridge/host_bridge_protocol/standard_tools/plugin_processes）= `196 passed, 1 skipped`。
+- 持久化/运行 workspace 变化：`none`。

@@ -17,7 +17,7 @@ from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.standard_tools.shell_backend import _log_shell_execution, _shell_env
 from agent.plugin_contracts.shell_command import resolve_shell
 from agent.plugin_contracts.shell_security import validate_command
-from agent.tools.unified_exec import (
+from agent.plugin_contracts.shell_execution import (
     DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS,
     MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError,
     clamp_initial_yield_time, clamp_write_stdin_yield_time, format_execution_result,

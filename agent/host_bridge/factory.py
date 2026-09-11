@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from agent.plugin_contracts.shell_execution import ShellProcessManagerProtocol  # noqa: F401  (再导出)
+
 import os
 from pathlib import Path
 from typing import Protocol
@@ -18,37 +20,6 @@ _RELEASE_COMMIT_ENV = "AKASHIC_RUNTIME_COMMIT"
 _TOOLCHAIN_DIGEST_ENV = "AKASHIC_HOST_TOOLCHAIN_DIGEST"
 
 
-class ShellProcessManagerProtocol(Protocol):
-    async def exec_command(
-        self,
-        *,
-        command: str,
-        argv: list[str],
-        cwd: Path | None,
-        env: dict[str, str],
-        tty: bool,
-        yield_time_ms: int,
-        max_output_tokens: int,
-        hard_timeout_s: int,
-        owner_session_key: str,
-    ) -> ExecutionResult: ...
-    async def write_stdin(
-        self,
-        *,
-        execution_id: int,
-        chars: str,
-        yield_time_ms: int,
-        max_output_tokens: int,
-        owner_session_key: str,
-    ) -> ExecutionResult: ...
-    async def terminate_execution(
-        self, execution_id: int, *, owner_session_key: str
-    ) -> bool: ...
-    async def terminate_owner(
-        self, owner_session_key: str
-    ) -> ExecutionCleanupReport: ...
-    async def shutdown(self) -> ExecutionCleanupReport: ...
-    async def active_execution_ids(self) -> list[int]: ...
 
 
 def build_shell_process_manager() -> ShellProcessManagerProtocol:

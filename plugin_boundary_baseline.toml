@@ -6,6 +6,7 @@
 R1 = [
 ]
 R2 = [
+    "plugins/standard_tools/shell_backend.py|agent.tools.unified_exec",
     "plugins/akasha/dashboard.py|agent.plugins.snapshot",
     "plugins/codex/driver.py|core.net.http",
     "plugins/codex/responses.py|core.net.http",
@@ -24,12 +25,7 @@ R2 = [
     "plugins/scheduler/store.py|infra.persistence.json_store",
     "plugins/standard_tools/filesystem.py|agent.plugins.snapshot",
     "plugins/standard_tools/filesystem.py|agent.tools.filesystem",
-    "plugins/standard_tools/shell.py|agent.tools.unified_exec",
     "plugins/standard_tools/shell_backend.py|agent.control.context",
-    "plugins/standard_tools/shell_backend.py|agent.host_bridge.factory",
-    "plugins/standard_tools/shell_backend.py|agent.tools.unified_exec",
-    "plugins/standard_tools/shell_backend.py|core.common.diagnostic_log",
-    "plugins/standard_tools/shell_backend.py|core.error_context",
     "plugins/standard_tools/skills.py|agent.plugins.archive",
     "plugins/standard_tools/skills.py|agent.plugins.snapshot",
     "plugins/standard_tools/skills.py|agent.skills",

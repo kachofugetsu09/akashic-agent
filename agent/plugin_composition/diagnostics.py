@@ -13,8 +13,14 @@ from types import TracebackType
 from typing import Any, ContextManager, Generator, Literal, Protocol, cast
 
 from agent.control.context import running_turn_id
-from core.common.diagnostic_log import log_event
-from core.error_context import current_client_message_id, current_session_key
+# 诊断与错误归属是 Core 的能力：插件需要在诊断输出里写入同一事件流、并把外部进程
+# 错误归属到当前 session。这些函数的定义留在 core/，但由本模块（诊断能力的定义处）
+# 再导出，插件因此不必 import `core/` 的实现模块。
+from core.common.diagnostic_log import diagnostic_line, log_event  # noqa: F401  (再导出)
+from core.error_context import (  # noqa: F401  (再导出)
+    current_client_message_id,
+    current_session_key,
+)
 
 _NAME = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
 _UNITS = frozenset({"bytes", "count", "ratio", "seconds", "tokens"})

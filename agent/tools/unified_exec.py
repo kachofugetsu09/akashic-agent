@@ -16,17 +16,30 @@ from typing import Any, BinaryIO
 
 from utils.process_group import process_group_exists
 
-MIN_YIELD_TIME_MS = 250
-MIN_EMPTY_YIELD_TIME_MS = 5_000
-MAX_YIELD_TIME_MS = 30_000
-MAX_WRITE_STDIN_YIELD_TIME_MS = 300_000
-DEFAULT_INITIAL_YIELD_TIME_MS = 10_000
-DEFAULT_MAX_OUTPUT_TOKENS = 10_000
+# shell 执行的结果类型、预算常量与进程管理器 Protocol 的拥有者已移到结构合同层；
+# 这里按原路径再导出，既有 Core 调用点与类型身份不变。
+from agent.plugin_contracts.shell_execution import (  # noqa: E402,F401  (再导出)
+    DEFAULT_HARD_TIMEOUT_S,
+    MAX_WRITE_STDIN_YIELD_TIME_MS,
+    MAX_YIELD_TIME_MS,
+    MIN_EMPTY_YIELD_TIME_MS,
+    MIN_YIELD_TIME_MS,
+    UnknownExecutionError,
+    clamp_initial_yield_time,
+    clamp_write_stdin_yield_time,
+    DEFAULT_INITIAL_YIELD_TIME_MS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_HARD_TIMEOUT_S,
+    ExecutionCleanupFailure,
+    ExecutionCleanupReport,
+    ExecutionResult,
+    format_execution_result,
+)
+
+
 OUTPUT_MAX_BYTES = 1024 * 1024
 MAX_EXECUTIONS = 64
 PROTECTED_RECENT_EXECUTIONS = 8
-DEFAULT_HARD_TIMEOUT_S = 4 * 3600
-MAX_HARD_TIMEOUT_S = 4 * 3600
 POST_EXIT_DRAIN_GRACE_S = 0.2
 TERMINATION_CONFIRM_TIMEOUT_S = 5.0
 INTERRUPT = "\x03"
@@ -36,8 +49,6 @@ _ID_MIN = 1_000
 _ID_MAX = 99_999
 
 
-class UnknownExecutionError(RuntimeError):
-    pass
 
 
 class HeadTailBuffer:
@@ -121,34 +132,10 @@ class HeadTailBuffer:
         self.omitted_bytes += excess
 
 
-@dataclass
-class ExecutionResult:
-    output: bytes
-    wall_time_ms: int
-    original_token_count: int
-    output_omitted_bytes: int
-    execution_id: int | None
-    exit_code: int | None
-    output_path: str | None
-    finish_reason: str
 
 
-@dataclass(frozen=True)
-class ExecutionCleanupFailure:
-    execution_id: int
-    error_type: str
-    message: str
 
 
-@dataclass(frozen=True)
-class ExecutionCleanupReport:
-    attempted_execution_ids: tuple[int, ...]
-    cleaned_execution_ids: tuple[int, ...]
-    failures: tuple[ExecutionCleanupFailure, ...]
-
-    @property
-    def failed_execution_ids(self) -> tuple[int, ...]:
-        return tuple(failure.execution_id for failure in self.failures)
 
 
 @dataclass
@@ -772,58 +759,12 @@ class ShellProcessManager:
             os.killpg(process.pid, signal.SIGINT)
 
 
-def clamp_initial_yield_time(yield_time_ms: int) -> int:
-    return min(max(yield_time_ms, MIN_YIELD_TIME_MS), MAX_YIELD_TIME_MS)
 
 
-def clamp_write_stdin_yield_time(
-    yield_time_ms: int,
-    *,
-    has_input: bool,
-    max_empty_ms: int = MAX_WRITE_STDIN_YIELD_TIME_MS,
-) -> int:
-    value = max(yield_time_ms, MIN_YIELD_TIME_MS)
-    if has_input:
-        return min(value, MAX_YIELD_TIME_MS)
-    return min(max(value, MIN_EMPTY_YIELD_TIME_MS), max_empty_ms)
 
 
-def format_execution_result(
-    result: ExecutionResult,
-    *,
-    command: str | None = None,
-) -> str:
-    """把内部结果转换成稳定的工具 JSON。"""
-
-    payload: dict[str, Any] = {
-        "chunk_id": f"{random.randrange(16 ** 6):06x}",
-        "wall_time_ms": result.wall_time_ms,
-        "output": result.output.decode(errors="replace"),
-        "original_token_count": result.original_token_count,
-        "process_status": _process_status(result),
-        "exit_code": result.exit_code,
-    }
-    if command is not None:
-        payload["command"] = command
-    if result.execution_id is not None:
-        payload["execution_id"] = result.execution_id
-    if result.output_path is not None:
-        payload["output_path"] = result.output_path
-    if result.output_omitted_bytes:
-        payload["output_omitted_bytes"] = result.output_omitted_bytes
-    if result.finish_reason != "natural":
-        payload["finish_reason"] = result.finish_reason
-    return json.dumps(payload, ensure_ascii=False)
 
 
-def _process_status(result: ExecutionResult) -> str:
-    if result.execution_id is not None:
-        return "running"
-    if result.finish_reason == "timeout":
-        return "timed_out"
-    if result.exit_code == 0:
-        return "succeeded"
-    return "failed"
 
 
 def _limit_output(buffer: HeadTailBuffer, max_output_tokens: int) -> HeadTailBuffer:

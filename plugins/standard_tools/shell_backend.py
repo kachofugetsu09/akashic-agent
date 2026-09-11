@@ -9,22 +9,29 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from agent.control.context import mint_plugin_child_capability, running_turn_id
-from agent.host_bridge.factory import ShellProcessManagerProtocol
+from agent.plugin_contracts.shell_execution import ShellProcessManagerProtocol
 from agent.plugin_contracts.tool_base import Tool
 from agent.plugin_contracts.shell_security import validate_command
 from agent.plugin_contracts.shell_security import validate_network_command
 from agent.plugin_contracts.shell_command import resolve_shell
-from agent.tools.unified_exec import DEFAULT_HARD_TIMEOUT_S
-from agent.tools.unified_exec import DEFAULT_INITIAL_YIELD_TIME_MS
-from agent.tools.unified_exec import DEFAULT_MAX_OUTPUT_TOKENS
-from agent.tools.unified_exec import ExecutionCleanupReport
-from agent.tools.unified_exec import ExecutionResult
-from agent.tools.unified_exec import MAX_HARD_TIMEOUT_S
+from agent.plugin_contracts.shell_execution import (
+    DEFAULT_HARD_TIMEOUT_S,
+    DEFAULT_INITIAL_YIELD_TIME_MS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_HARD_TIMEOUT_S,
+    ExecutionCleanupReport,
+    ExecutionResult,
+    ShellProcessManagerProtocol,
+    format_execution_result,
+)
+# 已知欠账（已在 plugin_boundary_baseline.toml 登记，留给独立批次）：
+# ShellTool 目前直接构造 Core 的 local 后端。正确做法是经 `core.processes`
+# （PluginProcesses）消费，让它统一持有进程与 owner 记账 —— 那会改变进程记账与
+# owner key 的生成路径，属行为变更，需要单独的设计与差分 Gate，不能混在本次
+# 「纯搬迁」的批次里做。
 from agent.tools.unified_exec import ShellProcessManager
-from agent.tools.unified_exec import format_execution_result
-from core.common.diagnostic_log import diagnostic_line
-from core.common.diagnostic_log import log_event
-from core.error_context import current_session_key
+from agent.plugin_composition.diagnostics import diagnostic_line, log_event
+from agent.plugin_composition.diagnostics import current_session_key
 
 logger = logging.getLogger(__name__)
 
