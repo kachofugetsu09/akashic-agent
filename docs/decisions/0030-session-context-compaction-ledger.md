@@ -1,10 +1,10 @@
 # 0030 · Session context compaction ledger owns model-window projections
 
-- 状态：accepted / implemented / partially superseded by 0052
+- 状态：accepted / implemented / partially superseded by 0052 and 0064
 - 日期：2026-08-08
 - 取代：[0012 · Query 内压缩是可持久重放的非破坏性投影](0012-query-local-compaction-is-a-persisted-projection.md)
 - 关联条款：CTX-001～CTX-007、SES-001～SES-005、MEM-002、MEM-004、MEM-008、MEM-011、MIG-001、WSP-003、TST-001～TST-006
-- superseded by：0052（只修订 Markdown/PENDING 后台 owner，不改变 Session ledger 合同）
+- superseded by：0052（修订 Markdown/PENDING 后台 owner）；0064（修订已有 generation 后的窗口选择）
 
 ## 背景
 
@@ -38,7 +38,7 @@
    调用再次经过同一 Gate。
    ledger 尚无 generation 时，首次投影先从最新历史向前按完整 logical unit 取约 74%
    窗口；更早历史不进入首次 provider payload、source plan 或摘要，但 SessionDB 原始消息
-   保持完整。已有 generation 后只处理有效 cursor 到当前的新单元。
+   保持完整。已有 generation 后的单窗口近期选择与明确省略语义由 0064 取代原“追平有效 cursor”选择。
 5. 摘要采用 Pi-mono 的六段格式：Goal、Constraints & Preferences、Progress（Done /
    In Progress / Blocked）、Key Decisions、Next Steps、Critical Context。摘要输入保留
    上一 generation 和已淘汰的完整证据；工具结果、路径、错误、外部效果、execution

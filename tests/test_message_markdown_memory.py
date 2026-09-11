@@ -29,8 +29,9 @@ async def application(tmp_path, *, start=False, transient_failure=False, draft_f
             shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                             ignore=shutil.ignore_patterns("__pycache__"))
         for name in ("compaction", "markdown_memory"):
+            version = "4.1.0"
             (sources / name / "akashic.plugin.toml").write_text(
-                f'schema_version = 1\nname = "{name}"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
+                f'schema_version = 1\nname = "{name}"\nversion = "{version}"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
         settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text('summary_source = ["compaction", "compaction"]\nprompt_sources = {markdown_memory = "markdown_memory"}\n')
@@ -262,10 +263,15 @@ def test_legacy_effect_reader_rejects_unproven_or_ambiguous_metadata(raw, digest
         legacy_post_commit_effect(row)
 
 
-def publish(log, reference, parent=None):
+def publish(log, reference, parent=None, *, summarized=None, omitted=()):
+    source_message_ids = tuple(message.message_id for message in log.reader("s").snapshot())
+    parent_size = 0 if parent is None else len(parent.source_message_ids)
+    added = source_message_ids[parent_size:]
     record = SummaryRecord(reference=reference, session_id="s", generation=1 if parent is None else parent.generation + 1,
         parent=None if parent is None else parent.reference,
-        source_message_ids=tuple(message.message_id for message in log.reader("s").snapshot()),
+        source_message_ids=source_message_ids,
+        summary_message_ids=added if summarized is None else summarized,
+        omitted_message_ids=omitted,
         content="actual summary", model_call_ids=("summary-model:" + reference,), trigger="soft_limit",
         context_window=32000, max_output_tokens=4096, keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000)
     return SummaryRecords(log.owner("plugin:compaction")).publish(record, log.reader("s"), parent=parent)
@@ -331,6 +337,43 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
                           store=profile_store(tmp_path), models=ctx.require(CHAT_MODELS),
                           lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
+
+
+@pytest.mark.asyncio
+async def test_markdown_does_not_learn_messages_omitted_by_single_window_compaction(tmp_path):
+    from agent.plugin_composition import CHAT_MODELS
+    from plugins.markdown_memory.message_plugin import project
+
+    async with application(tmp_path) as (log, host):
+        inputs = log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
+        inputs.append("u1", Input((ContentPart("text", "fact-one"),)))
+        parent = publish(log, "parent")
+        inputs.append("u2", Input((ContentPart("text", "fact-two"),)))
+        inputs.append("u3", Input((ContentPart("text", "fact-three"),)))
+        child = publish(
+            log,
+            "child",
+            parent,
+            summarized=("u3",),
+            omitted=("u2",),
+        )
+        used = await record_use(log, host, child, "used-child")
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            ctx = snapshot.composition_root.context
+            await project(
+                used,
+                reader=log.reader("s"),
+                bindings=ctx.require(BINDINGS),
+                store=profile_store(tmp_path),
+                models=ctx.require(CHAT_MODELS),
+                lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
+                sources=("conversation",),
+                projection=ctx.require(TURN_PROJECTION),
+            )
+        memory = profile_store(tmp_path).read_memory()
+        assert "fact-one" in memory
+        assert "fact-three" in memory
+        assert "fact-two" not in memory
 
 
 @pytest.mark.asyncio

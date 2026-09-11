@@ -22,7 +22,7 @@ from .message_summary import SummaryError, closed_groups, summarize, summary_gro
 
 api_version = 3
 name = "compaction"
-version = "4.0.0"
+version = "4.1.0"
 desc = "按不可变消息前缀发布摘要，并为已使用的摘要保留原始读取口"
 inject = (MATERIALS, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
 
@@ -122,14 +122,28 @@ async def apply(ctx: Context, config: Config) -> None:
             raise SummaryError("可选范围没有可用于摘要的资料")
         # 2. 嵌套 execution 复用调用者已经固定的角色，不重读模型配置。
         async with ctx.require(CHAT_MODELS).execution() as execution:
-            text, calls = await summarize(inputs, previous="" if parent is None else parent.content,
-                                          model=model, fallback=execution.chat(ModelRole.DEFAULT))
+            text, calls, summarized = await summarize(
+                inputs,
+                previous="" if parent is None else parent.content,
+                model=model,
+                fallback=execution.chat(ModelRole.DEFAULT),
+            )
         count = start + sum(len(group) for group in selected)
+        summary_message_ids = tuple(
+            message.message_id for group in summarized for message in group
+        )
+        summary_id_set = set(summary_message_ids)
+        added = snapshot[start:count]
         record = SummaryRecord(
             reference=uuid4().hex, session_id=snapshot[0].session_id,
             generation=1 if parent is None else parent.generation + 1,
             parent=None if parent is None else parent.reference,
             source_message_ids=tuple(message.message_id for message in snapshot[origin:count]),
+            summary_message_ids=summary_message_ids,
+            omitted_message_ids=tuple(
+                message.message_id for message in added
+                if message.message_id not in summary_id_set
+            ),
             content=text, model_call_ids=calls, trigger="context_overflow" if force else "soft_limit",
             context_window=window, max_output_tokens=request.max_output_tokens,
             keep_recent_tokens=config.keep_recent_tokens, tokens_before=before, tokens_after=0,

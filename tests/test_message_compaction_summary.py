@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from agent.plugin_composition.models import (
-    BoundModelDescriptor, CapabilitySources, ContextLengthError, InvalidRequestError,
+    BoundModelDescriptor, CapabilitySources, InvalidRequestError,
     LLMResponse, ModelCapabilities, ModelRequest, ModelRole, RateLimitError,
 )
 from plugins.compaction.message_summary import HEADINGS, SummaryError, closed_groups, summarize, summary_groups, window_starts
@@ -17,7 +17,7 @@ def message(seq, body, source="conversation"):
     return Message(str(seq), "s", seq, datetime.now(UTC), "test", source, body)
 
 
-def model(store, complete, *, identity="main", window=10000):
+def model(store, complete, *, identity="main", window=10000, estimate=None):
     descriptor = BoundModelDescriptor(
         binding_id=identity, plugin_snapshot_id="snapshot", model_revision=0,
         model_id=identity, connection_id="fixture", driver_id="fixture", driver_contract_version="1",
@@ -28,7 +28,7 @@ def model(store, complete, *, identity="main", window=10000):
     class Driver:
         max_tool_schemas = None
         def estimate_context_tokens(self, messages, tools=()):
-            return len(str(messages)) // 4
+            return len(str(messages)) // 4 if estimate is None else estimate(messages)
         def estimate_appended_message_tokens(self, messages):
             return len(str(messages)) // 4
         async def complete(self, request):
@@ -127,38 +127,56 @@ async def test_summary_provider_excludes_late_abandoned_result_across_generation
     )
     original = tuple(rows)
     groups = closed_groups(rows, TurnProjection(), after=3 if prior_summary else 0)
-    _, calls = await summarize(summary_groups(groups, rows), previous=summary_text() if prior_summary else "",
-                               model=provider, fallback=provider)
+    _, calls, selected = await summarize(
+        summary_groups(groups, rows),
+        previous=summary_text() if prior_summary else "",
+        model=provider,
+        fallback=provider,
+    )
     assert "late excluded fact" not in str(requests)
     assert "independent observation" in str(requests)
     assert "new answer" in str(requests)
+    assert "只有 author=user 的原话" in str(requests)
     assert calls and all(store.read_call(identity)["state"] == "success" for identity in calls)
+    assert selected
     assert rows == original and rows[5].body.parts[0].value == "late excluded fact"
 
 
 @pytest.mark.asyncio
-async def test_provider_overflow_halves_complete_groups_and_keeps_each_successful_call(tmp_path):
+async def test_summary_uses_one_recent_window_instead_of_serial_batches(tmp_path):
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
-    requests, successes = [], []
+    requests = []
     async def complete(request):
         requests.append(request)
         assert request.max_output_tokens == 0
-        text = request.messages[0]["content"]
-        if text.count('"message_id"') > 1:
-            raise ContextLengthError("actual tokenizer exceeds estimate")
-        successes.append(text)
         return LLMResponse(summary_text())
-    provider = model(store, complete)
-    groups = tuple((message(index, Output((ContentPart("text", "body " + str(index)),), "complete")),)
-                   for index in range(3))
-    summary, calls = await summarize(groups, previous="", model=provider, fallback=provider)
+    provider = model(store, complete, window=10_000)
+    groups = tuple((message(index, Output((ContentPart("text", str(index) + "x" * 11_000),), "complete")),)
+                   for index in range(6))
+    summary, calls, selected = await summarize(groups, previous="", model=provider, fallback=provider)
     assert summary == summary_text()
-    assert len(requests) == 5 and len(calls) == 3
+    assert len(requests) == 1 and len(calls) == 1
     assert all(store.read_call(identity)["state"] == "success" for identity in calls)
-    assert [next(str(index) for index in range(3) if f'"message_id":"{index}"' in text)
-            for text in successes] == ["0", "1", "2"]
-    assert "Preserved facts." in successes[-1]
+    assert selected == groups[-2:]
+    request_text = str(requests[0].messages)
+    assert '"message_id":"3"' not in request_text
+    assert '"message_id":"4"' in request_text and '"message_id":"5"' in request_text
+
+
+@pytest.mark.asyncio
+async def test_summary_window_accepts_the_exact_soft_threshold(tmp_path):
+    store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
+    store.initialize()
+    requests = []
+    async def complete(request):
+        requests.append(request)
+        return LLMResponse(summary_text())
+    provider = model(store, complete, window=10_000, estimate=lambda _messages: 7_400)
+    group = (message(0, Output((ContentPart("text", "boundary facts"),), "complete")),)
+    _, calls, selected = await summarize((group,), previous="", model=provider, fallback=provider)
+    assert len(requests) == 1 and len(calls) == 1
+    assert selected == (group,)
 
 
 @pytest.mark.asyncio
@@ -180,7 +198,7 @@ async def test_default_fallback_is_fixed_and_does_not_hide_request_contract_erro
             await summarize(groups, previous="", model=primary, fallback=default)
         assert used == []
     else:
-        _, calls = await summarize(groups, previous="", model=primary, fallback=default)
+        _, calls, _ = await summarize(groups, previous="", model=primary, fallback=default)
         assert len(used) == 1
         assert store.read_call(calls[0])["binding"]["binding_id"] == "fixed-default"
 

@@ -37,8 +37,8 @@ class _SummaryIdentity(BaseModel):
         return self
 
 
-class SummaryRecord(_SummaryIdentity):
-    """一次已发布压缩的完整覆盖、模型出处与生成条件。"""
+class NativeSummaryRecordV1(_SummaryIdentity):
+    """旧原生摘要记录；其覆盖范围同时充当模型输入范围。"""
 
     version: Literal[1] = 1
     model_call_ids: tuple[Text, ...] = Field(min_length=1)
@@ -55,6 +55,45 @@ class SummaryRecord(_SummaryIdentity):
             raise ValueError("摘要首代必须没有 parent，后续代必须声明 parent")
         if len(set(self.model_call_ids)) != len(self.model_call_ids):
             raise ValueError("摘要模型调用不能重复")
+        return self
+
+
+class SummaryRecord(_SummaryIdentity):
+    """一次单窗口压缩的覆盖范围、真实输入与生成条件。"""
+
+    version: Literal[2] = 2
+    summary_message_ids: tuple[Text, ...] = Field(min_length=1)
+    omitted_message_ids: tuple[Text, ...] = ()
+    model_call_ids: tuple[Text, ...] = Field(min_length=1, max_length=1)
+    trigger: Literal["soft_limit", "context_overflow"]
+    context_window: Annotated[int, Field(gt=0)]
+    max_output_tokens: Annotated[int, Field(gt=0)]
+    keep_recent_tokens: Annotated[int, Field(gt=0)]
+    tokens_before: Annotated[int, Field(ge=0)]
+    tokens_after: Annotated[int, Field(ge=0)]
+
+    @model_validator(mode="after")
+    def check_native_identity(self) -> Self:
+        if (self.generation == 1) != (self.parent is None):
+            raise ValueError("摘要首代必须没有 parent，后续代必须声明 parent")
+        if len(set(self.summary_message_ids)) != len(self.summary_message_ids):
+            raise ValueError("摘要模型输入消息不能重复")
+        if len(set(self.omitted_message_ids)) != len(self.omitted_message_ids):
+            raise ValueError("摘要省略消息不能重复")
+        if set(self.summary_message_ids) & set(self.omitted_message_ids):
+            raise ValueError("摘要模型输入与省略消息不能重叠")
+        source = set(self.source_message_ids)
+        summarized = set(self.summary_message_ids)
+        omitted = set(self.omitted_message_ids)
+        if not (summarized | omitted) <= source:
+            raise ValueError("摘要分区包含覆盖范围外的消息")
+        if (tuple(item for item in self.source_message_ids if item in summarized)
+                != self.summary_message_ids
+                or tuple(item for item in self.source_message_ids if item in omitted)
+                != self.omitted_message_ids):
+            raise ValueError("摘要分区顺序与覆盖范围不一致")
+        if self.parent is None and len(self.source_message_ids) != len(summarized) + len(omitted):
+            raise ValueError("首代摘要覆盖没有被模型输入与省略消息完整分区")
         return self
 
 
@@ -143,7 +182,44 @@ class ImportedSummaryRecord(_SummaryIdentity):
         return self
 
 
-StoredSummary: TypeAlias = SummaryRecord | ImportedSummaryRecord
+StoredSummary: TypeAlias = SummaryRecord | NativeSummaryRecordV1 | ImportedSummaryRecord
+
+
+def _check_lineage(
+    record: StoredSummary,
+    read: Callable[[str], StoredSummary | None],
+    session_id: str,
+) -> StoredSummary:
+    """核对完整父链，以及每代 v2 对新增覆盖的精确分区。"""
+    current = record
+    while True:
+        if current.parent is None:
+            parent = None
+        else:
+            parent = read(current.parent)
+            if parent is None or parent.session_id != session_id:
+                raise ValueError("摘要父链缺失或跨 Session")
+            generation_matches = (
+                parent.generation == current.legacy.row.parent_generation
+                if isinstance(current, ImportedSummaryRecord)
+                else parent.generation + 1 == current.generation
+            )
+            if (not generation_matches
+                    or len(parent.source_message_ids) >= len(current.source_message_ids)
+                    or current.source_message_ids[:len(parent.source_message_ids)] != parent.source_message_ids):
+                raise ValueError("摘要父链的 generation 或来源前缀不连续")
+        if isinstance(current, SummaryRecord):
+            parent_size = 0 if parent is None else len(parent.source_message_ids)
+            added = current.source_message_ids[parent_size:]
+            summarized = set(current.summary_message_ids)
+            omitted = set(current.omitted_message_ids)
+            if (len(added) != len(summarized) + len(omitted)
+                    or tuple(item for item in added if item in summarized) != current.summary_message_ids
+                    or tuple(item for item in added if item in omitted) != current.omitted_message_ids):
+                raise ValueError("摘要本代覆盖没有被模型输入与省略消息完整分区")
+        if parent is None:
+            return record
+        current = parent
 
 
 class _Head(BaseModel):
@@ -181,23 +257,7 @@ class SummaryLookup:
         record = self._read(reference.record_ref)
         if record is None or record.session_id != session_id:
             raise ValueError("摘要 binding 没有对应 Session 的原始记录")
-        current = record
-        while current.parent is not None:
-            parent = self._read(current.parent)
-            if parent is None or parent.session_id != session_id:
-                raise ValueError("摘要父链缺失或跨 Session")
-            # generation 严格递减同时排除循环，无需维护第二套访问状态。
-            generation_matches = (
-                parent.generation == current.legacy.row.parent_generation
-                if isinstance(current, ImportedSummaryRecord)
-                else parent.generation + 1 == current.generation
-            )
-            if (not generation_matches
-                    or len(parent.source_message_ids) >= len(current.source_message_ids)
-                    or current.source_message_ids[:len(parent.source_message_ids)] != parent.source_message_ids):
-                raise ValueError("摘要父链的 generation 或来源前缀不连续")
-            current = parent
-        return record
+        return _check_lineage(record, self._read, session_id)
 
 
 COMPACTION_SUMMARIES = ServiceKey[SummaryLookup]("compaction.summaries.v1")
@@ -209,7 +269,8 @@ class SummaryRecords:
     def __init__(self, state: OwnerStore):
         self._state = state
 
-    def read(self, reference: str) -> StoredSummary | None:
+    def _read_record(self, reference: str) -> StoredSummary | None:
+        """只反序列化一条不可变记录；父链由公共读取口统一核对。"""
         row = self._state.read("summary:" + reference)
         if row is None:
             return None
@@ -222,12 +283,20 @@ class SummaryRecords:
         if version == 0:
             record: StoredSummary = ImportedSummaryRecord.model_validate_json(raw)
         elif version == 1:
+            record = NativeSummaryRecordV1.model_validate_json(raw)
+        elif version == 2:
             record = SummaryRecord.model_validate_json(raw)
         else:
             raise ValueError("摘要记录 version 无效")
         if record.reference != reference or row.version != 0:
             raise ValueError("摘要记录的身份或不可变版本损坏")
         return record
+
+    def read(self, reference: str) -> StoredSummary | None:
+        record = self._read_record(reference)
+        if record is None:
+            return None
+        return _check_lineage(record, self._read_record, record.session_id)
 
     def head(self, session_id: str) -> StoredSummary | None:
         row = self._state.read("head:" + session_id)
@@ -264,6 +333,8 @@ class SummaryRecords:
             if parent is not None and (len(record.source_message_ids) <= len(parent.source_message_ids)
                     or record.source_message_ids[:len(parent.source_message_ids)] != parent.source_message_ids):
                 raise ValueError("后续摘要不能撤回已有来源")
+
+            _ = _check_lineage(record, self._read_record, record.session_id)
 
             # 2. 源消息与摘要在同一 authority 的事务中校验；读取模块无正文写权。
             _ = summary_range(reader.snapshot(), record.source_message_ids)

@@ -70,6 +70,7 @@
 | [0062](0062-tools-flow-through-provider-views.md) | accepted / implemented | 工具通过 provider view 流向消费者 | CTX-004、CTX-007、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016、PLG-018 |
 
 | [0063](0063-execution-failures-have-terminal-results.md) | accepted | 执行失败明确收尾，恢复依据原回执 | Tools、Delivery、Wake、Mobile、Models |
+| [0064](0064-compaction-uses-one-recent-window.md) | accepted | Compaction 每代只摘要一个近期窗口 | CTX-001～CTX-007、MEM-011～MEM-012、SES-003～SES-005 |
 
 ## 新增规则
 

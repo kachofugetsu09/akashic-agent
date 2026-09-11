@@ -415,7 +415,16 @@ Compaction 插件不拆分已提交的完整 Turn 投影；开放 source 段只�
 
 ledger 没有任何 generation 时，首次 compact 必须先从当前向历史方向按完整 Turn 单元
 选择不超过 `floor(context_window * 0.74)` 软水位的最大连续近期窗口，同时满足完整请求的硬输入边界；不得为凑满预算跨过阈值。窗口外更早历史不得进入首次 provider payload、source plan 或摘要，
-但 SessionDB 原始消息必须完整保留。已有 generation 后只处理有效 cursor 到当前的增量。
+但 SessionDB 原始消息必须完整保留。已有 generation 后先按 raw tail 找到本代可退出 Prompt 的
+完整旧前缀，再从该前缀末尾向前选择摘要模型单次请求能容纳的最大连续近期窗口；不得把有效
+cursor 到当前的积压分批串行追平。该窗口之前的本代旧前缀退出后续 Prompt，但不进入摘要模型，
+也不成为 Markdown 新事实的输入。
+
+checkpoint 必须分别保存连续 Prompt 覆盖范围、本代实际摘要输入消息和本代明确省略消息；不能
+用 cursor 或累计来源暗示省略消息已经被摘要或学习。每代只有一个成功摘要调用；主模型发生可恢复
+失败时可以改用已固定的 default fallback，但不能缩小窗口后继续串行重试。摘要 Prompt 必须把
+`author=user` 原话视为用户目标、要求、偏好和关系的核心证据；assistant 消息只证明助手的判断、
+计划与执行，不能单独建立或补全用户事实。
 
 持久 checkpoint 写入 `session_compactions`，保存 summary、parent lineage、source_ref、
 retained tail、usage、失效字段和模型容量；`sessions.last_consolidated` 只表示当前

@@ -346,8 +346,9 @@ def memory_sources(root):
     for name in ("akasha", "markdown_memory"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
+        version = "4.1.0" if name == "markdown_memory" else "4.0.0"
         (root / name / "akashic.plugin.toml").write_text(
-            f'schema_version = 1\nname = "{name}"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
+            f'schema_version = 1\nname = "{name}"\nversion = "{version}"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
     settings = root.parent / "workspace/plugin-data/context-builtin/config.local.toml"
     settings.parent.mkdir(parents=True, exist_ok=True)
     with settings.open("a") as handle:

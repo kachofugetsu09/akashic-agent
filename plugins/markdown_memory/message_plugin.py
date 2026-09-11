@@ -27,7 +27,7 @@ from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextL
 from agent.llm_json import load_json_object_loose
 from agent.turn_effects import PostCommitEffect
 from infra.persistence.json_store import atomic_write_text
-from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, StoredSummary
+from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, SummaryRecord, StoredSummary
 from plugins.compaction.message_summary import source_text, summary_groups, window_starts
 from plugins.content.api import is_user_input, legacy_post_commit_effect
 from plugins.context.api import Materials, check_summary, summary_range
@@ -42,7 +42,7 @@ logger = logging.getLogger("plugins.markdown_memory")
 
 api_version = 3
 name = "markdown_memory"
-version = "4.0.0"
+version = "4.1.0"
 desc = "把已使用摘要的确切原文投影到 MEMORY.md 和 SELF.md"
 inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, TURN_PROJECTION)
 _UPDATE_LOCK_NAME = "markdown-profile-update.lock"
@@ -604,8 +604,8 @@ async def profile_lock(path: Path, *, create: bool = True) -> AsyncGenerator[Non
 async def _unapplied_groups(record: StoredSummary, lookup: SummaryLookup, reader: MessageReader,
                         store: MarkdownProfileStore, sources: tuple[str, ...],
                         projection: TurnProjection) -> tuple[tuple[Message, ...], ...] | None:
-    """从最近已写入的祖先之后取完整组的原文，跳过未使用的摘要不会漏掉它覆盖的事实。"""
-    start = 0
+    """只取未应用 generation 真正送入摘要模型的完整组原文。"""
+    applied_reference: str | None = None
     latest = store.latest_applied(record.session_id)
     if latest is not None:
         latest_ref, generation = latest
@@ -620,7 +620,28 @@ async def _unapplied_groups(record: StoredSummary, lookup: SummaryLookup, reader
             raise ValueError("Markdown 当前档案与摘要不属于同一父链")
         if record.generation <= generation:
             return None
-        start = len(newer.source_message_ids)
+        applied_reference = latest_ref
+
+    # 新记录显式区分模型输入与退出 Prompt 的旧缺口；旧记录沿原累计差值兼容。
+    batches: list[tuple[str, ...]] = []
+    current = record
+    while current.reference != applied_reference:
+        parent = None if current.parent is None else lookup.resolve(
+            {"record_ref": current.parent, "session_id": record.session_id},
+            session_id=reader.session_id,
+        )
+        if current.version == 2:
+            batches.append(cast(SummaryRecord, current).summary_message_ids)
+        else:
+            parent_size = 0 if parent is None else len(parent.source_message_ids)
+            batches.append(current.source_message_ids[parent_size:])
+        if parent is None:
+            if applied_reference is not None:
+                raise ValueError("Markdown 当前档案与摘要不属于同一父链")
+            break
+        current = parent
+    selected_ids = {identity for batch in reversed(batches) for identity in batch}
+
     # 归档 lookup 依赖当前 task 的 lease；只把独立 reader 的解码移出事件循环。
     snapshot = await asyncio.to_thread(reader.snapshot)
     covered = summary_range(snapshot, record.source_message_ids)
@@ -633,11 +654,15 @@ async def _unapplied_groups(record: StoredSummary, lookup: SummaryLookup, reader
             effects = tuple(legacy_post_commit_effect(by_id[identity]) for identity in ids)
             if PostCommitEffect.SUPPRESS in effects:
                 excluded.update(ids)
-    after = covered.start + start
-    cuts = (after, *(index for index in window_starts(snapshot[:covered.stop], projection) if index > after), covered.stop)
+    cuts = (
+        covered.start,
+        *(index for index in window_starts(snapshot[:covered.stop], projection) if index > covered.start),
+        covered.stop,
+    )
     groups = tuple(snapshot[left:right] for left, right in zip(cuts, cuts[1:]))
     selected = tuple(tuple(message for message in group
-                           if message.source in sources and message.message_id not in excluded)
+                           if message.source in sources and message.message_id in selected_ids
+                           and message.message_id not in excluded)
                      for group in groups)
     # 批次切点来自完整前缀；学习资格与迟到结果沿原 source/放弃边界过滤。
     return summary_groups(selected, snapshot[:covered.stop])

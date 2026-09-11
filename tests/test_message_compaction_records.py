@@ -4,16 +4,27 @@ from contextlib import closing
 
 import pytest
 
-from plugins.compaction.records import ImportedSummaryRecord, LegacySummarySource, SummaryLookup, SummaryRecord, SummaryRecords
+from plugins.compaction.records import (
+    ImportedSummaryRecord,
+    LegacySummarySource,
+    NativeSummaryRecordV1,
+    SummaryLookup,
+    SummaryRecord,
+    SummaryRecords,
+)
 from plugins.content.plugin import check_text
 from session.log import MessageConflict, MessageLog, OwnerTransaction
 from session.message import ContentPart, Input
 
 
-def record(reference, *, parent=None, ids=("u1",)):
+def record(reference, *, parent=None, ids=("u1",), omitted=()):
+    parent_size = 0 if parent is None else len(parent.source_message_ids)
+    added = ids[parent_size:]
     return SummaryRecord(
         reference=reference, session_id="s", generation=1 if parent is None else parent.generation + 1,
         parent=None if parent is None else parent.reference, source_message_ids=ids,
+        summary_message_ids=tuple(identity for identity in added if identity not in omitted),
+        omitted_message_ids=omitted,
         content="summary " + reference, model_call_ids=("call:" + reference,), trigger="soft_limit",
         context_window=32000, max_output_tokens=4096, keep_recent_tokens=20000,
         tokens_before=27000, tokens_after=18000,
@@ -143,12 +154,68 @@ def test_summary_keeps_recent_start_and_only_extends_its_actual_range(tmp_path):
         writer.append("u3", Input((ContentPart("text", "third"),)))
         records = SummaryRecords(log.owner("compaction"))
         first = records.publish(record("recent", ids=("u2",)), log.reader("s"), parent=None)
-        for ids in (("u1", "u2", "u3"), ("u2",)):
-            with pytest.raises(ValueError, match="来源"):
-                records.publish(record("bad", parent=first, ids=ids), log.reader("s"), parent=first)
+        with pytest.raises(ValueError, match="来源"):
+            records.publish(record("bad-prefix", parent=first, ids=("u1", "u2", "u3")),
+                            log.reader("s"), parent=first)
+        shrink = record("bad-shrink", parent=first, ids=("u2", "u3")).model_copy(update={
+            "source_message_ids": ("u2",),
+        })
+        with pytest.raises(ValueError, match="来源"):
+            records.publish(shrink, log.reader("s"), parent=first)
         second = records.publish(record("extended", parent=first, ids=("u2", "u3")), log.reader("s"), parent=first)
         assert records.head("s") == second
         assert log.reader("s").get("u1").body.parts[0].value == "first original input"
+
+
+def test_version_two_records_partition_new_coverage_and_version_one_remains_readable(tmp_path):
+    with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        inputs(log)
+        records = SummaryRecords(log.owner("compaction"))
+        old = NativeSummaryRecordV1(
+            reference="v1", session_id="s", generation=1, parent=None,
+            source_message_ids=("u1",), content="old summary", model_call_ids=("old-call",),
+            trigger="soft_limit", context_window=32000, max_output_tokens=4096,
+            keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000,
+        )
+        records._state.transact(lambda tx: tx.save(
+            "summary:v1", old.model_dump(mode="json"), expected_version=None,
+        ))
+        records._state.transact(lambda tx: tx.save(
+            "head:s", {"reference": "v1"}, expected_version=None,
+        ))
+        assert records.read("v1") == old
+
+        child = record("v2", parent=old, ids=("u1", "u2")).model_copy(update={
+            "summary_message_ids": ("u1",), "omitted_message_ids": ("u2",),
+        })
+        with pytest.raises(ValueError, match="完整分区"):
+            records.publish(child, log.reader("s"), parent=old)
+
+        child = child.model_copy(update={
+            "summary_message_ids": ("u2",), "omitted_message_ids": (),
+        })
+        assert records.publish(child, log.reader("s"), parent=old) == child
+
+
+def test_version_two_readers_reject_corrupt_persisted_partition(tmp_path):
+    with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        inputs(log)
+        records = SummaryRecords(log.owner("compaction"))
+        parent = records.publish(record("parent"), log.reader("s"), parent=None)
+        corrupt = record("corrupt", parent=parent, ids=("u1", "u2")).model_dump(mode="json")
+        corrupt["summary_message_ids"] = ["u1"]
+        records._state.transact(lambda tx: (
+            tx.save("summary:corrupt", corrupt, expected_version=None),
+            tx.save("head:s", {"reference": "corrupt"}, expected_version=0),
+        ))
+
+        with pytest.raises(ValueError, match="完整分区"):
+            records.read("corrupt")
+        with pytest.raises(ValueError, match="完整分区"):
+            records.head("s")
+        lookup = SummaryLookup(records._read_record, records.head)
+        with pytest.raises(ValueError, match="完整分区"):
+            lookup.resolve({"record_ref": "corrupt", "session_id": "s"}, session_id="s")
 
 
 @pytest.mark.asyncio
@@ -169,7 +236,7 @@ async def test_summary_use_reopens_original_archive_after_head_advance_and_sourc
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     (sources / "compaction/akashic.plugin.toml").write_text(
-        'schema_version = 1\nname = "compaction"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
+        'schema_version = 1\nname = "compaction"\nversion = "4.1.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
     settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text('summary_source = ["compaction", "compaction"]\n')

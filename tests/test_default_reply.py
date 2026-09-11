@@ -46,7 +46,7 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         shutil.copytree(Path(__file__).parents[1] / "plugins/compaction", sources / "compaction",
                         ignore=shutil.ignore_patterns("__pycache__"))
         (sources / "compaction/akashic.plugin.toml").write_text(
-            'schema_version = 1\nname = "compaction"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
+            'schema_version = 1\nname = "compaction"\nversion = "4.1.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
         settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text('summary_source = ["compaction", "compaction"]\n')
@@ -403,6 +403,9 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
             return
         assert record is not None and record.tokens_after < record.tokens_before
         assert record.source_message_ids == tuple(row.message_id for row in original[4:6])
+        assert record.summary_message_ids == record.source_message_ids
+        assert record.omitted_message_ids == ()
+        assert len(record.model_call_ids) == 1
         outputs = [row for row in rows[len(original):] if isinstance(row.body, Output)]
         assert [row.body.finish for row in outputs] == ["continue", "complete"]
         refs = [next(cast(Mapping[str, object], part.value)["reference"] for part in row.body.parts
@@ -417,6 +420,77 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
                            for role in ("input", "answer") for index in (0, 1)) for request in calls)
             assert all("current request" in str(request.messages) for request in calls[1:])
         assert (tmp_path / "effect.txt").read_text() == "once\n"
+
+
+@pytest.mark.asyncio
+async def test_late_compaction_summarizes_one_recent_window_and_audits_older_gap(tmp_path):
+    from agent.plugin_composition import ServiceKey
+    from plugins.compaction.records import SummaryRecord, SummaryRecords
+    from plugins.content.plugin import check_text
+    from session.message import ContentPart
+
+    async with application(
+        tmp_path,
+        replying=True,
+        start=False,
+        compaction=True,
+        keep_recent_tokens=128,
+    ) as (log, host):
+        writer = log.writer(
+            "s", author="test", source="conversation", body_types=(Input, Output),
+            content={"text": check_text},
+        )
+        writer.append("parent-u", Input((ContentPart("text", "parent input"),)))
+        writer.append("parent-a", Output((ContentPart("text", "parent answer"),), "complete"))
+        parent = SummaryRecord(
+            reference="parent", session_id="s", generation=1, parent=None,
+            source_message_ids=("parent-u", "parent-a"),
+            summary_message_ids=("parent-u", "parent-a"), omitted_message_ids=(),
+            content="previous summary", model_call_ids=("parent-call",), trigger="soft_limit",
+            context_window=10000, max_output_tokens=4096, keep_recent_tokens=128,
+            tokens_before=8000, tokens_after=100,
+        )
+        records = SummaryRecords(log.owner("plugin:compaction"))
+        records.publish(parent, log.reader("s"), parent=None)
+        for index in range(5):
+            writer.append(
+                f"old-u{index}",
+                Input((ContentPart("text", f"old input {index}: " + "x" * 5000),)),
+            )
+            writer.append(
+                f"old-a{index}",
+                Output((ContentPart("text", f"old answer {index}: " + "y" * 5000),), "complete"),
+            )
+        writer.append("current", Input((ContentPart("text", "current request"),)))
+        original = log.reader("s").snapshot()
+        await host.start_runtime()
+
+        async def completed():
+            async for _ in log.catalog().follow():
+                rows = log.reader("s").snapshot()
+                if any(
+                    row.seq > original[-1].seq and isinstance(row.body, Output)
+                    and row.body.finish == "complete"
+                    for row in rows
+                ):
+                    return
+
+        await asyncio.wait_for(completed(), 10)
+        child = records.head("s")
+        assert isinstance(child, SummaryRecord) and child.parent == parent.reference
+        assert child.omitted_message_ids
+        assert child.summary_message_ids
+        assert set(child.omitted_message_ids).isdisjoint(child.summary_message_ids)
+        assert set(child.omitted_message_ids) | set(child.summary_message_ids) == set(
+            child.source_message_ids[len(parent.source_message_ids):]
+        )
+        by_id = {message.message_id: message.seq for message in original}
+        assert max(by_id[identity] for identity in child.omitted_message_ids) < min(
+            by_id[identity] for identity in child.summary_message_ids
+        )
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            calls = snapshot.composition_root.context.require(ServiceKey("fixture.calls"))
+        assert len([call for call in calls if "[Source messages]" in str(call.messages)]) == 1
 
 
 @pytest.mark.asyncio

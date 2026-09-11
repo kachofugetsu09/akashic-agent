@@ -63,13 +63,16 @@ def test_context_overflow_keeps_real_messages_and_model_continuation() -> None:
     assert projection.seen == snapshot
 
 
-def test_summary_request_stops_at_current_soft_watermark() -> None:
+def test_summary_request_accepts_soft_watermark_and_rejects_above_it() -> None:
     class SoftWatermarkProvider:
         context_window = 100
         max_tool_schemas = None
 
+        def __init__(self, tokens):
+            self.tokens = tokens
+
         def estimate_context_tokens(self, messages, tools=()):
-            return 74
+            return self.tokens
 
         def estimate_appended_message_tokens(self, messages):
             return 0
@@ -77,9 +80,11 @@ def test_summary_request_stops_at_current_soft_watermark() -> None:
         async def chat(self, **kwargs):
             raise AssertionError("soft-watermark request must not call provider")
 
+    groups = ((message(0, Output((ContentPart("text", "facts"),), "complete")),),)
+    assert _request(BoundChatModelFake(SoftWatermarkProvider(74)), "", groups)
     with pytest.raises(SummaryError, match="软水位"):
         _request(
-            BoundChatModelFake(SoftWatermarkProvider()),
+            BoundChatModelFake(SoftWatermarkProvider(75)),
             "",
-            ((message(0, Output((ContentPart("text", "facts"),), "complete")),),),
+            groups,
         )

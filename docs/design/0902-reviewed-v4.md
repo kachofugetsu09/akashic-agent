@@ -1058,11 +1058,11 @@ Akasha 不再另建 Turn 内容表或 SQL 消费表。现有学习图本来按�
 
 新 `SummaryRecords` 候选存储使用 compaction 自己的 `OwnerStore`，同事务创建不可变摘要与推进 Session head。它保留完整来源 ID、parent/generation、正文、实际模型调用 ID 和生成条件；同一出处只能幂等重放相同内容，旧 parent 无权覆盖新 head。`compaction.summaries.v1` 只按 binding 中固定的 `record_ref/session_id` 解析原记录并检查父链，没有发布或模型调用权。候选归档测试证明：head 推进、进程重启、当前源码移除后，仍读取原摘要而非当前 head。
 
-候选生成器保留完整近期分组；跨来源交错不会切开 call/result。Context 和生成器共用已结算或同来源明确放弃的前缀判断，abandon 无须伪造 ToolResult。摘要请求按模型容量分批，provider 拒绝时只减少本批完整分组；单组过大明确失败。可恢复的生成错误才使用当前 execution 已固定的 DEFAULT，配置或请求合同错误直接传播。正式 shell adapter 接线前仍须补齐活跃 execution 的原文保留，不能只凭摘要提示替代旧合同。
+候选生成器保留完整近期分组；跨来源交错不会切开 call/result。Context 和生成器共用已结算或同来源明确放弃的前缀判断，abandon 无须伪造 ToolResult。摘要生成从可退出 Prompt 的旧前缀末尾向前选取模型单次请求可容纳的最大完整窗口，不再分批串行追平；单组过大明确失败。可恢复的生成错误才使用当前 execution 已固定的 DEFAULT，配置或请求合同错误直接传播。正式 shell adapter 接线前仍须补齐活跃 execution 的原文保留，不能只凭摘要提示替代旧合同。
 
 当前 open Turn 的 Inputs 由现有 TurnProjection 选定，摘要覆盖它们后仍在本次请求中按原 seq 呈现，并读取原 Artifact；旧输入、其他来源输入及工具协议不重复。摘要覆盖所选近期窗口中的连续区间，不回填首次窗口之前的旧历史，也不另存一份 tail 正文。新的摘要引用明确开启 fresh 请求，原 opaque 留在日志；成功 Output 同时保存 `model.facts` 和实际 `context.summary` 后，后续同摘要请求可以接续自己的 continuation。直接只传 cutoff 的旧调用保留拒绝不明 opaque 的边界。
 
-成功模型 Output 的 `continue` 与 `complete` 都随正文原子追加实际使用的摘要 binding；普通 Input 没有该内容 grant。失败 provider 或未提交 Output 不产生使用记录。候选 Markdown 消费者在启动后跟随这些消息，按摘要出处复用既有 before-image/draft/applied receipt。若某个 parent 摘要从未被使用，后续使用 child 时仍从最近已写入祖先之后取完整原文，不遗漏 parent 覆盖的事实。恢复测试证明 Output 先提交后停机可以补写；MEMORY 已写而 SELF 失败，或 SQLite 准备只写了一部分时，重启从完整 model draft 补齐 order 与两份 document draft，不重新调用模型。进度从既有双文件 applied receipt 派生，并核对同一父链；迟到的旧 generation 不会在已应用 child 之后重写档案。文件锁使用可取消的非阻塞等待，等待中与持锁时取消都关闭句柄。
+成功模型 Output 的 `continue` 与 `complete` 都随正文原子追加实际使用的摘要 binding；普通 Input 没有该内容 grant。失败 provider 或未提交 Output 不产生使用记录。候选 Markdown 消费者在启动后跟随这些消息，按摘要出处复用既有 before-image/draft/applied receipt。若某个 parent 摘要从未被使用，后续使用 child 时仍从最近已写入祖先之后取得各代真正送入摘要模型的原文；version 2 明确省略的 Prompt 缺口不进入学习。恢复测试证明 Output 先提交后停机可以补写；MEMORY 已写而 SELF 失败，或 SQLite 准备只写了一部分时，重启从完整 model draft 补齐 order 与两份 document draft，不重新调用模型。进度从既有双文件 applied receipt 派生，并核对同一父链；迟到的旧 generation 不会在已应用 child 之后重写档案。文件锁使用可取消的非阻塞等待，等待中与持锁时取消都关闭句柄。
 
 当前真实候选默认回复已验证“生成并发布摘要 → 业务模型 → 工具结算 → 最终回答”，两次成功响应保留同一摘要引用，所有旧 Message 原文不变。请求只发送摘要正文和 binding，完整来源 IDs 留在 owner 记录中，避免长历史身份列表再次撑满窗口。本子范围 90 项相关回归通过，目标源码类型检查无错误和警告；独立 Terra/xhigh 评审的 P1 已清零。旧 Markdown 入口原有 18 个类型 warning 不在此零告警范围内。本文的候选进度不等于第 08 层完成：旧 ledger/prepare/receipt 迁移、新 programmatic 来源的投影资格、活跃 execution 保留，以及正式入口切换仍待整体验收。
 
@@ -2002,7 +2002,7 @@ Tools 提供 `TOOL_DISPLAY_NAME` 窄读取口：输入已保存的 Tool binding 
 自动迁移 `20260908_01_legacy_summaries` 在完整 SQLite 备份后，只把 `last_consolidated` 指向的有效祖先链发布到 Compaction owner。
 旧 generation 可以在失效后重新起根；保留原 generation，并把每代的增量来源组合为新接口要求的连续累计消息范围。
 version 0 记录保存完整旧行、原 JSON 字符串与 SHA-256；未记录的 model call ID 和输出上限保持缺失。
-原生新摘要仍写 version 1，可在已导入 head 后正常追加；只读材料与归档查询使用同一个 SummaryLookup。
+旧原生 version 1 继续只读兼容。原生新摘要写 version 2，除累计 Prompt 覆盖外另存本代实际摘要输入与明确省略消息，可在 version 0/1 head 后正常追加；只读材料与归档查询使用同一个 SummaryLookup。
 
 ```text
 ┌ 旧 ledger + 当前游标 + 实际 Message 身份 ┐
@@ -2011,7 +2011,7 @@ version 0 记录保存完整旧行、原 JSON 字符串与 SHA-256；未记录�
 ┌ 同一事务：只增 imported summary + head + 迁移回执 ┐
 └──────────────────┬──────────────────────────────┘
                    ▼
-┌ Context / 状态命令读取原摘要；后续正常生成 version 1 ┐
+┌ Context / 状态命令读取原摘要；后续正常生成 version 2 ┐
 └───────────────────────────────────────────────────┘
 ```
 

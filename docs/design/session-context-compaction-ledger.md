@@ -81,7 +81,8 @@ history route 和 vision 不经过本 Gate。
 ledger 无 generation 时，selection 在最终业务 payload 形成前从最新消息向前按完整 logical
 unit 选取约 74% 的近期窗口，同时给 20k raw tail 与 summary provider 硬边界留出空间。窗口外
 更早消息不进入首次 payload、source plan 或摘要，但 SessionDB 保持完整；后续 generation
-继续使用有效 cursor 到当前的增量。
+按 [0064](../decisions/0064-compaction-uses-one-recent-window.md) 只摘要一次请求可容纳的最大近期窗口，
+并把有效 cursor 之后未进入该窗口的旧前缀明确记录为省略，而不是串行追平。
 
 ## 3. SessionDB ledger 与持久化
 

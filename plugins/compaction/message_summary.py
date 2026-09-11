@@ -25,6 +25,8 @@ PROMPT = """更新当前长任务的上下文压缩摘要。
 
 只记录输入中已经出现的事实，不补充猜测，不把计划写成已完成。
 摘要只替代已结算的旧消息；完整原文和工具结果仍保留。
+用户消息是理解目标、要求、偏好和关系的核心证据。只有 author=user 的原话能够建立这些用户事实。
+助手消息只记录助手的判断、计划和执行过程；不得用助手转述或猜测补全用户没有表达的上下文。
 区分用户原话、助手判断及工具/后台结果，保留重要来源身份；转述不能升级成用户事实或偏好。
 必须严格使用以下标题，不得增加标题：
 """ + "\n".join(HEADINGS) + """
@@ -133,57 +135,46 @@ def _request(model: BoundChatModel, summary: str, groups: Sequence[tuple[Message
     if window is None:
         raise SummaryError("摘要模型缺少已确认的 context_window")
     estimated = model.estimate_context_tokens(rows)
-    if estimated >= int(window * 0.74):
+    if estimated > int(window * 0.74):
         raise SummaryError("单个摘要请求超出模型软水位")
     # 复用 provider 默认输出长度，不以旧摘要上限截断长任务资料。
     return ModelRequest(rows, max_output_tokens=0, disable_reasoning=True)
 
 
 async def _summarize(model: BoundChatModel, groups: tuple[tuple[Message, ...], ...],
-                     previous: str) -> tuple[str, tuple[str, ...]]:
-    """逐个有界请求更新摘要；provider 拒绝时只减小本批完整分组。"""
-    remaining = groups
-    summary = previous
-    calls: list[str] = []
-    while remaining:
-        # 1. 二分选择可容纳的最大完整前缀，不拆单条消息或工具批次。
-        low, high, size = 1, len(remaining), 0
-        while low <= high:
-            middle = (low + high) // 2
-            try:
-                _ = _request(model, summary, remaining[:middle])
-            except SummaryError:
-                high = middle - 1
-            else:
-                size = middle
-                low = middle + 1
-        if size == 0:
-            raise SummaryError("一个完整消息组已超过摘要模型容量")
-        while True:
-            request = _request(model, summary, remaining[:size])
-            try:
-                response = await model.complete(request)
-            except ContextLengthError:
-                if size == 1:
-                    raise
-                size = max(1, size // 2)
-                continue
-            break
-        # 2. 只接纳成功调用的真实正文；格式错误不会用空摘要掩盖。
-        text = (response.content or "").strip()
-        headings = tuple(line.strip() for line in text.splitlines() if line.lstrip().startswith("#"))
-        if response.tool_calls or headings != HEADINGS:
-            raise SummaryError("摘要响应没有遵守固定标题合同")
-        if response.call_record_id is None:
-            raise SummaryError("摘要响应缺少成功模型调用出处")
-        summary = text
-        calls.append(response.call_record_id)
-        remaining = remaining[size:]
-    return summary, tuple(calls)
+                     previous: str) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
+    """从尾部选一个可容纳窗口，只发出一次摘要请求。"""
+    # 1. 二分选择最大近期后缀；更老的积压不再触发串行摘要。
+    low, high, size = 1, len(groups), 0
+    while low <= high:
+        middle = (low + high) // 2
+        selected = groups[-middle:]
+        try:
+            _ = _request(model, previous, selected)
+        except SummaryError:
+            high = middle - 1
+        else:
+            size = middle
+            low = middle + 1
+    if size == 0:
+        raise SummaryError("一个完整消息组已超过摘要模型容量")
+    selected = groups[-size:]
+    response = await model.complete(_request(model, previous, selected))
+
+    # 2. 只接纳成功调用的真实正文；格式错误不会用空摘要掩盖。
+    text = (response.content or "").strip()
+    headings = tuple(line.strip() for line in text.splitlines() if line.lstrip().startswith("#"))
+    if response.tool_calls or headings != HEADINGS:
+        raise SummaryError("摘要响应没有遵守固定标题合同")
+    if response.call_record_id is None:
+        raise SummaryError("摘要响应缺少成功模型调用出处")
+    return text, (response.call_record_id,), selected
 
 
-async def summarize(groups: tuple[tuple[Message, ...], ...], *, previous: str,
-                    model: BoundChatModel, fallback: BoundChatModel) -> tuple[str, tuple[str, ...]]:
+async def summarize(
+    groups: tuple[tuple[Message, ...], ...], *, previous: str,
+    model: BoundChatModel, fallback: BoundChatModel,
+) -> tuple[str, tuple[str, ...], tuple[tuple[Message, ...], ...]]:
     """主模型在本层可恢复的生成失败后，使用本次作用域已固定的 DEFAULT。"""
     try:
         return await _summarize(model, groups, previous)
