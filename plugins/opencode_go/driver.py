@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
 
-from core.net.http import HttpClient, finish_response
+from agent.plugin_contracts.http import HttpClient, finish_response
 
 import httpx
 

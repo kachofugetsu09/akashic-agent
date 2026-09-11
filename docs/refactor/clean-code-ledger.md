@@ -3379,3 +3379,23 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
   不能一律 Port 化。这也是 Gate 抓到的第 N 次「静态改名破坏了运行期事实」。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/programmatic_control/programmatic_result）
   = `90 passed, 5 failed`，5 项与父提交逐项一致（既有 socket 集成失败）。
+
+## 2026-09-10 插件边界第 3 步（31）：HTTP 客户端合同化
+
+- 基线：stacked base `b109da6d`（第 30b 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam 拆分。`core/net/http.py` 此前把两类东西混在一个模块里：
+  1. **通用 httpx 包装**（无 Core 状态）：`HttpClient`（惰性建 client）、`finish_response`、
+     `RetryPolicy`、`RequestBudget`、`HttpRequester`、`HttpProfile` 类型别名 →
+     移入 `agent/plugin_contracts/http.py`。
+  2. **Core 拥有的共享默认连接池**：`SharedHttpResources`、`configure_/clear_/get_default_http_requester`
+     → 留在 `core/net/http.py`（它是宿主全局资源，插件不应隐式依赖）。
+- 消费者改写 6 处：
+  - 4 个模型 driver（codex×2、openai_compatible、opencode_go）改指合同层。
+  - `standard_web/web.py` 改指合同层。
+  - `standard_web/fetch.py` **去掉** `get_default_http_requester` 回退：`WebFetchTool` 的
+    `requester` 改为必填。注册处（`web.py` 的 `open_fetch`）本来就在每个资源 scope 自建
+    httpx client 并传入 requester，因此默认回退从未在真实路径使用；去掉它使插件不再
+    隐式依赖宿主全局连接池。`WebFetchTool` 只有 `web.py` 一处构造，改动面可控。
+- 账本：R2 由 23 降到 17。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/model_execution/web_chat_channel/standard_tools）= `167 passed`。
+- 持久化/运行 workspace 变化：`none`。

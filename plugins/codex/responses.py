@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import httpx
 
-from core.net.http import HttpClient, finish_response
+from agent.plugin_contracts.http import HttpClient, finish_response
 
 from agent.plugin_composition import (
     AuthenticationError,

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from core.net.http import HttpClient, finish_response
+from agent.plugin_contracts.http import HttpClient, finish_response
 
 from agent.plugin_composition import (
     AuthenticationError,

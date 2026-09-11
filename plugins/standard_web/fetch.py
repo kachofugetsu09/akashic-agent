@@ -11,11 +11,7 @@ from lxml import html as lxml_html
 from lxml.etree import ParserError
 
 from agent.plugin_contracts.tool_base import Tool
-from core.net.http import (
-    HttpRequester,
-    RequestBudget,
-    get_default_http_requester,
-)
+from agent.plugin_contracts.http import HttpRequester
 
 _MAX_BYTES = 5 * 1024 * 1024  # 5MB，与 OpenCode 一致
 _DEFAULT_TIMEOUT = 30  # 秒
@@ -62,8 +58,10 @@ class WebFetchTool(Tool):
         "required": ["url"],
     }
 
-    def __init__(self, requester: HttpRequester | None = None) -> None:
-        self._requester = requester or get_default_http_requester("external_default")
+    def __init__(self, requester: HttpRequester) -> None:
+        # requester 由注册处显式传入（每次资源 scope 自建 client）；本工具不读取
+        # Core 的共享默认连接池，避免插件隐式依赖宿主全局资源。
+        self._requester = requester
 
     async def execute(self, **kwargs: Any) -> str:
         url: str = kwargs["url"]

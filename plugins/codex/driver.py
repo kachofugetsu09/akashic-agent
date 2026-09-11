@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from core.net.http import HttpClient
+from agent.plugin_contracts.http import HttpClient
 
 from agent.plugin_composition import (
     AuthenticationError,

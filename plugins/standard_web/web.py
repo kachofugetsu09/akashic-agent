@@ -11,7 +11,7 @@ from agent.plugin_composition import Context
 from agent.plugin_contracts.tool_base import normalize_tool_parameters
 from plugins.standard_web.fetch import WebFetchTool
 from plugins.standard_web.search import WebSearchTool
-from core.net.http import HttpRequester, RequestBudget, RetryPolicy
+from agent.plugin_contracts.http import HttpRequester, RequestBudget, RetryPolicy
 from agent.plugin_contracts.tool_api import CallSource, Result
 from agent.plugin_contracts.tool_api import InvalidArguments
 from agent.plugin_contracts.tools import TOOLS, ToolRef
