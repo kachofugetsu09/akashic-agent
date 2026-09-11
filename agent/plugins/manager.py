@@ -44,6 +44,7 @@ from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.context import RuntimeScope
 from agent.restart import RESTART_GATE, RestartGate
 from agent.control.frame_book import CONTROL_FRAMES, FrameBook
+from agent.plugin_composition.runtime_snapshot import RUNTIME_SNAPSHOT
 
 from agent.plugin_composition import (
     CHANNELS,
@@ -180,6 +181,7 @@ from agent.plugins.skill_host import PluginSkillHost
 from agent.plugins.web_ui import resolve_web_module
 from agent.workloads.client import UnixWorkloadController, WorkloadController
 from agent.plugins.snapshot import (
+    RuntimeSnapshotAccess,
     RuntimeSnapshot,
     RuntimeSnapshotLease,
     RuntimeSnapshotCompiler,
@@ -5774,6 +5776,9 @@ class PluginManager:
                 gate = RestartGate(boot_id="unmanaged", supervised=False)
                 self._restart_gate = gate
             _ = await root.context.provide(RESTART_GATE, gate)
+        if RUNTIME_SNAPSHOT in requested:
+            # 只读访问器：委托同一 ContextVar，不持有快照或 lease 的所有权。
+            _ = await root.context.provide(RUNTIME_SNAPSHOT, RuntimeSnapshotAccess())
         if CONTROL_FRAMES in requested:
             # 候选与独立验证只读取副本；它们不能取得正式连接的发送 owner。
             isolated = candidate

@@ -135,6 +135,10 @@ note = "重启提交权与外部效果 permit"
 role = "core"
 note = "控制帧路由与声明"
 
+[capabilities."core.runtime_snapshot.v1"]
+role = "core"
+note = "当前 task 的 runtime snapshot / lease 只读访问；由 Core 装配时注入"
+
 [capabilities."core.plugin_updates"]
 role = "core"
 note = "插件 install/uninstall/revert 状态"

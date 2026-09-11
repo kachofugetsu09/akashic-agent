@@ -928,6 +928,20 @@ def get_current_runtime_lease() -> RuntimeSnapshotLease | None:
     return binding.lease
 
 
+class RuntimeSnapshotAccess:
+    """`core.runtime_snapshot.v1` 的实现：委托同一 ContextVar 的窄读取面。
+
+    它不持有第二份状态，只是把原先的模块级函数包成可注入的服务对象，
+    因此 task-scoped 语义、owner-task 校验与返回值与原先完全一致。
+    """
+
+    def current(self) -> RuntimeSnapshot | None:
+        return get_current_runtime_snapshot()
+
+    def lease(self) -> RuntimeSnapshotLease | None:
+        return lease_current_runtime_snapshot()
+
+
 class RuntimeSnapshotStore:
     def __init__(
         self,
