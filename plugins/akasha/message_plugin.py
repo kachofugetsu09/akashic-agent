@@ -10,6 +10,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from agent.plugin_contracts.plugin_tools import AKASHA_TOOLS  # noqa: F401  (再导出)
 from agent.plugin_composition import EMBEDDINGS, RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey, UI_SLOTS, MobileUiDefinition, MobileUiNavigation, MobileUiRpcInvalidRequest
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.commands import COMMANDS, CommandDefinition, CommandInvocation, CommandResult
@@ -98,7 +99,6 @@ AKASHA_RECORDS = ServiceKey[Callable[[str], Recall | None]]("akasha.recalls.v1")
 AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]](
     "akasha.recall-records.v1"
 )
-AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
 
 
 async def apply(ctx: Context, config: Config) -> None:

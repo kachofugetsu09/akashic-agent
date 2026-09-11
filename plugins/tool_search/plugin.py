@@ -8,6 +8,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from agent.plugin_contracts.plugin_tools import TOOL_SEARCH_TOOLS, TOOL_SEARCH_PRESENTATION  # noqa: F401  (再导出)
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugin_contracts.tool_api import BoundTool, CallSource, InvalidArguments, Result
@@ -23,10 +24,6 @@ version = "2.0.0"
 desc = "在获授工具 view 内搜索完整 schema，并解码间接调用"
 inject = (TOOLS,)
 
-TOOL_SEARCH_TOOLS = ServiceKey[ToolView]("tool-search.tools.v1")
-TOOL_SEARCH_PRESENTATION = ServiceKey[
-    Callable[[ToolView], ToolPresentation]
-]("tool-search.presentation.v1")
 
 
 class Query(BaseModel):

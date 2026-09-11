@@ -164,13 +164,26 @@ def test_every_contract_import_resolves() -> None:
             tree = ast.parse((root / relative).read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):  # pragma: no cover
             continue
+        # `if TYPE_CHECKING:` 下的 import 只在类型检查期存在，不是运行时依赖。
+        type_only: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If):
+                test = node.test
+                guarded = (
+                    isinstance(test, ast.Name) and test.id == "TYPE_CHECKING"
+                ) or (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
+                if guarded:
+                    type_only.update(id(child) for child in ast.walk(node))
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            if id(node) in type_only:
                 continue
             if not (
                 node.module.startswith("agent.plugin_contracts")
                 or node.module == "agent.plugin_composition"
                 or node.module.startswith("agent.plugin_composition.")
+                or node.module.startswith("plugins.")
             ):
                 continue
             try:
@@ -182,6 +195,11 @@ def test_every_contract_import_resolves() -> None:
                 if alias.name == "*":
                     # 通配再导出：模块可 import 已由上面的 import_module 覆盖。
                     continue
-                if not hasattr(module, alias.name):
+                if hasattr(module, alias.name):
+                    continue
+                # `from pkg import sub` 形式：sub 可能是子模块而不是属性。
+                try:
+                    importlib.import_module(f"{node.module}.{alias.name}")
+                except ImportError:
                     missing.append(f"{relative}: {node.module} 缺少 {alias.name}")
     assert missing == []

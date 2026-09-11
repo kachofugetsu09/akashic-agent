@@ -12,7 +12,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, 
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.timers import TIMERS
 from plugins.akasha.interest import SEMANTIC_INTEREST
-from plugins.akasha.message_plugin import AKASHA_TOOLS
+from agent.plugin_contracts.plugin_tools import AKASHA_TOOLS
 from plugins.delivery.history import DELIVERY_READ
 from plugins.drift.plugin import DRIFT_CHANGED
 from agent.plugin_contracts.content import ContentSchema
@@ -23,7 +23,7 @@ from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from agent.plugin_contracts.models import MODEL_CALLS
 from agent.plugin_contracts.react import REACT
-from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from agent.plugin_contracts.plugin_tools import STANDARD_WEB_TOOLS
 from agent.plugin_contracts.tools import TOOLS, ToolView
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 

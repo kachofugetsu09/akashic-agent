@@ -1,3 +1,4 @@
+from agent.plugin_contracts.plugin_tools import STANDARD_WEB_TOOLS  # noqa: F401  (再导出)
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_contracts.tools import TOOLS, ToolView
 
@@ -9,7 +10,6 @@ version = "1.0.0"
 desc = "提供普通 Web 搜索与读取工具"
 inject = (TOOLS,)
 
-STANDARD_WEB_TOOLS = ServiceKey[ToolView]("standard-web.tools.v1")
 
 
 async def apply(ctx: Context, config: object) -> None:

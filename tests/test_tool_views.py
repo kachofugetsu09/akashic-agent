@@ -11,7 +11,8 @@ from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
-from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
+from agent.plugin_contracts.plugin_tools import TOOL_SEARCH_TOOLS
+from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION
 from plugins.tools.api import MessageReply
 from plugins.tools.menu import InvalidToolCall, ToolMenu
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView

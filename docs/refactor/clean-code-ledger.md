@@ -3310,3 +3310,23 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
   仍需该实现类，已登记为待处理条目（正解是投影由 ServiceKey 提供，属行为变更）。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_react/reply_program/message_model_selection/model_call_records/wake_messages/subagent_messages/plugin_update_source/default_reply）= `226 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（28）：插件间工具 view key 合同化
+
+- 基线：stacked base `416fca1b`（第 27 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam。把「插件提供、其它插件消费」的工具相关 key 移到合同层：
+  - 新增 `agent/plugin_contracts/plugin_tools.py`：`AKASHA_TOOLS`、`STANDARD_WEB_TOOLS`、
+    `TOOL_SEARCH_TOOLS`（三个都只承载 `ToolView`，因此无需新 Protocol）与
+    `TOOL_SEARCH_PRESENTATION = ServiceKey[Callable[[ToolView], ToolPresentation]]`。
+  - `ToolPresentation`/`InvalidToolCall`/`tool_schema`/`NativePresentation` 属工具 ABI，移入
+    `agent/plugin_contracts/tool_api.py`；`plugins/tools/menu.py` 再导出。
+  - 四个 key 登记为 `seam`。
+- **第 7 次踩漏名**：从 `menu.py` 抽取定义时把 `NativePresentation` 一起切走却没再导出，
+  `tests/semantic/test_context_history_contract.py` 收集期 ImportError。
+- **因此把守护再扩一层**：`test_every_contract_import_resolves` 现在同时核对 `plugins.*` 实现模块的
+  import 名字（原先只查 contracts 与 composition 两个面），并正确处理 `TYPE_CHECKING` 守卫
+  （不是运行时依赖）与 `from pkg import sub`（子模块不是属性）。
+  扩展后立刻又抓出 3 处同类问题，全部修复。至此该守护覆盖**所有**跨模块 import 目标。
+- 账本：R3 由 50 降到 45。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/akasha_message_plugin/standard_tools/reply_program/wake_messages/computer_driver_plugin/model_execution）= `178 passed, 1 skipped`。
+- 持久化/运行 workspace 变化：`none`。

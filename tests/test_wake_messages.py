@@ -13,8 +13,8 @@ from agent.plugin_contracts.delivery_api import Sink
 from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
-from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from agent.plugin_contracts.plugin_tools import AKASHA_TOOLS
+from agent.plugin_contracts.plugin_tools import STANDARD_WEB_TOOLS
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from plugins.wake.api import DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
 from plugins.wake.request import (
@@ -68,8 +68,8 @@ from plugins.models.store import ModelsStore
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 from agent.plugin_contracts.tools import TOOLS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
-from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from agent.plugin_contracts.plugin_tools import AKASHA_TOOLS
+from agent.plugin_contracts.plugin_tools import STANDARD_WEB_TOOLS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS
 from plugins.akasha.interest import SEMANTIC_INTEREST, SemanticInterest
 from plugins.akasha.learning import Learning, LearningConfig

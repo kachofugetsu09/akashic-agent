@@ -204,6 +204,23 @@ note = "推理循环；定义在合同层，实现由 plugins/react 提供"
 role = "seam"
 note = "只读 Turn 投影；实现由 plugins/turn_projection 提供"
 
+# 插件之间共享的工具 view key（由各插件提供实现，消费者只依赖 key 与 ToolView）。
+[capabilities."akasha.tools.v1"]
+role = "seam"
+note = "Akasha 工具 view；实现由 plugins/akasha 提供"
+
+[capabilities."standard-web.tools.v1"]
+role = "seam"
+note = "标准 Web 工具 view；实现由 plugins/standard_web 提供"
+
+[capabilities."tool-search.tools.v1"]
+role = "seam"
+note = "工具检索 view；实现由 plugins/tool_search 提供"
+
+[capabilities."tool-search.presentation.v1"]
+role = "seam"
+note = "工具检索展示协议；实现由 plugins/tool_search 提供"
+
 [capabilities."tools.v1"]
 role = "seam"
 note = "工具注册表；实现由 plugins/tools 提供，消费者只依赖合同与 key"

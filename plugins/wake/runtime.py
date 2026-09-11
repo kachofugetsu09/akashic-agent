@@ -16,8 +16,8 @@ from plugins.akasha.interest import SEMANTIC_INTEREST
 from agent.plugin_contracts.delivery_api import Sink
 from plugins.delivery.history import DELIVERY_READ
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
-from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
+from agent.plugin_contracts.plugin_tools import AKASHA_TOOLS
+from agent.plugin_contracts.plugin_tools import STANDARD_WEB_TOOLS
 from agent.plugin_contracts.tools import TOOLS, ToolView
 from agent.plugin_composition.messages import MessageReader, OwnerRecord
 from agent.plugin_contracts import Message

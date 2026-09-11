@@ -13,9 +13,13 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, cast, runtime_checkable
 
 from agent.plugin_contracts.message import CallRef, ContentPart, Message, ToolCall
+
+if TYPE_CHECKING:
+    # 仅类型标注用；合同层运行时不依赖组合内核的模型词汇。
+    from agent.plugin_composition.models import ModelToolCall
 
 Outcome = Literal["success", "denied", "error", "interrupted"]
 
@@ -129,3 +133,55 @@ class MessageReplyPort(Protocol):
     def read(self, pointer: object) -> Result:
         """读取已有结果。"""
         ...
+
+
+class InvalidToolCall(ValueError):
+    """模型调用不符合当前展示协议；可反馈模型纠正，不代表工具效果。"""
+
+
+class ToolPresentation(Protocol):
+    """定义一次程序固定的 schema、wire 解码和系统提示词。"""
+
+    @property
+    def schemas(self) -> tuple[Mapping[str, Any], ...]: ...
+
+    @property
+    def system_prompt(self) -> str: ...
+
+    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]: ...
+
+    def configuration(self, name: str) -> Mapping[str, object] | None: ...
+
+
+class NativePresentation:
+    """把固定 binding 描述直接展示给模型。"""
+
+    def __init__(self, descriptions: Mapping[str, Mapping[str, object]]):
+        self._descriptions = dict(descriptions)
+
+    @property
+    def schemas(self) -> tuple[Mapping[str, Any], ...]:
+        return tuple(tool_schema(self._descriptions[name]) for name in self._descriptions)
+
+    @property
+    def system_prompt(self) -> str:
+        return ""
+
+    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
+        if call.name not in self._descriptions:
+            raise InvalidToolCall(f"工具不属于获授 view: {call.name}；请使用当前工具目录。")
+        return call.name, cast(Mapping[str, object], call.arguments)
+
+    def configuration(self, name: str) -> Mapping[str, object] | None:
+        return None
+
+
+def tool_schema(description: Mapping[str, object]) -> Mapping[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": description["name"],
+            "description": description["description"],
+            "parameters": description["parameters"],
+        },
+    }
