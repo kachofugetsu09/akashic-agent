@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from agent.plugin_contracts.timer import TimerReceipt, TimerStatus
-from agent.model_runtime.session_selection import read_session_model_selection
+from agent.plugin_contracts.session_selection import read_session_model_selection
 from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG

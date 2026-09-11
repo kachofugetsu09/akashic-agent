@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from collections.abc import Mapping
 
 from agent.plugin_composition import Context
-from agent.model_runtime.session_selection import read_session_model_selection
+from agent.plugin_contracts.session_selection import read_session_model_selection
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ChatModelSelection, ModelRequest, ModelRole

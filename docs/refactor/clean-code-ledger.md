@@ -3243,3 +3243,14 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R2 由 34 降到 30。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/shell_tool/unified_exec/host_bridge/host_bridge_protocol/standard_tools/plugin_processes）= `196 passed, 1 skipped`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（25）：JSON 持久化与模型选择词汇合同化
+
+- 基线：stacked base `47118734`（第 24 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：move & re-export。两个模块**零仓库内 import**：
+  - `infra/persistence/json_store.py` → `agent/plugin_contracts/json_store.py`（`load_json`/`save_json`/`atomic_save_json`/`atomic_write_text`）。判据与第 7 批的 `timekit` 同类：纯工具函数，插件需要它原子写自己的数据文件。
+  - `agent/model_runtime/session_selection.py` → `agent/plugin_contracts/session_selection.py`（`SessionModelSelection` 值 + `read_session_model_selection`/`write_session_model_selection`，只对 `Mapping`/`MutableMapping` 操作，含 legacy 字段兼容与 schema_version 校验）。这是 session metadata 中 `model_selection` 键的词汇表。
+  - 旧路径保留再导出，对象身份不变；再导出按全库被 import 的名字集合给出（4 个 + 5 个）。
+- 账本：R2 由 30 降到 23。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_model_selection/wake_messages/scheduler_tools/job_store/message_markdown_memory）= `210 passed`。
+- 持久化/运行 workspace 变化：`none`（纯 import 目标改写；文件仍是同一份 `atomic_*` 实现，写入路径与原子性语义不变）。
