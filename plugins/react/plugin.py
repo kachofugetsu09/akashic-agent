@@ -18,7 +18,7 @@ from agent.plugin_composition.models import (
     StreamCallback,
 )
 from agent.plugin_contracts.context import ContextOverflow, Materials, SummaryReducer
-from plugins.tools.menu import InvalidToolCall
+from agent.plugin_contracts.tool_api import InvalidToolCall
 from agent.plugin_composition.messages import MessageReader, MessageWriter
 from agent.plugin_contracts import CallRef, Control, Message, Output, Part, ContentPart, ToolCall, ToolResult
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from agent.plugin_contracts.content import ContentView
     from agent.plugin_contracts.context import ContextBuilderPort as ContextBuilder
     from agent.plugin_contracts.models import MessageProjectionPort as MessageProjection
-    from plugins.tools.menu import ToolMenu
+    from agent.plugin_contracts.tool_api import ToolMenuPort as ToolMenu
 
 api_version = 3
 name = "react"

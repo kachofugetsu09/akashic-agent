@@ -27,6 +27,7 @@ from agent.plugin_contracts.react import StepLimit
 from plugins.react.plugin import react
 from plugins.tools.execution import ToolExecution, MessageReply, Result
 from plugins.tools.abandon import follow_abandon, reject_start
+from agent.plugin_contracts.tool_api import ToolMenuPort
 from plugins.tools.menu import NativePresentation, ToolMenu
 from session.log import MessageConflict, MessageLog
 from session.message import (
@@ -82,7 +83,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             await authorize_hook()
         return {"decision": "allowed"}
     execution = ToolExecution(log.owner("tools"), tasks, open_tool, authorize, task_key="tools")
-    class Menu(ToolMenu):
+    class Menu(ToolMenu, ToolMenuPort):
         def __init__(self, task: Task) -> None:
             self.task = task
 

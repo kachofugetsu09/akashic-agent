@@ -9,7 +9,7 @@ from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore
 from plugins.scheduler.tools import ScheduleTool
 from plugins.tools.menu import ToolMenu
-from agent.plugin_contracts.tool_api import Result
+from agent.plugin_contracts.tool_api import Result, ToolMenuPort
 from session.message import CallRef
 
 
@@ -25,7 +25,7 @@ async def test_cancel_self_commits_then_lets_original_fire_drain_its_tool(tmp_pa
     prepared = await target.prepare({"id": job.id})
     results = []
 
-    class Menu(ToolMenu):
+    class Menu(ToolMenu, ToolMenuPort):
         def __init__(self) -> None:
             pass
 

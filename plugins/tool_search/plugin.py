@@ -12,7 +12,7 @@ from agent.plugin_contracts.plugin_tools import TOOL_SEARCH_TOOLS, TOOL_SEARCH_P
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugin_contracts.tool_api import BoundTool, CallSource, InvalidArguments, Result
-from plugins.tools.menu import InvalidToolCall, ToolPresentation, tool_schema
+from agent.plugin_contracts.tool_api import InvalidToolCall, ToolPresentation, tool_schema
 from agent.plugin_contracts.tools import TOOLS, ToolRef, ToolView
 from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog
 from agent.plugin_contracts import ContentPart

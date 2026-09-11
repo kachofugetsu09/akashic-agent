@@ -3477,3 +3477,21 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 24 降到 19（其中 1 条为本批新登记的构造点）。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_compaction_summary/reply_program/wake_messages/message_markdown_memory/message_model_selection/akasha_message_plugin/standard_tools）= `227 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（35）：工具菜单与投递执行注解 Port 化
+
+- 基线：stacked base `c49d441d`（第 34 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam（注解 Port 化 + 纯名字归位），逐条按「注解 vs 构造」判定后处理：
+  - 新增 `ToolMenuPort`（`agent/plugin_contracts/tool_api.py`）：只声明消费者真实调用的
+    `schemas`/`names`/`decode`/`name`/`execute`。**构造**具体菜单仍属提供方职责。
+  - `plugins/react/plugin.py`：`InvalidToolCall` 改指合同层；`ToolMenu` 注解改 `ToolMenuPort as ToolMenu`。
+  - `plugins/tool_search/plugin.py`：`InvalidToolCall`/`ToolPresentation`/`tool_schema` 三个名字本就在
+    合同层，整体改指。
+  - `plugins/delivery_policy/follow.py`：`Deliveries` 注解改 `DeliveriesPort as Deliveries`。
+  - `plugins/conversation/program.py`：`check_facts` 改指 `agent.plugin_contracts.model_facts`
+    （第 13 批已归位；此处是遗漏的调用点）。
+- 测试假体需**显式实现协议**（`class Menu(ToolMenu, ToolMenuPort)`），否则 pyright 判不可赋值 ——
+  与第 27 批 `MessageProjection` 同一手法，已在两处测试应用。
+- 账本：R3 由 19 降到 16。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_react/scheduler_tools/delivery_bindings/tool_views/reply_program）= `126 passed`。
+- 持久化/运行 workspace 变化：`none`。

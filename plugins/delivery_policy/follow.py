@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from agent.plugin_composition import Context
 from agent.plugin_contracts.delivery_api import Sink
-from plugins.delivery.execution import Deliveries
+from agent.plugin_contracts.plugin_capabilities import DeliveriesPort as Deliveries
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import Message
 

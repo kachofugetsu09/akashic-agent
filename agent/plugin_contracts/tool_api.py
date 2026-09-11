@@ -185,3 +185,34 @@ def tool_schema(description: Mapping[str, object]) -> Mapping[str, Any]:
             "parameters": description["parameters"],
         },
     }
+
+
+@runtime_checkable
+class ToolMenuPort(Protocol):
+    """一次程序固定的工具菜单对消费者可见的方法子集。
+
+    只声明真实被消费者调用的成员（`react` 推理循环用它投影工具、解码调用、执行、
+    反查名字）；构造具体菜单需要完整实现，属提供方职责。
+    """
+
+    @property
+    def schemas(self) -> tuple[Mapping[str, Any], ...]:
+        """本次程序固定的工具 schema。"""
+        ...
+
+    @property
+    def names(self) -> frozenset[str]:
+        """本次程序获授的工具名集合。"""
+        ...
+
+    def decode(self, call: object) -> tuple[str, Mapping[str, object]]:
+        """把模型工具调用解码为获授 binding 与实际参数。"""
+        ...
+
+    def name(self, binding_id: str) -> str:
+        """按 binding 反查工具展示名。"""
+        ...
+
+    async def execute(self, call: CallRef) -> "Result":
+        """执行一次已提交的工具调用。"""
+        ...
