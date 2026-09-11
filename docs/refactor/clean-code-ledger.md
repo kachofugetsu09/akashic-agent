@@ -3399,3 +3399,35 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R2 由 23 降到 17。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/model_execution/web_chat_channel/standard_tools）= `167 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（32）：技能值词汇与纯函数合同化
+
+- 基线：stacked base `b9dc968f`（第 31 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：move & re-export。`agent/skills.py` 里混着「值词汇 + 纯函数」与「加载器实现」：
+  - `SkillSource` 类型别名、`SkillRecord`/`SkillIndex` 值模型、`skill_body` 纯函数（去 frontmatter）
+    → `agent/plugin_contracts/skills.py`。
+  - `SkillsLoader`（扫描目录、读文件、依赖 `agent.tools.shell_command` 与 `yaml`）留在原处。
+  - `agent/skills.py` 按原路径再导出，`plugins/standard_tools/skills.py` 改指合同层。
+- 账本：R2 由 17 降到 16。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/standard_tools/adopt_legacy_plugin_skill_links）= `105 passed`。
+- 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步：R2 剩余 16 条的性质与结论（供接手）
+
+本轮把 R2 从 23 推到 16（第 31、32 批），剩余 16 条**全部需要设计决定或 Core 服务**，
+不再是机械搬迁。逐条结论如下，避免重复调查：
+
+| 条目 | 条数 | 结论 |
+|---|---|---|
+| `agent.plugins.snapshot` | 7 | **必须新建 Core 服务**。`get_current_runtime_snapshot`/`get_current_runtime_lease`/`lease_current_runtime_snapshot` 是 **task-scoped ContextVar 读取**（读「当前 task 的 runtime snapshot」）。已核对 7 处调用点的 ctx 可达性：`DashboardContext` **不带** `Context`（只有 paths），`plugins/models/state.py::save_embedding_binding` 的 `self` 不持有 ctx，`react/_settle`、`filesystem/_current_agent_accepts_images`、`skills/records` 都是模块级函数。因此正解是 `RUNTIME_SNAPSHOT = ServiceKey[RuntimeSnapshotAccessPort]`（Port 暴露 `current()`/`lease()`，内部仍读同一 ContextVar，**调用期语义不变**），再把这 7 处改为经 ctx/构造参数取得。属行为面改动，需完整 Gate |
+| `plugins/standard_tools/shell_backend.py` → `agent.tools.unified_exec` | 1 | **必须改经 `core.processes`**（`PluginProcesses`）。当前直接构造 `ShellProcessManager`，改为经进程能力会改变**进程记账与 owner key 生成路径**，属行为变更 |
+| `agent.persona` | 2 | Core 产品语义（`read_veda_file` 读 VEDA 文本、`AKASHIC_BEHAVIOR_RULES` 常量）。正解是 prompt/persona 能力面，不是词汇搬迁 |
+| `infra.channels.telegram_utils` | 1 | `strip_chunk` 是 Telegram 文本分段；owner 在 Telegram 适配层，需先定 channel seam |
+| `infra.channels.message_view` | 1 | `session_row` 是 Core 的 Session 展示投影，应由 Core 展示服务提供 |
+| `agent.plugins.archive` | 1 | `PluginArchive` 是 Core 插件归档存储，应经 seam 提供 |
+| `agent.control.context` | 1 | `mint_plugin_child_capability`/`running_turn_id` 是控制面能力铸造，属控制 seam |
+| `agent.model_runtime.catalog.litellm_registry` | 1 | `resolve_catalog_capabilities` 是模型能力解析入口，属 `models.*` seam 面 |
+| `agent.tools.filesystem` | 1 | 文件操作值对象（`ReadFileOperation` 等）与 `_FileOperation` 基类耦合，可与 `agent.tools.base`（已入合同）一并切 |
+
+**通用判据（本轮反复验证有效）**：函数若读取 **ContextVar/环境态**，它属于「运行时能力」而不是词汇，
+不能靠 move 解决；即使它「看起来像纯函数」。

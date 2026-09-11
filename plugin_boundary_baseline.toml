@@ -18,7 +18,6 @@ R2 = [
     "plugins/standard_tools/shell_backend.py|agent.control.context",
     "plugins/standard_tools/skills.py|agent.plugins.archive",
     "plugins/standard_tools/skills.py|agent.plugins.snapshot",
-    "plugins/standard_tools/skills.py|agent.skills",
     "plugins/telegram_sender/sender.py|infra.channels.telegram_utils",
     "plugins/wake/dashboard.py|agent.plugins.snapshot",
     "plugins/workbench_ui/dashboard.py|agent.plugins.snapshot",
