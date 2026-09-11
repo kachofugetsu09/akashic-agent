@@ -5,16 +5,15 @@
 
 规则
 ----
-R1  Core 不得 import `plugins.*`（把产品功能留在 core 之外）。
-R2  `plugins/**` 只能 import 受支持的公开面（`agent.plugin_composition`、
-    `agent.plugin_contracts`）；其余 core 内部深路径都算违规。
-R3  插件之间只能经由公开结构合同连接，不得 import 对方实现模块。
-R4  每个 Core 拥有的 ServiceKey 必须在 `plugin_boundary.toml` 登记角色；
+R1  Core 不得 import `plugins.*`，历史迁移也计入精确欠账。
+R2  插件导入 Core 只能使用冻结的公开模块清单；目录不自动授予公开资格。
+R3  不得导入兄弟插件实现或经自身绝对路径绕过 generation。
+R4  Core 文件中的字面 ServiceKey 必须在 `plugin_boundary.toml` 登记角色；
     表中登记的 key 也必须真实存在。
 R5  已记录为「文档承诺、代码未实现」的名字必须保持不存在。
 
 R1～R3 的既有欠账记在 `plugin_boundary_baseline.toml` 中，只允许减少。
-R4、R5 没有基线：新增 Core 能力必须同时登记角色，否则本门失败。
+R4、R5 没有基线；本门不证明角色归属、原子性或运行时隔离。
 
 用法
 ----
