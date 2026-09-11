@@ -14,8 +14,8 @@ from agent.plugin_contracts.content import CONTENT, check_text
 from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.context import CONTEXT
 from plugins.conversation.program import run_reply
-from plugins.models.projection import MODEL_CALLS
-from plugins.react.plugin import REACT
+from agent.plugin_contracts.models import MODEL_CALLS
+from agent.plugin_contracts.react import REACT
 from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION

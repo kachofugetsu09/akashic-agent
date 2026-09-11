@@ -3283,3 +3283,30 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 92 降到 67。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/native_senders/delivery_bindings/wake_messages/subagent_messages/message_push_plugin/scheduler_messages/agent_restart_tool）= `177 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（27）：模型调用与 ReAct 合同化
+
+- 基线：stacked base `d486cf9b`（第 26 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam + move。清掉 `plugins.models.projection`(9) 与 `plugins.react.plugin`(9)：
+  - 新增 `agent/plugin_contracts/models.py`：`CallReader`/`ContentRenderer` 别名、`MODEL_CALLS`/
+    `MODEL_CALL_HISTORY` key、`response_facts`/`check_tool_rejection` 纯函数、`MessageProjectionPort`。
+  - 新增 `agent/plugin_contracts/react.py`：`Preview` 别名、`StepLimit` 异常、`ReactPort`、`REACT` key。
+  - 实现在原处（`MessageProjection`、`react` 函数），按原路径再导出；四个 key 登记为 `seam`。
+- 三个技术细节（都踩到过、都记下来）：
+  1. **协议签名必须与实现协变**：`MessageProjectionPort.render` 最初写 `tuple[object, ...] -> object`，
+     pyright 判实现不可赋值给协议（参数逆变的经典问题）；改为与实现一致的
+     `tuple[Message, ...] -> ModelRequest` 后通过。
+  2. **具体类显式实现协议**（`class MessageProjection(MessageProjectionPort)`），pyright 才认可协议满足。
+  3. **合同层纯性**：`react.py` 的 `Preview = Callable[[str], AbstractContextManager[StreamCallback]]`
+     会在运行时求值 `StreamCallback`，导致合同层运行时依赖 `agent.plugin_composition.models`
+     （被 `test_contracts_module_has_no_implementation_dependency` 拦下）。改为
+     `Callable[[str], "AbstractContextManager[StreamCallback]"]` 字符串前向引用 +
+     `TYPE_CHECKING` 导入后既保持语义又满足纯性。
+- **批量改写第 6 次踩漏名**：`tests/test_default_reply.py` 里内嵌一段**插件源码字符串**，
+  批量替换把其中的 `MessageProjection` 一起搬到了合同层（该名字并不在合同层）。
+  已改回从 `plugins.models.projection` 取。教训与第 12 批一致：**测试文件里的内嵌插件源码
+  也是真实 import，必须一并核对**。
+- 账本：R3 由 67 降到 50；`MessageProjection` 的构造点（`plugins/conversation/program.py`）
+  仍需该实现类，已登记为待处理条目（正解是投影由 ServiceKey 提供，属行为变更）。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_react/reply_program/message_model_selection/model_call_records/wake_messages/subagent_messages/plugin_update_source/default_reply）= `226 passed`。
+- 持久化/运行 workspace 变化：`none`。

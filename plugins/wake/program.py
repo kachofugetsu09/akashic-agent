@@ -12,8 +12,8 @@ from agent.plugin_contracts.context import CONTEXT
 from agent.plugin_contracts.context import ContextOverflow
 from agent.plugin_contracts.context import MATERIALS
 from plugins.conversation.program import run_reply
-from plugins.models.projection import MODEL_CALLS
-from plugins.react.plugin import REACT, StepLimit
+from agent.plugin_contracts.models import MODEL_CALLS
+from agent.plugin_contracts.react import REACT, StepLimit
 from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import TOOLS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION

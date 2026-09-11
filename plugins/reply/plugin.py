@@ -21,8 +21,8 @@ from plugins.sources.plugin import SOURCES, SOURCE_CHANGED
 from plugins.conversation.source import needs_reply
 from plugins.conversation.commands import CONVERSATION_COMMANDS
 from plugins.conversation.program import run_reply
-from plugins.models.projection import MODEL_CALLS
-from plugins.react.plugin import REACT, Preview
+from agent.plugin_contracts.models import MODEL_CALLS
+from agent.plugin_contracts.react import REACT, Preview
 from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS

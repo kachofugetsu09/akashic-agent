@@ -298,7 +298,8 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             from agent.plugin_composition.bindings import BINDINGS
             from agent.plugin_composition.models import ModelRole
             from plugins.models.content import render_content
-            from plugins.models.projection import MODEL_CALLS, MessageProjection
+            from agent.plugin_contracts.models import MODEL_CALLS
+            from plugins.models.projection import MessageProjection
             from agent.plugin_contracts.tools import TOOLS
             payload = json.loads(cast(str, rows[2].body.parts[0].value))
             assert payload["matched_groups"][0]["tools"][0]["function"]["name"] == "write_evidence"
@@ -361,7 +362,7 @@ async def test_actual_reply_compacts_history_before_provider_and_records_each_su
     from agent.plugin_composition import ServiceKey
     from plugins.compaction.records import SummaryRecords
     from agent.plugin_contracts.content import check_text
-    from plugins.models.projection import MODEL_CALLS
+    from agent.plugin_contracts.models import MODEL_CALLS
     from session.message import ContentPart, Control
 
     async with application(tmp_path, replying=True, start=False, compaction=True,

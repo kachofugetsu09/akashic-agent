@@ -16,7 +16,8 @@ from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts.context import ContextModel, Materials, Reminder, Summary, check_summary, summary_range
 from plugins.models.selection import selection
 from plugins.models.content import load_artifacts, render_content as render_model_content
-from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts, check_tool_rejection
+from agent.plugin_contracts.models import CallReader, ContentRenderer, check_tool_rejection
+from plugins.models.projection import MessageProjection, check_facts
 from agent.plugin_contracts.tool_api import Authorize, result_message_id
 from plugins.tools.api import MessageReply
 from plugins.tools.menu import ToolMenu, ToolPresentation
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
     from agent.plugin_contracts.context import ContextMaterialsPort as ContextMaterials
     from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog
     from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
-    from plugins.react.plugin import Preview
+    from agent.plugin_contracts.react import Preview
 
 
 def check_source(task: Task, reader: MessageReader, source: str, through_seq: int) -> None:

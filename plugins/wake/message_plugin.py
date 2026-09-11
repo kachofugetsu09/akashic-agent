@@ -21,8 +21,8 @@ from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.context import CONTEXT
 from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
-from plugins.models.projection import MODEL_CALLS
-from plugins.react.plugin import REACT
+from agent.plugin_contracts.models import MODEL_CALLS
+from agent.plugin_contracts.react import REACT
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from agent.plugin_contracts.tools import TOOLS, ToolView
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION

@@ -188,6 +188,18 @@ note = "内容读写与 schema；定义在合同层，实现由 plugins/content 
 role = "seam"
 note = "程序化来源；RPC 参数与 key 由合同层拥有，实现由 plugins/programmatic 提供"
 
+[capabilities."models.calls.v1"]
+role = "seam"
+note = "模型调用记录只读读取；定义在合同层，实现由 plugins/models 提供"
+
+[capabilities."models.call-history.v1"]
+role = "seam"
+note = "模型调用历史区间读取；定义在合同层，实现由 plugins/models 提供"
+
+[capabilities."react.v1"]
+role = "seam"
+note = "推理循环；定义在合同层，实现由 plugins/react 提供"
+
 [capabilities."turn.projection.v1"]
 role = "seam"
 note = "只读 Turn 投影；实现由 plugins/turn_projection 提供"

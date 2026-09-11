@@ -128,7 +128,7 @@ def seed(log, count, model_store=None, model_descriptor=None):
         }
         if index % 2 and model_store is not None:
             from dataclasses import asdict
-            from plugins.models.projection import response_facts
+            from agent.plugin_contracts.models import response_facts
             from agent.plugin_composition.models import LLMResponse
 
             identity = f"history-call:{index}"

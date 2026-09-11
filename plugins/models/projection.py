@@ -25,73 +25,32 @@ from agent.plugin_contracts import (
 )
 from agent.plugin_contracts import json_value
 from agent.plugin_contracts.context import check_summary
-from .store import ModelCallReader
 
-ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
-CallReader = Callable[[str], Mapping[str, Any]]
-MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
-MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
-    "models.call-history.v1"
+# 模型调用词汇与纯函数（response_facts / check_tool_rejection）的拥有者已移到
+# 结构合同层；这里按原路径再导出，既有调用点与对象身份不变。
+from agent.plugin_contracts.models import (  # noqa: E402,F401  (再导出)
+    MODEL_CALLS,
+    MessageProjectionPort,
+    MODEL_CALL_HISTORY,
+    CallReader,
+    ContentRenderer,
+    check_tool_rejection,
+    response_facts,
 )
 
-
-def response_facts(
-    response: LLMResponse,
-    call_indices: Sequence[int],
-    *,
-    reminder: str | None = None,
-    wire_tool_calls: Mapping[str, Mapping[str, object]] = {},
-) -> ContentPart:
-    """只保存调用账指针与协议重放所需事实，计费数据仍由 Model store 拥有。"""
-    if response.call_record_id is None:
-        raise ValueError("模型响应尚未结算调用记录")
-    indices = tuple(call_indices)
-    if len(indices) != len(response.tool_calls) or len(set(indices)) != len(indices):
-        raise ValueError("模型工具调用与 Output 位置不匹配")
-    if any(type(index) is not int or index < 0 for index in indices):
-        raise ValueError("模型工具调用位置必须是非负整数")
-    continuation = response.continuation
-    return ContentPart(
-        "model.facts",
-        {
-            "call_record_id": response.call_record_id,
-            "tool_ids": {
-                str(index): call.id for index, call in zip(indices, response.tool_calls)
-            },
-            "wire_tool_calls": wire_tool_calls,
-            "reminder": reminder,
-            "thinking": response.thinking,
-            "continuation": (
-                None
-                if continuation is None
-                else {
-                    "binding_id": continuation.binding_id,
-                    "payload": continuation.payload,
-                }
-            ),
-        },
-    )
-
-
-def check_tool_rejection(part: ContentPart) -> ContentReferences:
-    """模型协议拒绝只保存原始请求与错误，不引用 binding 或工具效果。"""
-    value = part.value
-    if (
-        not isinstance(value, Mapping)
-        or set(value) != {"name", "arguments", "error"}
-        or not isinstance(value["name"], str) or not value["name"]
-        or not isinstance(value["arguments"], Mapping)
-        or not isinstance(value["error"], str) or not value["error"]
-    ):
-        raise ValueError("模型工具协议拒绝字段无效")
-    return ContentReferences()
+from .store import ModelCallReader
 
 
 
 
 
 
-class MessageProjection:
+
+
+
+
+
+class MessageProjection(MessageProjectionPort):
     """Model 的只读历史投影；不读写会话、不执行工具，也不调用模型。"""
 
     def __init__(

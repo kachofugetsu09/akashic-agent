@@ -273,7 +273,8 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
 ):
     from datetime import UTC, datetime
     from agent.plugin_composition.models import ToolCall as ModelToolCall
-    from plugins.models.projection import MessageProjection, response_facts
+    from agent.plugin_contracts.models import response_facts
+    from plugins.models.projection import MessageProjection
     from session.message import (
         CallRef,
         ContentPart,
@@ -376,7 +377,8 @@ async def test_message_projection_keeps_source_continuation_and_rejects_unsafe_s
 ):
     from dataclasses import replace
     from datetime import UTC, datetime
-    from plugins.models.projection import MessageProjection, response_facts
+    from agent.plugin_contracts.models import response_facts
+    from plugins.models.projection import MessageProjection
     from session.message import ContentPart, Message, Output
 
     class Driver(_DriverContract):
@@ -528,7 +530,8 @@ async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned
 ):
     from datetime import UTC, datetime
     from agent.plugin_composition.models import ToolCall as ModelToolCall
-    from plugins.models.projection import MessageProjection, response_facts
+    from agent.plugin_contracts.models import response_facts
+    from plugins.models.projection import MessageProjection
     from session.message import CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 
     class Driver(_DriverContract):
@@ -576,7 +579,8 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
     from dataclasses import replace
     from agent.plugin_contracts.context import Materials, Summary
     from plugins.context.plugin import ContextBuilder
-    from plugins.models.projection import MessageProjection, response_facts
+    from agent.plugin_contracts.models import response_facts
+    from plugins.models.projection import MessageProjection
     from plugins.models.content import render_content
     from plugins.codex.responses import _continuation_items, _responses_input
     from session.message import ContentPart, Input, Message, Output
@@ -858,7 +862,8 @@ def test_replay_batch_reads_current_settlement_and_requires_every_call(store, de
 
 def test_repeated_projection_keeps_dynamic_content_and_live_call_validation(store, descriptor):
     from datetime import UTC, datetime
-    from plugins.models.projection import MessageProjection, response_facts
+    from agent.plugin_contracts.models import response_facts
+    from plugins.models.projection import MessageProjection
     from session.message import ContentPart, Message, Output
     call = store.start_call(descriptor, ModelRequest(()))
     store.finish_call(call, usage=None, failure=None)

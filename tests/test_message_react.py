@@ -19,10 +19,12 @@ from agent.plugin_contracts.context import ContextModel, Materials, Reminder, Su
 from plugins.context.plugin import ContextBuilder
 from plugins.conversation.source import Conversation, needs_reply
 from plugins.models.content import render_content
-from plugins.models.projection import MessageProjection, check_facts, check_tool_rejection
+from agent.plugin_contracts.models import check_tool_rejection
+from plugins.models.projection import MessageProjection, check_facts
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
-from plugins.react.plugin import react, StepLimit
+from agent.plugin_contracts.react import StepLimit
+from plugins.react.plugin import react
 from plugins.tools.execution import ToolExecution, MessageReply, Result
 from plugins.tools.abandon import follow_abandon, reject_start
 from plugins.tools.menu import NativePresentation, ToolMenu

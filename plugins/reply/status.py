@@ -13,7 +13,7 @@ from agent.plugin_contracts.reply import (
     ReplyPreview,
     ReplyRead,
 )
-from plugins.react.plugin import Preview
+from agent.plugin_contracts.react import Preview
 
 __all__ = ["REPLY_STATUS", "ReplyActivity", "ReplyPreview", "ReplyRead", "ReplyState"]
 

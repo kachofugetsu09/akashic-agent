@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from agent.plugin_composition import Context, RuntimeScope, ServiceKey
+from agent.plugin_contracts.react import REACT, Preview, StepLimit  # noqa: F401  (再导出)
 from agent.plugins.snapshot import get_current_runtime_lease
 from agent.plugin_composition.models import (
     BoundChatModel,
@@ -24,7 +25,7 @@ from agent.plugin_contracts import CallRef, Control, Message, Output, Part, Cont
 if TYPE_CHECKING:
     from agent.plugin_contracts.content import ContentView
     from agent.plugin_contracts.context import ContextBuilderPort as ContextBuilder
-    from plugins.models.projection import MessageProjection
+    from agent.plugin_contracts.models import MessageProjectionPort as MessageProjection
     from plugins.tools.menu import ToolMenu
 
 api_version = 3
@@ -32,13 +33,6 @@ name = "react"
 version = "1.0.0"
 desc = "组合上下文、模型、内容与工具，不拥有会话或外部效果状态"
 inject = ()
-
-
-Preview = Callable[[str], AbstractContextManager[StreamCallback]]
-
-
-class StepLimit(RuntimeError):
-    """本次程序达到明确的模型请求上限，保留日志供来源继续控制。"""
 
 
 def _pending_calls(messages: Sequence[Message], source: str) -> tuple[CallRef, ...]:
@@ -279,7 +273,6 @@ async def react(
                 return message
 
 
-REACT = ServiceKey[Callable[..., Awaitable[Message]]]("react.v1")
 
 
 async def apply(ctx: Context, config: object) -> None:
