@@ -201,6 +201,8 @@ def _literal_dynamic_imports(rel: str, tree: ast.Module) -> list[Import]:
             for alias in node.names:
                 if alias.name == "importlib":
                     module_loaders.add(f"{alias.asname or alias.name}.import_module")
+                elif alias.name.startswith("importlib.") and alias.asname is None:
+                    module_loaders.add("importlib.import_module")
                 elif alias.name == "builtins":
                     loaders.add(f"{alias.asname or alias.name}.__import__")
         elif isinstance(node, ast.ImportFrom):
