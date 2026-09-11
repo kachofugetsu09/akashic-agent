@@ -3431,3 +3431,25 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 
 **通用判据（本轮反复验证有效）**：函数若读取 **ContextVar/环境态**，它属于「运行时能力」而不是词汇，
 不能靠 move 解决；即使它「看起来像纯函数」。
+
+## 2026-09-10 插件边界第 3 步（33）：跨插件能力 key 批量归位
+
+- 基线：stacked base `524a1c67`（第 32 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam 批量。新增 `agent/plugin_contracts/plugin_capabilities.py`，把「某插件提供、
+  其它插件消费」的能力 key + 消费者可见 Protocol 集中归位：
+  - `REPLY_COMPLETION`/`CompletionPort`、`REPLY_PROGRAM`、`CONVERSATION_COMMANDS`、
+    `SEMANTIC_INTEREST`/`SemanticInterestPort`、`DELIVERY_READ`/`DeliveryHistoryPort`、
+    `DRIFT_PROPOSALS`/`DriftProposalServicesPort`、`DRIFT_CHANGED`（事件 key）。
+  - 各提供方按原路径再导出；W/AKE 侧把注解改为 Port（`SemanticInterestPort as SemanticInterest`、
+    `DeliveryHistoryPort as DeliveryHistory`）。
+- 两条本次学到的边界规则：
+  1. **Protocol 只声明真实调用过的方法**，并在模块 docstring 里写明：新增消费者方法时必须
+     同步补声明 —— 避免合同层脱离实际使用面膨胀。
+  2. **`EmitEventKey` 不是 `ServiceKey`**：`plugin_boundary.toml` 的 `[capabilities]` 由 R4 按
+     `ServiceKey[...]` 形态校验，事件 key 登记进去会报「登记的 ServiceKey 不存在」。事件 key
+     只放合同模块，不登记能力表。
+- 合同层纯性白名单新增 `agent.plugin_composition.events`（与 `model` 同级的纯身份原语，
+  零仓库内实现依赖）；其它 composition 子模块仍禁止。
+- 账本：R3 由 35 降到 24。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（contracts/wake_messages/message_push_plugin/delivery_bindings/subagent_messages/akasha_recall_records/semantic）= `115 passed`。
+- 持久化/运行 workspace 变化：`none`。

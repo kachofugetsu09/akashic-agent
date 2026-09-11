@@ -79,4 +79,4 @@ class SemanticInterest:
         return tuple(scores)
 
 
-SEMANTIC_INTEREST = ServiceKey[SemanticInterest]("akasha.semantic-interest.v1")
+from agent.plugin_contracts.plugin_capabilities import SEMANTIC_INTEREST  # noqa: F401  (再导出)

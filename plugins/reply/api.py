@@ -7,7 +7,5 @@ from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
 
 
-# 原子材料入口；来源不改写用户 Input，也不复制主回复的配置与工具策略。
-REPLY_PROGRAM = ServiceKey[
-    Callable[[Task, MessageReader, str, Sequence[Reminder]], Awaitable[Message]]
-]("reply.program.v1")
+# key 的拥有者已移到结构合同层；这里按原路径再导出。
+from agent.plugin_contracts.plugin_capabilities import REPLY_PROGRAM  # noqa: F401

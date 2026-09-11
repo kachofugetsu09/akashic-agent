@@ -16,7 +16,15 @@ CONTRACTS_DIR = REPO_ROOT / "agent" / "plugin_contracts"
 # 合同层可以依赖 `agent.plugin_composition.model`：它只定义 ServiceKey / CompositionError
 # 等纯值身份原语，且自身零仓库内 import（实测）。合同层需要 ServiceKey 才能声明公开 key，
 # 而 ServiceKey 只按 name 相等，不引入任何实现依赖。其它 composition 子模块仍不允许。
-ALLOWED_TOP_LEVEL = {"agent.plugin_contracts", "agent.plugin_composition.model"}
+# 合同层可以依赖两个**纯身份原语**模块（均零仓库内实现依赖）：
+# `agent.plugin_composition.model`（ServiceKey/CompositionError）与
+# `agent.plugin_composition.events`（EmitEventKey 等事件 key 类型）。
+# 合同层需要它们来声明公开 key；其它 composition 子模块仍不允许。
+ALLOWED_TOP_LEVEL = {
+    "agent.plugin_contracts",
+    "agent.plugin_composition.model",
+    "agent.plugin_composition.events",
+}
 
 VOCABULARY_NAMES = (
     "Body",

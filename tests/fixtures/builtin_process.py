@@ -19,7 +19,7 @@ from bootstrap.runtime_readiness import RuntimeReadiness
 async def producers(app: AppRuntime) -> None:
     """stdin 只模拟插件生产者提交；判断、发送和结算全部由实际内置服务完成。"""
     from agent.plugins.snapshot import lease_runtime_snapshot
-    from plugins.drift.plugin import DRIFT_PROPOSALS
+    from agent.plugin_contracts.plugin_capabilities import DRIFT_PROPOSALS
     from plugins.eventmail.plugin import EVENTMAIL_ALERT_SOURCE, EVENTMAIL_CONTENT_SOURCE
 
     reader = asyncio.StreamReader()

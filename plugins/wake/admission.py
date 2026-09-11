@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from plugins.akasha.interest import SemanticInterest
+from agent.plugin_contracts.plugin_capabilities import SemanticInterestPort as SemanticInterest
 
 from .api import ContentWakeServices, DriftWakeServices
 from .content import (_content_text, _datetime, _integer, _mapping, _pool_detail,

@@ -147,4 +147,5 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
         writer.expire()
 
 
-CONVERSATION_COMMANDS = ServiceKey[Callable[[Task, MessageReader, str], Awaitable[Message | None]]]("conversation.commands.v1")
+# key 的拥有者已移到结构合同层；这里按原路径再导出。
+from agent.plugin_contracts.plugin_capabilities import CONVERSATION_COMMANDS  # noqa: F401

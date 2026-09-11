@@ -12,7 +12,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_contracts.delivery_api import Sink
 from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
-from plugins.drift.plugin import DRIFT_PROPOSALS
+from agent.plugin_contracts.plugin_capabilities import DRIFT_PROPOSALS
 from agent.plugin_contracts.plugin_tools import AKASHA_TOOLS
 from agent.plugin_contracts.plugin_tools import STANDARD_WEB_TOOLS
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS

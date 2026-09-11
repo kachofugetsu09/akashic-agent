@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Protocol
 
+from agent.plugin_contracts.plugin_capabilities import DRIFT_CHANGED, DRIFT_PROPOSALS  # noqa: F401  (再导出)
 from agent.plugin_composition import Context, EmitEventKey, ServiceKey
 from .store import DriftStore
 
@@ -53,8 +54,6 @@ class DriftProposalServices(Protocol):
     ) -> Mapping[str, object]: ...
 
 
-DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
-DRIFT_CHANGED = EmitEventKey[None]("drift.changed")
 
 
 class DriftDeliveryServices(Protocol):

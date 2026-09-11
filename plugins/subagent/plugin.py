@@ -17,7 +17,7 @@ from plugins.conversation.program import run_reply
 from agent.plugin_contracts.models import MODEL_CALLS
 from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
-from plugins.reply.api import REPLY_PROGRAM
+from agent.plugin_contracts.plugin_capabilities import REPLY_PROGRAM
 from agent.plugin_contracts.react import REACT
 from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS

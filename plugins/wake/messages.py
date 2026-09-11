@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from plugins.delivery.history import DeliveryHistory
+from agent.plugin_contracts.plugin_capabilities import DeliveryHistoryPort as DeliveryHistory
 from plugins.models.content import render_content
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult

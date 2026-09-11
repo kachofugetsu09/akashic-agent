@@ -14,7 +14,7 @@ from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.conversation import CONVERSATION
 from agent.plugin_contracts.delivery_api import DELIVERY
-from plugins.reply.api import REPLY_PROGRAM
+from agent.plugin_contracts.plugin_capabilities import REPLY_PROGRAM
 from agent.plugin_contracts.context import Reminder
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output

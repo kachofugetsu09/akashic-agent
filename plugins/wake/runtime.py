@@ -12,9 +12,9 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.timers import TIMERS
-from plugins.akasha.interest import SEMANTIC_INTEREST
+from agent.plugin_contracts.plugin_capabilities import SEMANTIC_INTEREST
 from agent.plugin_contracts.delivery_api import Sink
-from plugins.delivery.history import DELIVERY_READ
+from agent.plugin_contracts.plugin_capabilities import DELIVERY_READ
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from agent.plugin_contracts.plugin_tools import AKASHA_TOOLS
 from agent.plugin_contracts.plugin_tools import STANDARD_WEB_TOOLS

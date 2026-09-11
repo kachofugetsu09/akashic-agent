@@ -11,10 +11,10 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.timers import TIMERS
-from plugins.akasha.interest import SEMANTIC_INTEREST
+from agent.plugin_contracts.plugin_capabilities import SEMANTIC_INTEREST
 from agent.plugin_contracts.plugin_tools import AKASHA_TOOLS
-from plugins.delivery.history import DELIVERY_READ
-from plugins.drift.plugin import DRIFT_CHANGED
+from agent.plugin_contracts.plugin_capabilities import DELIVERY_READ
+from agent.plugin_contracts.plugin_capabilities import DRIFT_CHANGED
 from agent.plugin_contracts.content import ContentSchema
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.context import MATERIALS

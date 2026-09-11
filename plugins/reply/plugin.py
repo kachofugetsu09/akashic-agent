@@ -19,7 +19,7 @@ from agent.plugin_contracts.context import CONTEXT
 from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.sources import SOURCES, SOURCE_CHANGED
 from plugins.conversation.source import needs_reply
-from plugins.conversation.commands import CONVERSATION_COMMANDS
+from agent.plugin_contracts.plugin_capabilities import CONVERSATION_COMMANDS
 from plugins.conversation.program import run_reply
 from agent.plugin_contracts.models import MODEL_CALLS
 from agent.plugin_contracts.react import REACT, Preview

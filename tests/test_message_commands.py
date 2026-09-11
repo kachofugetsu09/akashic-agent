@@ -8,7 +8,7 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT
 from agent.plugins.snapshot import lease_runtime_snapshot
-from plugins.conversation.commands import CONVERSATION_COMMANDS
+from agent.plugin_contracts.plugin_capabilities import CONVERSATION_COMMANDS
 from agent.plugin_contracts.conversation import CONVERSATION
 from session.log import MessageWriter
 from session.message import Control, Output

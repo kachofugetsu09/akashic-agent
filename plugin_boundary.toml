@@ -180,6 +180,31 @@ note = "预置上下文组装器；定义在合同层，实现由 plugins/contex
 role = "seam"
 note = "预置上下文材料注册表；定义在合同层，实现由 plugins/context 提供"
 
+# 由某个插件提供、其它插件消费的能力（key 在合同层，实现在提供方）。
+[capabilities."reply.completion.v1"]
+role = "seam"
+note = "回复完成策略；实现由 plugins/reply 或 plugins/delivery_policy 提供"
+
+[capabilities."reply.program.v1"]
+role = "seam"
+note = "原子材料入口；实现由 plugins/reply 提供"
+
+[capabilities."conversation.commands.v1"]
+role = "seam"
+note = "会话命令入口；实现由 plugins/conversation 提供"
+
+[capabilities."akasha.semantic-interest.v1"]
+role = "seam"
+note = "语义兴趣打分；实现由 plugins/akasha 提供"
+
+[capabilities."delivery.read.v1"]
+role = "seam"
+note = "只读送达历史；实现由 plugins/delivery 提供"
+
+[capabilities."drift.proposals.v1"]
+role = "seam"
+note = "Drift 提案服务；实现由 plugins/drift 提供"
+
 [capabilities."sources.v1"]
 role = "seam"
 note = "来源注册表；定义在合同层，实现由 plugins/sources 提供"

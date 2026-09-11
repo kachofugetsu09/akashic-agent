@@ -105,4 +105,4 @@ class DeliveryHistory:
         return tuple(result)
 
 
-DELIVERY_READ = ServiceKey[DeliveryHistory]("delivery.read.v1")
+from agent.plugin_contracts.plugin_capabilities import DELIVERY_READ  # noqa: F401  (再导出)

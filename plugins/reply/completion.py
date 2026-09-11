@@ -2,22 +2,11 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from typing import Protocol
 
-from agent.plugin_composition import ServiceKey
 from agent.plugin_contracts.restart import ExternalRootPermit
 from agent.plugin_composition.messages import MessageReader
 
-
-class Completion(Protocol):
-    def activity(self, reader: MessageReader, source: str) -> AbstractContextManager[None]: ...
-
-    def __call__(
-        self,
-        reader: MessageReader,
-        source: str,
-        *,
-        child_permit: Callable[[], ExternalRootPermit] | None = None,
-    ) -> AbstractAsyncContextManager[None]: ...
-
-
-# 可选策略覆盖一次回复的完成阶段；Reply 自身不取得发送能力。
-REPLY_COMPLETION = ServiceKey[Completion]("reply.completion.v1")
+# key 与消费者可见 Protocol 的拥有者已移到结构合同层；这里按原路径再导出。
+from agent.plugin_contracts.plugin_capabilities import (  # noqa: E402,F401
+    REPLY_COMPLETION,
+    CompletionPort as Completion,
+)

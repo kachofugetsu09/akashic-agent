@@ -20,8 +20,8 @@ from agent.plugins.snapshot import RuntimeSnapshot
 from agent.plugins.web_ui import WebModuleDescriptor
 from bootstrap.dashboard_api import create_dashboard_app
 from plugins.akasha.recalls import ContextSource, Hit, Recall, RecallRecords
-from plugins.delivery.history import DELIVERY_READ
-from plugins.drift.plugin import DRIFT_PROPOSALS
+from agent.plugin_contracts.plugin_capabilities import DELIVERY_READ
+from agent.plugin_contracts.plugin_capabilities import DRIFT_PROPOSALS
 from plugins.wake.api import DRIFT_WAKE
 from plugins.wake.runtime import Runtime
 from plugins.wake.state import WakeState
