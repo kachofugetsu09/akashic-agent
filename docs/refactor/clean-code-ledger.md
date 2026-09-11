@@ -3165,3 +3165,17 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R2 由 52 降到 50。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/wake_messages/akasha_recall_records/scheduler_tools/message_markdown_memory/computer_driver_plugin/channel_attachment_store/message_artifacts）= `221 passed, 1 skipped`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（21）：shell 执行策略合同化
+
+- 基线：stacked base `525005ea`（第 20 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：move & re-export。两个模块零仓库内 import、无状态：
+  - `agent/tools/shell_security.py` → `agent/plugin_contracts/shell_security.py`（`validate_command`/`validate_network_command` 纯校验）。
+  - `agent/tools/shell_command.py` → `agent/plugin_contracts/shell_command.py`（`resolve_shell`/`ResolvedShell`/`ShellKind`/`detect_shell_kind`；`resolve_shell` 会探测 PATH，但只返回不可变值，属「允许哪些 shell」的执行策略而非状态）。
+  - Core 侧 `agent/skills.py`、`agent/tools/registry.py` 等保持原路径（shim 再导出）；插件侧 2 个文件改指合同层。
+- **第四次踩「漏名」**：shim 首版只导出了插件用到的 2 个名字，漏了 Core/测试在用的 `ResolvedShell`/`ShellKind`/`detect_shell_kind`，`tests/test_shell_tool.py` 收集期即 ImportError。
+  修正：先跑全库 import 名字扫描，再按**实际被 import 的 4+2 个名字**写再导出并列出 `__all__`。
+  **这是本项目第 4 次同类问题**（前三次：`_unique_fields`、`AttachmentReadLease/ReadPort`、`open_sender`/`MessageReply`），规则已再次写进设计文档。
+- 账本：R2 由 50 降到 46。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/shell_tool/standard_tools/unified_exec）= `158 passed, 1 skipped`。
+- 持久化/运行 workspace 变化：`none`。

@@ -11,9 +11,9 @@ from uuid import uuid4
 from agent.control.context import mint_plugin_child_capability, running_turn_id
 from agent.host_bridge.factory import ShellProcessManagerProtocol
 from agent.plugin_contracts.tool_base import Tool
-from agent.tools.shell_security import validate_command
-from agent.tools.shell_security import validate_network_command
-from agent.tools.shell_command import resolve_shell
+from agent.plugin_contracts.shell_security import validate_command
+from agent.plugin_contracts.shell_security import validate_network_command
+from agent.plugin_contracts.shell_command import resolve_shell
 from agent.tools.unified_exec import DEFAULT_HARD_TIMEOUT_S
 from agent.tools.unified_exec import DEFAULT_INITIAL_YIELD_TIME_MS
 from agent.tools.unified_exec import DEFAULT_MAX_OUTPUT_TOKENS

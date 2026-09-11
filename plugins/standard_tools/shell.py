@@ -15,8 +15,8 @@ from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.standard_tools.shell_backend import _log_shell_execution, _shell_env
-from agent.tools.shell_command import resolve_shell
-from agent.tools.shell_security import validate_command
+from agent.plugin_contracts.shell_command import resolve_shell
+from agent.plugin_contracts.shell_security import validate_command
 from agent.tools.unified_exec import (
     DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS,
     MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError,
