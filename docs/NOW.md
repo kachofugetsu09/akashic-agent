@@ -2,23 +2,12 @@
 
 这份文件只保存 Akashic Agent 当前仍未完成的工作。事项完成后删除，不保留“已完成”记录。
 
-## P0 · 插件边界第 3 步
+## P0 · 插件边界后续设计
 
-[0064 插件边界由机器强制](decisions/0064-plugin-boundary-is-machine-enforced.md) 已接受，第 1 步
-（能力角色表、import 门、公开结构合同模块）与
-[第 2 步删死代码](design/plugin-boundary-foundation.md#第-2-步--删死代码需独立授权) 已实现。
-
-- **第 3 步 · 机械迁移**：把 `plugin_boundary_baseline.toml` 的 R1（25 条）、R2（244 处）、
-  R3（238 处）降到 0，并完成 `core.restart_gate.v1`、`core.control_frames.v1` 归位与
-  `agent.plugins.snapshot` 去全局。每批只做一种改写、单独 commit、跑 targeted tests，
-  移动定义时必须 move & re-export 而不是复制。
-- **待裁决**：`agent/tools/executor.py` 与 `agent/tools/events.py` 是 R10 reviewed seam，
-  由 `tests/test_tool_executor.py` 覆盖，暂保留；其归属（是否迁入 `agent/plugin_contracts/`，
-  或随 seam 退场）留给第 3 步，见
-  [插件边界地基 §第 2 步](design/plugin-boundary-foundation.md#第-2-步--删死代码需独立授权)。
-
-不可机械化的部分（Turn 原子、压缩 surface replacement、Channel 双栈收敛、外部插件仓库迁移）
-不在上述范围内，需要各自的设计与差分 Gate。
+按 [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 与
+[阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 推进：后续先验证一个完整切片的外置安装、独立替换、缺依赖与 generation 行为。
+不沿 #595 的机械迁移路线继续，不把全部业务合同搬入 Core。
+Core 中的业务装配、宽泛 snapshot 访问和公开模块中的实现泄漏仍需逐项决定 owner。
 
 ## P0 · Akashic Channel 与 Web/Mobile Adapter 实现
 

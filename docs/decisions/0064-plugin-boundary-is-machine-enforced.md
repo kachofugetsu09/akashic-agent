@@ -1,10 +1,12 @@
 # 0064 · 插件边界由机器强制
 
-- 状态：accepted
+- 状态：superseded
 - 日期：2026-09-10
 - 关联条款：PLG-001～PLG-017、GOV-001～GOV-005、TST-001～TST-008
 - supersedes：无
-- superseded by：无
+- superseded by：[0065](0065-plugin-boundary-checks-do-not-grant-core-ownership.md)
+
+> 本文保留历史推理，不再指导后续机械迁移。角色表、静态门的实际证明范围与目标验收以 0065 为准。
 
 ## 背景
 

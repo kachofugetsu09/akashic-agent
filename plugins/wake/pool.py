@@ -6,9 +6,9 @@ from datetime import datetime
 from typing import Any
 
 WAKE_ADMISSION_FLOOR = 0.02
-WAKE_POOL_THRESHOLD = 1.0
+WAKE_POOL_THRESHOLD = 1.5
 
-_FRESHNESS_HALF_LIFE_HOURS = 36.0
+_FRESHNESS_HALF_LIFE_HOURS = 18.0
 _MISSING_PUBLICATION_CONFIDENCE = 0.03
 _INELIGIBLE_CONFIDENCE_MULTIPLIER = 0.01
 
@@ -59,7 +59,7 @@ def measure_pool(
 
 
 def rank_events(events: list[dict[str, Any]], *, now: datetime) -> list[dict[str, Any]]:
-    """Decay fixed scores, then apply source diversity only to page order."""
+    """Square and decay fixed scores, then diversify only the page order."""
 
     scored: list[dict[str, Any]] = []
     for event in events:
@@ -87,7 +87,7 @@ def rank_events(events: list[dict[str, Any]], *, now: datetime) -> list[dict[str
             -math.log(2.0) * age_hours / _FRESHNESS_HALF_LIFE_HOURS
         )
         copied = dict(event)
-        admission_mass = initial * freshness
+        admission_mass = initial**2 * freshness
         copied["_wake_rank_score"] = admission_mass
         copied["_wake_rank_features"] = {
             "initial_score": initial,

@@ -65,8 +65,8 @@ def test_prefix_lookalike_is_not_sanctioned() -> None:
 def test_cross_plugin_import_is_flagged() -> None:
     violations = boundary.check_cross_plugin([
         _import("plugins/reply/plugin.py", "plugins.tools.api"),
-        _import("plugins/reply/plugin.py", "plugins.reply.api"),
-        _import("plugins/reply/plugin.py", "plugins.reply"),
+        boundary.Import("plugins/reply/plugin.py", "plugins.reply.api", absolute=False),
+        boundary.Import("plugins/reply/plugin.py", "plugins.reply", absolute=False),
     ])
     assert [item.module for item in violations] == ["plugins.tools.api"]
 
@@ -171,7 +171,7 @@ def test_gate_fails_on_new_core_to_plugin_import(monkeypatch, tmp_path: Path) ->
 def test_gate_passes_when_violation_is_recorded_in_baseline(monkeypatch, tmp_path: Path) -> None:
     _synthetic_repo(
         tmp_path,
-        plugin_import_line="from plugins.reply import plugin\n",
+        plugin_import_line="import plugins.reply\n",
         baseline='[baseline]\nR1 = [\n    "bootstrap/app.py|plugins.reply",\n]\nR2 = []\nR3 = []\n',
     )
     monkeypatch.setattr(boundary, "REPO_ROOT", tmp_path)
@@ -219,6 +219,68 @@ def test_every_core_service_key_has_a_role() -> None:
     for name in boundary.discover_service_keys():
         assert name in declared, f"{name} 未在 plugin_boundary.toml 登记角色"
         assert declared[name]["role"] in {"core", "seam", "bundle", "claim"}
+
+
+@pytest.mark.parametrize("source,rule,target", [
+    ("from plugins import beta", "R3", "plugins.beta"),
+    ("from .. import beta", "R3", "plugins.beta"),
+    ("from .. import *", "R3", "plugins"),
+    ("import plugins.alpha.helpers", "R3", "plugins.alpha.helpers"),
+    ("from agent import config", "R2", "agent.config"),
+    ("from agent.plugin_composition import new_store", "R2", "agent.plugin_composition.new_store"),
+])
+def test_import_syntax_cannot_hide_dependencies(source: str, rule: str, target: str) -> None:
+    files = ["plugins/alpha/plugin.py", "agent/plugin_composition/new_store.py"]
+    imports = boundary.collect_imports(files, {files[0]: source, files[1]: ""})
+    assert target in {item.module for item in boundary.import_findings(imports)[rule]}
+
+
+def test_relative_helpers_and_standard_library_are_not_core_debt() -> None:
+    files = ["plugins/alpha/plugin.py"]
+    imports = boundary.collect_imports(files, {files[0]: "from . import helpers\nfrom types import MappingProxyType"})
+    assert not any(boundary.import_findings(imports).values())
+
+
+def test_migrations_are_not_a_blanket_exemption() -> None:
+    assert boundary.check_core_imports_plugin([
+        _import("migrations/yoyo/new.py", "plugins.alpha"),
+    ])
+
+
+def test_invalid_role_fails_the_cli_check(monkeypatch) -> None:
+    monkeypatch.setattr(boundary, "discover_service_keys", lambda: {"x": "agent/x.py"})
+    assert boundary.check_capability_table(_policy({"x": {"role": "anything"}}))
+
+
+def test_service_key_alias_and_lowercase_declarations_are_checked(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "agent").mkdir()
+    (tmp_path / "agent/x.py").write_text(
+        'from agent.plugin_composition import ServiceKey as Key\n'
+        'import agent.plugin_composition as api\n'
+        'first = Key[int]("core.first")\nsecond = api.ServiceKey("core.second")\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(boundary, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(boundary, "tracked_python_files", lambda: ["agent/x.py"])
+    assert set(boundary.discover_service_keys()) == {"core.first", "core.second"}
+
+
+def test_base_comparison_rejects_debt_even_when_added_to_ledger(monkeypatch, tmp_path: Path) -> None:
+    _synthetic_repo(tmp_path, plugin_import_line="import plugins.reply\n",
+                    baseline='[baseline]\nR1 = ["bootstrap/app.py|plugins.reply"]\n')
+    monkeypatch.setattr(boundary, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(boundary, "POLICY_PATH", tmp_path / "policy.toml")
+    monkeypatch.setattr(boundary, "BASELINE_PATH", tmp_path / "baseline.toml")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    assert boundary.run_check("HEAD") == 0
+    (tmp_path / "bootstrap/app.py").write_text("import plugins.beta\n", encoding="utf-8")
+    (tmp_path / "baseline.toml").write_text(
+        '[baseline]\nR1 = ["bootstrap/app.py|plugins.beta"]\n', encoding="utf-8")
+    assert boundary.run_check() == 0
+    assert boundary.run_check("HEAD") == 1
 
 
 @pytest.mark.parametrize("name", ["SCOPED_TURNS", "CONTINUATIONS", "BACKGROUND_JOBS"])

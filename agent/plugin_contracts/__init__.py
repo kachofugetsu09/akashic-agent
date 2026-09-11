@@ -1,7 +1,8 @@
 """插件公开结构合同。
 
-插件只能依赖本模块和 `agent.plugin_composition`；本模块只定义不可变值词汇表
-和不依赖实现的 Protocol，不导入服务实现、存储层或 bootstrap。
+本模块只承载 Core 自己拥有的值合同，不是所有业务共享代码的收容层。
+业务 schema、模型内容解释、存储实现和默认流程仍由相应 owner 提供。
+公开模块清单由边界门检查；业务协作可在 Core 外声明合同。
 """
 
 from agent.plugin_contracts.message import (

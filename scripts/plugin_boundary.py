@@ -19,16 +19,20 @@ R4、R5 没有基线：新增 Core 能力必须同时登记角色，否则本门
 用法
 ----
     python scripts/plugin_boundary.py check       # 校验，违规时退出码 1
-    python scripts/plugin_boundary.py baseline    # 用当前状态重写债务账本
+    python scripts/plugin_boundary.py check --base origin/main  # 禁止新增依赖
+    python scripts/plugin_boundary.py baseline    # 只输出待评审账本，不写文件
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import io
+import json
 import re
 import subprocess
 import sys
+import tarfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,19 +41,56 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = REPO_ROOT / "plugin_boundary.toml"
 BASELINE_PATH = REPO_ROOT / "plugin_boundary_baseline.toml"
 
-CORE_ROOTS = ("agent", "session", "infra", "core", "bootstrap", "bus", "utils", "mcp_servers")
+CORE_ROOTS = ("agent", "session", "infra", "core", "bootstrap", "bus", "utils", "mcp_servers", "host_bridge", "migrations")
 CORE_FILES = ("main.py",)
 PLUGIN_ROOT = "plugins"
 
-# 插件可以依赖的公开面。顺序即优先级，前缀匹配。
-PLUGIN_ALLOWED_PREFIXES = (
+# 冻结既有公开模块，不给目录内未来新增的实现自动授予公开资格。
+# 这是兼容清单，不证明其中每个对象已经原子化；扩张须单独评审 owner。
+PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition",
+    "agent.plugin_composition.access",
+    "agent.plugin_composition.artifacts",
+    "agent.plugin_composition.bindings",
+    "agent.plugin_composition.channels",
+    "agent.plugin_composition.claims",
+    "agent.plugin_composition.commands",
+    "agent.plugin_composition.context",
+    "agent.plugin_composition.credentials",
+    "agent.plugin_composition.dashboard",
+    "agent.plugin_composition.deliveries",
+    "agent.plugin_composition.diagnostics",
+    "agent.plugin_composition.durable_deliveries",
+    "agent.plugin_composition.durable_delivery_store",
+    "agent.plugin_composition.effect",
+    "agent.plugin_composition.events",
+    "agent.plugin_composition.executor",
+    "agent.plugin_composition.interaction_undo",
+    "agent.plugin_composition.mcp_slots",
+    "agent.plugin_composition.messages",
+    "agent.plugin_composition.model",
+    "agent.plugin_composition.model_settings_http",
+    "agent.plugin_composition.models",
+    "agent.plugin_composition.overlay",
+    "agent.plugin_composition.plugin_updates",
+    "agent.plugin_composition.process_slots",
+    "agent.plugin_composition.processes",
+    "agent.plugin_composition.runtime_lifecycle",
+    "agent.plugin_composition.semantic_interest",
+    "agent.plugin_composition.session_compaction",
+    "agent.plugin_composition.session_read",
+    "agent.plugin_composition.tasks",
+    "agent.plugin_composition.timers",
+    "agent.plugin_composition.tool_catalog",
+    "agent.plugin_composition.ui_slots",
+    "agent.plugin_composition.workload_slots",
     "agent.plugin_contracts",
-)
+    "agent.plugin_contracts.message",
+})
 
 # 插件不得 import 的 core 顶层包（用于 R2 的归属判定）。
 CORE_TOP_LEVELS = frozenset(
-    {"agent", "session", "infra", "core", "bootstrap", "bus", "utils", "mcp_servers", "types", "sdk"}
+    {*CORE_ROOTS, "sdk"}
 )
 
 SCAN_SUFFIX = ".py"
@@ -67,6 +108,7 @@ class Import:
 
     importer: str
     module: str
+    absolute: bool = True
 
     @property
     def key(self) -> str:
@@ -107,14 +149,16 @@ def _resolve_relative(importer: str, level: int, module: str | None) -> str | No
     return ".".join(base) if base else None
 
 
-def collect_imports(files: list[str]) -> list[Import]:
+def collect_imports(files: list[str], sources: dict[str, str] | None = None) -> list[Import]:
     """静态提取每个文件的 import 目标；语法错误直接失败而不是跳过。"""
 
     imports: list[Import] = []
+    known_files = set(files)
     for rel in files:
         path = REPO_ROOT / rel
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+            source = path.read_text(encoding="utf-8") if sources is None else sources[rel]
+            tree = ast.parse(source, filename=rel)
         except SyntaxError as error:  # pragma: no cover - 仓库内不应出现
             raise SystemExit(f"无法解析 {rel}: {error}") from error
         for node in ast.walk(tree):
@@ -122,12 +166,23 @@ def collect_imports(files: list[str]) -> list[Import]:
                 for alias in node.names:
                     imports.append(Import(rel, alias.name))
             elif isinstance(node, ast.ImportFrom):
-                if node.level:
-                    resolved = _resolve_relative(rel, node.level, node.module)
-                    if resolved:
-                        imports.append(Import(rel, resolved))
-                elif node.module:
-                    imports.append(Import(rel, node.module))
+                resolved = (
+                    _resolve_relative(rel, node.level, node.module)
+                    if node.level else node.module
+                )
+                if resolved:
+                    roots = {PLUGIN_ROOT, *CORE_TOP_LEVELS}
+                    if resolved not in roots or any(a.name == "*" for a in node.names):
+                        imports.append(Import(rel, resolved, not node.level))
+                    # 包入口可以把子模块藏在 names 中，不能只检查 node.module。
+                    for alias in node.names:
+                        target = f"{resolved}.{alias.name}"
+                        if alias.name != "*" and (
+                            resolved in roots
+                            or (target.replace(".", "/") + ".py") in known_files
+                            or (target.replace(".", "/") + "/__init__.py") in known_files
+                        ):
+                            imports.append(Import(rel, target, not node.level))
     return imports
 
 
@@ -175,17 +230,14 @@ def check_plugin_deep_core(imports: list[Import]) -> list[Import]:
         top = item.module.split(".")[0]
         if top not in CORE_TOP_LEVELS:
             continue
-        if any(
-            item.module == prefix or item.module.startswith(f"{prefix}.")
-            for prefix in PLUGIN_ALLOWED_PREFIXES
-        ):
+        if item.module in PLUGIN_ALLOWED_MODULES:
             continue
         violations.append(item)
     return violations
 
 
 def check_cross_plugin(imports: list[Import]) -> list[Import]:
-    """R3：插件 import 兄弟插件的实现模块。"""
+    """R3：跨插件实现依赖，以及绕过 generation 的自身绝对导入。"""
 
     violations: list[Import] = []
     for item in imports:
@@ -193,13 +245,15 @@ def check_cross_plugin(imports: list[Import]) -> list[Import]:
             continue
         own = plugin_package(item.importer)
         target = module_plugin_package(item.module)
-        if own is None or target is None or own == target:
+        if own is None or item.module.split(".")[0] != PLUGIN_ROOT:
+            continue
+        if own == target and not item.absolute:
             continue
         violations.append(item)
     return violations
 
 
-def _is_service_key_call(node: ast.AST) -> ast.Call | None:
+def _is_service_key_call(node: ast.AST, names: set[str], modules: set[str]) -> ast.Call | None:
     """识别 `ServiceKey[T]("name")` 形态，返回该调用节点。"""
 
     if not isinstance(node, ast.Call):
@@ -209,39 +263,31 @@ def _is_service_key_call(node: ast.AST) -> ast.Call | None:
         base = func.value
     else:
         base = func
-    if isinstance(base, ast.Name) and base.id == "ServiceKey":
+    if isinstance(base, ast.Name) and base.id in names:
+        return node
+    if isinstance(base, ast.Attribute) and base.attr == "ServiceKey" and ast.unparse(base.value) in modules:
         return node
     return None
 
 
 def discover_service_keys() -> dict[str, str]:
-    """扫描 `X = ServiceKey[...]("<name>")`，返回 name → 定义文件。"""
+    """扫描字面 ServiceKey 声明（含别名和小写变量），不推断动态 key。"""
 
     found: dict[str, str] = {}
     for rel in tracked_python_files():
         if not is_core_file(rel):
             continue
         path = REPO_ROOT / rel
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
-        except SyntaxError:  # pragma: no cover
-            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        names = {"ServiceKey"}
+        modules: set[str] = set()
         for node in ast.walk(tree):
-            targets: list[ast.expr] = []
-            if isinstance(node, ast.Assign):
-                targets = list(node.targets)
-                value: ast.expr | None = node.value
-            elif isinstance(node, ast.AnnAssign):
-                targets = [node.target]
-                value = node.value
-            else:
-                continue
-            if len(targets) != 1 or value is None:
-                continue
-            target = targets[0]
-            if not isinstance(target, ast.Name) or not target.id.isupper():
-                continue
-            call = _is_service_key_call(value)
+            if isinstance(node, ast.ImportFrom):
+                names.update(alias.asname or alias.name for alias in node.names if alias.name == "ServiceKey")
+            elif isinstance(node, ast.Import):
+                modules.update(alias.asname or alias.name for alias in node.names)
+        for node in ast.walk(tree):
+            call = _is_service_key_call(node, names, modules)
             if call is None or not call.args:
                 continue
             arg = call.args[0]
@@ -277,6 +323,8 @@ def check_capability_table(policy: dict[str, object]) -> list[str]:
     for name, entry in sorted(declared.items()):
         if not isinstance(entry, dict) or not entry.get("role"):
             errors.append(f"[capabilities.\"{name}\"] 缺少 role")
+        elif entry["role"] not in {"core", "seam", "bundle", "claim"}:
+            errors.append(f"[capabilities.\"{name}\"] 无效 role: {entry['role']}")
     return errors
 
 
@@ -334,16 +382,46 @@ def _format_violation(rule: str, item: Import) -> str:
     return f"{rule}: {item.importer} imports {item.module}"
 
 
-def run_check() -> int:
-    policy = load_policy()
-    baseline = load_baseline()
-    imports = collect_imports(tracked_python_files())
+def import_findings(imports: list[Import]) -> dict[str, list[Import]]:
+    """用同一规则扫描当前源码和比较基线，规则修正不伪装成新增依赖。"""
 
-    findings: dict[str, list[Import]] = {
+    return {
         "R1": check_core_imports_plugin(imports),
         "R2": check_plugin_deep_core(imports),
         "R3": check_cross_plugin(imports),
     }
+
+
+def base_findings(base: str) -> dict[str, list[Import]]:
+    """只读 Git 快照；不 checkout、不执行基线源码、不接触运行数据。"""
+
+    commit = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{base}^{{commit}}"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    archive = subprocess.run(
+        ["git", "archive", commit], cwd=REPO_ROOT, capture_output=True, check=True,
+    ).stdout
+    sources: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(archive)) as snapshot:
+        for member in snapshot:
+            if not member.isfile() or not member.name.endswith(SCAN_SUFFIX):
+                continue
+            if member.name.startswith(SKIP_PREFIXES):
+                continue
+            handle = snapshot.extractfile(member)
+            assert handle is not None
+            sources[member.name] = handle.read().decode("utf-8")
+    return import_findings(collect_imports(sorted(sources), sources))
+
+
+def run_check(base: str | None = None) -> int:
+    policy = load_policy()
+    baseline = load_baseline()
+    imports = collect_imports(tracked_python_files())
+
+    findings = import_findings(imports)
+    previous = base_findings(base) if base else None
 
     errors: list[str] = []
     for rule, items in findings.items():
@@ -354,6 +432,9 @@ def run_check() -> int:
             errors.append(_format_violation(rule, item))
         # 已还清的债务必须从账本移除，避免账本漂移。
         live = {item.key for item in items}
+        if previous is not None:
+            for added in sorted(live - {item.key for item in previous[rule]}):
+                errors.append(f"{rule}: 相对 {base} 新增依赖（写入账本也不能放行）: {added}")
         for stale in sorted(known - live):
             errors.append(
                 f"baseline-{rule}: 账本条目已不再是违规，请从 plugin_boundary_baseline.toml 删除: {stale}"
@@ -374,21 +455,18 @@ def run_check() -> int:
         f"R1={counts['R1']}/{len(baseline.get('R1', []))} "
         f"R2={counts['R2']}/{len(baseline.get('R2', []))} "
         f"R3={counts['R3']}/{len(baseline.get('R3', []))} "
-        "（当前/债务基线）"
+        "（当前/债务基线；不代表插件可独立安装或替换）"
     )
     return 0
 
 
-def write_baseline() -> int:
-    imports = collect_imports(tracked_python_files())
-    findings = {
-        "R1": check_core_imports_plugin(imports),
-        "R2": check_plugin_deep_core(imports),
-        "R3": check_cross_plugin(imports),
-    }
+def print_baseline() -> int:
+    """输出待评审账本，不覆盖文件，也不自动批准新增债务。"""
+
+    findings = import_findings(collect_imports(tracked_python_files()))
     lines = [
         "# 插件边界门债务账本：既有违规的精确清单。",
-        "# 由 `python scripts/plugin_boundary.py baseline` 生成。",
+        "# 由 `python scripts/plugin_boundary.py baseline` 输出，人工评审后更新。",
         "# 只允许减少：新增违规会使门失败，条目还清后必须删除。",
         "",
         "[baseline]",
@@ -396,19 +474,18 @@ def write_baseline() -> int:
     for rule in ("R1", "R2", "R3"):
         keys = sorted({item.key for item in findings[rule]})
         lines.append(f"{rule} = [")
-        lines.extend(f'    "{key}",' for key in keys)
+        lines.extend(f"    {json.dumps(key, ensure_ascii=False)}," for key in keys)
         lines.append("]")
-    BASELINE_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"已写入 {BASELINE_PATH.relative_to(REPO_ROOT)}："
-          + ", ".join(f"{rule}={len(findings[rule])}" for rule in findings))
+    print("\n".join(lines))
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Akashic 插件边界门")
     parser.add_argument("command", choices=("check", "baseline"))
+    parser.add_argument("--base", help="按当前规则比较 Git 基线源码，禁止账本接纳新增依赖")
     args = parser.parse_args()
-    return run_check() if args.command == "check" else write_baseline()
+    return run_check(args.base) if args.command == "check" else print_baseline()
 
 
 if __name__ == "__main__":

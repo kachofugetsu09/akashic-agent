@@ -6,14 +6,15 @@
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
+
+import scripts.plugin_boundary as boundary
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_DIR = REPO_ROOT / "agent" / "plugin_contracts"
 
 # 词汇表只允许依赖标准库与本层自身。
-ALLOWED_TOP_LEVEL = {"agent.plugin_contracts"}
+VALUE_LIBRARIES = {"__future__", "collections", "dataclasses", "datetime", "json", "math", "types", "typing"}
 
 VOCABULARY_NAMES = (
     "Body",
@@ -32,30 +33,17 @@ VOCABULARY_NAMES = (
 )
 
 
-def _imported_modules(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    modules: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            modules.add(node.module)
-    return modules
-
-
 def test_contracts_module_has_no_implementation_dependency() -> None:
-    """词汇表不得 import 任何项目内实现层。"""
+    """检查嵌套模块与相对导入；I/O 库和第三方实现不能自动进入值合同。"""
 
     offenders: dict[str, set[str]] = {}
-    for path in sorted(CONTRACTS_DIR.glob("*.py")):
-        for module in _imported_modules(path):
-            top = module.split(".")[0]
-            if top in {"agent", "session", "core", "infra", "bootstrap", "bus", "plugins"}:
-                if not any(
-                    module == allowed or module.startswith(f"{allowed}.")
-                    for allowed in ALLOWED_TOP_LEVEL
-                ):
-                    offenders.setdefault(path.name, set()).add(module)
+    files = [str(path.relative_to(REPO_ROOT)) for path in CONTRACTS_DIR.rglob("*.py")]
+    for item in boundary.collect_imports(files):
+        module = item.module
+        if module == "agent.plugin_contracts" or module.startswith("agent.plugin_contracts."):
+            continue
+        if module.split(".")[0] not in VALUE_LIBRARIES:
+            offenders.setdefault(item.importer, set()).add(module)
     assert offenders == {}, f"结构合同模块出现实现依赖: {offenders}"
 
 
