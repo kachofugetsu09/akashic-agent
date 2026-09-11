@@ -24,7 +24,8 @@ from agent.plugin_contracts.tool_api import BoundTool, CallSource, ContentPart, 
 from agent.plugin_contracts.tools import TOOLS, ToolRef
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION, Turn
 from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
-from agent.plugin_composition.messages import Message, MessageCatalog, MessageReader
+from agent.plugin_contracts import Message
+from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult, freeze_json
 
 logger = logging.getLogger(__name__)

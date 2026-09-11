@@ -140,11 +140,14 @@ def test_legacy_artifacts_shim_exports_every_consumed_name() -> None:
 
 
 def test_every_contract_import_resolves() -> None:
-    """全库 `from agent.plugin_contracts* import X` 的名字与模块都必须真实存在。
+    """全库对两个公开面（contracts / composition）的 import 名字都必须真实存在。
 
-    这是 move & re-export 的兜底：历史上漏过 `_unique_fields`（yoyo 迁移依赖）
-    与 `AttachmentReadLease`/`AttachmentReadPort`（composition 依赖），两次都是
-    「再导出没按全库被 import 的名字集合来写」。本测试把它变成一次静态全量校验。
+    这是 move & re-export 的兜底：历史上漏过 `_unique_fields`（yoyo 迁移依赖）、
+    `AttachmentReadLease`/`AttachmentReadPort`、`open_sender`、`MessageReply`、
+    `ResolvedShell`/`ShellKind`/`detect_shell_kind`，以及把 `Message` 扫进
+    `agent.plugin_composition.messages`（该模块不导出它）—— 全部是「再导出/改写
+    没有按全库实际被 import 的名字集合来核对」。本测试把它变成一次静态全量校验，
+    缺陷在提交前就能发现，而不是等到 change-impact Gate 的插件归档加载时。
     """
 
     import importlib
@@ -164,7 +167,11 @@ def test_every_contract_import_resolves() -> None:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom) or not node.module:
                 continue
-            if not node.module.startswith("agent.plugin_contracts"):
+            if not (
+                node.module.startswith("agent.plugin_contracts")
+                or node.module == "agent.plugin_composition"
+                or node.module.startswith("agent.plugin_composition.")
+            ):
                 continue
             try:
                 module = importlib.import_module(node.module)

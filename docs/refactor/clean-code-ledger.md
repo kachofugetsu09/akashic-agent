@@ -3188,3 +3188,21 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R2 由 46 降到 38。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/akasha_message_plugin/akasha_recall_records/message_embeddings/akasha_learning_binding）= `124 passed`。
 - 持久化/运行 workspace 变化：`none`（纯 import 目标改写）。
+
+## 2026-09-10 插件边界第 3 步（22b）：修复被批量改写扫错的 Message import
+
+- 发现方式：change-impact Gate 的 `model_owner_contract` 场景失败，报
+  `插件 message_push 导入失败: cannot import name 'Message' from 'agent.plugin_composition.messages'`。
+  Gate 会把插件源码冻结成归档再加载，因此这类错误只有真加载时暴露。
+- 根因：第 19 批（`session.log` → `agent.plugin_composition.messages`）时，某个插件原文是
+  `from session.log import Message, MessageCatalog, MessageReader`，批量替换把 `Message`
+  一起搬到了 `agent.plugin_composition.messages`，但该模块并不导出 `Message`。
+  这是**第 5 次同类问题**（前四次：`_unique_fields`、`AttachmentReadLease/ReadPort`、
+  `open_sender`/`MessageReply`、`ResolvedShell`/`ShellKind`/`detect_shell_kind`）。
+- 修复：`plugins/message_push/restart.py` 的 `Message` 改从 `agent.plugin_contracts` 取
+  （它本来就是合同层类型），其余两个名字仍从服务定义模块取。
+- **把守护从「事后靠 Gate」提前到「提交前静态校验」**：`test_every_contract_import_resolves`
+  原本只查 `agent.plugin_contracts*`，现扩展为同时查 `agent.plugin_composition*` ——
+  逐个 import 模块并断言被 import 的名字真实存在。本次这个缺陷在这个守护下会立刻失败。
+- 验证：`pytest`（boundary/contracts/semantic/message_push_plugin/agent_restart_tool/plugin_runtime_control）
+  = `106 passed, 1 failed`（唯一失败是已核对的既有 socket 集成用例）；重跑 change-impact Gate 全绿。
