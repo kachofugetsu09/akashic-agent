@@ -21,6 +21,7 @@ from plugins.react.plugin import REACT
 from agent.plugin_contracts.tool_api import Denied
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS, ToolView
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
+from agent.plugin_contracts.scheduler import SCHEDULER_JOBS, JobView
 from session.log import MessageReader
 from agent.plugin_contracts import Message
 
@@ -55,10 +56,56 @@ class Config(BaseModel):
     max_output_tokens: int = Field(default=4096, gt=0)
 
 
+class _SchedulerJobs:
+    """把调度任务投影成 Core 只读检查面用的纯值。
+
+    Core 不读取 `schedules.json`，也不知道 cron/interval 的表示；渲染计划文本与
+    取正文由本插件负责，Core 只做展示排版。
+    """
+
+    def __init__(self, store: JobStore) -> None:
+        self._store = store
+
+    @staticmethod
+    def _to_view(job: ScheduledJob) -> JobView:
+        schedule = job.cron_expr or (
+            f"每 {job.interval_seconds} 秒"
+            if job.interval_seconds is not None
+            else job.fire_at.isoformat()
+        )
+        content = job.message if job.tier == "instant" else job.prompt
+        return JobView(
+            id=job.id,
+            name=job.name,
+            trigger=job.trigger,
+            tier=job.tier,
+            fire_at=job.fire_at.isoformat(),
+            timezone=job.timezone,
+            enabled=job.enabled,
+            run_count=job.run_count,
+            schedule_text=schedule,
+            content=content or "",
+            state="启用" if job.enabled else "停用",
+        )
+
+    def list_jobs(self) -> tuple[JobView, ...]:
+        return tuple(
+            self._to_view(job)
+            for job in sorted(self._store.load(), key=lambda item: (item.fire_at, item.id))
+        )
+
+    def get_job(self, job_id: str) -> JobView | None:
+        for job in self._store.load():
+            if job.id == job_id:
+                return self._to_view(job)
+        return None
+
+
 async def apply(ctx: Context, config: Config) -> None:
     """注册工具不启动调度；旧 binding 直接重读同一文件，不依赖当前 runtime 指针。"""
     store = JobStore(ctx.workspace_file("schedules.json"))
     watcher: asyncio.Task[None] | None = None
+    _ = await ctx.provide(SCHEDULER_JOBS, _SchedulerJobs(store))
     tool_view = ToolView(())
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)

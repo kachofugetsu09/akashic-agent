@@ -3112,3 +3112,26 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 116 降到 92。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/context_compaction_contract/akasha_message_plugin/message_compaction_summary/reply_program/akasha_recall_records）= `118 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（18）：R1 归零 —— 调度检查改为只读 seam
+
+- 基线：stacked base `36935956`（第 17 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 清掉 R1 最后 2 条。此前 `infra/mobile_realtime/runtime_inspection.py` 直接
+  `from plugins.scheduler.store import JobStore` / `from plugins.scheduler.schedule import ScheduledJob`，
+  自己构造 `JobStore(workspace/schedules.json)` 并按插件的私有字段渲染任务摘要与 Markdown。
+  这是 **Core 在解析插件的私有数据格式**：插件一旦移出仓库，Core 就带着一份偷偷依赖的 schema，
+  正是 R1 要禁止的形态。
+- 为什么不能像前几批那样「搬进合同层」：搬的是**文件格式与字段语义**，不是词汇表。
+  `JobStore.load()` 解析 JSON 布局、`ScheduledJob` 的 cron/interval 表示都属于调度的领域知识，
+  搬进合同层等于把插件的数据格式固化进 Core，只是把耦合换个位置。
+- 做法（seam）：
+  - 新增 `agent/plugin_contracts/scheduler.py`：`JobView`（纯值：id/name/trigger/tier/fire_at/timezone/enabled/run_count + 由插件渲染好的 `schedule_text` 与 `content`）、`SchedulerJobsPort`（`list_jobs`/`get_job`）、`SCHEDULER_JOBS = ServiceKey[SchedulerJobsPort]("scheduler.jobs.read.v1")`，登记为 `seam`。
+  - `plugins/scheduler/message_plugin.py` 新增 `_SchedulerJobs` 提供者并在 `apply()` 里 `ctx.provide(SCHEDULER_JOBS, ...)`；计划文本与正文取值留在插件（属于调度的领域知识），Core 只做展示排版。
+  - `infra/mobile_realtime/runtime_inspection.py` 从当前 generation 的 `composition_root.context.get(SCHEDULER_JOBS)` 取只读视图，**不再 import 插件、不再读 `schedules.json`**。
+- 语义变化（有意且需可见）：**调度插件缺席时**，`list_jobs` 返回空列表、`get_job` 抛既有的
+  `job_not_found` 错误码（优雅降级），而不是 `ImportError` 直接让 Core 起不来。
+  「禁用」任务的行为保持原样：`list_jobs` 只列 enabled，`get_job` 对禁用任务同样报 `job_not_found`。
+- 验证：`plugin_boundary.py check` → **`R1=0/0`**；`pyright --level error` 主配置与 tests 配置均 0 errors；
+  `pytest`（boundary/contracts/semantic/mobile_realtime/scheduler_tools/scheduler_*/job_store）= `257 passed`；
+  另手工确认无 snapshot 时 `list_jobs()` 返回 `{'items': []}`、`get_job()` 报 `job_not_found`。
+- 持久化/运行 workspace 变化：`none`（仍读同一 `schedules.json`，只是改由插件 owner 读）。

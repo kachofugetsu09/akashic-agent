@@ -14,8 +14,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotLease,
     RuntimeSnapshotStore,
 )
-from plugins.scheduler.store import JobStore
-from plugins.scheduler.schedule import ScheduledJob
+from agent.plugin_contracts.scheduler import SCHEDULER_JOBS, JobView
 from agent.skills import SkillRecord, SkillsLoader
 
 _MAX_DOCUMENT_BYTES = 192 * 1024
@@ -73,7 +72,6 @@ class RuntimeInspectionService:
         snapshot_store: RuntimeSnapshotStore | None,
     ) -> None:
         self._workspace = workspace.expanduser().resolve()
-        self._job_store = JobStore(self._workspace / "schedules.json")
         self._snapshot_store = snapshot_store
 
     def list_documents(self) -> dict[str, object]:
@@ -109,23 +107,31 @@ class RuntimeInspectionService:
         return {**self._document_summary(document), "markdown": content}
 
     def list_jobs(self) -> dict[str, object]:
+        """调度插件缺席时返回空列表，而不是崩溃或假装有任务。"""
+        service = self._jobs_service()
+        if service is None:
+            return {"items": []}
         jobs = sorted(
-            self._active_jobs(),
+            (job for job in service.list_jobs() if job.enabled),
             key=lambda job: (job.fire_at, job.id),
         )
         return {"items": [self._job_summary(job) for job in jobs]}
 
     def get_job(self, job_id: str) -> dict[str, object]:
-        job = next(
-            (candidate for candidate in self._active_jobs() if candidate.id == job_id),
-            None,
-        )
-        if job is None:
+        service = self._jobs_service()
+        job = None if service is None else service.get_job(job_id)
+        if job is None or not job.enabled:
             raise RuntimeInspectionError("job_not_found", f"定时任务不存在: {job_id}")
         return {**self._job_summary(job), "markdown": _job_markdown(job)}
 
-    def _active_jobs(self) -> list[ScheduledJob]:
-        return [job for job in self._job_store.load() if job.enabled]
+    def _jobs_service(self) -> object | None:
+        """从当前 generation 的 Root 取只读调度视图；不读取插件私有文件格式。"""
+        store = self._snapshot_store
+        snapshot = None if store is None else store.current
+        root = None if snapshot is None else snapshot.composition_root
+        if root is None:
+            return None
+        return root.context.get(SCHEDULER_JOBS)
 
     async def list_capabilities(self) -> dict[str, object]:
         async with await self._acquire_snapshot() as snapshot:
@@ -173,13 +179,13 @@ class RuntimeInspectionService:
         }
 
     @staticmethod
-    def _job_summary(job: ScheduledJob) -> dict[str, object]:
+    def _job_summary(job: JobView) -> dict[str, object]:
         return {
             "id": job.id,
             "name": job.name,
             "trigger": job.trigger,
             "tier": job.tier,
-            "fire_at": job.fire_at.isoformat(),
+            "fire_at": job.fire_at,
             "timezone": job.timezone,
             "enabled": job.enabled,
             "run_count": job.run_count,
@@ -431,26 +437,21 @@ def _find_mcp_item(
     )
 
 
-def _job_markdown(job: ScheduledJob) -> str:
-    content = job.message if job.tier == "instant" else job.prompt
-    schedule = job.cron_expr or (
-        f"每 {job.interval_seconds} 秒"
-        if job.interval_seconds is not None
-        else job.fire_at.isoformat()
-    )
+def _job_markdown(job: JobView) -> str:
+    """展示排版由 Core 负责；计划文本与正文由调度插件提供。"""
     return "\n".join(
         (
             f"# {job.name or '未命名定时任务'}",
             "",
-            f"- **状态：** {'启用' if job.enabled else '停用'}",
+            f"- **状态：** {job.state}",
             f"- **触发：** `{job.trigger}` / `{job.tier}`",
-            f"- **计划：** {schedule}",
+            f"- **计划：** {job.schedule_text}",
             f"- **时区：** `{job.timezone}`",
             f"- **运行次数：** {job.run_count}",
             "",
             "## 内容",
             "",
-            content or "",
+            job.content,
         )
     )
 

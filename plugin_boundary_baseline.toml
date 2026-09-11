@@ -4,8 +4,6 @@
 
 [baseline]
 R1 = [
-    "infra/mobile_realtime/runtime_inspection.py|plugins.scheduler.schedule",
-    "infra/mobile_realtime/runtime_inspection.py|plugins.scheduler.store",
 ]
 R2 = [
     "plugins/akasha/application/consumer.py|session.embedding_store",
