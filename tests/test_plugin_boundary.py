@@ -288,6 +288,7 @@ def test_base_comparison_rejects_debt_even_when_added_to_ledger(monkeypatch, tmp
 
 @pytest.mark.parametrize("source", [
     'import importlib\nimportlib.import_module("plugins.beta")',
+    'import importlib.util\nimportlib.import_module("plugins.beta")',
     'import importlib as lib\nlib.import_module(name="plugins.beta")',
     'from importlib import import_module as load\nload("plugins.beta")',
     '__import__("plugins.beta")',
