@@ -2,25 +2,13 @@
 
 这份文件只保存 Akashic Agent 当前仍未完成的工作。事项完成后删除，不保留“已完成”记录。
 
-## P0 · 插件边界第 2、3 步
+## P0 · 插件边界后续设计
 
-[0064 插件边界由机器强制](decisions/0064-plugin-boundary-is-machine-enforced.md) 已接受，
-第 1 步（能力角色表、import 门、公开结构合同模块）已实现。以下两步各自需要独立授权与 Gate，
-不能合并推进：
-
-- **第 2 步 · 删死代码**：逐项可达性审计 `agent/tools/`，确认「无生产 importer + 无动态入口 +
-  无测试依赖」后才删除；删除必须同步 `impact.toml` 路径与 `coverage-baseline.json` 的
-  `catalogDigest`。**注意**：`snapshot.tool_registry` 在生产路径被赋值（`_compile_snapshot_tools`），
-  因此 `base.py`、`filesystem.py`、`registry.py`、`search_backend.py`、`shell_command.py`、
-  `shell_security.py`、`unified_exec.py`、`events.py` 是活代码，不得删除；候选清单与勘误见
-  [插件边界地基 §第 2 步](design/plugin-boundary-foundation.md#第-2-步--删死代码需独立授权)。
-- **第 3 步 · 机械迁移**：把 `plugin_boundary_baseline.toml` 的 R1（28 条）、R2（244 处）、
-  R3（238 处）降到 0，并完成 `core.restart_gate.v1`、`core.control_frames.v1` 归位与
-  `agent.plugins.snapshot` 去全局。每批只做一种改写、单独 commit、跑 targeted tests，
-  移动定义时必须 move & re-export 而不是复制。
-
-不可机械化的部分（Turn 原子、压缩 surface replacement、Channel 双栈收敛、外部插件仓库迁移）
-不在上述两步范围内，需要各自的设计与差分 Gate。
+按 [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 与
+[阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 推进：第 2 步仅处理已举证的
+遗留工具模块；后续先验证一个完整切片的外置安装、独立替换、缺依赖与 generation 行为。
+不沿 #595 的机械迁移路线继续，不把全部业务合同搬入 Core。
+Core 中的业务装配、宽泛 snapshot 访问和公开模块中的实现泄漏仍需逐项决定 owner。
 
 ## P0 · Akashic Channel 与 Web/Mobile Adapter 实现
 

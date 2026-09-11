@@ -1,250 +1,140 @@
-# 插件边界地基：从「能加载插件」到「可判定的边界」
+# 插件边界地基：防止新增耦合，为外置验收准备
 
-- 状态：proposed foundation / step 1 of 3
-- 日期：2026-09-10
-- 基线：`origin/main@4f9173c188a16289f0ac08d786f667e75df185d4`
-- 关联设计：[React Core 与 Scheduler/Subagent](react-core-scheduler-subagent.md)、[插件 V3 能力手册](plugin-v3-capabilities.md)
-- 关联决策：[0064 插件边界由机器强制](../decisions/0064-plugin-boundary-is-machine-enforced.md)
-- 参考实现：`/mnt/data/source-code/deepseek-harness`（2026-09-08 checkout，只作为设计输入）
-- 本文权限：只批准第 1 步（地基）。第 2、3 步需要各自的独立授权与 Gate。
+- 状态：第 1、2 步交付范围；后续架构实现待独立设计。
+- 更新：2026-09-12。
+- 决策：[0065](../decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md)，取代 [0064](../decisions/0064-plugin-boundary-is-machine-enforced.md) 的机械迁移路线。
+- 长期约束：PLG-003、PLG-006、PLG-008、PLG-010、PLG-014、PLG-016、STA-001、CAP-001。
 
-## 1. 问题与用户意图
+## 1. 目标与判断标准
 
-目标是让 Akashic 只提供「插件系统 + 原子能力」，所有产品功能是原子能力的正交组合。
-正交的判据是一条可观察结果：**新增一个来源插件时，不需要修改任何已有插件。**
+新增一种业务只增加和装配插件；替换一种实现只调整装配；Core 不需要知道新增业务叫什么。
+Core 保留插件基座、具有明确事实或机制 owner 的原子能力，以及这些能力自己的窄合同。
+业务协作仍需要合同，但合同不因为被多个插件消费就进入 Core。
 
-当前实现达不到这条判据，原因不是原子能力不够，而是**边界既没有被定义，也没有被强制**：
+第一方和外部插件使用同一套入口。允许声明能力依赖，不允许 import 另一个插件实现。
+包内相对导入保留同一 generation；默认装配不取得额外权限。
 
-| 现象 | 当前证据 | 后果 |
+## 2. 已核对事实与局限
+
+- `FreshPluginImporter` 为 artifact 建立独立模块身份并检查路径；它不是同进程 Python 安全沙箱。
+  `plugins.<自身包>` 的绝对导入仍可能走仓库命名空间，必须作为欠账暴露。
+- `ServiceKey` 按名称相等，只说明双方可以声明同名 key；它不证明协议相同、类型完整、
+  生命周期正确，也不证明移动定义没有影响。移动仍须检查类型身份、导入副作用和真实消费者。
+- `session/message.py` 原本只包含值类型及构造边界；#593 搬至
+  `agent/plugin_contracts/message.py` 并保留同对象再导出。本次不扩大它的业务含义。
+- `bootstrap/channels.py` 的渠道装配、`run_reply` 的跨插件组合以及宽泛 snapshot 访问仍待设计。
+  即使 import 数量归零，这些语义耦合也不自动消失。
+- 角色表只盘点 Core 文件中出现的字面 ServiceKey。它不是运行时注册表，
+  不检查所有动态表达式，不证明能力归属或替换成功。
+
+## 3. 本次允许与禁止的变化
+
+#593 完善静态检查、测试与设计依据；#594 核实并删除原有 11 个遗留模块。
+两层分别提交与验证，不合并 PR，不部署，不迁移正式 workspace。
+#595 的现有路线停止；保留分支与提交作为参考，不以其剩余 import 数量继续推进。
+
+持久状态增、改、逻辑失效、物理减少均无变化。Message、Session、memory、plugin-data、
+迁移文件和外部效果协议全部保留。测试只创建一次性数据。
+恢复点由原 PR commit 和任务开始前的 Git bundle 提供；代码回退不冒充运行数据回退。
+
+## 4. 静态门究竟证明什么
+
+| 规则 | 检查内容 | 不证明什么 |
 |---|---|---|
-| Core 直接 import 插件 | 28 条，例如 `bootstrap/app.py` → `plugins.delivery.senders`、`infra/channels/message_view.py` → `plugins.tools.api` | 移出仓库即崩；Core 无法独立启动 |
-| 插件 import Core 内部深路径 | 244 处（去重），涉及 `session.*`、`agent.restart`、`agent.tools.*` 等 | 插件与 Core 同属一个 import 图，不是可替换实现 |
-| 插件互相 import 实现模块 | 238 处（去重），最重的目标是 `plugins.tools`、`plugins.delivery`、`plugins.context` | 「组合」与「耦合」在语法上无法区分 |
-| 文档承诺超过代码实现 | `SCOPED_TURNS`、`CONTINUATIONS`、`BACKGROUND_JOBS` 在多份文档与 skill 中被当作现有积木，Python 代码中零命中 | 后续决策建立在假前提上 |
-| Turn 执行没有原子接口 | `plugins/conversation/program.py::run_reply` 有 25 个参数、11 个 `ctx.require`，被 4 个来源各自复制调用 | 每个来源复制一套执行模型，正交性不成立 |
+| R1 | Core（含 host_bridge 和历史 migrations）不得新增对仓库插件的静态依赖 | 没有业务名称分支或硬编码装配 |
+| R2 | 插件对 Core 的导入只能使用冻结的既有公开模块清单 | 清单内所有对象都已是窄能力 |
+| R3 | 不得跨插件导入实现，也不得通过自身绝对路径绕过 generation | 运行时热重载、卸载和归档正确 |
+| R4 | 字面 ServiceKey 与角色清单双向一致，角色值合法 | 角色语义、权限或提供者可替换 |
+| R5 | 尚未实现的文档名称进入实现后，必须同步清理旧声明 | 所有文档都与实现一致 |
 
-单独看每一条都像「还没迁完」。合起来看是同一个事实：**没有可失败的检查，边界只能靠人记得，代码会持续向单体回归。**
+公开模块清单位于 `scripts/plugin_boundary.py::PLUGIN_ALLOWED_MODULES`。
+它冻结兼容面，不给未来新建的 `plugin_composition/*` 自动放行。
+增加公开模块、搬运业务实现、转导出全功能 store 都须单独说明 owner 和消费者权限，
+不能仅凭 R2 通过接纳。值合同依赖测试另行禁止引入存储、网络及第三方实现库；
+纯函数中的业务分支仍需概念评审，AST 无法证明职责正确。
 
-## 2. 当前真实调用链和状态 owner
+扫描包括 `import`、`from package import module`、相对导入、星号导入和 TYPE_CHECKING 中的导入。
+同一文件对同一模块的重复导入只计一条。扫描仓库已跟踪的 Python 文件，新增文件先 stage。
+计算式动态导入、反射、其他语言、外部插件仓库及 Python 执行沙箱不在本门覆盖范围；
+新增动态加载入口必须在独立安装验收中展开，不能声称本门提供运行时隔离。
 
-### 2.1 插件加载真实边界
+### 债务不能通过改账本消失
 
-```text
-source/config
-     │
-     ▼
-resolve_plugin_sources()          agent/plugins/source_resolver.py
-     │  builtin: 仓库 plugins/ 目录；installed: plugin home cache
-     ▼
-PluginManager._import_plugin()    agent/plugins/manager.py
-     │  FreshPluginImporter.register(module_path, plugin_root)
-     ▼
-FreshPluginImporter.find_spec()   agent/plugins/importer.py
-     │  唯一强制：模块路径不得越出 plugin_root（_require_inside）
-     ▼
-apply(ctx, config)                插件模块
+```bash
+python scripts/plugin_boundary.py check --base origin/main
+python scripts/plugin_boundary.py baseline
 ```
 
-**已确认事实**：`FreshPluginImporter` 只做路径越界检查，没有 import 白名单、没有
-meta path 拦截、没有命名空间隔离。因此「插件」目前只描述加载方式，不描述依赖边界。
+`check` 要求当前违规与账本完全一致；陈旧条目也失败。
+`--base` 以**同一版检查器**扫描 Git 基线和当前源码，新增依赖即使写进账本仍失败。
+因此修复扫描漏报可以补录基线原有事实，不等于允许新源码增加依赖。
+比较基线必须是评审目标 commit，不能选择自己的 HEAD 来冒充无新增。
+CI 对所有 PR（包括 stacked 分支）使用事件中的 base SHA。
 
-**已确认事实**：插件内部写 `from plugins.tools.api import ...` 时，走的是常规 import
-系统解析仓库根的 `plugins/` 命名空间包，**不经过** `FreshPluginImporter`。所以插件之间
-的依赖不经过任何加载期校验。
+`baseline` 只向标准输出打印待评审内容，不写文件。没有 `--base` 的本地 check
+只证明账本一致，不能证明只减不增。检查器和清单自身变化仍需要可信评审，不能自证不可绕过。
+历史迁移的 import 保留为精确债务；不提供整个目录永久豁免，也不修改已发布迁移来获得绿色。
 
-**已确认事实**：`ServiceKey` 是 `@dataclass(frozen=True, slots=True)`，字段只有 `name`
-（`agent/plugin_composition/model.py`）。相等与 hash 只按名字，因此双方各自声明同名 key
-是成立且零运行时成本的；这也意味着 ServiceKey 的定义位置移动是纯文本操作。
+## 5. 第 2 步删除边界
 
-### 2.2 正交性的两个结构缺口
+候选范围固定为 `agent/tools/` 中：
+`forget_memory.py`、`memorize.py`、`message_lookup.py`、`message_push.py`、
+`recall_memory.py`、`skill_loader.py`、`tool_search.py`、`vision.py`、
+`web_fetch.py`、`web_search.py`、`shell.py`。
 
-**缺口一：Turn 执行没有原子接口。** 四个来源（`plugins/reply`、`plugins/scheduler`、
-`plugins/subagent`、`plugins/plugin_update`）各自调用 `plugins/conversation/program.py::run_reply`，
-并各自组装 `ChatModels`、内容检查器、工具菜单、材料绑定与取消检查。跨插件的
-`REPLY_PROGRAM` key（`plugins/reply/api.py`）存在的唯一理由就是让别人能调到这个函数。
+逐项核对静态消费者、相对与包入口导入、配置字符串、动态装载、安装插件消费者与兼容义务。
+删除同时更新 Gate 目录登记和活文档链接，不扩大到 `agent/tools/` 整个目录。
+`snapshot.tool_registry` 在生产中实际赋值；它及存活消费者继续保留。
+`executor.py` / `events.py` 有合同和测试消费者，本次不删除，不预先指定未来迁移位置。
 
-**缺口二：Core 侧能力不是原子。** 37 个 Core-owned `ServiceKey` 中，
-`MESSAGE_CATALOG`/`MESSAGE_WRITERS`/`SESSION_ADMISSION` 等已提供窄服务，但消费者同时
-继续深 import 同一事实的 DTO（`session.message` 被 82 个插件文件、172 处引用）。
+已安装外部插件的消费者证据只适用于记录过的本地快照；未取得正式运行 fleet 证据时，
+不能把全仓搜索写成“所有外部消费者为零”。发现真实外部依赖先处理兼容义务，不修改 cache。
 
-## 3. 已确认事实、推断和未知边界
-
-**已确认（本设计据此立项）**
-
-1. `ServiceKey` 按名相等，所以 key 归位与词汇表搬移是零运行时风险的文本操作。
-2. 词汇表本体 `session/message.py` 不 import 任何项目内模块，可独立成为公开合同。
-3. Core 侧的 `provide` 站点集中在 `PluginManager._provide_composition_services`，按
-   `inject` 按需提供——Core 确实不认识具体插件名，这一点已经正确。
-4. 三个被文档承诺的名字在 Python 代码中不存在。
-
-**推断（需要维护者确认后才可升级为需求）**
-
-1. `Message` 的公开位置应由 Core 侧结构合同模块拥有，而不是 `session/`。依据是
-   DeepSeek Harness 把 `Message` 定义在 `llm/llm`（能力包）而非 `core/session`。
-   本设计按此推断实施**词汇表位置**，但不改变任何持久语义。
-2. `core.timers`、`core.credentials`、`core.channels`、`models.*` 属于 `seam` 角色
-   （可替换实现），其余多为 `core` 角色。角色判定的依据是「是否存在第二种实现或
-   结构合同 + candidate stub」。
-
-**未知边界**
-
-1. 压缩投影是否需要引入 surface replacement（DeepSeek Harness 的
-   `SurfaceOp.replace`）以在日志内表达「替换区间」。本设计不触碰该问题，
-   也未核对现有 `plugins/compaction/` 实现的全部细节。
-2. Core 自建的 Telegram/QQ Channel（`bootstrap/channels.py`）与 v3 `CHANNELS` 的
-   收敛方案。本设计只把它登记为 seam 角色，不决定删除顺序。
-3. 对外部插件仓库（`akashic-plugin/*`）的迁移顺序与 Gate 归属。本门只扫描本仓库
-   跟踪文件，外部仓库的同类检查由各自仓库负责。
-
-## 4. 目标结构和权限边界
-
-### 4.1 分层
+## 6. 后续设计与装配
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│ 组合内核   agent/plugin_composition/                         │
-│   ServiceKey / Context / Fiber / Effect / typed event /      │
-│   generation / lease / candidate。不含任何业务词。            │
-├──────────────────────────────────────────────────────────────┤
-│ 结构合同   agent/plugin_contracts/                           │
-│   Message、内容块、调用引用、终态值域、seam Protocol。         │
-│   只定义不可变值与 Protocol，不 import 实现。                 │
-├──────────────────────────────────────────────────────────────┤
-│ 内置原子能力                                                  │
-│   Session 存储、Turn 执行、Prompt 组装、Tool 管线、           │
-│   Model、Delivery、Timer。以 core / seam / bundle 三种角色    │
-│   登记在 plugin_boundary.toml。                               │
-├──────────────────────────────────────────────────────────────┤
-│ 业务插件   plugins/**                                        │
-│   Markdown Memory、Akasha、Scheduler、Subagent、Wake、Drift。 │
-│   只依赖前两层。                                             │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────┐
+│ Core：加载、作用域、生命周期、原子能力 │
+└────────────────┬─────────────────┘
+                 │ 同一套插件入口
+        ┌────────┴────────┐
+        ▼                 ▼
+┌──────────────┐  ┌────────────────┐
+│ 普通能力提供插件 │  │ 普通业务/装配插件 │
+└──────┬───────┘  └───────┬────────┘
+       └── 明确合同与依赖 ───┘
 ```
 
-### 4.2 能力角色
-
-| 角色 | 判据 | 当前例子 |
-|---|---|---|
-| `core` | 独占权威事实或注册表，不提供第二种实现 | `core.message_writers`、`core.tool_catalog`、`core.tasks` |
-| `seam` | 结构合同 + 可替换实现；消费者只依赖合同 | `models.drivers.v1`、`core.channels`、`core.timers` |
-| `bundle` | 只随产品发布一份实现，且扩展插件禁止依赖本包 | 待第 3 步为 Turn 原子登记 |
-| `claim` | 单 owner 占用声明，不是可注入服务 | `plugin.claim.embedding_memory` |
-
-`bundle` 是当前缺失的角色。它的用途是固定一条规则：**扩展插件依赖 typed event 和更窄的
-Service，不依赖具体执行实现。** 没有这条规则，`run_reply` 被四处复制的问题会复发。
-
-### 4.3 边界规则
-
-| 规则 | 内容 | 基线 |
-|---|---|---|
-| R1 | Core 不得 import `plugins.*` | 28 条，只许减少 |
-| R2 | `plugins/**` 只能 import `agent.plugin_composition`、`agent.plugin_contracts` | 244 处，只许减少 |
-| R3 | 插件之间只能经公开结构合同连接，不得 import 对方实现模块 | 238 处，只许减少 |
-| R4 | 每个 Core-owned `ServiceKey` 必须在策略表登记角色 | 无基线，立即全绿 |
-| R5 | 已记录为「文档承诺、代码未实现」的名字必须保持不存在 | 无基线，立即全绿 |
-
-R1～R3 是既有欠账，用债务账本 `plugin_boundary_baseline.toml` 精确登记，**只允许减少**；
-R4、R5 没有基线，因此新增 Core 能力必须同时登记角色，实现幽灵名必须同时更新文档。
-
-## 5. 失败、取消、并发、迁移和回滚
-
-- **失败语义**：`python scripts/plugin_boundary.py check` 违规时输出每条
-  `<rule>: <importer> imports <module>` 并以退出码 1 结束。新增违规、未登记角色的
-  Core ServiceKey、幽灵名出现、账本条目已还清，四类都失败。
-- **取消与并发**：本门是只读静态检查，不持有锁、不写仓库、不访问网络。
-  唯一的写操作是 `baseline` 子命令，由人工显式调用。
-- **迁移**：本设计不改变任何持久状态。受保护对象逐项不变——`sessions.db/messages`
-  的只追加合同、`turns` 状态机、`memory` 目录、plugin-data、proactive/Wake/Drift 数据库、
-  外部效果提交语义。本 PR 只新增文件与一处 `session/message.py` 改为再导出。
-- **回滚**：按 commit 反向回滚。词汇表再导出保证了旧导入路径继续可用，因此回滚
-  词汇表位置不需要同时回滚任何调用点。
-
-## 6. 分阶段实施方案
-
-整体三步，每步一个 PR，逐步叠加（stacked）。
-
-### 第 1 步 · 地基（本设计批准的范围）
-
-1. 公开结构合同模块 `agent/plugin_contracts/`，承载消息词汇表；
-   `session/message.py` 保留为再导出入口，既有调用点零改动。
-2. 能力角色单一真源 `plugin_boundary.toml`，登记 37 个 Core-owned ServiceKey
-   与 3 个幽灵名。
-3. 边界门 `scripts/plugin_boundary.py` 与债务账本 `plugin_boundary_baseline.toml`。
-4. 边界门测试 `tests/test_plugin_boundary.py`，含端到端拒绝与账本陈旧检测。
-5. 本设计与决策记录；更新 `INDEX.md`。
-
-### 第 2 步 · 删死代码（需独立授权）
-
-**2026-09-10 勘误。** 本文初版写「删除不可达的 `agent/tools/` 副本（`RuntimeSnapshot.tool_registry`
-只声明不赋值，生产调用方从不传入）」，该论断**错误**，已作废。正确的可达性事实如下。
-
-`snapshot.tool_registry` 在生产路径被赋值：`agent/plugins/manager.py` 的
-`_compile_snapshot_tools` 编译它并挂到每个 `RuntimeSnapshot`（赋值点见
-`_refresh_composition_runtime_tools`、`_compile_generation_snapshot` 与 reload 分支），
-读取方包括 `infra/mobile_realtime/runtime_inspection.py` 与 `agent/tools/registry.py` 自身。
-按模块路径 `agent.tools.<name>` / `agent/tools/<name>.py` 静态扫描，20 个被跟踪文件的真实分布是：
-
-| 状态 | 模块 | 证据 |
-|---|---|---|
-| 活代码，必须保留 | `base.py`、`filesystem.py`、`registry.py`、`search_backend.py`、`shell_command.py`、`shell_security.py`、`unified_exec.py`、`events.py` | 有生产 importer；`host_bridge/`、`plugins/standard_tools/`、`agent/skills.py` 等 |
-| 无代码消费者，删除候选 | `forget_memory.py`、`memorize.py`、`message_lookup.py`、`message_push.py`、`recall_memory.py`、`skill_loader.py`、`tool_search.py`、`vision.py`、`web_fetch.py`、`web_search.py`、`shell.py` | 零生产 importer；仅出现在 `impact.toml`、设计文档或本门账本中 |
-| 仅测试消费者 | `executor.py`（`tests/test_tool_executor.py`）、随之受影响的 `events.py` | 删除需要同时处置测试与 `events.py` 的归属 |
-
-其中 `shell.py`、`web_fetch.py`、`web_search.py` 同时是 R1 违规来源（它们 import 插件），
-删除它们会让 R1 减少 3 条，是第 2 步与第 3 步的天然交界。
-
-因此第 2 步不是「整片删除」，而是**逐项可达性审计 + 目录登记联动**：
-
-1. 对每个候选确认「无生产 importer + 无动态/字符串入口 + 无测试依赖」；有任一消费者即保留。
-2. 删除时必须同步修改 `tests_scenarios/contracts/impact.toml` 的路径列表，并更新
-   `coverage-baseline.json` 的 `catalogDigest`（catalog 变更会使 digest 失效，这是设计如此）。
-3. 清理设计文档中指向被删模块的引用；确实需要预留的，按 `plugin_boundary.toml` 的幽灵名规则写明理由。
-
-**不在仓库范围内。** 起初列出的「只剩 `__pycache__` 的插件目录」与 `plugin_packages/` 经核实
-是某个工作 checkout 中的**未跟踪本地残留**，不是仓库内容（仓库实际跟踪 37 个插件目录，
-`git ls-files plugin_packages` 为 0）。它们不属于任何仓库 PR，也不得被当作已确认的可删除对象。
-
-### 第 3 步 · 机械迁移（需独立授权）
-
-把 R1～R3 的欠账降到 0：
-
-1. `session.*` 深路径（172 处）改经结构合同。
-2. 插件间实现 import（238 处）改经版本化 `ServiceKey` + 结构合同模块。
-3. Core→插件反向链路（28 条）改为经 Service 消费，逐条决定 owner。
-4. `RESTART_GATE`、`CONTROL_FRAMES` 两个错位 key 归位到组合内核。
-5. `agent.plugins.snapshot` 从隐式全局改为注入 Service。
-
-### 不在本设计范围
-
-Turn 原子（`SCOPED_TURNS` 形态的 inbox + scope + 句柄）、压缩 surface replacement、
-Channel 双栈收敛、外部插件仓库迁移。这些是不可机械化的重构，需要各自的差分 Gate。
+先选择一个完整业务切片验证通用边界，再迁移其他能力；不预先冻结所有业务 Protocol。
+例如新内容的结构、模型解释和 UI 展示是不同操作，各自由对应插件协作拥有，
+Core 不维护新内容名称的中央分支；没有解释器与解释器明确返回空必须可区分。
+这只是候选验证案例，不授权本轮实现新 renderer 注册表或改变现有内容语义。
 
 ## 7. 验收标准
 
-**本 PR（第 1 步）**
+### 第 1、2 步的交付
 
-1. `python scripts/plugin_boundary.py check` 退出码 0，并打印当前/基线数量。
-2. 新增一条 Core→插件 import 时，门必须失败——已用真实变异验证。
-3. 新增一个未登记角色的 Core `ServiceKey` 时，门必须失败——已用真实变异验证。
-4. 让 `SCOPED_TURNS` 等幽灵名出现在代码中时，门必须失败。
-5. 账本中已还清的条目必须使门失败，防止账本掩盖真实状态。
-6. `session.message` 与 `agent.plugin_contracts` 导出同一对象（身份唯一）。
-7. 既有测试全量通过，证明词汇表搬移无语义变化。
+1. 原来能绕过的包入口、跨包相对导入和自身绝对导入能被检测。
+2. 新依赖写入账本仍被 `check --base` 拒绝；已还清债务不能继续留在账本。
+3. 非法角色和别名声明受检；公开模块不能靠放入允许目录自动增加。
+4. Message 两条路径保持同一对象，消息与 metadata 现有行为回归通过。
+5. 第 2 步只删除有证据的模块，存活工具、迁移导入与 Gate 目录继续有效。
+6. targeted tests、类型检查、change-impact Gate 与独立概念审查分别记录真实结果。
 
-**终点（三步全部完成）**
+### 最终目标，尚未完成
 
-1. 清空 `plugins/` 目录后 Core 仍能启动。
-2. 任一插件目录原样安装到外部 cache，不改 Core，admission 通过。
-3. `plugins/**` 中不存在指向 Core 内部或兄弟插件实现的 import。
-4. 新增一个来源插件不需要修改任何已有插件。
-5. R1～R3 数量为 0，`plugin_boundary_baseline.toml` 清空。
-6. 模型实际收到的输入能由 Message 日志重建，并有运行时 invariant 断言。
+| 验收 | 独立可观察证据 |
+|---|---|
+| 空载 | Core 制品不含业务插件源码；启动和插件管理可用，缺失能力明确报告，不假装能够聊天 |
+| 外置 | 正式安装链加载外部插件；不借仓库 `plugins/` 或源码 PYTHONPATH 兜底；验证 apply 与真实能力调用 |
+| 新增 | 新增业务及其内容解释只增加插件与装配；Core、无关消费者不改，不增加第一方特殊分支 |
+| 替换 | 独立实现不委托原提供者，只改装配即可满足同一消费者的行为合同 |
+| 生命周期 | 缺依赖、卸载、失败、取消与 generation 切换明确；旧任务/历史绑定继续使用原实现，原始事实保留 |
+
+只要求依赖满足的合法组合能运行，不要求任意插件脱离所有依赖单独运行。
+R1～R3 归零是结构条件之一，不是上述五项验收的替代品。
 
 ## 8. 停止条件
 
-出现以下任一情况即停止当前步骤：
-
-- 需要改变 `sessions.db` schema、消息保留规则或任何正式 workspace 数据。
-- 需要按插件 ID 在 Core 中分支。
-- 只能通过放宽门、删除账本条目或跳过测试获得绿色。
-- 发现 `plugin_boundary.toml` 的角色判定与真实能力 owner 冲突，且无法用现有证据裁决。
+需要改变正式数据、持久语义、外部效果协议或既有插件生命周期时，转入独立设计与批准。
+不得通过转导出实现、扩大目录豁免、修改受保护测试或仅修改角色标签制造架构完成。

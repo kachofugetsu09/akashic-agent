@@ -1,16 +1,17 @@
-# Akashic 插件边界策略：Core 拥有能力的单一真源。
+# Akashic 插件边界清单：当前在 Core 源码中声明的字面 ServiceKey。
 #
 # 本文件的每个条目必须对应代码中真实存在的 ServiceKey，反之亦然；
 # 由 `python scripts/plugin_boundary.py check` 强制（R4）。
-# 新增一个 Core 能力时，必须同时在这里登记 role，否则门失败。
+# 新增声明必须登记 role，否则静态门失败；登记不授予运行时权限。
 #
-# role 取值（照抄 DeepSeek Harness 的能力角色三分法，另加 claim）：
-#   core  —— 独占权威事实或注册表，不提供第二种实现。
-#   seam  —— 结构合同 + 可替换实现；消费者只依赖合同，不依赖某个实现。
-#   bundle—— 只随产品发布一份具体实现，且扩展插件禁止依赖本包。
+# role 是待逐项复核的现状分类，不是目标 Core 白名单：
+#   core  —— 当前由 Core 提供；仍须证明其事实或通用机制归属。
+#   seam  —— 协作入口；可替换性必须另外用独立实现验证。
+#   bundle—— 默认装配；不得赋予第一方实现特殊入口。
 #   claim —— 单 owner 占用声明，不是可注入服务。
 #
-# 未注册的 Core 能力不会被加载；本文件不是愿望清单，而是现状合同。
+# Runtime 不读取本表。表不证明消费者权限、原子性或独立安装成功。
+# 业务合同可以由普通插件生态拥有；不要求所有共享类型迁入 Core。
 
 [capabilities]
 
@@ -53,7 +54,7 @@ note = "显式撤销最近一次 interaction"
 
 [capabilities."core.conversation.semantic_interest"]
 role = "core"
-note = "从最近非主动 Turn 生成的只读语义分"
+note = "当前 Core 中的业务评分，目标归属待复核；登记不批准留在 Core"
 
 # ── 外部效果与投递 ───────────────────────────────────────────
 [capabilities."core.deliveries"]
@@ -139,7 +140,7 @@ note = "控制帧路由与声明"
 role = "core"
 note = "插件 install/uninstall/revert 状态"
 
-# ── 模型：当前唯一已实现的可互换 seam ────────────────────────
+# ── 模型协作入口：声明位置不等于提供者归属 ──────────────────
 [capabilities."models.chat.v1"]
 role = "seam"
 note = "按冻结 revision 取得 chat model"

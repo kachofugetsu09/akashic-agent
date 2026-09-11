@@ -121,7 +121,7 @@
 | 插件只读既有 Session 投影 | [持久化状态地图](design/persistence-state-map.md) → [插件 Session Read 组合能力任务合同](design/plugin-session-read-service-task-contract.md) | `agent/plugin_composition/session_read.py`、`agent/plugins/manager.py`、`session/manager.py` |
 | 插件 v3 Dashboard 注册与数据边界 | [插件 v3 包级 contribution 任务合同](design/plugin-v3-package-contributions-task-contract.md) → [v3 DashboardContext 任务合同](design/plugin-v3-dashboard-context-task-contract.md) | `agent/plugin_composition/dashboard.py`、`agent/plugins/dashboard_host.py` |
 | 插件 v3 静态投影与 exact Root runtime | [v3 DashboardContext 任务合同](design/plugin-v3-dashboard-context-task-contract.md) → [静态投影与 exact runtime 任务合同](design/plugin-v3-static-projection-runtime-task-contract.md) | `agent/plugin_composition/model.py`、`agent/plugins/composable.py`、`agent/plugins/snapshot.py`、`agent/plugins/dashboard_host.py` |
-| 插件边界、能力角色、import 约束或正交性审查 | `projectneed` 第 6、9～13 节 → [0064](decisions/0064-plugin-boundary-is-machine-enforced.md) → [插件边界地基](design/plugin-boundary-foundation.md) → [插件 V3 能力手册](design/plugin-v3-capabilities.md) | `plugin_boundary.toml`、`plugin_boundary_baseline.toml`、`scripts/plugin_boundary.py`、`agent/plugin_contracts/`、`agent/plugin_composition/` |
+| 插件边界、能力角色、import 约束或正交性审查 | `projectneed` 第 6、9～13 节 → [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) → [插件边界地基](design/plugin-boundary-foundation.md) → [插件 V3 能力手册](design/plugin-v3-capabilities.md) | `plugin_boundary.toml`、`plugin_boundary_baseline.toml`、`scripts/plugin_boundary.py`、`agent/plugin_contracts/`、`agent/plugin_composition/` |
 | Akasha v3、feedback、Inspector 与 Mobile recall | [持久化状态地图](design/persistence-state-map.md) → [Akasha 在线与重放](design/akasha-v2-runtime-migration.md) → [Akasha v3 迁移任务合同](design/akasha-plugin-v3-migration-task-contract.md) | `plugins/akasha/`、`core/memory/plugin.py`、`agent/plugin_composition/models.py`、`agent/plugin_composition/messages.py`、`agent/plugins/manager.py` |
 | Citation/Meme v3 回复组合接入点 | [持久化状态地图](design/persistence-state-map.md) → [candidate Root 隔离任务合同](design/plugin-candidate-root-isolation-task-contract.md) → [v3 回复组合接入点任务合同](design/plugin-v3-passive-response-seams-task-contract.md) → [纯 v3 组合 Gate（历史）](design/plugin-passive-composition-v3-gate-task-contract.md) → [WebUI E2E Gate](design/plugin-passive-webui-v3-e2e-task-contract.md) | `plugins/reply/`、`plugins/react/`、`plugins/content/`、`plugins/models/`、`plugins/tools/`、`agent/plugin_composition/`、`agent/plugins/manager.py`、`bootstrap/chat_api.py` |
 | 插件 v3 context、只读 Memory runtime 与显式消息撤销 | [context-prepared 与 Memory capability 任务合同](design/plugin-context-prepared-memory-capability-task-contract.md) → [Plugin Undo v3 与 interaction 撤销协调合同](design/plugin-v3-interaction-undo-task-contract.md) | `plugins/context/`、`plugins/compaction/`、`plugins/markdown_memory/`、`agent/plugin_composition/interaction_undo.py`、`agent/plugins/manager.py`、`session/` |
@@ -270,7 +270,8 @@ docs/
 │   ├── 0061-archive-stopped-legacy-executions.md
 │   ├── 0062-tools-flow-through-provider-views.md
 │   ├── 0063-execution-failures-have-terminal-results.md
-│   └── 0064-plugin-boundary-is-machine-enforced.md
+│   ├── 0064-plugin-boundary-is-machine-enforced.md
+│   └── 0065-plugin-boundary-checks-do-not-grant-core-ownership.md
 ├── design/
 │   ├── akasha-v2-runtime-migration.md
 │   ├── akashic-channel-client-adapters.md

@@ -1,0 +1,20 @@
+name: Plugin boundary
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  plugin-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Reject new dependency debt, including ledger additions
+        env:
+          BOUNDARY_BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+        run: python scripts/plugin_boundary.py check --base "$BOUNDARY_BASE"
