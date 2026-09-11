@@ -8,22 +8,19 @@ from fastapi import FastAPI, HTTPException, Query
 
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.plugin_contracts import ContentPart, Message
 
 from .message_plugin import AKASHA_RECORDS_VIEW
 from .recalls import ContextSource, Hit, ProgramSource, Recall, RecallRecordsRead, ToolSource
 
 
-def _runtime_context():
-    snapshot = get_current_runtime_snapshot()
-    if snapshot is None or snapshot.composition_root is None:
-        raise RuntimeError("Akasha Dashboard 请求缺少实际 runtime snapshot")
-    return snapshot.composition_root.context
+def _runtime_context(context: DashboardContext):
+    """从本次 generation 的边界取得组合 Root；不再读模块级运行时全局。"""
+    return context.require_composition_root().context
 
 
-def _records() -> RecallRecordsRead:
-    return _runtime_context().require(AKASHA_RECORDS_VIEW)()
+def _records(context: DashboardContext) -> RecallRecordsRead:
+    return _runtime_context(context).require(AKASHA_RECORDS_VIEW)()
 
 
 def _message_text(message: Message) -> str:
@@ -63,8 +60,9 @@ def _hit_messages(
     hit: Hit,
     *,
     full_text: bool,
+    context: DashboardContext,
 ) -> dict[str, object]:
-    reader = _runtime_context().require(MESSAGE_CATALOG).reader(hit.session_id)
+    reader = _runtime_context(context).require(MESSAGE_CATALOG).reader(hit.session_id)
     messages: list[dict[str, object]] = []
     for message_id in hit.message_ids:
         message = reader.get(message_id)
@@ -98,9 +96,9 @@ def _source_fields(recall: Recall) -> tuple[str, str, int, dict[str, object]]:
     return source.query, "", -1, source_data
 
 
-def _row(identity: str, recall: Recall, *, full_text: bool) -> dict[str, object]:
+def _row(identity: str, recall: Recall, *, full_text: bool, context: DashboardContext) -> dict[str, object]:
     query_text, session_key, seq, source = _source_fields(recall)
-    hits = [_hit_messages(recall, hit, full_text=full_text) for hit in recall.hits]
+    hits = [_hit_messages(recall, hit, full_text=full_text, context=context) for hit in recall.hits]
     return {
         "query_id": identity,
         "session_key": session_key,
@@ -126,7 +124,7 @@ def register(app: FastAPI, context: DashboardContext) -> None:
 
     @app.get("/api/dashboard/akasha-inspector/overview")
     async def get_overview() -> dict[str, object]:
-        return {"available": True, "total": len(_records().list())}
+        return {"available": True, "total": len(_records(context).list())}
 
     @app.get("/api/dashboard/akasha-inspector/turns")
     async def list_turns(
@@ -136,17 +134,17 @@ def register(app: FastAPI, context: DashboardContext) -> None:
         page_size: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, object]:
         # 1. 会话过滤只读召回出处，普通翻页不展开页外消息正文。
-        records = [(identity, recall) for identity, recall in _records().list()
+        records = [(identity, recall) for identity, recall in _records(context).list()
                    if not session_key or _source_fields(recall)[1] == session_key]
         query = q.strip().casefold()
         start = (page - 1) * page_size
         if query:
             # 文本搜索仍包含展示正文；只展开已经通过会话过滤的记录。
-            rows = [_row(identity, recall, full_text=False) for identity, recall in records]
+            rows = [_row(identity, recall, full_text=False, context=context) for identity, recall in records]
             rows = [row for row in rows if query in json.dumps(row, ensure_ascii=False).casefold()]
             items, total = rows[start:start + page_size], len(rows)
         else:
-            items = [_row(identity, recall, full_text=False)
+            items = [_row(identity, recall, full_text=False, context=context)
                      for identity, recall in records[start:start + page_size]]
             total = len(records)
         return {
@@ -158,7 +156,7 @@ def register(app: FastAPI, context: DashboardContext) -> None:
 
     @app.get("/api/dashboard/akasha-inspector/turns/{query_id:path}")
     async def get_turn(query_id: str) -> dict[str, object]:
-        recall = _records().read(query_id)
+        recall = _records(context).read(query_id)
         if recall is None:
             raise HTTPException(status_code=404, detail="Akasha 检索记录不存在")
-        return _row(query_id, recall, full_text=True)
+        return _row(query_id, recall, full_text=True, context=context)

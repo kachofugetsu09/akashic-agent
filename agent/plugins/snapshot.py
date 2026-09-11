@@ -935,8 +935,9 @@ class RuntimeSnapshotAccess:
     因此 task-scoped 语义、owner-task 校验与返回值与原先完全一致。
     """
 
-    def current(self) -> RuntimeSnapshot | None:
-        return get_current_runtime_snapshot()
+    def composition_root(self) -> CompositionSnapshotRoot | None:
+        snapshot = get_current_runtime_snapshot()
+        return None if snapshot is None else snapshot.composition_root
 
     def lease(self) -> RuntimeSnapshotLease | None:
         return lease_current_runtime_snapshot()

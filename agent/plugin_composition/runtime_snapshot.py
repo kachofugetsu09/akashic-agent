@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agent.plugin_composition.model import ServiceKey
+
+if TYPE_CHECKING:
+    from agent.plugin_composition.overlay import CompositionSnapshotRoot
 
 
 @runtime_checkable
@@ -27,8 +30,8 @@ class RuntimeSnapshotAccessPort(Protocol):
     失败语义一致；类型用不透明对象避免合同层依赖快照实现。
     """
 
-    def current(self) -> object | None:
-        """当前 task 的 runtime snapshot；没有绑定时返回 None。"""
+    def composition_root(self) -> CompositionSnapshotRoot | None:
+        """当前 task 绑定快照的组合 Root；没有绑定或未发布时返回 None。"""
         ...
 
     def lease(self) -> object | None:

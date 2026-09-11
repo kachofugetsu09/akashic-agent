@@ -7,7 +7,6 @@ R1 = [
 ]
 R2 = [
     "plugins/standard_tools/shell_backend.py|agent.tools.unified_exec",
-    "plugins/akasha/dashboard.py|agent.plugins.snapshot",
     "plugins/models/litellm_catalog.py|agent.model_runtime.catalog.litellm_registry",
     "plugins/models/state.py|agent.plugins.snapshot",
     "plugins/prompt/plugin.py|agent.persona",
@@ -19,8 +18,6 @@ R2 = [
     "plugins/standard_tools/skills.py|agent.plugins.archive",
     "plugins/standard_tools/skills.py|agent.plugins.snapshot",
     "plugins/telegram_sender/sender.py|infra.channels.telegram_utils",
-    "plugins/wake/dashboard.py|agent.plugins.snapshot",
-    "plugins/workbench_ui/dashboard.py|agent.plugins.snapshot",
     "plugins/workbench_ui/dashboard.py|infra.channels.message_view",
 ]
 R3 = [

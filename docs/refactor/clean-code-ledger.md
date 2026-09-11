@@ -3551,3 +3551,26 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 构造路径，因此都需要 targeted tests + 完整 Gate。第 36/37 批证明：只要能找到不依赖
 实现类型的窄 Protocol，就能把「读取」类依赖安全地移到合同层；剩下的是「构造」类，
 必须由提供方显式暴露工厂。
+
+## 2026-09-10 插件边界第 3 步（39）：3 个 Dashboard 改为显式注入运行时边界
+
+- 基线：stacked base `2ba6de33`（第 38 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：**显式穿参**（DSH 的做法）。R2 由 16 降到 13：
+  - `DashboardContext` 增加只读字段 `_runtime_snapshot: RuntimeSnapshotAccessPort | None` 与
+    `require_composition_root()`；由 `dashboard_host.py` 在**装配时注入** `RuntimeSnapshotAccess()`。
+  - `plugins/akasha|wake|workbench_ui/dashboard.py` 改为经 `context.require_composition_root()`
+    取得组合 Root，**不再 import `agent.plugins.snapshot` 的模块级全局**；helper 函数
+    （`_records`/`_hit_messages`/`_row`/`_view`/`_catalog`）按值传递 `context`。
+- **失败语义核对**：原先各 dashboard 在缺少快照时抛 `RuntimeError`（消息含各自名字）。
+  新路径统一由 `require_composition_root()` fail-loud；`CompositionError` 继承 `RuntimeError`，
+  异常层级不变，且全库无测试匹配这些消息文本（已 grep 确认）。
+  行为差异仅在于错误消息里现在带 plugin_id，属于诊断信息改善。
+- 过程提醒：注入点第一次改错到了 `import_dashboard_module(...)` 的调用（参数名相似），
+  pyright 立刻报 `No parameter named "_runtime_snapshot"`；另有一次给 `snapshot.py` 重复导入
+  `CompositionSnapshotRoot`（类型别名）导致 pyright 报 `Variable not allowed in type expression`。
+  两处都由静态检查拦下，说明「每个小步都跑 pyright」是必要的。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_plugin_dashboards）= `98 passed, 2 failed`，
+  2 项是**既有**失败（父提交 `a2add169` 上同样 2 failed，均为 Node/jsdom 面板渲染用例）。
+  另用探针确认：无绑定时 fail-loud 且带 `RUNTIME_SNAPSHOT_UNAVAILABLE` code；
+  有绑定且快照带 root 时返回该 root。
+- 持久化/运行 workspace 变化：`none`。

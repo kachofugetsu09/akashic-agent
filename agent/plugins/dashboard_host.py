@@ -28,6 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Match, WebSocketRoute
 
 from agent.plugin_composition import DashboardContext
+from agent.plugins.snapshot import RuntimeSnapshotAccess
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
@@ -267,6 +268,7 @@ class PluginDashboardHost:
                 plugin_dir=module_path.parent,
                 data_root=data_root,
                 validation=validation,
+                _runtime_snapshot=RuntimeSnapshotAccess(),
                 _workspace_roots=tuple(
                     (name, resolve_declared_workspace_root(workspace, name))
                     for name in workspace_roots
