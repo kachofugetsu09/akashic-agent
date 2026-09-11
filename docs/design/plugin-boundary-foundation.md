@@ -312,6 +312,27 @@ core，必须先有真实 `__init__.py`。
 （`AttachmentReadLease`/`AttachmentReadPort`）都是没做这一步而漏名，前者被 change-impact Gate
 以 17 项失败挡下。drop-in 的判据是：`python -c "import <所有消费者模块>"` 全部成功。
 
+**R2 剩余条目的逐条分类（2026-09-10 第 25 批后，R2=23）。** 每一项都已定性，接手者不需要重新调查：
+
+| 目标 | 条数 | 性质与做法 |
+|---|---|---|
+| `agent.plugins.snapshot` | 7 | **设计原定第 5 项**：隐式全局改注入 Service。需要新增 ServiceKey + provider + 改写 7 处调用点，并验证 generation 切换语义，属独立批次 |
+| `core.net.http` | 6 | **真 seam，需要设计**：模型 driver 与 web 工具直接 `HttpClient()`/`RetryPolicy()`/`RequestBudget()`。要解耦必须让 HTTP requester 可注入（离线/测试可控），而不是把 httpx 实现搬进合同层 |
+| `agent.persona` | 2 | `read_veda_file` 读产品文本、`AKASHIC_BEHAVIOR_RULES` 常量。owner 是 Core 产品语义，应由 prompt 组装的服务面提供，不是词汇搬迁 |
+| `agent.skills` / `agent.plugins.archive` | 2 | `SkillRecord`/`skill_body` 可进合同层；`PluginArchive` 是 Core 插件归档存储，应经 seam 提供 |
+| `agent.tools.filesystem` | 1 | 文件操作值对象（`ReadFileOperation` 等），可进合同层，但需与 `_FileOperation` 基类一起切 |
+| `agent.model_runtime.catalog.litellm_registry` | 1 | `resolve_catalog_capabilities` 是模型能力的解析入口，属 `models.*` seam 面 |
+| `agent.control.context` | 1 | `mint_plugin_child_capability`/`running_turn_id` 是控制面能力铸造，属控制 seam |
+| `infra.channels.telegram_utils` | 1 | `strip_chunk` 是 Telegram 文本分段，owner 在 Telegram 适配层，应先定 channel seam |
+| `infra.channels.message_view` | 1 | `session_row` 是 Core 的 Session 展示投影，应由 Core 的展示服务提供 |
+| `agent.tools.unified_exec` | 1 | **已登记并注明**：`shell_backend` 直接构造 local 后端，应改经 `core.processes` 消费；会改变进程记账与 owner key 生成路径，属行为变更，需单独差分 Gate |
+
+**已判定「不搬」的通用理由（避免后来者重复调查）**：有状态、持注册表、需 I/O 或环境态的模块
+一律不进合同层 —— `session.log`/`session.embedding_store`（权威存储）、`core.common.diagnostic_log`
+（contextvars + logging 配置）、`core.error_context`（环境态 ContextVar）、`agent.control.context`
+（能力铸造）、`agent.plugins.snapshot`（运行时全局）。它们改由**能力定义处**再导出（第 19/22/24 批）
+或登记为 seam（第 9/10/11/17/18/23 批）。
+
 把 R1～R3 的欠账降到 0：
 
 1. `session.*` 深路径（172 处）改经结构合同。

@@ -3254,3 +3254,13 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R2 由 30 降到 23。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_model_selection/wake_messages/scheduler_tools/job_store/message_markdown_memory）= `210 passed`。
 - 持久化/运行 workspace 变化：`none`（纯 import 目标改写；文件仍是同一份 `atomic_*` 实现，写入路径与原子性语义不变）。
+
+## 2026-09-10 插件边界第 3 步：R2 剩余条目分类（收尾记录）
+
+- 第 25 批后 R2=23。每一项的性质与应做动作已写入
+  [设计文档 §第 3 步](../design/plugin-boundary-foundation.md)的分类表，接手者不需要重新调查：
+  7 条属设计原定第 5 项（`agent.plugins.snapshot` 去全局）、6 条 `core.net.http`（真 seam，需要
+  HTTP requester 可注入）、其余 10 条按「可进合同的价值词汇」与「应经 seam 提供的 Core 能力」两类分开。
+- 同时记录通用判据：有状态 / 持注册表 / 需 I/O 或环境态的模块一律不进合同层，改由**能力定义处**
+  再导出（第 19/22/24 批的模式）或登记为 seam（第 9/10/11/17/18/23 批的模式）。
+- 本轮（第 24、25 批）未跑 change-impact Gate，已在收尾批次补跑配对。
