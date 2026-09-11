@@ -11,7 +11,11 @@ from agent.plugin_composition.frames import CONTROL_FRAMES
 from agent.plugin_contracts.delivery_api import FINAL_OUTPUT_DELIVERY
 from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.conversation import check_origin
-from agent.plugin_contracts.conversation import ConversationPort as Conversation
+# 这里需要**构造**具体 Conversation（reader/inputs/controls/tasks/changed 全由本来源
+# 决定），不是只做注解；CONVERSATION 服务的签名是 `Callable[[str], ConversationPort]`，
+# 无法表达这次构造。因此保留实现 import，并已在 plugin_boundary_baseline.toml 登记。
+# 正解是由会话能力提供一个「按显式参数构造」的 seam，属独立批次。
+from plugins.conversation.source import Conversation
 from agent.plugin_contracts.sources import SOURCES, SOURCE_CHANGED, Source
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_composition.messages import MessageReader

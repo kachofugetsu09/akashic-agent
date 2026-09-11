@@ -3363,3 +3363,19 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
   WORKFLOW 的「源码在计划生成后发生变化会使原计划失效」在同进程内编辑时同样适用。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/channel_input/reply_program/subagent_messages/programmatic_result/wake_messages）= `159 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（30b）：修复 Protocol 被实例化
+
+- 发现方式：change-impact Gate 的 `companion_control_replay_contract` 场景失败，
+  报 `TypeError: Protocols cannot be instantiated`。
+- 根因：第 30 批把 `plugins.programmatic.plugin` 的 `Conversation` 注解从实现类改成了
+  `ConversationPort`，但该文件**需要构造**具体 `Conversation`
+  （`reader`/`inputs`/`controls`/`tasks`/`changed` 全由该来源决定），不是只做注解。
+  `CONVERSATION` 服务的签名是 `Callable[[str], ConversationPort]`，无法表达这次构造。
+- 修复：恢复实现 import 并在代码处写明原因，`plugins/programmatic/plugin.py|plugins.conversation.source`
+  记回账本（正解是由会话能力提供「按显式参数构造」的 seam，属独立批次）。
+- **教训（与第 28 批的 `NativePresentation` 同类，值得单列）**：批量把注解改成 Port 之前，
+  必须先区分该名字在文件里是**注解**还是**被构造/调用**。构造点必须保留实现 import 并登记，
+  不能一律 Port 化。这也是 Gate 抓到的第 N 次「静态改名破坏了运行期事实」。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/programmatic_control/programmatic_result）
+  = `90 passed, 5 failed`，5 项与父提交逐项一致（既有 socket 集成失败）。
