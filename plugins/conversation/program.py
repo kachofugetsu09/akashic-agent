@@ -15,7 +15,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts.context import ContextModel, Materials, Reminder, Summary, check_summary, summary_range
 from plugins.models.selection import selection
-from plugins.models.content import load_artifacts, render_content as render_model_content
+from agent.plugin_contracts.model_content import load_artifacts, render_content as render_model_content
 from agent.plugin_contracts.models import CallReader, ContentRenderer, check_tool_rejection
 from plugins.models.projection import MessageProjection, check_facts
 from agent.plugin_contracts.tool_api import Authorize, result_message_id

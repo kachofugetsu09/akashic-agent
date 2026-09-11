@@ -55,40 +55,7 @@ async def load_artifacts(
         content[ref.artifact_id] = tuple(blocks)
     return cast(Mapping[str, tuple[Mapping[str, Any], ...]], freeze_json(content))
 
-
-def render_content(
-    part: ContentPart,
-    *,
-    artifacts: Mapping[str, tuple[Mapping[str, Any], ...]],
-    read_message: Callable[[str], Message | None] | None = None,
-) -> tuple[Mapping[str, Any], ...]:
-    """基础正文与附件按协议投影；其余已声明内容作为带 kind 的低信任数据。"""
-    if part.kind == "text":
-        return ({"type": "text", "text": part.value},)
-    if part.kind == "artifact_ref":
-        return artifacts[cast(str, part.value)]
-    if part.kind in {"model.selection", "tool.selection", "context.summary", "history.record", "history.turn_input"}:
-        return ()
-    if part.kind == "reply_ref":
-        if read_message is None:
-            raise RuntimeError("回复引用投影需要当前 Session 的消息读取口")
-        target = read_message(cast(str, part.value))
-        text = None if target is None or isinstance(target.body, Control) else "\n".join(
-            cast(str, item.value) for item in target.body.parts
-            if not isinstance(item, ToolCall) and item.kind == "text"
-        )
-        return ({"type": "text", "text": json.dumps(
-            {"reply_to": part.value, "quoted_text": text, "available": target is not None},
-            ensure_ascii=False,
-        )},)
-    if part.kind == "model.facts":
-        raise ValueError("model.facts 必须由 Model replay owner 单独处理")
-    return (
-        {
-            "type": "text",
-            "text": json.dumps(
-                {"kind": part.kind, "value": json_value(part.value)},
-                ensure_ascii=False,
-            ),
-        },
-    )
+from agent.plugin_contracts.model_content import (  # noqa: E402,F401  (再导出)
+    load_artifacts,
+    render_content,
+)

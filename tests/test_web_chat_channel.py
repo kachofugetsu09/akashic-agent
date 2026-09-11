@@ -1554,7 +1554,7 @@ async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(tmp_path
 
 @pytest.mark.asyncio
 async def test_web_reply_uses_real_message_target_and_reports_source_conflicts(tmp_path: Path) -> None:
-    from plugins.models.content import render_content
+    from agent.plugin_contracts.model_content import render_content
     async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
         writer = log.writer("akashic:abc", author="另一个作者", source="program", body_types=(Output, Control),
             content={"text": lambda p: ContentReferences()})

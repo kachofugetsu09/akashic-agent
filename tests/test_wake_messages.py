@@ -482,7 +482,7 @@ async def test_reasoning_only_response_defers_one_flow_and_runtime_handles_the_n
 async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory_cue(tmp_path):
     from agent.plugin_contracts.content import check_text
     from plugins.conversation.source import update_selection
-    from plugins.models.selection import check_selection
+    from agent.plugin_contracts.model_selection import check_selection
     from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     from plugins.akasha.learning import Learning

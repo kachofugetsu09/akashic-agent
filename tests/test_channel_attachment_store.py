@@ -564,7 +564,7 @@ async def test_model_artifact_projection_reads_verified_bytes_without_changing_o
     stores,
 ):
     import io
-    from plugins.models.content import load_artifacts, render_content
+    from agent.plugin_contracts.model_content import load_artifacts, render_content
     from session.message import ContentPart
 
     session_store, artifact_store = stores
@@ -617,7 +617,7 @@ async def test_model_image_budget_rejects_before_acquiring_any_lease(
     sizes: list[int],
     match: str,
 ) -> None:
-    from plugins.models.content import load_artifacts
+    from agent.plugin_contracts.model_content import load_artifacts
     from session.artifacts import AttachmentReadLease
 
     refs = tuple(

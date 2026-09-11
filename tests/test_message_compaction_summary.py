@@ -6,7 +6,8 @@ from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, ContextLengthError, InvalidRequestError,
     LLMResponse, ModelCapabilities, ModelRequest, ModelRole, RateLimitError,
 )
-from plugins.compaction.message_summary import HEADINGS, SummaryError, closed_groups, summarize, summary_groups, window_starts
+from agent.plugin_contracts.compaction import summary_groups, window_starts
+from plugins.compaction.message_summary import HEADINGS, SummaryError, closed_groups, summarize
 from plugins.turn_projection.plugin import TurnProjection
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
@@ -78,7 +79,7 @@ def test_completed_turns_merge_overlapping_sources_but_open_batches_can_compact(
 def test_abandon_closes_summary_prefix_without_inventing_a_tool_result(tmp_path, late_result):
     from agent.plugin_contracts.context import Materials, Summary
     from plugins.context.plugin import ContextBuilder
-    from plugins.models.content import render_content
+    from agent.plugin_contracts.model_content import render_content
     from plugins.models.projection import MessageProjection
 
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")

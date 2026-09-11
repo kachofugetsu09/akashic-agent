@@ -1,22 +1,20 @@
+"""模型选择的纯校验（合同层）与选择读取（实现）。
+
+`check_selection` 是纯校验，已归位到 `agent.plugin_contracts.model_selection`；
+`selection()` 会**构造** `ChatModelSelection`（组合内核的模型值类型），因此按
+「合同层不依赖实现模块」的判据留在本模块。
+"""
+
+from __future__ import annotations
+
 from collections.abc import Mapping, Sequence
 from typing import cast
 
 from agent.plugin_composition.models import ChatModelSelection
-from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message
+from agent.plugin_contracts.message import Input, Message
+from agent.plugin_contracts.model_selection import check_selection  # noqa: F401  (再导出)
 
-
-def check_selection(part: ContentPart) -> ContentReferences:
-    """模型偏好是用户选择事实，实际可用性由 Model owner 在调用前验证。"""
-    raw_value = part.value
-    if not isinstance(raw_value, Mapping):
-        raise ValueError("model.selection 必须是对象")
-    value = cast(Mapping[str, object], raw_value)
-    if set(value) != {"model_id", "reasoning_effort"} or any(
-        item is not None and (not isinstance(item, str) or not item)
-        for item in value.values()
-    ):
-        raise ValueError("model.selection 字段无效")
-    return ContentReferences()
+__all__ = ["check_selection", "selection"]
 
 
 def selection(messages: Sequence[Message]) -> ChatModelSelection | None:

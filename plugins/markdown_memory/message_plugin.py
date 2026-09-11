@@ -28,7 +28,7 @@ from agent.plugin_contracts.llm_json import load_json_object_loose
 from agent.plugin_contracts.turn_effects import PostCommitEffect
 from agent.plugin_contracts.json_store import atomic_write_text
 from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, StoredSummary
-from plugins.compaction.message_summary import source_text, summary_groups, window_starts
+from agent.plugin_contracts.compaction import source_text, summary_groups, window_starts
 from agent.plugin_contracts.content import is_user_input, legacy_post_commit_effect
 from agent.plugin_contracts.context import Materials, check_summary, summary_range
 from agent.plugin_contracts.context import MATERIALS

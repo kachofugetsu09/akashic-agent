@@ -581,7 +581,7 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
     from plugins.context.plugin import ContextBuilder
     from agent.plugin_contracts.models import response_facts
     from plugins.models.projection import MessageProjection
-    from plugins.models.content import render_content
+    from agent.plugin_contracts.model_content import render_content
     from plugins.codex.responses import _continuation_items, _responses_input
     from session.message import ContentPart, Input, Message, Output
 

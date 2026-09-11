@@ -18,7 +18,7 @@ from plugins.content.plugin import _decode_text
 from agent.plugin_contracts.context import ContextModel, Materials, Reminder, Summary, check_summary
 from plugins.context.plugin import ContextBuilder
 from plugins.conversation.source import Conversation, needs_reply
-from plugins.models.content import render_content
+from agent.plugin_contracts.model_content import render_content
 from agent.plugin_contracts.models import check_tool_rejection
 from plugins.models.projection import MessageProjection, check_facts
 from plugins.models.state import _BoundChat

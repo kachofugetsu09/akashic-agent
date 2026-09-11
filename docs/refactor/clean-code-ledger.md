@@ -3453,3 +3453,27 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 35 降到 24。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（contracts/wake_messages/message_push_plugin/delivery_bindings/subagent_messages/akasha_recall_records/semantic）= `115 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（34）：模型内容投影与摘要纯函数合同化
+
+- 基线：stacked base `b4b4946c`（第 33 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：move & re-export（纯函数/投影，输入即事实，无状态读写）：
+  - `agent/plugin_contracts/model_content.py`（新）：`load_artifacts`（经只读
+    `AttachmentReadPort` 取附件并做图片预算/编码）、`render_content`（内容块投影）。
+    两者只读取入参并返回冻结值，不写会话、不调用模型。
+  - `agent/plugin_contracts/compaction.py`（新）：`source_text`/`window_starts`/`summary_groups`
+    与内部 `_protected_cuts`（含被它们依赖的 `settled_prefixes`）。
+  - `agent/plugin_contracts/model_selection.py`（新）：**只放 `check_selection`**（纯校验）。
+  - 三个原模块按原路径再导出，消费者 16 处改指合同层。
+- **一次由自查抓到的真实运行期 bug（重要）**：`model_selection.py` 首版把
+  `ChatModelSelection` 放在 `TYPE_CHECKING` 下，但 `selection()` 会**构造**它 —— pyright 通过、
+  `from __future__ import annotations` 让注解惰性求值掩盖了问题，**运行时才会 NameError**。
+  我用 `python -c` 直接调用 `selection()` 复现后才发现。
+  - 结论：`TYPE_CHECKING` 只适用于**注解**；任何被构造/调用的名字必须运行期 import。
+  - 同时这也说明 `composition.models` 不是纯原语（它传递依赖 `effect` → `diagnostics` →
+    `core.common.diagnostic_log`），因此**没有**把 `composition.models` 加入合同层纯度白名单；
+    改为把 `selection()` 留在 `plugins/models/selection.py`（它本来就构造内核值类型），
+    只把 `check_selection` 搬进合同层，并把该构造点登记为 R3 条目。
+- 账本：R3 由 24 降到 19（其中 1 条为本批新登记的构造点）。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_compaction_summary/reply_program/wake_messages/message_markdown_memory/message_model_selection/akasha_message_plugin/standard_tools）= `227 passed`。
+- 持久化/运行 workspace 变化：`none`。

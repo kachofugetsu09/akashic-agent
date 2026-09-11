@@ -22,8 +22,10 @@ CONTRACTS_DIR = REPO_ROOT / "agent" / "plugin_contracts"
 # 合同层需要它们来声明公开 key；其它 composition 子模块仍不允许。
 ALLOWED_TOP_LEVEL = {
     "agent.plugin_contracts",
-    "agent.plugin_composition.model",
-    "agent.plugin_composition.events",
+    # 三个纯值/身份原语模块（均零仓库内实现依赖）。合同层需要它们来声明公开
+    # key 与可构造的值类型；其它 composition 子模块仍不允许。
+    "agent.plugin_composition.model",   # ServiceKey / CompositionError
+    "agent.plugin_composition.events",  # EmitEventKey 等事件 key
 }
 
 VOCABULARY_NAMES = (

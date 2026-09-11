@@ -24,17 +24,14 @@ R2 = [
     "plugins/workbench_ui/dashboard.py|infra.channels.message_view",
 ]
 R3 = [
+    "plugins/conversation/program.py|plugins.models.selection",
     "plugins/programmatic/plugin.py|plugins.conversation.source",
     "plugins/reply/plugin.py|plugins.conversation.source",
     "plugins/conversation/program.py|plugins.models.projection",
     "plugins/conversation/program.py|plugins.tools.api",
-    "plugins/conversation/plugin.py|plugins.models.selection",
-    "plugins/conversation/program.py|plugins.models.content",
-    "plugins/conversation/program.py|plugins.models.selection",
     "plugins/conversation/program.py|plugins.standard_tools.shell",
     "plugins/conversation/program.py|plugins.tools.menu",
     "plugins/delivery_policy/follow.py|plugins.delivery.execution",
-    "plugins/markdown_memory/message_plugin.py|plugins.compaction.message_summary",
     "plugins/markdown_memory/message_plugin.py|plugins.compaction.records",
     "plugins/plugin_update/tool.py|plugins.delivery_policy.plugin",
     "plugins/plugin_update/validation.py|plugins.conversation.program",
@@ -45,7 +42,5 @@ R3 = [
     "plugins/subagent/plugin.py|plugins.conversation.program",
     "plugins/telegram_sender/sender.py|plugins.delivery.content",
     "plugins/tool_search/plugin.py|plugins.tools.menu",
-    "plugins/wake/messages.py|plugins.models.content",
     "plugins/wake/program.py|plugins.conversation.program",
-    "plugins/wake/source.py|plugins.models.selection",
 ]

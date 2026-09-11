@@ -21,7 +21,7 @@ from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.context import CONTEXT
 from plugins.conversation.program import run_reply
 from plugins.conversation.source import Conversation
-from plugins.models.content import render_content
+from agent.plugin_contracts.model_content import render_content
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.react.plugin import react

@@ -183,7 +183,7 @@ def test_conflicting_exact_input_reference_aborts_without_partial_archive(tmp_pa
 
 
 def test_archive_never_enters_default_model_content(tmp_path):
-    from plugins.models.content import render_content
+    from agent.plugin_contracts.model_content import render_content
     root = workspace(tmp_path)
     turn(root, 't1', [user(0)])
     migrate_turn_messages(root)

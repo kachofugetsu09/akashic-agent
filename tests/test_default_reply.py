@@ -297,7 +297,7 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             from agent.plugin_composition import CHAT_MODELS
             from agent.plugin_composition.bindings import BINDINGS
             from agent.plugin_composition.models import ModelRole
-            from plugins.models.content import render_content
+            from agent.plugin_contracts.model_content import render_content
             from agent.plugin_contracts.models import MODEL_CALLS
             from plugins.models.projection import MessageProjection
             from agent.plugin_contracts.tools import TOOLS
