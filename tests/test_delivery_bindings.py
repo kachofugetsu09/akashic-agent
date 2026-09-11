@@ -10,7 +10,7 @@ from agent.plugin_composition.tasks import Tasks
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
-from plugins.delivery.api import Sink
+from agent.plugin_contracts.delivery_api import Sink
 from plugins.delivery.execution import Deliveries
 from plugins.delivery.records import DeliveryRecords
 from plugins.delivery.senders import open_sender

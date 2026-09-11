@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from agent.plugin_composition.tasks import Tasks
-from plugins.delivery.api import Receipt, Sink
+from agent.plugin_contracts.delivery_api import Receipt, Sink
 from plugins.delivery.execution import Deliveries
 from plugins.delivery.history import DeliveryHistory
 from plugins.delivery.records import Delivery, DeliveryRecords, delivery_key

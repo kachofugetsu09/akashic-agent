@@ -19,7 +19,7 @@ from agent.plugin_contracts.content import ContentSchema
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.context import CONTEXT
-from plugins.delivery.plugin import DELIVERY
+from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT

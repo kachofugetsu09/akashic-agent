@@ -14,9 +14,9 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_contracts.restart import ExternalRootPermit, RestartRejectedError
 from plugins.conversation.plugin import check_origin
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.delivery.api import Sink
-from plugins.delivery.plugin import DELIVERY
+from agent.plugin_contracts.delivery_api import FINAL_OUTPUT_DELIVERY
+from agent.plugin_contracts.delivery_api import Sink
+from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.reply.completion import REPLY_COMPLETION
 from agent.plugin_composition.messages import MessageReader

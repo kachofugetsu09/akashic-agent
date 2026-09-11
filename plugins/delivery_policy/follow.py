@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from agent.plugin_composition import Context
-from plugins.delivery.api import Sink
+from agent.plugin_contracts.delivery_api import Sink
 from plugins.delivery.execution import Deliveries
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import Message

@@ -13,7 +13,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, 
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_contracts.content import check_text
 from plugins.conversation.plugin import CONVERSATION
-from plugins.delivery.plugin import DELIVERY
+from agent.plugin_contracts.delivery_api import DELIVERY
 from plugins.reply.api import REPLY_PROGRAM
 from agent.plugin_contracts.context import Reminder
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes

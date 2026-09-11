@@ -11,7 +11,7 @@ from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessa
 from agent.plugin_composition.context import Context
 from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.tasks import Tasks
-from plugins.delivery.api import Sink
+from agent.plugin_contracts.delivery_api import Sink
 from plugins.delivery.execution import Deliveries
 from plugins.delivery.records import DeliveryRecords
 from plugins.delivery_policy.follow import follow

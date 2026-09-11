@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from plugins.delivery.api import Sink
+from agent.plugin_contracts.delivery_api import Sink
 from agent.plugin_contracts import ContentPart, ContentReferences
 from agent.plugin_contracts import json_value
 

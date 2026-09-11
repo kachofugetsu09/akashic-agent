@@ -12,8 +12,8 @@ from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_composition.timers import TIMERS
 from agent.plugin_contracts.content import check_artifact
 from agent.plugin_contracts.content import check_text
-from plugins.delivery.api import Sink
-from plugins.delivery.plugin import DELIVERY
+from agent.plugin_contracts.delivery_api import Sink
+from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MessageReader, SessionAttributes

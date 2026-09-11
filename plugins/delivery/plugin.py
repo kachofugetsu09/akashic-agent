@@ -9,6 +9,7 @@ from .execution import Deliveries
 from .history import DELIVERY_READ, DeliveryHistory
 from .records import DeliveryRecords
 from .senders import DELIVERY_SENDERS, Senders, open_sender
+from agent.plugin_contracts.delivery_api import DELIVERY
 from .api import FINAL_OUTPUT_DELIVERY, FinalOutputDelivery
 
 api_version = 3
@@ -33,7 +34,6 @@ class DeliveryAdmission:
         )
 
 
-DELIVERY = ServiceKey[DeliveryAdmission]("delivery.v1")
 
 
 async def apply(ctx: Context, config: object) -> None:

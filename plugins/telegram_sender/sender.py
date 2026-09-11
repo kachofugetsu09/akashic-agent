@@ -10,7 +10,7 @@ from telegramify_markdown.entity import split_entities
 
 from agent.plugin_composition.artifacts import ArtifactRead
 from infra.channels.telegram_utils import strip_chunk
-from plugins.delivery.api import Receipt
+from agent.plugin_contracts.delivery_api import Receipt
 from plugins.delivery.content import AttachmentReadError, File, read_content
 from agent.plugin_contracts.artifacts import AttachmentKind
 from agent.plugin_composition.messages import MessageCatalog

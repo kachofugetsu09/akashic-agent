@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
-from plugins.delivery.api import Sink
+from agent.plugin_contracts.delivery_api import Sink
 from plugins.delivery_policy.plugin import input_origin
 from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result
 from agent.plugin_contracts import ContentPart

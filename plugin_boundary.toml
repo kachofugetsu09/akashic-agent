@@ -206,7 +206,15 @@ note = "工具展示名解析；实现由 plugins/tools 提供"
 
 [capabilities."delivery.senders.v1"]
 role = "seam"
-note = "普通渠道出站注册表；实现由 plugins/delivery 提供"
+note = "普通渠道出站注册表；定义在合同层，实现由 plugins/delivery 提供"
+
+[capabilities."delivery.final_output.v1"]
+role = "seam"
+note = "按来源等待最终 Output 送达；定义在合同层，实现由 plugins/delivery 提供"
+
+[capabilities."delivery.v1"]
+role = "seam"
+note = "投递准入；定义在合同层，实现由 plugins/delivery 提供"
 
 [capabilities."reply.status.v1"]
 role = "seam"

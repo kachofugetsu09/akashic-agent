@@ -15,7 +15,7 @@ from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.context import CONTEXT
 from agent.plugin_contracts.context import MATERIALS
 from plugins.conversation.program import run_reply
-from plugins.delivery.plugin import DELIVERY
+from agent.plugin_contracts.delivery_api import DELIVERY
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
 from agent.plugin_contracts.tool_api import Denied

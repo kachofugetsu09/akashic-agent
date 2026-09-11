@@ -1,54 +1,33 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager
-from typing import Annotated, Literal, Protocol
 
-from agent.plugin_composition import ServiceKey
-from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_contracts.turn_projection import Turn
 from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import Message
 
-Text = Annotated[str, Field(min_length=1)]
-Status = Literal["delivered", "rejected", "failed"]
-
-
-class Sink(BaseModel):
-    """发送 owner 固定的目的地；恢复不重新选择地址或 adapter。"""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    name: Text
-    binding_id: Text
-    address: Text
-
-
-class Receipt(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    status: Status
-    provider_ids: tuple[Text, ...] = ()
-    error: Text | None = None
+# 投递值模型、Sender/FinalOutputWaiter Protocol 与 key 的拥有者已移到结构合同层；
+# 这里按原路径再导出，既有调用点与对象身份不变。
+from agent.plugin_contracts.delivery_api import (  # noqa: E402,F401  (再导出)
+    FINAL_OUTPUT_DELIVERY,
+    OpenSender,
+    Receipt,
+    Sender,
+    Sink,
+    Status,
+    Text,
+)
+from agent.plugin_contracts.delivery_api import FinalOutputWaiter  # noqa: E402,F401
 
 
-class Sender(Protocol):
-    @property
-    def idempotent(self) -> bool: ...
-
-    async def send(self, key: str, address: str, message: Message) -> Receipt: ...
-
-    async def query(self, key: str, address: str) -> Receipt | None:
-        """只查询原效果；None 表示缺少可确认回执，不证明没有发送。"""
-        ...
 
 
-OpenSender = Callable[[str], AbstractAsyncContextManager[Sender]]
 
 
-class FinalOutputWaiter(Protocol):
-    """等待一个已投影 Turn 的最终 Output 完成其外部送达。"""
 
-    async def wait(self, reader: MessageReader, turn: Turn) -> None: ...
+
+
+
+
 
 
 class FinalOutputDelivery:
@@ -74,4 +53,3 @@ class FinalOutputDelivery:
         await provider.wait(reader, turn)
 
 
-FINAL_OUTPUT_DELIVERY = ServiceKey[FinalOutputDelivery]("delivery.final_output.v1")

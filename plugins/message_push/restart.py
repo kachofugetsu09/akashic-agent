@@ -20,7 +20,7 @@ from agent.plugin_contracts.frames import FrameRouteReleased
 from agent.plugin_composition.frames import CONTROL_FRAMES, FrameBookPort as FrameBook, FrameClaimPort as FrameClaim
 from agent.plugin_composition.restart import RESTART_GATE
 from agent.plugin_contracts.restart import RestartGate, RestartRejectedError
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
+from agent.plugin_contracts.delivery_api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
 from agent.plugin_contracts.tool_api import BoundTool, CallSource, ContentPart, Result, durable_call_key
 from agent.plugin_contracts.tools import TOOLS, ToolRef
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION, Turn

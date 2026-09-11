@@ -9,7 +9,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.messages import MessageReader
 
-from plugins.delivery.api import Sink
+from agent.plugin_contracts.delivery_api import Sink
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
 from agent.plugin_contracts import json_value
 

@@ -12,8 +12,8 @@ from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_contracts.content import check_artifact
 from agent.plugin_contracts.content import check_text
-from plugins.delivery.api import Receipt, Sink
-from plugins.delivery.plugin import DELIVERY
+from agent.plugin_contracts.delivery_api import Receipt, Sink
+from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result
 from agent.plugin_contracts.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart, Output

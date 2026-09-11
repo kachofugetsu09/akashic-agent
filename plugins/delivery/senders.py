@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict
 
 from agent.plugin_composition import Context, Effect
-from agent.plugin_contracts.delivery import DELIVERY_SENDERS
+from agent.plugin_contracts.delivery_api import DELIVERY_SENDERS
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts import Message
 

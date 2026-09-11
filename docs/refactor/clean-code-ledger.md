@@ -3264,3 +3264,22 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 同时记录通用判据：有状态 / 持注册表 / 需 I/O 或环境态的模块一律不进合同层，改由**能力定义处**
   再导出（第 19/22/24 批的模式）或登记为 seam（第 9/10/11/17/18/23 批的模式）。
 - 本轮（第 24、25 批）未跑 change-impact Gate，已在收尾批次补跑配对。
+
+## 2026-09-10 插件边界第 3 步（26）：投递能力合同化
+
+- 基线：stacked base `27a60384`（第 25 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam。`plugins.delivery.api`(15) 与 `plugins.delivery.plugin`(10) 是 R3 最大的一块，25 条一次清掉：
+  - 新增 `agent/plugin_contracts/delivery_api.py`：`Sink`/`Receipt` 值模型、`Sender`/`FinalOutputWaiter`/
+    `FinalOutputDeliveryPort`/`DeliveryAdmissionPort`/`DeliveriesPort`/`DeliverySendersPort` Protocol、
+    `Text`/`Status`/`OpenSender` 别名，以及三个 key（`delivery.final_output.v1`、`delivery.v1`、
+    `delivery.senders.v1`），全部登记为 `seam`。
+  - `agent/plugin_contracts/delivery.py` 作为短别名路径再导出（避免与已存在的同名模块语义冲突时产生歧义）。
+  - 实现留在插件：`FinalOutputDelivery` 注册表（`plugins/delivery/api.py`）、`DeliveryAdmission`
+    （`plugins/delivery/plugin.py`）、`Senders`（`plugins/delivery/senders.py`），三处均按原路径再导出。
+- 命名说明：`delivery_api` 与 `delivery` 并存是一次显式取舍 —— 前者的名字与源模块 `plugins/delivery/api.py`
+  一一对应（便于对照与审阅），后者是短别名。两者指向同一批对象，`is` 身份一致。
+- 消费者改写 32 处。`DeliveryAdmissionPort` 的接口按实际用法对齐为 `open(consumer) -> DeliveriesPort`
+  （14 处 `require(DELIVERY).open(...)`），而不是我最初假设的 `admit(key)` —— 以真实调用点为准。
+- 账本：R3 由 92 降到 67。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/native_senders/delivery_bindings/wake_messages/subagent_messages/message_push_plugin/scheduler_messages/agent_restart_tool）= `177 passed`。
+- 持久化/运行 workspace 变化：`none`。

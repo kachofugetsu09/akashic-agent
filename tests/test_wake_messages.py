@@ -9,8 +9,8 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.snapshot import lease_runtime_snapshot
-from plugins.delivery.api import Sink
-from plugins.delivery.plugin import DELIVERY
+from agent.plugin_contracts.delivery_api import Sink
+from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
 from plugins.akasha.message_plugin import AKASHA_TOOLS

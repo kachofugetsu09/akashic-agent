@@ -13,7 +13,7 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.timers import TIMERS
 from plugins.akasha.interest import SEMANTIC_INTEREST
-from plugins.delivery.api import Sink
+from agent.plugin_contracts.delivery_api import Sink
 from plugins.delivery.history import DELIVERY_READ
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.akasha.message_plugin import AKASHA_TOOLS

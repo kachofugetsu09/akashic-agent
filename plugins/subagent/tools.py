@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
-from plugins.delivery.api import Sink
+from agent.plugin_contracts.delivery_api import Sink
 from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result
 from agent.plugin_contracts.tools import TOOLS
 from agent.plugin_contracts import ContentPart, Input

@@ -8,8 +8,8 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.frames import CONTROL_FRAMES
 from agent.plugin_composition.restart import RESTART_GATE
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.delivery.plugin import DELIVERY
+from agent.plugin_contracts.delivery_api import FINAL_OUTPUT_DELIVERY
+from agent.plugin_contracts.delivery_api import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from agent.plugin_contracts.tools import TOOLS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION

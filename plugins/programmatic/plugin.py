@@ -8,7 +8,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, 
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.restart import RESTART_GATE
 from agent.plugin_composition.frames import CONTROL_FRAMES
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
+from agent.plugin_contracts.delivery_api import FINAL_OUTPUT_DELIVERY
 from agent.plugin_contracts.content import check_text
 from plugins.conversation.plugin import check_origin
 from plugins.conversation.source import Conversation
