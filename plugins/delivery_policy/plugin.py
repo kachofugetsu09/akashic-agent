@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.plugin_composition import Context, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.plugin_contracts.message_read import input_origin  # noqa: F401  (再导出)
 from agent.plugin_contracts.restart import ExternalRootPermit, RestartRejectedError
 from agent.plugin_contracts.conversation import check_origin
 from agent.plugin_contracts.delivery_api import FINAL_OUTPUT_DELIVERY
@@ -53,22 +54,6 @@ def origin(reader: MessageReader, message: Message, sources: tuple[str, ...]) ->
     if not visible:
         return None
     return input_origin(reader, message.source, through_seq=message.seq)
-
-
-def input_origin(reader: MessageReader, source: str, *, through_seq: int) -> tuple[str, str] | None:
-    """只从原输入的已验证渠道事实读取目的地。"""
-    previous = reader.latest_input(source, through_seq=through_seq)
-    if previous is None:
-        return None
-    assert isinstance(previous.body, Input)
-    parts = [part for part in previous.body.parts if part.kind == "channel.origin"]
-    if not parts:
-        return None
-    if len(parts) != 1:
-        raise ValueError("输入必须只有一个渠道来源")
-    _ = check_origin(parts[0])
-    value = cast(Mapping[str, str], parts[0].value)
-    return value["channel"], value["chat_id"]
 
 
 class DeliveryFinalOutput:

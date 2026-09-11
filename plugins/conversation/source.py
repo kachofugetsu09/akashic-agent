@@ -7,6 +7,7 @@ from uuid import uuid4
 from typing import cast
 
 from agent.plugin_contracts.conversation import Changed  # noqa: F401  (再导出)
+from agent.plugin_contracts.message_read import needs_reply  # noqa: F401  (再导出)
 from agent.plugin_contracts.session_selection import SessionModelSelection, write_session_model_selection
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from agent.plugin_contracts.restart import RestartGate
@@ -32,36 +33,6 @@ def update_selection(body: Body) -> Mapping[str, object | None]:
         value["model_id"] or "", value["reasoning_effort"] or "",
     ))
     return {"model_selection": selected.get("model_selection"), "model_runtime_override": None}
-
-
-def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool:
-    """来源从输入和控制事实决定是否唤醒；不依赖逻辑 Turn 或消费 cursor。"""
-    # 最近 Input 之前的控制和终结只能覆盖更早的 seq，不影响本次唤醒。
-    if isinstance(messages, MessageReader):
-        head = messages.head()
-        latest = messages.latest_input(source, through_seq=head)
-        if latest is None:
-            return False
-        messages = (latest, *messages.snapshot(after_seq=latest.seq, through_seq=head))
-    boundary = -1
-    latest_input = -1
-    paused_through = -1
-    for message in messages:
-        if message.source != source:
-            continue
-        body = message.body
-        if isinstance(body, Input):
-            latest_input = message.seq
-        elif isinstance(body, Output) and body.finish != "continue":
-            boundary = message.seq
-        elif isinstance(body, Control):
-            if body.action == "abandon":
-                boundary = max(boundary, body.through_seq)
-            elif body.action in {"pause", "failure"}:
-                paused_through = max(paused_through, body.through_seq)
-            elif body.action == "resume" and body.through_seq >= paused_through:
-                paused_through = -1
-    return latest_input > max(boundary, paused_through)
 
 
 class Conversation:

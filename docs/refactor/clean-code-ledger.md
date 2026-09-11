@@ -3495,3 +3495,23 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 19 降到 16。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_react/scheduler_tools/delivery_bindings/tool_views/reply_program）= `126 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（36）：消息读取判据合同化（MessageReaderPort）
+
+- 基线：stacked base `0e0ab385`（第 35 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam。新增 `agent/plugin_contracts/message_read.py`：
+  - `MessageReaderPort`（纯 Protocol：`head`/`latest_input`/`snapshot`）—— 让「消息读取器」
+    的窄接口出现在合同层，而不引入 Core 存储实现依赖。
+  - `needs_reply(messages, source)`（来源是否应被唤醒）与
+    `input_origin(reader, source, *, through_seq)`（原输入的渠道目的地）两个只读判据。
+  - `plugins/conversation/source.py` 与 `plugins/delivery_policy/plugin.py` 按原路径再导出；
+    `plugins/reply/plugin.py`、`plugins/plugin_update/tool.py` 改指合同层。
+- **关键语义核对（这类改动必须做）**：原实现用 `isinstance(messages, MessageReader)`（具体存储类）。
+  改用 `isinstance(messages, MessageReaderPort)`（runtime_checkable、只含方法）后必须保证判定等价。
+  已用**真实 `MessageReader` 实例**验证：`isinstance(reader, MessageReaderPort) is True`、
+  `isinstance((), MessageReaderPort) is False`，且 `needs_reply` 两条分支结果一致。
+  注意：消息序列是 tuple（非空也能通过 duck-typing 吗？——不能，tuple 没有这三个方法），
+  因此判定与原先一致。
+- 账本：R3 由 16 降到 14。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/channel_input/conversation_source/reply_program/plugin_update_source/delivery_bindings）= `129 passed`。
+- 持久化/运行 workspace 变化：`none`。
