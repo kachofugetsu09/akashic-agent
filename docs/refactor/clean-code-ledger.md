@@ -3149,3 +3149,19 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R2 由 102 降到 52。
 - 验证：`plugin_boundary.py check` → `R1=0/0 R2=52/52 R3=92/92`；`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/akasha_message_plugin/message_log/message_markdown_memory/scheduler_messages/reply_program/akasha_recall_records/wake_messages）= `236 passed`。
 - 持久化/运行 workspace 变化：`none`（纯 import 目标改写）。
+
+## 2026-09-10 插件边界第 3 步（20）：媒体工具与定时词汇合同化
+
+- 基线：stacked base `9f7794a3`（第 19 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态 1（move & re-export，纯函数库）：`agent/media.py` → `agent/plugin_contracts/media.py`。
+  依据：零仓库内 import（只用 `base64`/`io`/`pathlib`/`PIL`），全是纯编解码与预算校验函数，
+  无状态、无 I/O 副作用（`encode_image_bytes`/`detect_supported_image_mime`/`validate_image_attachment_budget`）。
+- 形态 2（seam：值 + Protocol 进合同，实现留下）：`agent/control/timer.py` 的
+  `TimerStatus`/`TimerReceipt`（值）、`TimerHandle`/`OneShotTimer`（Protocol）、`Clock`/`Sleeper` 别名
+  → `agent/plugin_contracts/timer.py`；`AsyncioOneShotTimer` 实现留在原处（它持有 asyncio 睡眠，属实现而非词汇），
+  按结构满足 Protocol。
+- 消费者改写：`plugins/models/content.py` 与 `plugins/wake/runtime.py`。插件只用到那两个值类型，
+  未使用实现类，因此 seam 切分没有留下欠账。
+- 账本：R2 由 52 降到 50。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/wake_messages/akasha_recall_records/scheduler_tools/message_markdown_memory/computer_driver_plugin/channel_attachment_store/message_artifacts）= `221 passed, 1 skipped`。
+- 持久化/运行 workspace 变化：`none`。

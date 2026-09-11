@@ -6,7 +6,7 @@ from dataclasses import asdict
 import json
 from typing import Any, cast
 
-from agent.media import (
+from agent.plugin_contracts.media import (
     MAX_IMAGE_DATA_URI_TOTAL_BYTES,
     MAX_IMAGE_FILE_BYTES,
     encode_image_bytes,
