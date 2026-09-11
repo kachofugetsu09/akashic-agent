@@ -346,6 +346,39 @@ core，必须先有真实 `__init__.py`。
 Turn 原子（`SCOPED_TURNS` 形态的 inbox + scope + 句柄）、压缩 surface replacement、
 Channel 双栈收敛、外部插件仓库迁移。这些是不可机械化的重构，需要各自的差分 Gate。
 
+## 6bis. 剩余 16 条 R2 的设计方案（对齐 DeepSeek Harness）
+
+DSH 的做法（`/mnt/data/source-code/deepseek-harness`，2026-09-11 checkout）对我们剩下的
+「运行时能力」类条目有直接参考价值：
+
+- DSH 用 Cordis 的 `Context` + `declare module` 声明服务接口，**所有依赖经 ctx 取得**；
+- 运行时的「当前作用域」由**服务对象内部持有的 `AsyncLocalStorage`** 实现
+  （见 `packages/core/agent/src/index.ts` 的 `AgentRegistry.initiators`），
+  而不是模块级全局变量；
+- 事件/作用域载体（`Scoped<T>`）是**显式穿参**的值，不用隐式全局。
+
+对照我们的 `agent.plugins.snapshot`（7 条 R2）：它是**模块级 ContextVar**，任何模块
+`import` 它都能读「当前 task 的 snapshot」——这正是 DSH 刻意避免的形态。因此修法不是
+「把它搬到合同层」，而是：
+
+1. 新增 Core 服务 `RUNTIME_SNAPSHOT = ServiceKey[RuntimeSnapshotAccessPort]`，
+   由 `agent/plugins/snapshot.py` 的一个**服务对象**实现；该对象**内部持有**同一
+   `ContextVar`（保持 task-scoped 语义不变），对外只暴露 `current()` / `lease()`。
+2. 插件经 `ctx.require(RUNTIME_SNAPSHOT)` 取得；**没有 ctx 的调用点按 DSH 的做法显式穿参**：
+   - `plugins/akasha|wake|workbench_ui/dashboard.py`：注册入口是
+     `register(app, context: DashboardContext)`，因此把访问器加进 `DashboardContext`
+     （由 Core 装配时注入），handler 闭包持有它；
+   - `plugins/standard_tools/filesystem.py` 与 `skills.py`：由工具注册路径
+     （`register_file` / `register_skills`，都有 ctx）在构造时注入；
+   - `plugins/models/state.py::save_embedding_binding`：由 `ModelRegistry` 构造时注入；
+   - `plugins/react/plugin.py::_settle`：`ToolMenu` 由 `program.py` 构造（那里有 ctx），
+     因此把访问器随菜单一起传入。
+3. `agent/plugins/snapshot.py` 的模块级函数**保留**给 Core 内部调用点（Core 侧不受 R2 约束），
+   但插件不再使用它们。
+
+`core.net.http`（6 条，已完成）与本方案是同一思路：把「宿主全局」从**隐式可达**变成
+**显式注入**，而不是换个模块放同样的全局。
+
 ## 7. 验收标准
 
 **本 PR（第 1 步）**
