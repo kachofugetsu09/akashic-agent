@@ -5,7 +5,7 @@ from typing import Any
 
 from agent.plugin_composition import CHAT_MODELS, ModelRole
 from agent.plugins.snapshot import get_current_runtime_snapshot
-from agent.tools.base import Tool, ToolResult
+from agent.plugin_contracts.tool_base import Tool, ToolResult
 from agent.tools.filesystem import (
     EditFileOperation,
     ListDirOperation,

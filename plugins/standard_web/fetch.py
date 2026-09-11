@@ -10,7 +10,7 @@ import httpx
 from lxml import html as lxml_html
 from lxml.etree import ParserError
 
-from agent.tools.base import Tool
+from agent.plugin_contracts.tool_base import Tool
 from core.net.http import (
     HttpRequester,
     RequestBudget,

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from agent.control.context import mint_plugin_child_capability, running_turn_id
 from agent.host_bridge.factory import ShellProcessManagerProtocol
-from agent.tools.base import Tool
+from agent.plugin_contracts.tool_base import Tool
 from agent.tools.shell_security import validate_command
 from agent.tools.shell_security import validate_network_command
 from agent.tools.shell_command import resolve_shell

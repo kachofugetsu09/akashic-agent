@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
-from agent.tools.base import Tool, normalize_tool_parameters
+from agent.plugin_contracts.tool_base import Tool, normalize_tool_parameters
 from plugins.standard_tools.filesystem import (
     EditFileTool,
     ListDirTool,

@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import httpx
 
-from agent.tools.base import Tool
+from agent.plugin_contracts.tool_base import Tool
 
 _MCP_URL = "https://mcp.exa.ai/mcp"
 _DEFAULT_NUM_RESULTS = 8
