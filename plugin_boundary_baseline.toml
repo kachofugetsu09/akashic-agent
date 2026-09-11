@@ -179,6 +179,7 @@ R2 = [
     "plugins/prompt/plugin.py|session.message",
     "plugins/prompt/plugin.py|session.message_codec",
     "plugins/prompt/text.py|agent.persona",
+    "plugins/prompt/text.py|prompts.completion",
     "plugins/qq_sender/sender.py|session.artifacts",
     "plugins/qq_sender/sender.py|session.log",
     "plugins/qq_sender/sender.py|session.message",

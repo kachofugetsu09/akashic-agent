@@ -227,6 +227,9 @@ def test_every_core_service_key_has_a_role() -> None:
     ("from .. import *", "R3", "plugins"),
     ("import plugins.alpha.helpers", "R3", "plugins.alpha.helpers"),
     ("from agent import config", "R2", "agent.config"),
+    ("from prompts.completion import build", "R2", "prompts.completion"),
+    ("import memory2.store", "R2", "memory2.store"),
+    ("import main", "R2", "main"),
     ("from agent.plugin_composition import new_store", "R2", "agent.plugin_composition.new_store"),
 ])
 def test_import_syntax_cannot_hide_dependencies(source: str, rule: str, target: str) -> None:
@@ -257,7 +260,7 @@ def test_service_key_alias_and_lowercase_declarations_are_checked(monkeypatch, t
     (tmp_path / "agent/x.py").write_text(
         'from agent.plugin_composition import ServiceKey as Key\n'
         'import agent.plugin_composition as api\n'
-        'first = Key[int]("core.first")\nsecond = api.ServiceKey("core.second")\n',
+        'first = Key[int](name="core.first")\nsecond = api.ServiceKey(name="core.second")\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(boundary, "REPO_ROOT", tmp_path)
@@ -281,6 +284,43 @@ def test_base_comparison_rejects_debt_even_when_added_to_ledger(monkeypatch, tmp
         '[baseline]\nR1 = ["bootstrap/app.py|plugins.beta"]\n', encoding="utf-8")
     assert boundary.run_check() == 0
     assert boundary.run_check("HEAD") == 1
+
+
+@pytest.mark.parametrize("source", [
+    'import importlib\nimportlib.import_module("plugins.beta")',
+    'import importlib as lib\nlib.import_module(name="plugins.beta")',
+    'from importlib import import_module as load\nload("plugins.beta")',
+    '__import__("plugins.beta")',
+    'from builtins import __import__ as load\nload("plugins.beta")',
+    'from importlib import import_module\nimport_module("..beta", __package__)',
+])
+def test_literal_dynamic_imports_cannot_hide_plugin_dependencies(source: str) -> None:
+    files = ["plugins/alpha/plugin.py"]
+    imports = boundary.collect_imports(files, {files[0]: source})
+    assert "plugins.beta" in {item.module for item in boundary.check_cross_plugin(imports)}
+
+
+def test_dynamic_relative_helper_keeps_generation_scope() -> None:
+    files = ["plugins/alpha/plugin.py"]
+    imports = boundary.collect_imports(files, {files[0]:
+        'from importlib import import_module\nimport_module(".helpers", package=__package__)'})
+    assert not any(boundary.import_findings(imports).values())
+
+
+def test_dynamic_fixed_package_cannot_escape_generation() -> None:
+    files = ["plugins/alpha/plugin.py"]
+    imports = boundary.collect_imports(files, {files[0]:
+        'from importlib import import_module\nimport_module(".helpers", "plugins.alpha")'})
+    assert boundary.check_cross_plugin(imports)
+
+
+def test_all_production_python_roots_are_checked() -> None:
+    """增加生产包不能让其中的跨插件依赖自动绕过门。"""
+    from scripts.measure_production_sloc import PYTHON_DIRECTORY_ROOTS
+
+    for root in set(PYTHON_DIRECTORY_ROOTS) - {"plugins"}:
+        assert boundary.check_core_imports_plugin([_import(f"{root}/probe.py", "plugins.alpha")])
+        assert boundary.check_plugin_deep_core([_import("plugins/alpha/plugin.py", f"{root}.probe")])
 
 
 @pytest.mark.parametrize("name", ["SCOPED_TURNS", "CONTINUATIONS", "BACKGROUND_JOBS"])
