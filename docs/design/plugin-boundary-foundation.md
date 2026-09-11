@@ -53,7 +53,9 @@ Core 保留插件基座、具有明确事实或机制 owner 的原子能力，�
 不能仅凭 R2 通过接纳。值合同依赖测试另行禁止引入存储、网络及第三方实现库；
 纯函数中的业务分支仍需概念评审，AST 无法证明职责正确。
 
-扫描包括 `import`、`from package import module`、相对导入、星号导入和 TYPE_CHECKING 中的导入。
+扫描包括 `import`、`from package import module`、相对导入、星号导入和 TYPE_CHECKING 中的导入，
+以及字面 `import_module` / `__import__`（含导入别名）。R4 包括位置与 `name=` 参数、
+导入别名和小写声明，不追踪 `Key = ServiceKey` 这类赋值数据流。
 同一文件对同一模块的重复导入只计一条。扫描仓库已跟踪的 Python 文件，新增文件先 stage。
 计算式动态导入、反射、其他语言、外部插件仓库及 Python 执行沙箱不在本门覆盖范围；
 新增动态加载入口必须在独立安装验收中展开，不能声称本门提供运行时隔离。

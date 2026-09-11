@@ -41,7 +41,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = REPO_ROOT / "plugin_boundary.toml"
 BASELINE_PATH = REPO_ROOT / "plugin_boundary_baseline.toml"
 
-CORE_ROOTS = ("agent", "session", "infra", "core", "bootstrap", "bus", "utils", "mcp_servers", "host_bridge", "migrations")
+CORE_ROOTS = (
+    "agent", "session", "infra", "core", "bootstrap", "bus", "utils",
+    "mcp_servers", "host_bridge", "migrations", "memory2", "prompts",
+)
 CORE_FILES = ("main.py",)
 PLUGIN_ROOT = "plugins"
 
@@ -90,7 +93,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
 
 # 插件不得 import 的 core 顶层包（用于 R2 的归属判定）。
 CORE_TOP_LEVELS = frozenset(
-    {*CORE_ROOTS, "sdk"}
+    {*CORE_ROOTS, "sdk", "main"}
 )
 
 SCAN_SUFFIX = ".py"
@@ -161,6 +164,7 @@ def collect_imports(files: list[str], sources: dict[str, str] | None = None) -> 
             tree = ast.parse(source, filename=rel)
         except SyntaxError as error:  # pragma: no cover - 仓库内不应出现
             raise SystemExit(f"无法解析 {rel}: {error}") from error
+        imports.extend(_literal_dynamic_imports(rel, tree))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -183,6 +187,56 @@ def collect_imports(files: list[str], sources: dict[str, str] | None = None) -> 
                             or (target.replace(".", "/") + "/__init__.py") in known_files
                         ):
                             imports.append(Import(rel, target, not node.level))
+    return imports
+
+
+def _literal_dynamic_imports(rel: str, tree: ast.Module) -> list[Import]:
+    """检查字面动态导入及导入别名，不执行或推断计算式模块名。"""
+
+    # 1. 只解析明确导入的入口；不做任意赋值、反射或数据流推断。
+    loaders = {"__import__"}
+    module_loaders: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib":
+                    module_loaders.add(f"{alias.asname or alias.name}.import_module")
+                elif alias.name == "builtins":
+                    loaders.add(f"{alias.asname or alias.name}.__import__")
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if node.module == "importlib" and alias.name == "import_module":
+                    module_loaders.add(alias.asname or alias.name)
+                elif node.module == "builtins" and alias.name == "__import__":
+                    loaders.add(alias.asname or alias.name)
+
+    # 2. 字面绝对路径与普通相对 import_module 都进入同一条依赖规则。
+    imports: list[Import] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        loader = ast.unparse(node.func)
+        if loader not in loaders | module_loaders:
+            continue
+        keywords = {item.arg: item.value for item in node.keywords}
+        name = node.args[0] if node.args else keywords.get("name")
+        if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
+            continue
+        module = name.value
+        if loader in module_loaders and module.startswith("."):
+            package = node.args[1] if len(node.args) > 1 else keywords.get("package")
+            level = len(module) - len(module.lstrip("."))
+            if isinstance(package, ast.Name) and package.id == "__package__":
+                resolved = _resolve_relative(rel, level, module.lstrip("."))
+            elif isinstance(package, ast.Constant) and isinstance(package.value, str):
+                resolved = _resolve_relative(package.value.replace(".", "/") + "/_.py", level, module.lstrip("."))
+            else:
+                continue
+            if resolved:
+                # 固定 package 字符串仍绕过 generation；只有 __package__ 绑定本代。
+                imports.append(Import(rel, resolved, absolute=isinstance(package, ast.Constant)))
+        else:
+            imports.append(Import(rel, module))
     return imports
 
 
@@ -288,9 +342,11 @@ def discover_service_keys() -> dict[str, str]:
                 modules.update(alias.asname or alias.name for alias in node.names)
         for node in ast.walk(tree):
             call = _is_service_key_call(node, names, modules)
-            if call is None or not call.args:
+            if call is None:
                 continue
-            arg = call.args[0]
+            arg = call.args[0] if call.args else next(
+                (item.value for item in call.keywords if item.arg == "name"), None,
+            )
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 found[arg.value] = rel
     return found
