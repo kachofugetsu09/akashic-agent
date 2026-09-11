@@ -8,7 +8,7 @@ import sqlite3
 from tempfile import TemporaryDirectory
 
 from agent.plugin_composition.bindings import Bindings
-from session.embedding_store import MessageEmbeddings
+from agent.plugin_composition.messages import MessageEmbeddings
 from agent.plugin_composition.messages import MessageCatalog
 
 from ..domain.model import MemoryConfig

@@ -5,7 +5,15 @@ from collections.abc import Callable, Mapping
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
-from session.embedding_store import MessageEmbeddings
+# 同 `session.log`：这三个名字是 embedding 服务的接口词汇（`core.message_embeddings`
+# 返回的就是 `MessageEmbeddings`），插件需要在注解与维护路径里命名它们。
+# `MessageEmbeddingStore` 是 Core 权威存储实现类，仍由本模块再导出 —— akasha 的
+# 维护路径（`plugins/akasha/repair.py`）会按显式给定的 sessions 路径重建 store。
+from session.embedding_store import (
+    EmbeddingRecords,
+    MessageEmbeddings,
+    MessageEmbeddingStore,
+)
 # 这些名字是 Core 消息服务的**接口词汇**：`core.message_catalog` 返回的就是
 # `MessageCatalog`，`core.owner_state` 返回的就是 `OwnerStore`。插件需要在注解与
 # 异常捕获里命名它们，但不应该 import `session/` 的存储实现模块。服务定义在本文件，
@@ -138,11 +146,14 @@ SESSION_ADMISSION = ServiceKey[SessionAdmission]("core.session_admission")
 __all__ = [
     "InvalidPage",
     "MESSAGE_CATALOG",
+    "EmbeddingRecords",
     "MESSAGE_EMBEDDINGS",
     "MESSAGE_WRITERS",
     "OWNER_STATE",
     "SESSION_ADMISSION",
     "MessageCatalog",
+    "MessageEmbeddings",
+    "MessageEmbeddingStore",
     "MessageConflict",
     "MessageReader",
     "MessageWriters",

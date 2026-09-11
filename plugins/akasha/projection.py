@@ -11,7 +11,7 @@ from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import Message, Output
 from agent.plugin_contracts import Input
 from agent.plugin_contracts import encode_body
-from session.embedding_store import EmbeddingRecords
+from agent.plugin_composition.messages import EmbeddingRecords
 import numpy as np
 
 from .domain.model import Turn, TurnFeedback

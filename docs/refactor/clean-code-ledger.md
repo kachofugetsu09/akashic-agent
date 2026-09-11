@@ -3179,3 +3179,12 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R2 由 50 降到 46。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/shell_tool/standard_tools/unified_exec）= `158 passed, 1 skipped`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（22）：embedding 服务接口词汇归位
+
+- 基线：stacked base `f8a457e8`（第 21 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 与第 19 批（`session.log`）同一形态：`MessageEmbeddings`/`EmbeddingRecords`/`MessageEmbeddingStore` 是 embedding 服务的接口词汇（`core.message_embeddings` 返回的就是 `MessageEmbeddings`），由服务定义模块 `agent/plugin_composition/messages.py` 再导出；插件侧 8 个文件改指该模块。
+- 一处**需要显式说明的例外**：`plugins/akasha/repair.py` 会构造 `MessageEmbeddingStore(sessions)`（`sessions` 是显式传入的 DB 路径）。这是 akasha 的**维护路径**，不是运行时装配；因此本批把 `MessageEmbeddingStore` 也一并再导出，而不是为它临时造一个 ServiceKey。若将来这个维护路径要脱离仓库运行，应按 `seam` 给它一个 Core 提供的只读/重建服务，届时再单独处理。
+- 账本：R2 由 46 降到 38。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/akasha_message_plugin/akasha_recall_records/message_embeddings/akasha_learning_binding）= `124 passed`。
+- 持久化/运行 workspace 变化：`none`（纯 import 目标改写）。

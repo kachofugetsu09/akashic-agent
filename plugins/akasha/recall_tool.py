@@ -15,7 +15,7 @@ from agent.plugin_composition.models import BoundEmbeddingModel
 from agent.plugin_contracts.content import Reference
 from agent.plugin_contracts.tool_api import CallSource, InvalidArguments, Result
 from agent.plugin_contracts.tools import TOOLS
-from session.embedding_store import MessageEmbeddings
+from agent.plugin_composition.messages import MessageEmbeddings
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import json_value

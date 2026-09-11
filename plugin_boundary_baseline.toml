@@ -6,15 +6,7 @@
 R1 = [
 ]
 R2 = [
-    "plugins/akasha/application/consumer.py|session.embedding_store",
-    "plugins/akasha/application/snapshot.py|session.embedding_store",
     "plugins/akasha/dashboard.py|agent.plugins.snapshot",
-    "plugins/akasha/interest.py|session.embedding_store",
-    "plugins/akasha/learning.py|session.embedding_store",
-    "plugins/akasha/projection.py|session.embedding_store",
-    "plugins/akasha/recall_tool.py|session.embedding_store",
-    "plugins/akasha/repair.py|session.embedding_store",
-    "plugins/akasha/runtime.py|session.embedding_store",
     "plugins/codex/driver.py|core.net.http",
     "plugins/codex/responses.py|core.net.http",
     "plugins/conversation/program.py|agent.model_runtime.session_selection",

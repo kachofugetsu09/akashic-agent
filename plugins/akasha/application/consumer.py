@@ -11,7 +11,7 @@ from pathlib import Path
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.messages import MessageCatalog
-from session.embedding_store import MessageEmbeddings
+from agent.plugin_composition.messages import MessageEmbeddings
 
 from ..domain.features import BurstAwareFeaturePool
 from ..domain.model import ContextState, EmbeddingSpaceMismatchError, MemoryConfig, Turn
