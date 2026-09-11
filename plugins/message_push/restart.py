@@ -16,7 +16,8 @@ from agent.plugin_composition import (
 )
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.control.frame_book import CONTROL_FRAMES, FrameBook, FrameClaim, FrameRouteReleased
+from agent.plugin_contracts.frames import FrameRouteReleased
+from agent.plugin_composition.frames import CONTROL_FRAMES, FrameBookPort as FrameBook, FrameClaimPort as FrameClaim
 from agent.plugin_composition.restart import RESTART_GATE
 from agent.plugin_contracts.restart import RestartGate, RestartRejectedError
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter

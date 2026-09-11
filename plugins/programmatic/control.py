@@ -16,7 +16,7 @@ from agent.plugin_contracts.programmatic import (
 )
 from agent.plugin_contracts.control_models import SessionIdParams, StrictModel
 from agent.plugin_composition import Context, ServiceKey
-from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResolver
+from agent.plugin_composition.frames import CONTROL_FRAMES, FrameResolver, FrameRouteStagePort as FrameRouteStage
 from agent.plugin_contracts.control_method import RequestTransport
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION, Turn

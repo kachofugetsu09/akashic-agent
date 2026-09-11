@@ -3206,3 +3206,17 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
   逐个 import 模块并断言被 import 的名字真实存在。本次这个缺陷在这个守护下会立刻失败。
 - 验证：`pytest`（boundary/contracts/semantic/message_push_plugin/agent_restart_tool/plugin_runtime_control）
   = `106 passed, 1 failed`（唯一失败是已核对的既有 socket 集成用例）；重跑 change-impact Gate 全绿。
+
+## 2026-09-10 插件边界第 3 步（23）：控制帧 key 归位（设计第 4 项）
+
+- 基线：stacked base `4007c0a8`（第 22b 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam + move。执行设计文档原定第 4 项「`core.control_frames.v1` 归位到组合内核」。
+  - 新增 `agent/plugin_composition/frames.py`：`CONTROL_FRAMES` key、`FrameResolver` 别名、`FrameBookPort`/`FrameClaimPort`/`FrameRouteStagePort` Protocol（只声明插件实际调用的 8 + 3 + 2 个方法）。
+  - 新增 `agent/plugin_contracts/frames.py`：`FrameRouteReleased` 异常（消费者要捕获它）。
+  - `agent/control/frame_book.py` 的实现保留，按原路径再导出两者；`ServiceKey` 只按 name 相等，归位零运行时语义。
+- 消费者改写 4 个文件：`plugins/message_push/{plugin,restart}.py`、`plugins/programmatic/{control,plugin}.py`；
+  从 `ctx.require(CONTROL_FRAMES)` 取到的值一律注解为 Port（`FrameBookPort as FrameBook`），未实例化具体类。
+- 账本：R2 由 38 降到 34。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/message_push_plugin/agent_restart_tool/programmatic_control/programmatic_result）
+  = `105 passed, 5 failed`，5 项与父提交逐项一致（既有 socket 集成失败）。
+- 持久化/运行 workspace 变化：`none`。

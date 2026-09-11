@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Protocol, cast
 
 from agent.plugin_composition import ServiceKey
+from agent.plugin_composition.frames import CONTROL_FRAMES, FrameBookPort
+from agent.plugin_contracts.frames import FrameRouteReleased  # noqa: F401  (再导出)
 from session.message import CallRef
 
 
@@ -15,8 +17,6 @@ class FrameResolver(Protocol):
     def __call__(self) -> str | None: ...
 
 
-class FrameRouteReleased(RuntimeError):
-    """The short-lived route no longer accepts a delivery wait."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,4 +414,3 @@ def _complete_output(row: Mapping[str, object]) -> bool:
     )
 
 
-CONTROL_FRAMES = ServiceKey[FrameBook]("core.control_frames.v1")
