@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_contracts.content import CONTENT
-from plugins.context.plugin import CONTEXT
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
 from plugins.conversation.plugin import CONVERSATION
 from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS

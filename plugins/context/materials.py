@@ -9,6 +9,7 @@ from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_contracts.content import Reference
 from agent.plugin_contracts import Message
 
+from agent.plugin_contracts.context import MATERIALS
 from .api import ContextModel, Materials, Reminder, Summary, SummaryReducer
 
 Prepare = Callable[[tuple[Message, ...], str], Awaitable[Materials]]
@@ -197,4 +198,3 @@ class ContextMaterials:
                 view.close()
 
 
-MATERIALS = ServiceKey[ContextMaterials]("context.materials.v1")

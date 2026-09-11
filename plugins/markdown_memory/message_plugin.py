@@ -31,7 +31,7 @@ from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, Stor
 from plugins.compaction.message_summary import source_text, summary_groups, window_starts
 from agent.plugin_contracts.content import is_user_input, legacy_post_commit_effect
 from agent.plugin_contracts.context import Materials, check_summary, summary_range
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
 from session.log import MessageCatalog, MessageReader

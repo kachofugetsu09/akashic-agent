@@ -5,7 +5,8 @@ import pytest
 
 from agent.plugin_composition.models import ModelContinuation, ModelRequest
 from agent.plugin_contracts.context import Reminder
-from plugins.context.plugin import ContextBuilder, ContextOverflow, Materials, Summary
+from agent.plugin_contracts.context import ContextOverflow, Materials, Summary
+from plugins.context.plugin import ContextBuilder
 from plugins.context.search import MessageSearch
 from session.message import (
     CallRef,

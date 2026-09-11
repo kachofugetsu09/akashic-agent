@@ -13,7 +13,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from agent.plugin_contracts.content import CONTENT
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import MATERIALS
 from plugins.tools.api import MessageReply
 from agent.plugin_contracts.tools import TOOLS
 from plugins.akasha.message_plugin import AKASHA_TOOLS

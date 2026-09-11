@@ -18,7 +18,7 @@ from agent.plugins.snapshot import get_current_runtime_snapshot, lease_runtime_s
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from agent.plugin_contracts.content import check_text
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import MATERIALS
 from plugins.context.plugin import Config
 from plugins.conversation.plugin import check_origin
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS

@@ -14,6 +14,7 @@ from agent.plugin_contracts import (
     Message,
 )
 from plugins.context.api import ContextModel, ContextOverflow, Materials, Summary, settled_prefixes, summary_range
+from agent.plugin_contracts.context import CONTEXT, ContextBuilderPort
 from plugins.context.materials import ContextMaterials, MATERIALS
 
 api_version = 3
@@ -158,7 +159,6 @@ class ContextBuilder:
         return request
 
 
-CONTEXT = ServiceKey[ContextBuilder]("context.v1")
 
 
 async def apply(ctx: Context, config: Config | None) -> None:

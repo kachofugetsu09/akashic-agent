@@ -17,8 +17,8 @@ from plugins.delivery.history import DELIVERY_READ
 from plugins.drift.plugin import DRIFT_CHANGED
 from agent.plugin_contracts.content import ContentSchema
 from agent.plugin_contracts.content import CONTENT
-from plugins.context.materials import MATERIALS
-from plugins.context.plugin import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
 from plugins.delivery.plugin import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.models.projection import MODEL_CALLS

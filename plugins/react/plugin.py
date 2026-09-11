@@ -23,7 +23,7 @@ from agent.plugin_contracts import CallRef, Control, Message, Output, Part, Cont
 
 if TYPE_CHECKING:
     from agent.plugin_contracts.content import ContentView
-    from plugins.context.plugin import ContextBuilder
+    from agent.plugin_contracts.context import ContextBuilderPort as ContextBuilder
     from plugins.models.projection import MessageProjection
     from plugins.tools.menu import ToolMenu
 

@@ -23,8 +23,8 @@ from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.standard_tools.shell import SHELL_OWNERS, shell_cleanup
 from agent.plugin_contracts.content import CONTENT, check_text
-from plugins.context.materials import MATERIALS
-from plugins.context.plugin import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
 from plugins.conversation.program import run_reply
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from plugins.tools.api import MessageReply

@@ -27,8 +27,8 @@ from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output,
 
 if TYPE_CHECKING:
     from agent.plugin_contracts.content import ContentView as Content
-    from plugins.context.plugin import ContextBuilder
-    from plugins.context.materials import ContextMaterials
+    from agent.plugin_contracts.context import ContextBuilderPort as ContextBuilder
+    from agent.plugin_contracts.context import ContextMaterialsPort as ContextMaterials
     from agent.plugin_contracts.tools import ToolCatalogPort as ToolCatalog
     from agent.plugin_contracts.turn_projection import TurnProjectionPort as TurnProjection
     from plugins.react.plugin import Preview

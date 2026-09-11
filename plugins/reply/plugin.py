@@ -15,8 +15,8 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.restart import RESTART_GATE
 from agent.plugin_contracts.content import CONTENT
-from plugins.context.plugin import CONTEXT
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
 from plugins.sources.plugin import SOURCES, SOURCE_CHANGED
 from plugins.conversation.source import needs_reply
 from plugins.conversation.commands import CONVERSATION_COMMANDS

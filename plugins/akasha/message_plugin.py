@@ -17,7 +17,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDING
 from agent.plugin_contracts.content import ContentSchema
 from agent.plugin_contracts.content import CONTENT
 from agent.plugin_contracts.context import Materials, Reminder
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.tools import TOOLS, ToolRef, ToolView
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts import Message

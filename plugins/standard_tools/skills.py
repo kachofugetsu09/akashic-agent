@@ -14,7 +14,7 @@ from agent.plugins.archive import PluginArchive
 from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.skills import SkillRecord, skill_body
 from agent.plugin_contracts.context import Materials
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.tool_api import CallSource, Result
 from agent.plugin_contracts.tools import TOOLS, ToolRef
 from agent.plugin_contracts import ContentPart, Message

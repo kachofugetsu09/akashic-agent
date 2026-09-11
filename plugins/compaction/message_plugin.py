@@ -12,8 +12,8 @@ from agent.plugin_composition.models import BoundChatModel, ModelRequest, ModelR
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from agent.plugin_contracts.context import ContextModel, ContextOverflow, Materials, Summary, summary_range
-from plugins.context.plugin import CONTEXT
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from agent.plugin_contracts import Message
 

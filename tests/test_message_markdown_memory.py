@@ -14,7 +14,7 @@ from bus.event_bus import EventBus
 from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryRecord, SummaryRecords
 from agent.plugin_contracts.content import check_text
 from agent.plugin_contracts.context import check_summary
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION
 from plugins.markdown_memory.store import MarkdownProfileStore
 from session.log import MessageLog, SessionAttributes

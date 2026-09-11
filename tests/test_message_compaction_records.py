@@ -161,7 +161,7 @@ async def test_summary_use_reopens_original_archive_after_head_advance_and_sourc
     from bus.event_bus import EventBus
     from plugins.compaction.records import COMPACTION_SUMMARIES
     from agent.plugin_contracts.context import check_summary
-    from plugins.context.materials import MATERIALS
+    from agent.plugin_contracts.context import MATERIALS
     from session.message import Output
 
     sources = tmp_path / "plugins"

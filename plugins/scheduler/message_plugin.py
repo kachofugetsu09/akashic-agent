@@ -12,8 +12,8 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.timers import TIMERS
 from agent.plugin_contracts.content import CONTENT
-from plugins.context.plugin import CONTEXT
-from plugins.context.materials import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
 from plugins.conversation.program import run_reply
 from plugins.delivery.plugin import DELIVERY
 from plugins.models.projection import MODEL_CALLS

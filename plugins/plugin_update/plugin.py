@@ -14,8 +14,8 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, 
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_contracts.content import CONTENT, check_text
-from plugins.context.materials import MATERIALS
-from plugins.context.plugin import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
 from plugins.delivery.plugin import DELIVERY
 from agent.plugin_contracts.delivery import DELIVERY_SENDERS
 from plugins.models.projection import MODEL_CALLS

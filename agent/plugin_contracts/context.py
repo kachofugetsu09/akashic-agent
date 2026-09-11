@@ -10,10 +10,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, cast
+from contextlib import AbstractAsyncContextManager
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
+from agent.plugin_composition.model import ServiceKey
 from agent.plugin_contracts.content import Reference
 from agent.plugin_contracts.message import (
     CallRef,
@@ -177,3 +179,69 @@ class ContextOverflow(ValueError):
             f"请求需要约 {estimated_tokens}+{output_tokens} tokens，容量 {capacity}"
         )
 
+
+
+@runtime_checkable
+class MaterialViewPort(Protocol):
+    """固定本次请求贡献者后的材料收集 view。"""
+
+    def close(self) -> None:
+        """关闭 view，之后不再接受 prepare。"""
+        ...
+
+    async def prepare(
+        self,
+        snapshot: tuple[Message, ...],
+        source: str,
+        *,
+        caller: object | None = None,
+        reminders: tuple[Reminder, ...] = (),
+    ) -> Materials:
+        """按固定贡献者收集预置上下文。"""
+        ...
+
+
+@runtime_checkable
+class ContextMaterialsPort(Protocol):
+    """预置上下文材料注册表对消费者可见的方法子集。"""
+
+    async def register(
+        self,
+        ctx: object,
+        *,
+        name: str,
+        prepare: object,
+        priority: int = 0,
+        prompt: bool = False,
+        reduce: object | None = None,
+    ) -> object:
+        """登记一个材料来源；同名称只有一个真实 owner。"""
+        ...
+
+    def bind(
+        self, *, exclude: frozenset[str] = frozenset()
+    ) -> AbstractAsyncContextManager[MaterialViewPort]:
+        """固定本次请求的材料来源。"""
+        ...
+
+
+@runtime_checkable
+class ContextBuilderPort(Protocol):
+    """把预置上下文组装为 ModelRequest 的纯组装器。"""
+
+    def build(
+        self,
+        snapshot: Sequence[Message],
+        *,
+        materials: Materials,
+        model: ContextModel,
+        tools: Sequence[Mapping[str, Any]] = (),
+        max_output_tokens: int,
+        window_start: str | None = None,
+    ) -> ModelRequest:
+        """纯函数式组装；容量不足明确报错。"""
+        ...
+
+
+MATERIALS = ServiceKey[ContextMaterialsPort]("context.materials.v1")
+CONTEXT = ServiceKey[ContextBuilderPort]("context.v1")

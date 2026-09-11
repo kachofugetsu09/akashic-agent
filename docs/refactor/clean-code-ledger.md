@@ -3101,3 +3101,14 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 132 降到 116。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/context_compaction_contract/akasha_message_plugin/akasha_recall_records/message_compaction_summary/reply_program/turn_messages_migration/legacy_summary_migration）= `157 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（17）：上下文装配能力合同化
+
+- 基线：stacked base `6122fcc8`（第 16 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam。`ContextMaterialsPort`/`MaterialViewPort`/`ContextBuilderPort` 与 `MATERIALS`/`CONTEXT` 两个 key 移入 `agent/plugin_contracts/context.py`，实现留在 `plugins/context`；两者登记为 `seam`。
+  - `MATERIALS`：`register(...)` 登记材料来源、`bind(*, exclude)` 固定本次请求贡献者（其余消费者只调用这两个方法）。
+  - `CONTEXT`：`build(...)` 纯组装为 `ModelRequest`。
+- 消费者改写 33 处；`plugins/conversation/program.py` 与 `plugins/react/plugin.py` 的 TYPE_CHECKING 注解改指 Port（`ContextBuilderPort as ContextBuilder`、`ContextMaterialsPort as ContextMaterials`），未实例化具体类。
+- 账本：R3 由 116 降到 92。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/context_compaction_contract/akasha_message_plugin/message_compaction_summary/reply_program/akasha_recall_records）= `118 passed`。
+- 持久化/运行 workspace 变化：`none`。

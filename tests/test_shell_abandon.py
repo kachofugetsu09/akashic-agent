@@ -11,8 +11,8 @@ from agent.plugins.manager import PluginManager
 from agent.restart import RestartGate
 from bus.event_bus import EventBus
 from agent.plugin_contracts.content import CONTENT, check_text
-from plugins.context.materials import MATERIALS
-from plugins.context.plugin import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
 from plugins.conversation.program import run_reply
 from agent.plugin_contracts.tools import ALL_TOOLS, TOOLS
 from agent.plugin_contracts.turn_projection import TURN_PROJECTION

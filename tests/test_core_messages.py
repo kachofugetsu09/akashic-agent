@@ -114,7 +114,7 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
                 assert result.outcome == "success"
         pushed = MessageCatalog(core.message_log).reader("akashic:room").snapshot()
         assert len(pushed) == 1 and pushed[0].body.parts[0].value == "离线时也保存"
-        from plugins.context.materials import MATERIALS
+        from agent.plugin_contracts.context import MATERIALS
         assert snapshot.composition_root.context.require(MATERIALS) is not None
     finally:
         await core.bus.aclose()
@@ -158,7 +158,7 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
     from agent.plugin_composition import AddConnection, AddModel, SetDefaultModel, UpdateConnection, ModelKind, ModelCapabilities, CapabilitySources, ModelUnavailableError
     from agent.plugins.model_control import RuntimeModelControl
     from bootstrap.init_workspace import init_workspace
-    from plugins.context.materials import MATERIALS
+    from agent.plugin_contracts.context import MATERIALS
     from plugins.akasha.infrastructure.persistence import logical_state_sha256
     from agent.plugin_contracts.content import CONTENT
     from session.message import Output

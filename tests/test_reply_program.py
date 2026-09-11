@@ -17,8 +17,8 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from agent.plugin_contracts.content import CONTENT, check_text
-from plugins.context.materials import MATERIALS
-from plugins.context.plugin import CONTEXT
+from agent.plugin_contracts.context import MATERIALS
+from agent.plugin_contracts.context import CONTEXT
 from plugins.conversation.program import run_reply
 from plugins.conversation.source import Conversation
 from plugins.models.content import render_content
