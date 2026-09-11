@@ -32,10 +32,8 @@ R3 = [
     "plugins/conversation/program.py|plugins.tools.menu",
     "plugins/markdown_memory/message_plugin.py|plugins.compaction.records",
     "plugins/plugin_update/validation.py|plugins.conversation.program",
-    "plugins/qq_sender/sender.py|plugins.delivery.content",
     "plugins/reply/plugin.py|plugins.conversation.program",
     "plugins/scheduler/message_plugin.py|plugins.conversation.program",
     "plugins/subagent/plugin.py|plugins.conversation.program",
-    "plugins/telegram_sender/sender.py|plugins.delivery.content",
     "plugins/wake/program.py|plugins.conversation.program",
 ]

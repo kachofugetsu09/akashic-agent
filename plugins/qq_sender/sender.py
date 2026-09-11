@@ -11,7 +11,7 @@ from websockets.exceptions import ConnectionClosed
 
 from agent.plugin_composition.artifacts import ArtifactRead
 from agent.plugin_contracts.delivery_api import Receipt
-from plugins.delivery.content import AttachmentReadError, read_content
+from agent.plugin_contracts.model_content import AttachmentReadError, read_content
 from agent.plugin_contracts.artifacts import AttachmentKind
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import Message

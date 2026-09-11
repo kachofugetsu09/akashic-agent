@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Protocol, cast, runtime_checkable
 
+from agent.plugin_contracts.artifacts import AttachmentRef
 from agent.plugin_contracts.conversation import check_origin
 from agent.plugin_contracts.message import Control, Input, Message, Output
 
@@ -34,6 +35,19 @@ class MessageReaderPort(Protocol):
         self, *, after_seq: int = -1, through_seq: int | None = None
     ) -> tuple[Message, ...]:
         """按区间读取已提交消息。"""
+        ...
+
+    def attachments(self, message_id: str) -> tuple[AttachmentRef, ...]:
+        """读取某条消息已验证的附件引用；不打开字节。"""
+        ...
+
+
+@runtime_checkable
+class MessageCatalogPort(Protocol):
+    """Core 消息目录的窄接口：按 session 取只读 reader。"""
+
+    def reader(self, session_id: str) -> MessageReaderPort:
+        """取得某个 Session 的只读 reader。"""
         ...
 
 

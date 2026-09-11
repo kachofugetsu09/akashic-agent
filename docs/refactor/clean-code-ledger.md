@@ -3515,3 +3515,39 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R3 由 16 降到 14。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/channel_input/conversation_source/reply_program/plugin_update_source/delivery_bindings）= `129 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（37）：附件正文读取合同化
+
+- 基线：stacked base `b52e3f09`（第 36 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：seam。`read_content`/`File`/`AttachmentReadError` 移到
+  `agent/plugin_contracts/model_content.py`（原生发送需要把消息正文与附件读出来）：
+  - `MessageReaderPort` 增加 `attachments(message_id)`；新增 `MessageCatalogPort`
+    （`reader(session_id)`）—— 两者都是纯 Protocol，让「Core 消息服务的只读面」出现在
+    合同层而不引入存储实现依赖。
+  - `AttachmentReadPort`（第 8 批已入合同）继续描述附件字节读取；`read_content` 因此
+    只依赖合同层类型。
+  - `plugins/delivery/content.py` 按原路径再导出；`qq_sender`/`telegram_sender` 改指合同层。
+- 语义核对（沿用第 36 批做法）：扩展后的 `MessageReaderPort` 仍须被真实 `MessageReader`
+  满足——已用真实实例验证 `isinstance(reader, MessageReaderPort) is True` 且具备 `attachments`。
+- 账本：R3 由 14 降到 12。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/native_senders/channel_attachment_store/message_artifacts/message_push_plugin）= `131 passed`。
+- 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步：R3 剩余 12 条（定性完成，供接手）
+
+| 条目 | 条数 | 结论 |
+|---|---|---|
+| `run_reply`（reply / scheduler / subagent / wake / plugin_update 调用 `plugins.conversation.program`） | **5** | **设计文档明确排除在机械迁移外**：Turn 原子需要 inbox + scope + `TurnHandle` 取代 25 参数、11 个 `ctx.require` 的 `run_reply`。属架构改动，需独立设计与差分 Gate |
+| `Conversation`（`programmatic/plugin.py` 构造） | 1 | 需「按显式参数构造会话」的工厂 seam。`CONVERSATION` 现有签名是 `Callable[[str], ConversationPort]`，无法表达这次构造；要新增构造入口 key 并改调用约定 |
+| `MessageProjection`（`conversation/program.py` 构造） | 1 | 需投影由 ServiceKey 提供的工厂（构造参数含 model/renderer/read_call，来源自持） |
+| `MessageReply`（`conversation/program.py` 构造） | 1 | 存储写入位置，构造需要 reader/writer；需 `core.message_writers` 提供「按显式参数构造 reply」的入口 |
+| `ToolMenu`（`conversation/program.py` 构造） | 1 | 需工具能力提供菜单工厂（`plugins.tools`）；`ToolMenuPort` 已就绪，缺构造入口 |
+| `shell_cleanup`（`conversation/program.py` 调用） | 1 | `plugins.standard_tools.shell` 的清理函数；应经 shell 能力 seam 暴露 |
+| `selection`（`conversation/program.py` 调用） | 1 | 会**构造** `ChatModelSelection`（组合内核值类型）；需模型选择能力 seam |
+| `COMPACTION_SUMMARIES`/`SummaryLookup`/`StoredSummary`（markdown_memory 只读） | 1 | 需把 `SummaryLookupPort`（已在合同层）补上 `COMPACTION_SUMMARIES` key，并用**纯读视图**（仿第 18 批 `JobView`）替代 `StoredSummary` 的存储模型，避免把 compaction 的存储格式搬进 Core |
+
+**共同点**：这 12 条全部是「消费者需要**实例化或调用**提供方的实现」，不是注解问题。
+正解统一是**工厂/能力 seam**（key + provider + 改调用约定），每一项都要动调用点签名与
+构造路径，因此都需要 targeted tests + 完整 Gate。第 36/37 批证明：只要能找到不依赖
+实现类型的窄 Protocol，就能把「读取」类依赖安全地移到合同层；剩下的是「构造」类，
+必须由提供方显式暴露工厂。
