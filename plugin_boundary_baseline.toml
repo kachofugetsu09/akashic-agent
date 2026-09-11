@@ -6,11 +6,11 @@
 R1 = [
 ]
 R2 = [
+    "plugins/react/plugin.py|agent.plugins.snapshot",
     "plugins/standard_tools/shell_backend.py|agent.tools.unified_exec",
     "plugins/models/litellm_catalog.py|agent.model_runtime.catalog.litellm_registry",
     "plugins/prompt/plugin.py|agent.persona",
     "plugins/prompt/text.py|agent.persona",
-    "plugins/react/plugin.py|agent.plugins.snapshot",
     "plugins/standard_tools/filesystem.py|agent.tools.filesystem",
     "plugins/standard_tools/shell_backend.py|agent.control.context",
     "plugins/standard_tools/skills.py|agent.plugins.archive",

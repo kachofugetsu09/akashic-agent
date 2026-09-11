@@ -3612,3 +3612,24 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
     `RuntimeSnapshotAccess()`。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（retire_core_model_config_migration/model_execution/boundary/contracts/semantic）= `112 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（42）：standard_tools 冻结记录 + react 回退
+
+- 承接第 40/41 批。本轮结论：
+  - **保留**：`filesystem.py` / `skills.py`（第 40 批）与 `ModelsState`（第 41 批）的注入改造，
+    R2 由 13 降到 10。
+  - **回退**：`plugins/react/plugin.py` 与 `plugins/conversation/program.py` 的运行时快照改造，
+    并把 `plugins/react/plugin.py|agent.plugins.snapshot` 记回账本。
+- **两个真实回归（都由测试抓到，值得单列）**：
+  1. `skills.records()` 的改动把「快照里没有技能索引」当成错误抛出。**原实现返回空元组** ——
+     「没有技能目录」是合法状态（drift 子 task 场景就是如此），不是错误。已恢复该语义并写明注释。
+     教训：**改造时必须逐条核对原实现的 None/空值分支语义**，不能只保证类型通过。
+  2. `program.py` 的 `run_reply` 里 `ctx.require(RUNTIME_SNAPSHOT)` 会**阻塞等待**服务可用：
+     `run_reply` 收到的是**调用方** ctx（reply/scheduler/subagent/wake/plugin_update 五个来源），
+     它们没有 inject 该 key，于是整个 drift 用例挂死（3m20s 无进展、user 时间仅 3s）。
+     教训：**新增 ctx.require 前必须确认该 ctx 属于谁、那个 Root 是否声明了依赖**；
+     「本插件 inject 了」不等于「传入的 ctx inject 了」。
+  - 正解是把 `runtime_snapshot` 作为 `run_reply` 的显式参数由调用方传入，或让五个来源都声明依赖 ——
+    这属于**调用约定变更**，已在设计文档登记，不混进本批。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（standard_tools/wake_messages）
+  = `53 passed`；`test_drift_runs_actual_private_tool_and_settles_once` 恢复为 `2 passed in 3.39s`。

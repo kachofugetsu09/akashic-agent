@@ -40,20 +40,15 @@ class SkillState(BaseModel):
     skills: dict[str, SkillFile]
 
 
-def require_skill_index(access: RuntimeSnapshotAccessPort) -> SkillIndex:
-    """在执行期经运行时边界取当前 task 的技能索引；插件不 import 模块级全局。
+def records(access: RuntimeSnapshotAccessPort) -> tuple[SkillRecord, ...]:
+    """读取当前 task 快照的插件技能；不扫描 workspace 软链接或旧目录。
 
-    装配期不能调用（那时当前 task 还没有绑定快照），因此注册路径只持有访问器，
-    真正的读取发生在 capture/prepare 这些**执行期**回调里，与原先语义一致。
+    与原先一致：**没有技能索引**（未绑定快照或索引为 None）时返回空元组，
+    而不是报错 —— 技能目录为空是合法状态。
     """
     index = access.plugin_skill_index()
     if index is None:
-        raise RuntimeError("技能读取需要实际 runtime scope")
-    return index
-
-
-def records(index: SkillIndex) -> tuple[SkillRecord, ...]:
-    """只读取给定 exact snapshot 的插件技能，不扫描 workspace 软链接或旧目录。"""
+        return ()
     return tuple(index.records[key] for key in sorted(index.records))
 
 
@@ -123,7 +118,7 @@ async def register_skills(ctx: Context) -> ToolRef:
         if configuration:
             raise ValueError("技能读取没有调用者配置")
         archive = PluginArchive(archive_path)
-        return SkillState(skills={record.name: save_skill(record, archive) for record in records(require_skill_index(runtime_snapshot))}).model_dump()
+        return SkillState(skills={record.name: save_skill(record, archive) for record in records(runtime_snapshot)}).model_dump()
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[SkillTool]:
@@ -132,7 +127,7 @@ async def register_skills(ctx: Context) -> ToolRef:
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
         catalog: list[str] = []
         active: list[str] = []
-        for record in records(require_skill_index(runtime_snapshot)):
+        for record in records(runtime_snapshot):
             catalog.append(
                 f"- {record.name}: {record.description}\n"
                 f"  适用：{record.when_to_use}；来源：{record.source}/{record.source_id}；"
