@@ -7,7 +7,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.models import ContextLengthError, LLMResponse
 from agent.plugins.snapshot import lease_runtime_snapshot
-from plugins.context.api import Summary
+from agent.plugin_contracts.context import Summary
 from plugins.reply.status import REPLY_STATUS, ReplyState
 from session.message import ContentPart, ContentReferences, Input, Output
 from session.log import WriterExpired

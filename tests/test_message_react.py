@@ -15,7 +15,7 @@ from agent.plugin_composition.models import (
 from agent.plugin_composition.tasks import Task, Tasks
 from agent.plugin_contracts.content import check_text
 from plugins.content.plugin import _decode_text
-from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary
+from agent.plugin_contracts.context import ContextModel, Materials, Reminder, Summary, check_summary
 from plugins.context.plugin import ContextBuilder
 from plugins.conversation.source import Conversation, needs_reply
 from plugins.models.content import render_content
@@ -456,7 +456,7 @@ async def test_new_input_does_not_reset_step_budget_and_abandon_starts_new_work(
 @pytest.mark.parametrize("case", ["soft", "local", "provider", "no_progress", "second_overflow"])
 async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_path, case):
     from agent.plugin_composition.models import ContextLengthError
-    from plugins.context.api import Summary
+    from agent.plugin_contracts.context import Summary
 
     prepared_count = 0
     requests, reductions = [], []

@@ -24,7 +24,7 @@ from agent.plugin_contracts import (
     ToolResult,
 )
 from agent.plugin_contracts import json_value
-from plugins.context.api import check_summary
+from agent.plugin_contracts.context import check_summary
 from .store import ModelCallReader
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]

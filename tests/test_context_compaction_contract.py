@@ -6,7 +6,7 @@ import pytest
 
 from agent.plugin_composition.models import ModelContinuation, ModelRequest
 from plugins.compaction.message_summary import SummaryError, _request
-from plugins.context.api import ContextOverflow, Materials
+from agent.plugin_contracts.context import ContextOverflow, Materials
 from plugins.context.plugin import ContextBuilder
 from session.message import ContentPart, Input, Message, Output
 from tests.model_plugin_fakes import BoundChatModelFake

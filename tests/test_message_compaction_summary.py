@@ -76,7 +76,7 @@ def test_completed_turns_merge_overlapping_sources_but_open_batches_can_compact(
 
 @pytest.mark.parametrize("late_result", [False, True])
 def test_abandon_closes_summary_prefix_without_inventing_a_tool_result(tmp_path, late_result):
-    from plugins.context.api import Materials, Summary
+    from agent.plugin_contracts.context import Materials, Summary
     from plugins.context.plugin import ContextBuilder
     from plugins.models.content import render_content
     from plugins.models.projection import MessageProjection

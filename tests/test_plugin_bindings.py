@@ -498,7 +498,7 @@ async def apply(ctx, config):
 async def test_archived_context_accepts_public_summary_from_another_plugin(tmp_path):
     from datetime import UTC, datetime
     from agent.plugin_composition.models import ModelRequest
-    from plugins.context.api import Materials, Summary
+    from agent.plugin_contracts.context import Materials, Summary
     from session.message import Input, Message, Output
 
     sources = tmp_path / "plugins"

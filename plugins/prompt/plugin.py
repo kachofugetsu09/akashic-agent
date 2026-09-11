@@ -7,7 +7,7 @@ from typing import cast
 
 from agent.persona import read_veda_file
 from agent.plugin_composition import Context
-from plugins.context.api import Materials, Reminder
+from agent.plugin_contracts.context import Materials, Reminder
 from plugins.context.materials import MATERIALS
 from agent.plugin_contracts import Input, Message
 from agent.plugin_contracts import json_value

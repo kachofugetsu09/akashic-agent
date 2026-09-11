@@ -3089,3 +3089,15 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
 - 账本：R2 由 108 降到 102。
 - 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/standard_tools/shell_tool/tool_views/tool_bindings/host_bridge/host_bridge_protocol）= `178 passed`。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（16）：上下文词汇表合同化
+
+- 基线：stacked base `cab4b2d5`（第 15 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：move & re-export。`plugins/context/api.py` 的预置上下文词汇表与 Protocol 移入 `agent/plugin_contracts/context.py`：
+  `settled_prefixes`、`check_summary`、`summary_range`（纯函数）、`Summary`/`Reminder`/`Materials`（frozen dataclass）、`ContextModel`/`SummaryReducer`（Protocol）、`ContextOverflow`。
+- 依赖处理：`ContextModel.render() -> ModelRequest` 与 `SummaryReducer.__call__(model=BoundChatModel)` 需要模型请求词汇，合同模块**只在 `TYPE_CHECKING` 下**引用 `agent.plugin_composition.models`，运行时零依赖；`Contract` 纯度测试已忽略 TYPE_CHECKING 守卫。
+- 附带收益：本批批量改写 `from plugins.context.api import` 时，`agent/migrations/legacy_summaries.py` 与 `agent/migrations/turn_messages.py` 也改指了合同层，
+  R1 豁免命中数由 17 降到 14 —— 迁移 payload 不再依赖插件实现模块，是净改善而非遗漏。
+- 账本：R3 由 132 降到 116。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/context_compaction_contract/akasha_message_plugin/akasha_recall_records/message_compaction_summary/reply_program/turn_messages_migration/legacy_summary_migration）= `157 passed`。
+- 持久化/运行 workspace 变化：`none`。

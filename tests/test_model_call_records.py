@@ -574,7 +574,7 @@ async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned
 async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_response(store, descriptor):
     from datetime import UTC, datetime
     from dataclasses import replace
-    from plugins.context.api import Materials, Summary
+    from agent.plugin_contracts.context import Materials, Summary
     from plugins.context.plugin import ContextBuilder
     from plugins.models.projection import MessageProjection, response_facts
     from plugins.models.content import render_content

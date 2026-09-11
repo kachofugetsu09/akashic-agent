@@ -16,7 +16,7 @@ from agent.migrations.session_db_backup import (
     validate_table_schema,
 )
 from plugins.compaction.records import ImportedSummaryRecord, SummaryRecords
-from plugins.context.api import summary_range
+from agent.plugin_contracts.context import summary_range
 from session.log import MessageLog, OwnerTransaction
 from session.message_codec import json_value
 

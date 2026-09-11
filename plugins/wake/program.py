@@ -9,7 +9,7 @@ from agent.plugin_composition.models import ModelError
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts.content import CONTENT
 from plugins.context.plugin import CONTEXT
-from plugins.context.api import ContextOverflow
+from agent.plugin_contracts.context import ContextOverflow
 from plugins.context.materials import MATERIALS
 from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS

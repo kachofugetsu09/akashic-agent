@@ -82,7 +82,7 @@ async def apply(ctx, config):
     authorizing, authorized = asyncio.Event(), asyncio.Event()
     if case == "summarized_input":
         from dataclasses import replace
-        from plugins.context.api import Summary
+        from agent.plugin_contracts.context import Summary
         from plugins.context.materials import MaterialView
         original_prepare = MaterialView.prepare
         async def summarized_prepare(self, messages, source, **kwargs):

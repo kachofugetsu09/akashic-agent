@@ -160,7 +160,7 @@ async def test_summary_use_reopens_original_archive_after_head_advance_and_sourc
     from agent.plugins.snapshot import lease_runtime_snapshot
     from bus.event_bus import EventBus
     from plugins.compaction.records import COMPACTION_SUMMARIES
-    from plugins.context.api import check_summary
+    from agent.plugin_contracts.context import check_summary
     from plugins.context.materials import MATERIALS
     from session.message import Output
 

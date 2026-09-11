@@ -1,4 +1,4 @@
-from plugins.context.api import Reminder
+from agent.plugin_contracts.context import Reminder
 from collections.abc import Awaitable, Callable, Sequence
 
 from agent.plugin_composition import ServiceKey

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from plugins.context.api import Reminder
+from agent.plugin_contracts.context import Reminder
 
 import asyncio
 from collections.abc import Mapping, Sequence

@@ -15,7 +15,7 @@ from agent.plugin_contracts.content import check_text
 from plugins.conversation.plugin import CONVERSATION
 from plugins.delivery.plugin import DELIVERY
 from plugins.reply.api import REPLY_PROGRAM
-from plugins.context.api import Reminder
+from agent.plugin_contracts.context import Reminder
 from session.log import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output
 from agent.plugin_contracts import json_value
