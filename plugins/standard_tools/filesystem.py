@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.plugin_composition import CHAT_MODELS, ModelRole
-from agent.plugins.snapshot import get_current_runtime_snapshot
+from agent.plugin_composition.runtime_snapshot import RuntimeSnapshotAccessPort
 from agent.plugin_contracts.tool_base import Tool, ToolResult
 from agent.tools.filesystem import (
     EditFileOperation,
@@ -15,7 +15,16 @@ from agent.tools.filesystem import (
 
 
 class ReadFileTool(ReadFileOperation, Tool):
-    """读取文件内容，支持按行分页，超大文件自动截断。"""
+    """读取文件内容，支持按行分页，超大文件自动截断。
+
+    运行时边界访问器由注册路径显式注入（原先 import 模块级全局读当前 task 的
+    snapshot）。模型能力仍在**执行期**从该快照的组合 Root 取，与原先语义一致
+    （注册期不能 require CHAT_MODELS：models 插件可能尚未装配）。
+    """
+
+    def __init__(self, *, runtime_snapshot: RuntimeSnapshotAccessPort, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._runtime_snapshot = runtime_snapshot
 
     @property
     def name(self) -> str:
@@ -61,7 +70,7 @@ class ReadFileTool(ReadFileOperation, Tool):
         result = await self.read_raw(path, **kwargs)
         if not isinstance(result, ToolResult) or not result.content_blocks:
             return result
-        if await _current_agent_accepts_images():
+        if await _agent_accepts_images(self._runtime_snapshot):
             return result
         return _vision_tool_hint(path, Path(path).name, "image")
 
@@ -159,12 +168,12 @@ class ListDirTool(ListDirOperation, Tool):
         }
 
 
-async def _current_agent_accepts_images() -> bool:
-    """读取当前 Turn 的实际模型图片能力。"""
-    snapshot = get_current_runtime_snapshot()
-    if snapshot is None or snapshot.composition_root is None:
+async def _agent_accepts_images(access: RuntimeSnapshotAccessPort) -> bool:
+    """读取当前 Turn 的实际模型图片能力（经注入的运行时边界，不读模块级全局）。"""
+    root = access.composition_root()
+    if root is None:
         raise RuntimeError("read_file 读图必须在 exact Turn snapshot 内执行")
-    chat_models = snapshot.composition_root.context.require(CHAT_MODELS)
+    chat_models = root.context.require(CHAT_MODELS)
     async with chat_models.execution() as execution:
         agent_model = execution.chat(ModelRole.AGENT)
         return "image" in agent_model.descriptor.capabilities.input_modalities

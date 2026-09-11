@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agent.plugin_composition.model import ServiceKey
 
+from agent.plugin_contracts.skills import SkillIndex
+
 if TYPE_CHECKING:
     from agent.plugin_composition.overlay import CompositionSnapshotRoot
 
@@ -32,6 +34,13 @@ class RuntimeSnapshotAccessPort(Protocol):
 
     def composition_root(self) -> CompositionSnapshotRoot | None:
         """当前 task 绑定快照的组合 Root；没有绑定或未发布时返回 None。"""
+        ...
+
+    def plugin_skill_index(self) -> SkillIndex | None:
+        """当前 task 绑定快照的插件技能索引；没有绑定或索引时为 None。
+
+        返回合同层的 `SkillIndex`（值词汇），因此消费者不需要依赖快照实现类型。
+        """
         ...
 
     def lease(self) -> object | None:

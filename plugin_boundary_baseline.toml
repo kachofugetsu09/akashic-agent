@@ -12,11 +12,9 @@ R2 = [
     "plugins/prompt/plugin.py|agent.persona",
     "plugins/prompt/text.py|agent.persona",
     "plugins/react/plugin.py|agent.plugins.snapshot",
-    "plugins/standard_tools/filesystem.py|agent.plugins.snapshot",
     "plugins/standard_tools/filesystem.py|agent.tools.filesystem",
     "plugins/standard_tools/shell_backend.py|agent.control.context",
     "plugins/standard_tools/skills.py|agent.plugins.archive",
-    "plugins/standard_tools/skills.py|agent.plugins.snapshot",
     "plugins/telegram_sender/sender.py|infra.channels.telegram_utils",
     "plugins/workbench_ui/dashboard.py|infra.channels.message_view",
 ]

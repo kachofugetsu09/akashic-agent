@@ -3574,3 +3574,25 @@ Core 的移动端运行时检查直接构造并读取调度插件的私有 JSON 
   另用探针确认：无绑定时 fail-loud 且带 `RUNTIME_SNAPSHOT_UNAVAILABLE` code；
   有绑定且快照带 root 时返回该 root。
 - 持久化/运行 workspace 变化：`none`。
+
+## 2026-09-10 插件边界第 3 步（40）：standard_tools 的运行时边界改为注入
+
+- 基线：stacked base `30b1837b`（第 39 批后）；分支 `feature/plugin-boundary-step3-migration-20260910`。
+- 形态：显式注入（DSH 做法）。R2 由 13 降到 11：
+  - `plugins/standard_tools/filesystem.py`：`ReadFileTool` 不再 import 模块级
+    `get_current_runtime_snapshot`；改为构造时注入 `RuntimeSnapshotAccessPort`，
+    在**执行期**经 `access.composition_root().context.require(CHAT_MODELS)` 取模型能力。
+  - `plugins/standard_tools/skills.py`：`records()` 改为接受注入的访问器，在执行期取
+    `access.plugin_skill_index()`；`RuntimeSnapshotAccessPort.plugin_skill_index()`
+    返回**合同层的 `SkillIndex`**，消费者因此不需要依赖快照实现类型。
+  - `plugins/standard_tools/plugin.py` 的 `inject` 补 `RUNTIME_SNAPSHOT`（消费方声明依赖）。
+- **两个由测试抓到的真实时序 bug（重要，都是「注入时机」问题）**：
+  1. 第一版在**注册期**就 `ctx.require(CHAT_MODELS)` —— 但 `standard_tools` 不 inject
+     `CHAT_MODELS`、且 models 插件可能尚未装配，导致 `INACTIVE_SERVICE: models.chat.v1`。
+     原实现的 `require` 发生在**执行期**（经当时 task 的 snapshot），语义必须保持。
+  2. 第二版在**装配期**调用 `plugin_skill_index()` —— 那时当前 task 还没有绑定快照，
+     抛「技能读取需要实际 runtime scope」。原先 `records()` 也是在执行期被调用的。
+  - 结论（已写入设计文档）：**只有「取访问器」可以在装配期做；任何读取当前 task 状态的
+    动作必须留在执行期。** 注入的应当是访问器本身，而不是它读到的值。
+- 验证：`pyright --level error` 主配置与 tests 配置均 0 errors；`pytest`（boundary/contracts/semantic/standard_tools/adopt_legacy_plugin_skill_links/message_artifacts/akasha_message_plugin）= `119 passed`。
+- 持久化/运行 workspace 变化：`none`。

@@ -9,10 +9,10 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, RUNTIME_SNAPSHOT
+from agent.plugin_composition.runtime_snapshot import RuntimeSnapshotAccessPort
+from agent.plugin_contracts.skills import SkillIndex, SkillRecord, skill_body
 from agent.plugins.archive import PluginArchive
-from agent.plugins.snapshot import get_current_runtime_snapshot
-from agent.plugin_contracts.skills import SkillRecord, skill_body
 from agent.plugin_contracts.context import Materials
 from agent.plugin_contracts.context import MATERIALS
 from agent.plugin_contracts.tool_api import CallSource, Result
@@ -40,13 +40,21 @@ class SkillState(BaseModel):
     skills: dict[str, SkillFile]
 
 
-def records() -> tuple[SkillRecord, ...]:
-    """只读取当前 exact snapshot 的插件技能，不扫描 workspace 软链接或旧目录。"""
-    snapshot = get_current_runtime_snapshot()
-    if snapshot is None:
+def require_skill_index(access: RuntimeSnapshotAccessPort) -> SkillIndex:
+    """在执行期经运行时边界取当前 task 的技能索引；插件不 import 模块级全局。
+
+    装配期不能调用（那时当前 task 还没有绑定快照），因此注册路径只持有访问器，
+    真正的读取发生在 capture/prepare 这些**执行期**回调里，与原先语义一致。
+    """
+    index = access.plugin_skill_index()
+    if index is None:
         raise RuntimeError("技能读取需要实际 runtime scope")
-    index = snapshot.plugin_skill_index
-    return () if index is None else tuple(index.records[key] for key in sorted(index.records))
+    return index
+
+
+def records(index: SkillIndex) -> tuple[SkillRecord, ...]:
+    """只读取给定 exact snapshot 的插件技能，不扫描 workspace 软链接或旧目录。"""
+    return tuple(index.records[key] for key in sorted(index.records))
 
 
 def body_hash(content: str) -> str:
@@ -107,12 +115,15 @@ class SkillTool:
 async def register_skills(ctx: Context) -> ToolRef:
     """目录和工具共享已发布技能事实；工具绑定独自保存恢复材料。"""
     archive_path = ctx.data_root / "skill-files"
+    # 注册发生在某个 generation 的装配期，此时当前 task 已绑定该 snapshot；
+    # 取出后由闭包持有，避免工具在执行期再去读模块级全局。
+    runtime_snapshot = ctx.require(RUNTIME_SNAPSHOT)
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
             raise ValueError("技能读取没有调用者配置")
         archive = PluginArchive(archive_path)
-        return SkillState(skills={record.name: save_skill(record, archive) for record in records()}).model_dump()
+        return SkillState(skills={record.name: save_skill(record, archive) for record in records(require_skill_index(runtime_snapshot))}).model_dump()
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[SkillTool]:
@@ -121,7 +132,7 @@ async def register_skills(ctx: Context) -> ToolRef:
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
         catalog: list[str] = []
         active: list[str] = []
-        for record in records():
+        for record in records(require_skill_index(runtime_snapshot)):
             catalog.append(
                 f"- {record.name}: {record.description}\n"
                 f"  适用：{record.when_to_use}；来源：{record.source}/{record.source_id}；"

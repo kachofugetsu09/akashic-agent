@@ -375,6 +375,10 @@ DSH 的做法（`/mnt/data/source-code/deepseek-harness`，2026-09-11 checkout�
      因此把访问器随菜单一起传入。
 3. `agent/plugins/snapshot.py` 的模块级函数**保留**给 Core 内部调用点（Core 侧不受 R2 约束），
    但插件不再使用它们。
+4. **注入时机（第 40 批实测教训）**：只能注入**访问器**，不能在装配期/注册期读取它。
+   `CHAT_MODELS` 这类能力在注册期可能尚未装配（`INACTIVE_SERVICE`），而
+   `plugin_skill_index()` 这类读取要求当前 task 已绑定快照。任何读取当前 task 状态的
+   动作必须留在**执行期**回调里，与原先语义一致。
 
 `core.net.http`（6 条，已完成）与本方案是同一思路：把「宿主全局」从**隐式可达**变成
 **显式注入**，而不是换个模块放同样的全局。

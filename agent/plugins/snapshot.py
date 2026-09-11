@@ -939,6 +939,10 @@ class RuntimeSnapshotAccess:
         snapshot = get_current_runtime_snapshot()
         return None if snapshot is None else snapshot.composition_root
 
+    def plugin_skill_index(self) -> SkillIndex | None:
+        snapshot = get_current_runtime_snapshot()
+        return None if snapshot is None else snapshot.plugin_skill_index
+
     def lease(self) -> RuntimeSnapshotLease | None:
         return lease_current_runtime_snapshot()
 

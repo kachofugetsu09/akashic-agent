@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, RUNTIME_SNAPSHOT
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_contracts.tool_base import Tool, normalize_tool_parameters
 from plugins.standard_tools.filesystem import (
@@ -103,7 +103,14 @@ async def register_file(
     ctx: Context, backend_type: type[FileBackend], *, allowed_dir: Path | None
 ) -> ToolRef:
     """注册 schema 和配置；实际文件/Bridge 只在已打开工具中访问。"""
-    prototype = backend_type(enable_bridge=False)
+    # read_file 在执行期经当前 Turn 的运行时边界取模型能力；由注册路径显式注入
+    # 该访问器（它内部委托同一 ContextVar），而不是让工具 import 模块级全局。
+    runtime_snapshot = ctx.require(RUNTIME_SNAPSHOT) if backend_type is ReadFileTool else None
+    prototype = (
+        backend_type(runtime_snapshot=runtime_snapshot, enable_bridge=False)
+        if runtime_snapshot is not None
+        else backend_type(enable_bridge=False)
+    )
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         return FileSettings.model_validate({
@@ -113,7 +120,12 @@ async def register_file(
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[FileTool]:
         settings = FileSettings.model_validate(json_value(state))
-        backend = backend_type(allowed_dir=None if settings.allowed_dir is None else Path(settings.allowed_dir))
+        allowed = None if settings.allowed_dir is None else Path(settings.allowed_dir)
+        backend = (
+            backend_type(runtime_snapshot=runtime_snapshot, allowed_dir=allowed)
+            if runtime_snapshot is not None
+            else backend_type(allowed_dir=allowed)
+        )
         try:
             yield FileTool(ctx, backend)
         finally:
