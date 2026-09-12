@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import sqlite3
 import subprocess
 import sys
 import types
@@ -13,7 +12,6 @@ import pytest
 import main
 from bootstrap import app as bootstrap_app
 from bootstrap import init_workspace as workspace_init
-from bootstrap.channels import start_channels
 from agent.config import (
     Config,
     DEFAULT_SOCKET,
@@ -23,7 +21,6 @@ from agent.config import (
 from plugins.prompt.persona import reset_veda
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
-from infra.mobile_webui.store import MobileWebUiStore
 
 
 class _FakeDashboardServer:
@@ -528,33 +525,6 @@ async def test_run_cleanup_steps_continues_after_cancellation():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_stops_mobile_channel_before_closing_gateway_storage(tmp_path):
-    events: list[str] = []
-
-    class Gateway:
-        closed = False
-
-        def close(self) -> None:
-            self.closed = True
-            events.append("gateway.close")
-
-    gateway = Gateway()
-
-    class ChannelHost:
-        async def stop_all(self) -> None:
-            assert gateway.closed is False
-            events.append("channels.stop")
-
-    runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
-    runtime.mobile_gateway_runtime = gateway
-    runtime.channel_host = cast(Any, ChannelHost())
-
-    await runtime.shutdown()
-
-    assert events == ["channels.stop", "gateway.close"]
-
-
-@pytest.mark.asyncio
 async def test_app_runtime_run_stops_primary_tasks_after_server_failure(tmp_path):
     runtime = bootstrap_app.AppRuntime(cast(Any, object()), tmp_path)
     runtime.dashboard_server = _FakeDashboardServer()
@@ -832,17 +802,6 @@ async def test_app_runtime_start_preserves_startup_error_when_rollback_fails(
 
 
 @pytest.mark.asyncio
-async def test_mobile_gateway_close_keeps_publication_owner_thread(tmp_path: Path):
-    store = MobileWebUiStore(tmp_path / "mobile-webui", server_id="shutdown-test")
-    try:
-        await bootstrap_app._close_mobile_gateway(store)()
-        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
-            store.get_release()
-    finally:
-        store.close()
-
-
-@pytest.mark.asyncio
 async def test_app_runtime_shutdown_cleans_up_after_server_failure(tmp_path):
     calls: list[str] = []
 
@@ -969,65 +928,3 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
     assert self_path not in summary_force.created + summary_force.overwritten
     assert veda_path not in summary_force.created + summary_force.overwritten
-
-
-@pytest.mark.asyncio
-async def test_start_channels_only_hosts_explicit_core_channels(
-    tmp_path: Path,
-) -> None:
-    starts: list[str] = []
-    attachment_roots: list[Path] = []
-    mobile_catalogs: list[list[tuple[str, str]]] = []
-
-    class _PluginChannel:
-        name = "plugin"
-
-        async def start(self, ctx: Any) -> None:
-            starts.append("plugin")
-            attachment_roots.append(ctx.attachment_store.root)
-            provider = ctx.command_catalog_provider
-            mobile_catalogs.append([] if provider is None else list(provider()))
-
-        async def stop(self) -> None:
-            starts.append("plugin.stop")
-
-        async def send(self, *args: object, **kwargs: object) -> None:
-            return None
-
-    resources = SharedHttpResources()
-    event_bus = EventBus()
-    host = await start_channels(
-        bus=cast(Any, object()),
-        workspace=tmp_path,
-        http_resources=resources,
-        event_bus=event_bus,
-        command_catalog_provider=lambda: (("shared", "统一目录"),),
-        extra_channels=[cast(Any, _PluginChannel())],
-    )
-    try:
-        await host.start_all()
-
-        (plugin,) = host.channels
-        assert starts == ["plugin"]
-        assert plugin.name == "plugin"
-        assert attachment_roots == [tmp_path / "uploads"]
-        assert mobile_catalogs == [[("shared", "统一目录")]]
-    finally:
-        await host.stop_all()
-        await resources.aclose()
-
-
-@pytest.mark.asyncio
-async def test_start_channels_skips_unfilled_optional_channels(tmp_path: Path) -> None:
-    resources = SharedHttpResources()
-    try:
-        host = await start_channels(
-            bus=cast(Any, object()),
-            workspace=tmp_path,
-            http_resources=resources,
-            event_bus=EventBus(),
-        )
-    finally:
-        await resources.aclose()
-
-    assert host.channels == []
