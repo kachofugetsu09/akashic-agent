@@ -1,3 +1,5 @@
+"""Markdown memory owns tolerant model JSON decoding."""
+
 from __future__ import annotations
 
 from typing import Any

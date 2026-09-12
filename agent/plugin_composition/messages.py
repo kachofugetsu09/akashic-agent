@@ -5,7 +5,13 @@ from collections.abc import Callable, Mapping
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
-from session.embedding_store import MessageEmbeddings
+# EmbeddingRecords/MessageEmbeddings are service vocabulary.  The repair path
+# also needs the explicit store writer for a supplied sessions database.
+from session.embedding_store import (
+    EmbeddingRecords,
+    MessageEmbeddings,
+    MessageEmbeddingStore,
+)
 from session.log import (
     MessageLog as _MessageLog,
     MessageReader as MessageReader,
@@ -129,3 +135,27 @@ MESSAGE_CATALOG = ServiceKey[MessageCatalog]("core.message_catalog")
 
 MESSAGE_EMBEDDINGS = ServiceKey[MessageEmbeddings]("core.message_embeddings")
 SESSION_ADMISSION = ServiceKey[SessionAdmission]("core.session_admission")
+
+
+__all__ = [
+    "EmbeddingRecords",
+    "InvalidPage",
+    "MESSAGE_CATALOG",
+    "MESSAGE_EMBEDDINGS",
+    "MESSAGE_WRITERS",
+    "MessageCatalog",
+    "MessageConflict",
+    "MessageEmbeddingStore",
+    "MessageEmbeddings",
+    "MessageReader",
+    "MessageWriter",
+    "MessageWriters",
+    "OWNER_STATE",
+    "OwnerRecord",
+    "OwnerState",
+    "OwnerStore",
+    "OwnerTransaction",
+    "SESSION_ADMISSION",
+    "SessionAdmission",
+    "SessionAttributes",
+]

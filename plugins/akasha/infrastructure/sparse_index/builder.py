@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from agent.turn_effects import suppresses_post_commit
+from agent.plugin_contracts.turn_effects import suppresses_post_commit
 
 from .encoding import LexicalState, lexical_identity, tokenize
 from .model import CanonicalTurn, SessionState, SparseFeature, TimeStats

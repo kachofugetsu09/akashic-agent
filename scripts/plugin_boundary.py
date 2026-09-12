@@ -96,10 +96,13 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.ui_slots",
     "agent.plugin_composition.workload_slots",
     "agent.plugin_contracts",
+    "agent.plugin_contracts.json_store",
     "agent.plugin_contracts.message",
     "core.common.diagnostic_log",
     "core.error_context",
     "core.net.http",
+    "agent.plugin_contracts.timekit",
+    "agent.plugin_contracts.turn_effects",
 })
 
 # 插件不得 import 的 core 顶层包（用于 R2 的归属判定）。

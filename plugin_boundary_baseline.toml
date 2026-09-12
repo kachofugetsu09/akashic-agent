@@ -35,23 +35,11 @@ R1 = [
     "migrations/yoyo/20260909_01_close_empty_wake_responses.py|plugins.wake.request",
 ]
 R2 = [
-    "plugins/akasha/infrastructure/sparse_index/builder.py|agent.turn_effects",
-    "plugins/akasha/repair.py|session.embedding_store",
-    "plugins/content/api.py|agent.turn_effects",
-    "plugins/markdown_memory/message_plugin.py|agent.llm_json",
-    "plugins/markdown_memory/message_plugin.py|infra.persistence.json_store",
-    "plugins/markdown_memory/store.py|infra.persistence.json_store",
     "plugins/message_push/plugin.py|agent.control.frame_book",
     "plugins/message_push/restart.py|agent.control.frame_book",
     "plugins/programmatic/control.py|agent.control.frame_book",
     "plugins/programmatic/control.py|agent.control.protocol.models",
     "plugins/programmatic/plugin.py|agent.control.frame_book",
-    "plugins/prompt/plugin.py|agent.persona",
-    "plugins/prompt/text.py|agent.persona",
-    "plugins/prompt/text.py|prompts.completion",
-    "plugins/scheduler/migration.py|infra.persistence.json_store",
-    "plugins/scheduler/store.py|core.common.timekit",
-    "plugins/scheduler/store.py|infra.persistence.json_store",
     "plugins/workbench_ui/dashboard.py|infra.channels.message_view",
 ]
 R3 = [

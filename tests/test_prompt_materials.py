@@ -9,7 +9,6 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from agent.persona import VedaLoadError
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
@@ -140,7 +139,7 @@ async def test_prompt_fails_on_missing_or_corrupt_veda_without_reset(tmp_path, p
             veda.write_bytes(payload)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             async with snapshot.composition_root.context.require(MATERIALS).bind() as view:
-                with pytest.raises(VedaLoadError, match="veda-reset"):
+                with pytest.raises(RuntimeError, match="veda-reset"):
                     await view.prepare((), "conversation")
         assert not veda.exists() if payload is None else veda.read_bytes() == payload
         assert not (tmp_path / "workspace/memory/veda-backups").exists()
