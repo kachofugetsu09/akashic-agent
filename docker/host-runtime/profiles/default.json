@@ -98,8 +98,13 @@
       "reason": "提供普通会话来源、输入校验和消息写入。"
     },
     {
+      "name": "reply_program",
+      "depends_on": ["models", "content", "context", "turn_projection", "tools", "react", "conversation"],
+      "reason": "提供一次回复所需的实际执行能力；来源监听仍由 reply 插件拥有。"
+    },
+    {
       "name": "reply",
-      "depends_on": ["sources", "conversation", "tools", "tool_search", "react"],
+      "depends_on": ["sources", "conversation", "tools", "tool_search", "react", "reply_program"],
       "reason": "把来源输入接到回复执行和持久输出。"
     },
     {
