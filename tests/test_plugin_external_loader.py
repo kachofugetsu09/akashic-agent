@@ -53,6 +53,11 @@ async def test_core_starts_with_no_checkout_plugins_and_keeps_manager_usable(
         assert core.plugin_manager._dirs == []
         await core.start()
         assert core.plugin_manager.discover() == []
+        snapshot = core.plugin_manager.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        assert snapshot.composition_root.receipt().ready
+        assert snapshot.generations == {}
+        assert "identity:" in await core.inspect_modules()
     finally:
         await core.stop()
         await core.bus.aclose()

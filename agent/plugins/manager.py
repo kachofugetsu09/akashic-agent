@@ -1511,8 +1511,6 @@ class PluginManager:
                 generation = await self._load_one(mod, stage_stable=True)
                 if generation is not None:
                     staged.append(generation)
-            if not staged:
-                return
             snapshot, catalog_id = await self._compile_stable_batch_snapshot(staged)
             for generation in staged:
                 generation.runtime_snapshot = snapshot
@@ -5540,8 +5538,6 @@ class PluginManager:
             )
         ):
             return current.composition_root, False
-        if not ordered and not self._core_channel_definitions:
-            return None, False
 
         # 2. stable 拓扑变化创建完整 Root；candidate Root 挂载闭包。
         identity = "|".join(
