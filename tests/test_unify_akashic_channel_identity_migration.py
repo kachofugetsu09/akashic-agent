@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import hashlib
 import shutil
@@ -12,39 +11,119 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-import yoyo
-
+import toml
 from session.store import SessionStore
 from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
 from memory2.embedder import Embedder
 from agent.migrations.runner import MigrationRunner
 from agent.migrations.context import bind_migration_context
 from plugins.akasha.infrastructure.loader import load_turns
+from tests.legacy_migration_loader import load_migration_namespace
 
 _PROJECT_ROOT = Path(__file__).parents[1]
 _MIGRATION_PATH = (
-    _PROJECT_ROOT / "migrations/yoyo/20260826_03_unify_akashic_channel_identity.py"
+    _PROJECT_ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260826_03_unify_akashic_channel_identity.py"
+)
+_RUNNER_PARENT_IDS = (
+    "20260805_01_akasha_sparse_index_v9",
+    "20260817_01_akasha_sparse_index_v10",
+    "20260823_01_retire_legacy_toolset_wiring",
+    "20260825_01_migrate_proactive_delivery_target",
+    "20260825_02_select_akasha_embedding_plugin",
+    "20260826_01_migrate_turn_effects",
+    "20260826_02_backfill_akasha_message_embeddings",
 )
 
 
 def _load_migration():
     """Load the migration callback without wrapping it in Yoyo."""
+    return load_migration_namespace("20260826_03_unify_akashic_channel_identity")
 
-    spec = importlib.util.spec_from_file_location(
-        "unify_akashic_channel_identity_under_test",
-        _MIGRATION_PATH,
+
+def _runner_artifact(root: Path) -> tuple[Path, Path]:
+    """Build a small installed artifact with frozen target and neutral parents."""
+
+    core = root / "migrations/core"
+    core.mkdir(parents=True)
+    shutil.copy2(_PROJECT_ROOT / "migrations/core/20260802_01_yoyo_origin.py", core)
+    bundle = root / "plugins/legacy_upgrade"
+    migration_root = bundle / "legacy_upgrade_migrations"
+    migration_root.mkdir(parents=True)
+    source_root = _PROJECT_ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations"
+    shutil.copy2(source_root / "__init__.py", migration_root / "__init__.py")
+    shutil.copytree(source_root / "support", migration_root / "support")
+
+    source_catalog = tomllib.loads(
+        (_PROJECT_ROOT / "plugins/legacy_upgrade/migration.catalog.toml").read_text(
+            encoding="utf-8"
+        )
     )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载迁移: {_MIGRATION_PATH}")
-    original_step = yoyo.step
-    yoyo.step = lambda callback: callback  # type: ignore[assignment]
-    try:
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-    finally:
-        yoyo.step = original_step
-    return module
+    source_specs = {
+        item["id"]: item for item in source_catalog["migrations"]
+    }
+    selected_ids = (*_RUNNER_PARENT_IDS, "20260826_03_unify_akashic_channel_identity")
+    selected: list[dict[str, object]] = []
+    for migration_id in selected_ids:
+        target = migration_root / f"{migration_id}.py"
+        if migration_id == "20260826_03_unify_akashic_channel_identity":
+            shutil.copy2(source_root / target.name, target)
+        else:
+            depends = source_specs[migration_id]["depends"]
+            target.write_text(
+                "from yoyo import step\n"
+                f"__depends__ = {depends!r}\n"
+                "__transactional__ = False\n"
+                "steps = [step(lambda connection: None)]\n",
+                encoding="utf-8",
+            )
+        metadata = dict(source_specs[migration_id])
+        metadata["sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+        selected.append(metadata)
+
+    files = [
+        {
+            "path": path.relative_to(migration_root).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        for path in sorted(migration_root.rglob("*"))
+        if path.is_file() and "__pycache__" not in path.parts
+    ]
+    artifact_catalog = {
+        "schema_version": 1,
+        "bundle_id": "legacy_upgrade",
+        "version": "1.0.0",
+        "migration_root": "legacy_upgrade_migrations",
+        "package_name": "legacy_upgrade_migrations",
+        "files": files,
+        "migrations": selected,
+    }
+    catalog_path = bundle / "migration.catalog.toml"
+    catalog_path.write_text(toml.dumps(artifact_catalog), encoding="utf-8")
+    manifest = tomllib.loads(
+        (source_root.parent / "akashic.plugin.toml").read_text(encoding="utf-8")
+    )
+    manifest["migration"]["catalog_sha256"] = hashlib.sha256(
+        catalog_path.read_bytes()
+    ).hexdigest()
+    (bundle / "akashic.plugin.toml").write_text(
+        toml.dumps(manifest), encoding="utf-8"
+    )
+    shutil.copy2(source_root.parent / "plugin.py", bundle / "plugin.py")
+    requirement_catalog = {
+        "schema_version": 1,
+        "migrations": [
+            {
+                "id": item["id"],
+                "bundle": "legacy_upgrade",
+                "depends": item["depends"],
+                "transactional": item["transactional"],
+            }
+            for item in selected
+        ],
+    }
+    requirement_path = root / "migrations/catalog.toml"
+    requirement_path.write_text(toml.dumps(requirement_catalog), encoding="utf-8")
+    return bundle, requirement_path
 
 
 def _create_session_database(path: Path) -> None:
@@ -333,23 +412,13 @@ channel_name = "web"
 
     # Keep the public runner while isolating this cutover and its declared parents.
     repo = root / "repo"
-    catalog = repo / "migrations" / "yoyo"
-    catalog.mkdir(parents=True)
-    (catalog / "20260826_01_migrate_turn_effects.py").write_text(
-        "from yoyo import step\nsteps = [step(lambda connection: None)]\n",
-        encoding="utf-8",
-    )
-    (catalog / "20260826_02_backfill_akasha_message_embeddings.py").write_text(
-        "from yoyo import step\n"
-        "__depends__ = {'20260826_01_migrate_turn_effects'}\n"
-        "steps = [step(lambda connection: None)]\n",
-        encoding="utf-8",
-    )
-    shutil.copy2(_MIGRATION_PATH, catalog / _MIGRATION_PATH.name)
+    bundle, _requirement_catalog = _runner_artifact(repo)
     runner = MigrationRunner(
         repo_root=repo,
         config_path=config,
         workspace=workspace,
+        plugin_dirs=(bundle,),
+        installed_cache_root=root / "empty-cache",
     )
 
     first = runner.run()

@@ -1,0 +1,289 @@
+schema_version = 1
+
+[[migrations]]
+id = "20260805_01_akasha_sparse_index_v9"
+bundle = "legacy_upgrade"
+depends = ["20260802_01_yoyo_origin"]
+transactional = false
+
+[[migrations]]
+id = "20260807_01_model_registry_database"
+bundle = "legacy_upgrade"
+depends = ["20260802_01_yoyo_origin"]
+transactional = false
+
+[[migrations]]
+id = "20260807_01_session_context_compaction_ledger"
+bundle = "legacy_upgrade"
+depends = ["20260805_01_akasha_sparse_index_v9"]
+transactional = false
+
+[[migrations]]
+id = "20260807_02_embedding_model_registry"
+bundle = "legacy_upgrade"
+depends = ["20260807_01_model_registry_database"]
+transactional = true
+
+[[migrations]]
+id = "20260808_01_restore_migrated_reasoning_efforts"
+bundle = "legacy_upgrade"
+depends = ["20260807_02_embedding_model_registry"]
+transactional = true
+
+[[migrations]]
+id = "20260808_01_session_mutation_audits"
+bundle = "legacy_upgrade"
+depends = ["20260807_01_session_context_compaction_ledger"]
+transactional = false
+
+[[migrations]]
+id = "20260808_02_correct_opencode_go_variants"
+bundle = "legacy_upgrade"
+depends = ["20260808_01_restore_migrated_reasoning_efforts"]
+transactional = true
+
+[[migrations]]
+id = "20260808_02_session_compaction_prepares"
+bundle = "legacy_upgrade"
+depends = ["20260808_01_session_mutation_audits"]
+transactional = false
+
+[[migrations]]
+id = "20260808_03_remove_compaction_trigger"
+bundle = "legacy_upgrade"
+depends = ["20260808_05_activate_session_compaction_cursor"]
+transactional = false
+
+[[migrations]]
+id = "20260808_04_session_compaction_source_plan_digest"
+bundle = "legacy_upgrade"
+depends = ["20260808_02_session_compaction_prepares"]
+transactional = false
+
+[[migrations]]
+id = "20260808_05_activate_session_compaction_cursor"
+bundle = "legacy_upgrade"
+depends = ["20260808_04_session_compaction_source_plan_digest"]
+transactional = false
+
+[[migrations]]
+id = "20260808_06_retire_legacy_context_state"
+bundle = "legacy_upgrade"
+depends = ["20260808_03_remove_compaction_trigger"]
+transactional = false
+
+[[migrations]]
+id = "20260817_01_akasha_sparse_index_v10"
+bundle = "legacy_upgrade"
+depends = ["20260805_01_akasha_sparse_index_v9"]
+transactional = false
+
+[[migrations]]
+id = "20260823_01_retire_legacy_toolset_wiring"
+bundle = "legacy_upgrade"
+depends = ["20260817_01_akasha_sparse_index_v10"]
+transactional = false
+
+[[migrations]]
+id = "20260825_01_migrate_proactive_delivery_target"
+bundle = "legacy_upgrade"
+depends = ["20260823_01_retire_legacy_toolset_wiring"]
+transactional = false
+
+[[migrations]]
+id = "20260825_02_select_akasha_embedding_plugin"
+bundle = "legacy_upgrade"
+depends = ["20260826_01_migrate_turn_effects"]
+transactional = false
+
+[[migrations]]
+id = "20260826_01_migrate_turn_effects"
+bundle = "legacy_upgrade"
+depends = ["20260825_01_migrate_proactive_delivery_target"]
+transactional = false
+
+[[migrations]]
+id = "20260826_02_backfill_akasha_message_embeddings"
+bundle = "legacy_upgrade"
+depends = ["20260825_02_select_akasha_embedding_plugin"]
+transactional = false
+
+[[migrations]]
+id = "20260826_03_unify_akashic_channel_identity"
+bundle = "legacy_upgrade"
+depends = ["20260826_01_migrate_turn_effects", "20260826_02_backfill_akasha_message_embeddings"]
+transactional = false
+
+[[migrations]]
+id = "20260827_01_normalize_session_timestamps"
+bundle = "legacy_upgrade"
+depends = ["20260826_03_unify_akashic_channel_identity"]
+transactional = false
+
+[[migrations]]
+id = "20260827_02_migrate_legacy_mobile_client_ids"
+bundle = "legacy_upgrade"
+depends = ["20260827_01_normalize_session_timestamps"]
+transactional = false
+
+[[migrations]]
+id = "20260828_01_migrate_eventmail_state"
+bundle = "legacy_upgrade"
+depends = ["20260827_02_migrate_legacy_mobile_client_ids"]
+transactional = false
+
+[[migrations]]
+id = "20260828_02_add_wake_content_scores"
+bundle = "legacy_upgrade"
+depends = ["20260828_01_migrate_eventmail_state"]
+transactional = false
+
+[[migrations]]
+id = "20260829_01_backfill_plugin_programmatic_effects"
+bundle = "legacy_upgrade"
+depends = ["20260828_02_add_wake_content_scores"]
+transactional = false
+
+[[migrations]]
+id = "20260829_02_backfill_explicit_programmatic_effects"
+bundle = "legacy_upgrade"
+depends = ["20260829_01_backfill_plugin_programmatic_effects"]
+transactional = false
+
+[[migrations]]
+id = "20260829_03_retire_core_model_config"
+bundle = "legacy_upgrade"
+depends = ["20260829_02_backfill_explicit_programmatic_effects"]
+transactional = false
+
+[[migrations]]
+id = "20260831_01_migrate_compaction_plugin_config"
+bundle = "legacy_upgrade"
+depends = ["20260829_03_retire_core_model_config"]
+transactional = false
+
+[[migrations]]
+id = "20260905_01_message_log"
+bundle = "legacy_upgrade"
+depends = ["20260831_01_migrate_compaction_plugin_config"]
+transactional = false
+
+[[migrations]]
+id = "20260905_02_owner_records"
+bundle = "legacy_upgrade"
+depends = ["20260905_01_message_log"]
+transactional = false
+
+[[migrations]]
+id = "20260905_03_model_calls"
+bundle = "legacy_upgrade"
+depends = ["20260905_02_owner_records"]
+transactional = false
+
+[[migrations]]
+id = "20260905_04_akasha_consumption"
+bundle = "legacy_upgrade"
+depends = ["20260905_03_model_calls"]
+transactional = false
+
+[[migrations]]
+id = "20260905_05_message_embeddings"
+bundle = "legacy_upgrade"
+depends = ["20260905_04_akasha_consumption"]
+transactional = false
+
+[[migrations]]
+id = "20260905_06_message_artifacts"
+bundle = "legacy_upgrade"
+depends = ["20260905_05_message_embeddings"]
+transactional = false
+
+[[migrations]]
+id = "20260906_01_scheduler_messages"
+bundle = "legacy_upgrade"
+depends = ["20260906_01_turn_messages"]
+transactional = false
+
+[[migrations]]
+id = "20260906_01_turn_messages"
+bundle = "legacy_upgrade"
+depends = ["20260905_06_message_artifacts"]
+transactional = false
+
+[[migrations]]
+id = "20260906_02_session_attributes"
+bundle = "legacy_upgrade"
+depends = ["20260906_01_scheduler_messages"]
+transactional = false
+
+[[migrations]]
+id = "20260906_03_plugin_update_rollback"
+bundle = "legacy_upgrade"
+depends = ["20260906_02_session_attributes"]
+transactional = false
+
+[[migrations]]
+id = "20260906_04_channel_identities"
+bundle = "legacy_upgrade"
+depends = ["20260906_03_plugin_update_rollback"]
+transactional = false
+
+[[migrations]]
+id = "20260906_05_mobile_input_rejections"
+bundle = "legacy_upgrade"
+depends = ["20260906_04_channel_identities"]
+transactional = false
+
+[[migrations]]
+id = "20260906_06_model_call_timing"
+bundle = "legacy_upgrade"
+depends = ["20260906_05_mobile_input_rejections"]
+transactional = false
+
+[[migrations]]
+id = "20260907_01_context_material_grants"
+bundle = "legacy_upgrade"
+depends = ["20260906_06_model_call_timing"]
+transactional = false
+
+[[migrations]]
+id = "20260907_02_retire_legacy_agent_config"
+bundle = "legacy_upgrade"
+depends = ["20260907_01_context_material_grants"]
+transactional = false
+
+[[migrations]]
+id = "20260907_03_message_metadata"
+bundle = "legacy_upgrade"
+depends = ["20260907_02_retire_legacy_agent_config"]
+transactional = false
+
+[[migrations]]
+id = "20260907_03_skill_prompt_grant"
+bundle = "legacy_upgrade"
+depends = ["20260907_02_retire_legacy_agent_config"]
+transactional = false
+
+[[migrations]]
+id = "20260908_01_legacy_summaries"
+bundle = "legacy_upgrade"
+depends = ["20260907_03_message_metadata", "20260907_03_skill_prompt_grant"]
+transactional = false
+
+[[migrations]]
+id = "20260909_01_close_empty_wake_responses"
+bundle = "legacy_upgrade"
+depends = ["20260908_01_legacy_summaries"]
+transactional = false
+
+[[migrations]]
+id = "20260909_01_tool_provider_views"
+bundle = "legacy_upgrade"
+depends = ["20260908_01_legacy_summaries"]
+transactional = false
+
+[[migrations]]
+id = "20260909_02_execution_failures"
+bundle = "legacy_upgrade"
+depends = ["20260909_01_close_empty_wake_responses", "20260909_01_tool_provider_views"]
+transactional = false

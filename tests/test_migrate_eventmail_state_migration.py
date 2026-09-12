@@ -1,35 +1,24 @@
 from __future__ import annotations
 
-import importlib.util
 import sqlite3
 import sys
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import ModuleType
 
 import pytest
-import yoyo
 
 from agent.migrations.context import bind_migration_context
 from plugins.eventmail.store import EventMailStore
+from tests.legacy_migration_loader import load_migration_namespace
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "migrations/yoyo/20260828_01_migrate_eventmail_state.py"
+MIGRATION = ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260828_01_migrate_eventmail_state.py"
 NOW = datetime(2026, 8, 28, 8, tzinfo=UTC)
 
 
-def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("eventmail_migration_test", MIGRATION)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    original_step = yoyo.step
-    yoyo.step = lambda callback: callback  # type: ignore[assignment]
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        yoyo.step = original_step
-    return module
+def _load_migration():
+    return load_migration_namespace("20260828_01_migrate_eventmail_state")
 
 
 def test_yoyo_discovery_does_not_import_repository_eventmail_plugin(
@@ -50,7 +39,7 @@ def test_yoyo_discovery_does_not_import_repository_eventmail_plugin(
     migration = _load_migration()
 
     assert migration.EventMailV3MigrationStore.__module__ == (
-        "agent.migrations.payloads.eventmail_v3"
+        "test_legacy_upgrade_migrations.support.eventmail_v3"
     )
 
 

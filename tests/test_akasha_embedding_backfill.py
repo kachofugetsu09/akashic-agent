@@ -8,12 +8,13 @@ from typing import Any, cast
 
 import pytest
 
-from agent.migrations import akasha_embedding_backfill as migration
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support import (
+    akasha_embedding_backfill as migration,
+)
 from plugins.akasha.infrastructure.sparse_index import (
     BuildConfig,
     audit_source_embeddings,
 )
-
 
 class _Embedder:
     MAX_BATCH = 10

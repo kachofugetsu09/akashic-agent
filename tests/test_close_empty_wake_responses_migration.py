@@ -1,34 +1,27 @@
 from __future__ import annotations
 
 import json
-import importlib.util
 import sqlite3
-import sys
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from types import ModuleType
 
 import pytest
-import yoyo
-
 from plugins.eventmail.plugin import EVENTMAIL_CONTENT_SOURCE
 from plugins.wake.api import EVENTMAIL_WAKE
 from plugins.wake.request import Phase, check_phase, retryable
 from plugins.wake.state import WakeState
 from session.message import ContentPart, Control, Input
 from tests.test_wake_messages import application, request
+from tests.legacy_migration_loader import load_migration_namespace
 
 
-def _migration(monkeypatch: pytest.MonkeyPatch, name: str = "20260909_01_close_empty_wake_responses") -> ModuleType:
-    path = Path(__file__).parents[1] / "migrations/yoyo" / (name + ".py")
-    spec = importlib.util.spec_from_file_location("close_empty_wake_responses_test", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    monkeypatch.setitem(sys.modules, spec.name, module)
-    spec.loader.exec_module(module)
-    return module
+def _migration(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str = "20260909_01_close_empty_wake_responses",
+):
+    _ = monkeypatch
+    return load_migration_namespace(name)
 
 
 def _legacy_attempts(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:

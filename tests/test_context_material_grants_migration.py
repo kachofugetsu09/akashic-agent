@@ -3,10 +3,11 @@ import os
 import tomllib
 
 import pytest
-from yoyo import get_backend, read_migrations
+from yoyo import get_backend
 
 from agent.migrations.context import bind_migration_context
 from bootstrap.init_workspace import init_workspace
+from tests.legacy_migration_loader import load_bundle_migrations
 
 
 def test_yoyo_installs_grants_without_overwriting_operator_choice(tmp_path):
@@ -14,12 +15,12 @@ def test_yoyo_installs_grants_without_overwriting_operator_choice(tmp_path):
     directory = tmp_path / "migrations"
     directory.mkdir()
     (directory / "20260906_06_model_call_timing.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
-    source = Path(__file__).parents[1] / "migrations/yoyo/20260907_01_context_material_grants.py"
+    source = Path(__file__).parents[1] / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_01_context_material_grants.py"
     (directory / source.name).write_bytes(source.read_bytes())
     workspace = tmp_path / "workspace"
     path = workspace / "plugin-data/context-builtin/config.local.toml"
     backend = get_backend(f"sqlite:///{tmp_path / 'ledger.db'}")
-    migrations = read_migrations(str(directory))
+    migrations = load_bundle_migrations(directory)
     with backend, bind_migration_context(config_path=tmp_path / "config.toml", workspace=workspace):
         backend.apply_migrations(backend.to_apply(migrations))
         assert not backend.to_apply(migrations)
@@ -49,10 +50,9 @@ def test_failed_grants_publish_leaves_no_partial_config(tmp_path, monkeypatch):
     directory = tmp_path / "migrations"
     directory.mkdir()
     (directory / "20260906_06_model_call_timing.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
-    source = Path(__file__).parents[1] / "migrations/yoyo/20260907_01_context_material_grants.py"
+    source = Path(__file__).parents[1] / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_01_context_material_grants.py"
     (directory / source.name).write_bytes(source.read_bytes())
-    migration = read_migrations(str(directory))[-1]
-    migration.load()
+    migration = load_bundle_migrations(directory)[-1]
     module = migration.module
     workspace = tmp_path / "workspace"
     path = workspace / "plugin-data/context-builtin/config.local.toml"
@@ -91,7 +91,7 @@ def test_skill_prompt_grant_backs_up_defaults_and_keeps_custom_choice(tmp_path, 
     directory = tmp_path / "migrations"
     directory.mkdir()
     (directory / "20260907_02_retire_legacy_agent_config.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
-    source = Path(__file__).parents[1] / "migrations/yoyo/20260907_03_skill_prompt_grant.py"
+    source = Path(__file__).parents[1] / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_03_skill_prompt_grant.py"
     (directory / source.name).write_bytes(source.read_bytes())
     workspace = tmp_path / "workspace"
     path = workspace / "plugin-data/context-builtin/config.local.toml"
@@ -102,7 +102,7 @@ def test_skill_prompt_grant_backs_up_defaults_and_keeps_custom_choice(tmp_path, 
         before += "# operator note\n"
     path.write_text(before)
     backend = get_backend(f"sqlite:///{tmp_path / 'ledger.db'}")
-    migrations = read_migrations(str(directory))
+    migrations = load_bundle_migrations(directory)
     with backend, bind_migration_context(config_path=tmp_path / "config.toml", workspace=workspace):
         backend.apply_migrations(backend.to_apply(migrations))
         migrations[-1].module.grant_skills(None)
@@ -121,10 +121,9 @@ def test_skill_prompt_grant_rejects_symlinked_plugin_data_without_external_write
     (directory / "20260907_02_retire_legacy_agent_config.py").write_text(
         'from yoyo import step\nsteps = [step("SELECT 1")]\n'
     )
-    source = Path(__file__).parents[1] / "migrations/yoyo/20260907_03_skill_prompt_grant.py"
+    source = Path(__file__).parents[1] / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_03_skill_prompt_grant.py"
     (directory / source.name).write_bytes(source.read_bytes())
-    migration = read_migrations(str(directory))[-1]
-    migration.load()
+    migration = load_bundle_migrations(directory)[-1]
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()

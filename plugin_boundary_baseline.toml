@@ -4,35 +4,6 @@
 
 [baseline]
 R1 = [
-    "agent/migrations/akasha_consumption.py|plugins.akasha.domain.model",
-    "agent/migrations/akasha_consumption.py|plugins.akasha.infrastructure.consumption",
-    "agent/migrations/akasha_consumption.py|plugins.akasha.infrastructure.loader",
-    "agent/migrations/akasha_consumption.py|plugins.akasha.infrastructure.persistence",
-    "agent/migrations/akasha_consumption.py|plugins.akasha.infrastructure.sparse_index",
-    "agent/migrations/akasha_embedding_backfill.py|plugins.akasha.infrastructure.sparse_index",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.application.rebuild",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.config",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.infrastructure.loader",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.infrastructure.persistence",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.infrastructure.sparse_index",
-    "agent/migrations/akasha_sidecar.py|plugins.akasha.infrastructure.sparse_index.schema",
-    "agent/migrations/legacy_summaries.py|plugins.compaction.records",
-    "agent/migrations/legacy_summaries.py|plugins.context.api",
-    "agent/migrations/turn_messages.py|plugins.content.api",
-    "agent/migrations/turn_messages.py|plugins.content.plugin",
-    "agent/migrations/turn_messages.py|plugins.conversation.plugin",
-    "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.application.rebuild",
-    "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.config",
-    "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.infrastructure.loader",
-    "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.infrastructure.persistence",
-    "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.infrastructure.sparse_index",
-    "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.infrastructure.sparse_index.schema",
-    "migrations/yoyo/20260826_03_unify_akashic_channel_identity.py|plugins.akasha.config",
-    "migrations/yoyo/20260905_04_akasha_consumption.py|plugins.akasha.config",
-    "migrations/yoyo/20260905_04_akasha_consumption.py|plugins.akasha.infrastructure.loader",
-    "migrations/yoyo/20260906_01_scheduler_messages.py|plugins.scheduler.migration",
-    "migrations/yoyo/20260909_01_close_empty_wake_responses.py|plugins.wake.messages",
-    "migrations/yoyo/20260909_01_close_empty_wake_responses.py|plugins.wake.request",
 ]
 R2 = [
 ]

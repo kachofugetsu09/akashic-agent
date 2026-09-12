@@ -1,33 +1,22 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from types import ModuleType
 
 import pytest
-import yoyo
 
 from agent.migrations.context import bind_migration_context
 from plugins.wake.state import WakeState
+from tests.legacy_migration_loader import load_migration_namespace
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "migrations/yoyo/20260828_02_add_wake_content_scores.py"
+MIGRATION = ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260828_02_add_wake_content_scores.py"
 
 
-def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("wake_score_migration_test", MIGRATION)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    original_step = yoyo.step
-    yoyo.step = lambda callback: callback  # type: ignore[assignment]
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        yoyo.step = original_step
-    return module
+def _load_migration():
+    return load_migration_namespace("20260828_02_add_wake_content_scores")
 
 
 def _wake_v7(workspace: Path) -> Path:

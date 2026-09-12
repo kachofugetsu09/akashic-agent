@@ -24,6 +24,7 @@ from agent.plugin_composition.models import (
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from agent.migrations.context import bind_migration_context
+from tests.legacy_migration_loader import load_migration_module
 
 
 class _DriverContract:
@@ -202,16 +203,8 @@ async def test_settlement_failure_keeps_provider_failure_and_durable_unknown(
 
 
 @pytest.fixture
-def migration(monkeypatch):
-    import yoyo
-
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    path = Path(__file__).parents[1] / "migrations/yoyo/20260905_03_model_calls.py"
-    spec = importlib.util.spec_from_file_location("model_calls_migration_test", path)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def migration():
+    return load_migration_module("20260905_03_model_calls")
 
 
 def dump(path):
@@ -631,10 +624,10 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
 
 @pytest.fixture
 def timing_migration(monkeypatch):
-    import runpy
     import yoyo
+    from tests.legacy_migration_loader import load_migration_module
     monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    return runpy.run_path(str(Path(__file__).parents[1] / "migrations/yoyo/20260906_06_model_call_timing.py"))
+    return load_migration_module("20260906_06_model_call_timing")
 
 
 def run_timing_migration(migration, workspace):

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.config import Config
+from agent.migrations.runner import initialize_empty_workspace
 
 @dataclass
 class InitSummary:
@@ -55,6 +56,10 @@ def init_workspace(
 
     _ = Config.load(config_path, workspace=workspace)
     workspace.mkdir(parents=True, exist_ok=True)
+    initialize_empty_workspace(
+        repo_root=Path(__file__).resolve().parents[1], workspace=workspace,
+        config_path=config_path.resolve(),
+    )
 
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [

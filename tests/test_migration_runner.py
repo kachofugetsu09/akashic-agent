@@ -6,6 +6,8 @@ import hashlib
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 import tomllib
 from contextlib import closing
 from pathlib import Path
@@ -125,22 +127,116 @@ _CURRENT_IDS = (
 _CURRENT_LEDGER_IDS = tuple(sorted(_CURRENT_IDS))
 
 
-def _runner(root: Path, *, repo_root: Path = _PROJECT_ROOT) -> MigrationRunner:
+def _runner(
+    root: Path,
+    *,
+    repo_root: Path = _PROJECT_ROOT,
+    plugin_dirs: tuple[Path, ...] | None = None,
+) -> MigrationRunner:
+    if plugin_dirs is None:
+        plugin_root = repo_root / "plugins" / "legacy_upgrade"
+        plugin_dirs = (plugin_root,) if plugin_root.is_dir() else ()
     return MigrationRunner(
         repo_root=repo_root,
         config_path=root / "config.toml",
         workspace=root / "workspace",
+        plugin_dirs=plugin_dirs,
     )
 
 
 def _catalog(root: Path, migration_ids: tuple[str, ...]) -> Path:
-    catalog = root / "migrations" / "yoyo"
-    catalog.mkdir(parents=True)
-    for migration_id in migration_ids:
+    """Build a temporary Core plus explicitly installed legacy artifact."""
+
+    core = root / "migrations" / "core"
+    core.mkdir(parents=True)
+    shutil.copy2(
+        _PROJECT_ROOT / "migrations/core/20260802_01_yoyo_origin.py",
+        core / "20260802_01_yoyo_origin.py",
+    )
+    external_ids = tuple(
+        migration_id for migration_id in migration_ids if migration_id != _ORIGIN_ID
+    )
+    if external_ids:
+        bundle = root / "plugins" / "legacy_upgrade"
+        migration_root = bundle / "legacy_upgrade_migrations"
+        migration_root.mkdir(parents=True)
         shutil.copy2(
-            _PROJECT_ROOT / "migrations/yoyo" / f"{migration_id}.py",
-            catalog / f"{migration_id}.py",
+            _PROJECT_ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations/__init__.py",
+            migration_root / "__init__.py",
         )
+        shutil.copytree(
+            _PROJECT_ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations/support",
+            migration_root / "support",
+            dirs_exist_ok=True,
+        )
+        for migration_id in external_ids:
+            shutil.copy2(
+                _PROJECT_ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations" / f"{migration_id}.py",
+                migration_root / f"{migration_id}.py",
+            )
+    source_catalog = tomllib.loads(
+        (_PROJECT_ROOT / "plugins/legacy_upgrade/migration.catalog.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    selected = {
+        item["id"]: item
+        for item in source_catalog["migrations"]
+        if item["id"] in external_ids
+    }
+    missing = set(external_ids) - set(selected)
+    if missing:
+        raise AssertionError(f"missing fixture migration metadata: {sorted(missing)}")
+    if external_ids:
+        package_files = []
+        for path in sorted(migration_root.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            relative = path.relative_to(migration_root).as_posix()
+            package_files.append(
+                {
+                    "path": relative,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+        artifact_catalog = {
+            "schema_version": 1,
+            "bundle_id": "legacy_upgrade",
+            "version": "1.0.0",
+            "migration_root": "legacy_upgrade_migrations",
+            "package_name": "legacy_upgrade_migrations",
+            "files": package_files,
+            "migrations": [selected[migration_id] for migration_id in external_ids],
+        }
+        catalog_path = bundle / "migration.catalog.toml"
+        catalog_path.write_text(toml.dumps(artifact_catalog), encoding="utf-8")
+        manifest = tomllib.loads(
+            (_PROJECT_ROOT / "plugins/legacy_upgrade/akashic.plugin.toml").read_text(
+                encoding="utf-8"
+            )
+        )
+        manifest["migration"]["catalog_sha256"] = hashlib.sha256(
+            catalog_path.read_bytes()
+        ).hexdigest()
+        (bundle / "akashic.plugin.toml").write_text(
+            toml.dumps(manifest), encoding="utf-8"
+        )
+        shutil.copy2(_PROJECT_ROOT / "plugins/legacy_upgrade/plugin.py", bundle / "plugin.py")
+    requirement_catalog = {
+        "schema_version": 1,
+        "migrations": [
+            {
+                "id": selected[migration_id]["id"],
+                "bundle": "legacy_upgrade",
+                "depends": selected[migration_id]["depends"],
+                "transactional": selected[migration_id]["transactional"],
+            }
+            for migration_id in external_ids
+        ],
+    }
+    (root / "migrations/catalog.toml").write_text(
+        toml.dumps(requirement_catalog), encoding="utf-8"
+    )
     return root
 
 
@@ -572,8 +668,15 @@ def test_new_branch_migration_is_applied_even_after_sibling_ran(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
-    catalog = repo / "migrations/yoyo"
+    plugin = repo / "plugins/dynamic_upgrade"
+    catalog = plugin / "dynamic_migrations"
     catalog.mkdir(parents=True)
+    (catalog / "__init__.py").write_text("", encoding="utf-8")
+    (plugin / "plugin.py").write_text("", encoding="utf-8")
+    (repo / "migrations").mkdir(parents=True)
+    (repo / "migrations/catalog.toml").write_text(
+        "schema_version = 1\nmigrations = []\n", encoding="utf-8"
+    )
     root = tmp_path / "state"
     workspace_literal = repr(str(root / "workspace"))
 
@@ -590,9 +693,71 @@ def test_new_branch_migration_is_applied_even_after_sibling_ran(
             "steps = [step(apply)]\n",
             encoding="utf-8",
         )
+        migration_entries = []
+        for path in sorted(catalog.glob("*.py")):
+            migration_id = path.stem
+            if migration_id == "__init__":
+                continue
+            dependency_values = depends if migration_id == name else {
+                "base": "set()",
+                "bob": "{'base'}",
+                "alice": "{'base'}",
+            }[migration_id]
+            dependency_names = {
+                "set()": (),
+                "{'base'}": ("base",),
+            }[dependency_values]
+            migration_entries.append(
+                {
+                    "id": migration_id,
+                    "path": path.name,
+                    "depends": list(dependency_names),
+                    "transactional": True,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+        files = [
+            {
+                "path": path.relative_to(catalog).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in sorted(catalog.rglob("*"))
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix != ".pyc"
+        ]
+        artifact_catalog = {
+            "schema_version": 1,
+            "bundle_id": "dynamic_upgrade",
+            "version": "1.0.0",
+            "migration_root": "dynamic_migrations",
+            "package_name": "dynamic_migrations",
+            "files": files,
+            "migrations": migration_entries,
+        }
+        catalog_path = plugin / "migration.catalog.toml"
+        catalog_path.write_text(toml.dumps(artifact_catalog), encoding="utf-8")
+        (plugin / "akashic.plugin.toml").write_text(
+            toml.dumps(
+                {
+                    "schema_version": 1,
+                    "name": "dynamic_upgrade",
+                    "version": "1.0.0",
+                    "api_version": 3,
+                    "entrypoint": "plugin.py",
+                    "migration": {
+                        "catalog": "migration.catalog.toml",
+                        "catalog_sha256": hashlib.sha256(
+                            catalog_path.read_bytes()
+                        ).hexdigest(),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
 
     write_migration("base", "set()")
-    runner = _runner(root, repo_root=repo)
+    runner = _runner(root, repo_root=repo, plugin_dirs=(plugin,))
     assert runner.run().migrations == ("base",)
 
     write_migration("bob", "{'base'}")
@@ -1045,7 +1210,10 @@ def test_fresh_init_runs_migrations_before_message_log_owner_creates_schema(
     assert not sessions.exists()
 
     first = _runner(root).run()
-    assert first.migrations == _CURRENT_IDS
+    assert first.migrations == ("20260802_01_yoyo_origin",)
+    with closing(sqlite3.connect(workspace / "migrations.sqlite3")) as connection:
+        applied = {row[0] for row in connection.execute("SELECT migration_id FROM _yoyo_migration")}
+        assert applied == {"20260802_01_yoyo_origin"}
     assert not sessions.exists()
 
     message_log = MessageLog(sessions)
@@ -1083,3 +1251,22 @@ def test_fresh_init_runs_migrations_before_message_log_owner_creates_schema(
     second = _runner(root).run()
     assert second.state == "current"
     assert second.migrations == ()
+
+
+def test_core_only_cli_restarts_after_creating_runtime_data(tmp_path: Path) -> None:
+    """真实 CLI 在创建当前持久状态后重启，不要求不存在的历史插件。"""
+    config = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    environment = dict(os.environ)
+    environment["AKASHIC_PLUGIN_HOME"] = str(tmp_path / "plugin-home")
+    environment["PYTHONPATH"] = os.pathsep.join((str(_PROJECT_ROOT / "sdk/python/src"), str(_PROJECT_ROOT)))
+    arguments = ["--config", str(config), "--workspace", str(workspace)]
+    for command in (["init", *arguments], ["--inspect-modules", *arguments], ["--inspect-modules", *arguments]):
+        result = subprocess.run(
+            [sys.executable, str(_PROJECT_ROOT / "main.py"), *command],
+            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=40,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert (workspace / "sessions.db").is_file()
+    with closing(sqlite3.connect(workspace / "migrations.sqlite3")) as connection:
+        assert {row[0] for row in connection.execute("SELECT migration_id FROM _yoyo_migration")} == {_ORIGIN_ID}

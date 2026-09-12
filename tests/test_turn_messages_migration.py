@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.migrations.turn_messages import migrate_turn_messages
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.turn_messages import migrate_turn_messages
 from plugins.content.api import legacy_post_commit_effect
 from plugins.content.plugin import check_text
 from plugins.sources.session import needs_reply

@@ -93,7 +93,7 @@ def test_identity_migration_failure_rolls_back_all_channels_and_retries(tmp_path
 
 
 def test_migrated_empty_routes_do_not_parse_obsolete_metadata(tmp_path):
-    from agent.migrations.channel_identities import migrate
+    from plugins.legacy_upgrade.legacy_upgrade_migrations.support.channel_identities import migrate
 
     path, config = _history(tmp_path)
     with closing(ChannelIdentities(path)) as identities:
@@ -107,7 +107,7 @@ def test_migrated_empty_routes_do_not_parse_obsolete_metadata(tmp_path):
 
 
 def test_migration_rejects_unmarked_routes_before_any_change(tmp_path):
-    from agent.migrations.channel_identities import migrate
+    from plugins.legacy_upgrade.legacy_upgrade_migrations.support.channel_identities import migrate
 
     path, config = _history(tmp_path)
     with closing(ChannelIdentities(path)):

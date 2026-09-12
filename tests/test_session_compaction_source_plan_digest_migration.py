@@ -1,44 +1,29 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
-import yoyo
-
 from agent.migrations.context import bind_migration_context
+from tests.legacy_migration_loader import load_migration_namespace
 
 
 _PROJECT_ROOT = Path(__file__).parents[1]
 _MIGRATION_PATH = (
     _PROJECT_ROOT
-    / "migrations"
-    / "yoyo"
+    / "plugins"
+    / "legacy_upgrade"
+    / "legacy_upgrade_migrations"
     / "20260808_04_session_compaction_source_plan_digest.py"
 )
 
 
 def _load_migration():
     """Load the real migration callback without wrapping it in a Yoyo step."""
-
-    spec = importlib.util.spec_from_file_location(
-        "session_compaction_source_plan_digest_migration_under_test",
-        _MIGRATION_PATH,
+    return load_migration_namespace(
+        "20260808_04_session_compaction_source_plan_digest"
     )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载迁移: {_MIGRATION_PATH}")
-    original_step = yoyo.step
-    yoyo.step = lambda callback: callback  # type: ignore[assignment]
-    try:
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-    finally:
-        yoyo.step = original_step
-    return module
 
 
 def _create_legacy_db(path: Path, *, with_row: bool) -> None:
