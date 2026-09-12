@@ -6,4 +6,4 @@ entrypoint = "plugin.py"
 
 [migration]
 catalog = "migration.catalog.toml"
-catalog_sha256 = "4ba2bc2a97cde6b61dd9ecee9689258b84fe6041212562fc0ed623760d966603"
+catalog_sha256 = "d6ba46112f578bf97356ac39ffe2f531c24e332d39b7ae7796937c7a99635687"

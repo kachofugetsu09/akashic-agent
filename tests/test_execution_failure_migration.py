@@ -1,17 +1,18 @@
 """历史失败只变更已声明状态，消息、身份与恢复备份保持完整。"""
 import json
-import runpy
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
+
+from tests.legacy_migration_loader import load_migration_module
 
 import pytest
 
 
 def load_migration():
     with patch("yoyo.step", lambda callback: callback):
-        return runpy.run_path(str(Path(__file__).parents[1] / "migrations/yoyo/20260909_02_execution_failures.py"))
+        return load_migration_module("20260909_02_execution_failures")
 
 
 @pytest.fixture

@@ -51,11 +51,29 @@ def test_new_yoyo_migration_is_allowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo, base = _repository(tmp_path)
-    (repo / "migrations/yoyo/20260803_01_next.py").write_text(
+    path = repo / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260803_01_next.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
         "steps = []\n",
         encoding="utf-8",
     )
-    _ = _git(repo, "add", "migrations/yoyo/20260803_01_next.py")
+    _ = _git(repo, "add", str(path.relative_to(repo)))
+    monkeypatch.setattr(checker, "ROOT", repo)
+
+    assert checker.violations(base) == []
+
+
+def test_registered_yoyo_migration_can_move_to_legacy_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, base = _repository(tmp_path)
+    old = repo / "migrations/yoyo/20260802_01_origin.py"
+    replacement = repo / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260802_01_origin.py"
+    replacement.parent.mkdir(parents=True)
+    replacement.write_text(old.read_text(encoding="utf-8"), encoding="utf-8")
+    old.unlink()
+    _ = _git(repo, "add", "-A")
     monkeypatch.setattr(checker, "ROOT", repo)
 
     assert checker.violations(base) == []

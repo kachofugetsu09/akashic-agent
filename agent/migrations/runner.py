@@ -8,13 +8,13 @@ from pathlib import Path
 from typing import Iterator, Literal, Sequence
 from urllib.parse import quote
 
-from yoyo import get_backend, read_migrations
-from yoyo.migrations import MigrationList
+from yoyo import get_backend
 
 from agent.migrations.context import bind_migration_context
 from agent.migrations.bundles import (
     MigrationBundleBlocked,
     MigrationBundleError,
+    _read_migrations,
     discover_migration_bundles,
     load_migration_requirements,
     migration_import_paths,
@@ -84,6 +84,7 @@ class MigrationRunner:
         """加载不可变目录并提交全部缺失迁移。"""
 
         # 1. 初始化由 workspace 持有的迁移账本
+        has_authoritative_state = _workspace_has_authoritative_state(self.workspace)
         try:
             self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
             core_migrations = _read_migrations(str(self.migrations_root))
@@ -102,12 +103,14 @@ class MigrationRunner:
                 bundles,
                 core_migration_ids=core_ids,
                 requirements=requirements,
+                require_missing_bundles=has_authoritative_state,
             )
             validate_pending_requirements(
                 requirements,
                 loaded_ids=core_ids + bundle_ids,
                 applied_ids=_read_applied_ids(self.ledger_path),
                 bundles=bundles,
+                require_missing_bundles=has_authoritative_state,
             )
             backend = get_backend(self._ledger_uri())
             os.chmod(self.ledger_path, 0o600)
@@ -123,8 +126,7 @@ class MigrationRunner:
                 migration_import_paths(bundles),
             ):
                 migrations = _read_migrations(
-                    str(self.migrations_root),
-                    *(str(bundle.migration_root) for bundle in bundles),
+                    str(self.migrations_root), bundles
                 )
                 pending = backend.to_apply(migrations)
                 migration_ids = tuple(migration.id for migration in pending)
@@ -168,6 +170,41 @@ def migrate_installation(config_path: Path, workspace: Path) -> MigrationOutcome
     ).run()
 
 
+_KNOWN_EMPTY_ASSETS = frozenset(
+    {
+        "VEDA.md",
+        "memes/manifest.json",
+        "plugin-data/context-builtin/config.local.toml",
+    }
+)
+
+
+def _workspace_has_authoritative_state(workspace: Path) -> bool:
+    """识别需要历史 owner 才能安全升级的已存在 workspace 状态。"""
+
+    if not workspace.exists():
+        return False
+    for path in workspace.rglob("*"):
+        if not path.is_file() and not path.is_symlink():
+            continue
+        relative = path.relative_to(workspace).as_posix()
+        if relative == "migrations.sqlite3":
+            continue
+        if relative in _KNOWN_EMPTY_ASSETS:
+            continue
+        if path.name in {"sessions.db", "model-registry.sqlite3", "schedules.json"}:
+            return True
+        if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            return True
+        if relative.startswith("runtime/"):
+            return True
+        if relative.startswith("memory/") and path.name != "VEDA.md":
+            return True
+        if relative.startswith("plugin-data/"):
+            return True
+    return False
+
+
 def _read_applied_ids(path: Path) -> tuple[str, ...]:
     """只读 ledger 已成功 ID，缺表视为空账本。"""
 
@@ -186,12 +223,3 @@ def _read_applied_ids(path: Path) -> tuple[str, ...]:
     finally:
         connection.close()
     return tuple(str(row[0]) for row in rows)
-
-
-def _read_migrations(*sources: str) -> MigrationList:
-    """Load Yoyo files while excluding the package marker from execution."""
-
-    migrations = read_migrations(*sources)
-    return MigrationList(
-        migration for migration in migrations if migration.id != "__init__"
-    )

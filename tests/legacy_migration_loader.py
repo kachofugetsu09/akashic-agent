@@ -7,7 +7,7 @@ import importlib.util
 from pathlib import Path
 import shutil
 import sys
-from types import SimpleNamespace
+from types import ModuleType
 
 import yoyo
 
@@ -34,6 +34,14 @@ def _bundle(root: Path) -> _TestBundle:
     return _TestBundle(package_name=_PACKAGE_NAME, migration_root=root)
 
 
+def _clear_package() -> None:
+    """清掉上一项测试留下的 bundle 包，避免跨用例复用模块身份。"""
+
+    for name in tuple(sys.modules):
+        if name == _PACKAGE_NAME or name.startswith(f"{_PACKAGE_NAME}."):
+            del sys.modules[name]
+
+
 def prepare_migration_directory(directory: Path) -> Path:
     """为临时迁移目录补上冻结包的相对 helper。"""
 
@@ -52,9 +60,10 @@ def prepare_migration_directory(directory: Path) -> Path:
     return directory
 
 
-def load_migration_module(stem: str) -> dict[str, object]:
-    """按完整包名加载单个迁移，返回其模块命名空间。"""
+def load_migration_object(stem: str) -> ModuleType:
+    """按完整包名加载单个迁移，并保留可替换的模块全局。"""
 
+    _clear_package()
     path = _SOURCE_ROOT / f"{stem.removesuffix('.py')}.py"
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -72,18 +81,34 @@ def load_migration_module(stem: str) -> dict[str, object]:
             spec.loader.exec_module(module)
         finally:
             yoyo.step = original_step
-        return dict(vars(module))
+        loaded = {
+            name: value
+            for name, value in sys.modules.items()
+            if name == _PACKAGE_NAME or name.startswith(f"{_PACKAGE_NAME}.")
+        }
+    # Production keeps this package alive while Yoyo invokes the callback. The
+    # callback fixtures run after this function returns, so retain the exact
+    # loaded package modules until the next fixture load clears them.
+    sys.modules.update(loaded)
+    return module
 
 
-def load_migration_namespace(stem: str) -> SimpleNamespace:
-    """Load one migration as an attribute namespace for callback tests."""
+def load_migration_module(stem: str) -> dict[str, object]:
+    """按完整包名加载单个迁移，返回其模块命名空间映射。"""
 
-    return SimpleNamespace(**load_migration_module(stem))
+    return dict(vars(load_migration_object(stem)))
+
+
+def load_migration_namespace(stem: str) -> ModuleType:
+    """Load one migration object so monkeypatches reach its global scope."""
+
+    return load_migration_object(stem)
 
 
 def load_bundle_migrations(directory: Path):
     """加载临时 bundle 的所有 Yoyo 对象并在返回前完成相对导入。"""
 
+    _clear_package()
     prepare_migration_directory(directory)
     bundle = _bundle(directory)
     empty_core = directory.parent / "_empty_core_migrations"

@@ -15,8 +15,29 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _encode_stored_event(event: object) -> str:
-    """Encode one already validated stored event as canonical JSON."""
-    if isinstance(event, str):
-        return event
-    return json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _encode_stored_event(
+    *,
+    event_id: str,
+    event_type: str,
+    payload: dict[str, object],
+    session_id: str | None = None,
+    turn_id: str | None = None,
+) -> str:
+    """Encode the historical durable envelope without connection state."""
+
+    body: dict[str, object] = {
+        "id": event_id,
+        "type": event_type,
+        "payload": payload,
+    }
+    if session_id is not None:
+        body["session_id"] = session_id
+    if turn_id is not None:
+        body["turn_id"] = turn_id
+    return json.dumps(
+        body,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )

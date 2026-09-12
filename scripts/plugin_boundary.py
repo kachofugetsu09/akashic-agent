@@ -107,6 +107,30 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_contracts.turn_effects",
 })
 
+# Legacy upgrade is an ordinary installed artifact.  It may use only these
+# exact host atoms while replaying an old workspace schema; its frozen business
+# helpers remain inside the artifact.  This is deliberately an allowlist of
+# modules, not an exemption for the whole plugin directory.
+MIGRATION_HOST_MODULES = frozenset({
+    "agent.migrations.context",
+    "agent.plugin_composition",
+    "agent.plugin_composition.artifacts",
+    "agent.plugin_composition.messages",
+    "agent.plugin_contracts",
+    "agent.plugin_contracts.message",
+    "agent.turn_effects",
+    "core.common.timekit",
+    "core.net.http",
+    "infra.persistence.json_store",
+    "memory2.embedder",
+    "session.embedding_store",
+    "session.identities",
+    "session.log",
+    "session.message",
+    "session.message_codec",
+})
+MIGRATION_ARTIFACT_PREFIX = "plugins/legacy_upgrade/legacy_upgrade_migrations/"
+
 # 插件不得 import 的 core 顶层包（用于 R2 的归属判定）。
 CORE_TOP_LEVELS = frozenset(
     {*CORE_ROOTS, "sdk", "main"}
@@ -303,6 +327,11 @@ def check_plugin_deep_core(imports: list[Import]) -> list[Import]:
         if top not in CORE_TOP_LEVELS:
             continue
         if item.module in PLUGIN_ALLOWED_MODULES:
+            continue
+        if (
+            item.importer.startswith(MIGRATION_ARTIFACT_PREFIX)
+            and item.module in MIGRATION_HOST_MODULES
+        ):
             continue
         violations.append(item)
     return violations

@@ -1,23 +1,11 @@
-import importlib.util
-from pathlib import Path
 import tomllib
-import yoyo
 
 from agent.migrations.context import bind_migration_context
+from tests.legacy_migration_loader import load_migration_namespace
 
 
 def _migration():
-    path = Path(__file__).parents[1] / "migrations/yoyo/20260909_01_tool_provider_views.py"
-    spec = importlib.util.spec_from_file_location("tool_provider_views_migration", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    original = yoyo.step
-    yoyo.step = lambda callback: callback
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        yoyo.step = original
-    return module
+    return load_migration_namespace("20260909_01_tool_provider_views")
 
 
 def test_tool_provider_migration_moves_only_exact_skill_owner_and_keeps_backup(tmp_path):

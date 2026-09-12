@@ -1,5 +1,4 @@
 import hashlib
-import importlib.util
 import json
 import sqlite3
 import subprocess
@@ -14,19 +13,12 @@ from agent.migrations.context import bind_migration_context
 from session.log import MessageLog
 from session.message import Input, Output, ToolCall
 from session.store import SessionStore
+from tests.legacy_migration_loader import load_migration_namespace
 
 
 @pytest.fixture
-def migration(monkeypatch):
-    import yoyo
-
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    path = Path(__file__).parents[1] / "migrations/yoyo/20260905_01_message_log.py"
-    spec = importlib.util.spec_from_file_location("message_log_migration_test", path)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def migration():
+    return load_migration_namespace("20260905_01_message_log")
 
 
 @pytest.fixture
@@ -345,24 +337,22 @@ def test_process_exit_during_ddl_leaves_complete_old_database(migration, old_wor
     path = old_workspace / "sessions.db"
     before = snapshot(path)
     source = """
-import importlib.util, os, pathlib, sys, yoyo
+import os, pathlib, sys
 from agent.migrations.context import bind_migration_context
-yoyo.step = lambda callback: callback
-spec = importlib.util.spec_from_file_location('crash_fixture', sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from tests.legacy_migration_loader import load_migration_namespace
+module = load_migration_namespace('20260905_01_message_log')
 check = module._check
 def crash(connection):
     if 'body' in {row[1] for row in connection.execute('PRAGMA table_info(messages)')}:
         os._exit(77)
     check(connection)
 module._check = crash
-workspace = pathlib.Path(sys.argv[2])
+workspace = pathlib.Path(sys.argv[1])
 with bind_migration_context(workspace=workspace, config_path=workspace/'config.toml'):
     module.migrate_message_log(None)
 """
     result = subprocess.run(
-        [sys.executable, "-c", source, migration.__file__, str(old_workspace)],
+        [sys.executable, "-c", source, str(old_workspace)],
         capture_output=True,
         text=True,
         timeout=30,

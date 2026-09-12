@@ -316,8 +316,9 @@ async def test_same_artifact_enable_commits_only_after_runtime_activation(tmp_pa
 
 @pytest.mark.parametrize("interrupt", [False, True])
 def test_update_migration_preserves_old_resource_rows_with_native_backup(tmp_path, monkeypatch, interrupt):
-    from yoyo import get_backend, read_migrations
+    from yoyo import get_backend
     from agent.migrations.context import bind_migration_context
+    from tests.legacy_migration_loader import load_bundle_migrations
     journal = ReloadJournal(tmp_path)
     tx = journal.begin(plugin_id="sample", base_snapshot_id=None, generation_id="generation", source_revision="source", config_revision="config")
     with closing(sqlite3.connect(journal.path)) as conn, conn:
@@ -325,10 +326,10 @@ def test_update_migration_preserves_old_resource_rows_with_native_backup(tmp_pat
     directory = tmp_path / "migrations"
     directory.mkdir()
     (directory / "20260906_02_session_attributes.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
-    source = Path(__file__).parents[1] / "migrations/yoyo/20260906_03_plugin_update_rollback.py"
+    source = Path(__file__).parents[1] / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260906_03_plugin_update_rollback.py"
     (directory / source.name).write_bytes(source.read_bytes())
     backend = get_backend(f'sqlite:///{tmp_path / "ledger.db"}')
-    migrations = read_migrations(str(directory))
+    migrations = load_bundle_migrations(directory)
     before = journal.get(tx)
     with backend, bind_migration_context(config_path=tmp_path / "config.toml", workspace=tmp_path):
         if interrupt:

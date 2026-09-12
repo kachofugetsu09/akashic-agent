@@ -1,6 +1,5 @@
 import json
 import re
-import runpy
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -10,7 +9,7 @@ import pytest
 import yoyo
 
 from agent.migrations.context import bind_migration_context
-from agent.migrations.mobile_input import migrate
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.mobile_input import migrate
 from infra.mobile_realtime.storage import MobileRealtimeStorage
 from tests.mobile_realtime.test_storage import _device, _ready_upload
 
@@ -119,7 +118,8 @@ def test_yoyo_uses_the_configured_mobile_database(tmp_path, monkeypatch):
     config = tmp_path / 'config.toml'
     config.write_text(f'[mobile_realtime]\ndatabase = "{path}"\n')
     monkeypatch.setattr(yoyo, 'step', lambda callback: callback)
-    module = runpy.run_path(str(Path(__file__).parents[1] / 'migrations/yoyo/20260906_05_mobile_input_rejections.py'))
+    from tests.legacy_migration_loader import load_migration_module
+    module = load_migration_module("20260906_05_mobile_input_rejections")
     with bind_migration_context(config_path=config, workspace=workspace):
         module['steps'][0](None)
     with closing(current_storage(path)) as storage:

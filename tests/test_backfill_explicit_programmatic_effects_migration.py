@@ -1,39 +1,22 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sqlite3
-import sys
 from contextlib import closing
 from pathlib import Path
 
-import yoyo
-
 from agent.migrations.context import bind_migration_context
+from tests.legacy_migration_loader import load_migration_namespace
 
 _PROJECT_ROOT = Path(__file__).parents[1]
 _MIGRATION_PATH = (
     _PROJECT_ROOT
-    / "migrations/yoyo/20260829_02_backfill_explicit_programmatic_effects.py"
+    / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260829_02_backfill_explicit_programmatic_effects.py"
 )
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location(
-        "backfill_explicit_programmatic_effects_under_test",
-        _MIGRATION_PATH,
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载迁移: {_MIGRATION_PATH}")
-    original_step = yoyo.step
-    yoyo.step = lambda callback: callback  # type: ignore[assignment]
-    try:
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-    finally:
-        yoyo.step = original_step
-    return module
+    return load_migration_namespace("20260829_02_backfill_explicit_programmatic_effects")
 
 
 def _create_database(path: Path) -> None:

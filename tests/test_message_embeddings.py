@@ -64,9 +64,8 @@ def test_missing_schema_and_corrupt_vectors_fail_without_reembedding(tmp_path):
 
 @pytest.mark.parametrize('legacy', [False, True])
 def test_yoyo_embedding_owner_preserves_existing_vectors_and_backs_up_missing_schema(tmp_path, legacy):
-    from pathlib import Path
-    from yoyo import read_migrations
     from agent.migrations.context import bind_migration_context
+    from tests.legacy_migration_loader import load_migration_module
     path = tmp_path / 'sessions.db'
     with closing(sqlite3.connect(path)) as db, db:
         db.execute('CREATE TABLE unrelated_owner (value TEXT)')
@@ -78,13 +77,11 @@ def test_yoyo_embedding_owner_preserves_existing_vectors_and_backs_up_missing_sc
         finally:
             store.close()
     before = path.read_bytes()
-    migration = next(m for m in read_migrations(str(Path(__file__).parents[1] / 'migrations/yoyo'))
-                     if m.id == '20260905_05_message_embeddings')
-    migration.load()
+    migration = load_migration_module("20260905_05_message_embeddings")
     with bind_migration_context(config_path=tmp_path / 'config.toml', workspace=tmp_path):
-        migration.module.migrate_message_embeddings(None)
+        migration["migrate_message_embeddings"](None)
         once = path.read_bytes()
-        migration.module.migrate_message_embeddings(None)
+        migration["migrate_message_embeddings"](None)
     assert path.read_bytes() == once
     with closing(sqlite3.connect(path)) as db:
         assert db.execute('SELECT value FROM unrelated_owner').fetchall() == [('preserved',)]
@@ -100,18 +97,15 @@ def test_yoyo_embedding_owner_preserves_existing_vectors_and_backs_up_missing_sc
 
 
 def test_yoyo_embedding_owner_rejects_unknown_schema_before_backup(tmp_path):
-    from pathlib import Path
-    from yoyo import read_migrations
     from agent.migrations.context import bind_migration_context
+    from tests.legacy_migration_loader import load_migration_module
     path = tmp_path / 'sessions.db'
     with closing(sqlite3.connect(path)) as db, db:
         db.execute('CREATE TABLE message_embeddings (message_id TEXT)')
     before = path.read_bytes()
-    migration = next(m for m in read_migrations(str(Path(__file__).parents[1] / 'migrations/yoyo'))
-                     if m.id == '20260905_05_message_embeddings')
-    migration.load()
+    migration = load_migration_module("20260905_05_message_embeddings")
     with bind_migration_context(config_path=tmp_path / 'config.toml', workspace=tmp_path):
         with pytest.raises(RuntimeError, match='schema lineage'):
-            migration.module.migrate_message_embeddings(None)
+            migration["migrate_message_embeddings"](None)
     assert path.read_bytes() == before
     assert not (tmp_path / 'backups').exists()

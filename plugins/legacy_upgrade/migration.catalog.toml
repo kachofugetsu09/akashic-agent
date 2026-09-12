@@ -342,7 +342,7 @@ sha256 = "c999134af1756b80babc7829ebefa2c27b619d6d7aa4f48374da532cce4ac132"
 
 [[files]]
 path = "support/context_compaction.py"
-sha256 = "14b33e7a93c7dade5194b7791ffac1885d0f87bc0dbbd9bb087c3e9661e6629b"
+sha256 = "6171ec1e71331d6db8a34870d470532fae4d48f521392c524f7c37d190f51863"
 
 [[files]]
 path = "support/conversation_plugin.py"
@@ -358,7 +358,7 @@ sha256 = "faf51fdf75d7e6d8ddc8e591448f92124901ee1928d5e03e514aaf0d760c3bb8"
 
 [[files]]
 path = "support/mobile_gateway.py"
-sha256 = "5b6382ea4d85f334237c85d606ee76f5f814a216b1bd2243a4822e3816ef7db9"
+sha256 = "c87f750bb2a8080407fc0b3e18b39a8a5bfde10afbd64dfbdb212cc187f8f9ee"
 
 [[files]]
 path = "support/mobile_input.py"

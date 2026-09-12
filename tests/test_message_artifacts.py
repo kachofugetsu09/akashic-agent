@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 
 import pytest
-from yoyo import get_backend, read_migrations
+from yoyo import get_backend
 
 from agent.migrations.context import bind_migration_context
 from session.artifacts import AttachmentKind, AttachmentRef
@@ -13,6 +13,7 @@ from session.log import MessageLog, MessageConflict
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
 from session.store import SessionStore
 from session.artifact_store import ArtifactStore
+from tests.legacy_migration_loader import load_bundle_migrations
 
 
 @pytest.fixture
@@ -82,9 +83,9 @@ def migration(tmp_path):
     directory = tmp_path / "migrations"
     directory.mkdir()
     (directory / "20260905_05_message_embeddings.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
-    source = Path(__file__).parents[1] / "migrations/yoyo/20260905_06_message_artifacts.py"
+    source = Path(__file__).parents[1] / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260905_06_message_artifacts.py"
     (directory / source.name).write_bytes(source.read_bytes())
-    return read_migrations(str(directory))
+    return load_bundle_migrations(directory)
 
 
 @pytest.mark.parametrize("bad_direction", [False, True])

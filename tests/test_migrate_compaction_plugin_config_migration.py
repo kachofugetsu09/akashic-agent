@@ -1,32 +1,20 @@
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 import tomllib
 from pathlib import Path
 
 import pytest
-import yoyo
 
 from agent.migrations.context import bind_migration_context
+from tests.legacy_migration_loader import load_migration_namespace
 
 _ROOT = Path(__file__).parents[1]
-_MIGRATION = _ROOT / "migrations/yoyo/20260831_01_migrate_compaction_plugin_config.py"
+_MIGRATION = _ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260831_01_migrate_compaction_plugin_config.py"
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("compaction_plugin_config_migration", _MIGRATION)
-    assert spec is not None and spec.loader is not None
-    original = yoyo.step
-    yoyo.step = lambda callback: callback  # type: ignore[assignment]
-    try:
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        yoyo.step = original
+    return load_migration_namespace("20260831_01_migrate_compaction_plugin_config")
 
 
 def _run(module, config: Path, workspace: Path) -> None:

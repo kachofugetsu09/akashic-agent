@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from agent.migrations.legacy_summaries import migrate_legacy_summaries
-from agent.migrations.session_attributes import migrate as migrate_attributes
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.legacy_summaries import migrate_legacy_summaries
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.session_attributes import migrate as migrate_attributes
 from plugins.compaction.records import SummaryLookup, SummaryRecords
 from plugins.content.plugin import check_text
 from session.log import MessageLog, OwnerTransaction

@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from yoyo import read_migrations
 
 from agent.migrations.context import bind_migration_context
 from plugins.reply.plugin import Config as ReplyConfig
+from tests.legacy_migration_loader import load_bundle_migrations
 
 
 _PROJECT_ROOT = Path(__file__).parents[1]
@@ -26,9 +26,8 @@ def _module(tmp_path: Path):
     catalog = tmp_path / "migrations"
     catalog.mkdir()
     for name in (_DEPENDENCY, _MIGRATION):
-        shutil.copy2(_PROJECT_ROOT / "migrations/yoyo" / name, catalog / name)
-    migration = read_migrations(str(catalog))[-1]
-    migration.load()
+        shutil.copy2(_PROJECT_ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations" / name, catalog / name)
+    migration = load_bundle_migrations(catalog)[-1]
     return migration.module
 
 

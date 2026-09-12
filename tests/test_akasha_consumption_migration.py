@@ -4,9 +4,9 @@ from pathlib import Path
 import sqlite3
 
 import pytest
-from yoyo import get_backend, read_migrations
+from yoyo import get_backend
 
-from agent.migrations.akasha_consumption import cutover_akasha
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.akasha_consumption import cutover_akasha
 from agent.migrations.context import bind_migration_context
 from plugins.akasha.application.rebuild import rebuild_memory
 from plugins.akasha.domain.model import MemoryConfig
@@ -16,6 +16,7 @@ from session.embedding_store import MessageEmbeddingStore
 from session.log import MessageLog
 from session.message import Input, Output, ContentPart
 from tests.test_akasha_embedding_backfill import _create_sessions
+from tests.legacy_migration_loader import load_bundle_migrations
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def workspace(tmp_path):
 
 
 def test_yoyo_cutover_is_durable_idempotent_and_preserves_learned_state(workspace, tmp_path):
-    source = Path(__file__).resolve().parents[1] / 'migrations/yoyo/20260905_04_akasha_consumption.py'
+    source = Path(__file__).resolve().parents[1] / 'plugins/legacy_upgrade/legacy_upgrade_migrations/20260905_04_akasha_consumption.py'
     # 用真正 yoyo Python step；隔离目录将已存在的父迁移声明为已完成前提。
     directory = tmp_path / 'migrations'
     directory.mkdir()
@@ -57,7 +58,7 @@ def test_yoyo_cutover_is_durable_idempotent_and_preserves_learned_state(workspac
     before_index = sha256_file(index)
     before_messages = sha256_file(workspace / 'sessions.db')
     backend = get_backend(f'sqlite:///{tmp_path / "ledger.db"}')
-    migrations = read_migrations(str(directory))
+    migrations = load_bundle_migrations(directory)
     with backend, bind_migration_context(config_path=tmp_path / 'config.toml', workspace=workspace):
         backend.apply_migrations(backend.to_apply(migrations))
         assert not backend.to_apply(migrations)

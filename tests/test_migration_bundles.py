@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ from agent.migrations.bundles import (
     MigrationBundleBlocked,
     MigrationBundleError,
     discover_migration_bundles,
+    migration_import_paths,
 )
 from agent.migrations.runner import MigrationRunner
 
@@ -155,6 +158,8 @@ def test_missing_pending_bundle_is_typed_and_does_not_create_ledger(tmp_path: Pa
         "transactional = false\n",
         encoding="utf-8",
     )
+    (root / "workspace").mkdir(parents=True)
+    (root / "workspace/sessions.db").write_bytes(b"legacy-state")
 
     with pytest.raises(MigrationBundleBlocked) as raised:
         _runner(root).run()
@@ -164,6 +169,68 @@ def test_missing_pending_bundle_is_typed_and_does_not_create_ledger(tmp_path: Pa
     assert error.bundle_id == "legacy_upgrade"
     assert error.migration_ids == ("test_missing_owner_step",)
     assert not (root / "workspace/migrations.sqlite3").exists()
+
+
+def test_fresh_core_only_workspace_skips_uninstalled_legacy_requirements(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    repo = root / "repo"
+    core_id = "test_core_fresh_origin"
+    _write_core(repo, core_id)
+    catalog = repo / "migrations/catalog.toml"
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text(
+        "schema_version = 1\n\n"
+        "[[migrations]]\n"
+        "id = 'test_missing_owner_step'\n"
+        "bundle = 'legacy_upgrade'\n"
+        f"depends = ['{core_id}']\n"
+        "transactional = false\n",
+        encoding="utf-8",
+    )
+
+    outcome = _runner(root).run()
+
+    assert outcome.migrations == (core_id,)
+    assert _runner(root).run().state == "current"
+
+
+def test_bundle_loader_keeps_importlib_and_unrelated_modules_untouched(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    artifact = _write_bundle(root / "plugins")
+    bundle = discover_migration_bundles(
+        plugin_dirs=(artifact.parent,), installed_cache_root=root / "empty-cache"
+    )[0]
+    original_loader = importlib.util.spec_from_file_location
+    before = set(sys.modules)
+
+    with migration_import_paths((bundle,)):
+        assert importlib.util.spec_from_file_location is original_loader
+        assert "migration_steps" in sys.modules
+
+    assert importlib.util.spec_from_file_location is original_loader
+    assert "migration_steps" not in sys.modules
+    assert set(sys.modules) >= before
+
+
+def test_bundle_loader_rejects_preloaded_package_identity(tmp_path: Path) -> None:
+    root = tmp_path / "state"
+    artifact = _write_bundle(root / "plugins")
+    bundle = discover_migration_bundles(
+        plugin_dirs=(artifact.parent,), installed_cache_root=root / "empty-cache"
+    )[0]
+    import types
+
+    sys.modules[bundle.package_name] = types.ModuleType(bundle.package_name)
+    try:
+        with pytest.raises(MigrationBundleError, match="已在当前进程加载"):
+            with migration_import_paths((bundle,)):
+                pass
+    finally:
+        sys.modules.pop(bundle.package_name, None)
 
 
 def test_bundle_source_digest_drift_fails_before_ledger_write(tmp_path: Path) -> None:

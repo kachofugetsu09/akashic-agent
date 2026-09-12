@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from agent.migrations.session_attributes import migrate
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.session_attributes import migrate
 from session.log import MessageConflict, MessageLog, SessionAttributes, _OLD_SESSION_SCHEMA, _LEGACY_SESSION_SCHEMA
 from session.message import ContentPart, ContentReferences, Input
 

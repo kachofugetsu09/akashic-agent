@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from yoyo import get_backend, read_migrations
+from yoyo import get_backend
 
 from agent.migrations.context import bind_migration_context
 from infra.channels.message_view import follow_messages, message_rows
 from session.log import MessageConflict, MessageLog
 from session.message import ContentPart, MAX_METADATA_BYTES, Output
 from plugins.content.plugin import check_text
+from tests.legacy_migration_loader import load_bundle_migrations, load_migration_module
 
 
 def writer(log, namespaces=frozenset({"citation", "meme"})):
@@ -85,14 +86,12 @@ async def test_unknown_metadata_survives_restart_history_and_follow_without_plug
 
 
 def migration_source():
-    return Path(__file__).parents[1] / "migrations/yoyo/20260907_03_message_metadata.py"
+    return Path(__file__).parents[1] / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_03_message_metadata.py"
 
 
 def load_migration():
-    migration = next(item for item in read_migrations(str(migration_source().parent))
-                     if item.id == migration_source().stem)
-    migration.load()
-    return migration.module
+    from types import SimpleNamespace
+    return SimpleNamespace(**load_migration_module(migration_source().stem))
 
 
 def test_yoyo_adds_only_metadata_and_replay_keeps_new_extensions(tmp_path):
@@ -112,7 +111,7 @@ def test_yoyo_adds_only_metadata_and_replay_keeps_new_extensions(tmp_path):
     (directory / "20260907_02_retire_legacy_agent_config.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
     (directory / migration_source().name).write_bytes(migration_source().read_bytes())
     backend = get_backend(f"sqlite:///{tmp_path / 'ledger.db'}")
-    migrations = read_migrations(str(directory))
+    migrations = load_bundle_migrations(directory)
     with backend, bind_migration_context(workspace=tmp_path, config_path=tmp_path / "config.toml"):
         backend.apply_migrations(backend.to_apply(migrations))
     with closing(sqlite3.connect(path)) as connection:

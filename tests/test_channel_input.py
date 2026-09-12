@@ -367,8 +367,8 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
         with bind_migration_context(workspace=tmp_path, config_path=tmp_path / "config.toml"):
             for number, name in [(1, "message_log"), (2, "owner_records"), (3, "model_calls"),
                                  (5, "message_embeddings"), (6, "message_artifacts")]:
-                module = runpy.run_path(str(Path(__file__).parents[1] / "migrations/yoyo" /
-                                           f"20260905_{number:02d}_{name}.py"))
+                from tests.legacy_migration_loader import load_migration_module
+                module = load_migration_module(f"20260905_{number:02d}_{name}")
                 module[f"migrate_{name}"](None)
 
     # 2. 分别模拟正文提交前与提交后进程结束，重开都不能重复正文。
@@ -596,8 +596,8 @@ async def test_channel_input_imported_artifact_is_pinned_and_read_lease_closed(t
         with bind_migration_context(workspace=tmp_path, config_path=tmp_path / "config.toml"):
             for number, name in [(1, "message_log"), (2, "owner_records"), (3, "model_calls"),
                                  (5, "message_embeddings"), (6, "message_artifacts")]:
-                module = runpy.run_path(str(Path(__file__).parents[1] / "migrations/yoyo" /
-                                           f"20260905_{number:02d}_{name}.py"))
+                from tests.legacy_migration_loader import load_migration_module
+                module = load_migration_module(f"20260905_{number:02d}_{name}")
                 module[f"migrate_{name}"](None)
         opened = []
         acquire = artifacts.acquire
