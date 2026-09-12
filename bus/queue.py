@@ -587,7 +587,11 @@ class MessageBus:
                     if recoverer is None:
                         raise RuntimeError("durable inbound recovery port 未绑定")
                     if not await recoverer(raw):
-                        raise RuntimeError("durable inbound recovery 被 current binding 拒绝")
+                        # No exact current channel owner is a normal partial
+                        # catalog state.  Release only this page claim and
+                        # leave the durable row for the generation that owns
+                        # its persisted channel; other channels can proceed.
+                        self._recovery_claimed.discard(handoff_id)
                 if legacy_page:
                     # 旧 worker 删除前维持原本逐次完成再 pump 一页的容量边界。
                     return

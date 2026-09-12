@@ -89,6 +89,8 @@ class InputCustody(Protocol):
         recoverer: Callable[[RawInbound], Awaitable[bool]],
     ) -> None: ...
 
+    async def recover_durable_inbounds(self) -> None: ...
+
     async def defer_durable_inbound(self, handoff_id: str) -> bool: ...
 
     async def settle_rejected_inbound(
@@ -636,9 +638,19 @@ class _ChannelDurableInbound:
         owner = self._host._durable_reservation_owners.get(reservation.handoff_id)
         if owner is not None and owner != self._key:
             raise RuntimeError("durable inbound reservation 已由另一 binding 持有")
-        accepted = await self._custody().reserve_durable_inbound(raw)
+        reserve_task = asyncio.create_task(
+            self._custody().reserve_durable_inbound(raw),
+            name=f"channel-durable-reserve:{reservation.handoff_id}",
+        )
+        accepted, cancelled = await _await_reservation_after_cancellation(
+            reserve_task
+        )
         if accepted:
             self._host._remember_durable_reservation(self._key, reservation)
+        if cancelled:
+            # The Bus task has settled and the exact binding is recorded before
+            # restoring cancellation, so stop/recovery can still own this row.
+            raise asyncio.CancelledError
         return accepted
 
     async def defer(self, handoff_id: str) -> None:
@@ -1227,11 +1239,20 @@ class ChannelGenerationHost:
             "has_pending_durable_inbound",
             "pending_durable_attachment_refs",
             "bind_durable_inbound_recoverer",
+            "recover_durable_inbounds",
         ):
             if not callable(getattr(custody, method, None)):
                 raise TypeError(f"Channel input custody 缺少 {method}(...)")
         custody.bind_durable_inbound_recoverer(self._recover_current_durable_inbound)
         self._input_custody = custody
+
+    async def recover_durable_inbounds(self) -> None:
+        """Recover rows after the current exact channel generation is open."""
+
+        custody = self._input_custody
+        if custody is None:
+            return
+        await custody.recover_durable_inbounds()
 
     def bind_control_interrupter(self, interrupter: ControlInterrupter) -> None:
         """Bind Core's typed interrupt effect owner exactly once."""
@@ -1856,9 +1877,11 @@ class ChannelGenerationHost:
             )
         )
         if not candidates:
-            raise RuntimeError(
-                f"durable inbound 当前 channel binding 不可用: {raw.message.channel}"
-            )
+            # A different channel may be restored by a later generation.  The
+            # Bus leaves this row pending when the current catalog has no exact
+            # owner; malformed identity/session failures still fail in
+            # _recover_inbound after an owner is selected.
+            return False
         if len(candidates) != 1:
             raise RuntimeError(
                 f"durable inbound channel binding 不唯一: {raw.message.channel}"
@@ -2501,7 +2524,6 @@ class ChannelGenerationHost:
             for subscription in subscriptions:
                 await subscription.close()
             failures: list[ChannelCleanupFailure] = []
-            failures.extend(await self._defer_durable_reservations(key, state))
             receipt = state.stop_receipt
             if not state.adapter_stop_succeeded:
                 state.adapter_stop_settled = False
@@ -2559,6 +2581,13 @@ class ChannelGenerationHost:
                 else:
                     state.adapter_stop_succeeded = True
                     state.adapter_stop_settled = True
+            # The adapter still owns its accepted tasks until stop() returns.
+            # Those tasks may need the exact port to defer or reject a handoff
+            # in their finally blocks.  Transfer only the reservations left
+            # after a successful adapter stop; a failed stop keeps the old
+            # binding as the cleanup owner and therefore cannot be reclaimed.
+            if state.adapter_stop_succeeded:
+                failures.extend(await self._defer_durable_reservations(key, state))
             if not state.factory_close_succeeded:
                 state.factory_close_settled = False
                 try:
@@ -2984,6 +3013,20 @@ async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
     if cancelled:
         raise asyncio.CancelledError
     return result
+
+
+async def _await_reservation_after_cancellation(
+    task: asyncio.Task[bool],
+) -> tuple[bool, bool]:
+    """Finish Bus reserve and report outer cancellation after owner handoff."""
+
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    return task.result(), cancelled
 
 
 async def _settle_cleanup_task(task: asyncio.Task[Any]) -> Any:

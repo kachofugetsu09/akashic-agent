@@ -1096,6 +1096,42 @@ class RuntimeSnapshotStore:
         async with self._condition:
             self._condition.notify_all()
 
+    async def rollback_published(
+        self,
+        transaction: SnapshotTransaction,
+        *,
+        keep_candidate_latest: bool,
+        reopen_previous: bool,
+    ) -> None:
+        """Rollback a publication whose post-open participant failed.
+
+        ``finalize_provisional`` clears the provisional marker before returning;
+        a participant that runs immediately after it therefore needs the same
+        pointer restoration without pretending the transaction is still
+        provisional.
+        """
+
+        if self._provisional is not None:
+            raise RuntimeError("RuntimeSnapshot 已仍处于 provisional 发布阶段")
+        if self._current is not transaction.candidate:
+            raise RuntimeError("RuntimeSnapshot 已不是待回滚的 published candidate")
+        previous = transaction.previous
+        self._current = previous
+        if previous is not None:
+            previous.state = "committed"
+            previous.accepting_leases = reopen_previous
+        candidate = transaction.candidate
+        candidate.accepting_leases = False
+        if keep_candidate_latest:
+            candidate.state = "committed"
+            self._latest = candidate
+        else:
+            candidate.state = "validating"
+            self._latest = previous
+            self._pending = transaction
+        async with self._condition:
+            self._condition.notify_all()
+
     async def promote_latest(
         self,
         *,

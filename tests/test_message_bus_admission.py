@@ -800,6 +800,57 @@ async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> Non
 
 
 @pytest.mark.asyncio
+async def test_recovery_skips_channel_without_current_owner_and_continues(
+    tmp_path: Path,
+) -> None:
+    """One missing channel owner must not block another row in the page."""
+
+    import json
+
+    store = InboundHandoffStore(tmp_path / "sessions.db")
+    bus = MessageBus()
+    bus.bind_durable_inbound_store(store)
+    for channel in ("missing", "ready"):
+        handoff_id = f"handoff-{channel}"
+        provider_message_id = f"message-{channel}"
+        store.reserve_inbound_handoff(
+            handoff_id=handoff_id,
+            dedupe_key=f"{channel}:shared:{provider_message_id}",
+            channel=channel,
+            sender="provider",
+            chat_id="room",
+            session_key="shared",
+            content=channel,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            media_json="[]",
+            metadata_json=json.dumps(
+                {
+                    "durable_inbound": True,
+                    "durable_handoff_id": handoff_id,
+                    "provider_message_id": provider_message_id,
+                    "session_key_override": "shared",
+                }
+            ),
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+    seen: list[str] = []
+
+    async def recover(raw: RawInbound) -> bool:
+        seen.append(raw.message.channel)
+        return raw.message.channel == "ready"
+
+    bus.bind_durable_inbound_recoverer(recover)
+    try:
+        await bus.recover_durable_inbounds()
+        assert seen == ["missing", "ready"]
+        assert bus._recovery_claimed == set()
+        assert len(store.list_inbound_handoffs()) == 2
+    finally:
+        await bus.aclose()
+        store.close()
+
+
+@pytest.mark.asyncio
 async def test_durable_identity_is_namespaced_by_channel(tmp_path: Path) -> None:
     manager = SessionManager(tmp_path / "workspace")
     session_key = "shared-session"

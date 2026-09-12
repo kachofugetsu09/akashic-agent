@@ -489,6 +489,167 @@ async def test_stop_transfers_reserve_only_handoff_and_revokes_old_port(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_adapter_stop_can_compensate_reservation_before_host_transfer(tmp_path):
+    """Adapter-owned cancellation keeps its exact reservation until stop returns."""
+
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+            recover=False,
+        ) as (_, _, _, _, _, adapter):
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            assert await durable.reserve(mobile_raw())
+            order: list[str] = []
+
+            async def stop_with_compensation():
+                order.append("adapter.stop")
+                await durable.defer("handoff-1")
+                order.append("adapter.defer")
+                return StopReceipt(adapter.context.binding_token, True)
+
+            adapter.stop = stop_with_compensation
+        assert order == ["adapter.stop", "adapter.defer"]
+        assert manager.inbound_store.list_inbound_handoffs()
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
+async def test_adapter_stop_failure_retains_reservation_owner_until_retry(tmp_path):
+    """A failed adapter stop leaves its old reservation in the cleanup tombstone."""
+
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+            recover=False,
+        ) as (_, host, custody, _, _, adapter):
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            assert await durable.reserve(mobile_raw())
+
+            async def fail_stop():
+                raise RuntimeError("adapter stop injected failure")
+
+            adapter.stop = fail_stop
+            key = (host.current_snapshot.snapshot_id, "akashic")
+            with pytest.raises(RuntimeError, match="cleanup failed"):
+                await host.channel_generation_host._stop_binding(key)
+            assert host.channel_generation_host.failure(
+                host.current_snapshot.snapshot_id, "akashic"
+            ) is not None
+            assert "handoff-1" in host.channel_generation_host._durable_reservation_owners
+            assert "handoff-1" in host.channel_generation_host._bindings[key].durable_reservations
+            assert not custody._durable_admissions["handoff-1"].recoverable
+
+            async def successful_stop():
+                return StopReceipt(adapter.context.binding_token, True)
+
+            adapter.stop = successful_stop
+            await host.channel_generation_host.retry_generation_cleanup(
+                adapter.context.binding_token
+            )
+            assert host.channel_generation_host.failure(
+                host.current_snapshot.snapshot_id, "akashic"
+            ) is None
+            # This test drives the binding's private retry directly; detach
+            # the manager facade before the fixture's normal full shutdown.
+            host._active_channel_generation = None
+            host._active_channel_catalog_identity = None
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
+async def test_reserve_cancellation_registers_owner_before_propagating(tmp_path):
+    """Cancellation after Bus persistence cannot orphan the Host reservation."""
+
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+            recover=False,
+        ) as (_, host, custody, _, _, adapter):
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            original = custody.reserve_durable_inbound
+            persisted = asyncio.Event()
+            release = asyncio.Event()
+
+            async def reserve_then_pause(raw):
+                accepted = await original(raw)
+                persisted.set()
+                await release.wait()
+                return accepted
+
+            custody.reserve_durable_inbound = reserve_then_pause
+            reserving = asyncio.create_task(durable.reserve(mobile_raw()))
+            await asyncio.wait_for(persisted.wait(), 2)
+            reserving.cancel()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await reserving
+
+            key = (host.current_snapshot.snapshot_id, "akashic")
+            assert host.channel_generation_host._durable_reservation_owners[
+                "handoff-1"
+            ] == key
+            assert await durable.defer("handoff-1") is None
+            await custody.recover_durable_inbounds()
+            assert custody.completed == 1
+            assert not manager.inbound_store.list_inbound_handoffs()
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
+async def test_same_host_replacement_recovers_reserve_only_row_without_manual_recover(tmp_path):
+    """Host replacement opens the new binding before one automatic recovery pass."""
+
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+            recover=False,
+        ) as (log, host, custody, _, _, adapter):
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            assert await durable.reserve(mobile_raw())
+            replacement = await host._compile_topology_snapshot(
+                dict(host._active_generations)
+            )
+            await host._publish_committed_snapshot(replacement)
+            messages = log.reader("akashic:room").snapshot()
+            assert [item.message_id for item in messages] == ["mobile-1"]
+            assert custody.completed == 1
+            assert manager.inbound_store.list_inbound_handoffs() == []
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
 async def test_old_port_cannot_settle_handoff_reclaimed_by_next_generation(tmp_path):
     """同一 Host 的新 binding 接管后，旧 port 不能删除同一 handoff。"""
 

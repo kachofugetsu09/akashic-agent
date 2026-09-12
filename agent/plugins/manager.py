@@ -2564,6 +2564,15 @@ class PluginManager:
                 before_open=before_open,
                 after_open=open_participants,
             )
+            if (
+                channel_state is not None
+                and channel_state.old_runtime is not None
+                and channel_state.new_runtime is not None
+            ):
+                # A stopped binding has already handed reserve-only rows back
+                # to the Bus.  Recover them only after the new exact catalog
+                # is public and its admissions are open.
+                await self._channel_generation_host.recover_durable_inbounds()
         except BaseException as publication_error:
             rollback_errors: list[BaseException] = []
             channel_cleanup_failed = False
@@ -2607,13 +2616,26 @@ class PluginManager:
                 except BaseException as caught:
                     rollback_errors.append(caught)
                     channel_cleanup_failed = True
-            await self._snapshot_store.rollback_provisional(
-                provisional,
-                keep_candidate_latest=promote_latest,
-                reopen_previous=(reopen_previous_on_failure and not rollback_errors),
-            )
+            if self._snapshot_store.current is provisional.candidate:
+                await self._snapshot_store.rollback_published(
+                    provisional,
+                    keep_candidate_latest=promote_latest,
+                    reopen_previous=(reopen_previous_on_failure and not rollback_errors),
+                )
+            else:
+                await self._snapshot_store.rollback_provisional(
+                    provisional,
+                    keep_candidate_latest=promote_latest,
+                    reopen_previous=(reopen_previous_on_failure and not rollback_errors),
+                )
             if not rollback_errors and channel_state is not None:
                 self._reopen_restored_channel_publication(channel_state)
+                if channel_state.old_runtime is not None:
+                    try:
+                        await self._channel_generation_host.recover_durable_inbounds()
+                    except BaseException as caught:
+                        rollback_errors.append(caught)
+                        channel_cleanup_failed = True
             self._abort_channel_boot_transactions(
                 provisional.candidate,
                 publication_error,
@@ -3228,6 +3250,7 @@ class PluginManager:
                 self._active_channel_generation = restored_channel_runtime
                 self._active_channel_catalog_identity = current_channel_identity
                 restored_channel_runtime.open_admission()
+                await self._channel_generation_host.recover_durable_inbounds()
                 receipts.append("stable-channel-runtime-restored")
             receipt = ";".join(receipts) or "runtime-owner-already-clean"
             _, resume_cancelled = await _complete_critical(
