@@ -61,6 +61,34 @@ async def test_model_selection_reader_uses_current_snapshot_and_reports_missing_
 
 
 @pytest.mark.asyncio
+async def test_runtime_model_control_propagates_reader_programming_errors():
+    """Core model adapters must release the lease without masking provider bugs."""
+
+    root = CompositionRoot("stats-error")
+
+    def broken(_call_id: str):
+        raise ValueError("provider invariant broken")
+
+    async def plugin(ctx):
+        await ctx.provide(MODEL_CALL_STATS, broken)
+
+    await root.mount(plugin, name="models")
+    snapshot = RuntimeSnapshotCompiler().compile(
+        {}, composition_root=root, snapshot_revision="stats-error"
+    )
+    snapshots = RuntimeSnapshotStore()
+    snapshots.install(snapshot)
+    control = RuntimeModelControl(snapshots)
+    try:
+        with pytest.raises(ValueError, match="provider invariant broken"):
+            await control.call_stats("call")
+        assert snapshot.lease_count == 0
+    finally:
+        await snapshots.close()
+        await root.dispose()
+
+
+@pytest.mark.asyncio
 async def test_http_and_mobile_read_same_call_without_receipts_or_credentials(store, descriptor, mobile):
     log, runtime, channel, device = mobile
     call_id = store.start_call(descriptor, ModelRequest(({'role': 'user', 'content': 'private input'},)))

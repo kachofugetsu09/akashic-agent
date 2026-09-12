@@ -14,10 +14,7 @@ from pydantic import (
     ValidationError,
 )
 
-from agent.plugin_composition.model_settings_http import (
-    MODEL_SELECTION,
-    ModelControlUnavailable,
-)
+from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from agent.plugin_composition.models import (
     MODEL_CATALOG,
     MODEL_CALL_STATS,
@@ -56,6 +53,7 @@ from .settings import (
     SyncModels,
     UpdateConnection,
 )
+from .selection import MODEL_SELECTION
 
 
 class ModelControl(Protocol):
