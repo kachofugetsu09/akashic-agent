@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Mapping
+from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from typing import cast
 
 from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
-from plugins.tools.api import Denied, MessageReply, Result, durable_call_key
-from plugins.tools.execution import _fingerprint, finish
-from session.log import MessageCatalog, MessageReader, OwnerStore
+from .api import Denied, MessageReply, Result, durable_call_key
+from .execution import _fingerprint, finish
+from agent.plugin_composition.messages import MessageCatalog, MessageReader, OwnerStore
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
@@ -79,7 +80,7 @@ async def abandon_call(
 
 async def follow_abandon(
     catalog: MessageCatalog, state: OwnerStore, tasks: TaskAdmission,
-    reply: Callable[[MessageReader, str, CallRef], Awaitable[MessageReply]], *, task_key: Hashable,
+    reply: Callable[[MessageReader, str, CallRef], AbstractAsyncContextManager[MessageReply]], *, task_key: Hashable,
     report_incident: Callable[[str, str], object],
 ) -> None:
     """只消费持久 abandon；启动追赶也结算未开始或进程中断后的调用。"""
@@ -96,14 +97,11 @@ async def follow_abandon(
             messages = await asyncio.to_thread(reader.snapshot, through_seq=head) if controls else ()
             for control in controls:
                 for ref in abandoned_calls(messages, control):
-                    target = await reply(reader, control.source, ref)
-                    try:
+                    async with reply(reader, control.source, ref) as target:
                         try:
                             _ = await abandon_call(state, tasks, target, task_key=task_key)
                         except LegacyReplyIdentityUnavailable as error:
                             _ = report_incident("legacy_tool_reply_identity", str(error))
-                    finally:
-                        target.writer.expire()
             seen[session_id] = head
 
 

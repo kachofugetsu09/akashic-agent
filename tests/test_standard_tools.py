@@ -131,7 +131,8 @@ async def test_standard_file_tools_keep_typed_errors_and_model_safe_image_artifa
         execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize, task_key="effects")
         missing = await execution.execute("missing", read, {"path": str(tmp_path / "missing")})
         assert missing.outcome == "error" and "不存在" in cast(str, missing.parts[0].value)
-        assert await execution.execute("missing", read, {"path": str(tmp_path / "missing")}) == missing
+        replayed = await execution.execute("missing", read, {"path": str(tmp_path / "missing")})
+        assert (replayed.outcome, replayed.parts) == (missing.outcome, missing.parts)
         escaped = await execution.execute("escape", write, {"path": "../outside", "content": "bad"})
         assert escaped.outcome == "error" and not (tmp_path / "outside").exists()
         written = await execution.execute("write", write, {"path": "record.txt", "content": "alpha\nalpha\n"})

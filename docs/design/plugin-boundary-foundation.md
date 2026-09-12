@@ -297,3 +297,14 @@ lease 内完成；缺 provider 明确返回 scheduler_unavailable，空列表只
 Message 追加、幂等接纳、撤权与物理排空保持原顺序；没有第二份任务或会话状态。
 Core tasks 公开已有重启准入原子，不拥有业务回复策略。最终输出等待的局部输入
 包含消息前缀 ID，保证 programmatic 仍能等待原连接的真实 writer flush。
+
+
+### 9.11 工具 provider 与回执生命周期
+
+standard_tools 与 standard_web 使用局部注册输入和结果值，tools 在实际执行边界
+校验结果。内部相对 import 允许归档包持有自己的实现；首次返回与持久回执重读比较
+结果值，不要求跨代 Python 类身份。工具 ID、原 binding、查询结果和未知效果语义不变。
+Skills 同时改为材料 v2 结构输入，关闭上一层留下的旧材料贡献 ABI。
+
+后台 abandon 监听只在实际结算一条回执时打开 Content 与 runtime scope；提交完成或
+异常后释放 writer 和租约。空闲监听不固定业务 provider，不阻止新代替换旧代。

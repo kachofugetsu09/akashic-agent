@@ -1,6 +1,6 @@
 from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
-from plugins.standard_tools.filesystem import (
+from .filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,

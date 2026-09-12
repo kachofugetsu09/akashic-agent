@@ -9,12 +9,12 @@ import httpx
 
 from agent.plugin_composition import Context
 from agent.tools.base import normalize_tool_parameters
-from plugins.standard_web.fetch import WebFetchTool
-from plugins.standard_web.search import WebSearchTool
+from .fetch import WebFetchTool
+from .search import WebSearchTool
 from core.net.http import HttpRequester, RequestBudget, RetryPolicy
 from plugins.tools.api import InvalidArguments
 from agent.plugin_contracts import ContentPart
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 

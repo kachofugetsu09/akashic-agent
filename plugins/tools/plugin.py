@@ -10,15 +10,15 @@ from typing import Literal, Protocol, cast
 from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult, freeze_json
-from session.log import MessageReader
-from agent.restart import ExternalRootPermit
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_composition.tasks import ExternalRootPermit
 
-from plugins.tools.api import (
+from .api import (
     Authorize, BoundTool, CallSource, MessageReply, ProviderBoundTool, Result,
     coerce_result, display_name, result_message_id,
 )
-from plugins.tools.abandon import follow_abandon, reject_start
-from plugins.tools.execution import ToolExecution
+from .abandon import follow_abandon, reject_start
+from .execution import ToolExecution
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import TASKS
@@ -336,7 +336,7 @@ class ToolCatalog:
 
     async def drain_calls(self, calls: tuple[CallRef, ...]) -> None:
         """清理 owner 等待原效果退出；终态结果不等于资源已经释放。"""
-        from plugins.tools.api import durable_call_key
+        from .api import durable_call_key
 
         tasks = self._ctx.require(TASKS).open(self._ctx)
         for ref in calls:
@@ -531,38 +531,25 @@ async def apply(ctx: Context, config: object) -> None:
 
     async def start(_event: object) -> None:
         nonlocal watcher
-        async def run_abandon() -> None:
-            content = ctx.get(CONTENT)
+        @asynccontextmanager
+        async def reply(reader: MessageReader, source: str, ref: CallRef) -> AsyncIterator[MessageReply]:
+            """仅一次回执提交持有内容与组合租约，空闲监听不阻挡换代。"""
+            async with ctx.runtime_scope():
+                async with ctx.require(CONTENT).bind() as view:
+                    writer = ctx.require(MESSAGE_WRITERS).bind(
+                        ctx, author="tool", source=source, body_types=(ToolResult,),
+                        content={"text": view.checks["text"]},
+                    )(reader.session_id, call_ref=ref)
+                    try:
+                        yield MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+                    finally:
+                        writer.expire()
 
-            if content is None:
-                async def reply(reader: MessageReader, source: str, ref: CallRef) -> MessageReply:
-                    raise RuntimeError("工具消息回执需要 content capability")
-
-                await follow_abandon(
-                    ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),
-                    ctx.require(TASKS).open(ctx), reply, task_key="effects",
-                    report_incident=ctx.report_incident,
-                )
-                return
-            async with content.bind() as content_view:
-                check_text = content_view.checks.get("text")
-                if check_text is None:
-                    raise RuntimeError("content capability 没有 text 检查器")
-
-                async def bound_reply(reader: MessageReader, source: str, ref: CallRef) -> MessageReply:
-                    async with ctx.runtime_scope():
-                        writer = ctx.require(MESSAGE_WRITERS).bind(
-                            ctx, author="tool", source=source, body_types=(ToolResult,), content={"text": check_text},
-                        )(reader.session_id, call_ref=ref)
-                    return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
-
-                await follow_abandon(
-                    ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),
-                    ctx.require(TASKS).open(ctx), bound_reply, task_key="effects",
-                    report_incident=ctx.report_incident,
-                )
-
-        watcher = await ctx.spawn(run_abandon(), name="tools-abandon")
+        watcher = await ctx.spawn(follow_abandon(
+            ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),
+            ctx.require(TASKS).open(ctx), reply, task_key="effects",
+            report_incident=ctx.report_incident,
+        ), name="tools-abandon")
 
     async def stop(_event: object) -> None:
         if watcher is not None:

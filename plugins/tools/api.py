@@ -6,7 +6,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast, runtime_checkable
 
-from session.log import MessageReader, MessageWriter, OwnerStore
+from agent.plugin_composition.messages import MessageReader, MessageWriter, OwnerStore
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 

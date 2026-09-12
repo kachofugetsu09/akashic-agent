@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from plugins.standard_tools.shell_backend import _log_shell_execution, _shell_env
+from .shell_backend import _log_shell_execution, _shell_env
 from agent.tools.shell_command import resolve_shell
 from agent.tools.shell_security import validate_command
 from agent.tools.unified_exec import (
@@ -23,9 +23,9 @@ from agent.tools.unified_exec import (
     clamp_initial_yield_time, clamp_write_stdin_yield_time, format_execution_result,
 )
 from plugins.tools.api import InvalidArguments
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.tools.base import Tool, normalize_tool_parameters
-from plugins.standard_tools.filesystem import (
+from .filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,
@@ -21,7 +21,7 @@ from plugins.standard_tools.filesystem import (
 from plugins.tools.api import InvalidArguments
 from session.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 
