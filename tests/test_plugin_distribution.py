@@ -245,7 +245,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
     }
     upgraded = ensure_profile(
         output_v2,
-        output_v2 / "profiles/default.json",
+        output / "profiles/default.json",
         workspace=tmp_path / "profile-workspace",
         plugins_home=tmp_path / "profile-home",
         config_path=config,
