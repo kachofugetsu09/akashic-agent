@@ -266,7 +266,7 @@ async def test_stop_commits_pause_before_draining_and_duplicate_does_not_pause_n
     from agent.plugin_composition.channels import CHANNEL_INPUT
     from agent.plugins.snapshot import lease_runtime_snapshot
     from plugins.conversation.plugin import CONVERSATION
-    from plugins.conversation.source import needs_reply
+    from plugins.sources.session import needs_reply
     from session.message import Control
 
     async with runtime(tmp_path) as (log, host, custody, identities, rollbacks, adapter):

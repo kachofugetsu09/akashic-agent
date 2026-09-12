@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from agent.plugin_composition.tasks import Tasks, StaleTask
-from plugins.conversation.source import Conversation, needs_reply
+from plugins.sources.session import SourceSession as Conversation, needs_reply
 from session.log import MessageConflict, MessageLog, WriterExpired
 from session.message import ContentPart, Control, Input, Output, ToolCall, ToolResult, CallRef
 

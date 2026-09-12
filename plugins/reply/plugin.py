@@ -17,8 +17,6 @@ from agent.restart import RESTART_GATE
 from plugins.content.plugin import CONTENT
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
-from plugins.sources.plugin import SOURCES, SOURCE_CHANGED
-from plugins.conversation.source import needs_reply
 from plugins.conversation.commands import CONVERSATION_COMMANDS
 from plugins.conversation.program import run_reply
 from plugins.models.projection import MODEL_CALLS
@@ -31,7 +29,7 @@ from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import CallRef, Message
 
 from .api import REPLY_PROGRAM
-from .follow import follow
+from .follow import Sources, follow
 from .completion import REPLY_COMPLETION
 from .status import REPLY_STATUS, ReplyState
 
@@ -50,6 +48,9 @@ class ToolCleanup(Protocol):
         drain: Callable[[tuple[CallRef, ...]], Awaitable[None]],
     ) -> AbstractAsyncContextManager[None]: ...
 
+
+SOURCES = ServiceKey[Sources]("sources.v2")
+SOURCE_CHANGED = ServiceKey[Callable[[MessageReader, str], None]]("source.changed.v1")
 
 TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
 
@@ -100,7 +101,7 @@ async def apply(ctx: Context, config: Config) -> None:
         """输入提交时同步占活动；暂停和失败只释放尚未开始的回复。"""
         if not running:
             return
-        if not needs_reply(reader, source):
+        if not ctx.require(SOURCES).needs_reply(reader, source):
             release(reader, source)
             return
         key = (reader.session_id, source)

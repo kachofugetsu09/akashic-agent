@@ -20,7 +20,7 @@ from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply
-from plugins.conversation.source import Conversation
+from plugins.sources.session import SourceSession as Conversation
 from plugins.models.content import render_content
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore

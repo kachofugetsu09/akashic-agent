@@ -1,30 +1,61 @@
-from collections.abc import Callable, Mapping
-from typing import cast
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Protocol, cast
 
-from agent.plugin_composition import Context, ServiceKey
+from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
-from agent.plugin_composition.tasks import TASKS, Task
-from agent.restart import RESTART_GATE
-from agent.plugin_composition.messages import MessageConflict, MessageReader
+from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGate, RESTART_GATE
+from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter
 from plugins.content.plugin import check_text
 from plugins.content.api import check_artifact
 from plugins.models.selection import check_selection
-from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
 
-from .source import Conversation, update_selection
+from .source import update_selection
 from .commands import CONVERSATION_COMMANDS, run_commands
+
+
+
+class SourceSession(Protocol):
+    async def accept(self, message_id: str, body: Input) -> Message: ...
+    async def pause(self, message_id: str) -> Message: ...
+    async def resume(self, message_id: str, input_id: str) -> Message: ...
+    async def start(self, program: Callable[[Task, MessageReader, str], Awaitable[object]]) -> Task | None: ...
+
+
+class SessionFactory(Protocol):
+    def __call__(
+        self, *, reader: MessageReader, inputs: MessageWriter, controls: MessageWriter,
+        tasks: TaskAdmission, changed: Callable[[MessageReader, str], None] | None = None,
+        restart_gate: RestartGate | None = None,
+    ) -> SourceSession: ...
+
+    def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
+
+
+class SourceRegistry(Protocol):
+    async def register(
+        self, ctx: Context, *, name: str, open: Callable[[str], SourceSession],
+        needs_reply: Callable[[MessageReader], bool],
+        accept: Callable[[str, str, ChannelInboundMessage], Awaitable[Message]] | None = None,
+        channels: tuple[str, ...] | None = (),
+    ) -> Effect: ...
+
+
+SOURCES = ServiceKey[SourceRegistry]("sources.v2")
+SOURCE_SESSION = ServiceKey[SessionFactory]("source.session.v1")
+SOURCE_CHANGED = ServiceKey[Callable[[MessageReader, str], None]]("source.changed.v1")
+
 
 api_version = 3
 name = "conversation"
 version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
-inject = (MESSAGE_WRITERS, SOURCES, RESTART_GATE)
+inject = (MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTART_GATE)
 
-CONVERSATION = ServiceKey[Callable[[str], Conversation]]("conversation.v1")
+CONVERSATION = ServiceKey[Callable[[str], SourceSession]]("conversation.v1")
 
 
 async def apply(ctx: Context, config: object) -> None:
@@ -37,7 +68,7 @@ async def apply(ctx: Context, config: object) -> None:
         if listener is not None:
             listener(reader, source)
 
-    def open(session_id: str) -> Conversation:
+    def open(session_id: str) -> SourceSession:
         def check_model(part: ContentPart) -> ContentReferences:
             references = check_selection(part)
             value = cast(Mapping[str, str | None], part.value)
@@ -63,7 +94,7 @@ async def apply(ctx: Context, config: object) -> None:
         controls = writers.bind(
             ctx, author="app", source="conversation", body_types=(Control,), content={},
         )
-        return Conversation(
+        return ctx.require(SOURCE_SESSION)(
             reader=ctx.require(MESSAGE_CATALOG).reader(session_id),
             inputs=inputs(session_id), controls=controls(session_id),
             tasks=ctx.require(TASKS).open(ctx), changed=changed,
@@ -112,7 +143,8 @@ async def apply(ctx: Context, config: object) -> None:
 
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION, open)
-    _ = await ctx.require(SOURCES).register(ctx, Source("conversation", open, accept, None))
+    _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
+        needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "conversation"))
 
 
 def check_origin(part: ContentPart) -> ContentReferences:

@@ -53,10 +53,11 @@ OpenSender = Callable[[str], AbstractAsyncContextManager[Sender]]
 
 
 class FinalOutputTurn(Protocol):
-    """最终 Output 等待只需要来源和结尾消息，不依赖 Turn 投影实现。"""
+    """最终 Output 等待读取来源、输入前缀和结尾消息，不依赖 Turn 投影实现。"""
 
     source: str
     ending_message_id: str | None
+    message_ids: tuple[str, ...]
 
 
 class FinalOutputWaiter(Protocol):

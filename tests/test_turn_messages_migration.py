@@ -9,7 +9,7 @@ import pytest
 from agent.migrations.turn_messages import migrate_turn_messages
 from plugins.content.api import legacy_post_commit_effect
 from plugins.content.plugin import check_text
-from plugins.conversation.source import needs_reply
+from plugins.sources.session import needs_reply
 from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Control, Input, Output
 from session.store import SessionStore
