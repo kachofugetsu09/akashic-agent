@@ -131,6 +131,16 @@ class _ToolView:
         self._active = False
 
 
+def _same_description(current: Mapping[str, object], archived: object) -> bool:
+    """归档描述与当前注册逐字段一致；旧归档缺少 parallel 字段时按 False 解释。"""
+    if not isinstance(archived, Mapping):
+        return False
+    candidate = cast(Mapping[str, object], archived)
+    if "parallel" not in candidate:
+        candidate = {**candidate, "parallel": False}
+    return current == candidate
+
+
 class ToolCatalog:
     """普通注册表拥有工具描述、目标与参数准备；不管理消息或循环。"""
 
@@ -174,6 +184,7 @@ class ToolCatalog:
         public: bool = True,
         idempotent: bool = False,
         risk: Literal["read-only", "read-write", "external-side-effect"] = "read-write",
+        parallel: bool = False,
         search_hint: str | None = None,
     ) -> ToolRef:
         """目标自行校验参数 schema；注册表固定发现描述与真实资源入口。"""
@@ -189,7 +200,7 @@ class ToolCatalog:
             raise ValueError("工具风险声明无效")
         if search_hint is not None and not isinstance(search_hint, str):
             raise TypeError("工具搜索提示必须是字符串或 None")
-        if any(type(value) is not bool for value in (idempotent, public)):
+        if any(type(value) is not bool for value in (idempotent, public, parallel)):
             raise TypeError("工具执行和发现选项必须是 bool")
         if capture is not None and not callable(capture):
             raise TypeError("工具 capture 必须是同步回调")
@@ -204,6 +215,7 @@ class ToolCatalog:
                     "parameters": parameters,
                     "idempotent": idempotent,
                     "risk": risk,
+                    "parallel": parallel,
                     "search_hint": search_hint,
                 }
             ),
@@ -380,7 +392,7 @@ class ToolCatalog:
             raise ValueError("工具 binding 描述无效")
         name = description.get("name")
         registration = self._tools.get(name) if isinstance(name, str) else None
-        if registration is None or registration.ref.description != description:
+        if registration is None or not _same_description(registration.ref.description, description):
             raise ValueError("工具 binding 与归档注册不一致")
         preparation = registration.preparation
         authorization = registration.authorization
@@ -420,7 +432,7 @@ class ToolCatalog:
             raise ValueError("工具 binding 缺少工具名")
         registration = self._tools[name]
         preparation = registration.preparation
-        if registration.ref.description != description or metadata["prepare"] != (
+        if not _same_description(registration.ref.description, description) or metadata["prepare"] != (
             None if preparation is None else preparation.name
         ):
             raise ValueError("归档工具描述或参数准备与 binding 不一致")
@@ -462,7 +474,7 @@ class ToolCatalog:
         registration = self._tools.get(cast(str, description["name"]))
         authorization = (
             None
-            if registration is None or registration.ref.description != description
+            if registration is None or not _same_description(registration.ref.description, description)
             else registration.authorization
         )
         if authorization is None or metadata["authorize"] != authorization.name:

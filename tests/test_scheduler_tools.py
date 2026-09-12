@@ -29,7 +29,7 @@ async def test_cancel_self_commits_then_lets_original_fire_drain_its_tool(tmp_pa
         def __init__(self) -> None:
             pass
 
-        async def execute(self, call: CallRef) -> Result:
+        async def execute(self, call: CallRef, *, commit_after=None) -> Result:
             result = await target.invoke("cancel-self", prepared)
             results.append(result)
             return result

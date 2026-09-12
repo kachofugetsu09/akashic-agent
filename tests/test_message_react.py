@@ -34,7 +34,8 @@ from session.message import (
 
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
-                  reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset()):
+                  reducer=None, material_source=None, estimate=None, preview_state=None,
+                  terminal_tools=frozenset(), parallel=frozenset(), max_parallel_calls=4):
     log = MessageLog(tmp_path / "sessions.db")
     store = ModelsStore(tmp_path / "models.db", tmp_path / "backups")
     store.initialize()
@@ -56,6 +57,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         max_tool_schemas = None
     model = _BoundChat(descriptor, Driver(), store)
     log.save_binding("tool", {"target": "test-file-effect"})
+    log.save_binding("other", {"target": "test-file-effect"})
     def writer(body, call_ref=None):
         return log.writer(
             "s", author="test", source="conversation", body_types=(body,),
@@ -72,7 +74,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
             return None
     @asynccontextmanager
     async def open_tool(binding):
-        assert binding == "tool"
+        assert binding in {"tool", "other"}
         yield Target()
     async def authorize(binding, arguments):
         if authorize_hook is not None:
@@ -87,24 +89,31 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         def schemas(self) -> tuple[Mapping[str, Any], ...]:
             return ({"type": "function", "function": {
                 "name": "example", "parameters": {"type": "object"},
-            }},)
+            }}, {"type": "function", "function": {
+                "name": "other", "parameters": {"type": "object"},
+            }})
 
         def decode(self, call: ModelToolCall):
             if call.name == "tool_call":
                 assert call.arguments["name"] == "example"
                 return "tool", call.arguments["arguments"]
+            if call.name == "other":
+                return "other", call.arguments
             _, arguments = NativePresentation({"example": {}}).decode(call)
             return "tool", arguments
 
         def name(self, binding: str) -> str:
-            assert binding == "tool"
-            return "example"
+            assert binding in {"tool", "other"}
+            return {"tool": "example", "other": "other"}[binding]
 
-        async def execute(self, ref: CallRef) -> Result:
+        def parallel(self, binding: str) -> bool:
+            return binding in parallel
+
+        async def execute(self, ref: CallRef, *, commit_after: asyncio.Event | None = None) -> Result:
             return await execution.execute_call(MessageReply(
                 "result:" + ref.message_id + ":" + str(ref.part_index), ref,
                 log.reader("s"), writer(ToolResult, ref), self.check_start,
-            ))
+            ), commit_after=commit_after)
 
         def check_start(self) -> None:
             if not self.task.active:
@@ -132,7 +141,8 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         with preview_state.open(task, reader.session_id, source) if preview_state is not None else nullcontext(None) as preview:
             return await react(reader, output, model=model, context=ContextBuilder(),
                                projection=projection, materials=materials, content=Content(), tools=Menu(task),
-                               max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools)
+                               max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview,
+                               terminal_tools=terminal_tools, max_parallel_calls=max_parallel_calls)
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
     async def interrupted_reply(reader, source, ref):
@@ -694,3 +704,128 @@ async def test_mixed_valid_and_rejected_calls_replay_after_restart(tmp_path):
         assert (await (await conversation.start(run)).join()).body.finish == "complete"
         assert log.reader("s").snapshot()[:len(before)] == before
     assert len(effects) == 1 and len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_parallel_calls_overlap_but_results_commit_in_model_order(tmp_path):
+    """执行可重叠，但 ToolResult 落盘顺序仍是模型顺序；provider 也只看到模型顺序。"""
+    entered: list[int] = []
+    finished: list[int] = []
+    tail_done = asyncio.Event()
+    release_first = asyncio.Event()
+    requests = []
+
+    async def complete(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return LLMResponse(None, [ModelToolCall("a", "example", {"call": 0}),
+                                      ModelToolCall("b", "example", {"call": 1}),
+                                      ModelToolCall("c", "example", {"call": 2})])
+        rows = [row for row in request.messages if row["role"] == "tool"]
+        assert [row["tool_call_id"] for row in rows] == ["a", "b", "c"]
+        return LLMResponse("done")
+
+    async def invoke(key, arguments):
+        index = cast(int, arguments["call"])
+        entered.append(index)
+        if index == 0:
+            await release_first.wait()
+        finished.append(index)
+        if len(finished) >= 2 and 0 not in finished:
+            tail_done.set()
+        return Result("success", (ContentPart("text", str(index)),))
+
+    async with runtime(tmp_path, complete, invoke,
+                       parallel=frozenset({"tool"})) as (conversation, log, _, run):
+        await conversation.accept("u1", Input(()))
+        task = await conversation.start(run)
+        await asyncio.wait_for(tail_done.wait(), 5)
+        # 1. 后续调用已完成效果，但结果消息仍等首个调用提交，乱序不影响日志顺序。
+        assert not any(isinstance(m.body, ToolResult) for m in log.reader("s").snapshot())
+        release_first.set()
+        await asyncio.wait_for(task.join(), 5)
+        results = [m.body for m in log.reader("s").snapshot() if isinstance(m.body, ToolResult)]
+        assert [r.call_ref.part_index for r in results] == [0, 1, 2]
+        assert sorted(entered) == sorted(finished) == [0, 1, 2]
+        assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_exclusive_call_separates_parallel_groups(tmp_path):
+    """exclusive 调用是屏障：等前组排空才执行，其后的并行调用等它结算。"""
+    order: list[tuple[str, int]] = []
+    blocked_started = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def complete(request):
+        if not any(row["role"] == "tool" for row in request.messages):
+            return LLMResponse(None, [ModelToolCall("p0", "example", {"call": 0}),
+                                      ModelToolCall("p1", "example", {"call": 1}),
+                                      ModelToolCall("x", "other", {"call": 2}),
+                                      ModelToolCall("p3", "example", {"call": 3})])
+        return LLMResponse("done")
+
+    async def invoke(key, arguments):
+        index = cast(int, arguments["call"])
+        order.append(("start", index))
+        if index == 1:
+            blocked_started.set()
+            await gate.wait()
+        order.append(("end", index))
+        return Result("success", ())
+
+    async with runtime(tmp_path, complete, invoke,
+                       parallel=frozenset({"tool"})) as (conversation, log, _, run):
+        await conversation.accept("u1", Input(()))
+        task = await conversation.start(run)
+        await asyncio.wait_for(blocked_started.wait(), 5)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        # 2. 前组未排空时 exclusive 与其后调用都未开始。
+        assert ("start", 2) not in order and ("start", 3) not in order
+        gate.set()
+        await asyncio.wait_for(task.join(), 5)
+        assert order.index(("start", 2)) > order.index(("end", 1))
+        assert order.index(("start", 3)) > order.index(("end", 2))
+
+
+@pytest.mark.asyncio
+async def test_parallel_group_respects_dispatch_limit(tmp_path):
+    """有界池只放开 limit 个执行；排空槽位前不补发新调用。"""
+    in_flight = 0
+    peak = 0
+    entered: list[int] = []
+    two_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def complete(request):
+        if not any(row["role"] == "tool" for row in request.messages):
+            return LLMResponse(None, [ModelToolCall("c" + str(i), "example", {"call": i})
+                                      for i in range(4)])
+        return LLMResponse("done")
+
+    async def invoke(key, arguments):
+        nonlocal in_flight, peak
+        index = cast(int, arguments["call"])
+        entered.append(index)
+        in_flight += 1
+        peak = max(peak, in_flight)
+        if in_flight == 2:
+            two_entered.set()
+        await release.wait()
+        in_flight -= 1
+        return Result("success", ())
+
+    async with runtime(tmp_path, complete, invoke, parallel=frozenset({"tool"}),
+                       max_parallel_calls=2) as (conversation, log, _, run):
+        await conversation.accept("u1", Input(()))
+        task = await conversation.start(run)
+        await asyncio.wait_for(two_entered.wait(), 5)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert in_flight == 2 and sorted(entered) == [0, 1]
+        release.set()
+        await asyncio.wait_for(task.join(), 5)
+        assert peak == 2 and sorted(entered) == [0, 1, 2, 3]
+        results = [m.body for m in log.reader("s").snapshot() if isinstance(m.body, ToolResult)]
+        assert [r.call_ref.part_index for r in results] == [0, 1, 2, 3]
