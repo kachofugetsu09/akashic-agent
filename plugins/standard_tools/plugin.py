@@ -1,13 +1,13 @@
 from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
-from plugins.standard_tools.filesystem import (
+from .filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,
     WriteFileTool,
 )
-from plugins.context.materials import MATERIALS
-from plugins.tools.plugin import TOOLS, ToolView
+from ._materials_boundary import MATERIALS
+from ._tool_boundary import TOOLS, ToolView
 
 from .files import register_file
 from .shell import register_shell

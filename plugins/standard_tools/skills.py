@@ -13,12 +13,11 @@ from agent.plugin_composition import Context
 from agent.plugins.archive import PluginArchive
 from agent.plugins.snapshot import get_current_runtime_snapshot
 from agent.skills import SkillRecord, skill_body
-from plugins.context.api import Materials
-from plugins.context.materials import MATERIALS
-from plugins.tools.api import CallSource, Result
-from plugins.tools.plugin import TOOLS, ToolRef
-from session.message import ContentPart, Message
-from session.message_codec import json_value
+from agent.plugin_contracts import ContentPart, Message
+from agent.plugin_contracts import json_value
+
+from ._materials_boundary import MATERIALS
+from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 
 class SkillQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -73,14 +72,14 @@ class SkillTool:
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
         return SkillQuery.model_validate(json_value(arguments)).model_dump()
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
         """只打开原绑定的文件树；失效路径不改读当前安装或 latest。"""
         name = cast(str, arguments["skill"])
         record = self._state.skills.get(name)
         if record is None:
-            return Result("error", (ContentPart("text", f"此绑定没有技能：{name}"),))
+            return ToolResultValue("error", (ContentPart("text", f"此绑定没有技能：{name}"),))
         if not record.available:
-            return Result("error", (ContentPart("text", f"技能不可用：{name}；缺少依赖：{record.missing}"),))
+            return ToolResultValue("error", (ContentPart("text", f"技能不可用：{name}；缺少依赖：{record.missing}"),))
         # 正常恢复只能读取已存在的材料，不通过建空目录掩盖丢失。
         if not self._path.is_dir():
             raise FileNotFoundError(f"技能恢复归档缺失：{self._path}")
@@ -92,15 +91,15 @@ class SkillTool:
             raise RuntimeError("技能正文与原绑定不一致")
         body = skill_body(content)
         if not body.strip():
-            return Result("error", (ContentPart("text", f"技能正文为空：{name}"),))
-        return Result("success", (ContentPart("text", json.dumps({
+            return ToolResultValue("error", (ContentPart("text", f"技能正文为空：{name}"),))
+        return ToolResultValue("success", (ContentPart("text", json.dumps({
             "skill": name, "source": record.source, "source_id": record.source_id,
             "tree_ref": record.tree_ref, "body_sha256": record.body_sha256,
             "base_directory": str(root), "instructions": body,
             "path_rule": "技能中的相对路径以 base_directory 为根读取；归档资源不可改写。",
         }, ensure_ascii=False)),))
 
-    async def query(self, key: str) -> Result | None:
+    async def query(self, key: str) -> ToolResultValue | None:
         return None
 
 
@@ -118,7 +117,7 @@ async def register_skills(ctx: Context) -> ToolRef:
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[SkillTool]:
         yield SkillTool(archive_path, SkillState.model_validate(json_value(state)))
 
-    async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
+    async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
         catalog: list[str] = []
         active: list[str] = []
         for record in records():
@@ -137,7 +136,7 @@ async def register_skills(ctx: Context) -> ToolRef:
                     f"资源目录：{archive.open(saved.tree_ref)}\n\n{skill_body(record.content)}"
                 )
         if not catalog:
-            return Materials("")
+            return {"system_prompt": "", "reminders": ()}
         text = (
             "## 已安装技能\n"
             "目录只表示安装与可用性，不授予工具。使用技能前通过本次可见的技能读取工具加载正文；"
@@ -147,11 +146,11 @@ async def register_skills(ctx: Context) -> ToolRef:
         )
         if active:
             text += "\n\n## 当前常驻技能\n\n" + "\n\n".join(active)
-        return Materials(text)
+        return {"system_prompt": text, "reminders": ()}
 
     _ = await ctx.require(MATERIALS).register(ctx, name="skills", prepare=prepare, prompt=True, priority=300)
-    return await ctx.require(TOOLS).register(
+    return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx, name="load_skill", description="按技能名称读取完整指令和固定资源目录；先读取再执行，相对资源以返回的 base_directory 为根。未知、不可用或空技能返回错误。",
         parameters=SkillQuery.model_json_schema(), open=open_tool, capture=capture,
         risk="read-only", idempotent=True,
-    )
+    ))

@@ -5,7 +5,7 @@ from typing import Any, Protocol, cast
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import ToolCall as ModelToolCall
-from session.message import CallRef, ToolCall
+from agent.plugin_contracts import CallRef, ToolCall
 
 from .execution import MessageReply, Result, ToolExecution
 from .plugin import TOOLS, ToolCatalog, ToolRef, ToolView

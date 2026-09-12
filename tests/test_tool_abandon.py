@@ -118,10 +118,20 @@ async def test_startup_consumer_settles_old_calls_after_new_turn_completed(envir
     other = log.writer("s", author="agent", source="other", body_types=(Output,), content={}, check_call=lambda call: None)
     other.append("other-call", Output((ToolCall("fixed-A", {}),), "continue"))
 
+    active_replies = set()
+    closed_replies = []
+
+    @asynccontextmanager
     async def reply(reader, source, ref):
         writer = log.writer(reader.session_id, author="tool", source=source,
                             body_types=(ToolResult,), content={"text": check_text}, call_ref=ref)
-        return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+        active_replies.add(ref)
+        try:
+            yield MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+        finally:
+            writer.expire()
+            active_replies.remove(ref)
+            closed_replies.append(ref)
 
     watcher = asyncio.create_task(follow_abandon(
         log.catalog(), state, tasks, reply, task_key="tools",
@@ -137,6 +147,8 @@ async def test_startup_consumer_settles_old_calls_after_new_turn_completed(envir
         results = await asyncio.wait_for(settled(), 1)
         assert [r.outcome for r in results] == ["interrupted", "denied", "denied"]
         assert results[0].call_ref == first.call_ref
+        assert not active_replies
+        assert set(closed_replies) == {result.call_ref for result in results}
         assert not probe.calls and probe.query_count == 0
         assert (await execution.execute_call(first)).outcome == "interrupted"
         assert first.reader.get("new-done").body.parts[0].value == "new answer"
@@ -204,10 +216,14 @@ async def test_unrecoverable_legacy_custom_identity_records_incident_and_keeps_c
     abandon(log, broken, identity="abandon-broken")
     incidents = []
 
+    @asynccontextmanager
     async def reply(reader, source, ref):
         writer = log.writer(reader.session_id, author="tool", source=source,
                             body_types=(ToolResult,), content={"text": check_text}, call_ref=ref)
-        return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+        try:
+            yield MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+        finally:
+            writer.expire()
 
     watcher = asyncio.create_task(follow_abandon(
         log.catalog(), state, tasks, reply, task_key="tools",

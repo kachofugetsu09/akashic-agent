@@ -7,20 +7,20 @@ from collections.abc import Callable, Hashable, Mapping
 from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from agent.restart import ExternalRootPermit
-from session.log import (
+from agent.plugin_composition.tasks import ExternalRootPermit
+from agent.plugin_composition.messages import (
     OwnerRecord,
     OwnerStore,
     OwnerTransaction,
 )
-from session.message import (
+from agent.plugin_contracts import (
     ContentPart,
     ToolResult,
     freeze_json,
 )
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
-from plugins.tools.api import (
+from .api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
     durable_call_key,
 )
