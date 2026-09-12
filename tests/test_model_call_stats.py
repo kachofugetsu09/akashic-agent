@@ -1,4 +1,6 @@
 from dataclasses import asdict
+from collections.abc import Mapping
+from typing import cast
 
 import httpx
 import pytest
@@ -16,6 +18,7 @@ from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.model_settings_http import (
+    ModelControl,
     create_model_settings_router,
     rpc_methods,
 )
@@ -103,7 +106,8 @@ async def test_http_and_mobile_read_same_call_without_receipts_or_credentials(st
     control = RuntimeModelControl(snapshots)
     channel.bind_model_stats(control.call_stats)
     app = FastAPI()
-    app.include_router(create_model_settings_router(control))
+    # 此夹具只请求 call stats 路由，其他设置方法不在本用例范围内。
+    app.include_router(create_model_settings_router(cast(ModelControl, control)))
     before = dump(store.path), dump(runtime.storage.db_path)
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
@@ -143,11 +147,11 @@ async def test_chat_model_route_dispatches_plugin_rpc_under_one_snapshot_lease(
     root = CompositionRoot("rpc")
 
     class Control:
-        async def call_stats(self, requested: str):
-            return store.read_call_stats(requested)
+        async def call_stats(self, call_id: str):
+            return store.read_call_stats(call_id)
 
     async def plugin(ctx):
-        for name, operation in rpc_methods(Control()).items():
+        for name, operation in rpc_methods(cast(ModelControl, Control())).items():
             await ctx.provide(rpc_method_key(name), operation)
 
     await root.mount(plugin, name="models")
@@ -199,7 +203,7 @@ async def test_chat_model_route_does_not_hide_provider_programming_errors():
 
     class BrokenControl:
         async def invoke_rpc(
-            self, method: str, params: dict[str, object]
+            self, method: str, params: Mapping[str, object]
         ) -> object:
             del method, params
             raise ValueError("provider invariant broken")

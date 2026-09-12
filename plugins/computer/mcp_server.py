@@ -88,7 +88,7 @@ def prune_screenshots(screenshot_dir: Path, *, keep: Path) -> None:
         path.unlink()
 
 
-def screenshot_result(raw: bytes, media_type: str) -> dict[str, object]:
+def screenshot_result(raw: bytes, media_type: str) -> dict[str, list[dict[str, str]]]:
     """Return a file reference that both text and multimodal agents can consume."""
 
     path = save_screenshot(raw, media_type)

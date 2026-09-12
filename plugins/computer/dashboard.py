@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDiscon
 from starlette.websockets import WebSocketState
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
+from websockets.typing import Subprotocol
 
 from agent.plugin_composition import DashboardContext
 
@@ -56,7 +57,7 @@ def register(app: FastAPI, context: DashboardContext) -> httpx.Client:
             for item in socket.headers.get("sec-websocket-protocol", "").split(",")
             if item.strip()
         }
-        protocols = ["binary"] if "binary" in requested else None
+        protocols = [Subprotocol("binary")] if "binary" in requested else None
         try:
             upstream_context = connect(
                 display,

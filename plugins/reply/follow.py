@@ -22,7 +22,8 @@ class SourceSession(Protocol):
 class Source(Protocol):
     @property
     def name(self) -> str: ...
-    def open(self, session_id: str) -> SourceSession: ...
+    @property
+    def open(self) -> Callable[[str], SourceSession]: ...
 
 
 class Sources(Protocol):

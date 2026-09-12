@@ -372,7 +372,9 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
                                  (5, "message_embeddings"), (6, "message_artifacts")]:
                 from tests.legacy_migration_loader import load_migration_module
                 module = load_migration_module(f"20260905_{number:02d}_{name}")
-                module[f"migrate_{name}"](None)
+                migrate = module[f"migrate_{name}"]
+                assert callable(migrate)
+                migrate(None)
 
     # 2. 分别模拟正文提交前与提交后进程结束，重开都不能重复正文。
     if committed:
@@ -601,7 +603,9 @@ async def test_channel_input_imported_artifact_is_pinned_and_read_lease_closed(t
                                  (5, "message_embeddings"), (6, "message_artifacts")]:
                 from tests.legacy_migration_loader import load_migration_module
                 module = load_migration_module(f"20260905_{number:02d}_{name}")
-                module[f"migrate_{name}"](None)
+                migrate = module[f"migrate_{name}"]
+                assert callable(migrate)
+                migrate(None)
         opened = []
         acquire = artifacts.acquire
         async def track(ref):

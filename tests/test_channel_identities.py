@@ -43,8 +43,12 @@ def test_yoyo_preserves_known_aliases_original_data_and_unknown_sources(tmp_path
         original = tuple(db.iterdump())
         sessions = db.execute("SELECT * FROM sessions ORDER BY key").fetchall()
     entry = load_migration_module("20260906_04_channel_identities")
+    steps = entry["steps"]
+    assert isinstance(steps, list)
+    migrate = steps[0]
+    assert callable(migrate)
     with bind_migration_context(config_path=config, workspace=tmp_path):
-        entry["steps"][0](None)
+        migrate(None)
     with closing(ChannelIdentities(path)) as identities:
         assert identities.load("telegram_work") == {"alice": "z"}
         assert identities.resolve("feishu", "ou_123") == "room"
@@ -60,7 +64,7 @@ def test_yoyo_preserves_known_aliases_original_data_and_unknown_sources(tmp_path
         assert db.execute("SELECT * FROM sessions ORDER BY key").fetchall() == sessions
         committed = tuple(db.iterdump())
     with bind_migration_context(config_path=config, workspace=tmp_path):
-        entry["steps"][0](None)
+        migrate(None)
     with closing(sqlite3.connect(path)) as db:
         assert tuple(db.iterdump()) == committed
     assert len(tuple((tmp_path / "backups/channel-identities").glob("*/manifest.json"))) == 1

@@ -1125,7 +1125,7 @@ async def test_lazy_mcp_catalog_error_does_not_abort_next_command(tmp_path: Path
     from agent.plugins.snapshot import RuntimeSnapshot
     from infra.mobile_realtime.runtime_inspection import _mcp_items
 
-    snapshot = RuntimeSnapshot("lazy-mcp", {}, None)
+    snapshot = RuntimeSnapshot("lazy-mcp", {}, ())
     snapshot.mcp_server_registry = cast(Any, SimpleNamespace(
         descriptors=(SimpleNamespace(owner="computer", name="computer"),),
     ))

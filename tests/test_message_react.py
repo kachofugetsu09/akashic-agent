@@ -99,14 +99,14 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
                 return ToolCallDecode(None, {}, {"name": call.name, "arguments": call.arguments, "error": decoded})
             return ToolCallDecode("tool", decoded[1])
 
-        def name(self, binding: str) -> str:
-            assert binding == "tool"
+        def name(self, binding_id: str) -> str:
+            assert binding_id == "tool"
             return "example"
 
-        async def execute(self, ref: CallRef) -> Result:
+        async def execute(self, call: CallRef) -> Result:
             return await execution.execute_call(MessageReply(
-                "result:" + ref.message_id + ":" + str(ref.part_index), ref,
-                log.reader("s"), writer(ToolResult, ref), self.check_start,
+                "result:" + call.message_id + ":" + str(call.part_index), call,
+                log.reader("s"), writer(ToolResult, call), self.check_start,
             ))
 
         def check_start(self) -> None:
@@ -485,7 +485,9 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
         assert materials["system_prompt"] == "fixed prompt"
         reductions.append(force)
         if case == "no_progress" or (case in {"provider", "second_overflow"} and not force):
-            return materials["summary"]
+            summary = materials["summary"]
+            assert summary is None or isinstance(summary, Mapping)
+            return summary
         summary = Summary("published", ("old-user", "old-reply"), "durable old history")
         state.transact(lambda tx: tx.save("published", {"summary": summary.content}, expected_version=None))
         return {"reference": summary.reference, "source_message_ids": summary.source_message_ids, "content": summary.content}

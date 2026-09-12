@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import pytest
@@ -36,6 +37,7 @@ async def test_preview_commit_uses_allocated_id_and_slow_readers_get_current_sna
         items = await asyncio.wait_for(anext(follower), 3)
         assert len(items) == 1 and items[0]['handle'] == task.handle and items[0]['active']
         draft = items[0]['preview']
+        assert isinstance(draft, Mapping)
         assert draft['text'] == '第一段第二段' and draft['thinking'] == '思考'
         assert log.reader('s').get(draft['message_id']) is None
         assert state.read.snapshot('another-session') == ()

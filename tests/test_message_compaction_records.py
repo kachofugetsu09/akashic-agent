@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 import hashlib
 import json
 from contextlib import closing
@@ -203,7 +204,10 @@ async def apply(ctx, config):
             ctx = snapshot.composition_root.context
             async with ctx.require(MATERIALS).bind() as view:
                 prepared = await view.prepare(log.reader("s").snapshot(), "conversation")
-                reference = prepared["summary"]["reference"]
+                summary = prepared["summary"]
+                assert isinstance(summary, Mapping)
+                reference = summary["reference"]
+                assert isinstance(reference, str)
             metadata = ctx.require(BINDINGS).describe(reference, COMPACTION_SUMMARIES)
             assert metadata == {"record_ref": "first", "session_id": "s"}
         writer = log.writer("s", author="assistant", source="conversation", body_types=(Output,),

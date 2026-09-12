@@ -1,6 +1,7 @@
 """外部 RPC 的方法、参数和生命周期由实际 provider 拥有。"""
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import cast
@@ -38,7 +39,7 @@ async def test_connection_uses_current_plugin_schema_and_keeps_inflight_method()
     current = RpcMethod(FirstParams, first)
 
     @asynccontextmanager
-    async def resolve(name):
+    async def resolve(name: str) -> AsyncIterator[RpcMethod | None]:
         selected = current if name == "example/inspect" else None
         marker = "first" if selected is not None and selected.params is FirstParams else "second"
         active.append(marker)

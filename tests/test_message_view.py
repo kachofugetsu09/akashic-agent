@@ -199,7 +199,9 @@ async def test_runtime_display_discovers_new_kind_and_releases_each_generation(s
             rows = await reader(page, display_only=True)
             expected = {"kind": "example.fact", "display": "unavailable"} if label is None else {
                 "kind": "example.fact", "value": {"label": label}}
-            assert rows[0]["body"]["parts"] == [expected]
+            body = rows[0]["body"]
+            assert isinstance(body, Mapping)
+            assert body["parts"] == [expected]
             assert selected.lease_count == 0
     finally:
         await store.close()

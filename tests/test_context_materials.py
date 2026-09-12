@@ -160,7 +160,9 @@ async def test_program_excludes_retrieval_without_running_it_or_losing_persona()
         # 显式排除不改变全局注册；普通回复仍能取得原有检索。
         async with service.bind() as view:
             result = await view.prepare((), "conversation")
-        assert result["reminders"][0]["text"] == "retrieved private context"
+        reminders = result["reminders"]
+        assert isinstance(reminders, tuple)
+        assert reminders[0]["text"] == "retrieved private context"
 
 
 @pytest.mark.asyncio
@@ -265,8 +267,10 @@ async def test_reminder_order_uses_owner_and_name_and_keeps_each_request_snapsho
             before = await view.prepare((), "conversation")
             current = "new"
             after = await view.prepare((), "conversation")
-        assert [item["text"] for item in before["reminders"]] == ["early", "evil-a", "old", "trusted-z"]
-        assert [item["text"] for item in after["reminders"]] == ["early", "evil-a", "new", "trusted-z"]
+        before_reminders, after_reminders = before["reminders"], after["reminders"]
+        assert isinstance(before_reminders, tuple) and isinstance(after_reminders, tuple)
+        assert [item["text"] for item in before_reminders] == ["early", "evil-a", "old", "trusted-z"]
+        assert [item["text"] for item in after_reminders] == ["early", "evil-a", "new", "trusted-z"]
 
 
 @pytest.mark.asyncio

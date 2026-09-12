@@ -55,7 +55,9 @@ def current_storage(path):
     """旧迁移完成后应用当前失败合同，再交给当前运行时读取。"""
     from tests.test_execution_failure_migration import load_migration
     module = load_migration()
-    module['_migrate'](path, 'mobile_command_receipts', module['_MOBILE_OLD'], module['_MOBILE_NEW'], path.parent / 'failure-backups')
+    migrate = module["_migrate"]
+    assert callable(migrate)
+    migrate(path, 'mobile_command_receipts', module['_MOBILE_OLD'], module['_MOBILE_NEW'], path.parent / 'failure-backups')
     return MobileRealtimeStorage(path)
 
 
@@ -120,8 +122,12 @@ def test_yoyo_uses_the_configured_mobile_database(tmp_path, monkeypatch):
     monkeypatch.setattr(yoyo, 'step', lambda callback: callback)
     from tests.legacy_migration_loader import load_migration_module
     module = load_migration_module("20260906_05_mobile_input_rejections")
+    steps = module["steps"]
+    assert isinstance(steps, list)
+    migrate = steps[0]
+    assert callable(migrate)
     with bind_migration_context(config_path=config, workspace=workspace):
-        module['steps'][0](None)
+        migrate(None)
     with closing(current_storage(path)) as storage:
         assert storage.pending_message_rejections()
     assert list((workspace / 'backups/mobile-input-rejections').glob('*/custom-mobile.db'))

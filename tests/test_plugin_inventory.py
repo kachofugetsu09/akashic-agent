@@ -17,8 +17,14 @@ def test_inventory_includes_support_packages_and_uses_frozen_boundary_rules(tmp_
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True, capture_output=True)
     report = build_inventory(tmp_path)
-    assert {item["package"] for item in report["packages"]} == {"one", "two"}
-    assert report["summary"]["support_package_count"] == 2
-    assert {item["kind"] for item in report["static_boundary_violations"]} == {
+    packages = report["packages"]
+    summary = report["summary"]
+    violations = report["static_boundary_violations"]
+    assert isinstance(packages, list)
+    assert isinstance(summary, dict)
+    assert isinstance(violations, list)
+    assert {item["package"] for item in packages} == {"one", "two"}
+    assert summary["support_package_count"] == 2
+    assert {item["kind"] for item in violations} == {
         "R1", "R2", "R3", "not_installable_artifact"}
     assert report["core_consumer_imports"] == [{"file": "bootstrap/app.py", "target": "plugins.two.impl"}]

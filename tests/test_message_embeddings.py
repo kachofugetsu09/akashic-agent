@@ -78,10 +78,12 @@ def test_yoyo_embedding_owner_preserves_existing_vectors_and_backs_up_missing_sc
             store.close()
     before = path.read_bytes()
     migration = load_migration_module("20260905_05_message_embeddings")
+    migrate = migration["migrate_message_embeddings"]
+    assert callable(migrate)
     with bind_migration_context(config_path=tmp_path / 'config.toml', workspace=tmp_path):
-        migration["migrate_message_embeddings"](None)
+        migrate(None)
         once = path.read_bytes()
-        migration["migrate_message_embeddings"](None)
+        migrate(None)
     assert path.read_bytes() == once
     with closing(sqlite3.connect(path)) as db:
         assert db.execute('SELECT value FROM unrelated_owner').fetchall() == [('preserved',)]
@@ -104,8 +106,10 @@ def test_yoyo_embedding_owner_rejects_unknown_schema_before_backup(tmp_path):
         db.execute('CREATE TABLE message_embeddings (message_id TEXT)')
     before = path.read_bytes()
     migration = load_migration_module("20260905_05_message_embeddings")
+    migrate = migration["migrate_message_embeddings"]
+    assert callable(migrate)
     with bind_migration_context(config_path=tmp_path / 'config.toml', workspace=tmp_path):
         with pytest.raises(RuntimeError, match='schema lineage'):
-            migration["migrate_message_embeddings"](None)
+            migrate(None)
     assert path.read_bytes() == before
     assert not (tmp_path / 'backups').exists()

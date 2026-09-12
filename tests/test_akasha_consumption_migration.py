@@ -9,7 +9,7 @@ from yoyo import get_backend
 from plugins.legacy_upgrade.legacy_upgrade_migrations.support.akasha_consumption import cutover_akasha
 from agent.migrations.context import bind_migration_context
 from plugins.akasha.application.rebuild import rebuild_memory
-from plugins.akasha.domain.model import MemoryConfig
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.akasha.domain.model import MemoryConfig
 from plugins.akasha.infrastructure.persistence import load_consumption, logical_state_sha256, sha256_file
 from plugins.akasha.infrastructure.sparse_index import BuildConfig, build_sparse_index
 from session.embedding_store import MessageEmbeddingStore
