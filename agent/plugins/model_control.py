@@ -14,6 +14,7 @@ from agent.plugins.snapshot import (
     bind_runtime_snapshot,
     reset_runtime_snapshot,
 )
+from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.model_settings_http import (
     BoundModelControl,
     ModelControlUnavailable,
@@ -73,6 +74,30 @@ class RuntimeModelControl:
         token = bind_runtime_snapshot(lease)
         try:
             return await self._bound.discover(connection)
+        finally:
+            reset_runtime_snapshot(token)
+            await lease.release()
+
+    async def invoke_rpc(
+        self,
+        method: str,
+        params: Mapping[str, object],
+    ) -> object:
+        """Resolve and invoke one plugin RPC while holding its exact lease."""
+        try:
+            lease = await self._snapshot_store.acquire()
+        except RuntimeError as error:
+            raise ModelControlUnavailable("模型控制服务尚未就绪") from error
+        token = bind_runtime_snapshot(lease)
+        try:
+            root = lease.snapshot.composition_root
+            if root is None:
+                raise ModelControlUnavailable("模型控制服务尚未绑定插件组合 Root")
+            operation = root.context.get(rpc_method_key(method))
+            if operation is None:
+                raise ModelControlUnavailable("models 插件未提供模型 HTTP 服务")
+            typed = operation.params.model_validate(params)
+            return await operation.invoke(typed, None)
         finally:
             reset_runtime_snapshot(token)
             await lease.release()
