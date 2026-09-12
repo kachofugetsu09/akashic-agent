@@ -636,3 +636,19 @@ Message 展示函数依赖消息读取能力，归入公开的 plugin_compositio
 源码；后续组件属于 ABI 1 时也不得先导入前面的组件。旧归档保留，使用原 Core
 和安装环境恢复，不将未知外部效果重发或改写成已完成。新归档的删除安装后恢复、
 热更新与绑定定向验证 60 项通过。
+
+### 9.35 模型设置与部署安装入口
+
+模型设置命令、参数校验、HTTP 错误映射和 Dashboard 路由由 Models 插件拥有。
+Core 的客户端 adapter 调用插件声明的 RPC，并在整个调用期间持有同一 generation
+租约；它不 import Models 的设置命令。Dashboard 从请求 context 解析已声明的
+能力，不读取 Core 私有 snapshot。角色名称由消费者和 Models 自己解释，现有
+Models 仍支持原四种预设；这不是新增任意角色配置功能，也没有改写持久字段。
+
+正式安装的回复测试通过同一公开 RPC 配置 Models，然后观察真实 Message、模型
+HTTP 调用、发送请求和重开的持久回执。该层整合后的 Core Message、模型执行与
+选择、实际安装回复和 Dashboard 共 52 项通过；重启工具补验 13 项通过。
+
+分发入口显式传递 runtime tree 身份。Git bundle 预检使用一次性空 bare repository，
+因此不要求 Core 制品所在目录是 Git checkout。相关分发测试 7 项通过。先前镜像的
+安装器覆盖挂载演练仅用于定位问题；最终无覆盖挂载镜像与整栈验收仍须单独完成。
