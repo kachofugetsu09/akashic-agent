@@ -24,6 +24,7 @@ import sys
 import tarfile
 import tempfile
 from typing import Any
+from uuid import uuid4
 
 
 _CORE_PACKAGES = frozenset(
@@ -43,6 +44,11 @@ _CORE_PACKAGES = frozenset(
 )
 _SAFE_CAPABILITY_ENTRYPOINTS = {
     "message.display:model.facts": "plugins.models.projection.display_facts",
+    # This is a deliberately narrow acceptance fixture ABI.  The fixture uses
+    # the real Content and Message services and returns the durable message
+    # identity so the runner can independently read it back from MessageLog.
+    "acceptance.messages.roundtrip.v1": "external_acceptance.message_roundtrip",
+    "acceptance.consumer.roundtrip.v1": "external_acceptance.message_roundtrip",
 }
 
 # This configuration deliberately enables only the local Web channel and the
@@ -233,6 +239,23 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _tree_sha256(root: Path) -> str:
+    """Hash one external artifact tree so a plugin test can prove Core stayed fixed."""
+
+    digest = hashlib.sha256()
+    for path in sorted(
+        item
+        for item in root.rglob("*")
+        if item.is_file() and "__pycache__" not in item.parts and item.suffix != ".pyc"
+    ):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(_sha256(path).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _checkout_root(path: Path) -> Path | None:
     """返回 path 所在 Git checkout，包含 worktree 的 .git 文件。"""
 
@@ -305,7 +328,14 @@ def _source_checkout(path_or_url: str, repo_root: Path) -> Path | None:
 
 def _purge_modules(roots: tuple[Path, ...]) -> list[str]:
     removed: list[str] = []
-    for module_name, module in tuple(sys.modules.items()):
+    # Remove children before namespace parents; otherwise iterating a stale
+    # ``plugins.__path__`` can raise KeyError after its parent is removed.
+    modules = sorted(
+        tuple(sys.modules.items()),
+        key=lambda item: item[0].count("."),
+        reverse=True,
+    )
+    for module_name, module in modules:
         locations = _module_locations(module)
         if not locations:
             if module_name == "plugins" or module_name.startswith("plugins."):
@@ -696,6 +726,43 @@ def _load_capability_calls(path: Path | None) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _load_business_composition(path: Path) -> dict[str, Any]:
+    """Load an explicit external subset and replacement oracle for CLI runs."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+        raise ValueError("business composition JSON 必须包含 jobs 数组")
+    base = path.resolve().parent
+    jobs: list[dict[str, Any]] = []
+    for item in payload["jobs"]:
+        if not isinstance(item, dict):
+            raise ValueError("business composition job 必须是 object")
+        label = item.get("label")
+        source = item.get("source")
+        if not isinstance(label, str) or not label or not isinstance(source, str) or not source:
+            raise ValueError("business composition job 缺少 label/source")
+        row = dict(item)
+        if "://" not in source and not source.startswith("git@"):
+            row["source"] = str((base / source).resolve(strict=True))
+        capability = row.get("capability_spec")
+        if capability is not None and not isinstance(capability, dict):
+            raise ValueError("business composition capability_spec 必须是 object")
+        jobs.append(row)
+    if not jobs:
+        raise ValueError("business composition jobs 不能为空")
+    replacement = payload.get("replacement")
+    if replacement is not None:
+        if not isinstance(replacement, dict):
+            raise ValueError("business composition replacement 必须是 object")
+        replacement = dict(replacement)
+        source = replacement.get("source")
+        if not isinstance(source, str) or not source:
+            raise ValueError("business composition replacement 缺少 source")
+        if "://" not in source and not source.startswith("git@"):
+            replacement["source"] = str((base / source).resolve(strict=True))
+    return {"jobs": jobs, "replacement": replacement}
+
+
 def _load_inventory(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("packages"), list):
@@ -816,6 +883,15 @@ async def _invoke_capability(
         from session.message import ContentPart
 
         actual = value(ContentPart(input_value["kind"], input_value["value"]))
+    elif service in {
+        "acceptance.messages.roundtrip.v1",
+        "acceptance.consumer.roundtrip.v1",
+    }:
+        if not isinstance(input_value, dict):
+            raise ValueError(
+                "Message roundtrip oracle input 必须是 JSON object"
+            )
+        actual = value(input_value)
     else:  # pragma: no cover - guarded by the registry above
         raise ValueError(f"未实现安全能力 oracle: {service}")
     if inspect.isawaitable(actual):
@@ -828,6 +904,45 @@ async def _invoke_capability(
         )
     if actual != expected["value"]:
         raise AssertionError(f"能力返回值不符: expected={expected['value']!r} actual={actual!r}")
+    if service in {
+        "acceptance.messages.roundtrip.v1",
+        "acceptance.consumer.roundtrip.v1",
+    }:
+        if not isinstance(actual, dict):
+            raise TypeError("Message roundtrip oracle 必须返回 JSON object")
+        session_id = actual.get("session_id")
+        message_id = actual.get("message_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("Message roundtrip 结果缺少 session_id")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("Message roundtrip 结果缺少 message_id")
+        from agent.plugin_composition.messages import MESSAGE_CATALOG
+
+        catalog = root.context.require(MESSAGE_CATALOG)
+        message = catalog.reader(session_id).get(message_id)
+        if message is None:
+            raise AssertionError(
+                "Message roundtrip 返回的 identity 在独立 catalog reader 中不存在"
+            )
+        text_parts = tuple(
+            part.value
+            for part in getattr(message.body, "parts", ())
+            if getattr(part, "kind", None) == "text"
+        )
+        expected_text = actual.get("read_text")
+        if text_parts != (expected_text,):
+            raise AssertionError(
+                "Message roundtrip 独立 reader 读取正文不匹配: "
+                f"expected={(expected_text,)!r} actual={text_parts!r}"
+            )
+        evidence["message_readback"] = {
+            "session_id": session_id,
+            "message_id": message_id,
+            "source": message.source,
+            "seq": message.seq,
+            "text_parts": text_parts,
+        }
+        evidence["durable_message_readback"] = True
     evidence["call_executed"] = True
     evidence["status"] = "passed"
     return evidence
@@ -1353,6 +1468,462 @@ async def _exercise_fleet(
     }
 
 
+async def _exercise_business_composition(
+    *,
+    jobs: list[dict[str, Any]],
+    repo_root: Path,
+    marketplace: str,
+    workspace: Path,
+    plugins_home: Path,
+    core_root: Path | None = None,
+    replacement: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Install a legal external subset and prove its Message behavior and replacement.
+
+    This probe deliberately uses the normal Git installer, PluginManager and
+    RuntimeSnapshot lease.  A fixture service may return a message identity,
+    but ``_invoke_capability`` reads that identity again through the real
+    ``MESSAGE_CATALOG`` before reporting success.
+    """
+
+    _ensure_empty_directory(workspace, "workspace")
+    _ensure_empty_directory(plugins_home, "plugins-home")
+    if core_root is not None:
+        core_root = _validate_core_root(core_root, repo_root)
+    source_checkout = next(
+        (
+            checkout
+            for checkout in (
+                _source_checkout(str(job["source"]), repo_root)
+                for job in jobs
+                if isinstance(job.get("source"), str)
+            )
+            if checkout is not None
+        ),
+        None,
+    )
+    runtime_paths: dict[str, Any] = {}
+    core_digest_before: str | None = None
+    if core_root is not None:
+        runtime_paths = _prepare_runtime(
+            repo_root=repo_root,
+            source_checkout=source_checkout,
+            core_root=core_root,
+            workspace=workspace,
+        )
+        core_digest_before = _tree_sha256(core_root)
+    else:
+        # Unit-level composition runs still prove that installed plugin code
+        # came from cache; remove any first-party plugin modules imported by
+        # the surrounding pytest process before loading the external subset.
+        _purge_modules((repo_root / "plugins",))
+
+    from agent.plugins.install import install_git_plugin
+    from agent.plugins.manager import PluginManager
+    from agent.plugins.snapshot import lease_runtime_snapshot
+    from bus.event_bus import EventBus
+    from session.log import MessageLog, SessionAttributes
+
+    log = MessageLog(workspace / "sessions.db")
+    bus = EventBus()
+    manager = PluginManager(
+        [],
+        event_bus=bus,
+        workspace=workspace,
+        installed_cache_root=plugins_home / "cache",
+        message_log=log,
+    )
+    reports: list[dict[str, Any]] = []
+    installed_by_id: dict[str, dict[str, Any]] = {}
+    replacement_evidence: dict[str, Any] | None = None
+    initial_snapshot: Any = None
+    source_restore: tuple[Path, Path] | None = None
+
+    async def run_call(
+        *,
+        plugin_id: str,
+        spec: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_input = spec.get("input")
+        if isinstance(raw_input, dict):
+            session_id = raw_input.get("session_id")
+            if isinstance(session_id, str) and session_id:
+                # Session admission is test setup; the external capability
+                # still owns the actual writer and reader behavior.
+                log.ensure_session(
+                    session_id,
+                    SessionAttributes(visibility="internal", learning="excluded"),
+                )
+        async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
+            if snapshot.composition_root is None:
+                raise RuntimeError("business composition snapshot 缺少 composition root")
+            generation = snapshot.generations.get(plugin_id)
+            if generation is None:
+                raise RuntimeError(f"business capability 缺少 generation: {plugin_id}")
+            evidence = await _invoke_capability(
+                root=snapshot.composition_root,
+                plugin_id=plugin_id,
+                spec=spec,
+            )
+            evidence["selector"] = "stable"
+            evidence["snapshot_id"] = snapshot.snapshot_id
+            evidence["generation_id"] = generation.generation_id
+            return evidence
+
+    try:
+        # 1. Install every declared provider and consumer before loading the
+        # composition.  A single package is never treated as an isolated pass.
+        for job in jobs:
+            row: dict[str, Any] = {
+                "plugin": job.get("label"),
+                "source": str(job.get("source", "")),
+                "checks": {
+                    "source_checkout_is_external": True,
+                    "formal_install_artifact": False,
+                    "installed_manifest_identity": False,
+                    "installed_source_has_no_sibling_plugins": False,
+                    "apply": False,
+                },
+            }
+            try:
+                install_result_initial = install_git_plugin(
+                    workspace=workspace,
+                    source=str(job["source"]),
+                    marketplace=marketplace,
+                    plugins_home=plugins_home,
+                )
+                artifact = install_result_initial.installed_path.resolve(strict=True)
+                plugin_id, entrypoint = _plugin_id_from_manifest(artifact, marketplace)
+                expected_name = str(job.get("label", ""))
+                actual_name = plugin_id.split("@", 1)[0]
+                row.update(
+                    {
+                        "plugin_id": plugin_id,
+                        "source_revision": install_result_initial.source_revision,
+                        "installed_artifact": str(artifact),
+                        "entrypoint": entrypoint,
+                        "artifact": artifact,
+                        "capability_spec": job.get("capability_spec"),
+                    }
+                )
+                row["checks"].update(
+                    {
+                        "formal_install_artifact": artifact.is_relative_to(
+                            (plugins_home / "cache").resolve(strict=False)
+                        ),
+                        "installed_manifest_identity": (
+                            not expected_name or actual_name == expected_name
+                        ),
+                        "installed_source_has_no_sibling_plugins": not (
+                            artifact / "plugins"
+                        ).exists(),
+                    }
+                )
+                installed_by_id[plugin_id] = row
+            except Exception as error:
+                row["status"] = "failed"
+                row["error"] = f"{type(error).__name__}: {error}"
+            reports.append(row)
+
+        await manager.load_all()
+        initial_snapshot = manager.current_snapshot
+        if initial_snapshot is None:
+            raise RuntimeError("business composition 未形成 stable snapshot")
+        visible_checkout_modules: list[dict[str, str]] = []
+        for job in jobs:
+            checkout = _source_checkout(str(job["source"]), repo_root)
+            visible_checkout_modules.extend(
+                _visible_checkout_modules(repo_root, checkout)
+            )
+        for row in reports:
+            row["checkout_modules_visible"] = visible_checkout_modules
+            row["checks"]["checkout_invisible"] = not visible_checkout_modules
+        # 2. Every declared capability is called while its real generation is
+        # leased.  Calls that only enumerate services never reach this path.
+        for row in reports:
+            plugin_id = row.get("plugin_id")
+            if not isinstance(plugin_id, str):
+                continue
+            generation = initial_snapshot.generations.get(plugin_id)
+            row["checks"]["apply"] = generation is not None
+            if generation is None:
+                row["error"] = row.get("error", "apply 后缺少 stable generation")
+                continue
+            source_checkout = _source_checkout(str(row["source"]), repo_root)
+            row["generation"] = _generation_evidence(
+                generation=generation,
+                artifact=Path(str(row["installed_artifact"])),
+                entrypoint=str(row["entrypoint"]),
+                workspace=workspace,
+                repo_root=repo_root,
+                source_checkout=source_checkout,
+            )
+            row["checks"].update(
+                {
+                    key: bool(row["generation"]["checks"].get(key, False))
+                    for key in (
+                        "module_file_is_core_archive",
+                        "module_file_not_checkout",
+                        "module_bytes_match_installed_artifact",
+                    )
+                }
+            )
+            spec = row.get("capability_spec")
+            if spec is None:
+                continue
+            try:
+                row["capability_call"] = await run_call(
+                    plugin_id=plugin_id,
+                    spec=spec,
+                )
+                row["checks"]["capability_call"] = True
+                row["checks"]["durable_message_readback"] = bool(
+                    row["capability_call"].get("durable_message_readback", False)
+                )
+            except Exception as error:
+                row["checks"]["capability_call"] = False
+                row["checks"]["durable_message_readback"] = False
+                row["capability_call"] = {
+                    "status": "failed",
+                    "call_executed": False,
+                    "error": f"{type(error).__name__}: {error}",
+                }
+
+        if replacement is not None:
+            # 3. Keep the old stable lease while the manager stages the new
+            # artifact.  Release it only after the normal publication task has
+            # been started, then call the same consumer under the new lease.
+            provider_name = str(replacement.get("plugin", ""))
+            consumer_name = str(replacement.get("consumer", ""))
+            if not provider_name or not consumer_name:
+                raise ValueError("replacement 必须声明 provider plugin 和 consumer")
+            provider_id = f"{provider_name}@{marketplace}"
+            consumer_id = f"{consumer_name}@{marketplace}"
+            old_provider = initial_snapshot.generations.get(provider_id)
+            old_consumer = initial_snapshot.generations.get(consumer_id)
+            if old_provider is None or old_consumer is None:
+                raise RuntimeError(
+                    "replacement 需要 provider 与真实 consumer 同时存在于旧组合"
+                )
+            before_spec = replacement.get("before")
+            after_spec = replacement.get("after")
+            replacement_source = replacement.get("source")
+            if (
+                not isinstance(before_spec, dict)
+                or not isinstance(after_spec, dict)
+                or not isinstance(replacement_source, str)
+            ):
+                raise ValueError(
+                    "replacement 必须提供 source、before、after 精确能力 oracle"
+                )
+            old_provider_artifact = Path(
+                str(installed_by_id[provider_id]["installed_artifact"])
+            )
+            original_provider_source = Path(
+                str(installed_by_id[provider_id]["source"])
+            )
+            if replacement.get("remove_original_source", False):
+                if original_provider_source.is_symlink() or not original_provider_source.is_dir():
+                    raise ValueError("replacement 原 provider source 不是可删除的 checkout")
+                backup = original_provider_source.with_name(
+                    original_provider_source.name + ".before-acceptance-" + uuid4().hex
+                )
+                original_provider_source.rename(backup)
+                source_restore = (original_provider_source, backup)
+            old_provider_generation_id: str
+            old_consumer_generation_id: str
+            old_consumer_call: dict[str, Any]
+            install_result: Any = None
+            publication: tuple[str, asyncio.Task[None]] | None = None
+            async with lease_runtime_snapshot(manager.snapshot_store) as old_snapshot:
+                old_provider_generation_id = old_snapshot.generations[provider_id].generation_id
+                old_consumer_generation_id = old_snapshot.generations[consumer_id].generation_id
+                raw_input = before_spec.get("input")
+                if isinstance(raw_input, dict):
+                    session_id = raw_input.get("session_id")
+                    if isinstance(session_id, str) and session_id:
+                        log.ensure_session(
+                            session_id,
+                            SessionAttributes(visibility="internal", learning="excluded"),
+                        )
+                old_consumer_call = await _invoke_capability(
+                    root=old_snapshot.composition_root,
+                    plugin_id=consumer_id,
+                    spec=before_spec,
+                )
+                old_consumer_call["snapshot_id"] = old_snapshot.snapshot_id
+                old_consumer_call["generation_id"] = old_consumer_generation_id
+                install_result, candidate_status = await manager.install_candidate(
+                    source=replacement_source,
+                    marketplace=marketplace,
+                    ref_name="",
+                    sparse_paths=[],
+                )
+                waiting_for_old = asyncio.Event()
+                wait_for_no_leases = manager.snapshot_store.wait_for_no_leases
+
+                async def observe_drain(snapshot: Any) -> None:
+                    if snapshot is old_snapshot:
+                        waiting_for_old.set()
+                    await wait_for_no_leases(snapshot)
+
+                manager.snapshot_store.wait_for_no_leases = observe_drain
+                try:
+                    manager.start_update_publication(install_result.update_id)
+                    publication = manager._update_publication
+                    if publication is None:
+                        raise RuntimeError("replacement publication task 未创建")
+                    await asyncio.wait_for(waiting_for_old.wait(), timeout=10)
+                    if publication[1].done():
+                        raise RuntimeError("旧 lease 未释放，publication 却已经结束")
+                    # 观察真实 drain 入口后仍执行旧消费者；不靠 sleep 猜测时序。
+                    old_consumer_call = await _invoke_capability(
+                        root=old_snapshot.composition_root, plugin_id=consumer_id, spec=before_spec,
+                    )
+                    old_consumer_call["snapshot_id"] = old_snapshot.snapshot_id
+                    old_consumer_call["generation_id"] = old_consumer_generation_id
+                finally:
+                    manager.snapshot_store.wait_for_no_leases = wait_for_no_leases
+            await publication[1]
+            update_status = manager.reload_journal.update(install_result.update_id)
+            new_snapshot = manager.current_snapshot
+            if new_snapshot is None:
+                raise RuntimeError("replacement publication 后缺少 stable snapshot")
+            new_provider = new_snapshot.generations.get(provider_id)
+            new_consumer = new_snapshot.generations.get(consumer_id)
+            if new_provider is None or new_consumer is None:
+                raise RuntimeError("replacement publication 后 provider/consumer generation 缺失")
+            new_consumer_call = await run_call(
+                plugin_id=consumer_id,
+                spec=after_spec,
+            )
+            new_module = sys.modules.get(new_provider.module_path)
+            new_module_file = getattr(new_module, "__file__", None)
+            replacement_artifact = Path(install_result.installed_path).resolve(strict=True)
+            replacement_entrypoint = replacement_artifact / "plugin.py"
+            new_module_sha256 = (
+                None
+                if not isinstance(new_module_file, str)
+                else _sha256(Path(new_module_file))
+            )
+            replacement_entrypoint_sha256 = (
+                _sha256(replacement_entrypoint)
+                if replacement_entrypoint.is_file()
+                else None
+            )
+            replacement_evidence = {
+                "provider_id": provider_id,
+                "consumer_id": consumer_id,
+                "old_generation_id": old_provider_generation_id,
+                "new_generation_id": new_provider.generation_id,
+                "old_consumer_call": old_consumer_call,
+                "new_consumer_call": new_consumer_call,
+                "update": {
+                    "update_id": install_result.update_id,
+                    "phase": update_status.phase,
+                    "source_revision": install_result.source_revision,
+                    "candidate_status": candidate_status,
+                },
+                "replacement_artifact": str(replacement_artifact),
+                "replacement_module_file": new_module_file,
+                "old_artifact": str(old_provider_artifact),
+                "checks": {
+                    "publication_committed": update_status.phase == "committed",
+                    "publication_waited_for_old_lease": waiting_for_old.is_set(),
+                    "provider_generation_changed": (
+                        old_provider_generation_id != new_provider.generation_id
+                    ),
+                    "consumer_read_under_new_snapshot": (
+                        new_consumer_call.get("snapshot_id")
+                        != old_consumer_call.get("snapshot_id")
+                    ),
+                    "old_consumer_readback": bool(
+                        old_consumer_call.get("durable_message_readback", False)
+                    ),
+                    "replacement_consumer_readback": bool(
+                        new_consumer_call.get("durable_message_readback", False)
+                    ),
+                    "replacement_module_from_new_artifact": (
+                        new_module_sha256 is not None
+                        and new_module_sha256 == replacement_entrypoint_sha256
+                    ),
+                    "replacement_module_not_old_artifact": (
+                        not isinstance(new_module_file, str)
+                        or not _under(Path(new_module_file), old_provider_artifact)
+                    ),
+                    "original_source_not_required": (
+                        not original_provider_source.exists()
+                    ),
+                },
+            }
+            if core_root is not None and core_digest_before is not None:
+                replacement_evidence["checks"]["core_artifact_unchanged"] = (
+                    _tree_sha256(core_root) == core_digest_before
+                )
+            else:
+                replacement_evidence["core_artifact"] = "not_supplied"
+
+    except Exception as error:
+        reports.append(
+            {
+                "plugin": "business-composition",
+                "status": "failed",
+                "checks": {"composition_completed": False},
+                "error": f"{type(error).__name__}: {error}",
+            }
+        )
+    finally:
+        try:
+            await manager.terminate_all()
+        finally:
+            try:
+                log.close()
+                await bus.aclose()
+            finally:
+                if source_restore is not None:
+                    original, backup = source_restore
+                    if original.exists():
+                        raise RuntimeError(f"原源码路径被重新占用，备份保留在 {backup}")
+                    backup.rename(original)
+
+    for row in reports:
+        row.pop("artifact", None)
+        row["status"] = "passed" if all(row.get("checks", {}).values()) else "failed"
+    if replacement_evidence is not None:
+        replacement_evidence["status"] = (
+            "passed"
+            if all(replacement_evidence["checks"].values())
+            else "failed"
+        )
+    checks = {
+        "composition_loaded": initial_snapshot is not None,
+        "all_reports_passed": bool(reports)
+        and all(row.get("status") == "passed" for row in reports),
+        "business_calls_executed": any(
+            row.get("checks", {}).get("capability_call", False) for row in reports
+        ),
+        "durable_message_readback": any(
+            row.get("checks", {}).get("durable_message_readback", False)
+            for row in reports
+        ),
+    }
+    if replacement is not None:
+        checks["replacement_verified"] = (
+            replacement_evidence is not None and replacement_evidence["status"] == "passed"
+        )
+    if core_root is not None and core_digest_before is not None:
+        checks["core_artifact_unchanged"] = _tree_sha256(core_root) == core_digest_before
+    result: dict[str, Any] = {
+        "mode": "business-composition",
+        "runtime": runtime_paths,
+        "reports": reports,
+        "replacement": replacement_evidence,
+        "checks": checks,
+    }
+    result["status"] = "passed" if all(checks.values()) else "failed"
+    return result
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", help="一个真实 external Git checkout、bundle 或 Git URL")
@@ -1367,6 +1938,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--plugins-home", type=Path)
     parser.add_argument("--capability-service", help="兼容旧参数；没有精确 oracle 时必然失败")
     parser.add_argument("--capability-calls-json", type=Path)
+    parser.add_argument(
+        "--business-composition-json",
+        type=Path,
+        help="显式 external 合法子集与 replacement oracle JSON",
+    )
     parser.add_argument("--require-capabilities", action="store_true")
     parser.add_argument("--core-root", type=Path, help="已解包、位于 checkout 外且不含业务源码的 Core 制品")
     parser.add_argument("--core-tar", type=Path, help="build distribution 生成的 Core tar")
@@ -1390,11 +1966,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.source and args.all:
         print("必须二选一：--source 或 --all", file=sys.stderr)
         return 2
+    if args.business_composition_json and (
+        args.source or args.all or args.distribution
+    ):
+        print(
+            "--business-composition-json 不能与 --source/--all/--distribution 同时使用",
+            file=sys.stderr,
+        )
+        return 2
     if args.distribution and args.source:
         print("--distribution 不能与 --source 同时使用", file=sys.stderr)
         return 2
-    if not args.source and not args.all and not args.distribution:
-        print("必须提供 --source 或 --all/--distribution", file=sys.stderr)
+    if not args.source and not args.all and not args.distribution and not args.business_composition_json:
+        print(
+            "必须提供 --source、--all/--distribution 或 --business-composition-json",
+            file=sys.stderr,
+        )
         return 2
     if args.distribution:
         args.all = True
@@ -1404,11 +1991,13 @@ def main(argv: list[str] | None = None) -> int:
     reports: list[dict[str, Any]] = []
     distribution: dict[str, Any] | None = None
     fleet_result: dict[str, Any] | None = None
+    business_result: dict[str, Any] | None = None
     core_bootstrap: dict[str, Any] | None = None
     try:
         repo_root = args.repo_root.resolve(strict=True)
         capability_calls = _load_capability_calls(args.capability_calls_json)
         jobs: list[dict[str, Any]] = []
+        business_spec: dict[str, Any] | None = None
         if args.source:
             spec = capability_calls.get(args.plugin or Path(args.source).stem)
             if args.capability_service is not None and spec is None:
@@ -1425,6 +2014,9 @@ def main(argv: list[str] | None = None) -> int:
                     "capability_spec": spec,
                 }
             )
+        elif args.business_composition_json:
+            business_spec = _load_business_composition(args.business_composition_json)
+            jobs = list(business_spec["jobs"])
         elif args.distribution:
             distribution = _load_distribution(args.distribution)
             if args.inventory is not None:
@@ -1522,9 +2114,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.workspace is None or args.plugins_home is None or args.core_root is None:
             temp_root = Path(tempfile.mkdtemp(prefix="akashic-external-acceptance-"))
-        root = temp_root
-        workspace = args.workspace or root / "workspace"
-        plugins_home = args.plugins_home or root / "plugins-home"
+        workspace = args.workspace
+        plugins_home = args.plugins_home
+        if workspace is None or plugins_home is None:
+            assert temp_root is not None
+            workspace = workspace or temp_root / "workspace"
+            plugins_home = plugins_home or temp_root / "plugins-home"
         if workspace.resolve(strict=False) == plugins_home.resolve(strict=False):
             raise ValueError("workspace 和 plugins-home 必须是不同目录")
         core_root = args.core_root
@@ -1533,6 +2128,7 @@ def main(argv: list[str] | None = None) -> int:
             if core_tar is None and distribution is not None:
                 core_tar = Path(distribution["_root"]) / str(distribution["core"]["file"])
             if core_tar is not None:
+                assert temp_root is not None
                 core_root = _extract_core_tar(core_tar, temp_root, repo_root)
         if core_root is not None:
             bootstrap_temp_root = Path(
@@ -1552,7 +2148,28 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "failed",
                 "error": "缺少仓库外 Core 制品，不能宣称 bootstrap 启停通过",
             }
-        if not args.all:
+        if business_spec is not None:
+            if core_root is None:
+                reports.append(
+                    _failure_report(
+                        "business-composition",
+                        "业务组合 external acceptance 必须提供仓库外 Core 制品",
+                    )
+                )
+            else:
+                business_result = asyncio.run(
+                    _exercise_business_composition(
+                        jobs=jobs,
+                        repo_root=repo_root,
+                        marketplace=args.marketplace,
+                        workspace=workspace,
+                        plugins_home=plugins_home,
+                        core_root=core_root,
+                        replacement=business_spec.get("replacement"),
+                    )
+                )
+                reports.extend(business_result.pop("reports"))
+        elif not args.all:
             job = jobs[0]
             if core_root is None:
                 reports.append(
@@ -1607,7 +2224,11 @@ def main(argv: list[str] | None = None) -> int:
             "repository": str(repo_root),
             "workspace": str(workspace),
             "plugins_home": str(plugins_home),
-            "mode": "all" if args.all else "single",
+            "mode": (
+                "business-composition"
+                if business_spec is not None
+                else "all" if args.all else "single"
+            ),
             "distribution_source_commit": None if distribution is None else distribution.get("source_commit"),
             "reports": reports,
             "core_bootstrap": core_bootstrap,
@@ -1622,6 +2243,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         if fleet_result is not None:
             result["fleet"] = fleet_result
+        if business_result is not None:
+            result["business_composition"] = business_result
         rendered = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

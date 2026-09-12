@@ -513,3 +513,31 @@ SDK 的空插件发现目录使用本代独有临时树，停止后清理；不�
 等待者不取消共享清理。测试以 FreshPluginImporter 加载两份实际插件 namespace，
 证明它们不能同时改共享 SDK 配置，旧代关闭后新代可进入。渠道 9 项和宿主相关
 50 项测试通过，定向 pyright 0 errors；完整 Gate 与 CI 仍按用户顺序最后处理。
+
+### 9.26 历史迁移外置的当前证据与未完成项
+
+48 个历史步骤及其冻结 helper 已进入普通 legacy_upgrade artifact，Core 保留起点
+和 ID/依赖索引；安装时验证 catalog 与全部包文件摘要，不从 checkout 猜测实现。
+在独立临时 workspace 显式加载 bundle，49 个步骤实际完成，第二次执行返回 current。
+原步骤 ID 与共用 Yoyo ledger 保留；这次验证未使用 monkeypatch 补齐 codec。
+
+尚未完成：新空 workspace 不安装历史业务包时的真实 CLI 启动、历史 helper 的
+Core 残留、迁移包独立导入身份及精确公共依赖。初次集成新增的迁移专用 R2 尚未
+清零，不能把此前常规插件的静态结果套用于这批新增源码。
+
+### 9.27 分开的组合、替代和旧 lease 实验
+
+验收分别在两个独立安装根运行 content+Message 消费者，以及 content+另一包名
+provider+原消费者；第二组没有原 provider 安装，也没有更改消费者源码来识别
+替代包名字。实际经正式 installer、PluginManager 和 generation lease 写入 Message，
+再由独立 reader 回读最终文本。
+
+同名热更新另做一组实验：观察真实 snapshot drain 等待，旧 lease 未释放时 publication
+不得结束，旧消费者仍读原结果；释放后新 snapshot 消费者读替代结果。两类证据不
+混称。源码暂时移至命名恢复点，退出后恢复原路径；验收不删除调用者的源码。
+
+固定 00cfea41 的 Core tar 外置实跑，异名 provider 的结果为
+`independent:same-consumer`，Core 摘要不变且 Core-only AppRuntime 启停通过。
+该结果不代表 CLI 历史迁移已经闭环。8 项定向测试通过；未提供 Core 制品或未请求
+热更新时，报告不再为未执行的验证生成通过标记。完整 Gate、CI 与概念审查待实施
+完成后统一运行。
