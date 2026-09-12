@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 import toml
 
+from agent.plugins.artifacts import relative_artifact_pointer, write_pointers
 from agent.migrations.bundles import MigrationBundleBlocked, MigrationBundleError
 from agent.migrations.runner import MigrationRunner
 from bootstrap.init_workspace import init_workspace
@@ -50,6 +51,31 @@ def _write_core_step(
         f"__depends__ = {set(depends)!r}\n"
         "__transactional__ = False\n"
         "steps = [step('SELECT 1', 'SELECT 1')]\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_core_marker_step(
+    repo: Path,
+    migration_id: str,
+    dependency: str,
+    marker: Path,
+) -> Path:
+    """Add a Core step that records execution after its bundle dependency."""
+
+    path = repo / "migrations/core" / f"{migration_id}.py"
+    path.write_text(
+        "from pathlib import Path\n"
+        "from yoyo import step\n"
+        f"__depends__ = {{{dependency!r}}}\n"
+        "__transactional__ = False\n"
+        "\n"
+        "def apply(connection):\n"
+        "    _ = connection\n"
+        f"    Path({str(marker)!r}).write_text('applied', encoding='utf-8')\n"
+        "\n"
+        "steps = [step(apply)]\n",
         encoding="utf-8",
     )
     return path
@@ -141,6 +167,7 @@ def _write_bundle(
     *,
     bundle_id: str = "future_plugin",
     package_name: str = "future_migrations",
+    manifest_name: str | None = None,
 ) -> Path:
     """Write a complete synthetic v3 artifact accepted by the real loader."""
 
@@ -195,7 +222,7 @@ def _write_bundle(
         toml.dumps(
             {
                 "schema_version": 1,
-                "name": bundle_id,
+                "name": manifest_name or bundle_id,
                 "version": "1.0.0",
                 "api_version": 3,
                 "entrypoint": "plugin.py",
@@ -224,6 +251,97 @@ def test_empty_core_and_catalog_establish_current_baseline(tmp_path: Path) -> No
     assert (second.state, second.migrations) == ("current", ())
     assert _baseline_ids(runner.ledger_path) == ()
     assert _applied_ids(runner.ledger_path) == ()
+
+
+def test_stable_installed_cache_pointer_is_loaded_without_plugin_dir(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    repo = _empty_repo(tmp_path)
+    plugin_base = root / "plugin-cache/marketplace/installed_plugin"
+    artifacts = plugin_base / ".artifacts"
+    stable = _write_bundle(
+        artifacts,
+        {
+            "stable_step": (
+                (),
+                _migration_source(tmp_path / "stable.marker"),
+            )
+        },
+        bundle_id="stable_release",
+        package_name="stable_migrations",
+        manifest_name="installed_plugin",
+    )
+    candidate = _write_bundle(
+        artifacts,
+        {
+            "candidate_step": (
+                (),
+                _migration_source(tmp_path / "candidate.marker"),
+            )
+        },
+        bundle_id="candidate_release",
+        package_name="candidate_migrations",
+        manifest_name="installed_plugin",
+    )
+    write_pointers(
+        plugin_base,
+        stable=relative_artifact_pointer(plugin_base, stable),
+        latest=relative_artifact_pointer(plugin_base, candidate),
+    )
+
+    outcome = _runner(root, repo).run()
+
+    assert outcome.migrations == ("stable_step",)
+    assert (tmp_path / "stable.marker").read_text(encoding="utf-8") == "attempted"
+    assert not (tmp_path / "candidate.marker").exists()
+    assert _runner(root, repo).run().state == "current"
+
+
+def test_future_core_step_runs_after_installed_bundle_is_applied(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state"
+    repo = _empty_repo(tmp_path)
+    plugin_base = root / "plugin-cache/marketplace/installed_plugin"
+    artifacts = plugin_base / ".artifacts"
+    bundle = _write_bundle(
+        artifacts,
+        {
+            "installed_step": (
+                (),
+                _migration_source(tmp_path / "bundle.marker"),
+            )
+        },
+        bundle_id="installed_release",
+        package_name="installed_migrations",
+        manifest_name="installed_plugin",
+    )
+    write_pointers(
+        plugin_base,
+        stable=relative_artifact_pointer(plugin_base, bundle),
+        latest=relative_artifact_pointer(plugin_base, bundle),
+    )
+    runner = _runner(root, repo)
+    assert runner.run().migrations == ("installed_step",)
+    before_ledger = _ledger_rows(runner.ledger_path)
+    bundle_marker = (tmp_path / "bundle.marker").read_bytes()
+    core_marker = tmp_path / "core.marker"
+    _write_core_marker_step(
+        repo,
+        "future_core_step",
+        "installed_step",
+        core_marker,
+    )
+
+    outcome = runner.run()
+
+    assert outcome.migrations == ("future_core_step",)
+    assert core_marker.read_text(encoding="utf-8") == "applied"
+    assert (tmp_path / "bundle.marker").read_bytes() == bundle_marker
+    after_ledger = _ledger_rows(runner.ledger_path)
+    old_row = next(row for row in before_ledger if row[1] == "installed_step")
+    assert next(row for row in after_ledger if row[1] == "installed_step") == old_row
 
 
 def test_applied_bundle_with_retired_core_dependency_does_not_block(
