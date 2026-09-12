@@ -15,15 +15,15 @@ from agent.config_models import MobileRealtimeConfig
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.snapshot import RuntimeSnapshotStore
 from bootstrap.reply_status import RuntimeReplyStatus
-from infra.channels.message_view import message_rows
-from infra.mobile_realtime.auth import DeviceAuthenticator, device_proof_signing_bytes
-from infra.mobile_realtime.channel import MobileRealtimeChannel
-from infra.mobile_realtime.gateway import MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
-from infra.mobile_realtime.inbox import DurableInboxManager
-from infra.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
-from infra.mobile_realtime.message_view import bounded_reply_status, message_json
-from infra.mobile_realtime.pairing import PairingService
-from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from agent.plugin_composition.message_view import message_rows
+from plugins.akashic_clients.mobile_realtime.auth import DeviceAuthenticator, device_proof_signing_bytes
+from plugins.akashic_clients.mobile_realtime.channel import MobileRealtimeChannel
+from plugins.akashic_clients.mobile_realtime.gateway import MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
+from plugins.akashic_clients.mobile_realtime.inbox import DurableInboxManager
+from plugins.akashic_clients.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
+from plugins.akashic_clients.mobile_realtime.message_view import bounded_reply_status, message_json
+from plugins.akashic_clients.mobile_realtime.pairing import PairingService
+from plugins.akashic_clients.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
 from plugins.reply.status import ReplyState
 from session.log import MessageLog
 from session.message import ContentPart, Input, Output, Control
@@ -79,19 +79,28 @@ def connected(gateway):
         yield ws, epoch
 
 
+_PENDING_FRAMES: dict[int, list[dict[str, object]]] = {}
+
+
 def follow(ws, epoch, session, after_seq, **fields):
     identity = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
     ws.send_json({'v': 1, 'kind': 'command', 'type': 'session.follow', 'id': identity,
         'connection_epoch': epoch, 'session_id': session,
         'payload': {'message_log_version': 2, 'after_seq': after_seq, **fields}})
-    reply = ws.receive_json()
-    assert reply['type'] == 'session.follow.ok', reply
+    pending = _PENDING_FRAMES.setdefault(id(ws), [])
+    while True:
+        reply = ws.receive_json()
+        if reply['type'] == 'session.follow.ok':
+            break
+        assert reply['type'] == 'session.message', reply
+        pending.append(reply)
     return identity
 
 
 def receive(ws, kind):
     while True:
-        wire = ws.receive_json()
+        pending = _PENDING_FRAMES.setdefault(id(ws), [])
+        wire = pending.pop(0) if pending else ws.receive_json()
         assert wire['kind'] == 'control' and wire['type'] == 'session.message', wire
         if wire['payload']['type'] == kind:
             return wire['payload']
