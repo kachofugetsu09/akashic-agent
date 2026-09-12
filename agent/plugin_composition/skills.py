@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import re
 from pathlib import Path
 from typing import Any, Literal
+from collections.abc import Callable
 
 from agent.plugin_composition.model import ServiceKey
 
@@ -43,7 +44,7 @@ class SkillRecord:
 
 @dataclass(frozen=True)
 class SkillIndex:
-    """Immutable skill records published by one exact runtime catalog."""
+    """一个运行目录发布的技能记录。"""
 
     records: dict[str, SkillRecord]
 
@@ -57,20 +58,7 @@ class SkillIndex:
         return self.records.get(name)
 
 
-SKILL_CATALOG = ServiceKey[SkillIndex]("core.skill_catalog.v1")
+SKILL_CATALOG = ServiceKey[Callable[[], tuple[SkillRecord, ...]]]("core.skill_catalog.v1")
 
 
-def plugin_records(index: SkillIndex) -> tuple[SkillRecord, ...]:
-    """Return the plugin-owned records from one exact published catalog."""
-
-    return tuple(index.records[key] for key in sorted(index.records))
-
-
-__all__ = [
-    "SkillIndex",
-    "SkillRecord",
-    "SkillSource",
-    "SKILL_CATALOG",
-    "plugin_records",
-    "skill_body",
-]
+__all__ = ["SkillIndex", "SkillRecord", "SkillSource", "SKILL_CATALOG", "skill_body"]

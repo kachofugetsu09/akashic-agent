@@ -177,6 +177,7 @@ from agent.plugins.reload_journal import (
     ReloadRecoveryAction,
 )
 from agent.plugins.skill_host import PluginSkillHost
+from agent.plugin_composition.skills import SKILL_CATALOG, SkillRecord
 from agent.plugins.web_ui import resolve_web_module
 from agent.workloads.client import UnixWorkloadController, WorkloadController
 from agent.plugins.snapshot import (
@@ -5738,6 +5739,19 @@ class PluginManager:
             for generation in mount_order
             for key in cast(ComposablePlugin, generation.instance).inject
         }
+        if SKILL_CATALOG in requested:
+            def read_skill_catalog() -> tuple[SkillRecord, ...]:
+                """绑定与材料只读取实际调用所在快照的安装目录。"""
+                snapshot = get_current_runtime_snapshot()
+                current = snapshot.composition_root
+                if current is None or current.context.require(SKILL_CATALOG) is not read_skill_catalog:
+                    raise RuntimeError("技能目录不属于当前 runtime scope")
+                index = snapshot.plugin_skill_index
+                if index is None:
+                    raise RuntimeError("当前 snapshot 没有已发布技能目录")
+                return tuple(index.records[key] for key in sorted(index.records))
+
+            _ = await root.context.provide(SKILL_CATALOG, read_skill_catalog)
         if CREDENTIALS in requested:
             clients = CredentialClients(None if candidate or self._validation_only else {
                 generation.plugin_id: CoreProviderClientFactory(

@@ -13,9 +13,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.archive import PluginArchive
 from agent.plugin_composition.skills import (
     SKILL_CATALOG,
-    SkillIndex,
     SkillRecord,
-    plugin_records,
     skill_body,
 )
 from agent.plugin_contracts import ContentPart, Message
@@ -42,11 +40,6 @@ class SkillFile(BaseModel):
 class SkillState(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     skills: dict[str, SkillFile]
-
-
-def records(catalog: SkillIndex) -> tuple[SkillRecord, ...]:
-    """只读取当前 exact snapshot 的插件技能，不扫描 workspace 软链接或旧目录。"""
-    return plugin_records(catalog)
 
 
 def body_hash(content: str) -> str:
@@ -107,13 +100,13 @@ class SkillTool:
 async def register_skills(ctx: Context) -> ToolRef:
     """目录和工具共享已发布技能事实；工具绑定独自保存恢复材料。"""
     archive_path = ctx.data_root / "skill-files"
-    catalog = ctx.require(SKILL_CATALOG)
+    read_catalog = ctx.require(SKILL_CATALOG)
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
             raise ValueError("技能读取没有调用者配置")
         archive = PluginArchive(archive_path)
-        return SkillState(skills={record.name: save_skill(record, archive) for record in records(catalog)}).model_dump()
+        return SkillState(skills={record.name: save_skill(record, archive) for record in read_catalog()}).model_dump()
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[SkillTool]:
@@ -122,7 +115,7 @@ async def register_skills(ctx: Context) -> ToolRef:
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
         catalog_lines: list[str] = []
         active: list[str] = []
-        for record in records(catalog):
+        for record in read_catalog():
             catalog_lines.append(
                 f"- {record.name}: {record.description}\n"
                 f"  适用：{record.when_to_use}；来源：{record.source}/{record.source_id}；"
