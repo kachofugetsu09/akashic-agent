@@ -115,6 +115,17 @@ def _count(path: Path, query: str) -> int:
         return 0
 
 
+def _rows(
+    path: Path,
+    query: str,
+    parameters: tuple[object, ...] = (),
+) -> list[tuple[object, ...]]:
+    """Read committed fixture rows for assertions that need owner identity."""
+
+    with closing(sqlite3.connect(path)) as connection:
+        return [tuple(row) for row in connection.execute(query, parameters)]
+
+
 async def _embedding_server() -> tuple[web.AppRunner, str]:
     """提供真实 openai-compatible embedding HTTP 边界，返回确定向量。"""
 
@@ -147,7 +158,13 @@ async def _embedding_server() -> tuple[web.AppRunner, str]:
     return runner, f"http://127.0.0.1:{sock.getsockname()[1]}/v1"
 
 
-async def _append_followup(core: Any, session_id: str = "wake:interop") -> None:
+async def _append_followup(
+    core: Any,
+    *,
+    explicit_quote: bool,
+    suffix: str,
+    session_id: str = "wake:interop",
+) -> None:
     """经正式 MessageLog 与当前 Content owner 追加完整 Wake follow-up。"""
 
     async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
@@ -163,11 +180,17 @@ async def _append_followup(core: Any, session_id: str = "wake:interop") -> None:
             content=checks,
         )
         proactive.append(
-            "p1",
+            f"p{suffix}",
             Output(
                 (ContentPart("text", "主动提醒某个很长很长的主题"),),
                 "complete",
             ),
+        )
+        user_text = (
+            "被回复消息：主动提醒某个很长很长的主题\n\n"
+            "【你当前新消息】我继续这个主题"
+            if explicit_quote
+            else "我继续这个主题"
         )
         user = log.writer(
             session_id,
@@ -177,16 +200,8 @@ async def _append_followup(core: Any, session_id: str = "wake:interop") -> None:
             content=checks,
         )
         user.append(
-            "u1",
-            Input(
-                (
-                    ContentPart(
-                        "text",
-                        "被回复消息：主动提醒某个很长很长的主题\n\n"
-                        "【你当前新消息】我继续这个主题",
-                    ),
-                )
-            ),
+            f"u{suffix}",
+            Input((ContentPart("text", user_text),)),
         )
         assistant = log.writer(
             session_id,
@@ -196,15 +211,17 @@ async def _append_followup(core: Any, session_id: str = "wake:interop") -> None:
             content=checks,
         )
         assistant.append(
-            "a1",
+            f"a{suffix}",
             Output((ContentPart("text", "我接着回答这个主题"),), "complete"),
         )
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_quote", (False, True))
 async def test_installed_manager_message_append_reaches_pf_and_emotion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    explicit_quote: bool,
 ) -> None:
     """正式归档加载后，真实 Message 自然抵达 PF 与 Emotion。"""
 
@@ -279,7 +296,7 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
             },
         )
 
-        await _append_followup(core)
+        await _append_followup(core, explicit_quote=explicit_quote, suffix="1")
         pf_db = installed["proactive_feedback"].data_path / "proactive_feedback.db"
         emotion_db = workspace / "emotion" / "emotion.db"
 
@@ -290,6 +307,22 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
             )
             == 1
         )
+        pf_first = _rows(
+            pf_db,
+            "SELECT id, user_message_id, assistant_message_id, "
+            "proactive_message_id, feedback_type, confidence, pa_score, pua_score "
+            "FROM proactive_feedback_events ORDER BY id",
+        )
+        assert len(pf_first) == 1
+        assert pf_first[0][0] == 1
+        assert pf_first[0][1:4] == ("u1", "a1", "p1")
+        expected_feedback_type = "explicit_quote" if explicit_quote else "topic_follow"
+        assert pf_first[0][4] == expected_feedback_type
+        assert pf_first[0][5] == ("gold" if explicit_quote else "high")
+        if explicit_quote:
+            assert pf_first[0][6:8] == (1.0, 1.0)
+        else:
+            assert pf_first[0][7] == pytest.approx(1.0)
         assert _count(
             pf_db,
             "SELECT count(*) FROM proactive_feedback_input_inbox "
@@ -297,37 +330,166 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
         ) == 1
 
         # Emotion observes the same completed Turn directly from MessageCatalog.
-        await _eventually(
-            lambda: _count(
+        if explicit_quote:
+            await _eventually(
+                lambda: _count(
+                    emotion_db,
+                    "SELECT count(*) FROM emotion_events "
+                    "WHERE source_event_id='emotion_explicit_quote:a1' "
+                    "AND source_type='explicit_quote'",
+                )
+                == 1
+            )
+        else:
+            assert _count(
                 emotion_db,
                 "SELECT count(*) FROM emotion_events "
-                "WHERE source_type='explicit_quote'",
-            )
-            == 1
-        )
+                "WHERE source_plugin='emotion' AND source_type='explicit_quote'",
+            ) == 0
 
-        # Restart the real manager so the consumer's immediate Timer pull sees the
-        # durable PF page; no lifecycle event is manufactured or emitted by test code.
-        await core.bus.aclose()
-        await core.stop()
-        core = None
-        await http.aclose()
-        http = SharedHttpResources()
-        core = build_core_runtime(Config(), workspace, http, plugin_dirs=[])
-        await core.start()
-        await core.plugin_manager.start_runtime()
+        async def restart_manager() -> None:
+            """Restart the formal manager so its real immediate Timer runs."""
 
-        # Its real Timer pull consumes the PF history page without any lifecycle emit.
+            nonlocal core, http
+            assert core is not None and http is not None
+            await core.bus.aclose()
+            await core.stop()
+            core = None
+            await http.aclose()
+            http = SharedHttpResources()
+            core = build_core_runtime(Config(), workspace, http, plugin_dirs=[])
+            await core.start()
+            await core.plugin_manager.start_runtime()
+
+        # The first real restart consumes exactly PF row 1 through the
+        # generation-owned immediate Timer; no lifecycle event is emitted here.
+        await restart_manager()
         await _eventually(
             lambda: _count(
                 emotion_db,
-                "SELECT count(*) FROM pf_history_cursor "
+                "SELECT row_id FROM pf_history_cursor "
                 "WHERE source='proactive_feedback'",
             )
             == 1,
             attempts=1400,
         )
+        first_import = _rows(
+            emotion_db,
+            "SELECT source_plugin, source_event_id, source_type, "
+            "valence_delta, dominance_delta "
+            "FROM emotion_events WHERE source_event_id='proactive_feedback:1'",
+        )
+        assert len(first_import) == 1
+        assert first_import[0][0] == "proactive_feedback"
+        if explicit_quote:
+            assert first_import[0][2:] == (
+                "explicit_quote_already_applied",
+                0.0,
+                0.0,
+            )
+        else:
+            assert first_import[0][2] == "topic_follow"
+            assert first_import[0][3] > 0.0
+            assert first_import[0][4] > 0.0
         assert _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples") == 1
+
+        # Add another real completed Message after the first pull.  The running
+        # history Timer is on its ordinary interval, so row 2 remains pending.
+        await _append_followup(core, explicit_quote=explicit_quote, suffix="2")
+        await _eventually(
+            lambda: _count(
+                pf_db,
+                "SELECT count(*) FROM proactive_feedback_events",
+            )
+            == 2
+        )
+        if explicit_quote:
+            await _eventually(
+                lambda: _count(
+                    emotion_db,
+                    "SELECT count(*) FROM emotion_events "
+                    "WHERE source_event_id='emotion_explicit_quote:a2' "
+                    "AND source_type='explicit_quote'",
+                )
+                == 1
+            )
+        assert _count(
+            emotion_db,
+            "SELECT row_id FROM pf_history_cursor "
+            "WHERE source='proactive_feedback'",
+        ) == 1
+        pf_rows = _rows(
+            pf_db,
+            "SELECT id, user_message_id, assistant_message_id, "
+            "proactive_message_id FROM proactive_feedback_events ORDER BY id",
+        )
+        assert [row[0] for row in pf_rows] == [1, 2]
+        assert [row[1:] for row in pf_rows] == [
+            ("u1", "a1", "p1"),
+            ("u2", "a2", "p2"),
+        ]
+
+        # A second real restart fires another immediate Timer and consumes only
+        # the newly pending PF row 2.
+        await restart_manager()
+        await _eventually(
+            lambda: _count(
+                emotion_db,
+                "SELECT row_id FROM pf_history_cursor "
+                "WHERE source='proactive_feedback'",
+            )
+            == 2,
+            attempts=1400,
+        )
+        imported = _rows(
+            emotion_db,
+            "SELECT source_plugin, source_event_id, source_type, "
+            "valence_delta, dominance_delta "
+            "FROM emotion_events "
+            "WHERE source_event_id LIKE 'proactive_feedback:%' ORDER BY source_event_id",
+        )
+        assert [row[1] for row in imported] == [
+            "proactive_feedback:1",
+            "proactive_feedback:2",
+        ]
+        assert all(row[0] == "proactive_feedback" for row in imported)
+        if explicit_quote:
+            assert [row[2:] for row in imported] == [
+                ("explicit_quote_already_applied", 0.0, 0.0),
+                ("explicit_quote_already_applied", 0.0, 0.0),
+            ]
+            assert _count(
+                emotion_db,
+                "SELECT count(*) FROM emotion_events "
+                "WHERE source_type='explicit_quote'",
+            ) == 2
+        else:
+            assert [row[2] for row in imported] == ["topic_follow", "topic_follow"]
+            assert all(row[3] > 0.0 and row[4] > 0.0 for row in imported)
+        state = _rows(
+            emotion_db,
+            "SELECT valence, dominance FROM emotion_state WHERE id=1",
+        )
+        assert len(state) == 1
+        assert state[0][0] > 0.0
+        assert state[0][1] > 0.0
+        assert _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples") == 2
+        sample_ids = _rows(
+            emotion_db,
+            "SELECT source_event_id FROM emotion_feedback_samples ORDER BY id",
+        )
+        if explicit_quote:
+            assert sample_ids == [("emotion_explicit_quote:a1",), ("emotion_explicit_quote:a2",)]
+        else:
+            assert sample_ids == [("proactive_feedback:1",), ("proactive_feedback:2",)]
+
+        # Both immediate pulls remain idempotent: the second restart must not
+        # re-import row 1 or apply either direct signal twice.
+        event_count = _count(emotion_db, "SELECT count(*) FROM emotion_events")
+        sample_count = _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples")
+        await asyncio.sleep(0.1)
+        assert _count(emotion_db, "SELECT count(*) FROM emotion_events") == event_count
+        assert _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples") == sample_count
     finally:
         if core is not None:
             await core.bus.aclose()
