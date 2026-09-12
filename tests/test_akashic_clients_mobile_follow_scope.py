@@ -14,7 +14,6 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
-from agent.config_models import MobileRealtimeConfig
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from plugins.akashic_clients.mobile_realtime.auth import (
     DeviceAuthenticator,
@@ -36,6 +35,7 @@ from plugins.akashic_clients.mobile_realtime.storage import (
     DeviceRecord,
     MobileRealtimeStorage,
 )
+from plugins.akashic_clients.config import MobileRealtimeConfig
 from plugins.akashic_clients.scoped_capabilities import open_request_scope
 from session.log import MessageLog
 from session.message import ContentPart, Input
