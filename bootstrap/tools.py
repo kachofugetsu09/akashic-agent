@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -426,6 +426,7 @@ def build_core_runtime(
     restart_gate: RestartGate | None = None,
     *,
     clear_stale_session_admissions: bool = False,
+    plugin_dirs: Iterable[Path] | None = None,
 ) -> CoreRuntime:
     """从已迁移消息库装配窄 owner；构造失败关闭此前取得的连接。"""
     from contextlib import ExitStack
@@ -457,12 +458,19 @@ def build_core_runtime(
         if restart_gate is None:
             restart_gate = RestartGate(boot_id="unmanaged", supervised=False)
         control_frames = FrameBook()
+        resolved_plugin_dirs = (
+            _resolve_plugin_dirs(workspace)
+            if plugin_dirs is None
+            else _resolve_plugin_dirs(workspace, plugin_dirs=plugin_dirs)
+        )
         manager = PluginManager(
-            plugin_dirs=_resolve_plugin_dirs(workspace), event_bus=event_bus,
+            plugin_dirs=resolved_plugin_dirs, event_bus=event_bus,
             workspace=workspace, message_log=message_log, channel_identities=identities,
             installed_cache_root=plugins_root() / "cache",
             channel_attachment_store=attachments,
-            disabled_builtin_plugins=_disabled_builtin_plugins_for_runtime(config),
+            disabled_builtin_plugins=_disabled_builtin_plugins_for_runtime(
+                config, resolved_plugin_dirs
+            ),
             restart_gate=restart_gate,
             control_frames=control_frames,
         )
@@ -481,26 +489,46 @@ def build_core_runtime(
         return runtime
 
 
-def _resolve_plugin_dirs(workspace: Path) -> list[Path]:
-    project_root = Path(__file__).resolve().parent.parent
-    roots = [project_root / "plugins"]
+def _resolve_plugin_dirs(
+    workspace: Path,
+    *,
+    plugin_dirs: Iterable[Path] = (),
+) -> list[Path]:
+    """Return only explicitly requested development plugin roots."""
+
+    _ = workspace
+    roots = [Path(item).expanduser() for item in plugin_dirs]
     extra = os.environ.get("AKASHIC_EXTRA_PLUGIN_DIRS", "")
     roots.extend(
         Path(item).expanduser() for item in extra.split(os.pathsep) if item.strip()
     )
-    return roots
+    result: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        normalized = root.resolve(strict=False)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(root)
+    return result
 
 
-def _disabled_builtin_plugins_for_runtime(config: Config) -> frozenset[str]:
-    """Disable built-in Workload plugins when this deployment has no Controller."""
+def _disabled_builtin_plugins_for_runtime(
+    config: Config,
+    plugin_dirs: Iterable[Path] = (),
+) -> frozenset[str]:
+    """Apply generic disabled/Workload rules to explicit development roots."""
 
     disabled = set(config.disabled_builtin_plugins)
-    builtin_root = Path(__file__).resolve().parent.parent / "plugins"
+    roots = tuple(plugin_dirs)
+    if not roots:
+        return frozenset(disabled)
+
     from agent.plugins.source_resolver import resolve_plugin_sources
 
     known = {
         source.plugin_name or source.plugin_root.name
-        for source in resolve_plugin_sources([builtin_root])
+        for source in resolve_plugin_sources(list(roots))
     }
     unknown = sorted(disabled - known)
     if unknown:
@@ -514,7 +542,8 @@ def _disabled_builtin_plugins_for_runtime(config: Config) -> frozenset[str]:
 
     unavailable = {
         manifest.name
-        for path in builtin_root.glob("*/akashic.plugin.toml")
+        for root in roots
+        for path in root.glob("*/akashic.plugin.toml")
         if (manifest := load_static_plugin_manifest(path.parent)).workloads
     }
     if unavailable:

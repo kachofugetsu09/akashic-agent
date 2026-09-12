@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 from agent.plugins.artifacts import ArtifactSelector, read_pointers, resolve_pointer
 from agent.plugins.static_manifest import (
@@ -23,7 +23,7 @@ class ResolvedPluginSource:
 
 
 def resolve_plugin_sources(
-    plugin_dirs: list[Path],
+    plugin_dirs: Sequence[Path] = (),
     *,
     installed_cache_root: Path | None = None,
     installed_selector: ArtifactSelector = "stable",
