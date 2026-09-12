@@ -69,8 +69,6 @@ class GateResult:
 class PluginContributions:
     manifest: dict[str, object]
     asset_roots: tuple[tuple[str, tuple[Path, ...]], ...] = ()
-    skill_roots: tuple[Path, ...] = ()
-    drift_skill_roots: tuple[Path, ...] = ()
     dashboard_module: Path | None = None
     web_module: WebModuleAsset | None = None
 

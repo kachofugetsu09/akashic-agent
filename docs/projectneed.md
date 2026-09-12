@@ -723,7 +723,7 @@ active 检查错误、generation key 错配、名称冲突、依赖缺失和拓�
 
 ### PLG-009 Skill 和 MCP 通过插件安装发布
 
-Skill、Drift skill 和 MCP server 都由 V3 插件 artifact 声明并通过插件安装系统进入 Akashic。模块的 `skill_roots`、`drift_skill_roots` 属性是 Skill 来源；MCP 的 static manifest admission identity 必须与 `apply` 中 `MCP_SERVERS.register(...)` 的 Fiber-owned registration 完全一致。安装阶段准备代码与 MCP runtime，generation readiness 全部通过后再原子发布 catalog。workspace 中的 skill 软链接只是当前插件 generation 的可重建投影，不是 canonical source。独立 `mcp/servers/*.toml`、手工 skill 目录和 `[packages]` 均不属于当前安装模型，也没有兼容读取入口。
+Skill、Drift skill 和 MCP server 都由 V3 插件 artifact 声明并通过插件安装系统进入 Akashic。模块通过 `asset_roots` 声明类别与目录；Core 只固定每个 generation 的资产树，Skill 格式、可用性和目录由普通插件解释。旧 `skill_roots`、`drift_skill_roots` 只在模块加载边界转换成资产声明。MCP 的 static manifest admission identity 必须与 `apply` 中 `MCP_SERVERS.register(...)` 的 Fiber-owned registration 完全一致。安装阶段准备代码与 MCP runtime，generation readiness 全部通过后再原子发布。Core 不创建、重建或删除 workspace 中的历史 skill 软链接，也不读取手工 skill 目录补齐能力。原有目录、链接及 ownership journal 保留，不能借重构自动减少；旧未完成外部效果保留为待恢复。独立 `mcp/servers/*.toml` 和 `[packages]` 均不属于当前安装模型。
 
 ### PLG-010 卸载插件默认保留 plugin-data
 

@@ -53,7 +53,8 @@ def _manager(root: Path, workspace: Path, *, with_plugin: bool) -> PluginManager
 
 
 @pytest.mark.asyncio
-async def test_startup_keeps_retired_activity_recovery_pending(tmp_path: Path) -> None:
+@pytest.mark.parametrize("resource", ["activity-publication", "plugin-skill-projection"])
+async def test_startup_keeps_retired_activity_recovery_pending(tmp_path: Path, resource: str) -> None:
     """旧 Activity owner 记录不能在启动时被伪造为 recovered。"""
 
     workspace = tmp_path / "workspace"
@@ -61,11 +62,11 @@ async def test_startup_keeps_retired_activity_recovery_pending(tmp_path: Path) -
     _write_plugin(tmp_path)
     journal = _write_recovery_action(
         workspace,
-        resource="channel-publication, activity-publication ,channel-binding:old",
+        resource=f"channel-publication, {resource} ,channel-binding:old",
     )
     manager = _manager(tmp_path, workspace, with_plugin=True)
     try:
-        with pytest.raises(RuntimeError, match="retired activity-publication owner"):
+        with pytest.raises(RuntimeError, match="retired.*" + resource):
             await manager.load_all()
     finally:
         await manager.terminate_all()
@@ -74,23 +75,24 @@ async def test_startup_keeps_retired_activity_recovery_pending(tmp_path: Path) -
     assert record is not None
     assert record.phase == "degraded"
     assert record.failure_resource == (
-        "channel-publication, activity-publication ,channel-binding:old"
+        f"channel-publication, {resource} ,channel-binding:old"
     )
 
 
 @pytest.mark.asyncio
-async def test_manual_retry_keeps_retired_activity_recovery_pending(tmp_path: Path) -> None:
+@pytest.mark.parametrize("resource", ["activity-publication", "plugin-skill-projection"])
+async def test_manual_retry_keeps_retired_activity_recovery_pending(tmp_path: Path, resource: str) -> None:
     """手工 retry 不能调用已删除 owner，也不能完成 journal。"""
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     journal = _write_recovery_action(
         workspace,
-        resource="channel-publication,activity-publication",
+        resource=f"channel-publication,{resource}",
     )
     manager = _manager(tmp_path, workspace, with_plugin=False)
     try:
-        with pytest.raises(RuntimeError, match="retired activity-publication owner"):
+        with pytest.raises(RuntimeError, match="retired.*" + resource):
             await manager.retry_runtime_recovery("baseline")
     finally:
         await manager.terminate_all()

@@ -569,3 +569,22 @@ delivery 或 TelegramSender。用本地 HTTP 服务实现 OpenAI 与 Telegram �
 delivered 回执。关闭所有 runtime 后重新打开消息库，原 Input/Output 字节语义未变，
 送达记录仍保留 provider ID 731。该测试通过；不声称测试了真实 Telegram 网络、
 Bot 收件或 checkout 完全不可见的进程（后二者有各自独立验收）。
+
+### 9.30 资产的唯一生命周期与旧投影退役
+
+删除 Core SkillLinker、启动/发布/回滚自动软链接路径，doctor 只检查任意类别的
+声明资产目录，不再要求 workspace skill 链接，也不从 checkout 补齐未安装的插件。
+旧模块字段只在读取模块时转换；ComposablePlugin、PluginContributions 和
+ActivePluginInfo 不再保存重复的技能专用字段。
+
+候选升为正式版本的实际测试暴露原快照资产 ID 漏接。修复采用一份 generation
+资产树：快照从自己固定的 generation 集合派生目录，不再复制第二份拓扑目录或
+保存独立目录 ID。历史归档重开也准备同一生命周期的资产；关闭失败保留 owner，
+重试完成后才注销。持久 SkillTool 的原绑定文件树协议保持不变。
+
+原 workspace 用户文件、同名目录、旧软链接和 ownership journal 都不改变；同名
+用户目录不再阻止插件升级。旧恢复记录若仍依赖已删除投影 owner，启动与显式
+retry 均在外部效果之前阻断，journal 保持 pending。没有正式数据迁移。
+
+68 项资产/候选/归档/外置组合回归通过；补查清理重试与运行入口的 88 项测试通过，
+定向类型检查零错误。完整 Gate 与 CI 仍在所有实施层完成后统一执行。

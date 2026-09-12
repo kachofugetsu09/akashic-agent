@@ -27,8 +27,6 @@ class ComposablePlugin:
     author: str
     inject: tuple[ServiceKey[object], ...]
     asset_roots: tuple[tuple[str, tuple[str, ...]], ...]
-    skill_roots: tuple[str, ...]
-    drift_skill_roots: tuple[str, ...]
     workspace_roots: tuple[str, ...]
     workspace_files: tuple[str, ...]
     dashboard_module: str | None
@@ -125,8 +123,6 @@ class ComposablePlugin:
             author=str(getattr(module, "author", "")),
             inject=inject,
             asset_roots=asset_roots,
-            skill_roots=skill_roots,
-            drift_skill_roots=drift_skill_roots,
             workspace_roots=workspace_roots,
             workspace_files=workspace_files,
             dashboard_module=cast(str | None, dashboard_module),
@@ -246,12 +242,12 @@ def _asset_roots_export(
 
     raw = getattr(module, "asset_roots", None)
     if raw is None:
-        entries: dict[str, tuple[str, ...]] = {}
+        legacy: dict[str, tuple[str, ...]] = {}
         if skill_roots:
-            entries["skills"] = skill_roots
+            legacy["skills"] = skill_roots
         if drift_skill_roots:
-            entries["drift_skills"] = drift_skill_roots
-        return tuple(sorted(entries.items()))
+            legacy["drift_skills"] = drift_skill_roots
+        return tuple(sorted(legacy.items()))
     if skill_roots or drift_skill_roots:
         raise ValueError("v3 插件不能同时声明 asset_roots 与旧 skill_roots")
     if not isinstance(raw, Mapping):
@@ -276,8 +272,6 @@ def _asset_roots_export(
         if len(set(typed_paths)) != len(typed_paths):
             raise ValueError(f"v3 插件 asset_roots[{raw_category}] 不得重复路径")
         entries.append((raw_category, typed_paths))
-    if len({category for category, _ in entries}) != len(entries):
-        raise ValueError("v3 插件 asset_roots 类别不得重复")
     return tuple(sorted(entries))
 
 

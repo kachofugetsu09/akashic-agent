@@ -6,6 +6,19 @@
 - 目标读者：维护者、coding agent、迁移与备份实现者、评审者
 - 关联条款：STA-001～STA-003、CTX-001、SES-001～SES-006、MEM-001～MEM-009、PLG-001～PLG-013、WSP-001～WSP-004、SCH-001～SCH-002、PRO-001～PRO-002、BAK-001
 
+## 2026-09-12：插件资产归属修订
+
+用户授权正交插件重构后，当前实现停止由 Core 同步 `skills/`、`drift/skills/`
+及 `runtime/plugin-skill-links.json`。下文记录的 Linker 正常写入/删除路径是旧版事实，
+不再是现行恢复动作。已有目录、软链接、ownership journal 均保留，不自动迁移、
+重建或减少；旧 pending 外部效果没有实际恢复证据时继续阻断，不能伪造完成。
+
+当前普通安装只增加插件 artifact；每个 generation 准备自己的临时固定资产树，
+在其全部快照租约排空后由 generation scope 清理。清理失败保留真实 owner 供重试。
+Skill 消费者按当前快照取得该代资产；持久工具绑定另存不可变 skill-files 归档，
+没有新增自动 GC、消息修改或 plugin-data 减少协议。历史源码和本次修改前的
+Git archive 是源码恢复点，不代表正式 workspace 已迁移；本任务未操作正式数据。
+
 ## 1. 这份地图怎样使用
 
 这份文件不只回答“落了哪些文件”，还回答每类数据怎样增加、怎样原位更新、怎样逻辑失效、什么条件才允许物理减少。它先陈述代码事实，再提出设计意图推断。两者不能混用：
