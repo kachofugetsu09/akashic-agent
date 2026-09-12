@@ -13,6 +13,7 @@ from docker.debug.plugin_external_acceptance import (
     _ensure_empty_directory,
     _invoke_capability,
     _load_distribution,
+    _write_bootstrap_config,
 )
 
 
@@ -23,6 +24,18 @@ def test_external_acceptance_rejects_nonempty_runtime_directory(tmp_path: Path) 
 
     with pytest.raises(ValueError, match="必须为空"):
         _ensure_empty_directory(workspace, "workspace")
+
+
+def test_bootstrap_workspace_seeds_legal_context_material_grants(tmp_path: Path) -> None:
+    _write_bootstrap_config(tmp_path, marketplace="acceptance")
+
+    config = (tmp_path / "plugin-data/context-acceptance/config.local.toml").read_text(
+        encoding="utf-8"
+    )
+    assert 'default_prompt = "prompt@acceptance"' in config
+    assert 'markdown_memory = "markdown_memory@acceptance"' in config
+    assert 'skills = "standard_tools@acceptance"' in config
+    assert 'summary_source = ["compaction", "compaction@acceptance"]' in config
 
 
 def test_capability_enumeration_does_not_count_as_call() -> None:

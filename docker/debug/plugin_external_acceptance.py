@@ -78,6 +78,145 @@ outbound_queue_size = 512
 """
 
 
+class _AcceptanceWorkloadController:
+    """Serve the narrow local workload protocol without starting a container."""
+
+    def __init__(self, socket_path: Path) -> None:
+        self._socket_path = socket_path
+        self._control_server: asyncio.AbstractServer | None = None
+        self._health_server: asyncio.AbstractServer | None = None
+        self._health_port: int | None = None
+        self._sequence = 0
+        self.actions: list[str] = []
+
+    @property
+    def socket_path(self) -> Path:
+        return self._socket_path
+
+    async def start(self) -> None:
+        self._socket_path.unlink(missing_ok=True)
+        self._health_server = await asyncio.start_server(
+            self._serve_health, "127.0.0.1", 0
+        )
+        health_socket = self._health_server.sockets
+        if not health_socket:
+            raise RuntimeError("local fake workload health server 没有 socket")
+        self._health_port = int(health_socket[0].getsockname()[1])
+        self._control_server = await asyncio.start_unix_server(
+            self._serve_control, path=str(self._socket_path)
+        )
+
+    async def close(self) -> None:
+        for server in (self._control_server, self._health_server):
+            if server is not None:
+                server.close()
+                await server.wait_closed()
+        self._control_server = None
+        self._health_server = None
+        self._socket_path.unlink(missing_ok=True)
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "actions": tuple(self.actions),
+            "start_calls": self.actions.count("start"),
+            "stop_calls": self.actions.count("stop"),
+            "cleanup_candidates_calls": self.actions.count("cleanup_candidates"),
+            "external_processes_started": False,
+        }
+
+    async def _serve_health(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            request = (await reader.read(4096)).splitlines()
+            path = ""
+            if request:
+                fields = request[0].decode("ascii", errors="replace").split()
+                if len(fields) >= 2:
+                    path = fields[1]
+            if path == "/driver/status":
+                body = b'{"version":2,"source":true,"ready":true}'
+                content_type = b"application/json"
+            else:
+                body = b"ok"
+                content_type = b"text/plain"
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Length: "
+                + str(len(body)).encode("ascii")
+                + b"\r\nContent-Type: "
+                + content_type
+                + b"\r\nConnection: close\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def _serve_control(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            raw = await reader.readline()
+            request = json.loads(raw)
+            if not isinstance(request, dict) or request.get("version") != 1:
+                raise ValueError("local fake workload request version 无效")
+            action = request.get("action")
+            body = request.get("body")
+            if not isinstance(action, str) or not isinstance(body, dict):
+                raise ValueError("local fake workload request 缺少 action/body")
+            self.actions.append(action)
+            payload = self._response(action, body)
+            result = {"ok": True, "body": payload}
+        except Exception as error:
+            result = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+        writer.write(json.dumps(result, separators=(",", ":")).encode() + b"\n")
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    def _response(self, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        if action == "cleanup_candidates":
+            return {"receipts": []}
+        if action == "stop":
+            lease = body.get("lease")
+            if not isinstance(lease, dict):
+                raise ValueError("local fake workload stop 缺少 lease")
+            return {"lease": lease, "container_absent": True, "mounts_released": True}
+        if action != "start":
+            raise ValueError(f"local fake workload action 不支持: {action}")
+        ports = body.get("ports")
+        if not isinstance(ports, list) or any(
+            not isinstance(item, list) or len(item) != 2 or not isinstance(item[0], str)
+            for item in ports
+        ):
+            raise ValueError("local fake workload start ports 无效")
+        required = (
+            "workspace_id",
+            "plugin_id",
+            "workload",
+            "mode",
+            "transaction_id",
+            "generation_id",
+            "spec_digest",
+        )
+        if any(not isinstance(body.get(key), str) or not body[key] for key in required):
+            raise ValueError("local fake workload start identity 无效")
+        self._sequence += 1
+        lease = {key: body[key] for key in required}
+        lease["container_id"] = f"external-acceptance-fake-{self._sequence}"
+        if self._health_port is None:
+            raise RuntimeError("local fake workload health server 尚未启动")
+        return {
+            "lease": lease,
+            "endpoints": [
+                {"name": item[0], "url": f"http://127.0.0.1:{self._health_port}"}
+                for item in ports
+            ],
+            "adopted_from_generation": None,
+        }
+
+
 def _under(path: Path, root: Path) -> bool:
     try:
         path.resolve(strict=False).relative_to(root.resolve(strict=False))
@@ -330,10 +469,23 @@ def _prepare_runtime(
     }
 
 
-def _write_bootstrap_config(workspace: Path) -> Path:
+def _write_bootstrap_config(
+    workspace: Path, *, marketplace: str = "external-acceptance"
+) -> Path:
     """Create the credential-free config used by the real AppRuntime probe."""
 
     path = workspace / "external-acceptance-config.toml"
+    context_data = workspace / "plugin-data" / f"context-{marketplace}" / "config.local.toml"
+    context_data.parent.mkdir(parents=True, exist_ok=True)
+    context_data.write_text(
+        "prompt_sources = {{default_prompt = \"prompt@{marketplace}\", "
+        "markdown_memory = \"markdown_memory@{marketplace}\", "
+        "skills = \"standard_tools@{marketplace}\"}}\n"
+        "summary_source = [\"compaction\", \"compaction@{marketplace}\"]\n".format(
+            marketplace=marketplace,
+        ),
+        encoding="utf-8",
+    )
     path.write_text(
         _BOOTSTRAP_CONFIG.format(workspace=repr(str(workspace))),
         encoding="utf-8",
@@ -376,16 +528,21 @@ async def _start_app_runtime(
     plugins_home: Path,
     repo_root: Path,
     core_root: Path,
+    marketplace: str = "external-acceptance",
 ) -> tuple[Any, dict[str, Any], dict[str, str | None]]:
     """Start the product AppRuntime and return it with observable startup evidence."""
 
     previous_environment = {
         name: os.environ.get(name)
-        for name in ("AKASHIC_PLUGIN_HOME", "AKASHIC_WORKSPACE")
+        for name in (
+            "AKASHIC_PLUGIN_HOME",
+            "AKASHIC_WORKSPACE",
+            "AKASHIC_WORKLOAD_SOCKET",
+        )
     }
     os.environ["AKASHIC_PLUGIN_HOME"] = str(plugins_home)
     os.environ["AKASHIC_WORKSPACE"] = str(workspace)
-    config_path = _write_bootstrap_config(workspace)
+    config_path = _write_bootstrap_config(workspace, marketplace=marketplace)
     evidence: dict[str, Any] = {
         "config": str(config_path),
         "checks": {
@@ -397,8 +554,20 @@ async def _start_app_runtime(
             "app_server_started": False,
             "checkout_invisible": False,
             "core_modules_from_artifact": False,
+            "local_workload_controller": False,
         },
     }
+    workload_controller = _AcceptanceWorkloadController(
+        workspace / "external-acceptance-workload.sock"
+    )
+    try:
+        await workload_controller.start()
+    except Exception:
+        await workload_controller.close()
+        raise
+    os.environ["AKASHIC_WORKLOAD_SOCKET"] = str(workload_controller.socket_path)
+    evidence["_workload_controller"] = workload_controller
+    evidence["checks"]["local_workload_controller"] = True
     runtime: Any = None
     try:
         from agent.config import Config
@@ -410,6 +579,9 @@ async def _start_app_runtime(
         )
         await runtime.start()
     except Exception as error:
+        await workload_controller.close()
+        evidence["fake_workload_controller"] = workload_controller.evidence()
+        evidence.pop("_workload_controller", None)
         evidence["start_error"] = f"{type(error).__name__}: {error}"
         evidence["checkout_modules_visible"] = _visible_checkout_modules(repo_root, None)
         evidence["core_module_violations"] = _core_module_violations(core_root)
@@ -459,6 +631,15 @@ async def _stop_app_runtime(
         await runtime.shutdown()
     except Exception as error:
         evidence["shutdown_error"] = f"{type(error).__name__}: {error}"
+    workload_controller = evidence.pop("_workload_controller", None)
+    if workload_controller is not None:
+        try:
+            evidence["fake_workload_controller"] = workload_controller.evidence()
+            await workload_controller.close()
+        except Exception as error:
+            evidence["workload_controller_close_error"] = (
+                f"{type(error).__name__}: {error}"
+            )
     manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
     socket_path = workspace / "akashic.sock"
     checks = evidence["checks"]
@@ -469,6 +650,9 @@ async def _stop_app_runtime(
                 manager is not None and manager.current_snapshot is None
             ),
             "app_server_socket_removed": not socket_path.exists(),
+            "workload_controller_socket_removed": not (
+                workspace / "external-acceptance-workload.sock"
+            ).exists(),
             "background_tasks_stopped": _runtime_task_evidence(runtime)[
                 "all_background_tasks_done"
             ],
@@ -805,6 +989,7 @@ async def _exercise(
             plugins_home=plugins_home,
             repo_root=repo_root,
             core_root=core_root,
+            marketplace=marketplace,
         )
         evidence["bootstrap"] = startup
         manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
@@ -1020,6 +1205,7 @@ async def _exercise_fleet(
             plugins_home=plugins_home,
             repo_root=repo_root,
             core_root=core_root,
+            marketplace=marketplace,
         )
         manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
         if startup.get("start_error"):
