@@ -181,3 +181,7 @@ note = "content-wake 设计列为现有原子；代码中无此 ServiceKey"
 
 [phantom.BACKGROUND_JOBS]
 note = "插件手册与 skill 文档仍在教学使用；代码中无此 ServiceKey"
+
+[capabilities."reply.status.v2"]
+role = "seam"
+note = "客户端消费插件已投影的短命回复状态，不取得内部状态类"
