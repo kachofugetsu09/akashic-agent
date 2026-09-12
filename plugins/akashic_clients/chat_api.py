@@ -191,9 +191,12 @@ def create_chat_app(
     model_control: ModelRpcInvoker | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+    message_scope: Callable[[], Any] | None = None,
     attachment_store: AttachmentStore | None = None,
     artifact_store: ChannelAttachmentArtifactStore | None = None,
 ) -> FastAPI:
+    if messages is not None and message_scope is not None:
+        raise ValueError("chat API 不能同时绑定直接消息 provider 与 request scope")
     if messages is not None:
         channel.bind_message_readers(messages, reply_status)
     if message_display is not None:
@@ -212,6 +215,19 @@ def create_chat_app(
         _include_model_settings_routes(app, model_control)
     app.state.workspace = workspace
     app.state.channel = channel
+
+    @asynccontextmanager
+    async def open_message_catalog() -> AsyncGenerator[MessageCatalog, None]:
+        """Hold the message catalog only while one HTTP operation is running."""
+
+        if message_scope is not None:
+            async with message_scope() as catalog:
+                yield cast(MessageCatalog, catalog)
+            return
+        if messages is None:
+            raise HTTPException(status_code=503, detail="会话日志不可用")
+        yield messages
+
     project_root = Path(__file__).resolve().parent.parent
     static_dir = project_root / "static" / "chat"
     index_file = static_dir / "index.html"
@@ -270,20 +286,19 @@ def create_chat_app(
         )
 
     @app.get("/api/chat/sessions")
-    def list_sessions(
+    async def list_sessions(
         page_size: int = Query(50, ge=1, le=200),
         after_time: str | None = Query(default=None),
         after_key: str | None = Query(default=None),
     ) -> dict[str, object]:
-        if messages is None:
-            raise HTTPException(status_code=503, detail="会话日志不可用")
         if (after_time is None) != (after_key is None):
             raise HTTPException(status_code=422, detail="目录 cursor 需要时间与会话 ID")
         after = None if after_time is None or after_key is None else (after_time, after_key)
-        try:
-            page = messages.sessions(prefix=f"{channel.name}:", visibility="listed", after=after, limit=page_size)
-        except InvalidPage as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        async with open_message_catalog() as catalog:
+            try:
+                page = catalog.sessions(prefix=f"{channel.name}:", visibility="listed", after=after, limit=page_size)
+            except InvalidPage as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
         return {"items": [session_row(cast(Any, entry)) for entry in page.items], "total": page.total,
                 "next_cursor": None if page.next_cursor is None else {
                     "updated_at": page.next_cursor[0], "session_id": page.next_cursor[1]}}
@@ -299,11 +314,10 @@ def create_chat_app(
         session_override = ""
         session_effort = ""
         if session_key:
-            if messages is None:
-                raise HTTPException(status_code=503, detail="会话日志不可用")
             if model_selection_reader is None:
                 raise HTTPException(status_code=503, detail="模型选择服务不可用")
-            metadata = messages.reader(session_key).metadata()
+            async with open_message_catalog() as catalog:
+                metadata = catalog.reader(session_key).metadata()
             try:
                 selection = await model_selection_reader(
                     metadata if metadata is not None else {}
@@ -446,15 +460,14 @@ def create_chat_app(
         before_seq: int | None = Query(default=None, ge=0),
         through_seq: int | None = Query(default=None, ge=-1),
     ) -> dict[str, object]:
-        if messages is None:
-            raise HTTPException(status_code=503, detail="会话日志不可用")
-        try:
-            page = messages.reader(session_key).read_tail(
-                before_seq=before_seq, through_seq=through_seq, limit=page_size)
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="会话不存在") from error
-        except InvalidPage as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        async with open_message_catalog() as catalog:
+            try:
+                page = catalog.reader(session_key).read_tail(
+                    before_seq=before_seq, through_seq=through_seq, limit=page_size)
+            except KeyError as error:
+                raise HTTPException(status_code=404, detail="会话不存在") from error
+            except InvalidPage as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
         items = await read_message_rows(
             cast(Any, page),
             display_only=True,
@@ -595,6 +608,7 @@ def build_chat_server(
     model_control: ModelRpcInvoker | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+    message_scope: Callable[[], Any] | None = None,
     attachment_store: AttachmentStore | None = None,
     artifact_store: ChannelAttachmentArtifactStore | None = None,
     uds: str,
@@ -613,6 +627,7 @@ def build_chat_server(
             model_control=model_control,
             messages=messages,
             reply_status=reply_status,
+            message_scope=message_scope,
             attachment_store=attachment_store,
             artifact_store=artifact_store,
         ),

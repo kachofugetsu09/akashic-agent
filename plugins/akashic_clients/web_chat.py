@@ -6,8 +6,8 @@ import mimetypes
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import AsyncGenerator, AsyncIterable, Awaitable, Callable, Mapping
-from contextlib import aclosing, suppress
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import aclosing, asynccontextmanager, suppress
 from typing import Any, cast
 from uuid import uuid4
 
@@ -218,6 +218,7 @@ class WebChatChannel:
         self._events_bound = False
         self._v3_adapters: dict[str, WebNativeChannelAdapter] = {}
         self._messages: MessageCatalog | None = None
+        self._message_scope: Callable[[], Any] | None = None
         self._reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
         self._message_display: MessageDisplayReader | None = None
         self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
@@ -236,6 +237,38 @@ class WebChatChannel:
             raise RuntimeError("Web 消息读取已绑定")
         self._messages = messages
         self._reply_status = reply_status
+
+    def bind_message_scope(
+        self,
+        scope: Callable[[], Any],
+        *,
+        reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+    ) -> None:
+        """Bind a request scope factory instead of retaining a host provider."""
+
+        if not callable(scope):
+            raise TypeError("Web message scope 必须可调用")
+        if self._messages is not None:
+            raise RuntimeError("Web 消息读取已绑定直接 provider")
+        if self._message_scope is not None and self._message_scope is not scope:
+            raise RuntimeError("Web message scope 不允许替换")
+        self._message_scope = scope
+        if reply_status is not None:
+            if self._reply_status is not None and self._reply_status is not reply_status:
+                raise RuntimeError("Web reply status reader 不允许替换")
+            self._reply_status = reply_status
+
+    @asynccontextmanager
+    async def _open_message_catalog(self) -> AsyncIterator[MessageCatalog]:
+        """Hold one message capability only for the current request or stream."""
+
+        if self._message_scope is not None:
+            async with self._message_scope() as messages:
+                yield messages
+            return
+        if self._messages is None:
+            raise RuntimeError("Web 消息日志不可用")
+        yield self._messages
 
     def bind_message_display(self, providers: MessageDisplayReader) -> None:
         """绑定逐页取得插件 lease 的只读投影入口。"""
@@ -936,9 +969,8 @@ class WebChatChannel:
             after_seq = payload.get("after_seq")
             if type(after_seq) is not int or after_seq < -1:
                 raise ValueError("after_seq 必须是大于等于 -1 的整数")
-            if self._messages is None:
-                raise RuntimeError("Web 消息日志不可用")
-            head = self._messages.reader(session_id).head()
+            async with self._open_message_catalog() as messages:
+                head = messages.reader(session_id).head()
             if after_seq > head:
                 raise ValueError("after_seq 超过当前消息 head")
         except ValueError as error:
@@ -956,23 +988,21 @@ class WebChatChannel:
 
     async def _follow(self, websocket: WebSocket, session_id: str, after_seq: int) -> None:
         """日志与回复状态独立订阅，失败交回连接 owner，断线共同排空。"""
-        if self._messages is None:
-            raise RuntimeError("Web 消息日志不可用")
-
         async def send(kind: str, frames: AsyncGenerator[dict[str, object], None]) -> None:
             async with aclosing(frames):
                 async for frame in frames:
                     await websocket.send_json({"type": kind, **frame})
 
-        async with asyncio.TaskGroup() as tasks:
-            _ = tasks.create_task(send("messages.appended", follow_messages(
-                cast(Any, self._messages.reader(session_id)), after_seq=after_seq, display_only=True,
-                reader_display=self.message_display)))
-            if self._reply_status is None:
-                await websocket.send_json({"type": "reply.status", "version": 2,
-                    "session_id": session_id, "snapshot_id": None, "available": False, "items": []})
-            else:
-                _ = tasks.create_task(send("reply.status", self._reply_status(session_id)))
+        async with self._open_message_catalog() as messages:
+            async with asyncio.TaskGroup() as tasks:
+                _ = tasks.create_task(send("messages.appended", follow_messages(
+                    cast(Any, messages.reader(session_id)), after_seq=after_seq, display_only=True,
+                    reader_display=self.message_display)))
+                if self._reply_status is None:
+                    await websocket.send_json({"type": "reply.status", "version": 2,
+                        "session_id": session_id, "snapshot_id": None, "available": False, "items": []})
+                else:
+                    _ = tasks.create_task(send("reply.status", self._reply_status(session_id)))
 
     async def _cancel_follow(self, websocket: WebSocket) -> None:
         current = self._followers.get(websocket)

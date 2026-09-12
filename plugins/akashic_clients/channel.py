@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -153,7 +154,6 @@ class _GenerationAkashicAdapter:
         self._binding_token = context.binding_token
         self._config = state.config
         self._workspace = state.workspace
-        self._messages: MessageCatalogPort | None = None
         self._reply_status: ReplyStatusPort | None = None
         self._model_catalog_reader: ModelCatalogReader | None = None
         self._model_selection_reader: ModelSelectionReader | None = None
@@ -180,40 +180,31 @@ class _GenerationAkashicAdapter:
         return self._started and not self._stopped
 
     async def _resolve_capabilities(self) -> None:
-        """Check independent providers inside one exact startup scope."""
+        """Prepare request-scoped capability readers without retaining providers."""
 
         open_scope = self._context.open_scope
         if open_scope is None:
             raise RuntimeError("akashic channel 缺少 host request scope")
-        async with open_scope() as scope:
-            # Resolve message catalog at generation start because its sync page
-            # API cannot carry an async scope.  The async capabilities below
-            # open a fresh exact scope for every HTTP/WS query.
-            self._messages = scope.require(MESSAGE_CATALOG)
-            _ = scope.require(REPLY_STATUS)
-            _ = scope.require(MODEL_CATALOG)
-            _ = scope.require(MODEL_SELECTION)
-            _ = scope.require(MODEL_CALL_STATS)
-            rpc_keys = (
-                INSPECTION_DOCUMENTS_LIST,
-                INSPECTION_DOCUMENTS_GET,
-                INSPECTION_JOBS_LIST,
-                INSPECTION_JOBS_GET,
-                INSPECTION_SKILLS_LIST,
-                MODEL_CALL,
-                MODEL_CATALOG_RPC,
-                MODEL_COMMAND,
-                MODEL_DISCOVER,
-            )
-            for key in rpc_keys:
-                _ = scope.require(key)
         self._reply_status = self._follow_reply_status
         self._model_catalog_reader = self._read_model_catalog
         self._model_selection_reader = self._read_model_selection
         self._model_stats_reader = self._read_model_stats
         self._runtime_inspection = ScopedRpcRuntimeInspection(open_scope)
-        if self._web is not None and self._messages is not None:
-            self._web.bind_message_readers(self._messages, self._reply_status)
+        if self._web is not None:
+            self._web.bind_message_scope(
+                self._message_scope,
+                reply_status=self._reply_status,
+            )
+
+    @asynccontextmanager
+    async def _message_scope(self) -> AsyncIterator[MessageCatalogPort]:
+        """Resolve the message catalog only for one HTTP or WebSocket operation."""
+
+        open_scope = self._context.open_scope
+        if open_scope is None:
+            raise RuntimeError("akashic message catalog 缺少 host request scope")
+        async with open_scope() as scope:
+            yield scope.require(MESSAGE_CATALOG)
 
     async def _follow_reply_status(self, session_id: str):
         """Keep the reply status read inside this subscription's exact scope."""
@@ -300,8 +291,6 @@ class _GenerationAkashicAdapter:
     async def _start_web(self) -> None:
         if self._web is None or self._web_adapter is None:
             return
-        if self._messages is None or self._reply_status is None:
-            raise RuntimeError("akashic Web capabilities 尚未解析")
         await self._web.start()
         self._started_children.append(self._web)
         _ = await self._web_adapter.start()
@@ -314,8 +303,8 @@ class _GenerationAkashicAdapter:
             runtime_inspection=self._runtime_inspection,
             model_catalog_reader=self._model_catalog_reader,
             model_selection_reader=self._model_selection_reader,
-            messages=self._messages,
             reply_status=self._reply_status,
+            message_scope=self._message_scope,
             uds=socket_path,
         )
         await self._start_server(server, name="akashic-web")
