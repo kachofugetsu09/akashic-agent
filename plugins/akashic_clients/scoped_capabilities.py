@@ -14,17 +14,16 @@ from typing import Any, cast
 
 from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.message_view import MessageDisplayReader
-from agent.plugin_composition.requests import RequestContext
 
 from .capabilities import MESSAGE_DISPLAY, MOBILE_UI, WEB_UI
 from .services import MobileUiProvider, WebUiProvider
 
 
 RequestScopeOpener = Callable[
-    [], AbstractAsyncContextManager[RequestContext]
+    [], AbstractAsyncContextManager[Any]
 ]
 
-_ACTIVE_SCOPE: ContextVar[RequestContext | None] = ContextVar(
+_ACTIVE_SCOPE: ContextVar[Any | None] = ContextVar(
     "akashic_clients_active_request_scope",
     default=None,
 )
@@ -33,7 +32,7 @@ _ACTIVE_SCOPE: ContextVar[RequestContext | None] = ContextVar(
 @asynccontextmanager
 async def open_request_scope(
     opener: RequestScopeOpener,
-) -> AsyncIterator[RequestContext]:
+) -> AsyncIterator[Any]:
     """Open one exact host scope and expose it to nested synchronous readers."""
 
     async with opener() as scope:
@@ -44,13 +43,13 @@ async def open_request_scope(
             _ACTIVE_SCOPE.reset(token)
 
 
-def active_scope() -> RequestContext | None:
+def active_scope() -> Any | None:
     """Return the exact scope owned by the current request task, if any."""
 
     return _ACTIVE_SCOPE.get()
 
 
-def _require_active_scope(capability: str) -> RequestContext:
+def _require_active_scope(capability: str) -> Any:
     scope = _ACTIVE_SCOPE.get()
     if scope is None:
         raise RuntimeError(f"akashic {capability} 必须在 request scope 内读取")
