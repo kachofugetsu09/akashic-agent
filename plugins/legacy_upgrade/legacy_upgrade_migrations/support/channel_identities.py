@@ -4,13 +4,67 @@ from __future__ import annotations
 from contextlib import closing
 import json
 from pathlib import Path
+import re
 import sqlite3
 import tomllib
+from datetime import UTC, datetime
 from typing import cast
 
 from .session_db_backup import backup_sqlite_database
-from session.identities import init_channel_identities, seed_channel_identities
-from session.log import _session_schemas, _sql
+from .legacy_message_log import _session_schemas, _sql
+
+
+_IDENTITY_SCHEMA = {
+    "channel_identities": """CREATE TABLE IF NOT EXISTS channel_identities (
+        channel TEXT NOT NULL, identity TEXT NOT NULL, chat_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL, PRIMARY KEY(channel, identity)
+    )""",
+    "channel_identity_migrations": """CREATE TABLE IF NOT EXISTS channel_identity_migrations (
+        channel TEXT PRIMARY KEY, migrated_at TEXT NOT NULL
+    )""",
+}
+
+
+def init_channel_identities(connection: sqlite3.Connection) -> None:
+    """冻结旧渠道路由表的 schema 接纳规则，供一次性迁移使用。"""
+    def normalize(value: str) -> str:
+        return re.sub(r"\s+", "", value.lower().replace("if not exists", "")).rstrip(";")
+
+    existing: set[str] = set()
+    for name, statement in _IDENTITY_SCHEMA.items():
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name=?", (name,)
+        ).fetchone()
+        if row is not None:
+            if normalize(str(row[0])) != normalize(statement):
+                raise RuntimeError(f"{name} schema 不匹配")
+            existing.add(name)
+    if existing and existing != set(_IDENTITY_SCHEMA):
+        raise RuntimeError("channel identities schema 不完整")
+    for statement in _IDENTITY_SCHEMA.values():
+        _ = connection.execute(statement)
+
+
+def seed_channel_identities(
+    connection: sqlite3.Connection, channel: str, mapping: dict[str, tuple[str, str]]
+) -> None:
+    """在迁移事务内一次发布历史路由与永久标记。"""
+    if connection.execute(
+        "SELECT 1 FROM channel_identity_migrations WHERE channel=?", (channel,)
+    ).fetchone() is not None:
+        return
+    if connection.execute(
+        "SELECT 1 FROM channel_identities WHERE channel=? LIMIT 1", (channel,)
+    ).fetchone() is not None:
+        raise ValueError(f"身份映射缺少迁移标记: {channel}")
+    _ = connection.executemany(
+        "INSERT INTO channel_identities(channel, identity, chat_id, updated_at) VALUES (?, ?, ?, ?)",
+        ((channel, identity, chat_id, updated) for identity, (chat_id, updated) in mapping.items()),
+    )
+    _ = connection.execute(
+        "INSERT INTO channel_identity_migrations(channel, migrated_at) VALUES (?, ?)",
+        (channel, datetime.now(UTC).isoformat()),
+    )
 
 
 def _rules(config_path: Path) -> dict[str, tuple[str, bool]]:

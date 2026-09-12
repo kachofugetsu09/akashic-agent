@@ -126,7 +126,7 @@ sha256 = "eb067628c6113d6abb76510b73fe8a7997d27c3b9a923b3296302ff2b2e51697"
 
 [[files]]
 path = "20260905_04_akasha_consumption.py"
-sha256 = "00700e6b42b03d4a986801703dc0f1832cf7089b6e0ee9aabd83ea0a99141f2d"
+sha256 = "b1788ce572df76acf9fb076e0550f9f35d41ca11ee3b4d4e44e9edeac09b02d9"
 
 [[files]]
 path = "20260905_05_message_embeddings.py"
@@ -174,11 +174,11 @@ sha256 = "49d58d155c7269a36ea13e677cca45de171d1c76c540fa9f3ebdcf3632b78c90"
 
 [[files]]
 path = "20260907_03_message_metadata.py"
-sha256 = "43a9cf4094e3d586dbf6a3593710edddbb5a04388de55484a30e48efa40ce902"
+sha256 = "c2d96a32426371ddd01514aec5cb58050a5a143d0deb3ced55050c05ea67a378"
 
 [[files]]
 path = "20260907_03_skill_prompt_grant.py"
-sha256 = "9067134b7f528d0047d71a5d5929fd9f7bd895ac5747015d7ad0057782aa51b9"
+sha256 = "03c6a13a00eb99e80d30d5be3f102137a005df4f6542503d1d5a1f0b18a0987d"
 
 [[files]]
 path = "20260908_01_legacy_summaries.py"
@@ -186,11 +186,11 @@ sha256 = "6cd92ab1beb63aac2de71416afca453bf63598a5c17977431e6765c46e5e2cdb"
 
 [[files]]
 path = "20260909_01_close_empty_wake_responses.py"
-sha256 = "5ce8948f67593feb5b89f273d9ca21e6f4b7de21990af38390d33c7e67149ffb"
+sha256 = "2882bc0ce53a9636aa05413848e8a33b32cc65f2b6e6039ece89b189c24d5002"
 
 [[files]]
 path = "20260909_01_tool_provider_views.py"
-sha256 = "b4767cc64f2939018969c2aaae566a0260ee39a4461c76b068715ff133effcfc"
+sha256 = "0b83cfb20d5fa3b2440335e45da4c6f3d965d4657e2f063f0d6ea17f714897c4"
 
 [[files]]
 path = "20260909_02_execution_failures.py"
@@ -266,7 +266,7 @@ sha256 = "2d95e80e2d6913493f41ff63989daadc057baa80d8815022131046996bdcaba8"
 
 [[files]]
 path = "support/akasha/infrastructure/sparse_index/builder.py"
-sha256 = "691af7005fd81d0c35126618a18644dc5aa73d0ccfc5b6dbb01cc2a8422295e8"
+sha256 = "0c4d8571851427efc01b7be84ed863b381ce3aaf994b40264efb623c3eacba5a"
 
 [[files]]
 path = "support/akasha/infrastructure/sparse_index/encoding.py"
@@ -294,7 +294,7 @@ sha256 = "96ee4eefa99c0c9140f06be347095a2504eae58bdee92eb9e74ccaf1478906e7"
 
 [[files]]
 path = "support/akasha_embedding_backfill.py"
-sha256 = "037a7cb0174c25f3ead15b27f2398d8a715f8563821544dbb8950f33c68c35b4"
+sha256 = "89a926a913e669416dd7506a16fef8202e12f58a04c0232f3fac986867197925"
 
 [[files]]
 path = "support/akasha_loader.py"
@@ -322,7 +322,7 @@ sha256 = "4caa75cdb1bd80e4f1626e2de1ade2a44cc4514afb6c485d72bd24637dacfc0d"
 
 [[files]]
 path = "support/channel_identities.py"
-sha256 = "1df2ff36f4ccbbede76bb72a70e19a65188dc1f558f61b26c6721b2b046d60af"
+sha256 = "53c48173119b27cba440a665245e6a79aca366046c6b2c40c5f6af58e86bb210"
 
 [[files]]
 path = "support/compaction_records.py"
@@ -330,7 +330,7 @@ sha256 = "32da8ae58f1082c83979c79527599c2802dc60ef44f5f67b577350adcc2b2671"
 
 [[files]]
 path = "support/content_api.py"
-sha256 = "733820beca8d8ec8b4f08eee9ffbabd08270375d0cd9216de24b50583162a230"
+sha256 = "056295fa434d108286bcd8083ec8ff73ce0aa9079318c6c8211adcacd3eeb3db"
 
 [[files]]
 path = "support/content_plugin.py"
@@ -354,7 +354,7 @@ sha256 = "3bb31e551f9a67818bce4b3d526d977cef85c4c9721597fbd9514cee29b876d6"
 
 [[files]]
 path = "support/legacy_summaries.py"
-sha256 = "faf51fdf75d7e6d8ddc8e591448f92124901ee1928d5e03e514aaf0d760c3bb8"
+sha256 = "89b21ad4cdd39216ed357e3d02c16151d5f7adc44a9ea5e6d429d87415ef2193"
 
 [[files]]
 path = "support/mobile_gateway.py"
@@ -390,7 +390,7 @@ sha256 = "1fc177a3bc3d85722fa72fa450f76b0f16c20ff41d7fb989a608aa938ae7ef90"
 
 [[files]]
 path = "support/scheduler.py"
-sha256 = "a6bb2b5256144ac0a3c3e453f87a30b524ff021140f8d76a6cc551d8a8618ae3"
+sha256 = "7f604bf4931f6ff7c74131ce0d2f6d9c93840f7c8a9ec9b29b727b7418341310"
 
 [[files]]
 path = "support/scheduler_schedule.py"
@@ -398,11 +398,11 @@ sha256 = "f17e9841315d7433e0fb0c9805059edb33fdbb53b9f89a88a2d9a7a17302b904"
 
 [[files]]
 path = "support/scheduler_store.py"
-sha256 = "8e12a0506b6cd24591edd6b60845013c7140dbeed40063768f9a31de1d234a33"
+sha256 = "5c7d71f767040c3e1b3464fecb3c6fef324a1b4ddd74555a70d0b508b968501e"
 
 [[files]]
 path = "support/session_attributes.py"
-sha256 = "39da8f4e09212ee14733a0cf5b6aec9244ec6a80716b102473d746d9da48675e"
+sha256 = "09e604350722930ad0a4c26ec490ee12860cb77c59fc80e9594e125418f84ce8"
 
 [[files]]
 path = "support/session_db_backup.py"
@@ -410,7 +410,7 @@ sha256 = "6d6ba5eb5e48272013935261e9c1da2fe2f0c39346347af025bcb284e3d5119f"
 
 [[files]]
 path = "support/turn_messages.py"
-sha256 = "fd59fa8b6609d65649f8754a4b1cba77fef7ffd0d4ed5b77b9e0081531a40579"
+sha256 = "fa1f3adcede72c56451668fd246be7ecfe9281bc93c6fd529e70fb5b5b25c942"
 
 [[files]]
 path = "support/update_rollback.py"
@@ -423,6 +423,14 @@ sha256 = "66978bb7c318c3caa68ab040e243a7e3bd8d97e6da5aca66996a614de0cb5b7d"
 [[files]]
 path = "support/wake_request.py"
 sha256 = "6fb365add37840dddda23a38619cd8b6a8157558b06ac02230068b0929037413"
+
+[[files]]
+path = "support/embedder.py"
+sha256 = "6dfbcb90914da8afb4640e2d1e5a4225d6d1c079d4cb4317275d78fb7b74eb65"
+
+[[files]]
+path = "support/legacy_message_log.py"
+sha256 = "9601a9c36051d5f0b3736d4eb3bfcee09442ec76abce20d188f1da5bd6e2d4fc"
 
 [[migrations]]
 id = "20260805_01_akasha_sparse_index_v9"
@@ -639,7 +647,7 @@ id = "20260905_04_akasha_consumption"
 path = "20260905_04_akasha_consumption.py"
 depends = ["20260905_03_model_calls"]
 transactional = false
-sha256 = "00700e6b42b03d4a986801703dc0f1832cf7089b6e0ee9aabd83ea0a99141f2d"
+sha256 = "b1788ce572df76acf9fb076e0550f9f35d41ca11ee3b4d4e44e9edeac09b02d9"
 
 [[migrations]]
 id = "20260905_05_message_embeddings"
@@ -723,14 +731,14 @@ id = "20260907_03_message_metadata"
 path = "20260907_03_message_metadata.py"
 depends = ["20260907_02_retire_legacy_agent_config"]
 transactional = false
-sha256 = "43a9cf4094e3d586dbf6a3593710edddbb5a04388de55484a30e48efa40ce902"
+sha256 = "c2d96a32426371ddd01514aec5cb58050a5a143d0deb3ced55050c05ea67a378"
 
 [[migrations]]
 id = "20260907_03_skill_prompt_grant"
 path = "20260907_03_skill_prompt_grant.py"
 depends = ["20260907_02_retire_legacy_agent_config"]
 transactional = false
-sha256 = "9067134b7f528d0047d71a5d5929fd9f7bd895ac5747015d7ad0057782aa51b9"
+sha256 = "03c6a13a00eb99e80d30d5be3f102137a005df4f6542503d1d5a1f0b18a0987d"
 
 [[migrations]]
 id = "20260908_01_legacy_summaries"
@@ -744,14 +752,14 @@ id = "20260909_01_close_empty_wake_responses"
 path = "20260909_01_close_empty_wake_responses.py"
 depends = ["20260908_01_legacy_summaries"]
 transactional = false
-sha256 = "5ce8948f67593feb5b89f273d9ca21e6f4b7de21990af38390d33c7e67149ffb"
+sha256 = "2882bc0ce53a9636aa05413848e8a33b32cc65f2b6e6039ece89b189c24d5002"
 
 [[migrations]]
 id = "20260909_01_tool_provider_views"
 path = "20260909_01_tool_provider_views.py"
 depends = ["20260908_01_legacy_summaries"]
 transactional = false
-sha256 = "b4767cc64f2939018969c2aaae566a0260ee39a4461c76b068715ff133effcfc"
+sha256 = "0b83cfb20d5fa3b2440335e45da4c6f3d965d4657e2f063f0d6ea17f714897c4"
 
 [[migrations]]
 id = "20260909_02_execution_failures"

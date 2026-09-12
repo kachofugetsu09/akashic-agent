@@ -18,6 +18,7 @@ def _runner(root: Path) -> MigrationRunner:
         repo_root=_PROJECT_ROOT,
         config_path=root / "config.toml",
         workspace=root / "workspace",
+        plugin_dirs=(_PROJECT_ROOT / "plugins" / "legacy_upgrade",),
     )
 
 
@@ -35,6 +36,11 @@ def test_correction_removes_trigger_and_keeps_recoverable_backup(tmp_path: Path)
     config = root / "config.toml"
     original = _config_text(21_000).encode("utf-8")
     config.write_bytes(original)
+    # 这是已有安装的迁移夹具；新 workspace 的显式 init 会记录外部
+    # bundle 起点，因此不能用空 workspace 伪造历史安装。
+    workspace = root / "workspace"
+    workspace.mkdir()
+    (workspace / "legacy-install.marker").write_bytes(b"existing installation\n")
 
     outcome = _runner(root).run()
 

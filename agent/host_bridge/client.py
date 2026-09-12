@@ -30,14 +30,14 @@ _HEARTBEAT_INTERVAL_S = 2.0
 
 
 @dataclass(frozen=True)
-class SkillRequirementAvailability:
+class RequirementsAvailability:
     available_bins: tuple[str, ...]
     missing_bins: tuple[str, ...]
     available_env: tuple[str, ...]
     missing_env: tuple[str, ...]
 
 
-class HostBridgeSkillCapabilityChecker:
+class HostBridgeRequirementsChecker:
     """通过短生命周期同步 RPC 查询宿主能力名称。"""
 
     def __init__(
@@ -58,10 +58,11 @@ class HostBridgeSkillCapabilityChecker:
             expected_toolchain_digest=expected_toolchain_digest,
         )
 
-    def check_skill_requirements(
+    def check_requirements(
         self, bins: list[str], env: list[str]
-    ) -> SkillRequirementAvailability:
+    ) -> RequirementsAvailability:
         """保留同步调用的关闭 owner，并验证名称集合没有缺失或混入值。"""
+        # V2 传输保留旧方法名；本原子只认识可执行文件和环境变量名称。
         request = pb.SkillRequirementsRequest(context=self._context, bins=bins, env=env)
         request.context.request_id = uuid.uuid4().hex
         with grpc.insecure_channel(
@@ -88,7 +89,7 @@ class HostBridgeSkillCapabilityChecker:
         _validate_requirement_partition(
             env, list(response.available.env), list(response.missing.env), "env"
         )
-        return SkillRequirementAvailability(
+        return RequirementsAvailability(
             tuple(response.available.bins),
             tuple(response.missing.bins),
             tuple(response.available.env),

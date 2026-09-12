@@ -44,7 +44,11 @@ async def apply(ctx, config):
     if store.read_snapshot().revision == 0:
         store.add_connection(AddConnection(0, "connection", "test", "openai-compatible", "https://example.test/v1", "fixture", {"api_key": "fixture"}))
         store.add_model(AddModel(1, "saved", "connection", ModelKind.CHAT, "fixture", ModelCapabilities(supported_reasoning_efforts=("low", "high")), CapabilitySources()))
-    model_state = ModelsState(store, root_instance_token=ctx.root_instance_token)
+    model_state = ModelsState(
+        store,
+        root_instance_token=ctx.root_instance_token,
+        context=ctx,
+    )
     await ctx.provide(MODEL_DRIVERS, model_state.drivers)
     await ctx.provide(MODEL_CATALOG, model_state.catalog)
     await ctx.provide(MODEL_SETTINGS, model_state.settings)

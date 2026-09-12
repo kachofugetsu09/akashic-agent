@@ -14,7 +14,7 @@ from typing import Any, Literal, Protocol, cast
 
 import yaml
 
-from agent.host_bridge.factory import build_skill_capability_checker
+from agent.host_bridge.factory import build_requirements_checker
 from agent.plugin_composition.assets import InstalledAsset
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.shell_runtime import resolve_shell
@@ -32,15 +32,15 @@ SKILL_INSPECTION = ServiceKey[SkillInspectionReader](
 )
 
 
-class SkillCapabilityChecker(Protocol):
-    def check_skill_requirements(
+class RequirementsChecker(Protocol):
+    def check_requirements(
         self,
         bins: list[str],
         env: list[str],
-    ) -> "SkillRequirementAvailability": ...
+    ) -> "RequirementsAvailability": ...
 
 
-class SkillRequirementAvailability(Protocol):
+class RequirementsAvailability(Protocol):
     @property
     def missing_bins(self) -> tuple[str, ...]: ...
 
@@ -80,9 +80,9 @@ def skill_body(content: str) -> str:
 class SkillCatalogParser:
     """解析固定资产树并计算本 generation 的可用性。"""
 
-    def __init__(self, capability_checker: SkillCapabilityChecker | None = None):
+    def __init__(self, capability_checker: RequirementsChecker | None = None):
         if capability_checker is None:
-            capability_checker = build_skill_capability_checker()
+            capability_checker = build_requirements_checker()
         self._capability_checker = capability_checker
         self._shell_path: str | None = None
 
@@ -194,7 +194,7 @@ class SkillCatalogParser:
         bins = self._string_list(requires_dict.get("bins"))
         env_names = self._string_list(requires_dict.get("env"))
         if self._capability_checker is not None and (bins or env_names):
-            availability = self._capability_checker.check_skill_requirements(
+            availability = self._capability_checker.check_requirements(
                 bins,
                 env_names,
             )

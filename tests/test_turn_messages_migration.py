@@ -196,7 +196,10 @@ def test_archive_never_enters_default_model_content(tmp_path):
 
 @pytest.mark.parametrize('stage', ['before_receipt', 'after_commit'])
 def test_crash_keeps_transaction_atomic_and_retry_uses_same_message_identities(tmp_path, monkeypatch, stage):
-    from session.log import OwnerStore, OwnerTransaction
+    from plugins.legacy_upgrade.legacy_upgrade_migrations.support.legacy_message_log import (
+        OwnerStore,
+        OwnerTransaction,
+    )
     root = workspace(tmp_path)
     item = user(0)
     old = turn(root, 't1', [item])

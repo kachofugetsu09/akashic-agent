@@ -6,7 +6,7 @@ from .support.plugin_data import (
     builtin_plugin_data_dir,
     validate_workspace_plugin_data_path,
 )
-from infra.persistence.json_store import atomic_write_text
+from agent.plugin_contracts.json_store import atomic_write_text
 
 __depends__ = {"20260907_02_retire_legacy_agent_config"}
 __transactional__ = False

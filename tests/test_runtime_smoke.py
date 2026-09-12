@@ -276,12 +276,12 @@ def test_load_config_rejects_retired_proactive_before_workspace_access(
     workspace = tmp_path / "workspace"
     config_path.write_text(body, encoding="utf-8")
 
-    def reject_store_access(_: Path):
-        raise AssertionError("legacy config must fail before opening the model store")
+    def reject_workspace_backed_config(_: dict, __: Path):
+        raise AssertionError("legacy config must fail before opening workspace-backed config")
 
     monkeypatch.setattr(
-        "agent.model_runtime.store.ModelRegistryStore.for_workspace",
-        reject_store_access,
+        "agent.config._load_channels_config",
+        reject_workspace_backed_config,
     )
 
     with pytest.raises(ValueError, match=r"\[proactive\] 已移除"):

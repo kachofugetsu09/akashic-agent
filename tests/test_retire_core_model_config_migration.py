@@ -9,8 +9,13 @@ from pathlib import Path
 import pytest
 
 from agent.migrations.context import bind_migration_context
-from agent.model_runtime.auth.store import Credential, CredentialStore
-from agent.model_runtime.store import ModelRegistryStore
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.model_auth import (
+    Credential,
+    CredentialStore,
+)
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.model_store import (
+    ModelRegistryStore,
+)
 from plugins.models.store import ModelsStore
 from plugins.models.state import ModelsState
 from plugins.openai_compatible.driver import definition as openai_driver_definition

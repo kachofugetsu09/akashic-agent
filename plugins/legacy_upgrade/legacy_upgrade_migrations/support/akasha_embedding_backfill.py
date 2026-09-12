@@ -10,13 +10,13 @@ from uuid import uuid4
 
 from .session_db_backup import backup_sqlite_database
 from core.net.http import HttpRequester, SharedHttpResources
-from memory2.embedder import Embedder
+from .embedder import Embedder
 from .akasha_sparse_index import (
     BuildConfig,
     EmbeddingAudit,
     audit_source_embeddings,
 )
-from session.embedding_store import MessageEmbeddingStore
+from agent.plugin_composition.messages import MessageEmbeddingStore
 
 _MIGRATION_NAME = "backfill-akasha-message-embeddings"
 

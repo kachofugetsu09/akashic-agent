@@ -8,9 +8,8 @@ from yoyo import step
 
 from agent.migrations.context import current_migration_context
 from .support.session_db_backup import backup_sqlite_database
-from session.log import _sql
-from session.message import freeze_metadata
-from session.message_codec import _unique_fields
+from .support.legacy_message_log import _sql
+from agent.plugin_contracts.message import freeze_metadata
 import json
 
 __depends__ = {"20260907_02_retire_legacy_agent_config"}
@@ -22,6 +21,16 @@ _OLD_SCHEMA = """CREATE TABLE messages (
     body TEXT NOT NULL, UNIQUE(session_key, seq))"""
 _COLUMN = "metadata TEXT NOT NULL DEFAULT '{}'"
 _NEW_SCHEMA = _OLD_SCHEMA.replace("UNIQUE(session_key, seq)", _COLUMN + ", UNIQUE(session_key, seq)")
+
+
+def _unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """冻结历史 metadata JSON 的重复字段拒绝规则。"""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"消息 JSON 包含重复字段: {key}")
+        result[key] = value
+    return result
 
 
 def _schema(connection: sqlite3.Connection) -> bool:

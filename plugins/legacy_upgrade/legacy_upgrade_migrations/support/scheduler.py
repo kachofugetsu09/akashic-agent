@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import cast
 
-from infra.persistence.json_store import atomic_save_json, atomic_write_text
+from agent.plugin_contracts.json_store import atomic_save_json, atomic_write_text
 from .scheduler_store import JobStore, ScheduleState
 
 

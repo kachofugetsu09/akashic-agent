@@ -55,6 +55,7 @@ def test_audit_migration_publishes_manifest_schema_and_indexes(tmp_path: Path) -
         repo_root=_PROJECT_ROOT,
         config_path=root / "config.toml",
         workspace=workspace,
+        plugin_dirs=(_PROJECT_ROOT / "plugins" / "legacy_upgrade",),
     ).run()
 
     assert "20260808_01_session_mutation_audits" in outcome.migrations
@@ -137,6 +138,7 @@ def test_audit_migration_rejects_incompatible_existing_table(tmp_path: Path) -> 
         repo_root=_PROJECT_ROOT,
         config_path=root / "config.toml",
         workspace=workspace,
+        plugin_dirs=(_PROJECT_ROOT / "plugins" / "legacy_upgrade",),
     )
     with pytest.raises(RuntimeError, match="schema lineage"):
         runner.run()
@@ -177,6 +179,7 @@ def test_audit_migration_rejects_wrong_primary_key(tmp_path: Path) -> None:
             repo_root=_PROJECT_ROOT,
             config_path=root / "config.toml",
             workspace=workspace,
+            plugin_dirs=(_PROJECT_ROOT / "plugins" / "legacy_upgrade",),
         ).run()
 
 
@@ -198,6 +201,7 @@ def test_audit_migration_rejects_wrong_named_index(tmp_path: Path) -> None:
             repo_root=_PROJECT_ROOT,
             config_path=root / "config.toml",
             workspace=workspace,
+            plugin_dirs=(_PROJECT_ROOT / "plugins" / "legacy_upgrade",),
         ).run()
 
 
@@ -219,6 +223,7 @@ def test_audit_migration_rejects_unknown_extra_index(tmp_path: Path) -> None:
             repo_root=_PROJECT_ROOT,
             config_path=root / "config.toml",
             workspace=workspace,
+            plugin_dirs=(_PROJECT_ROOT / "plugins" / "legacy_upgrade",),
         ).run()
 
 

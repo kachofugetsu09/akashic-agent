@@ -24,7 +24,7 @@ from agent.plugin_composition.models import (
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from agent.migrations.context import bind_migration_context
-from tests.legacy_migration_loader import load_migration_module
+from tests.legacy_migration_loader import load_migration_module, load_migration_namespace
 
 
 class _DriverContract:
@@ -204,7 +204,7 @@ async def test_settlement_failure_keeps_provider_failure_and_durable_unknown(
 
 @pytest.fixture
 def migration():
-    return load_migration_module("20260905_03_model_calls")
+    return load_migration_namespace("20260905_03_model_calls")
 
 
 def dump(path):
@@ -568,7 +568,7 @@ async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned
 async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_response(store, descriptor):
     from datetime import UTC, datetime
     from dataclasses import replace
-    from plugins.context.api import Materials, Summary
+    from plugins.context.api import Summary
     from plugins.context.plugin import ContextBuilder
     from plugins.models.projection import MessageProjection, response_facts
     from plugins.models.content import render_content
@@ -596,7 +596,19 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
         render_content=lambda part: render_content(part, artifacts={}), tool_name=lambda binding: "unused",
         keep_input_ids=("2",))
     summary = Summary("summary-binding", ("0", "1"), "saved old work")
-    request = ContextBuilder().build(before, materials=Materials("", summary=summary),
+    def material_data(summary: Summary) -> dict[str, object]:
+        return {
+            "system_prompt": "",
+            "reminders": (),
+            "summary": {
+                "reference": summary.reference,
+                "source_message_ids": summary.source_message_ids,
+                "content": summary.content,
+            },
+            "references": (),
+        }
+
+    request = ContextBuilder().build(before, materials=material_data(summary),
                                      model=projection, max_output_tokens=100)
     assert request.continuation is None
     payload, _ = _responses_input(request.messages, "", _continuation_items(request.continuation))
@@ -609,13 +621,13 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
         ContentPart("text", "fresh answer"), response_facts(next_response, []),
         ContentPart("context.summary", {"reference": summary.reference}),
     ), "complete")))
-    resumed = ContextBuilder().build(after, materials=Materials("", summary=summary),
+    resumed = ContextBuilder().build(after, materials=material_data(summary),
                                      model=projection, max_output_tokens=100)
     assert resumed.continuation == next_response.continuation
     payload, _ = _responses_input(resumed.messages, "", _continuation_items(resumed.continuation))
     assert payload[0] == {"type": "reasoning", "encrypted_content": "opaque-state"}
     changed = replace(summary, reference="next-summary", source_message_ids=("0", "1", "2", "3"))
-    fresh = ContextBuilder().build(after, materials=Materials("", summary=changed),
+    fresh = ContextBuilder().build(after, materials=material_data(changed),
                                    model=projection, max_output_tokens=100)
     assert fresh.continuation is None
     facts = cast(Mapping[str, object], before[1].body.parts[-1].value)

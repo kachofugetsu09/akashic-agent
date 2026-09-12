@@ -17,8 +17,8 @@ from .session_db_backup import (
 )
 from .compaction_records import ImportedSummaryRecord, SummaryRecords
 from .context_api import summary_range
-from session.log import MessageLog, OwnerTransaction
-from session.message_codec import json_value
+from .legacy_message_log import MessageLog, OwnerTransaction
+from agent.plugin_contracts.message import json_value
 
 _OWNER = "plugin:compaction"
 _RECEIPT = "migration:legacy-summary-v1"

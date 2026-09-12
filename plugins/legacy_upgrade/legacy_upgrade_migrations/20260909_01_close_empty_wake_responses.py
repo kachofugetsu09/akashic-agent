@@ -15,8 +15,8 @@ from agent.migrations.context import current_migration_context
 from .support.session_db_backup import backup_sqlite_database
 from .support.wake_messages import finished
 from .support.wake_request import Stage, WakeFailure, read_phase, read_request
-from session.log import MessageLog
-from session.message import Control
+from .support.legacy_message_log import MessageLog
+from agent.plugin_contracts.message import Control
 
 __depends__ = {"20260908_01_legacy_summaries"}
 __transactional__ = False
