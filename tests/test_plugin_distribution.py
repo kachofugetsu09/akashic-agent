@@ -9,7 +9,13 @@ import tomllib
 
 import pytest
 
-from agent.plugins.install import install_git_plugin, set_installed_plugin_enabled
+from agent.plugins.install import (
+    finalize_uninstall_plugin,
+    install_git_plugin,
+    set_installed_plugin_enabled,
+)
+from agent.plugins.manifest import load_plugin_manifest
+import scripts.build_host_runtime_release as host_runtime_release
 from scripts.build_host_runtime_release import _create_context
 from scripts.build_plugin_distribution import _append_tree, build
 from scripts.install_plugin_distribution import (
@@ -182,6 +188,86 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
         text=True,
     )
     assert json.loads(cli_restart.stdout)["status"] == "existing"
+
+    # A new Core/profile generation may remove the original providers and
+    # install a different-name replacement.  The old receipt remains a
+    # historical record; ensure_profile must validate the current composition
+    # without reinstalling or rewriting that record.
+    receipt_before_upgrade = receipt_path.read_bytes()
+    replacement_source = source / "plugins" / "replacement"
+    replacement_source.mkdir(parents=True)
+    (replacement_source / "plugin.py").write_text(
+        'api_version = 3\nname = "replacement"\nversion = "1"\ndef apply(ctx, config): pass\n'
+    )
+    (replacement_source / "akashic.plugin.toml").write_text(
+        'schema_version = 1\napi_version = 3\nname = "replacement"\n'
+        'version = "1"\nentrypoint = "plugin.py"\n'
+    )
+    (source / "main.py").write_text('print("core-v2")\n')
+    (profile / "default.json").write_text(json.dumps({
+        "schema_version": 1,
+        "name": "fixture-v2",
+        "marketplace": "distribution",
+        "initialization": {"plugin_configs": []},
+        "plugins": [
+            {"name": "replacement", "depends_on": [], "reason": "new provider"}
+        ],
+    }) + "\n")
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True, capture_output=True)
+    subprocess.run([
+        "git", "-C", str(source), "-c", "user.name=Test", "-c",
+        "user.email=test@example.invalid", "-c", "commit.gpgSign=false",
+        "commit", "-m", "core and provider upgrade",
+    ], check=True, capture_output=True)
+    output_v2 = tmp_path / "release-v2"
+    report_v2 = build(source, "HEAD", output_v2)
+    assert report_v2["source_commit"] != report["source_commit"]
+    replacement_row = next(
+        row for row in report_v2["plugins"] if row["name"] == "replacement"
+    )
+    installed_alias = install_git_plugin(
+        workspace=tmp_path / "profile-workspace",
+        source=str(output_v2 / replacement_row["file"]),
+        marketplace="distribution",
+        ref_name=replacement_row["source_revision"],
+        plugins_home=tmp_path / "profile-home",
+    )
+    replacement_provenance = (
+        installed_alias.installed_path / ".akashic-source.json"
+    ).read_bytes()
+    finalize_uninstall_plugin(
+        "one@distribution",
+        workspace=tmp_path / "profile-workspace",
+        plugins_home=tmp_path / "profile-home",
+    )
+    finalize_uninstall_plugin(
+        "two@distribution",
+        workspace=tmp_path / "profile-workspace",
+        plugins_home=tmp_path / "profile-home",
+    )
+    assert load_plugin_manifest(tmp_path / "profile-home") == {
+        "replacement@distribution": True
+    }
+    upgraded = ensure_profile(
+        output_v2,
+        output_v2 / "profiles/default.json",
+        workspace=tmp_path / "profile-workspace",
+        plugins_home=tmp_path / "profile-home",
+        config_path=config,
+        receipt_path=receipt_path,
+    )
+    assert upgraded["status"] == "existing"
+    assert upgraded["profile"] == "fixture"
+    assert receipt_path.read_bytes() == receipt_before_upgrade
+    assert load_plugin_manifest(tmp_path / "profile-home") == {
+        "replacement@distribution": True
+    }
+    assert replacement_provenance == (
+        installed_alias.installed_path / ".akashic-source.json"
+    ).read_bytes()
+    assert not (tmp_path / "profile-home" / "cache" / "distribution" / "one").exists()
+    assert not (tmp_path / "profile-home" / "cache" / "distribution" / "two").exists()
+
     invalid_receipt = tmp_path / "invalid-receipt.json"
     invalid_receipt.write_text("{}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="schema_version"):
@@ -203,6 +289,34 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
         assert provenance == {"commit": report["source_commit"], "path": row["source_path"]}
     with pytest.raises(FileExistsError):
         build(source, "HEAD", output)
+
+
+def test_host_runtime_cli_defaults_to_distribution(monkeypatch, tmp_path, capsys):
+    calls: list[str] = []
+
+    def fake_distribution(**kwargs):
+        calls.append("distribution")
+        return {"mode": "distribution", "repository": str(kwargs["repository"])}
+
+    def fail_legacy(**kwargs):
+        pytest.fail("正式 CLI 不应默认选择旧 checkout builder")
+
+    monkeypatch.setattr(host_runtime_release, "build_distribution_release", fake_distribution)
+    monkeypatch.setattr(host_runtime_release, "build_release", fail_legacy)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build_host_runtime_release.py",
+            "--repository", str(tmp_path / "repo"),
+            "--commit", "a" * 40,
+            "--image-tag", "akashic:test",
+            "--output-manifest", str(tmp_path / "manifest.json"),
+        ],
+    )
+    host_runtime_release.main()
+    assert calls == ["distribution"]
+    assert json.loads(capsys.readouterr().out)["mode"] == "distribution"
 
 
 def test_formal_host_context_contains_core_and_bundles_only(tmp_path):

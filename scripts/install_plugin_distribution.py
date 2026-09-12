@@ -478,6 +478,8 @@ def install_profile(
         "distribution_source_tree": report["source_tree"],
         "profile": profile_name,
         "marketplace": marketplace,
+        "workspace": str(workspace),
+        "plugins_home": str(plugins_home),
         "initialization": initialization,
         "plugin_configs": config_results,
         "formal_installer": _FORMAL_INSTALLER,
@@ -488,37 +490,39 @@ def install_profile(
 def _validate_receipt_state(
     receipt: dict[str, Any],
     *,
-    report: dict[str, Any],
-    profile_name: str,
-    marketplace: str,
-    entries: list[dict[str, Any]],
     workspace: Path,
     plugins_home: Path,
 ) -> None:
-    """Validate a prior install against current pointers, artifacts and manifest."""
+    """Validate one historical receipt without treating it as current composition."""
 
     if receipt.get("schema_version") != 1:
         raise ValueError("distribution receipt schema_version 必须为 1")
-    if receipt.get("distribution_source_commit") != report["source_commit"]:
-        raise ValueError("distribution receipt source_commit 与当前 distribution 不一致")
-    if receipt.get("distribution_source_tree") != report["source_tree"]:
-        raise ValueError("distribution receipt source_tree 与当前 distribution 不一致")
-    if receipt.get("profile") != profile_name or receipt.get("marketplace") != marketplace:
-        raise ValueError("distribution receipt profile 与当前 profile 不一致")
+    for key in ("distribution_source_commit", "distribution_source_tree"):
+        value = receipt.get(key)
+        if not isinstance(value, str) or _REVISION.fullmatch(value) is None:
+            raise ValueError(f"distribution receipt {key} 无效")
+    profile_name = receipt.get("profile")
+    marketplace = receipt.get("marketplace")
+    if (
+        not isinstance(profile_name, str)
+        or not profile_name.strip()
+        or not isinstance(marketplace, str)
+        or _PATH_SEGMENT.fullmatch(marketplace) is None
+    ):
+        raise ValueError("distribution receipt profile/marketplace 无效")
+    expected_workspace = str(workspace.expanduser().resolve(strict=False))
+    expected_plugins_home = str(plugins_home.expanduser().resolve(strict=False))
+    if receipt.get("workspace") != expected_workspace:
+        raise ValueError("distribution receipt workspace 与当前运行不一致")
+    if receipt.get("plugins_home") != expected_plugins_home:
+        raise ValueError("distribution receipt plugins_home 与当前运行不一致")
     if receipt.get("formal_installer") != _FORMAL_INSTALLER:
         raise ValueError("distribution receipt 缺少正式安装器身份")
 
     installed = receipt.get("installed")
-    expected_names = tuple(str(entry["name"]) for entry in entries)
-    if (
-        not isinstance(installed, list)
-        or len(installed) != len(expected_names)
-        or {item.get("name") for item in installed if isinstance(item, dict)}
-        != set(expected_names)
-    ):
-        raise ValueError("distribution receipt installed 与 profile 不一致")
-
-    manifest = load_plugin_manifest(plugins_home)
+    if not isinstance(installed, list):
+        raise ValueError("distribution receipt installed 必须是 array")
+    historical_ids: set[str] = set()
     for item in installed:
         if not isinstance(item, dict):
             raise ValueError("distribution receipt installed 条目必须是 object")
@@ -528,31 +532,112 @@ def _validate_receipt_state(
         if (
             not isinstance(name, str)
             or _PATH_SEGMENT.fullmatch(name) is None
-            or item_marketplace != marketplace
+            or not isinstance(item_marketplace, str)
+            or _PATH_SEGMENT.fullmatch(item_marketplace) is None
             or not isinstance(source_revision, str)
             or _REVISION.fullmatch(source_revision) is None
+            or not isinstance(item.get("installed_path"), str)
+            or not Path(item["installed_path"]).is_absolute()
+            or not isinstance(item.get("data_path"), str)
+            or not Path(item["data_path"]).is_absolute()
         ):
             raise ValueError("distribution receipt installed 条目身份无效")
-        plugin_id = f"{name}@{marketplace}"
-        if plugin_id not in manifest:
-            raise ValueError(f"distribution receipt 插件未在当前 manifest 中: {plugin_id}")
+        historical_id = f"{name}@{item_marketplace}"
+        if historical_id in historical_ids:
+            raise ValueError(f"distribution receipt installed 条目重复: {historical_id}")
+        historical_ids.add(historical_id)
 
-        plugin_base = plugins_home / "cache" / marketplace / name
+    initialization = receipt.get("initialization")
+    if (
+        not isinstance(initialization, dict)
+        or set(initialization) != {"plugin_configs"}
+        or not isinstance(initialization.get("plugin_configs"), list)
+    ):
+        raise ValueError("distribution receipt initialization 无效")
+    historical_names = {item.split("@", 1)[0] for item in historical_ids}
+    config_owners: set[str] = set()
+    for index, item in enumerate(initialization["plugin_configs"]):
+        if not isinstance(item, dict):
+            raise ValueError(f"distribution receipt initialization.plugin_configs[{index}] 无效")
+        owner = item.get("owner")
+        config = item.get("config")
+        if (
+            not isinstance(owner, str)
+            or _PATH_SEGMENT.fullmatch(owner) is None
+            or owner not in historical_names
+            or owner in config_owners
+            or not isinstance(config, dict)
+        ):
+            raise ValueError(
+                f"distribution receipt initialization.plugin_configs[{index}] 无效"
+            )
+        _validate_toml_value(
+            config,
+            location=f"distribution receipt plugin_configs[{index}].config",
+        )
+        config_owners.add(owner)
+
+    config_results = receipt.get("plugin_configs")
+    if not isinstance(config_results, list) or len(config_results) != len(config_owners):
+        raise ValueError("distribution receipt plugin_configs 无效")
+    result_owners: set[str] = set()
+    for index, item in enumerate(config_results):
+        if not isinstance(item, dict):
+            raise ValueError(f"distribution receipt plugin_configs[{index}] 无效")
+        owner = item.get("owner")
+        path = item.get("path")
+        status = item.get("status")
+        if (
+            not isinstance(owner, str)
+            or owner not in config_owners
+            or owner in result_owners
+            or not isinstance(path, str)
+            or not Path(path).is_absolute()
+            or not _under(Path(path), workspace)
+            or status not in {"created", "existing"}
+        ):
+            raise ValueError(f"distribution receipt plugin_configs[{index}] 无效")
+        result_owners.add(owner)
+
+
+def _validate_current_plugins(
+    *,
+    workspace: Path,
+    plugins_home: Path,
+    marketplace: str,
+    entries: list[dict[str, Any]],
+) -> None:
+    """Validate current manifest/artifacts independently of historical receipt rows."""
+
+    manifest = load_plugin_manifest(plugins_home)
+    expected_ids = {f"{entry['name']}@{marketplace}" for entry in entries}
+    missing = sorted(expected_ids - set(manifest))
+    if missing:
+        raise ValueError(f"当前 profile 插件未安装: {missing}")
+    for plugin_id, enabled in manifest.items():
+        name, separator, item_marketplace = plugin_id.rpartition("@")
+        if (
+            not separator
+            or _PATH_SEGMENT.fullmatch(name) is None
+            or _PATH_SEGMENT.fullmatch(item_marketplace) is None
+            or not isinstance(enabled, bool)
+        ):
+            raise ValueError(f"当前 plugin manifest 身份无效: {plugin_id}")
+        plugin_base = plugins_home / "cache" / item_marketplace / name
         pointers = read_pointers(plugin_base)
         if pointers is None or pointers.stable.path is None:
-            raise ValueError(f"distribution receipt 插件缺少 stable artifact: {plugin_id}")
+            raise ValueError(f"当前插件缺少 stable artifact: {plugin_id}")
         artifact = resolve_pointer(plugin_base, pointers.stable)
         if artifact is None:
-            raise ValueError(f"distribution receipt stable artifact 为空: {plugin_id}")
+            raise ValueError(f"当前插件 stable artifact 为空: {plugin_id}")
         static_manifest = load_static_plugin_manifest(artifact)
         if static_manifest.name != name:
             raise ValueError(
-                f"distribution receipt artifact 身份不一致: {plugin_id} -> {static_manifest.name}"
+                f"当前 artifact 身份不一致: {plugin_id} -> {static_manifest.name}"
             )
-
-        data_path = workspace_plugin_data_dir(workspace, name, marketplace)
+        data_path = workspace_plugin_data_dir(workspace, name, item_marketplace)
         if data_path.is_symlink() or not data_path.is_dir():
-            raise ValueError(f"distribution receipt 插件数据目录缺失: {data_path}")
+            raise ValueError(f"当前插件数据目录缺失: {data_path}")
 
 
 def ensure_profile(
@@ -586,16 +671,18 @@ def ensure_profile(
             for item in profile_rows
         ):
             raise ValueError("profile 不属于已验证的 distribution artifact")
-        profile_name, marketplace, entries, _ = _load_profile(profile_path)
+        _, marketplace, entries, _ = _load_profile(profile_path)
         receipt = _read_json(receipt_path)
         _validate_receipt_state(
             receipt,
-            report=report,
-            profile_name=profile_name,
-            marketplace=marketplace,
-            entries=entries,
             workspace=workspace.expanduser().resolve(strict=False),
             plugins_home=plugins_home.expanduser().resolve(strict=False),
+        )
+        _validate_current_plugins(
+            workspace=workspace.expanduser().resolve(strict=False),
+            plugins_home=plugins_home.expanduser().resolve(strict=False),
+            marketplace=marketplace,
+            entries=entries,
         )
         return {**receipt, "status": "existing"}
 

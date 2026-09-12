@@ -225,7 +225,11 @@ def build_release(
     base_image: str,
     arch_snapshot: str,
 ) -> dict[str, Any]:
-    """Build an immutable host-runtime image and record its local content digest."""
+    """Build the legacy checkout image for the explicit bridge compatibility path.
+
+    The formal CLI never selects this builder implicitly.  The old operator
+    bridge still calls it directly until that release flow is migrated.
+    """
 
     repository = repository.resolve(strict=True)
     commit, tree = _resolve_commit(repository, requested_commit)
@@ -302,17 +306,32 @@ def main() -> None:
     parser.add_argument("--output-manifest", type=Path, required=True)
     parser.add_argument("--base-image", default=_DEFAULT_BASE_IMAGE)
     parser.add_argument("--arch-snapshot", default="2026/08/09")
-    parser.add_argument(
+    release_mode = parser.add_mutually_exclusive_group()
+    release_mode.add_argument(
         "--distribution",
         action="store_true",
-        help="构建 Core tar + 独立插件 bundle 的正式分发镜像",
+        help="构建 Core tar + 独立插件 bundle 的正式分发镜像（默认）",
+    )
+    release_mode.add_argument(
+        "--legacy-checkout",
+        action="store_true",
+        help="仅供旧 Host Bridge 开发兼容；正式发行不得使用",
     )
     parser.add_argument(
         "--pypi-index-url",
         default="https://mirrors.aliyun.com/pypi/simple",
     )
     args = parser.parse_args()
-    if args.distribution:
+    if args.legacy_checkout:
+        result = build_release(
+            repository=args.repository,
+            requested_commit=args.commit,
+            image_tag=args.image_tag,
+            output_manifest=args.output_manifest,
+            base_image=args.base_image,
+            arch_snapshot=args.arch_snapshot,
+        )
+    else:
         result = build_distribution_release(
             repository=args.repository,
             requested_commit=args.commit,
@@ -321,15 +340,6 @@ def main() -> None:
             base_image=args.base_image,
             arch_snapshot=args.arch_snapshot,
             pypi_index_url=args.pypi_index_url,
-        )
-    else:
-        result = build_release(
-            repository=args.repository,
-            requested_commit=args.commit,
-            image_tag=args.image_tag,
-            output_manifest=args.output_manifest,
-            base_image=args.base_image,
-            arch_snapshot=args.arch_snapshot,
         )
     print(json.dumps(result, ensure_ascii=False))
 
