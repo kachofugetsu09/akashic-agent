@@ -2,17 +2,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
-from dataclasses import replace
 import hashlib
 import json
+from typing import cast
 
 from agent.plugin_composition.bindings import Bindings
-from plugins.context.api import Materials
 from session.embedding_store import MessageEmbeddings
 from session.log import MessageCatalog
-from session.message import Input, Message
+from agent.plugin_contracts import Input, Message
 
 from .application.consumer import MessageConsumer, run_memory_job
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
@@ -21,6 +20,22 @@ from .infrastructure.consumption import Consumption
 from .projection import input_features
 from .recalls import ContextSource, RecallRecords, query_memory, render_materials
 from .recall_tool import tool_references
+
+MaterialData = Mapping[str, object]
+
+
+def _reference_rows(material: MaterialData) -> tuple[Mapping[str, object], ...]:
+    """读取 provider 已发布的引用行，并拒绝无法保存出处的形状。"""
+    value = material.get("references", ())
+    if not isinstance(value, tuple):
+        raise TypeError("材料 references 必须是 tuple")
+    rows = cast(tuple[object, ...], value)
+    if any(not isinstance(row, Mapping) for row in rows):
+        raise TypeError("材料 references 必须是对象数组")
+    typed = tuple(cast(Mapping[str, object], row) for row in rows)
+    if any(not isinstance(row.get("ref"), str) or not row["ref"] for row in typed):
+        raise TypeError("材料 reference 必须有非空 ref")
+    return typed
 
 
 class MessageMemory:
@@ -77,7 +92,7 @@ class MessageMemory:
                 embeddings=self._embeddings, bindings=self._bindings, embed_batch=self._embed_batch,
             )
 
-    async def prepare(self, snapshot: tuple[Message, ...], source: str) -> Materials:
+    async def prepare(self, snapshot: tuple[Message, ...], source: str) -> MaterialData:
         """Context 查询与学习、关闭共用串行锁；查询本身不推进学习图。"""
         async with self._lock:
             self._check_open()
@@ -98,22 +113,22 @@ async def prepare_materials(
     catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
     learning_binding: str, learning: Learning, rule: LearningConfig, records: RecallRecords,
     embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]], limit: int, max_chars: int,
-) -> Materials:
+) -> MaterialData:
     """在已核对空间的图上查询真实输入前缀，发布出处后交付材料。"""
     if not snapshot:
-        return Materials("")
+        return {}
     # 1. 使用调用者已经固定的真实前缀，后来输入不会进入本次 cue。
     session_id = snapshot[0].session_id
     if catalog.reader(session_id).snapshot(through_seq=snapshot[-1].seq) != snapshot:
         raise ValueError("召回材料需要完整且真实的 Message 前缀")
     projected = learning.projection.project(snapshot, source)
     if not projected or projected[-1].status != "open":
-        return Materials("")
+        return {}
     members = set(projected[-1].message_ids)
     inputs = tuple(message for message in snapshot
                    if message.message_id in members and isinstance(message.body, Input)
                    and message.author == "user")[-1:]
-    material = Materials("")
+    material: MaterialData = {}
     if any(learning.text(message).strip() for message in inputs):
         # 同一真实输入使用稳定身份；工具续步、Reminder 和重启只读原记录。
         identity = "context:" + hashlib.sha256(json.dumps(
@@ -138,12 +153,14 @@ async def prepare_materials(
                 learning=learning, rule=rule, records=records, embed_batch=embed_batch,
                 limit=limit, max_chars=max_chars,
             )
-    references = {ref.ref: ref for ref in material.references}
+    references = {cast(str, ref["ref"]): ref for ref in _reference_rows(material)}
     # 同一消息有多次真实查询时，当前工具结果的精确出处供后续 Citation 使用。
-    references.update((ref.ref, ref) for ref in tool_references(
-        snapshot, source, learning, bindings, records,
-    ))
-    return replace(material, references=tuple(references.values()))
+    references.update((ref.ref, {
+        "ref": ref.ref, "resolved_ref": ref.resolved_ref, "retrieval_ref": ref.retrieval_ref,
+    }) for ref in tool_references(snapshot, source, learning, bindings, records))
+    result = dict(material)
+    result["references"] = tuple(references.values())
+    return result
 
 
 async def query_inputs(
@@ -152,7 +169,7 @@ async def query_inputs(
     embeddings: MessageEmbeddings, learning_binding: str, learning: Learning,
     rule: LearningConfig, records: RecallRecords,
     embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]], limit: int, max_chars: int,
-) -> Materials:
+) -> MaterialData:
     """真实用户输入首次准备时检索并保存结果，包括未命中。"""
     session_id = snapshot[0].session_id
     # 1. 空间身份必须在嵌入和写向量之前核对；历史向量只读取。
@@ -177,7 +194,11 @@ async def query_inputs(
     material = render_materials(identity, recall, learning, catalog, max_chars=max_chars)
     recall = recall.model_copy(update={
         "max_chars": max_chars,
-        "presented_message_ids": tuple(dict.fromkeys(ref.ref for ref in material.references)),
+        "presented_message_ids": tuple(
+            dict.fromkeys(
+                cast(str, ref["ref"]) for ref in _reference_rows(material)
+            )
+        ),
     })
     _ = records.save(identity, recall)
     return material

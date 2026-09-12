@@ -1,21 +1,18 @@
 """候选 Message 摘要入口；正式 manifest 在完整迁移验收后切换。"""
 from __future__ import annotations
 
-from dataclasses import replace
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPPING, Context
+from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey
 from agent.plugin_composition.models import BoundChatModel, ModelRequest, ModelRole
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
-from plugins.context.api import ContextModel, ContextOverflow, Materials, Summary, summary_range
-from plugins.context.plugin import CONTEXT
-from plugins.context.materials import MATERIALS
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.message import Message
+from agent.plugin_contracts import Message
 
 from .records import COMPACTION_SUMMARIES, StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, closed_groups, summarize, summary_groups, window_starts
@@ -24,6 +21,54 @@ api_version = 3
 name = "compaction"
 version = "4.0.0"
 desc = "按不可变消息前缀发布摘要，并为已使用的摘要保留原始读取口"
+
+MaterialData = Mapping[str, object]
+
+
+class ContextModel(Protocol):
+    @property
+    def context_window(self) -> int | None: ...
+
+    @property
+    def max_tool_schemas(self) -> int | None: ...
+
+    def render(self, messages: tuple[Message, ...], *, after_seq: int,
+               summary_reference: str | None = None, fresh: bool = False) -> ModelRequest: ...
+
+    def estimate(self, request: ModelRequest) -> int: ...
+
+
+class ContextBuilder(Protocol):
+    def build_attempt(
+        self, snapshot: Sequence[Message], *, materials: MaterialData,
+        model: ContextModel, tools: Sequence[Mapping[str, object]] = (),
+        max_output_tokens: int, window_start: str | None = None,
+    ) -> tuple[ModelRequest, bool]: ...
+
+
+class MaterialRegistry(Protocol):
+    async def register(
+        self, ctx: Context, *, name: str,
+        prepare: Callable[[tuple[Message, ...], str], Awaitable[MaterialData]],
+        priority: int = 0, prompt: bool = False,
+        reduce: Callable[..., Awaitable[MaterialData | None]] | None = None,
+    ) -> object: ...
+
+
+def summary_range(snapshot: tuple[Message, ...], source_message_ids: tuple[str, ...]) -> range:
+    """按摘要 owner 发布的消息身份定位连续覆盖区间。"""
+    identities = tuple(message.message_id for message in snapshot)
+    if not source_message_ids or source_message_ids[0] not in identities:
+        raise ValueError("摘要来源缺少实际消息")
+    start = identities.index(source_message_ids[0])
+    end = start + len(source_message_ids)
+    if identities[start:end] != source_message_ids:
+        raise ValueError("摘要来源不等于实际连续消息范围")
+    return range(start, end)
+
+
+CONTEXT = ServiceKey[ContextBuilder]("context.v1")
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v1")
 inject = (MATERIALS, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
 
 
@@ -61,22 +106,26 @@ async def apply(ctx: Context, config: Config) -> None:
     lookup = SummaryLookup(read, head)
     _ = await ctx.provide(COMPACTION_SUMMARIES, lookup)
 
-    def material(record: StoredSummary) -> Summary:
+    def material(record: StoredSummary) -> MaterialData:
         reference = ctx.require(BINDINGS).bind(COMPACTION_SUMMARIES, {
             "record_ref": record.reference, "session_id": record.session_id,
         })
-        return Summary(reference, record.source_message_ids, record.content)
+        return {
+            "reference": reference,
+            "source_message_ids": record.source_message_ids,
+            "content": record.content,
+        }
 
-    async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
+    async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         if not snapshot:
-            return Materials("")
+            return {}
         record = records().head(snapshot[0].session_id)
         if record is None:
-            return Materials("")
-        return Materials("", summary=material(record))
+            return {}
+        return {"summary": material(record)}
 
-    async def reduce(snapshot: tuple[Message, ...], materials: Materials, request: ModelRequest,
-                     model: BoundChatModel, projection: ContextModel, *, source: str, force: bool) -> Summary | None:
+    async def reduce(snapshot: tuple[Message, ...], materials: MaterialData, request: ModelRequest,
+                     model: BoundChatModel, projection: ContextModel, *, source: str, force: bool) -> MaterialData | None:
         """选完整旧前缀、生成摘要，再把不可变记录与 head 一起发布。"""
         # 1. 容量与近期保留均按当前已固定的业务模型判断。
         window = projection.context_window
@@ -84,18 +133,22 @@ async def apply(ctx: Context, config: Config) -> None:
         if window is None or not snapshot or (not force and before < int(window * 0.74)):
             return None
         parent = records().head(snapshot[0].session_id)
-        if (None if parent is None else material(parent)) != materials.summary:
+        current_summary = materials.get("summary")
+        if current_summary is not None and not isinstance(current_summary, Mapping):
+            raise TypeError("Context 材料摘要必须是对象")
+        if (None if parent is None else material(parent)) != current_summary:
             raise ValueError("本次已取得摘要与当前 Session head 不一致")
         turns = ctx.require(TURN_PROJECTION)
         if parent is None:
             origin: int | None = None
             # 首次窗口从最近完整单元累加；完整业务输入不得越过软水位或硬边界。
             for index in reversed(window_starts(snapshot, turns)):
-                try:
-                    candidate = ctx.require(CONTEXT).build(snapshot, materials=materials, model=projection,
-                        tools=request.tools, max_output_tokens=request.max_output_tokens,
-                        window_start=snapshot[index].message_id)
-                except ContextOverflow:
+                candidate, overflow = ctx.require(CONTEXT).build_attempt(
+                    snapshot, materials=materials, model=projection,
+                    tools=request.tools, max_output_tokens=request.max_output_tokens,
+                    window_start=snapshot[index].message_id,
+                )
+                if overflow:
                     break
                 if projection.estimate(candidate) > int(window * 0.74):
                     break
@@ -135,11 +188,12 @@ async def apply(ctx: Context, config: Config) -> None:
             keep_recent_tokens=config.keep_recent_tokens, tokens_before=before, tokens_after=0,
         )
         summary = material(record)
-        try:
-            after_request = ctx.require(CONTEXT).build(snapshot, materials=replace(materials, summary=summary),
-                model=projection, tools=request.tools, max_output_tokens=request.max_output_tokens)
-        except ContextOverflow as overflow:
-            after_request = overflow.request
+        after_materials = dict(materials)
+        after_materials["summary"] = summary
+        after_request, _overflow = ctx.require(CONTEXT).build_attempt(
+            snapshot, materials=after_materials, model=projection,
+            tools=request.tools, max_output_tokens=request.max_output_tokens,
+        )
         after = projection.estimate(after_request)
         if after >= before:
             raise SummaryError("摘要没有降低本次完整请求容量")

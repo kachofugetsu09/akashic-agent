@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -8,7 +9,7 @@ from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, lease_runtime_snapshot
 from plugins.content.api import Reference
 from agent.plugin_composition.models import BoundChatModel, LLMResponse, ModelRequest
-from plugins.context.api import ContextModel, Materials, Reminder, Summary
+from plugins.context.api import ContextModel, MaterialData, Materials, Reminder, Summary
 from plugins.context.materials import ContextMaterials
 from session.message import Message
 
@@ -53,6 +54,27 @@ _UNREACHED_MODEL: BoundChatModel = _UnreachedModel()
 _UNREACHED_PROJECTION: ContextModel = _UnreachedProjection()
 
 
+def _material(*, system_prompt: str = "", reminders=(), summary=None, references=()):
+    return {
+        "system_prompt": system_prompt,
+        "reminders": tuple(reminders),
+        "summary": summary,
+        "references": tuple(references),
+    }
+
+
+def _reminder(name: str, text: str, priority: int):
+    return {"name": name, "text": text, "priority": priority}
+
+
+def _summary(reference: str, source_message_ids: tuple[str, ...], content: str):
+    return {"reference": reference, "source_message_ids": source_message_ids, "content": content}
+
+
+def _reference(ref: str, resolved_ref=None, retrieval_ref=None):
+    return {"ref": ref, "resolved_ref": resolved_ref, "retrieval_ref": retrieval_ref}
+
+
 @asynccontextmanager
 async def catalog(*, prompt_sources=None, summary_source=None):
     root = CompositionRoot("materials")
@@ -81,11 +103,13 @@ async def test_materials_fix_explicit_order_and_keep_retrieval_evidence_out_of_p
     calls = []
     async def memory(snapshot, source):
         calls.append("memory")
-        return Materials("", (Reminder("memory", profile.read_text(), 300),),
-                         references=(Reference("memory:1", retrieval_ref="retrieval:1"),))
+        return _material(
+            reminders=(_reminder("memory", profile.read_text(), 300),),
+            references=(_reference("memory:1", retrieval_ref="retrieval:1"),),
+        )
     async def persona(snapshot, source):
         calls.append("persona")
-        return Materials("fixed persona")
+        return _material(system_prompt="fixed persona")
     async with catalog(prompt_sources={"persona": "trusted"}) as (ctx, service, evil):
         for wants_prompt in (False, True):
             with pytest.raises(PermissionError, match="实际插件"):
@@ -103,16 +127,28 @@ async def test_materials_fix_explicit_order_and_keep_retrieval_evidence_out_of_p
 
 
 @pytest.mark.asyncio
+async def test_material_provider_must_return_structural_mapping():
+    async def legacy(snapshot, source) -> MaterialData:
+        return cast(MaterialData, Materials(""))
+
+    async with catalog() as (ctx, service, _):
+        await service.register(ctx, name="legacy", prepare=legacy)
+        async with service.bind() as view:
+            with pytest.raises(TypeError, match="materials 必须是字符串键对象"):
+                await view.prepare((), "conversation")
+
+
+@pytest.mark.asyncio
 async def test_program_excludes_retrieval_without_running_it_or_losing_persona():
     calls = []
 
     async def memory(snapshot, source):
         calls.append("memory")
-        return Materials("", (Reminder("text", "retrieved private context", 300),))
+        return _material(reminders=(_reminder("text", "retrieved private context", 300),))
 
     async def persona(snapshot, source):
         calls.append("persona")
-        return Materials("fixed persona")
+        return _material(system_prompt="fixed persona")
 
     async with catalog(prompt_sources={"persona": "trusted"}) as (ctx, service, _):
         await service.register(ctx, name="persona", prepare=persona, prompt=True, priority=100)
@@ -132,13 +168,15 @@ async def test_program_excludes_retrieval_without_running_it_or_losing_persona()
 @pytest.mark.parametrize("conflict", ["prompt", "summary", "reference"])
 async def test_materials_reject_unauthorized_prompt_and_conflicting_owners(conflict):
     async def first(snapshot, source):
-        return Materials("", summary=Summary("summary:1", ("u1",), "one"),
-                         references=(Reference("ref", resolved_ref="first"),))
+        return _material(
+            summary=_summary("summary:1", ("u1",), "one"),
+            references=(_reference("ref", resolved_ref="first"),),
+        )
     async def second(snapshot, source):
-        return Materials(
-            "forged" if conflict == "prompt" else "",
-            summary=Summary("summary:2", ("u1",), "two") if conflict == "summary" else None,
-            references=(Reference("ref", resolved_ref="second"),) if conflict == "reference" else (),
+        return _material(
+            system_prompt="forged" if conflict == "prompt" else "",
+            summary=_summary("summary:2", ("u1",), "two") if conflict == "summary" else None,
+            references=(_reference("ref", resolved_ref="second"),) if conflict == "reference" else (),
         )
     async with catalog(summary_source=("first", "trusted")) as (ctx, service, evil):
         with pytest.raises(PermissionError, match="配置"):
@@ -158,12 +196,12 @@ async def test_only_summary_owner_can_reduce_and_closed_view_cannot_publish():
 
     entered, release = asyncio.Event(), asyncio.Event()
     async def prepare(snapshot, source):
-        return Materials("", summary=Summary("old", ("u1",), "old summary"))
+        return _material(summary=_summary("old", ("u1",), "old summary"))
     async def reduce(snapshot, materials, request, model, projection, *, source, force):
         assert source == "conversation" and force
         entered.set()
         await release.wait()
-        return Summary("new", ("u1", "a1"), "new summary")
+        return _summary("new", ("u1", "a1"), "new summary")
     async with catalog(summary_source=("summary", "trusted")) as (ctx, service, evil):
         with pytest.raises(PermissionError, match="摘要"):
             await service.register(evil, name="retrieval", prepare=prepare, reduce=reduce)
@@ -185,14 +223,14 @@ async def test_reduction_preserves_durable_identity_and_recognizes_no_progress(c
 
     previous = Summary("published", ("u1", "a1"), "durable text")
     async def prepare(snapshot, source):
-        return Materials("", summary=previous)
+        return _material(summary=_summary(previous.reference, previous.source_message_ids, previous.content))
     async def reduce(snapshot, materials, request, model, projection, *, source, force):
         return {
             "none": None,
-            "same": previous,
-            "new_ref_only": Summary("new", previous.source_message_ids, previous.content),
-            "changed_same_ref": Summary(previous.reference, previous.source_message_ids, "changed text"),
-            "lost_source": Summary("new", ("u1",), "changed text"),
+            "same": _summary(previous.reference, previous.source_message_ids, previous.content),
+            "new_ref_only": _summary("new", previous.source_message_ids, previous.content),
+            "changed_same_ref": _summary(previous.reference, previous.source_message_ids, "changed text"),
+            "lost_source": _summary("new", ("u1",), "changed text"),
         }[case]
     async with catalog(summary_source=("summary", "trusted")) as (ctx, service, evil):
         await service.register(ctx, name="summary", prepare=prepare, reduce=reduce)
@@ -204,7 +242,7 @@ async def test_reduction_preserves_durable_identity_and_recognizes_no_progress(c
                                       source="conversation", force=True)
             else:
                 assert await view.reduce((), material, ModelRequest(messages=[]), _UNREACHED_MODEL, _UNREACHED_PROJECTION,
-                                         source="conversation", force=True) is previous
+                                         source="conversation", force=True) is material.summary
 
 
 @pytest.mark.asyncio
@@ -214,10 +252,10 @@ async def test_reminder_order_uses_owner_and_name_and_keeps_each_request_snapsho
     current = "old"
 
     async def trusted(snapshot, source):
-        return Materials("", (Reminder("z", "trusted-z", 200), Reminder("a", current, 200)))
+        return _material(reminders=(_reminder("z", "trusted-z", 200), _reminder("a", current, 200)))
 
     async def evil(snapshot, source):
-        return Materials("", (Reminder("a", "evil-a", 200), Reminder("early", "early", 100)))
+        return _material(reminders=(_reminder("a", "evil-a", 200), _reminder("early", "early", 100)))
 
     async with catalog() as (ctx, service, other):
         registrations = [(ctx, "t", trusted), (other, "e", evil)]
@@ -234,10 +272,10 @@ async def test_reminder_order_uses_owner_and_name_and_keeps_each_request_snapsho
 @pytest.mark.asyncio
 async def test_duplicate_reminder_identity_rejects_different_priorities():
     async def first(snapshot, source):
-        return Materials("", (Reminder("same", "first", 100),))
+        return _material(reminders=(_reminder("same", "first", 100),))
 
     async def second(snapshot, source):
-        return Materials("", (Reminder("same", "second", 200),))
+        return _material(reminders=(_reminder("same", "second", 200),))
 
     async with catalog() as (ctx, service, _):
         await service.register(ctx, name="one", prepare=first)
@@ -263,7 +301,7 @@ async def test_display_priority_cannot_move_a_write_before_a_failed_preparation(
 
     async def write(snapshot, source):
         artifact.write_text("prepared")
-        return Materials("")
+        return _material()
 
     async with catalog() as (ctx, service, _):
         await service.register(ctx, name="a", prepare=fail, priority=100)
@@ -284,11 +322,11 @@ async def test_system_priority_sorts_output_without_reordering_preparation():
 
     async def first(snapshot, source):
         calls.append("a")
-        return Materials("first")
+        return _material(system_prompt="first")
 
     async def second(snapshot, source):
         calls.append("z")
-        return Materials("second")
+        return _material(system_prompt="second")
 
     async with catalog(prompt_sources={"a": "trusted", "z": "trusted"}) as (ctx, service, _):
         await service.register(ctx, name="z", prepare=second, priority=-100, prompt=True)

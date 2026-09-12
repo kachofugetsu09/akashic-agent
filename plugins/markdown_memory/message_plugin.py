@@ -9,7 +9,8 @@ import logging
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from dataclasses import replace
-from typing import AsyncGenerator, cast
+from typing import TYPE_CHECKING, AsyncGenerator, Protocol, cast
+from collections.abc import Awaitable, Callable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +21,7 @@ from agent.plugin_composition import (
     Context,
     ModelRequest,
     ModelRole,
+    ServiceKey,
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
@@ -30,11 +32,13 @@ from infra.persistence.json_store import atomic_write_text
 from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, StoredSummary
 from plugins.compaction.message_summary import source_text, summary_groups, window_starts
 from plugins.content.api import is_user_input, legacy_post_commit_effect
-from plugins.context.api import Materials, check_summary, summary_range
-from plugins.context.materials import MATERIALS
+from plugins.context.api import check_summary, summary_range
 from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
-from session.log import MessageCatalog, MessageReader
-from session.message import ContentPart, Input, Message, Output, ToolResult
+from session.log import MessageCatalog
+from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
+
+if TYPE_CHECKING:
+    from agent.plugin_composition.messages import MessageReader
 
 from .store import DEFAULT_SELF_MD, MEMORY_WRITES, MarkdownProfileStore, content_digest
 
@@ -44,7 +48,6 @@ api_version = 3
 name = "markdown_memory"
 version = "4.0.0"
 desc = "把已使用摘要的确切原文投影到 MEMORY.md 和 SELF.md"
-inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, TURN_PROJECTION)
 _UPDATE_LOCK_NAME = "markdown-profile-update.lock"
 workspace_files = (
     "memory/MEMORY.md", "memory/SELF.md", "memory/markdown-profile-writes.db",
@@ -52,6 +55,20 @@ workspace_files = (
     "memory/PENDING.retired.md",
     f"memory/{_UPDATE_LOCK_NAME}",
 )
+
+MaterialData = Mapping[str, object]
+
+
+class MaterialRegistry(Protocol):
+    async def register(
+        self, ctx: Context, *, name: str,
+        prepare: Callable[[tuple[Message, ...], str], Awaitable[MaterialData]],
+        priority: int = 0, prompt: bool = False, reduce: object | None = None,
+    ) -> object: ...
+
+
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v1")
+inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, TURN_PROJECTION)
 
 
 _MEMORY_HEADINGS = (
@@ -698,7 +715,7 @@ async def apply(ctx: Context, config: Config) -> None:
 
     _ = await ctx.provide(MEMORY_WRITES, read_writes)
 
-    async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
+    async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         # 完整初始态只投影 Store 的同一默认值；不创建文件或消费旧队列。
         state_files = tuple(ctx.workspace_file(name) for name in workspace_files
                             if not name.endswith(".lock"))
@@ -713,7 +730,7 @@ async def apply(ctx: Context, config: Config) -> None:
             parts.append("## Akashic 自我认知\n\n" + self_profile)
         if memory:
             parts.append("## Long-term Memory\n" + memory)
-        return Materials("\n\n".join(parts))
+        return {"system_prompt": "\n\n".join(parts)}
 
     async def follow(catalog: MessageCatalog) -> None:
         """模型暂时失败时保留原游标，关闭订阅后延时重读，其他会话继续处理。"""

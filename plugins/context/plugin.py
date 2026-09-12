@@ -10,10 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ModelRequest
-from session.message import (
+from agent.plugin_contracts import (
     Message,
 )
-from plugins.context.api import ContextModel, ContextOverflow, Materials, Summary, settled_prefixes, summary_range
+from plugins.context.api import ContextModel, ContextOverflow, MaterialData, Materials, Summary, decode_material, settled_prefixes, summary_range
 from plugins.context.materials import ContextMaterials, MATERIALS
 
 api_version = 3
@@ -156,6 +156,25 @@ class ContextBuilder:
         ):
             raise ContextOverflow(estimated, max_output_tokens, model.context_window, request=request)
         return request
+
+    def build_attempt(
+        self,
+        snapshot: Sequence[Message],
+        *,
+        materials: MaterialData,
+        model: ContextModel,
+        tools: Sequence[Mapping[str, Any]] = (),
+        max_output_tokens: int,
+        window_start: str | None = None,
+    ) -> tuple[ModelRequest, bool]:
+        """返回请求及是否因容量不足；把异常类型留在 Context owner 内。"""
+        try:
+            return self.build(
+                snapshot, materials=decode_material(materials), model=model, tools=tools,
+                max_output_tokens=max_output_tokens, window_start=window_start,
+            ), False
+        except ContextOverflow as overflow:
+            return overflow.request, True
 
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v1")

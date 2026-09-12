@@ -7,11 +7,21 @@ from dataclasses import dataclass
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from plugins.content.api import Reference
-from session.message import Message
+from agent.plugin_contracts import Message
 
-from .api import ContextModel, Materials, Reminder, Summary, SummaryReducer
+from .api import (
+    ContextModel,
+    MaterialData,
+    Materials,
+    Reminder,
+    Summary,
+    SummaryReducer,
+    decode_material,
+    decode_summary,
+    material_data,
+)
 
-Prepare = Callable[[tuple[Message, ...], str], Awaitable[Materials]]
+Prepare = Callable[[tuple[Message, ...], str], Awaitable[MaterialData]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +76,8 @@ class MaterialView:
         summary: Summary | None = None
         references: dict[str, Reference] = {}
         for name, owner in self._sources:
-            material = await owner.prepare(snapshot, source)
+            material = decode_material(await owner.prepare(snapshot, source))
             self._check_active()
-            if not isinstance(material, Materials):
-                raise TypeError("材料 owner 必须返回 Materials")
             if material.system_prompt:
                 if not owner.prompt:
                     raise PermissionError("此材料 owner 没有 Prompt 贡献权")
@@ -100,10 +108,12 @@ class MaterialView:
         self._check_active()
         for _, owner in self._sources:
             if owner.reduce is not None:
-                summary = await owner.reduce(snapshot, materials, request, model, projection, source=source, force=force)
+                summary_value = await owner.reduce(
+                    snapshot, material_data(materials), request, model, projection,
+                    source=source, force=force,
+                )
                 self._check_active()
-                if summary is not None and not isinstance(summary, Summary):
-                    raise TypeError("缩减必须返回已发布的 Summary")
+                summary = decode_summary(summary_value)
                 if summary is None:
                     return materials.summary
                 previous = materials.summary
