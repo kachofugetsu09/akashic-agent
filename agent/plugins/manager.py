@@ -190,6 +190,7 @@ from bus.event_bus import EventBus
 from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
+PLUGIN_ARCHIVE_BINDING_API = 2
 U = TypeVar("U")
 
 
@@ -4681,7 +4682,7 @@ class PluginManager:
                 "entrypoint": static_manifest.entrypoint if static_manifest else "plugin.py",
                 "source_type": mod["source_type"],
                 "data_dir": data_dir.resolve().relative_to(self._workspace.resolve()).as_posix(),
-                "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": 1},
+                "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
             })
             generation = PluginGeneration(
                 plugin_id=plugin_id,
@@ -5217,12 +5218,15 @@ class PluginManager:
         generations: dict[str, PluginGeneration] = {}
         asset_scopes = ExitStack()
         try:
-            for index, ref in enumerate(components):
-                record = self._archive.read_descriptor(ref)
+            records = tuple(self._archive.read_descriptor(ref) for ref in components)
+            # 先检查整个闭包，不能导入前半段后才发现后续组件属于旧接口。
+            for record in records:
                 if record["version"] != 2 or record["runtime"] != {
-                    "python_tag": sys.implementation.cache_tag, "binding_api": 1,
+                    "python_tag": sys.implementation.cache_tag,
+                    "binding_api": PLUGIN_ARCHIVE_BINDING_API,
                 }:
-                    raise RuntimeError("插件归档运行合同不兼容")
+                    raise RuntimeError("插件归档运行合同不兼容；保留原归档并使用原 Core 恢复")
+            for index, (ref, record) in enumerate(zip(components, records, strict=True)):
                 plugin_dir = self._archive.open(cast(str, record["code"]))
                 revision = cast(str, record["source_revision"])
                 if _source_revision(plugin_dir) != revision:

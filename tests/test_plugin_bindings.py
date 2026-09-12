@@ -190,12 +190,21 @@ async def test_missing_provider_and_runtime_mismatch_do_not_use_current_root(
         with pytest.raises(RuntimeError, match="闭包不完整"):
             async with host.open_binding((consumer_ref,)):
                 pytest.fail("current provider must not fill the archive")
-        descriptor = dict(host._archive.read_descriptor(provider_ref))
-        descriptor["runtime"] = {"python_tag": "other", "binding_api": 1}
-        incompatible = host._archive.save_descriptor(descriptor)
-        with pytest.raises(RuntimeError, match="不兼容"):
-            async with host.open_binding((incompatible, consumer_ref)):
-                pytest.fail("incompatible archive must not load")
+        # 即使旧接口位于闭包尾部，也必须在打开任何组件源码前拒绝。
+        for runtime in (
+            {"python_tag": "other", "binding_api": 2},
+            {"python_tag": sys.implementation.cache_tag, "binding_api": 1},
+        ):
+            descriptor = dict(host._archive.read_descriptor(consumer_ref))
+            descriptor["runtime"] = runtime
+            incompatible = host._archive.save_descriptor(descriptor)
+            def unexpected_open(_identity):
+                pytest.fail("incompatible closure must not open any component code")
+            with monkeypatch.context() as patch:
+                patch.setattr(host._archive, "open", unexpected_open)
+                with pytest.raises(RuntimeError, match="不兼容"):
+                    async with host.open_binding((provider_ref, incompatible)):
+                        pytest.fail("incompatible archive must not load")
         assert host.current_snapshot is current
         async with host.open_binding(
             (provider_ref, consumer_ref)

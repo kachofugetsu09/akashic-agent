@@ -623,3 +623,16 @@ Message 展示函数依赖消息读取能力，归入公开的 plugin_compositio
 
 这些是本地实施证据。整组发行、完整 Gate、CI 和独立概念审查尚待累计栈完成后核对；
 不据此声明 refactor 已完成，也没有对正式 workspace 执行迁移。
+
+
+### 9.34 退役接口与明确的归档边界
+
+旧 Core 语义兴趣评分、Session 压缩 facade 及其 grant wiring 已无生产消费者，
+删除这些导出与装配，不删除 Message/Session 数据或修改历史迁移。外部反馈插件的
+旧锁仍消费 SESSION_READ，但正式 runtime 不提供旧 SessionManager；锁和实际
+互操作迁移另行完成，不能用手工注入旧 facade 的 fixture 宣称可用。
+
+本轮 Python/API 不兼容以组件归档 ABI 2 明确表达。整个闭包先校验，再打开组件
+源码；后续组件属于 ABI 1 时也不得先导入前面的组件。旧归档保留，使用原 Core
+和安装环境恢复，不将未知外部效果重发或改写成已完成。新归档的删除安装后恢复、
+热更新与绑定定向验证 60 项通过。
