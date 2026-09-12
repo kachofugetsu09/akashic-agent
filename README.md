@@ -138,24 +138,79 @@ channel_name = "web"
 **个人推荐**：主模型使用 DeepSeek，轻量和视觉任务使用 Qwen。通信渠道推荐
 Telegram；只想先本机试用时，打开 2236 绑定模型后即可直接对话。
 
-**3. 运行与安全切换**
+**3. 正式发行、运行与安全切换**
 
-Linux 服务器上的 Core + Host Bridge 使用同一远端 commit 安装。未指定 commit 时固定本次执行开始时
-`main` 的最新完整 SHA；需要复现或回滚测试时显式指定 40 位 SHA：
+正式发行使用 `scripts/install-akashic.sh`，它把精确 commit 的 Core 分发制品交给
+`akashic-release` 完成构建和激活。未指定 commit 时固定本次执行开始时 `main` 的最新完整 SHA；需要
+复现或回滚测试时显式指定 40 位 SHA：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh \
+  | sh -s -- --yes
 
 curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh \
-  | sh -s -- --commit <full-40-character-sha>
+  | sh -s -- --commit <full-40-character-sha> --yes
 ```
 
 安装器会显示 current/target identity 并等待确认；无人值守时加 `--yes`。只准备镜像、Bridge venv、
-manifest、unit 和稳定 CLI 而不启动服务时加 `--no-activate`。激活前
-`/srv/data/services/akashic/state` 必须已有经过批准的 `config.toml`、`workspace/` 和
-`plugin-home/`；安装器不会把软件更新授权解释成正式数据迁移授权。安装后使用
-`akashic-release doctor` 核对实际 Bridge/Core identity，使用 `akashic-release rollback --yes`
-回到 previous 软件代际。完整边界见 [Core 与 Host Bridge 安装设计](./docs/design/akashic-core-bridge-installer.md)。
+manifest、unit 和稳定 CLI 而不启动服务时加 `--no-activate`。首次激活前，
+`/srv/data/services/akashic/state/config.toml`、`workspace/` 和 `plugin-home/` 必须已经由 operator
+准备好；没有现成配置时从 `config.example.toml` 复制后按目标机编辑，不能把测试配置或假凭据带入正式
+state。若配置没有 OpenCode Go 凭据，安装进程还必须从受保护的环境变量取得
+`OPENCODE_GO_API_KEY`。安装器不会把软件更新授权解释成正式数据迁移授权。
+
+这条路径的构建边界是：
+
+```text
+exact commit
+  └─ 临时 clean checkout（只作为构建和 Host Bridge identity 输入）
+       ├─ Core distribution builder → core.tar + 独立 *.bundle + profile/report
+       └─ Host Bridge / systemd / Compose → runtime-sources/<commit>
+```
+
+正式 Docker image 从 `core.tar` 解出 Core，并在构建时拒绝 `plugins/` 业务源码；插件只能由 profile
+声明的独立 bundle 通过正式 installer 安装。宿主上的 `runtime-sources/<commit>` 供 Host Bridge、Compose
+模板和 identity 校验使用，不是 Core 的业务插件搜索路径。`build_host_runtime_release.py --legacy-checkout`
+只保留给旧开发兼容，不能用于正式发行，也不能让镜像通过 checkout 自动装配插件。
+
+安装后用稳定 CLI 核对实际身份或恢复上一代软件：
+
+```bash
+akashic-release doctor
+akashic-release rollback --yes
+```
+
+`runtime.env` 由激活事务原子生成，至少闭合 `AKASHIC_RUNTIME_COMMIT`、
+`AKASHIC_RUNTIME_TREE`、`AKASHIC_IMAGE`、`AKASHIC_RELEASE_MANIFEST` 和
+`AKASHIC_RUNTIME_CHECKOUT`。容器入口会用镜像内 `runtime-info.json` 对照 commit/tree；`doctor` 还会核对
+release manifest、content-addressed image、Host Bridge checkout、toolchain 和 Bridge RPC。不要手改这些
+generation 字段；需要更新时重新准备并激活一个完整 release。
+
+首次正式启动时，distribution entrypoint 先用 default profile 校验并安装独立 bundle，随后在
+`<workspace>/runtime/distribution-install.json` 写入安装 receipt。后续重启只校验历史 receipt、当前
+manifest 和 stable artifact，不重新安装、启用默认 profile 或覆盖插件配置；因此 operator 后续禁用、卸载
+或用不同名称的 provider 替换插件后，重启仍保持当前组合。卸载走正在运行的 Core 控制面，例如
+`python main.py plugin-uninstall <plugin-id> --config PATH --workspace PATH`；普通卸载保留该插件的
+`plugin-data`。要恢复软件代际使用 `akashic-release rollback --yes`，它恢复 runtime/env 和服务身份，
+不回滚已经写入 Workspace 的业务数据或外部效果。
+
+发布验收还必须单独证明 Core-only 启停。下面的命令把分发制品写到仓库外；runner 会先从 `core.tar`
+启动并停止无业务源码的 Core，再执行 bundle 组合。检查报告中的 `core_bootstrap.status` 与 stop 证据；
+这一步证明 Core tar 不依赖 checkout 或业务源码，不等于默认 profile 的全量业务验收。
+
+```bash
+release_dir="$(mktemp -d /var/tmp/akashic-distribution.XXXXXX)"
+release_sha="<full-40-character-sha>"
+python scripts/build_plugin_distribution.py \
+  --repository "$PWD" --revision "$release_sha" --output "$release_dir"
+python docker/debug/plugin_external_acceptance.py \
+  --distribution "$release_dir/distribution.json" \
+  --core-tar "$release_dir/core.tar" \
+  --repo-root "$PWD" \
+  --output "$release_dir/acceptance.json"
+```
+
+完整边界见 [Core 与 Host Bridge 安装设计](./docs/design/akashic-core-bridge-installer.md)。
 
 无参数启动会先进入内置 supervisor，再由它启动正式 gateway。这样核心代码或主配置
 确需完整重载时，Agent 可以通过当轮 `tool_search` 解锁 `agent_restart`，并在回复持久化、
@@ -327,8 +382,10 @@ akashic_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
 `~/.akashic/workspace`；可设置 `AKASHIC_WORKSPACE`，也可以为单条命令传入
 `--workspace /absolute/path`。优先级为 `--workspace`、`AKASHIC_WORKSPACE`、
 `config.toml`。不同测试环境使用不同目录，不共享会话、记忆、附件或插件数据。
-插件代码缓存和启停清单默认仍位于 `$HOME/.akashic-plugin`；需要完整隔离插件安装状态时，
-额外设置 `AKASHIC_PLUGIN_HOME=/absolute/test/plugin-home`。
+开发 checkout 的插件代码缓存和启停清单默认仍位于 `$HOME/.akashic-plugin`；需要完整隔离插件安装状态时，
+额外设置 `AKASHIC_PLUGIN_HOME=/absolute/test/plugin-home`。正式分发使用
+`/srv/data/services/akashic/state/plugin-home`，只接受 release profile 或普通插件控制面发布的 artifact，
+不会扫描仓库 checkout 的 `plugins/`。
 
 从旧版升级时，第一次重启前显式复制旧插件数据；命令保留旧目录，目标已存在时拒绝覆盖：
 
