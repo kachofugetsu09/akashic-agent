@@ -35,7 +35,6 @@ CORE_PATHS = (
     "session",
     "utils",
     "host_bridge",
-    "memory2",
     "migrations",
     "main.py",
     "config.example.toml",

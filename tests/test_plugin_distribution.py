@@ -36,6 +36,9 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
         (root / "plugin.py").write_text(f'api_version = 3\nname = "{name}"\nversion = "1"\ndef apply(ctx, config): pass\n')
         (root / "akashic.plugin.toml").write_text(f'schema_version = 1\napi_version = 3\nname = "{name}"\nversion = "1"\nentrypoint = "plugin.py"\n')
     (source / "main.py").write_text('print("core")\n')
+    legacy_memory = source / "memory2"
+    legacy_memory.mkdir()
+    (legacy_memory / "embedder.py").write_text("legacy memory must stay external\n")
     (source / "config.example.toml").write_text("[runtime]\nworkspace = \"workspace\"\n")
     (source / "private.txt").write_text("must not ship")
     runtime = source / "docker" / "host-runtime"
@@ -77,6 +80,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
             "docker/host-runtime/distribution-entrypoint.sh",
         }
         assert not any(name == "plugins" or name.startswith("plugins/") for name in archive.getnames())
+        assert not any(name == "memory2" or name.startswith("memory2/") for name in archive.getnames())
     assert {row["name"] for row in report["plugins"]} == {"one", "two", "unused"}
     assert {row["path"] for row in report["runtime_wiring"]} == {
         "Dockerfile.distribution",
