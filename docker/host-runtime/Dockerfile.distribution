@@ -46,6 +46,8 @@ COPY core.tar /opt/akashic/distribution/core.tar
 COPY distribution.json /opt/akashic/distribution/distribution.json
 COPY profiles /opt/akashic/distribution/profiles
 COPY *.bundle /opt/akashic/distribution/
+COPY Dockerfile.distribution /opt/akashic/distribution/Dockerfile.distribution
+COPY distribution-entrypoint.sh /opt/akashic/distribution/distribution-entrypoint.sh
 COPY distribution-entrypoint.sh /opt/akashic/distribution-entrypoint.sh
 
 RUN test -n "${AKASHIC_SOURCE_COMMIT}" \

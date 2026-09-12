@@ -87,8 +87,15 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
         "distribution-entrypoint.sh",
     }
     assert (output / "Dockerfile.distribution").is_file()
-    assert "COPY core.tar /opt/akashic/distribution/core.tar" in (
-        Path("docker/host-runtime/Dockerfile.distribution").read_text()
+    dockerfile = Path("docker/host-runtime/Dockerfile.distribution").read_text()
+    assert "COPY core.tar /opt/akashic/distribution/core.tar" in dockerfile
+    assert (
+        "COPY Dockerfile.distribution /opt/akashic/distribution/Dockerfile.distribution"
+        in dockerfile
+    )
+    assert (
+        "COPY distribution-entrypoint.sh /opt/akashic/distribution/distribution-entrypoint.sh"
+        in dockerfile
     )
     assert "--ensure-profile" in (
         Path("docker/host-runtime/distribution-entrypoint.sh").read_text()
