@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.base import AttachmentStore
-from infra.mobile_realtime.gateway import build_mobile_gateway_runtime, build_mobile_gateway_server
+from plugins.akashic_clients.mobile_realtime.gateway import build_mobile_gateway_runtime, build_mobile_gateway_server
 from session.artifact_store import ArtifactStore
 from session.artifacts import AttachmentKind
 from session.log import MessageLog
