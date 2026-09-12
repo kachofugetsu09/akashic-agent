@@ -1,0 +1,5 @@
+schema_version = 1
+name = "subagent"
+version = "4.0.0"
+api_version = 3
+entrypoint = "plugin.py"

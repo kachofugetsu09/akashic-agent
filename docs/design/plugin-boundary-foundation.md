@@ -185,3 +185,17 @@ RPC 的参数模型和处理函数由声明该方法的插件拥有。Core 只�
 解析、参数校验和调用持有同一 snapshot lease，连接不缓存业务插件参数表。
 旧请求在原 generation 完成；新请求使用当前 provider。缺失方法返回 METHOD_NOT_FOUND。
 当前 programmatic 方法名称、参数和调用语义不变；方法在插件实际启用期间可用。
+
+
+### 9.2 独立分发制品
+
+`scripts/build_plugin_distribution.py` 从明确 Git commit 构建 `core.tar` 和每个插件自己的
+Git bundle。所有第一方插件均提供静态 manifest；没有 manifest 的入口会阻止分发。
+Core 的路径清单不包含 `plugins/`，每个插件源只含自身子树及构建来源证明。
+Git bundle 由原 `install_git_plugin` 安装，不给第一方插件增加 source loader 特权。
+构建报告分别记录源码 commit/path、独立 Git revision 与产物 SHA256；它们不是同一个身份。
+输出目录必须新建，失败保留已有内容，不覆盖旧发布制品。
+
+这一步只证明包边界及安装输入，不能证明每个包已经可以独立 apply。
+跨插件实现导入、宿主业务入口和默认组合仍需后续迁移；Core archive 尚不宣称是完整
+可启动发布镜像。Docker、前端资源和历史升级的完整验收在累计收口中完成。
