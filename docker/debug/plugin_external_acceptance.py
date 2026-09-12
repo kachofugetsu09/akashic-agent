@@ -1759,10 +1759,31 @@ async def _exercise_business_composition(
                     ref_name="",
                     sparse_paths=[],
                 )
-                manager.start_update_publication(install_result.update_id)
-                publication = manager._update_publication
-                if publication is None:
-                    raise RuntimeError("replacement publication task 未创建")
+                waiting_for_old = asyncio.Event()
+                wait_for_no_leases = manager.snapshot_store.wait_for_no_leases
+
+                async def observe_drain(snapshot: Any) -> None:
+                    if snapshot is old_snapshot:
+                        waiting_for_old.set()
+                    await wait_for_no_leases(snapshot)
+
+                manager.snapshot_store.wait_for_no_leases = observe_drain
+                try:
+                    manager.start_update_publication(install_result.update_id)
+                    publication = manager._update_publication
+                    if publication is None:
+                        raise RuntimeError("replacement publication task 未创建")
+                    await asyncio.wait_for(waiting_for_old.wait(), timeout=10)
+                    if publication[1].done():
+                        raise RuntimeError("旧 lease 未释放，publication 却已经结束")
+                    # 观察真实 drain 入口后仍执行旧消费者；不靠 sleep 猜测时序。
+                    old_consumer_call = await _invoke_capability(
+                        root=old_snapshot.composition_root, plugin_id=consumer_id, spec=before_spec,
+                    )
+                    old_consumer_call["snapshot_id"] = old_snapshot.snapshot_id
+                    old_consumer_call["generation_id"] = old_consumer_generation_id
+                finally:
+                    manager.snapshot_store.wait_for_no_leases = wait_for_no_leases
             await publication[1]
             update_status = manager.reload_journal.update(install_result.update_id)
             new_snapshot = manager.current_snapshot
@@ -1808,6 +1829,7 @@ async def _exercise_business_composition(
                 "old_artifact": str(old_provider_artifact),
                 "checks": {
                     "publication_committed": update_status.phase == "committed",
+                    "publication_waited_for_old_lease": waiting_for_old.is_set(),
                     "provider_generation_changed": (
                         old_provider_generation_id != new_provider.generation_id
                     ),
