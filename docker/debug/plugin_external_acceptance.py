@@ -1884,12 +1884,11 @@ async def _exercise_business_composition(
             row.get("checks", {}).get("durable_message_readback", False)
             for row in reports
         ),
-        "replacement_verified": (
-            replacement is None
-            or replacement_evidence is not None
-            and replacement_evidence["status"] == "passed"
-        ),
     }
+    if replacement is not None:
+        checks["replacement_verified"] = (
+            replacement_evidence is not None and replacement_evidence["status"] == "passed"
+        )
     if core_root is not None and core_digest_before is not None:
         checks["core_artifact_unchanged"] = _tree_sha256(core_root) == core_digest_before
     result: dict[str, Any] = {
