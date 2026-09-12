@@ -464,3 +464,21 @@ driver 关闭语义。RuntimeScope 的身份直接来自真实 lease，不以 ge
 进程、文件、归档等定向测试 124 项通过、1 项平台跳过；发现的旧材料 ABI 与默认
 加载 fixture 已修正，随后 Prompt 与真实模型执行 31 项通过。定向类型检查 0 errors。
 当前静态债务 R1=29、R2=18、R3=0；Gate、CI 与累计概念审查留在实施完成后。
+
+### 9.23 人格与初始化的业务 owner
+
+Prompt 的完整模板、读取校验、默认恢复和原始字节备份由同一个安装包拥有。
+Core 不再提供 veda-reset，也不在启动前读取 VEDA；用户显式运行安装包的
+`persona.py --workspace PATH` 维护入口。正常读取仍对缺失、空白、损坏报错，不能
+借插件加载自动重置人格。测试实际执行外置复制包的维护命令，验证非法 UTF-8
+原文备份、默认结果与重复执行不重写。
+
+Core init 只准备配置和空 workspace；不再写 VEDA、Context 默认授权、meme 清单
+或业务目录，已有文件即便 --force 也不会被这些已移出的动作改写。新安装组合须
+由产品配置与各包维护入口完成业务初始化；这是显式行为变化，不保留隐式 builtin
+产品组装作为兼容 fallback。
+
+Markdown JSON 解析属于自身；日期、原子文件写入、Turn effect 持久编码和 Message
+embedding writer 使用实际 owner 的精确公共入口。没有另建业务接口全集，writer
+没有被伪装成只读检索端口。Prompt、Core 初始化及公开合同相关 63 项测试通过，
+定向 pyright 0 errors；静态边界 R1=29、R2=6、R3=0。最终 Gate 与 CI 尚未运行。
