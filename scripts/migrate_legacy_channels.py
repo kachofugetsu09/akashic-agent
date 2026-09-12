@@ -9,6 +9,7 @@ recoverable config backup, and removes the old tables from the source config.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import shutil
@@ -152,12 +153,16 @@ def _render_qq(table: Mapping[str, Any]) -> str:
     if not isinstance(groups_raw, list | tuple):
         raise ValueError("channels.qq.groups 必须是数组")
     groups: list[dict[str, Any]] = []
+    seen_groups: set[str] = set()
     for index, raw in enumerate(groups_raw):
         if not isinstance(raw, Mapping):
             raise ValueError(f"channels.qq.groups[{index}] 必须是 table")
         group_id = str(raw.get("group_id", raw.get("groupId", ""))).strip()
         if not group_id:
             raise ValueError(f"channels.qq.groups[{index}].group_id 不能为空")
+        if group_id in seen_groups:
+            raise ValueError(f"QQ 群配置重复: {group_id}")
+        seen_groups.add(group_id)
         groups.append(
             {
                 "group_id": group_id,
@@ -175,7 +180,7 @@ def _render_qq(table: Mapping[str, Any]) -> str:
             }
         )
     timeout = float(table.get("websocket_open_timeout_seconds", 5.0))
-    if timeout <= 0:
+    if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("channels.qq.websocket_open_timeout_seconds 必须大于 0")
     return tomlkit.dumps(
         {

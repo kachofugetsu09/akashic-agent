@@ -890,3 +890,23 @@ def test_channel_config_migration_requires_qq_sender_endpoint_before_writing(tmp
     assert config.read_text() == source
     assert not workspace.exists()
     assert not config.with_name(config.name + ".before-channel-plugin-migration.bak").exists()
+
+
+@pytest.mark.parametrize("invalid", [
+    "websocket_open_timeout_seconds=nan\n",
+    "websocket_open_timeout_seconds=inf\n",
+    'groups=[{group_id="42"}, {group_id="42"}]\n',
+])
+def test_channel_config_migration_rejects_invalid_receiver_before_writing(tmp_path, invalid):
+    """无效接收配置不能在迁移后才报错并丢掉旧入口。"""
+    from scripts.migrate_legacy_channels import migrate_legacy_channels
+
+    config = tmp_path / "config.toml"
+    source = '[channels.qq]\nbot_uin="9001"\nsender_endpoint="ws://127.0.0.1/api"\n' + invalid
+    config.write_text(source)
+    workspace = tmp_path / "workspace"
+    with pytest.raises(ValueError, match="timeout|重复"):
+        migrate_legacy_channels(config, workspace, marketplace="external")
+    assert config.read_text() == source
+    assert not workspace.exists()
+    assert not config.with_name(config.name + ".before-channel-plugin-migration.bak").exists()
