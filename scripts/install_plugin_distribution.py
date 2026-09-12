@@ -211,8 +211,15 @@ def _preflight_bundle(
 ) -> None:
     """在正式安装前验证 bundle revision 与不可变来源记录。"""
 
-    _ = _git("bundle", "verify", str(bundle))
     with tempfile.TemporaryDirectory(prefix="akashic-plugin-preflight-") as directory:
+        # `git bundle verify` needs a repository for prerequisite checks.  The
+        # Core artifact has no checkout, so use a fresh empty bare repository
+        # instead of inheriting whatever directory launched the installer.
+        verify_repository = Path(directory) / "verify.git"
+        _ = _git("init", "--bare", str(verify_repository))
+        _ = _git(
+            "-C", str(verify_repository), "bundle", "verify", str(bundle)
+        )
         clone = Path(directory) / "source"
         _ = _git("clone", "--no-local", "--no-checkout", str(bundle), str(clone))
         revision = str(row["source_revision"])
