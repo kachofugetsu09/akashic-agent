@@ -11,6 +11,8 @@ import sys
 
 import httpx
 
+from tests.fixtures.formal_plugins import FULL_RUNTIME_PLUGINS, install_formal_plugins
+
 ROOT = Path(__file__).parents[2]
 
 
@@ -22,9 +24,10 @@ async def dashboard(root: Path, plugin: str) -> AsyncIterator[httpx.AsyncClient]
         response = await chat.get("/api/chat/web-ui/bootstrap")
         response.raise_for_status()
         catalog = response.json()
-    module = next(item for item in catalog["modules"] if item["pluginId"] == plugin)
+    plugin_id = plugin if "@" in plugin else f"{plugin}@fixture"
+    module = next(item for item in catalog["modules"] if item["pluginId"] == plugin_id)
     headers = {"x-akashic-web-snapshot": catalog["snapshotId"], "x-akashic-web-catalog": catalog["catalogId"],
-               "x-akashic-web-module": plugin, "x-akashic-web-generation": module["generationId"]}
+               "x-akashic-web-module": module["pluginId"], "x-akashic-web-generation": module["generationId"]}
     async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=address["dashboard"]),
                                 base_url="http://fixture", headers=headers) as web:
         yield web
@@ -63,13 +66,17 @@ async def runtime(root: Path, model_endpoint: str, *, settings: dict | None = No
     root.mkdir(parents=True, exist_ok=True)
     if settings is not None:
         (root / "fixture-config.json").write_text(json.dumps(settings), encoding="utf-8")
+    plugin_home, _ = install_formal_plugins(
+        root, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
     launch = json.loads(os.environ.get("AKASHIC_FIXTURE_COMMAND", "null"))
     command = ([sys.executable, "-m", "tests.fixtures.builtin_process", str(root), model_endpoint]
                if launch is None else [arg.replace("{root}", str(root)).replace("{model_endpoint}", model_endpoint)
                                        for arg in launch])
     environment = {key: value for key, value in os.environ.items() if not key.startswith("AKASHIC_")}
     environment.update({
-        "AKASHIC_PLUGIN_HOME": str(root / "plugin-home"),
+      "AKASHIC_PLUGIN_HOME": str(plugin_home),
         "HOME": str(root / "home"),
         "XDG_CONFIG_HOME": str(root / "home/config"),
         "XDG_CACHE_HOME": str(root / "home/cache"),

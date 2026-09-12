@@ -12,6 +12,7 @@ from agent.plugins.snapshot import get_current_runtime_snapshot, lease_runtime_s
 from bus.event_bus import EventBus
 from session.log import MessageLog, WriterExpired
 from session.message import ContentPart, ContentReferences, Input
+from tests.fixtures.formal_plugins import MINIMAL_MESSAGE_PLUGINS, install_formal_plugins
 
 
 def write_plugins(root):
@@ -208,18 +209,13 @@ async def apply(ctx, config):
 
 @pytest.mark.asyncio
 async def test_actual_conversation_plugin_accepts_without_model_or_reply_and_shares_source_task(tmp_path):
-    import shutil
     from plugins.conversation.plugin import CONVERSATION
     from session.message import Control
 
-    sources = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / "conversation", sources / "conversation",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / "sources", sources / "sources",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    plugin_home, _ = install_formal_plugins(tmp_path, MINIMAL_MESSAGE_PLUGINS)
     log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home", message_log=log)
+    host = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
+                         installed_cache_root=plugin_home / "cache", message_log=log)
     entered = asyncio.Event()
     async def program(task, reader, source):
         assert source == "conversation"

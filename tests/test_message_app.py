@@ -1,6 +1,4 @@
 """临时 workspace 中运行真正 App 装配和控制 socket。"""
-import shutil
-from pathlib import Path
 from typing import cast
 
 from fastapi import FastAPI
@@ -10,19 +8,16 @@ import pytest
 from akashic_sdk import AsyncAkashic
 from agent.config_models import Config
 from bootstrap.app import AppRuntime
-from bootstrap import tools as bootstrap
 from session.log import MessageLog
+from tests.fixtures.formal_plugins import MINIMAL_MESSAGE_PLUGINS, install_formal_plugins
 
 
 @pytest.mark.asyncio
 async def test_app_starts_web_and_control_with_message_owners(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    source = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", source / "conversation")
-    shutil.copytree(Path(__file__).parents[1] / "plugins/sources", source / "sources")
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
+    plugin_home, _ = install_formal_plugins(tmp_path, MINIMAL_MESSAGE_PLUGINS)
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     app = AppRuntime(Config(), workspace)
     try:
         await app.start()

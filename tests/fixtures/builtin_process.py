@@ -93,8 +93,11 @@ async def serve(root: Path, endpoint: str) -> None:
     if not (root / "config.toml").exists():
         init_workspace(config_path=root / "config.toml", workspace=workspace)
         plugins = settings.get("plugins", {})
+        marketplace = settings.get("marketplace", "fixture")
+        if not isinstance(marketplace, str) or not marketplace.strip():
+            raise ValueError("fixture marketplace 必须是非空字符串")
         for plugin, config in plugins.items():
-            destination = workspace / f"plugin-data/{plugin}-builtin/config.local.toml"
+            destination = workspace / f"plugin-data/{plugin}-{marketplace}/config.local.toml"
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(config, encoding="utf-8")
 
