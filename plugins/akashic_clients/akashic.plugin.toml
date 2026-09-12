@@ -3,3 +3,7 @@ name = "akashic_clients"
 version = "1.0.0"
 api_version = 3
 entrypoint = "plugin.py"
+
+[migration]
+catalog = "migration.catalog.toml"
+catalog_sha256 = "2497f029560db4e4598c6294c4e724551d6cc875e33e960246d64a755b4000d2"
