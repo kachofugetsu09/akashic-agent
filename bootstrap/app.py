@@ -14,8 +14,6 @@ from agent.host_bridge.monitor import build_host_bridge_monitor
 from agent.host_bridge.monitor import claim_host_bridge_boot
 from agent.restart import RestartGate
 from agent.config_models import Config
-from bootstrap.channel_host import ChannelHost
-from bootstrap.channels import start_channels
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.web_runtime import dashboard_socket_path, prepare_runtime_socket
@@ -27,7 +25,6 @@ from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from agent.plugins.turn_rollout import TurnPluginRollout
 from agent.plugins.watcher import PluginWatcher
-from agent.plugin_composition.commands import command_discovery_catalog
 from core.net.http import (
     SharedHttpResources,
     clear_default_shared_http_resources,
@@ -41,9 +38,7 @@ logging.getLogger("agent.plugins.manager").setLevel(
     os.environ.get("AKASHIC_PLUGIN_LOG_LEVEL", "INFO").upper()
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -152,15 +147,6 @@ def _wait_server_task(
     return wait
 
 
-def _close_mobile_gateway(runtime: Any | None) -> Callable[[], Awaitable[None]]:
-    async def close() -> None:
-        if runtime is not None:
-            # Gateway 的 task 与 SQLite publication 都由当前 loop 线程创建。
-            runtime.close()
-
-    return close
-
-
 class AppRuntime:
     def __init__(
         self,
@@ -185,18 +171,11 @@ class AppRuntime:
         self.app_server: SocketAppServer | None = None
         self.control_service: ControlService | None = None
         self.plugin_turn_rollout: TurnPluginRollout | None = None
-        self.channel_host: ChannelHost | None = None
         self.core: CoreRuntime | None = None
         self.bus = None
         self.event_bus: EventBus | None = None
         self.dashboard_server = None
         self.dashboard_task: asyncio.Task[None] | None = None
-        self.chat_server = None
-        self.chat_task: asyncio.Task[None] | None = None
-        self.web_chat_channel = None
-        self.mobile_gateway_runtime = None
-        self.mobile_gateway_server = None
-        self.mobile_gateway_task: asyncio.Task[None] | None = None
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
@@ -261,30 +240,10 @@ class AppRuntime:
             plugin_manager = getattr(self.core, "plugin_manager", None)
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
-            command_catalog_provider: Callable[
-                [], tuple[tuple[str, str], ...]
-            ] | None = None
-            if plugin_manager is not None:
-                def current_command_catalog() -> tuple[tuple[str, str], ...]:
-                    snapshot = plugin_manager.current_snapshot
-                    registry = None if snapshot is None else snapshot.command_registry
-                    return command_discovery_catalog(registry)
 
-                command_catalog_provider = current_command_catalog
-
-            # Web/Mobile client owners are ordinary installed plugins.  Keep an
-            # empty neutral host for the command endpoint callback and lifecycle
-            # shape, but never construct Core's historical ``akashic`` channel.
-            self.channel_host = await start_channels(
-                bus=self.bus,
-                workspace=self.workspace,
-                http_resources=self.http_resources,
-                event_bus=event_bus,
-                command_catalog_provider=command_catalog_provider,
-                extra_channels=[],
-            )
-            await self.channel_host.start_all()
-            # 渠道已打开 exact ingress 后恢复 Input；不依赖回复 worker。
+            # ChannelGenerationHost owns installed channel bindings.  Recovery
+            # runs after those exact bindings are open; no Core channel table
+            # or legacy ChannelHost is constructed here.
             await self.bus.recover_durable_inbounds()
             if self.readiness is not None:
                 self.readiness.mark_stage("channels.ready")
@@ -346,8 +305,6 @@ class AppRuntime:
                 task
                 for task in (
                     self.dashboard_task,
-                    self.chat_task,
-                    self.mobile_gateway_task,
                     self.plugin_watcher_task,
                 )
                 if task is not None
@@ -369,15 +326,6 @@ class AppRuntime:
                 if self.dashboard_task is not None and self.dashboard_task in done:
                     watched_task = self.dashboard_task
                     self.dashboard_task = None
-                elif self.chat_task is not None and self.chat_task in done:
-                    watched_task = self.chat_task
-                    self.chat_task = None
-                elif (
-                    self.mobile_gateway_task is not None
-                    and self.mobile_gateway_task in done
-                ):
-                    watched_task = self.mobile_gateway_task
-                    self.mobile_gateway_task = None
                 elif (
                     self.plugin_watcher_task is not None
                     and self.plugin_watcher_task in done
@@ -465,10 +413,6 @@ class AppRuntime:
     async def _request_server_shutdown(self) -> None:
         if self.dashboard_server is not None:
             self.dashboard_server.should_exit = True
-        if self.chat_server is not None:
-            self.chat_server.should_exit = True
-        if self.mobile_gateway_server is not None:
-            self.mobile_gateway_server.should_exit = True
 
     async def shutdown(self) -> None:
         if self._shutdown:
@@ -483,14 +427,6 @@ class AppRuntime:
                 (
                     "dashboard_server.wait",
                     _wait_server_task(self.dashboard_task),
-                ),
-                (
-                    "chat_server.wait",
-                    _wait_server_task(self.chat_task),
-                ),
-                (
-                    "mobile_gateway_server.wait",
-                    _wait_server_task(self.mobile_gateway_task),
                 ),
                 ("message_bus.aclose", _close_message_bus(self.bus)),
                 (
@@ -519,14 +455,6 @@ class AppRuntime:
                         if self.plugin_turn_rollout
                         else _noop_async
                     ),
-                ),
-                (
-                    "channels.stop",
-                    self.channel_host.stop_all if self.channel_host else _noop_async,
-                ),
-                (
-                    "mobile_gateway.close",
-                    _close_mobile_gateway(self.mobile_gateway_runtime),
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 ("http_resources.aclose", self.http_resources.aclose),
@@ -745,12 +673,9 @@ class AppRuntime:
         old_commands: tuple[tuple[str, str], ...],
         new_commands: tuple[tuple[str, str], ...],
     ) -> None:
-        assert self.channel_host is not None
-        if old_commands != new_commands:
-            await self.channel_host.swap_command_catalog(
-                old_commands,
-                new_commands,
-            )
+        # Installed channel plugins resolve COMMANDS inside each exact
+        # request scope.  There is no Core endpoint registry to mutate.
+        _ = old_commands, new_commands
 
 
 def build_app_runtime(
