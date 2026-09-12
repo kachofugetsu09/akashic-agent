@@ -249,6 +249,7 @@ def _tar_info(
     mode: int,
     mtime: int,
     size: int = 0,
+    type: bytes = tarfile.REGTYPE,
 ) -> tarfile.TarInfo:
     info = tarfile.TarInfo(name)
     info.mode = mode
@@ -258,6 +259,7 @@ def _tar_info(
     info.uname = ""
     info.gname = ""
     info.size = size
+    info.type = type
     return info
 
 
@@ -268,11 +270,18 @@ def _append_bytes(
     *,
     mtime: int,
     mode: int = 0o644,
+    type: bytes = tarfile.REGTYPE,
 ) -> bytes:
     stream = io.BytesIO(archive)
     with tarfile.open(fileobj=stream, mode="a", format=tarfile.PAX_FORMAT) as output:
         output.addfile(
-            _tar_info(name, mode=mode, mtime=mtime, size=len(content)),
+            _tar_info(
+                name,
+                mode=mode,
+                mtime=mtime,
+                size=len(content),
+                type=type,
+            ),
             io.BytesIO(content),
         )
     return stream.getvalue()
@@ -290,7 +299,14 @@ def _append_tree(
         relative = path.relative_to(root).as_posix()
         name = f"{prefix.rstrip('/')}/{relative}"
         if path.is_dir():
-            result = _append_bytes(result, name + "/", b"", mtime=mtime, mode=0o755)
+            result = _append_bytes(
+                result,
+                name + "/",
+                b"",
+                mtime=mtime,
+                mode=0o755,
+                type=tarfile.DIRTYPE,
+            )
             continue
         if not path.is_file():
             raise RuntimeError(f"Web 静态产物含不支持的文件类型: {path}")

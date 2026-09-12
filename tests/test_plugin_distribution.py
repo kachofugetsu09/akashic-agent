@@ -9,7 +9,7 @@ import pytest
 
 from agent.plugins.install import install_git_plugin
 from scripts.build_host_runtime_release import _create_context
-from scripts.build_plugin_distribution import build
+from scripts.build_plugin_distribution import _append_tree, build
 from scripts.install_plugin_distribution import extract_core, install_profile, verify_distribution
 
 
@@ -117,3 +117,18 @@ def test_formal_host_context_contains_core_and_bundles_only(tmp_path):
     assert (context / "one.bundle").is_file()
     assert not (context / "plugins").exists()
     assert not (context / "private.txt").exists()
+
+
+def test_static_asset_directories_are_real_tar_directories(tmp_path):
+    asset_root = tmp_path / "assets"
+    (asset_root / "sdk").mkdir(parents=True)
+    (asset_root / "sdk" / "react.js").write_text("export {}\n")
+    with io.BytesIO() as stream:
+        with tarfile.open(fileobj=stream, mode="w"):
+            pass
+        archive = _append_tree(
+            stream.getvalue(), asset_root, "static/dashboard", mtime=1
+        )
+    with tarfile.open(fileobj=io.BytesIO(archive)) as result:
+        assert result.getmember("static/dashboard/sdk/").isdir()
+        assert result.getmember("static/dashboard/sdk/react.js").isfile()
