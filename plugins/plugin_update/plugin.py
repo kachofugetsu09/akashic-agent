@@ -8,32 +8,30 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition import Context, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from agent.plugin_composition.tasks import TASKS
-from plugins.content.plugin import CONTENT, check_text
-from plugins.context.materials import MATERIALS
-from plugins.context.plugin import CONTEXT
+from plugins.content.plugin import check_text
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.models.projection import MODEL_CALLS
-from plugins.react.plugin import REACT
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
-from plugins.turn_projection.plugin import TURN_PROJECTION
 from agent.plugin_contracts import ContentPart, Output
 from agent.plugin_contracts import json_value
 
 from .tool import InstallPlugin, InstallInput, Request
-from .validation import PLUGIN_VALIDATION, TOOL_CLEANUP, Validation
+from .validation import PLUGIN_VALIDATION, Validation
 
 logger = logging.getLogger(__name__)
+REPLY_EXECUTE = ServiceKey("reply.execute.v1")
+
 api_version = 3
 name = "plugin_update"
 version = "1.0.0"
 desc = "按实际要求验证候选，排空后发布，并用原渠道报告结果"
 inject = (
+    REPLY_EXECUTE,
     PLUGIN_UPDATES,
     TOOLS,
     ALL_TOOLS,
@@ -45,14 +43,6 @@ inject = (
     TASKS,
     DELIVERY,
     DELIVERY_SENDERS,
-    CHAT_MODELS,
-    CONTENT,
-    CONTEXT,
-    MATERIALS,
-    MODEL_CALLS,
-    REACT,
-    TURN_PROJECTION,
-    TOOL_CLEANUP,
 )
 
 

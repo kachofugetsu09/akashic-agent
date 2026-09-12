@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
-from plugins.content.api import Reference
 from agent.plugin_contracts import Message
 
 from .api import (
@@ -15,6 +14,7 @@ from .api import (
     Materials,
     Reminder,
     Summary,
+    SummaryData,
     SummaryReducer,
     decode_material,
     decode_summary,
@@ -55,8 +55,8 @@ class MaterialView:
 
     async def prepare(
         self, snapshot: tuple[Message, ...], source: str, *,
-        caller: Context | None = None, reminders: tuple[Reminder, ...] = (),
-    ) -> Materials:
+        caller: Context | None = None, reminders: tuple[Mapping[str, object], ...] = (),
+    ) -> MaterialData:
         """按固定贡献者收集；同优先级按实际插件 ID 和块名称的 UTF-8 字节排序。"""
         self._check_active()
         prompts: list[tuple[int, bytes, bytes, str]] = []
@@ -72,9 +72,9 @@ class MaterialView:
         if reminders:
             if caller is None or caller.root_instance_token is not self._ctx.root_instance_token:
                 raise ValueError("调用程序的提醒需要同一 Root 的实际 Context owner")
-            collect(caller.runtime.plugin_id, reminders)
+            collect(caller.runtime.plugin_id, decode_material({"reminders": reminders}).reminders)
         summary: Summary | None = None
-        references: dict[str, Reference] = {}
+        references: dict[str, Mapping[str, object]] = {}
         for name, owner in self._sources:
             material = decode_material(await owner.prepare(snapshot, source))
             self._check_active()
@@ -90,42 +90,50 @@ class MaterialView:
                     raise ValueError("摘要必须只有一个 owner")
                 summary = material.summary
             for ref in material.references:
-                previous = references.get(ref.ref)
-                if previous is not None and previous != ref:
+                identity = ref.get("ref")
+                if not isinstance(identity, str) or not identity:
+                    raise ValueError("引用必须包含非空 ref 字符串")
+                previous = references.get(identity)
+                if previous is not None and dict(previous) != dict(ref):
                     raise ValueError("同一引用的材料证据冲突")
-                references[ref.ref] = ref
+                references[identity] = ref
         ordered = tuple(block for _, block in sorted(
             blocks.items(), key=lambda item: (item[1].priority, item[0][0].encode("utf-8"), item[0][1].encode("utf-8")),
         ))
-        return Materials("\n\n".join(item[3] for item in sorted(prompts)), ordered, summary, tuple(references.values()))
+        return material_data(Materials("\n\n".join(item[3] for item in sorted(prompts)), ordered, summary, tuple(references.values())))
 
     async def reduce(
-        self, snapshot: tuple[Message, ...], materials: Materials,
+        self, snapshot: tuple[Message, ...], materials: MaterialData,
         request: ModelRequest, model: BoundChatModel, projection: ContextModel,
         *, source: str, force: bool,
-    ) -> Summary | None:
+    ) -> SummaryData | None:
         """只有同一个摘要 owner 能缩减；其余已取得材料保持原样。"""
         self._check_active()
+        current = decode_material(materials)
         for _, owner in self._sources:
             if owner.reduce is not None:
                 summary_value = await owner.reduce(
-                    snapshot, material_data(materials), request, model, projection,
+                    snapshot, material_data(current), request, model, projection,
                     source=source, force=force,
                 )
                 self._check_active()
                 summary = decode_summary(summary_value)
                 if summary is None:
-                    return materials.summary
-                previous = materials.summary
+                    return None
+                previous = current.summary
                 if previous is not None:
                     if summary.reference == previous.reference and summary != previous:
                         raise ValueError("同一持久摘要引用的内容不能改变")
                     if summary.source_message_ids[:len(previous.source_message_ids)] != previous.source_message_ids:
                         raise ValueError("缩减不能撤回已覆盖的摘要来源")
                     if (summary.source_message_ids, summary.content) == (previous.source_message_ids, previous.content):
-                        return previous
-                return summary
-        return materials.summary
+                        return None
+                return {
+                    "reference": summary.reference,
+                    "source_message_ids": summary.source_message_ids,
+                    "content": summary.content,
+                }
+        return None
 
 
 class ContextMaterials:
@@ -207,4 +215,4 @@ class ContextMaterials:
                 view.close()
 
 
-MATERIALS = ServiceKey[ContextMaterials]("context.materials.v2")
+MATERIALS = ServiceKey[ContextMaterials]("context.materials.v3")

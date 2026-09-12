@@ -31,7 +31,7 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         "conversation",
         "react",
         "turn_projection",
-        *(("reply", "tool_search") if replying else ()),
+        *(("reply", "reply_program", "tool_search") if replying else ()),
     ):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
@@ -238,7 +238,6 @@ async def test_reply_commits_plugin_metadata_and_history_reads_it_without_the_pl
         plugin.mkdir()
         (plugin / "plugin.py").write_text('''
 from plugins.content.plugin import CONTENT
-from plugins.content.api import TextProtocol
 api_version = 3
 name = "citation"
 version = "1.0.0"
@@ -246,8 +245,8 @@ inject = (CONTENT,)
 async def apply(ctx, config):
     async def decode(source, references):
         return (), {"version": 1, "references": [{"ref": "remembered", "declared": True}]} if source.text else {}
-    await ctx.require(CONTENT).register(ctx, TextProtocol(
-        name="citation", prompt="", content={}, decode=decode))
+    await ctx.require(CONTENT).register(ctx, {
+        "name": "citation", "prompt": "", "content": {}, "decode": decode})
 ''')
 
     async with application(tmp_path, replying=True, extra_sources=extra) as (log, host):

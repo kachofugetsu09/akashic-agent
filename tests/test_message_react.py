@@ -15,7 +15,7 @@ from agent.plugin_composition.models import (
 )
 from agent.plugin_composition.tasks import Task, Tasks
 from plugins.content.plugin import _decode_text, check_text
-from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary
+from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary, material_data
 from plugins.context.plugin import ContextBuilder
 from plugins.sources.session import SourceSession as Conversation, needs_reply
 from plugins.models.content import render_content
@@ -25,7 +25,7 @@ from plugins.models.store import ModelsStore
 from plugins.react.plugin import react, StepLimit
 from plugins.tools.execution import ToolExecution, MessageReply, Result
 from plugins.tools.abandon import follow_abandon, reject_start
-from plugins.tools.menu import NativePresentation, ToolMenu
+from plugins.tools.menu import NativePresentation, ToolMenu, ToolCallDecode
 from session.log import MessageConflict, MessageLog
 from session.message import (
     CallRef, ContentPart, ContentReferences, Control, Input, Message, Output, ToolCall,
@@ -93,9 +93,11 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         def decode(self, call: ModelToolCall):
             if call.name == "tool_call":
                 assert call.arguments["name"] == "example"
-                return "tool", call.arguments["arguments"]
-            _, arguments = NativePresentation({"example": {}}).decode(call)
-            return "tool", arguments
+                return ToolCallDecode("tool", call.arguments["arguments"])
+            decoded = NativePresentation({"example": {}}).decode(call)
+            if isinstance(decoded, str):
+                return ToolCallDecode(None, {}, {"name": call.name, "arguments": call.arguments, "error": decoded})
+            return ToolCallDecode("tool", decoded[1])
 
         def name(self, binding: str) -> str:
             assert binding == "tool"
@@ -125,7 +127,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
                                    render_content=lambda p: render_content(p, artifacts={}),
                                    tool_name=lambda binding: "example", read_call=store.read_call)
     async def materials(snapshot):
-        return Materials("system") if material_source is None else await material_source(snapshot)
+        return material_data(Materials("system")) if material_source is None else await material_source(snapshot)
     async def run(task, reader, source):
         output = writer(Output)
         assert output.source == source
@@ -471,22 +473,22 @@ async def test_react_reduces_one_prepared_request_and_bounds_provider_retry(tmp_
     async def materials(snapshot):
         nonlocal prepared_count
         prepared_count += 1
-        return Materials("fixed prompt", (Reminder("retrieval", "actual query result", 100),))
+        return material_data(Materials("fixed prompt", (Reminder("retrieval", "actual query result", 100),)))
 
     async def reduce(
-        snapshot: tuple[Message, ...], materials: Materials, request: ModelRequest,
+        snapshot: tuple[Message, ...], materials: Mapping[str, object], request: ModelRequest,
         model: BoundChatModel, projection: ContextModel, *, source: str, force: bool,
-    ) -> Summary | None:
+    ) -> Mapping[str, object] | None:
         assert source == "conversation"
         assert model.descriptor.binding_id == "model"
         assert request.tools and request.max_output_tokens == 100
-        assert materials.system_prompt == "fixed prompt"
+        assert materials["system_prompt"] == "fixed prompt"
         reductions.append(force)
         if case == "no_progress" or (case in {"provider", "second_overflow"} and not force):
-            return materials.summary
+            return materials["summary"]
         summary = Summary("published", ("old-user", "old-reply"), "durable old history")
         state.transact(lambda tx: tx.save("published", {"summary": summary.content}, expected_version=None))
-        return summary
+        return {"reference": summary.reference, "source_message_ids": summary.source_message_ids, "content": summary.content}
 
     def estimate(messages, tools):
         return 9901 if case == "local" and '"summary":' not in str(messages) else 100
@@ -612,7 +614,7 @@ async def test_indirect_wire_call_and_request_reminder_replay_exactly(tmp_path):
         return Result("success", (ContentPart("text", str(arguments["value"])),))
 
     async def materials(snapshot):
-        return Materials("system", (Reminder("directory", "example directory", 10),))
+        return material_data(Materials("system", (Reminder("directory", "example directory", 10),)))
 
     async with runtime(
         tmp_path, complete, invoke, material_source=materials,

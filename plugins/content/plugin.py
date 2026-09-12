@@ -10,7 +10,7 @@ from collections.abc import (
 )
 from contextlib import asynccontextmanager
 from types import MappingProxyType
-from typing import Protocol
+from typing import Protocol, cast
 
 from markdown_it import MarkdownIt
 
@@ -20,14 +20,19 @@ from agent.plugin_contracts import ContentPart, ContentReferences, freeze_metada
 from agent.plugin_contracts import json_value
 
 # 类型属于 Content 的公开 API；不同归档实现共享当前已校验的 binding ABI。
-from plugins.content.api import (
+from .api import (
     check_artifact,
+    is_user_input,
+    legacy_post_commit_effect,
     ContentCheck,
     ContentSchema,
     Reference,
+    ReferenceData,
     Span,
     TextProtocol,
+    TextDecoder,
     TextSource,
+    decode_reference,
 )
 
 api_version = 3
@@ -93,21 +98,21 @@ def _literal_ranges(text: str) -> tuple[tuple[int, int], ...]:
 
 
 async def _decode_text(
-    text: str, protocols: Sequence[tuple[str, TextProtocol]], references: tuple[Reference, ...] = ()
+    text: str, protocols: Sequence[tuple[str, TextProtocol]], references: Sequence[ReferenceData] = ()
 ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]:
     """一次组装整份原文，冲突明确失败；不按安装先后串行改写文本。"""
     if not isinstance(text, str):
         raise TypeError("待解码内容必须是字符串")
-    references = tuple(references)
-    if any(not isinstance(ref, Reference) for ref in references):
-        raise TypeError("引用必须来自已校验的 Reference")
+    validated_references: tuple[Reference, ...] = tuple(
+        decode_reference(value) for value in references
+    )
     protected = _literal_ranges(text)
     source = TextSource(text, protected)
     spans: list[tuple[str, Span]] = []
     metadata: dict[str, object] = {}
     # 1. 每个 decoder 都接收同一个不可变原文和引用集合。
     for owner, protocol in sorted(protocols, key=lambda item: item[1].name):
-        decoded, extra = await protocol.decode(source, references)
+        decoded, extra = await protocol.decode(source, validated_references)
         if not isinstance(extra, Mapping):
             raise TypeError(f"{protocol.name} 的 metadata 必须是 JSON 对象")
         if extra:
@@ -115,6 +120,10 @@ async def _decode_text(
                 raise ValueError(f"同一插件重复产生 metadata: {owner}")
             metadata[owner] = extra
         for span in decoded:
+            if isinstance(span, Mapping):
+                if set(span) != {"start", "end", "parts"}:
+                    raise ValueError("文本区间字段无效")
+                span = Span(span["start"], span["end"], span["parts"])
             if not isinstance(span, Span) or span.end > len(text):
                 raise ValueError(f"{protocol.name} 返回越界的内容区间")
             if not source.allows(span.start, span.end):
@@ -157,7 +166,7 @@ class ContentView(Protocol):
     def checks(self) -> Mapping[str, ContentCheck]: ...
 
     async def decode(
-        self, text: str, references: tuple[Reference, ...] = ()
+        self, text: str, references: Sequence[ReferenceData] = ()
     ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]: ...
 
 
@@ -207,7 +216,7 @@ class _ContentView:
         return validate
 
     async def decode(
-        self, text: str, references: tuple[Reference, ...] = ()
+        self, text: str, references: Sequence[ReferenceData] = ()
     ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]:
         self._check_active()
         protocols = tuple(
@@ -227,18 +236,43 @@ class _ContentView:
         self._active = False
 
 
+def _definition(value: ContentSchema | Mapping[str, object]) -> ContentSchema:
+    """在注册边界解码外部声明，schema 与文本协议不共享实现类。"""
+    if isinstance(value, ContentSchema):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("内容声明必须是映射")
+    fields = set(value)
+    if fields not in ({"name", "content"}, {"name", "content", "prompt", "decode"}):
+        raise ValueError("内容声明字段无效")
+    name, checks = value["name"], value["content"]
+    if not isinstance(name, str) or not isinstance(checks, Mapping):
+        raise TypeError("内容声明名称与校验器映射无效")
+    content = cast(Mapping[str, ContentCheck], checks)
+    if "decode" not in value:
+        return ContentSchema(name=name, content=content)
+    prompt, decode = value["prompt"], value["decode"]
+    if not isinstance(prompt, str) or not callable(decode):
+        raise TypeError("文本协议需要提示与 decoder")
+    return TextProtocol(name=name, content=content, prompt=prompt, decode=cast(TextDecoder, decode))
+
+
 class Content:
+    check_text = staticmethod(check_text)
+    check_artifact = staticmethod(check_artifact)
+    is_user_input = staticmethod(is_user_input)
+    legacy_post_commit_effect = staticmethod(legacy_post_commit_effect)
+
     def __init__(self, ctx: Context):
         self._ctx = ctx
-        self._definitions: dict[str, tuple[Context, ContentSchema, Callable[[], TextProtocol] | None]] = {}
+        self._definitions: dict[str, tuple[Context, ContentSchema, Callable[[], TextProtocol | Mapping[str, object]] | None]] = {}
 
     async def register(
-        self, ctx: Context, definition: ContentSchema, *,
-        prepare: Callable[[], TextProtocol] | None = None,
+        self, ctx: Context, definition: ContentSchema | Mapping[str, object], *,
+        prepare: Callable[[], TextProtocol | Mapping[str, object]] | None = None,
     ) -> Effect:
         """登记固定 schema；动态协议在每次 bind 同时固定提示与解析器。"""
-        if not isinstance(definition, ContentSchema):
-            raise TypeError("内容声明必须是 ContentSchema 或 TextProtocol")
+        definition = _definition(definition)
         if prepare is not None and (not isinstance(definition, TextProtocol) or not callable(prepare)):
             raise TypeError("动态准备只适用于 TextProtocol")
         if ctx.root_instance_token is not self._ctx.root_instance_token:
@@ -288,7 +322,7 @@ class Content:
             for key in sorted(self._definitions):
                 owner, definition, prepare = self._definitions[key]
                 if prepare is not None:
-                    prepared = prepare()
+                    prepared = _definition(prepare())
                     if (not isinstance(prepared, TextProtocol) or prepared.name != definition.name
                             or prepared.content != definition.content):
                         raise ValueError("动态协议不能更换名称或内容 schema")
@@ -301,7 +335,7 @@ class Content:
                 view.close()
 
 
-CONTENT = ServiceKey[Content]("content.v1")
+CONTENT = ServiceKey[Content]("content.v2")
 
 
 @asynccontextmanager

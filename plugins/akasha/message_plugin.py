@@ -14,12 +14,10 @@ from agent.plugin_composition import EMBEDDINGS, RUNTIME_STARTED, RUNTIME_STOPPI
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.commands import COMMANDS, CommandDefinition, CommandInvocation, CommandResult
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE
-from plugins.content.api import ContentSchema
-from plugins.tools.plugin import TOOLS, ToolRef, ToolView
-from plugins.turn_projection.plugin import TURN_PROJECTION
 from agent.plugin_contracts import Message
 from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
 from .domain.model import EmbeddingSpaceMismatchError
+from ._boundaries import CONTENT, TOOLS, TURN_PROJECTION, ContentCapability, ToolCatalog, ToolRef, ToolView
 
 from .application.consumer import MessageConsumer
 from .config import AkashaConfig, resolve_memory_path
@@ -50,12 +48,6 @@ workspace_roots = ("memory",)
 MaterialData = Mapping[str, object]
 
 
-class ContentRegistry(Protocol):
-    async def register(
-        self, ctx: Context, definition: ContentSchema, *, prepare: Callable[[], object] | None = None,
-    ) -> object: ...
-
-
 class MaterialRegistry(Protocol):
     async def register(
         self, ctx: Context, *, name: str,
@@ -64,8 +56,7 @@ class MaterialRegistry(Protocol):
     ) -> object: ...
 
 
-CONTENT = ServiceKey[ContentRegistry]("content.v1")
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v2")
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")
 inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
           BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, UI_SLOTS, COMMANDS)
 
@@ -120,7 +111,8 @@ AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
 
 async def apply(ctx: Context, config: Config) -> None:
     """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
-    catalog = ctx.require(TOOLS)
+    catalog: ToolCatalog = ctx.require(TOOLS)
+    content: ContentCapability = ctx.require(CONTENT)
     _ = await catalog.declare_group(ctx, description=desc)
     tool_refs: list[ToolRef] = []
 
@@ -135,11 +127,15 @@ async def apply(ctx: Context, config: Config) -> None:
     settings = config.settings()
     memory_path = resolve_memory_path(ctx.workspace_root("memory"), settings.db_path)
     index_path = resolve_memory_path(ctx.workspace_root("memory"), settings.index_path)
-    learning = Learning(ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id)
+    learning = Learning(
+        ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id,
+        post_commit_effect=content.legacy_post_commit_effect,
+    )
     _ = await ctx.provide(AKASHA_LEARNING, learning)
-    _ = await ctx.require(CONTENT).register(ctx, ContentSchema(
-        name="akasha", content={"akasha.feedback": check_feedback, "akasha.recall": check_recall},
-    ))
+    _ = await content.register(ctx, {
+        "name": "akasha",
+        "content": {"akasha.feedback": check_feedback, "akasha.recall": check_recall},
+    })
     memory: MessageMemory | None = None
     memory_rule: LearningConfig | None = None
     watcher: asyncio.Task[None] | None = None

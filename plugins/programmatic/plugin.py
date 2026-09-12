@@ -8,16 +8,31 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, 
 from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGate, RESTART_GATE
 from agent.control.frame_book import CONTROL_FRAMES
 from agent.plugin_composition.rpc import rpc_method_key
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.content.plugin import check_text
-from plugins.conversation.plugin import check_origin
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from .result import TURN_PROJECTION
 from agent.plugin_composition.channels import ChannelInboundMessage
 from agent.plugin_composition.messages import MessageReader, MessageWriter
-from agent.plugin_contracts import Control, Input, Message
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
 
-from .control import PROGRAMMATIC, Programmatic, check_session, rpc_methods
+from .control import PROGRAMMATIC, Programmatic, FinalOutputTurn, check_session, rpc_methods
 
+
+
+class ContentChecks(Protocol):
+    def check_text(self, part: ContentPart) -> ContentReferences: ...
+
+
+class FinalOutputWaiter(Protocol):
+    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None: ...
+
+
+class FinalOutputDelivery(Protocol):
+    def register(self, source: str, provider: FinalOutputWaiter) -> None: ...
+    def unregister(self, source: str, provider: FinalOutputWaiter) -> None: ...
+
+
+CONTENT = ServiceKey[ContentChecks]("content.v2")
+CHECK_ORIGIN = ServiceKey[Callable[[ContentPart], ContentReferences]]("conversation.check_origin.v1")
+FINAL_OUTPUT_DELIVERY = ServiceKey[FinalOutputDelivery]("delivery.final_output.v1")
 
 
 class SourceSession(Protocol):
@@ -55,7 +70,7 @@ api_version = 3
 name = "programmatic"
 version = "1.0.0"
 desc = "程序调用的输入、停止、恢复与结果；默认保存原文但排除学习"
-inject = (SOURCES, SOURCE_SESSION, MESSAGE_WRITERS, SESSION_ADMISSION, TURN_PROJECTION, RESTART_GATE, CONTROL_FRAMES)
+inject = (CONTENT, CHECK_ORIGIN, SOURCES, SOURCE_SESSION, MESSAGE_WRITERS, SESSION_ADMISSION, TURN_PROJECTION, RESTART_GATE, CONTROL_FRAMES)
 
 
 def open_source(ctx: Context, session_id: str) -> SourceSession:
@@ -76,7 +91,7 @@ def open_source(ctx: Context, session_id: str) -> SourceSession:
     writers = ctx.require(MESSAGE_WRITERS)
     return ctx.require(SOURCE_SESSION)(reader=reader,
         inputs=writers.bind(ctx, author="user", source="programmatic", body_types=(Input,),
-            content={"text": check_text, "channel.origin": check_origin})(session_id),
+            content={"text": ctx.require(CONTENT).check_text, "channel.origin": ctx.require(CHECK_ORIGIN)})(session_id),
         controls=writers.bind(ctx, author="app", source="programmatic", body_types=(Control,),
             content={})(session_id),
         tasks=ctx.require(TASKS).open(ctx), changed=changed,

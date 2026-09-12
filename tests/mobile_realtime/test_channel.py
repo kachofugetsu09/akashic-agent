@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +65,7 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.mobile_realtime.attachments import attachment_descriptor
 from infra.mobile_realtime.channel import MobileRealtimeChannel
 from infra.mobile_realtime.gateway import MobileGatewayRuntime
+from plugins.models.selection import read_saved
 from infra.mobile_realtime.protocol import (
     GenericCommand,
     MAX_JSON_FRAME_BYTES,
@@ -1206,6 +1208,11 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
             }}),))
         channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
         channel.bind_model_catalog(_ModelCatalogReader())
+
+        async def read_selection(metadata: Mapping[str, object]):
+            return read_saved(metadata)
+
+        channel.bind_model_selection(read_selection)
         channel.bind_messages(log.catalog())
 
         reply = await channel.handle_command(

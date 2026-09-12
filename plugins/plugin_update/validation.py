@@ -2,26 +2,24 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import AbstractAsyncContextManager
-from typing import Protocol, cast
+
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, Context, ServiceKey
+from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task
-from plugins.content.plugin import CONTENT, check_text
-from plugins.context.materials import MATERIALS
-from plugins.context.plugin import CONTEXT
-from plugins.conversation.program import run_reply
-from plugins.models.projection import MODEL_CALLS
-from plugins.react.plugin import REACT
-from plugins.tools.api import Denied
+from plugins.content.plugin import check_text
+
+
+
+
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
-from plugins.turn_projection.plugin import TURN_PROJECTION
-from agent.plugin_composition.messages import MessageReader, SessionAttributes
-from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output
+
+from agent.plugin_composition.messages import SessionAttributes
+from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .tool import InstallInput
 
@@ -32,22 +30,9 @@ class Verdict(BaseModel):
     reason: str = Field(min_length=1)
 
 
-class ToolCleanup(Protocol):
-    """候选验证只接收工具 owner 的窄收尾边界。"""
-
-    def __call__(
-        self,
-        ctx: Context,
-        reader: MessageReader,
-        source: str,
-        from_seq: int,
-        *,
-        task: Task,
-        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]],
-    ) -> AbstractAsyncContextManager[None]: ...
 
 
-TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
+REPLY_EXECUTE = ServiceKey[Callable[..., Awaitable[Message]]]("reply.execute.v1")
 
 
 class Validation:
@@ -86,37 +71,23 @@ class Validation:
             Input((ContentPart("text", request.validation_prompt),)),
         )
 
-        async def authorize(binding: str, arguments: Mapping[str, object]) -> Mapping[str, object]:
+        async def authorize(binding: str, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
             tool = cast(Mapping[str, object], ctx.require(BINDINGS).describe(binding, TOOLS)["tool"])
             if tool["name"] not in names:
-                raise Denied("当前验证未授予此工具")
+                return '当前验证未授予此工具'
             return {"source": "plugin_update", "session_id": session_id}
 
         async def program(task: Task) -> Message:
             task.on_close(writer.expire)
-            return await run_reply(
-                ctx,
-                task,
-                reader,
-                "plugin_update",
-                models=ctx.require(CHAT_MODELS),
-                content=ctx.require(CONTENT),
-                context=ctx.require(CONTEXT),
-                tools=ctx.require(TOOLS),
-                cleanup=ctx.require(TOOL_CLEANUP),
-                react=ctx.require(REACT),
-                materials=ctx.require(MATERIALS),
-                turn_projection=ctx.require(TURN_PROJECTION),
-                read_call=ctx.require(MODEL_CALLS),
-                authorize=authorize,
-                tool_view=view,
-                max_output_tokens=self._max_output_tokens,
-                max_steps=self._max_steps,
-                exclude_materials=frozenset(request.excluded_materials),
-                prompt_hints=(
-                    '你正在验证插件候选。依据实际检查结果作结论。最终只返回 JSON：'
-                    '{"passed": true 或 false, "reason": "实际证据和原因"}。',
-                ))
+            return await ctx.require(REPLY_EXECUTE)(
+                             ctx, task, reader, 'plugin_update',
+                             authorize=authorize,
+                             tool_view=view,
+                             max_output_tokens=self._max_output_tokens,
+                             max_steps=self._max_steps,
+                             exclude_materials=frozenset(request.excluded_materials),
+                             prompt_hints=('你正在验证插件候选。依据实际检查结果作结论。最终只返回 JSON：{"passed": true 或 false, "reason": "实际证据和原因"}。',),
+                         )
         try:
             task = await ctx.require(TASKS).open(ctx).admit(session_id, lambda slot: slot.start(program))
             output = cast(Message, await task.join())

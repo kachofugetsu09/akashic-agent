@@ -22,7 +22,6 @@ from agent.tools.unified_exec import (
     MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError,
     clamp_initial_yield_time, clamp_write_stdin_yield_time, format_execution_result,
 )
-from plugins.tools.api import InvalidArguments
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall
 from agent.plugin_contracts import json_value
@@ -158,7 +157,7 @@ class ShellTool:
         self._name = name
         self._settings = settings
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """校验最终命令并固定进程 owner；恢复不重选目录、shell 或默认参数。"""
         owner = (
             self._settings.owner_key or "standalone" if source is None
@@ -180,14 +179,14 @@ class ShellTool:
                 return PreparedStdin(**args.model_dump(), owner_key=owner).model_dump()
             command = Command.model_validate(raw)
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         text = command.command.strip()
         if not text:
-            raise InvalidArguments("命令不能为空")
+            return '命令不能为空'
         try:
             shell = resolve_shell(command.shell)
         except ValueError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         cwd = command.cwd or self._settings.working_dir or self._settings.restricted_dir
         directory = None if cwd is None else Path(cwd).expanduser().absolute()
         denied = validate_command(
@@ -196,7 +195,7 @@ class ShellTool:
             cwd=directory,
         )
         if denied:
-            raise InvalidArguments(denied)
+            return denied
         return PreparedCommand(
             owner_key=owner, command=text, description=command.description,
             argv=shell.derive_argv(text, login=command.login), shell_kind=shell.kind.value,

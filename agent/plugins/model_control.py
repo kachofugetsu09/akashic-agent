@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from agent.plugin_composition import (
     AddConnection,
     DiscoveredModel,
@@ -16,7 +18,7 @@ from agent.plugin_composition.model_settings_http import (
     BoundModelControl,
     ModelControlUnavailable,
 )
-from agent.plugin_composition.models import ModelCallStats
+from agent.plugin_composition.models import ChatModelSelection, ModelCallStats
 
 
 class RuntimeModelControl:
@@ -31,6 +33,16 @@ class RuntimeModelControl:
         token = bind_runtime_snapshot(lease)
         try:
             return await self._bound.call_stats(call_id)
+        finally:
+            reset_runtime_snapshot(token)
+            await lease.release()
+
+    async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection:
+        """在当前 snapshot lease 内解析并读取会话模型选择。"""
+        lease = await self._snapshot_store.acquire()
+        token = bind_runtime_snapshot(lease)
+        try:
+            return await self._bound.read_saved(metadata)
         finally:
             reset_runtime_snapshot(token)
             await lease.release()

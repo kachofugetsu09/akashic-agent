@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
 from plugins.delivery.api import Sink
-from plugins.tools.api import CallSource, InvalidArguments, Result
+from plugins.tools.api import CallSource, Result
 from plugins.tools.plugin import TOOLS, bind_saved_tool
 from agent.plugin_contracts import ContentPart, Input
 from agent.plugin_contracts import json_value
@@ -43,16 +43,16 @@ class Spawn:
         self.senders = senders
         self.jobs = Subagents(ctx)
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         # 1. 只有实际父调用能建立回传关系，模型参数不能伪造父 Session。
         try:
             args = SpawnInput.model_validate(dict(arguments))
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         if not args.task.strip():
-            raise InvalidArguments("子任务不能为空")
+            return '子任务不能为空'
         if source is None:
-            raise InvalidArguments("spawn 需要已提交的父消息调用")
+            return 'spawn 需要已提交的父消息调用'
         origin = None
         for message in reversed(source.messages):
             if isinstance(message.body, Input):
@@ -61,18 +61,18 @@ class Spawn:
                     origin = cast(dict[str, str], json_value(parts[0].value))
                 break
         if args.run_in_background and origin is None:
-            raise InvalidArguments("后台子任务需要原会话渠道")
+            return '后台子任务需要原会话渠道'
         sink = None
         if args.run_in_background:
             assert origin is not None
             if origin["channel"] not in self.senders:
-                raise InvalidArguments("后台子任务的原渠道没有发送能力")
+                return '后台子任务的原渠道没有发送能力'
             sink = Sink(name=origin["channel"], binding_id=self.senders[origin["channel"]], address=origin["chat_id"])
         job_id = uuid4().hex
         task_dir = self.ctx.workspace_root("subagent-runs") / job_id
         names = PROFILE_TOOLS[args.profile]
         if set(names) - self.targets.keys():
-            raise InvalidArguments("当前 profile 缺少已安装工具")
+            return '当前 profile 缺少已安装工具'
         bindings = self.ctx.require(BINDINGS)
         fixed: dict[str, str] = {}
         # 2. 目录、网络设置与实际工具实现都在 prepared 时固定，恢复不重选配置。
@@ -139,13 +139,13 @@ class Manage:
     def __init__(self, ctx: Context):
         self.jobs = Subagents(ctx)
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         try:
             args = ManageInput.model_validate(dict(arguments))
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         if args.action == "cancel" and not args.job_id:
-            raise InvalidArguments("取消子任务需要 job_id")
+            return '取消子任务需要 job_id'
         return args.model_dump()
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:

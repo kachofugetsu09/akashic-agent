@@ -25,7 +25,7 @@ from plugins.standard_tools.shell import SHELL_OWNERS, TOOL_CLEANUP, shell_clean
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
-from plugins.conversation.program import run_reply
+from plugins.reply_program.program import run_reply
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.api import MessageReply
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult

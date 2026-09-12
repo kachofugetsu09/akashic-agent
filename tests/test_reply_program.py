@@ -19,7 +19,7 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
-from plugins.conversation.program import run_reply
+from plugins.reply_program.program import run_reply
 from plugins.sources.session import SourceSession as Conversation
 from plugins.models.content import render_content
 from plugins.models.state import _BoundChat
@@ -35,7 +35,7 @@ from session.message import ContentPart, Control, Input, Output, ToolResult
 @pytest.mark.parametrize("case", ["complete", "interrupt", "input_before_effect", "input_during_reduction", "summarized_input"])
 async def test_ordinary_program_keeps_content_live_until_real_tool_settlement(tmp_path, case, monkeypatch):
     sources = tmp_path / "plugins"
-    for name in ("content", "context", "tools", "turn_projection", "models"):
+    for name in ("content", "context", "tools", "turn_projection", "models", "sources"):
         shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     path = sources / "probe"
@@ -80,27 +80,6 @@ async def apply(ctx, config):
     requests = []
     entered, release = asyncio.Event(), asyncio.Event()
     authorizing, authorized = asyncio.Event(), asyncio.Event()
-    if case == "summarized_input":
-        from dataclasses import replace
-        from plugins.context.api import Summary
-        from plugins.context.materials import MaterialView
-        original_prepare = MaterialView.prepare
-        async def summarized_prepare(self, messages, source, **kwargs):
-            prepared = await original_prepare(self, messages, source, **kwargs)
-            if any(isinstance(message.body, ToolResult) for message in messages):
-                return replace(prepared, summary=Summary(
-                    "published", tuple(message.message_id for message in messages[2:]), "tool work summary"))
-            return prepared
-        monkeypatch.setattr(MaterialView, "prepare", summarized_prepare)
-    if case == "input_during_reduction":
-        from plugins.context.materials import MaterialView
-        original_reduce = MaterialView.reduce
-        async def delayed_reduce(self, *args, **kwargs):
-            if not authorizing.is_set():
-                authorizing.set()
-                await authorized.wait()
-            return await original_reduce(self, *args, **kwargs)
-        monkeypatch.setattr(MaterialView, "reduce", delayed_reduce)
     async def serve(reader, writer):
         entered.set()
         await release.wait()
@@ -158,6 +137,25 @@ async def apply(ctx, config):
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             root = snapshot.composition_root.context
+            async with root.require(MATERIALS).bind() as material_view:
+                MaterialView = type(material_view)
+            if case == "summarized_input":
+                original_prepare = MaterialView.prepare
+                async def summarized_prepare(self, messages, source, **kwargs):
+                    prepared = await original_prepare(self, messages, source, **kwargs)
+                    if any(isinstance(message.body, ToolResult) for message in messages):
+                        return {**prepared, "summary": {"reference": "published",
+                            "source_message_ids": tuple(message.message_id for message in messages[2:]), "content": "tool work summary"}}
+                    return prepared
+                monkeypatch.setattr(MaterialView, "prepare", summarized_prepare)
+            if case == "input_during_reduction":
+                original_reduce = MaterialView.reduce
+                async def delayed_reduce(self, *args, **kwargs):
+                    if not authorizing.is_set():
+                        authorizing.set()
+                        await authorized.wait()
+                    return await original_reduce(self, *args, **kwargs)
+                monkeypatch.setattr(MaterialView, "reduce", delayed_reduce)
             ctx = root.require(ServiceKey("probe"))
             def writer(body):
                 return root.require(MESSAGE_WRITERS).bind(

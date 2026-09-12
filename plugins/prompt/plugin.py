@@ -27,7 +27,7 @@ class MaterialRegistry(Protocol):
     ) -> object: ...
 
 
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v2")
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")
 inject = (MATERIALS,)
 
 

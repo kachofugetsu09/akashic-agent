@@ -2,9 +2,28 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from plugins.turn_projection.plugin import Turn, TurnProjection
+from typing import Protocol
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Control, Input, Message
+
+
+class Turn(Protocol):
+    @property
+    def source(self) -> str: ...
+    @property
+    def status(self) -> str: ...
+    @property
+    def ending_message_id(self) -> str | None: ...
+    @property
+    def message_ids(self) -> tuple[str, ...]: ...
+
+
+class TurnProjection(Protocol):
+    def project(self, messages: Sequence[Message], source: str) -> tuple[Turn, ...]: ...
+
+
+TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
 
 
 def read_result_snapshot(

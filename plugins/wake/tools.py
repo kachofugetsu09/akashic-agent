@@ -5,7 +5,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from plugins.tools.api import CallSource, Denied, InvalidArguments, Result
+from plugins.tools.api import CallSource, Result
 from agent.plugin_contracts import ContentPart, Output, ToolCall
 from agent.plugin_contracts import json_value
 
@@ -67,24 +67,24 @@ class DecisionTool:
     def __init__(self, name: str):
         self.name = name
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         if source is None:
-            raise Denied("Wake 决策只能由内部消息程序调用")
+            raise PermissionError('Wake 决策只能由内部消息程序调用')
         try:
             request = read_request(source.messages)
             _, phase = read_phase(source.messages, request)
         except ValueError as error:
-            raise Denied("Wake 决策缺少真实内部请求") from error
+            raise PermissionError('Wake 决策缺少真实内部请求') from error
         message = next(message for message in source.messages if message.message_id == source.call_ref.message_id)
         if message.source != "wake" or not isinstance(message.body, Output):
-            raise Denied("当前来源无权提交 Wake 决策")
+            raise PermissionError('当前来源无权提交 Wake 决策')
         call = message.body.parts[source.call_ref.part_index]
         if not isinstance(call, ToolCall) or self.name not in STAGE_TOOLS[phase.stage] or call.binding_id != request.tools.get(self.name):
-            raise Denied("当前阶段未授予此 Wake 工具")
+            raise PermissionError('当前阶段未授予此 Wake 工具')
         try:
             result = SCHEMAS[self.name].model_validate(json_value(arguments))
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         if isinstance(result, Screen):
             # 候选身份在模型输入边界核对，错误反馈给本轮模型纠正。
             proposal = propose_content(request.items, now=request.now)
@@ -93,9 +93,7 @@ class DecisionTool:
             allowed = {item["candidate_id"] for item in _candidate_payloads(proposal)}
             unknown = [item.candidate_id for item in result.items if item.candidate_id not in allowed]
             if unknown:
-                raise InvalidArguments(
-                    f"candidate_id 不属于本轮候选: {unknown}。请逐字复制候选中的完整 ID，不得截短；本次决定未记录。"
-                )
+                return f'candidate_id 不属于本轮候选: {unknown}。请逐字复制候选中的完整 ID，不得截短；本次决定未记录。'
         return result.model_dump(mode="json")
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:

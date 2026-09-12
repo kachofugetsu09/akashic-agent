@@ -18,7 +18,6 @@ from .filesystem import (
     ReadFileTool,
     WriteFileTool,
 )
-from plugins.tools.api import InvalidArguments
 from session.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
@@ -40,12 +39,12 @@ class FileSettings(BaseModel):
         return value
 
 
-def prepare_arguments(tool: Tool, arguments: Mapping[str, object]) -> Mapping[str, object]:
+def prepare_arguments(tool: Tool, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
     """参数只在物理工具的 schema 边界校验一次；之后使用同一最终值。"""
     raw = cast(dict[str, Any], json_value(arguments))
     errors = tool.validate_params(raw, schema=normalize_tool_parameters(tool.parameters))
     if errors:
-        raise InvalidArguments("; ".join(errors))
+        return '; '.join(errors)
     return raw
 
 
@@ -56,7 +55,7 @@ class FileTool:
         self._ctx = ctx
         self._backend = backend
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         return prepare_arguments(self._backend, arguments)
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:

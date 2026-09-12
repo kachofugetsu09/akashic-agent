@@ -47,8 +47,10 @@ class Result:
 class ResultLike(Protocol):
     """provider 返回的结构结果；tools owner 不依赖 provider 的类身份。"""
 
-    outcome: Outcome
-    parts: tuple[ContentPart, ...]
+    @property
+    def outcome(self) -> Outcome: ...
+    @property
+    def parts(self) -> tuple[ContentPart, ...]: ...
 
 
 def coerce_result(value: object) -> Result:
@@ -165,7 +167,7 @@ class ProviderBoundTool(Protocol):
 
     async def prepare(
         self, arguments: Mapping[str, object], source: CallSource | None = None
-    ) -> Mapping[str, object]: ...
+    ) -> Mapping[str, object] | str: ...
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ResultLike: ...
 
@@ -182,7 +184,7 @@ class BoundTool(Protocol):
 
     async def prepare(
         self, arguments: Mapping[str, object], source: CallSource | None = None
-    ) -> Mapping[str, object]: ...
+    ) -> Mapping[str, object] | str: ...
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result: ...
 
@@ -192,4 +194,4 @@ class BoundTool(Protocol):
 
 
 OpenTool = Callable[[str], AbstractAsyncContextManager[BoundTool]]
-Authorize = Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object]]]
+Authorize = Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object] | str]]

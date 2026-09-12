@@ -13,7 +13,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.tools.api import MessageReply
-from plugins.tools.menu import InvalidToolCall, ToolMenu
+from plugins.tools.menu import ToolMenu
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView, open_tool
 from session.log import MessageLog
 from session.message import CallRef
@@ -38,11 +38,11 @@ def _sources(tmp_path):
         target.read_text()
         .replace(
             "from plugins.tools.execution import Result",
-            "from plugins.tools.execution import Result\nfrom plugins.tools.api import InvalidArguments",
+            "from plugins.tools.execution import Result",
         )
         .replace(
             'raise ValueError("value must be text")',
-            'raise InvalidArguments("value must be text")',
+            'return "value must be text"',
         )
     )
     prepare = sources / "prepare/plugin.py"
@@ -109,9 +109,8 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
                 "tool_call",
             ]
 
-            search_binding, search_arguments = menu.decode(
-                ModelToolCall("search", "tool_search", {"query": "example"})
-            )
+            decoded = menu.decode(ModelToolCall('search', 'tool_search', {'query': 'example'}))
+            (search_binding, search_arguments) = decoded.binding_id, decoded.arguments
             async with open_tool(bindings, search_binding) as search:
                 result = await search.invoke(
                     "search",
@@ -136,13 +135,8 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
                 "tool_call",
             ]
 
-            binding, arguments = menu.decode(
-                ModelToolCall(
-                    "call",
-                    "tool_call",
-                    {"name": "example", "arguments": {"value": " ok "}},
-                )
-            )
+            decoded = menu.decode(ModelToolCall('call', 'tool_call', {'name': 'example', 'arguments': {'value': ' ok '}}))
+            (binding, arguments) = decoded.binding_id, decoded.arguments
             executed = await catalog.execution(
                 lambda identity, final: _allow()
             ).execute("valid", binding, arguments)
@@ -152,14 +146,17 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
             ).execute("invalid", binding, {"value": 7})
             assert invalid.outcome == "error"
             assert invalid.parts[0].value == "value must be text"
-            with pytest.raises(InvalidToolCall, match="获授 view"):
-                menu.decode(
-                    ModelToolCall(
-                        "unknown",
-                        "tool_call",
-                        {"name": "missing", "arguments": {}},
-                    )
+            rejected = menu.decode(
+                ModelToolCall(
+                    "unknown",
+                    "tool_call",
+                    {"name": "missing", "arguments": {}},
                 )
+            )
+            assert not rejected.accepted
+            assert rejected.rejection is not None
+            assert rejected.rejection["name"] == "tool_call"
+            assert "获授 view" in rejected.rejection["error"]
             narrow = ToolView.combine(
                 catalog.view(view.select("example")),
                 ctx.require(TOOL_SEARCH_TOOLS),
@@ -172,14 +169,17 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
                 view=narrow,
                 presentation=ctx.require(TOOL_SEARCH_PRESENTATION)(narrow),
             )
-            with pytest.raises(InvalidToolCall, match="获授 view"):
-                narrow_menu.decode(
-                    ModelToolCall(
-                        "not-awarded",
-                        "tool_call",
-                        {"name": "example_status", "arguments": {"value": "ok"}},
-                    )
+            rejected = narrow_menu.decode(
+                ModelToolCall(
+                    "not-awarded",
+                    "tool_call",
+                    {"name": "example_status", "arguments": {"value": "ok"}},
                 )
+            )
+            assert not rejected.accepted
+            assert rejected.rejection is not None
+            assert rejected.rejection["name"] == "tool_call"
+            assert "获授 view" in rejected.rejection["error"]
     finally:
         await host.terminate_all()
         log.close()
@@ -207,7 +207,8 @@ async def test_standard_web_is_directly_callable_without_search(tmp_path):
             assert "example" not in names
             for name, arguments in (("web_fetch", {"url": "https://example.com"}),
                                     ("web_search", {"query": "weather"})):
-                binding, _ = menu.decode(ModelToolCall("direct", name, arguments))
+                decoded = menu.decode(ModelToolCall('direct', name, arguments))
+                (binding, _) = decoded.binding_id, decoded.arguments
                 async with open_tool(ctx.require(BINDINGS), binding) as tool:
                     assert await tool.prepare(arguments) == arguments
     finally:
@@ -270,9 +271,8 @@ async def test_fixed_bindings_use_archived_schema_without_rebinding_current_prov
                 parameters = current.description["parameters"]
                 assert isinstance(parameters, Mapping)
                 assert parameters["required"] == ()
-            identity, arguments = menu.decode(
-                ModelToolCall("old", "example", {"value": "old"})
-            )
+            decoded = menu.decode(ModelToolCall('old', 'example', {'value': 'old'}))
+            (identity, arguments) = decoded.binding_id, decoded.arguments
             assert identity == old
             result = await ctx.require(TOOLS).execution(
                 lambda binding, final: _allow()

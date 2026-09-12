@@ -210,7 +210,11 @@ class ToolExecution:
                 if record.value["phase"] == "requested":
                     source = None if reply is None else reply.source()
                     try:
-                        final = freeze_json(await tool.prepare(arguments, source))
+                        prepared = await tool.prepare(arguments, source)
+                        if isinstance(prepared, str):
+                            return finish(self._state, key, record,
+                                Result("error", (ContentPart("text", prepared),)), reply)
+                        final = freeze_json(prepared)
                     except InvalidArguments as error:
                         return finish(self._state,
                             key, record, Result("error", (ContentPart("text", str(error)),)), reply,
@@ -247,6 +251,10 @@ class ToolExecution:
                 # 4. 只为即将发生的调用授权；撤权不能抹掉可查询的历史结果。
                 try:
                     permission = await self._authorize(binding_id, final_arguments)
+                    if isinstance(permission, str):
+                        return finish(self._state, key, record, Result(
+                            "interrupted" if started else "denied",
+                            (ContentPart("text", permission),)), reply)
                     if reply is not None:
                         reply.check_start()
                 except Denied as error:

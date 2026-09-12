@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -21,9 +21,9 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
 )
-from agent.model_runtime.session_selection import read_session_model_selection
+from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from session.log import InvalidPage, MessageCatalog
-from agent.plugin_composition import ModelCatalogSnapshot
+from agent.plugin_composition import ChatModelSelection, ModelCatalogSnapshot
 from agent.plugins.model_catalog import (
     ModelCatalogUnavailable,
     default_chat_model_id,
@@ -89,6 +89,9 @@ def create_chat_app(
     plugin_ui_provider: MobileUiProvider | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
+    model_selection_reader: Callable[
+        [Mapping[str, object]], Awaitable[ChatModelSelection]
+    ] | None = None,
     model_control: ModelControl | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
@@ -213,10 +216,20 @@ def create_chat_app(
         if session_key:
             if messages is None:
                 raise HTTPException(status_code=503, detail="会话日志不可用")
+            if model_selection_reader is None:
+                raise HTTPException(status_code=503, detail="模型选择服务不可用")
             metadata = messages.reader(session_key).metadata()
-            selection = read_session_model_selection(metadata if metadata is not None else {})
-            session_override = selection.model_ref
-            session_effort = selection.reasoning_effort
+            try:
+                selection = await model_selection_reader(
+                    metadata if metadata is not None else {}
+                )
+            except ModelControlUnavailable as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail="模型选择服务不可用",
+                ) from error
+            session_override = selection.model_id or ""
+            session_effort = selection.reasoning_effort or ""
         try:
             current = await model_catalog_reader()
         except ModelCatalogUnavailable as error:
@@ -491,6 +504,9 @@ def build_chat_server(
     plugin_ui_provider: MobileUiProvider | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
+    model_selection_reader: Callable[
+        [Mapping[str, object]], Awaitable[ChatModelSelection]
+    ] | None = None,
     model_control: ModelControl | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
@@ -506,6 +522,7 @@ def build_chat_server(
             plugin_ui_provider=plugin_ui_provider,
             web_ui_provider=web_ui_provider,
             model_catalog_reader=model_catalog_reader,
+            model_selection_reader=model_selection_reader,
             model_control=model_control,
             messages=messages,
             reply_status=reply_status,

@@ -13,8 +13,8 @@ from agent.plugin_composition.models import ModelRequest
 from agent.plugin_contracts import (
     Message,
 )
-from plugins.context.api import ContextModel, ContextOverflow, MaterialData, Materials, Summary, decode_material, settled_prefixes, summary_range
-from plugins.context.materials import ContextMaterials, MATERIALS
+from .api import ContextModel, ContextOverflow, check_summary, MaterialData, Materials, Summary, decode_material, settled_prefixes, summary_range
+from .materials import ContextMaterials, MATERIALS
 
 api_version = 3
 name = "context"
@@ -67,9 +67,11 @@ def _summary_cutoff(snapshot: tuple[Message, ...], summary: Summary | None) -> i
 
 
 class ContextBuilder:
+    check_summary = staticmethod(check_summary)
+    summary_range = staticmethod(summary_range)
+
     @staticmethod
-    def reminder_content(materials: Materials) -> str | None:
-        """返回本次请求实际使用的末尾 reminder 正文。"""
+    def _reminder_content(materials: Materials) -> str | None:
         reminders = [escape(part.text, quote=False) for part in materials.reminders if part.text.strip()]
         if not reminders:
             return None
@@ -80,11 +82,16 @@ class ContextBuilder:
             + "\n</system-reminder>"
         )
 
+    @staticmethod
+    def reminder_content(materials: MaterialData) -> str | None:
+        """返回本次请求实际使用的末尾 reminder 正文。"""
+        return ContextBuilder._reminder_content(decode_material(materials))
+
     def build(
         self,
         snapshot: Sequence[Message],
         *,
-        materials: Materials,
+        materials: MaterialData,
         model: ContextModel,
         tools: Sequence[Mapping[str, Any]] = (),
         max_output_tokens: int,
@@ -93,11 +100,12 @@ class ContextBuilder:
         """纯函数式组装；容量不足明确报错，由调用程序取得更小视图。"""
         if type(max_output_tokens) is not int or max_output_tokens < 0:
             raise ValueError("输出预算必须是非负整数")
+        decoded_materials = decode_material(materials)
         # 1. Model owner 保留自身的 call IDs 与 opaque replay，Context 不重造它们。
         snapshot = tuple(snapshot)
-        cutoff = _summary_cutoff(snapshot, materials.summary)
+        cutoff = _summary_cutoff(snapshot, decoded_materials.summary)
         if window_start is not None:
-            if materials.summary is not None:
+            if decoded_materials.summary is not None:
                 raise ValueError("已有摘要的请求不能重新选择首次窗口")
             identities = tuple(message.message_id for message in snapshot)
             if window_start not in identities:
@@ -110,7 +118,7 @@ class ContextBuilder:
         else:
             rendered = model.render(
                 snapshot, after_seq=cutoff,
-                summary_reference=None if materials.summary is None else materials.summary.reference,
+                summary_reference=None if decoded_materials.summary is None else decoded_materials.summary.reference,
             )
         if any(
             row["role"] not in {"user", "assistant", "tool"}
@@ -118,17 +126,17 @@ class ContextBuilder:
         ):
             raise ValueError("历史投影不能产生 system/developer 权限")
         rows: list[Mapping[str, Any]] = []
-        if materials.system_prompt:
-            rows.append({"role": "system", "content": materials.system_prompt})
+        if decoded_materials.system_prompt:
+            rows.append({"role": "system", "content": decoded_materials.system_prompt})
         # 2. 摘要和检索是带出处的数据，不能通过文本伪装成高权限 Prompt。
-        if materials.summary is not None:
+        if decoded_materials.summary is not None:
             rows.append(
                 {
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "summary": materials.summary.content,
-                            "reference": materials.summary.reference,
+                            "summary": decoded_materials.summary.content,
+                            "reference": decoded_materials.summary.reference,
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),
@@ -136,7 +144,7 @@ class ContextBuilder:
                 }
             )
         rows.extend(rendered.messages)
-        reminder = self.reminder_content(materials)
+        reminder = self._reminder_content(decoded_materials)
         if reminder is not None:
             rows.append({"role": "user", "content": reminder})
         request = replace(
@@ -166,18 +174,18 @@ class ContextBuilder:
         tools: Sequence[Mapping[str, Any]] = (),
         max_output_tokens: int,
         window_start: str | None = None,
-    ) -> tuple[ModelRequest, bool]:
-        """返回请求及是否因容量不足；把异常类型留在 Context owner 内。"""
+    ) -> tuple[ModelRequest, str | None]:
+        """返回请求及容量拒绝说明；异常类型留在 Context owner 内。"""
         try:
             return self.build(
-                snapshot, materials=decode_material(materials), model=model, tools=tools,
+                snapshot, materials=materials, model=model, tools=tools,
                 max_output_tokens=max_output_tokens, window_start=window_start,
-            ), False
+            ), None
         except ContextOverflow as overflow:
-            return overflow.request, True
+            return overflow.request, str(overflow)
 
 
-CONTEXT = ServiceKey[ContextBuilder]("context.v1")
+CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 
 
 async def apply(ctx: Context, config: Config | None) -> None:

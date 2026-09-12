@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
-from typing import TYPE_CHECKING
-
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import Message, Output
 from agent.plugin_contracts import Input
@@ -17,9 +15,7 @@ import numpy as np
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied
 from .infrastructure.sparse_index.encoding import tokenize
-
-if TYPE_CHECKING:
-    from plugins.turn_projection.plugin import TurnProjection
+from ._boundaries import TurnProjection
 
 
 type CausalKey = tuple[datetime, str, int, str]

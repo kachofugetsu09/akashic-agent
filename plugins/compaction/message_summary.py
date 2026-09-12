@@ -11,9 +11,8 @@ from agent.plugin_composition.models import (
     RateLimitError, TransportError,
 )
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
-from plugins.context.api import settled_prefixes
-from plugins.turn_projection.plugin import TurnProjection
 from agent.plugin_contracts import body_to_dict
+from ._boundaries import TurnProjection, settled_prefixes
 
 logger = logging.getLogger(__name__)
 

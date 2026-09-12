@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from agent.plugin_composition.bindings import Bindings
@@ -8,11 +9,33 @@ from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugin_contracts import CallRef, ToolCall
 
 from .execution import MessageReply, Result, ToolExecution
-from .plugin import TOOLS, ToolCatalog, ToolRef, ToolView
+from .plugin import TOOLS, ToolCatalog, ToolView
 
 
-class InvalidToolCall(ValueError):
-    """模型调用不符合当前展示协议；可反馈模型纠正，不代表工具效果。"""
+@dataclass(frozen=True, slots=True)
+class ToolCallDecode:
+    """工具 owner 对一次 wire 调用的结构化解码结果。"""
+
+    binding_id: str | None
+    arguments: Mapping[str, object]
+    rejection: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.arguments, Mapping):
+            raise TypeError("工具解码参数必须是对象")
+        accepted = self.binding_id is not None
+        if accepted == (self.rejection is not None):
+            raise ValueError("工具解码结果必须且只能是成功或拒绝")
+        if accepted and (not isinstance(self.binding_id, str) or not self.binding_id):
+            raise ValueError("工具解码结果缺少 binding ID")
+        if self.rejection is not None and not isinstance(self.rejection, Mapping):
+            raise TypeError("工具拒绝反馈必须是对象")
+
+    @property
+    def accepted(self) -> bool:
+        """判断模型调用是否已经解码到获授 binding。"""
+        return self.binding_id is not None
+
 
 
 class ToolPresentation(Protocol):
@@ -24,7 +47,7 @@ class ToolPresentation(Protocol):
     @property
     def system_prompt(self) -> str: ...
 
-    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]: ...
+    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]] | str: ...
 
     def configuration(self, name: str) -> Mapping[str, object] | None: ...
 
@@ -43,9 +66,9 @@ class NativePresentation:
     def system_prompt(self) -> str:
         return ""
 
-    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
+    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]] | str:
         if call.name not in self._descriptions:
-            raise InvalidToolCall(f"工具不属于获授 view: {call.name}；请使用当前工具目录。")
+            return f"工具不属于获授 view: {call.name}；请使用当前工具目录。"
         return call.name, cast(Mapping[str, object], call.arguments)
 
     def configuration(self, name: str) -> Mapping[str, object] | None:
@@ -134,12 +157,18 @@ class ToolMenu:
     def system_prompt(self) -> str:
         return self._presentation.system_prompt
 
-    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
-        name, arguments = self._presentation.decode(call)
+    def decode(self, call: ModelToolCall) -> ToolCallDecode:
+        """把 wire 调用变成真实 binding 或模型可修正的拒绝反馈。"""
+        decoded = self._presentation.decode(call)
+        if isinstance(decoded, str):
+            return ToolCallDecode(None, {}, {
+                "name": call.name, "arguments": call.arguments, "error": decoded,
+            })
+        name, arguments = decoded
         identity = self._bound.get(name)
         if identity is None:
             raise PermissionError(f"展示层返回了未获授工具: {name}")
-        return identity, arguments
+        return ToolCallDecode(identity, arguments)
 
     def bind(self, name: str) -> str:
         """让归档旧 ReAct 只解析已经固定在本菜单中的 binding。"""
