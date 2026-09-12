@@ -100,8 +100,8 @@ async def test_failed_sink_does_not_cancel_other_sink_and_restart_keeps_original
                         content={"text": lambda part: ContentReferences()})
     message = writer.append("answer", Output((ContentPart("text", "original"),), "complete"))
     selected = (
-        Sink(name="bad", binding_id="bad-A", address="bad-original"),
-        Sink(name="good", binding_id="good-A", address="good-original"),
+        {"name": "bad", "binding_id": "bad-A", "address": "bad-original"},
+        {"name": "good", "binding_id": "good-A", "address": "good-original"},
     )
     watcher = asyncio.create_task(follow(Scope(), log.catalog(), execution, lambda *_: selected))
     try:

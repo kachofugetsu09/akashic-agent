@@ -435,6 +435,39 @@ async def test_runtime_timer_captures_original_drift_and_records_real_completion
 
 
 @pytest.mark.asyncio
+async def test_runtime_rebuilds_cross_generation_config_values(tmp_path):
+    from pydantic import BaseModel, ConfigDict
+    from typing import cast
+    from plugins.wake.runtime import Runtime
+
+    class PreviousDeliveryTarget(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        channel: str
+        recipient: str
+        session_id: str
+
+    class PreviousConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        delivery: PreviousDeliveryTarget | None = None
+        timezone: str = "Asia/Shanghai"
+
+    async with application(tmp_path) as (host, log, ctx, source, control):
+        now = datetime.now(timezone.utc)
+        ctx.require(DRIFT_PROPOSALS).propose("duty", "1", {"summary": "old generation"}, now)
+        previous = PreviousConfig(
+            delivery=PreviousDeliveryTarget(
+                channel="test", recipient="room", session_id="test:room"
+            )
+        )
+        runtime = Runtime(ctx, cast(Config, previous))
+        original = runtime.capture("d" * 32, await runtime.duties.check(now), now)
+        assert original is not None
+        assert type(runtime.config) is Config
+        assert type(runtime.config.delivery) is DeliveryTarget
+        assert original.target == runtime.config.delivery
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["authentication", "rate_limit", "budget"])
 async def test_model_failure_keeps_real_control_and_original_retry_classification(tmp_path, failure):
     from agent.plugin_composition.models import AuthenticationError, RateLimitError

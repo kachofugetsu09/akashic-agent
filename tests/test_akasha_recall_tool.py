@@ -1,5 +1,5 @@
 import pytest
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 
 from agent.plugin_composition.models import EmbeddingResult, EmbeddingSpaceDescriptor
@@ -45,6 +45,7 @@ async def test_recall_tool_recovers_original_query_after_graph_advances_without_
         assert await runtime.consume() == 1
         recall = target(tmp_path, runtime)
         arguments = await recall.prepare({"query": "original memory"})
+        assert isinstance(arguments, Mapping)
         result = await recall.invoke("request", arguments)
         observed = records.read("tool:request")
         assert observed.source.kind == "program"
@@ -84,6 +85,7 @@ async def test_prepared_recall_keeps_learning_model_and_budget_when_defaults_cha
         assert await runtime.consume() == 1
         original = target(tmp_path, runtime, max_chars=100)
         prepared = await original.prepare({"query": "recall"})
+        assert isinstance(prepared, Mapping)
         changed = target(tmp_path, runtime, binding="unavailable-new-rule", model_id="new-default", max_chars=1)
         result = await changed.invoke("prepared", prepared)
         record = records.read("tool:prepared")
@@ -101,6 +103,7 @@ async def test_bad_embedding_never_publishes_query_or_changes_learning(tmp_path,
             return values
         recall = target(tmp_path, runtime, embed=invalid)
         prepared = await recall.prepare({"query": "test"})
+        assert isinstance(prepared, Mapping)
         with pytest.raises(ValueError, match="embedding"):
             await recall.invoke("invalid", prepared)
         assert records.read("tool:invalid") is None

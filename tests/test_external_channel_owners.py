@@ -20,7 +20,7 @@ from agent.plugin_composition import (
     DeliveryStatus,
     ProviderDeliveryRequest,
 )
-from agent.plugin_composition.channels import ChannelRuntimePorts
+from agent.plugin_composition.channels import ChannelRuntimePorts, ChannelAttachmentReadPort
 from plugins.qq_channel import channel as qq_channel
 from plugins.telegram_channel import channel as telegram_channel
 
@@ -63,7 +63,7 @@ class _ProviderFactory:
         self.client = _ProviderClient()
         self.create_calls = 0
 
-    async def create(self, _credentials: object) -> _ProviderClient:
+    async def create(self, credentials: object) -> _ProviderClient:
         self.create_calls += 1
         return self.client
 
@@ -106,7 +106,7 @@ def _context(
     *,
     config: dict[str, object],
     credentials: dict[str, CredentialRef] | None = None,
-    attachment_read: object | None = None,
+    attachment_read: ChannelAttachmentReadPort | None = None,
 ) -> tuple[ChannelFactoryContext, _Ingress, _ProviderFactory]:
     ingress = _Ingress()
     provider = _ProviderFactory()

@@ -500,7 +500,7 @@ def test_candidate_fence_keeps_akashic_crash_recovery_target(
         return RuntimeSnapshot(
             "candidate",
             {},
-            None,
+            (),
             composition_topology=TopologyView(
                 generation_id="root:candidate",
                 identity="topology:candidate",
@@ -586,7 +586,7 @@ def test_candidate_fence_ignores_nonrecoverable_terminal_rows(
     snapshot = RuntimeSnapshot(
         "candidate",
         {},
-        None,
+        (),
         composition_topology=TopologyView(
             "root:candidate", "topology:candidate", 1, (), (), (), ()
         ),

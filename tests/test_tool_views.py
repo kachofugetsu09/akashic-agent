@@ -93,7 +93,7 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
             catalog = ctx.require(TOOLS)
             bindings = ctx.require(BINDINGS)
             view = ToolView.combine(
-                ctx.require(ALL_TOOLS)(), ctx.require(TOOL_SEARCH_TOOLS)
+                ctx.require(ALL_TOOLS)(), cast(ToolView, ctx.require(TOOL_SEARCH_TOOLS))
             )
             presentation = ctx.require(TOOL_SEARCH_PRESENTATION)(view)
             menu = ToolMenu(
@@ -111,10 +111,13 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
 
             decoded = menu.decode(ModelToolCall('search', 'tool_search', {'query': 'example'}))
             (search_binding, search_arguments) = decoded.binding_id, decoded.arguments
+            assert search_binding is not None
             async with open_tool(bindings, search_binding) as search:
+                prepared = await search.prepare(search_arguments)
+                assert isinstance(prepared, Mapping)
                 result = await search.invoke(
                     "search",
-                    await search.prepare(search_arguments),
+                    prepared,
                 )
             value = result.parts[0].value
             assert isinstance(value, str)
@@ -137,6 +140,7 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
 
             decoded = menu.decode(ModelToolCall('call', 'tool_call', {'name': 'example', 'arguments': {'value': ' ok '}}))
             (binding, arguments) = decoded.binding_id, decoded.arguments
+            assert binding is not None
             executed = await catalog.execution(
                 lambda identity, final: _allow()
             ).execute("valid", binding, arguments)
@@ -156,10 +160,12 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
             assert not rejected.accepted
             assert rejected.rejection is not None
             assert rejected.rejection["name"] == "tool_call"
-            assert "获授 view" in rejected.rejection["error"]
+            rejection_error = rejected.rejection["error"]
+            assert isinstance(rejection_error, str)
+            assert "获授 view" in rejection_error
             narrow = ToolView.combine(
                 catalog.view(view.select("example")),
-                ctx.require(TOOL_SEARCH_TOOLS),
+                cast(ToolView, ctx.require(TOOL_SEARCH_TOOLS)),
             )
             narrow_menu = ToolMenu(
                 catalog,
@@ -179,7 +185,9 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
             assert not rejected.accepted
             assert rejected.rejection is not None
             assert rejected.rejection["name"] == "tool_call"
-            assert "获授 view" in rejected.rejection["error"]
+            rejection_error = rejected.rejection["error"]
+            assert isinstance(rejection_error, str)
+            assert "获授 view" in rejection_error
     finally:
         await host.terminate_all()
         log.close()
@@ -198,7 +206,9 @@ async def test_standard_web_is_directly_callable_without_search(tmp_path):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
             catalog = ctx.require(TOOLS)
-            view = ToolView.combine(ctx.require(ALL_TOOLS)(), ctx.require(TOOL_SEARCH_TOOLS))
+            view = ToolView.combine(
+                ctx.require(ALL_TOOLS)(), cast(ToolView, ctx.require(TOOL_SEARCH_TOOLS)),
+            )
             menu = ToolMenu(catalog, ctx.require(BINDINGS),
                            catalog.execution(lambda binding, arguments: _allow()), _unexpected_reply,
                            view=view, presentation=ctx.require(TOOL_SEARCH_PRESENTATION)(view))
@@ -209,6 +219,7 @@ async def test_standard_web_is_directly_callable_without_search(tmp_path):
                                     ("web_search", {"query": "weather"})):
                 decoded = menu.decode(ModelToolCall('direct', name, arguments))
                 (binding, _) = decoded.binding_id, decoded.arguments
+                assert binding is not None
                 async with open_tool(ctx.require(BINDINGS), binding) as tool:
                     assert await tool.prepare(arguments) == arguments
     finally:
@@ -273,6 +284,7 @@ async def test_fixed_bindings_use_archived_schema_without_rebinding_current_prov
                 assert parameters["required"] == ()
             decoded = menu.decode(ModelToolCall('old', 'example', {'value': 'old'}))
             (identity, arguments) = decoded.binding_id, decoded.arguments
+            assert identity is not None
             assert identity == old
             result = await ctx.require(TOOLS).execution(
                 lambda binding, final: _allow()

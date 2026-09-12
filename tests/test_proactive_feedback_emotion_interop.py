@@ -389,6 +389,8 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
             )
         else:
             assert first_import[0][2] == "topic_follow"
+            assert isinstance(first_import[0][3], (int, float))
+            assert isinstance(first_import[0][4], (int, float))
             assert first_import[0][3] > 0.0
             assert first_import[0][4] > 0.0
         assert _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples") == 1
@@ -465,12 +467,16 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
             ) == 2
         else:
             assert [row[2] for row in imported] == ["topic_follow", "topic_follow"]
-            assert all(row[3] > 0.0 and row[4] > 0.0 for row in imported)
+            for row in imported:
+                assert isinstance(row[3], (int, float)) and isinstance(row[4], (int, float))
+                assert row[3] > 0.0 and row[4] > 0.0
         state = _rows(
             emotion_db,
             "SELECT valence, dominance FROM emotion_state WHERE id=1",
         )
         assert len(state) == 1
+        assert isinstance(state[0][0], (int, float))
+        assert isinstance(state[0][1], (int, float))
         assert state[0][0] > 0.0
         assert state[0][1] > 0.0
         assert _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples") == 2

@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from typing import cast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -169,6 +169,7 @@ async def test_archived_schedule_tool_recovers_original_operation_after_source_r
             async with open_tool(bindings, tool) as bound:
                 prepared = await bound.prepare({"tier": "instant", "trigger": "after", "when": "1h",
                     "channel": "test", "chat_id": "room", "timezone": "UTC", "message": "original"})
+                assert isinstance(prepared, Mapping)
                 result = await bound.invoke("original-schedule", prepared)
         store = JobStore(tmp_path / "workspace/schedules.json")
         original = store.load()[0]

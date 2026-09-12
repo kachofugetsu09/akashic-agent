@@ -23,8 +23,11 @@ class CallSource(Protocol):
     @property
     def effect_key(self) -> str: ...
 
-    call_ref: CallRef
-    messages: tuple[Message, ...]
+    @property
+    def call_ref(self) -> CallRef: ...
+
+    @property
+    def messages(self) -> tuple[Message, ...]: ...
 
 
 ToolOutcome = Literal["success", "denied", "error", "interrupted"]

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
 import shutil
@@ -343,7 +344,9 @@ async def test_tool_configuration_is_owned_frozen_and_restored_without_recapture
         host = manager(tmp_path, [])
         bindings = Bindings(log, host._archive, host.open_binding)
         async with open_tool(bindings, identity) as target:
-            result = await target.invoke("fixed", await target.prepare({"value": "input"}))
+            prepared = await target.prepare({"value": "input"})
+            assert isinstance(prepared, Mapping)
+            result = await target.invoke("fixed", prepared)
             assert result.parts[0].value == "job-a:restore:input"
     finally:
         await host.terminate_all()

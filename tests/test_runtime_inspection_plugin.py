@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,6 +15,25 @@ from plugins.runtime_inspection.inspection import (
     SCHEDULER_INSPECTION,
     SKILL_INSPECTION,
 )
+
+
+def _payload(value: object) -> Mapping[str, object]:
+    """窄化 inspection RPC 的结构化返回值。"""
+    if not isinstance(value, Mapping):
+        raise AssertionError("inspection RPC 必须返回对象")
+    return cast(Mapping[str, object], value)
+
+
+def _rows(value: object) -> tuple[Mapping[str, object], ...]:
+    """窄化 inspection RPC 中的列表行。"""
+    if not isinstance(value, (list, tuple)):
+        raise AssertionError("inspection RPC rows 必须是列表")
+    rows: list[Mapping[str, object]] = []
+    for row in value:
+        if not isinstance(row, Mapping):
+            raise AssertionError("inspection RPC row 必须是对象")
+        rows.append(cast(Mapping[str, object], row))
+    return tuple(rows)
 
 
 class _Scheduler:
@@ -56,14 +76,18 @@ async def test_runtime_inspection_plugin_owns_documents_and_optional_providers(
     async def call(method, params=None):
         operation = root.context.require(rpc_method_key("inspection/" + method))
         return await operation.invoke(operation.params.model_validate(params or {}), None)
-    assert [item["id"] for item in (await call("documents.list"))["items"]] == [
+    documents = _payload(await call("documents.list"))
+    assert [item["id"] for item in _rows(documents["items"])] == [
         "memory",
         "self",
         "veda",
     ]
-    assert (await call("documents.get", {"document_id": "memory"}))["markdown"] == "# Memory\n"
-    assert (await call("skills.list"))["unavailable"]["code"] == "skills_unavailable"
-    assert (await call("jobs.list"))["unavailable"]["code"] == "scheduler_unavailable"
+    memory = _payload(await call("documents.get", {"document_id": "memory"}))
+    assert memory["markdown"] == "# Memory\n"
+    skills = _payload(await call("skills.list"))
+    assert _payload(skills["unavailable"])["code"] == "skills_unavailable"
+    jobs = _payload(await call("jobs.list"))
+    assert _payload(jobs["unavailable"])["code"] == "scheduler_unavailable"
 
     scheduler = _Scheduler()
     skills = _Skills()
@@ -73,11 +97,15 @@ async def test_runtime_inspection_plugin_owns_documents_and_optional_providers(
         await ctx.provide(SKILL_INSPECTION, skills)
 
     business = await root.mount(mount_business, name="business-providers")
-    assert (await call("jobs.list"))["items"] == [{"id": "external-job", "name": "外部任务"}]
-    assert (await call("skills.list"))["items"] == [{"name": "external-skill", "available": True}]
+    jobs = _payload(await call("jobs.list"))
+    assert tuple(_rows(jobs["items"])) == ({"id": "external-job", "name": "外部任务"},)
+    skills = _payload(await call("skills.list"))
+    assert tuple(_rows(skills["items"])) == ({"name": "external-skill", "available": True},)
     await business.dispose()
-    assert (await call("jobs.list"))["unavailable"]["code"] == "scheduler_unavailable"
-    assert (await call("skills.list"))["unavailable"]["code"] == "skills_unavailable"
+    jobs = _payload(await call("jobs.list"))
+    assert _payload(jobs["unavailable"])["code"] == "scheduler_unavailable"
+    skills = _payload(await call("skills.list"))
+    assert _payload(skills["unavailable"])["code"] == "skills_unavailable"
     await root.dispose()
 
 
@@ -152,7 +180,7 @@ async def test_core_inspection_binds_lease_for_real_skill_projection(tmp_path: P
         service = RuntimeInspectionService(workspace=tmp_path / "workspace", snapshot_store=manager.snapshot_store)
         for _ in range(2):
             result = await service.list_capabilities()
-            assert [item["name"] for item in result["skills"]] == ["probe"]
+            assert [item["name"] for item in _rows(result["skills"])] == ["probe"]
             assert snapshot.lease_count == 0
             assert get_current_runtime_snapshot() is None
     finally:

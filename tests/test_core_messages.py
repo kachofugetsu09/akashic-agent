@@ -323,9 +323,11 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 sent = len(calls)
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
+                reminders = result["reminders"]
+                assert isinstance(reminders, tuple)
                 status = next(
                     part["text"]
-                    for part in result["reminders"]
+                    for part in reminders
                     if part["name"] == "status"
                 )
                 assert "召回不可用" in status and "重建" in status
@@ -341,7 +343,9 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 })
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                assert not any(part["name"] == "status" for part in result["reminders"])
+                reminders = result["reminders"]
+                assert isinstance(reminders, tuple)
+                assert not any(part["name"] == "status" for part in reminders)
                 assert all(item.healthy for item in snapshot.composition_root.receipt().health if item.owner == "akasha")
                 assert logical_state_sha256(graph) == before
                 assert core.plugin_manager.current_snapshot is root

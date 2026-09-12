@@ -8,10 +8,12 @@ from pathlib import Path
 import shutil
 import sys
 from types import ModuleType
+from typing import cast
 
 import yoyo
 
 from agent.migrations.bundles import (
+    MigrationBundle,
     _read_migrations,
     migration_import_paths,
 )
@@ -30,8 +32,9 @@ class _TestBundle:
     migration_root: Path
 
 
-def _bundle(root: Path) -> _TestBundle:
-    return _TestBundle(package_name=_PACKAGE_NAME, migration_root=root)
+def _bundle(root: Path) -> MigrationBundle:
+    # 私有导入 helper 只读取这两个字段；完整 manifest 校验由安装测试覆盖。
+    return cast(MigrationBundle, _TestBundle(package_name=_PACKAGE_NAME, migration_root=root))
 
 
 def _clear_package() -> None:

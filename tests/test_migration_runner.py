@@ -161,9 +161,9 @@ def _catalog(root: Path, migration_ids: tuple[str, ...]) -> Path:
     external_ids = tuple(
         migration_id for migration_id in migration_ids if migration_id != _ORIGIN_ID
     )
+    bundle = root / "plugins" / "legacy_upgrade"
+    migration_root = bundle / "legacy_upgrade_migrations"
     if external_ids:
-        bundle = root / "plugins" / "legacy_upgrade"
-        migration_root = bundle / "legacy_upgrade_migrations"
         migration_root.mkdir(parents=True)
         shutil.copy2(
             _PROJECT_ROOT / "plugins/legacy_upgrade/legacy_upgrade_migrations/__init__.py",

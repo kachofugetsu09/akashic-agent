@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 """正式安装的业务组合经真实 HTTP driver/sender 写入最终送达回执。"""
 
 import asyncio
@@ -205,7 +206,9 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
             saved = reopened.owner("plugin:delivery@acceptance").scan(start="delivery:", stop="delivery;")
             assert len(saved) == 1
             assert saved[0][1].value["phase"] == "delivered"
-            assert saved[0][1].value["receipt"]["provider_ids"] == ("731",)
+            receipt = saved[0][1].value["receipt"]
+            assert isinstance(receipt, Mapping)
+            assert receipt["provider_ids"] == ("731",)
         finally:
             reopened.close()
     finally:

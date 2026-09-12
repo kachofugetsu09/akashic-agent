@@ -74,6 +74,10 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
                     "-c", "commit.gpgSign=false", "commit", "-m", "source"], check=True, capture_output=True)
     output = tmp_path / "release"
     report = build(source, "HEAD", output)
+    plugins = report["plugins"]
+    wiring = report["runtime_wiring"]
+    assert isinstance(plugins, list)
+    assert isinstance(wiring, list)
     with tarfile.open(fileobj=io.BytesIO((output / "core.tar").read_bytes())) as archive:
         assert set(archive.getnames()) == {
             "config.example.toml", "main.py", "runtime-dependencies.json",
@@ -84,8 +88,8 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
         }
         assert not any(name == "plugins" or name.startswith("plugins/") for name in archive.getnames())
         assert not any(name == "memory2" or name.startswith("memory2/") for name in archive.getnames())
-    assert {row["name"] for row in report["plugins"]} == {"one", "two", "unused"}
-    one_row = next(row for row in report["plugins"] if row["name"] == "one")
+    assert {row["name"] for row in plugins} == {"one", "two", "unused"}
+    one_row = next(row for row in plugins if row["name"] == "one")
     repository_cwd = Path.cwd()
     monkeypatch.chdir(tmp_path)
     _preflight_bundle(
@@ -94,7 +98,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
         source_commit=str(report["source_commit"]),
     )
     monkeypatch.chdir(repository_cwd)
-    assert {row["path"] for row in report["runtime_wiring"]} == {
+    assert {row["path"] for row in wiring} == {
         "Dockerfile.distribution",
         "distribution-entrypoint.sh",
     }
@@ -235,9 +239,11 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     ], check=True, capture_output=True)
     output_v2 = tmp_path / "release-v2"
     report_v2 = build(source, "HEAD", output_v2)
+    plugins_v2 = report_v2["plugins"]
+    assert isinstance(plugins_v2, list)
     assert report_v2["source_commit"] != report["source_commit"]
     replacement_row = next(
-        row for row in report_v2["plugins"] if row["name"] == "replacement"
+        row for row in plugins_v2 if row["name"] == "replacement"
     )
     installed_alias = install_git_plugin(
         workspace=tmp_path / "profile-workspace",
@@ -293,7 +299,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
             config_path=config,
             receipt_path=invalid_receipt,
         )
-    for row in report["plugins"]:
+    for row in plugins:
         installed = install_git_plugin(workspace=tmp_path / "workspace", plugins_home=tmp_path / "home",
             source=str(output / row["file"]), marketplace="distribution")
         assert installed.source_revision == row["source_revision"]

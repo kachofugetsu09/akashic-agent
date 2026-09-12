@@ -239,7 +239,9 @@ async def test_web_search_only_reports_empty_success_from_confirmed_response(mon
     transport = httpx.MockTransport(lambda request: httpx.Response(200, text=reply, headers={"content-type": media}))
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=transport, **kwargs))
     tool = WebTool(WebSearchTool())
-    result = await tool.invoke("request", await tool.prepare({"query": "test"}))
+    prepared = await tool.prepare({"query": "test"})
+    assert isinstance(prepared, Mapping)
+    result = await tool.invoke("request", prepared)
     assert result.outcome == ("error" if error else "success")
     if not error:
         assert json.loads(cast(str, result.parts[0].value))["result"] == ""

@@ -236,7 +236,9 @@ def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
     run_timing_migration(timing_migration, store.path.parent)
     from tests.test_execution_failure_migration import load_migration
     failure = load_migration()
-    failure["_migrate"](store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
+    migrate_failure = failure["_migrate"]
+    assert callable(migrate_failure)
+    migrate_failure(store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
     call_id = store.start_call(descriptor, ModelRequest(()))
     # 模拟 provider 已接到请求，进程在收到响应前崩溃；不会重放或把费用补成零。
     reopened = ModelsStore(store.path, store.backup_dir)
@@ -244,7 +246,7 @@ def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
     assert reopened.read_call(call_id)["state"] == "started"
     assert reopened.read_call(call_id)["usage"] is None
     after = dump(store.path)
-    failure["_migrate"](store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
+    migrate_failure(store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
     assert dump(store.path) == after
     assert store.read_snapshot().revision == 0
 

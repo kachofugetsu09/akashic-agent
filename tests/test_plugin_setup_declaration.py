@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 import subprocess
 
@@ -162,7 +163,9 @@ def test_setup_runner_passes_plugin_data_boundary(tmp_path: Path, monkeypatch) -
     lines = config.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "fixture_setup@lab"
     record = python_environments.archive.read_descriptor(environment_ref)
-    archived_code = python_environments.archive.open(record["input"]["code"])
+    descriptor_input = record["input"]
+    assert isinstance(descriptor_input, Mapping)
+    archived_code = python_environments.archive.open(descriptor_input["code"])
     environment_root = python_environments.open(
         environment_ref,
         archived_code,
