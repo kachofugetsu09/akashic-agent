@@ -15,6 +15,19 @@
           },
           "summary_source": ["compaction", "compaction@release"]
         }
+      },
+      {
+        "owner": "akashic_clients",
+        "config": {
+          "enabled": true,
+          "web": {
+            "enabled": true,
+            "socket_path": ""
+          },
+          "mobile_realtime": {
+            "enabled": false
+          }
+        }
       }
     ]
   },
@@ -68,6 +81,11 @@
       "name": "runtime_inspection",
       "depends_on": [],
       "reason": "提供 Web/Mobile 所需的文档、技能和任务只读检查投影。"
+    },
+    {
+      "name": "akashic_clients",
+      "depends_on": ["models", "runtime_inspection"],
+      "reason": "提供可替换的 Akashic Web/Mobile 普通 channel；客户端配置和生命周期归插件。"
     },
     {
       "name": "prompt",

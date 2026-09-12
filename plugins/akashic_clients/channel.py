@@ -30,6 +30,9 @@ from .chat_api import build_chat_server
 from .services import AkashicClientServices
 
 
+_SERVER_START_TIMEOUT_SECONDS = 10.0
+
+
 async def _stop_started_children(
     children: Sequence[Any],
     *,
@@ -370,6 +373,29 @@ class _GenerationAkashicAdapter:
         if spawn_owned is None:
             raise RuntimeError(f"akashic {name} 缺少 host-owned task scope")
         task = await spawn_owned(server.serve(), name=name)
+        try:
+            async with asyncio.timeout(_SERVER_START_TIMEOUT_SECONDS):
+                while True:
+                    if server.started:
+                        break
+                    if task.done():
+                        task.result()
+                        raise RuntimeError(f"akashic {name} 在监听就绪前退出")
+                    await asyncio.sleep(0)
+        except BaseException as error:
+            server.should_exit = True
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        f"akashic {name} 启动失败且清理失败",
+                        (error, cleanup_error),
+                    ) from error
+            raise
         self._servers.append((server, task))
 
     async def _start_web(self) -> None:
@@ -438,23 +464,29 @@ class _GenerationAkashicAdapter:
 
     async def _rollback_start(self, primary: BaseException) -> None:
         self._stopped = True
+        failures: list[BaseException] = []
         for server, task in reversed(self._servers):
             server.should_exit = True
             if not task.done():
                 task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except BaseException as error:
+                failures.append(error)
         self._servers.clear()
         results = await asyncio.gather(
             *(child.stop() for child in reversed(self._started_children)),
             return_exceptions=True,
         )
-        failures = tuple(item for item in results if isinstance(item, BaseException))
+        failures.extend(item for item in results if isinstance(item, BaseException))
         self._started_children.clear()
         if self._mobile_runtime is not None:
             try:
                 await self._mobile_runtime.stop()
             except BaseException as error:
-                failures = (*failures, error)
+                failures.append(error)
         if failures:
             raise BaseExceptionGroup("akashic channel start rollback 失败", (primary, *failures))
         raise primary
@@ -512,13 +544,18 @@ class _GenerationAkashicAdapter:
         if self._stopped:
             return StopReceipt(self._binding_token, resources_closed=True)
         self._stopped = True
+        errors: list[BaseException] = []
         for server, task in reversed(self._servers):
             server.should_exit = True
             if not task.done():
                 task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except BaseException as error:
+                errors.append(error)
         self._servers.clear()
-        errors: list[BaseException] = []
         receipts: list[StopReceipt] = []
         for child in reversed(self._started_children):
             try:
