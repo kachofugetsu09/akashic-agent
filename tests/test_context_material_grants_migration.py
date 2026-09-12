@@ -34,10 +34,11 @@ def test_yoyo_installs_grants_without_overwriting_operator_choice(tmp_path):
             },
             "summary_source": ["compaction", "compaction"],
         }
-        current = tomllib.loads(
-            (initialized / "plugin-data/context-builtin/config.local.toml").read_text()
-        )
-        assert current["prompt_sources"]["skills"] == "standard_tools"
+        # Core init only records the workspace origin.  The external Context
+        # plugin owns this grant and must install it through its migration.
+        assert not (
+            initialized / "plugin-data/context-builtin/config.local.toml"
+        ).exists()
         assert path.stat().st_mode & 0o777 == 0o600
         path.write_text('prompt_sources = {custom = "custom"}\n')
         before = (path.stat().st_ino, path.read_bytes())
@@ -78,6 +79,7 @@ def test_force_init_backs_up_config_and_preserves_owned_assets(tmp_path):
     assets = [workspace / "memory/VEDA.md", workspace / "memes/manifest.json",
               workspace / "plugin-data/context-builtin/config.local.toml"]
     for path in assets:
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("operator owned bytes\n")
     init_workspace(config_path=config, workspace=workspace, force=True)
     backups = list(tmp_path.glob("config.toml.before-init-*.bak"))

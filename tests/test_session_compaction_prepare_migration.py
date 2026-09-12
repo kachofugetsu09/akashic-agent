@@ -37,6 +37,7 @@ def _runner(root: Path) -> MigrationRunner:
         repo_root=_PROJECT_ROOT,
         config_path=root / "config.toml",
         workspace=root / "workspace",
+        plugin_dirs=(_PROJECT_ROOT / "plugins" / "legacy_upgrade",),
     )
 
 
