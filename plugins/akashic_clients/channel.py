@@ -31,6 +31,7 @@ from .mobile_realtime.channel import MobileRealtimeChannel
 from .mobile_realtime.gateway import MobileGatewayRuntime
 from .chat_api import build_chat_server
 from .runtime_inspection import ScopedRpcRuntimeInspection
+from .model_control import ScopedModelRpcControl
 from .services import (
     MessageCatalogPort,
     ModelCatalogReader,
@@ -150,6 +151,7 @@ class _GenerationAkashicAdapter:
         self._model_selection_reader: ModelSelectionReader | None = None
         self._model_stats_reader: ModelStatsReader | None = None
         self._runtime_inspection: ScopedRpcRuntimeInspection | None = None
+        self._model_control: ScopedModelRpcControl | None = None
         self._web = WebChatChannel("akashic") if state.config.web.enabled else None
         self._mobile: MobileRealtimeChannel | None = None
         self._mobile_runtime: MobileGatewayRuntime | None = None
@@ -181,6 +183,7 @@ class _GenerationAkashicAdapter:
         self._model_selection_reader = self._read_model_selection
         self._model_stats_reader = self._read_model_stats
         self._runtime_inspection = ScopedRpcRuntimeInspection(open_scope)
+        self._model_control = ScopedModelRpcControl(open_scope)
         if self._web is not None:
             self._web.bind_message_scope(
                 self._message_scope,
@@ -294,6 +297,7 @@ class _GenerationAkashicAdapter:
             runtime_inspection=self._runtime_inspection,
             model_catalog_reader=self._model_catalog_reader,
             model_selection_reader=self._model_selection_reader,
+            model_control=self._model_control,
             reply_status=self._reply_status,
             message_scope=self._message_scope,
             uds=socket_path,

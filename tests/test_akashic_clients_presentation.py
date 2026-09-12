@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 from starlette.websockets import WebSocketState
 
 from agent.plugin_composition.channels import (
@@ -21,6 +22,9 @@ from agent.plugin_composition.channels import (
 )
 from plugins.akashic_clients import plugin
 from plugins.akashic_clients.config import AkashicClientsConfig
+from plugins.akashic_clients.model_control import ScopedModelRpcControl
+from plugins.akashic_clients.capabilities import MODEL_DISCOVER
+from agent.plugin_composition.rpc import RpcMethod
 from plugins.akashic_clients.web_chat import WebChatChannel
 
 
@@ -72,6 +76,25 @@ class _MessageScope:
         self.entered += 1
         try:
             yield self.value
+        finally:
+            self.exited += 1
+
+
+class _RpcScope:
+    def __init__(self, provider: RpcMethod) -> None:
+        self.provider = provider
+        self.entered = 0
+        self.exited = 0
+
+    def require(self, key: Any) -> RpcMethod:
+        assert key is MODEL_DISCOVER
+        return self.provider
+
+    @asynccontextmanager
+    async def __call__(self):
+        self.entered += 1
+        try:
+            yield self
         finally:
             self.exited += 1
 
@@ -219,5 +242,23 @@ async def test_web_message_catalog_is_held_only_inside_request_scope() -> None:
         assert scope.entered == 1
         assert scope.exited == 0
 
+    assert scope.entered == 1
+    assert scope.exited == 1
+
+
+@pytest.mark.asyncio
+async def test_model_rpc_is_resolved_inside_request_scope() -> None:
+    class DiscoverParams(BaseModel):
+        value: int
+
+    async def discover(params: DiscoverParams) -> object:
+        return {"status": 200, "body": {"value": params.value}}
+
+    scope = _RpcScope(RpcMethod(DiscoverParams, discover))
+    control = ScopedModelRpcControl(scope)
+
+    result = await control.invoke_rpc("models/discover", {"value": 7})
+
+    assert result == {"status": 200, "body": {"value": 7}}
     assert scope.entered == 1
     assert scope.exited == 1
