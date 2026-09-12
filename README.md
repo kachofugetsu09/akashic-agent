@@ -123,14 +123,13 @@ enabled = true
 channel_name = "web"
 ```
 
-当前代码形状是新的迁移原点。启动时 Yoyo 只读取 `migrations/yoyo/`，并在
-`<workspace>/migrations.sqlite3` 记录已成功执行的迁移；它不依赖 Git 历史、分支或版本号。
-旧 Git cursor 时代的脚本保留为历史源码，但不会注册或自动执行，也不承诺接管旧格式。
-原点迁移只删除退役的 `config.toml.migration-{cursor,lock,backups}` companion state，
-不修改配置与业务数据。
+当前状态作为新的迁移基线，历史兼容脚本已经退役；Yoyo 保留用于未来升级。
+Core 只加载自有迁移和正式安装插件声明的 bundle，以 `<workspace>/migrations.sqlite3`
+记录成功回执。旧账本与用户数据保留，不依赖 Git 历史，也不重新执行已退役步骤。
 
-新增迁移前请阅读 [Yoyo 迁移维护手册](./docs/design/git-migration-authoring.md)。已注册脚本
-只追加不修改；修正错误时新增 migration ID。
+新增迁移前请阅读 [Yoyo 迁移维护手册](./docs/design/git-migration-authoring.md) 与
+[当前基线决定](./docs/decisions/0066-yoyo-current-baseline.md)。未来已发布脚本只追加不修改；
+业务迁移由相应插件拥有。
 
 `workspace` 默认是 `~/.akashic/workspace`。临时切换隔离环境时传
 `--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。

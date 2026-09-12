@@ -439,6 +439,7 @@ async def test_runtime_rebuilds_cross_generation_config_values(tmp_path):
     from pydantic import BaseModel, ConfigDict
     from typing import cast
     from plugins.wake.runtime import Runtime
+    from plugins.wake.api import Config as CurrentConfig, DeliveryTarget as CurrentTarget
 
     class PreviousDeliveryTarget(BaseModel):
         model_config = ConfigDict(extra="forbid")
@@ -462,8 +463,8 @@ async def test_runtime_rebuilds_cross_generation_config_values(tmp_path):
         runtime = Runtime(ctx, cast(Config, previous))
         original = runtime.capture("d" * 32, await runtime.duties.check(now), now)
         assert original is not None
-        assert type(runtime.config) is Config
-        assert type(runtime.config.delivery) is DeliveryTarget
+        assert type(runtime.config) is CurrentConfig
+        assert type(runtime.config.delivery) is CurrentTarget
         assert original.target == runtime.config.delivery
 
 

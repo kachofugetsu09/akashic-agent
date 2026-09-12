@@ -5,8 +5,6 @@ import shutil
 
 import pytest
 
-from agent.migrations.context import bind_migration_context
-from plugins.legacy_upgrade.legacy_upgrade_migrations.support.session_attributes import migrate as migrate_attributes
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
@@ -19,28 +17,16 @@ from plugins.tools.execution import ToolExecution
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
 from agent.plugin_composition.tasks import Tasks
 from session.log import MessageLog, OwnerTransaction
-from session.store import SessionStore
 from session.artifact_store import ArtifactStore
-from tests.legacy_migration_loader import load_migration_namespace
 from tests.test_delivery_bindings import sources
 
 
 def storage(workspace):
-    """关闭旧连接，迁移后分别重开 Message 与附件 owner。"""
+    """用当前 Message owner 初始化消息与附件测试库。"""
     workspace.mkdir()
-    store = SessionStore(workspace / "sessions.db")
-    store.close()
-    with bind_migration_context(workspace=workspace, config_path=workspace / "config.toml"):
-        for name, callback in (
-            ("20260905_01_message_log", "migrate_message_log"),
-            ("20260905_02_owner_records", "migrate_owner_records"),
-            ("20260905_05_message_embeddings", "migrate_message_embeddings"),
-            ("20260905_06_message_artifacts", "migrate_message_artifacts"),
-        ):
-            module = load_migration_namespace(name)
-            getattr(module, callback)(None)
-    migrate_attributes(workspace / "sessions.db", workspace / "backups/attributes")
-    return ArtifactStore(workspace / "sessions.db"), MessageLog(workspace / "sessions.db")
+    log = MessageLog(workspace / "sessions.db")
+    store = ArtifactStore(workspace / "sessions.db")
+    return store, log
 
 
 @pytest.mark.asyncio

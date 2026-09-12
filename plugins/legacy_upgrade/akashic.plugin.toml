@@ -1,9 +1,0 @@
-schema_version = 1
-name = "legacy_upgrade"
-version = "1.0.0"
-api_version = 3
-entrypoint = "plugin.py"
-
-[migration]
-catalog = "migration.catalog.toml"
-catalog_sha256 = "99cb60fc6714081ceb7f1e4cc57783e711c7a2e69b4670446a69105b693c14d9"

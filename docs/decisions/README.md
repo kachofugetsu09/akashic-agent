@@ -73,6 +73,8 @@
 | [0064](0064-plugin-boundary-is-machine-enforced.md) | superseded by 0065 | 插件边界静态门的初始设计 | PLG-001～PLG-017、GOV-001～GOV-005、TST-001～TST-008 |
 | [0065](0065-plugin-boundary-checks-do-not-grant-core-ownership.md) | accepted | 边界检查不授予 Core 归属，按外置与替换验收 | PLG-014、PLG-016、STA-001、CAP-001、TST-003 |
 
+| [0066](0066-yoyo-current-baseline.md) | accepted | 保留 Yoyo，以当前基线退役历史兼容脚本 | MIG-001、MIG-002、WSP-003 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

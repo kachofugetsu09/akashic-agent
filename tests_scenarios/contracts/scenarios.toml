@@ -363,7 +363,6 @@ observes = [
   "akasha_embedding_binding",
   "public_model_control_socket",
   "catalog_secret_redaction",
-  "core_model_config_retirement",
   "migration_chain",
 ]
 mutants = ["model_consumer_imports_plugin_source"]

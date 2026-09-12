@@ -836,11 +836,11 @@ Workload writer；容器名、镜像和 endpoint 都不是持久状态 owner。
 
 ### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
 
-迁移框架只从 `migrations/yoyo/` 加载已注册脚本，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。既有 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。
+迁移框架读取 Core 自有脚本和正式安装插件声明的 migration bundle，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。未来已发布 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。业务 schema 由相应插件拥有，Core 只负责通用装配与执行。
 
-### MIG-002 当前结构是迁移原点
+### MIG-002 当前结构是迁移基线，Yoyo 保留未来兼容能力
 
-新系统不接管 Git cursor 时代的迁移历史。历史脚本保留为源码证据，但不注册、不自动执行，也不据此推断旧安装状态。原点迁移只清除退役的配置 companion cursor、lock 和 backups；配置、会话、记忆及其他业务数据保持不变。此后的兼容变换只能新增到 Yoyo 目录，不依赖 Git HEAD、分支拓扑、浅克隆状态或人工产品版本号。
+本次基线假定现有用户的数据、schema 和配置已经是当前状态。按 [0066](decisions/0066-yoyo-current-baseline.md) 删除已经完成使命的历史脚本、`legacy_upgrade` 及其专属兼容代码，清空历史业务 requirement；保留 Yoyo、runner、插件迁移声明和账本。既有历史回执和用户数据不删除、不重跑、不伪造成功。未来迁移不得依赖源码已经退役的历史 ID；新脚本继续遵守 append-only、备份和失败重试合同。
 
 ### FS-001 文件写入限于 allowed root
 

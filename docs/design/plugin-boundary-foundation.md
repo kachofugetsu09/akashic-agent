@@ -448,8 +448,7 @@ loop 卸载资源、取消长连接并 join 实际线程，不能取消 to_threa
 这批证据固定在 1d4ede3af3e7e412d615d7f074508737def9f837 构建的产物，Core tar
 SHA-256 为 0ae58a6601e30077a95dd4a721dc5398286298a84f840b14a8fa0cf1da8307a0。
 后续仍须覆盖真实 CLI 迁移入口、合法子集、原 provider 不在场的替换及最终业务结果。
-历史 Yoyo Message 元数据迁移仍引用旧 codec 的私有解析 helper；保留指向同一实现
-的 Core 内部别名，迁移包拆分前不能因移动公开 codec 破坏旧数据入口。
+此处为早期分层证据；历史迁移及其专属 helper 已按 [0066](../decisions/0066-yoyo-current-baseline.md) 退役，不构成当前 Core 保留兼容别名的理由。
 
 按用户指定顺序，逐层发布 draft PR 并继续实施，全部实现后统一完成 Gate、CI 与
 概念评审；本节的本地证据不代表这些检查已通过。
@@ -519,16 +518,12 @@ SDK 的空插件发现目录使用本代独有临时树，停止后清理；不�
 证明它们不能同时改共享 SDK 配置，旧代关闭后新代可进入。渠道 9 项和宿主相关
 50 项测试通过，定向 pyright 0 errors；完整 Gate 与 CI 仍按用户顺序最后处理。
 
-### 9.26 历史迁移外置的当前证据与未完成项
+### 9.26 历史迁移退役与未来升级
 
-48 个历史步骤及其冻结 helper 已进入普通 legacy_upgrade artifact，Core 保留起点
-和 ID/依赖索引；安装时验证 catalog 与全部包文件摘要，不从 checkout 猜测实现。
-在独立临时 workspace 显式加载 bundle，49 个步骤实际完成，第二次执行返回 current。
-原步骤 ID 与共用 Yoyo ledger 保留；这次验证未使用 monkeypatch 补齐 codec。
-
-尚未完成：新空 workspace 不安装历史业务包时的真实 CLI 启动、历史 helper 的
-Core 残留、迁移包独立导入身份及精确公共依赖。初次集成新增的迁移专用 R2 尚未
-清零，不能把此前常规插件的静态结果套用于这批新增源码。
+历史步骤曾外置为 legacy_upgrade artifact；当前按 [0066](../decisions/0066-yoyo-current-baseline.md)
+退役该历史包、旧 origin 与业务 requirement。Yoyo、通用 runner、插件自有 bundle、workspace 锁、
+失败重试和成功账本均保留。当前基线不再要求安装历史业务包，不重跑或清除旧 ledger。
+新迁移通过所属插件声明，Core 不保留业务 schema 的中央目录。
 
 ### 9.27 分开的组合、替代和旧 lease 实验
 
@@ -596,7 +591,7 @@ retry 均在外部效果之前阻断，journal 保持 pending。没有正式数�
 
 ### 9.31 新工作区起点与真实重启
 
-- Core 为明确的新建 workspace 记录独立起点，列出创建前的历史迁移 ID；这些 ID 不写成 Yoyo 已执行记录。已有状态而没有起点时仍要求缺失的历史 owner，不能猜测数据格式。
+- Core 为明确的新建 workspace 记录独立起点，列出创建前的历史迁移 ID；这些 ID 不写成 Yoyo 已执行记录。这是旧历史包阶段的规则；0066 后历史 requirement 清空，既有 ledger 保留，未来已声明依赖缺失仍明确阻断。
 - 记录与业务文件名无关，不认识 VEDA、memes 或 Context 路径。临时账本完成后以不覆盖既有文件的方式发布；异常中断留下的未知状态保持失败可见。
 - 77 项迁移与 runtime 测试通过；额外真实 CLI 验证执行 init、启动并创建当前数据、再次启动，最终只有 Core origin 被记为已执行。没有正式 workspace 写入。
 
@@ -611,9 +606,7 @@ retry 均在外部效果之前阻断，journal 保持 pending。没有正式数�
 ### 9.33 整组行为回归与不兼容范围
 
 安装、配置和插件 Python 导入接口采用新的显式边界；旧 checkout 自动装配、Core
-业务初始化和兄弟插件类身份不作为兼容路径。已有 workspace 的历史升级仍由显式
-安装的 legacy_upgrade 包执行；48 个历史步骤及其旧 schema 读取实现封存在包内，
-不再为该包豁免 Core 私有 import。当前 Message 存储与模型 owner 可独立演进。
+业务初始化和兄弟插件类身份不作为兼容路径。已有 workspace 按当前状态处理，历史兼容脚本已退役；未来升级继续由 Yoyo 执行相应 owner 的 bundle。当前 Message 存储与模型 owner 可独立演进。
 
 整组测试揭示工具固定授权丢弃了 provider 返回的拒绝理由；现在拒绝沿归档目录和
 执行链直接返回，在实际工具效果之前结算。原无授权字段的绑定仍执行原策略。
