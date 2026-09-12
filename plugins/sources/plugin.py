@@ -8,7 +8,7 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.tasks import Task
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 from session.message import Message
 
 api_version = 3

@@ -6,6 +6,7 @@ from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
 from session.embedding_store import MessageEmbeddings
+from session.log import MessageReader as MessageReader
 from session.log import MessageCatalog, MessageLog, MessageWriter, OwnerStore, SessionAttributes, WriterExpired
 from session.message import Body, CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 

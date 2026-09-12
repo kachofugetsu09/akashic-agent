@@ -70,6 +70,7 @@ from plugins.models.projection import MODEL_CALLS
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.tools.api import Result
+from plugins.standard_tools.shell import shell_cleanup
 from plugins.tools.plugin import TOOLS
 from session.message import ContentPart
 api_version = 3
@@ -117,6 +118,7 @@ async def apply(ctx, config):
     await ctx.require(TOOLS).declare_group(ctx, always_on=True)
     await ctx.require(TOOLS).register(ctx, name="write_evidence", description="record local test evidence",
         parameters={"type":"object"}, open=open)
+    await ctx.provide(ServiceKey("tools.cleanup.v1"), shell_cleanup)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
     await ctx.provide(ServiceKey("fixture.calls"), calls)
