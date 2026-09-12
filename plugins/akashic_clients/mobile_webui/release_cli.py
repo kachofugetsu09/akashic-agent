@@ -19,6 +19,12 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+# auto_publish invokes this explicit plugin-owned CLI by file path.  Supplying
+# the source-tree package identity keeps that path on the same relative-import
+# boundary as normal plugin loading.
+if not __package__:
+    __package__ = "plugins.akashic_clients.mobile_webui"
+
 from .manifest import manifest_from_directory
 from .store import MobileWebUiStore
 

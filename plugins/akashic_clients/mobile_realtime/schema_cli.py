@@ -9,6 +9,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
+# Running this source file directly has no package context.  Set the same
+# source-tree package identity before using the normal relative imports.
+if not __package__:
+    __package__ = "plugins.akashic_clients.mobile_realtime"
+
 from .protocol import (
     COMMAND_TYPES,
     CONTROL_TYPES,
