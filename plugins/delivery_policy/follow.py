@@ -6,13 +6,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from agent.plugin_composition import Context
-from plugins.delivery.api import Sink
-from plugins.delivery.execution import Deliveries
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import Message
 
+from .boundary import DeliveryExecution, SinkInput
+
 logger = logging.getLogger(__name__)
-Select = Callable[[MessageReader, Message], tuple[Sink, ...] | None]
+Select = Callable[[MessageReader, Message], tuple[SinkInput, ...] | None]
 
 
 @dataclass(slots=True)
@@ -22,7 +22,7 @@ class _Wake:
 
 async def follow(
     ctx: Context, catalog: MessageCatalog,
-    execution: Callable[[], Deliveries], select: Select,
+    execution: Callable[[], DeliveryExecution], select: Select,
     *, settled: Callable[[str, str], None] | None = None,
 ) -> None:
     """按 seq 固定选路；重启追赶 prepared，各目的地与各 Session 独立结算。"""

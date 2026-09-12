@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Annotated, Literal, Self, cast
+from typing import Annotated, Literal, Protocol, Self, cast, runtime_checkable
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
@@ -106,9 +106,16 @@ class DeliveryRecords:
             raise ValueError("发送目的地与记录身份不一致")
         return row, delivery
 
-    def prepare(self, reader: MessageReader, message: Message, sinks: tuple[Sink, ...], *, passive: bool = False) -> Selection:
+    def prepare(
+        self,
+        reader: MessageReader,
+        message: Message,
+        sinks: tuple[Sink | Mapping[str, object], ...],
+        *,
+        passive: bool = False,
+    ) -> Selection:
         """显式发送固定全体目的地，不替自动消费者跳过其他消息。"""
-        sinks = tuple(Sink.model_validate(sink.model_dump()) for sink in sinks)
+        sinks = _normalize_sinks(sinks)
         self._check_message(reader, message, sinks)
         def commit(tx: OwnerTransaction) -> Selection:
             existing = self.selection(message.message_id)
@@ -118,9 +125,9 @@ class DeliveryRecords:
         return self._state.transact(commit)
 
     def publish(self, writer: MessageWriter, message_id: str, body: Body,
-                sinks: tuple[Sink, ...], *, passive: bool = False) -> tuple[Message, Selection]:
+                sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]:
         """已授权 writer 的新消息与首次选路同事务，崩溃不会留下可被抢选的通知。"""
-        sinks = tuple(Sink.model_validate(sink.model_dump()) for sink in sinks)
+        sinks = _normalize_sinks(sinks)
         if len({sink.name for sink in sinks}) != len(sinks):
             raise ValueError("一次选路不能重复同一目的地")
         def commit(tx: OwnerTransaction) -> tuple[Message, Selection]:
@@ -137,11 +144,11 @@ class DeliveryRecords:
         if len({sink.name for sink in sinks}) != len(sinks):
             raise ValueError("一次选路不能重复同一目的地")
 
-    def consume(self, reader: MessageReader, message: Message, sinks: tuple[Sink, ...] | None,
+    def consume(self, reader: MessageReader, message: Message, sinks: tuple[Sink | Mapping[str, object], ...] | None,
                 *, passive: bool = False) -> Selection | None:
         """按序消费；None 表示不拥有选路权，空集合是明确的零目标选择。"""
         if sinks is not None:
-            sinks = tuple(Sink.model_validate(sink.model_dump()) for sink in sinks)
+            sinks = _normalize_sinks(sinks)
         self._check_message(reader, message, () if sinks is None else sinks)
 
         def commit(tx: OwnerTransaction) -> Selection | None:
@@ -177,9 +184,9 @@ class DeliveryRecords:
             self._add(tx, message.message_id, sink)
         return selection
 
-    def add(self, message_id: str, sink: Sink) -> None:
+    def add(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
         """显式新增一个目的地；相同发送键不能改绑地址或旧 generation。"""
-        sink = Sink.model_validate(sink.model_dump())
+        sink = _normalize_sink(sink)
         def commit(tx: OwnerTransaction) -> None:
             _ = self.check_owner(message_id)
             self._add(tx, message_id, sink)
@@ -242,3 +249,32 @@ class DeliveryRecords:
             if delivery.phase not in {"delivered", "rejected", "failed"}:
                 pending.append((message_id, sink))
         return tuple(pending)
+
+
+@runtime_checkable
+class _SinkValue(Protocol):
+    """允许归档 generation 的同形目的地跨 owner 边界进入校验。"""
+
+    name: str
+    binding_id: str
+    address: str
+
+
+def _normalize_sinks(sinks: tuple[Sink | Mapping[str, object] | _SinkValue, ...]) -> tuple[Sink, ...]:
+    """在 Delivery owner 边界把消费者结构重新校验成内部 Sink。"""
+    return tuple(_normalize_sink(sink) for sink in sinks)
+
+
+def _normalize_sink(value: Sink | Mapping[str, object] | _SinkValue) -> Sink:
+    """接纳 Mapping 或跨 generation 同形值，再由 owner 重新校验。"""
+    if isinstance(value, Sink):
+        return value
+    if isinstance(value, Mapping):
+        return Sink.model_validate(dict(value))
+    if isinstance(value, _SinkValue):
+        return Sink.model_validate({
+            "name": value.name,
+            "binding_id": value.binding_id,
+            "address": value.address,
+        })
+    raise TypeError("发送目的地必须是结构映射")

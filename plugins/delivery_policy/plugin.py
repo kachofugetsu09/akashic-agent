@@ -5,7 +5,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from functools import partial
-from typing import Protocol, cast
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,15 +13,19 @@ from agent.plugin_composition import Context, RUNTIME_STARTING, RUNTIME_STARTED,
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.restart import ExternalRootPermit, RestartRejectedError
-from plugins.conversation.plugin import check_origin
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
-from plugins.delivery.api import Sink
-from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.reply.completion import REPLY_COMPLETION
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
 
+from .boundary import (
+    DELIVERY,
+    DELIVERY_SENDERS,
+    FINAL_OUTPUT_DELIVERY,
+    ORIGIN_CHECK,
+    REPLY_COMPLETION,
+    FinalOutputTurn,
+    OriginCheck,
+    SinkInput,
+)
 from .follow import follow
 
 logger = logging.getLogger(__name__)
@@ -30,7 +34,14 @@ api_version = 3
 name = "delivery_policy"
 version = "1.0.0"
 desc = "默认只发送完整可见回复；显式通知沿来源自己的固定发送选择"
-inject = (DELIVERY, DELIVERY_SENDERS, BINDINGS, MESSAGE_CATALOG, FINAL_OUTPUT_DELIVERY)
+inject = (
+    DELIVERY,
+    DELIVERY_SENDERS,
+    BINDINGS,
+    MESSAGE_CATALOG,
+    FINAL_OUTPUT_DELIVERY,
+    ORIGIN_CHECK,
+)
 
 
 class Config(BaseModel):
@@ -38,14 +49,13 @@ class Config(BaseModel):
     sources: tuple[str, ...] = Field(default=("conversation",), min_length=1)
 
 
-class FinalOutputTurn(Protocol):
-    """策略只读取最终消息标识，不依赖 turn_projection 的实现类型。"""
-
-    source: str
-    ending_message_id: str | None
-
-
-def origin(reader: MessageReader, message: Message, sources: tuple[str, ...]) -> tuple[str, str] | None:
+def origin(
+    reader: MessageReader,
+    message: Message,
+    sources: tuple[str, ...],
+    *,
+    check_origin: OriginCheck | None = None,
+) -> tuple[str, str] | None:
     """默认回复发往其消息前缀中最后一次同来源输入；后来消息不改变旧目的地。"""
     if reader.attributes.visibility == "internal":
         return None
@@ -58,10 +68,21 @@ def origin(reader: MessageReader, message: Message, sources: tuple[str, ...]) ->
     ) for part in body.parts)
     if not visible:
         return None
-    return input_origin(reader, message.source, through_seq=message.seq)
+    return input_origin(
+        reader,
+        message.source,
+        through_seq=message.seq,
+        check_origin=check_origin,
+    )
 
 
-def input_origin(reader: MessageReader, source: str, *, through_seq: int) -> tuple[str, str] | None:
+def input_origin(
+    reader: MessageReader,
+    source: str,
+    *,
+    through_seq: int,
+    check_origin: OriginCheck | None = None,
+) -> tuple[str, str] | None:
     """只从原输入的已验证渠道事实读取目的地。"""
     previous = reader.latest_input(source, through_seq=through_seq)
     if previous is None:
@@ -72,7 +93,8 @@ def input_origin(reader: MessageReader, source: str, *, through_seq: int) -> tup
         return None
     if len(parts) != 1:
         raise ValueError("输入必须只有一个渠道来源")
-    _ = check_origin(parts[0])
+    if check_origin is not None:
+        _ = check_origin(parts[0])
     value = cast(Mapping[str, str], parts[0].value)
     return value["channel"], value["chat_id"]
 
@@ -114,6 +136,7 @@ class DeliveryFinalOutput:
 async def apply(ctx: Context, config: Config) -> None:
     """正式启动后跟随日志；不把策略、学习或来源 ACK 放进发送原子能力。"""
     final_delivery = DeliveryFinalOutput(ctx)
+    origin_check = ctx.require(ORIGIN_CHECK)
     for source in config.sources:
         ctx.require(FINAL_OUTPUT_DELIVERY).register(source, final_delivery)
     watcher: asyncio.Task[None] | None = None
@@ -143,19 +166,19 @@ async def apply(ctx: Context, config: Config) -> None:
 
     _ = await ctx.effect(lambda: close_recovery, label="pending-delivery")
 
-    def select(reader: MessageReader, message: Message) -> tuple[Sink, ...] | None:
+    def select(reader: MessageReader, message: Message) -> tuple[SinkInput, ...] | None:
         if message.source not in config.sources or reader.attributes.visibility == "internal":
             return None
-        route = origin(reader, message, config.sources)
+        route = origin(reader, message, config.sources, check_origin=origin_check)
         if route is None:
             return ()
         name, address = route
         binding = ctx.require(DELIVERY_SENDERS).bind(name, ctx.require(BINDINGS))
-        return (Sink(name=name, binding_id=binding, address=address),)
+        return ({"name": name, "binding_id": binding, "address": address},)
 
     class ReplyCompletion:
         def activity(self, reader: MessageReader, source: str) -> AbstractContextManager[None]:
-            route = (input_origin(reader, source, through_seq=reader.head())
+            route = (input_origin(reader, source, through_seq=reader.head(), check_origin=origin_check)
                      if source in config.sources and reader.attributes.visibility != "internal" else None)
             return nullcontext() if route is None else ctx.require(DELIVERY).open(ctx).activity(*route)
 
@@ -175,7 +198,9 @@ async def apply(ctx: Context, config: Config) -> None:
                     yield
                 finally:
                     for message in reader.snapshot(after_seq=head):
-                        if message.source != source or origin(reader, message, config.sources) is None:
+                        if message.source != source or origin(
+                            reader, message, config.sources, check_origin=origin_check,
+                        ) is None:
                             continue
                         try:
                             sinks = select(reader, message) if delivery.selection(message.message_id) is None else ()

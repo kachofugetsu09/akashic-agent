@@ -54,7 +54,7 @@ def storage(workspace):
 async def test_push_keeps_artifacts_and_original_sender_after_crash_without_resending(tmp_path, monkeypatch, confirmed):
     source = tmp_path / "plugins"
     sources(source)
-    for name in ("tools", "message_push"):
+    for name in ("content", "tools", "message_push"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     sender = source / "test_sender/plugin.py"

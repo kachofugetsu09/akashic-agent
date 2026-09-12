@@ -18,13 +18,23 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.control.frame_book import CONTROL_FRAMES, FrameBook, FrameClaim, FrameRouteReleased
 from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
-from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
-from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durable_call_key
-from plugins.tools.plugin import TOOLS, ToolRef
-from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
-from agent.plugin_contracts import Message
+from plugins.tools.api import durable_call_key
+from agent.plugin_contracts import ContentPart, Message
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
-from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult, freeze_json
+from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult as ToolMessageResult, freeze_json
+
+from .boundary import (
+    FINAL_OUTPUT_DELIVERY,
+    TOOLS,
+    TURN_PROJECTION,
+    BoundTool,
+    CallSource,
+    FinalOutputWaiter,
+    ProjectedTurn,
+    ToolRef,
+    ToolResult,
+    TurnProjection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,15 +78,15 @@ class RestartTool(BoundTool):
         self,
         arguments: Mapping[str, object],
         source: CallSource | None = None,
-    ) -> Mapping[str, object]:
+    ) -> Mapping[str, object] | str:
         if source is None:
-            raise ValueError("agent_restart 必须引用当前 Turn 的 ToolCall")
+            return "agent_restart 必须引用当前 Turn 的 ToolCall"
         self._require_supervised()
         if set(arguments) != {"reason"}:
-            raise ValueError("agent_restart 参数只能包含 reason")
+            return "agent_restart 参数只能包含 reason"
         reason = arguments.get("reason")
         if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 300:
-            raise ValueError("reason 长度必须为 1..300")
+            return "reason 长度必须为 1..300"
         call_message = next(
             (message for message in source.messages if message.message_id == source.call_ref.message_id),
             None,
@@ -119,7 +129,7 @@ class RestartTool(BoundTool):
                 self._claim_session_id = None
         return current.arguments
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResult:
         self._require_supervised()
         pending = self._prepared
         if pending is None:
@@ -129,7 +139,7 @@ class RestartTool(BoundTool):
         final_arguments = freeze_json(arguments)
         if not isinstance(final_arguments, Mapping) or final_arguments != pending.arguments:
             raise RestartRejectedError("agent_restart 参数不属于当前 ToolCall")
-        return Result("success", (ContentPart("text", "已安排在本轮最终回复送达后重启。"),))
+        return ToolResult("success", (ContentPart("text", "已安排在本轮最终回复送达后重启。"),))
 
     def finalize(self, catalog: MessageCatalog) -> None:
         """Keep a pre-claim only when the durable ToolResult really succeeded."""
@@ -141,7 +151,7 @@ class RestartTool(BoundTool):
         succeeded = False
         if session_id is not None and pending is not None:
             succeeded = any(
-                isinstance(message.body, ToolResult)
+                isinstance(message.body, ToolMessageResult)
                 and message.body.call_ref == pending.call_ref
                 and message.body.outcome == "success"
                 for message in catalog.reader(session_id).snapshot()
@@ -151,7 +161,7 @@ class RestartTool(BoundTool):
         self._claim = None
         self._claim_session_id = None
 
-    async def query(self, key: str) -> Result | None:
+    async def query(self, key: str) -> ToolResult | None:
         return None
 
 
@@ -228,7 +238,7 @@ class RestartWatcher:
                             for message in messages:
                                 if self._active is not None:
                                     return
-                                if not isinstance(message.body, ToolResult) or message.body.outcome != "success":
+                                if not isinstance(message.body, ToolMessageResult) or message.body.outcome != "success":
                                     continue
                                 try:
                                     request = await self._request(reader, message)
@@ -265,7 +275,7 @@ class RestartWatcher:
 
     async def _request(self, reader: MessageReader, message: Message) -> RestartRequest | None:
         result = message.body
-        if not isinstance(result, ToolResult):
+        if not isinstance(result, ToolMessageResult):
             return None
         call_message = reader.get(result.call_ref.message_id)
         if call_message is None or not isinstance(call_message.body, Output):
@@ -339,7 +349,7 @@ class RestartWatcher:
             raise
 
 
-def _find_turn(reader: MessageReader, projection: TurnProjection, request: RestartRequest) -> Turn | None:
+def _find_turn(reader: MessageReader, projection: TurnProjection, request: RestartRequest) -> ProjectedTurn | None:
     """从现有 TurnProjection 找出精确 CallRef 所属 Turn。"""
     call_message = reader.get(request.call_ref.message_id)
     if call_message is None or call_message.source != request.source or not isinstance(call_message.body, Output):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Mapping
 from contextlib import AbstractContextManager, AsyncExitStack
 from typing import cast
 
@@ -27,14 +27,28 @@ class Deliveries:
         self._open_sender = open_sender
         self._task_key = task_key
 
-    def prepare(self, reader: MessageReader, message: Message, sinks: tuple[Sink, ...], *, passive: bool = False) -> Selection:
+    def prepare(
+        self,
+        reader: MessageReader,
+        message: Message,
+        sinks: tuple[Sink | Mapping[str, object], ...],
+        *,
+        passive: bool = False,
+    ) -> Selection:
         return self._records.prepare(reader, message, sinks, passive=passive)
 
     def publish(self, writer: MessageWriter, message_id: str, body: Body,
-                sinks: tuple[Sink, ...], *, passive: bool = False) -> tuple[Message, Selection]:
+                sinks: tuple[Sink | Mapping[str, object], ...], *, passive: bool = False) -> tuple[Message, Selection]:
         return self._records.publish(writer, message_id, body, sinks, passive=passive)
 
-    def consume(self, reader: MessageReader, message: Message, sinks: tuple[Sink, ...] | None, *, passive: bool = False) -> Selection | None:
+    def consume(
+        self,
+        reader: MessageReader,
+        message: Message,
+        sinks: tuple[Sink | Mapping[str, object], ...] | None,
+        *,
+        passive: bool = False,
+    ) -> Selection | None:
         selected = self._records.consume(reader, message, sinks, passive=passive)
         return selected if selected is not None and selected.recovery_owner == self._records.recovery_owner else None
 
@@ -44,7 +58,7 @@ class Deliveries:
     def selection(self, message_id: str) -> Selection | None:
         return self._records.selection(message_id)
 
-    def add(self, message_id: str, sink: Sink) -> None:
+    def add(self, message_id: str, sink: Sink | Mapping[str, object]) -> None:
         self._records.add(message_id, sink)
 
     def destination(self, message_id: str, sink: str) -> Sink:
