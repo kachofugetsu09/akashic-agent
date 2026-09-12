@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 from starlette.websockets import WebSocketDisconnect
 
+from agent.plugin_composition import CompositionError
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
 from agent.plugins.dashboard_host import (
     DashboardBinding,
@@ -32,6 +33,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
     RuntimeSnapshotStore,
+    lease_runtime_snapshot,
 )
 from agent.plugins.watcher import PluginWatcher
 from agent.skills import SkillsLoader
@@ -1327,10 +1329,20 @@ async def test_dashboard_routes_follow_snapshot_generation(
     )
 
     def write_dashboard(version: str) -> None:
+        (plugin_dir / "plugin.py").write_text(_v3_source(
+            "snapshot_dashboard",
+            exports="from agent.plugin_composition import ServiceKey\ndashboard_module = 'dashboard.py'\nweb_module = 'web_module.js'\n",
+            body=f"    await ctx.provide(ServiceKey('fixture.dashboard-value'), '{version}')\n",
+        ))
         (plugin_dir / "dashboard.py").write_text(
+            "from agent.plugin_composition import ServiceKey\n"
+            "VALUE = ServiceKey('fixture.dashboard-value')\n"
+            "inject = (VALUE,)\n"
             "def register(app, context):\n"
+            "    @app.get('/api/dashboard/undeclared')\n"
+            "    async def undeclared(): return context.require(ServiceKey('core.message-writers'))\n"
             "    @app.get('/api/dashboard/snapshot-version')\n"
-            f"    def version(): return {{'version': '{version}'}}\n"
+            "    async def version(): return {'version': context.require(VALUE)}\n"
             "    class Closeable:\n"
             "        def close(self):\n"
             f"            (context.data_root / 'dashboard-{version}-closed').write_text('closed')\n"
@@ -1407,8 +1419,16 @@ async def test_dashboard_routes_follow_snapshot_generation(
         "/api/dashboard/snapshot-version",
         headers=new_headers,
     ).json() == {"version": "release-b"}
+    with pytest.raises(CompositionError, match="未声明能力"):
+        client.get("/api/dashboard/undeclared", headers=new_headers)
     old_binding = old_snapshot.dashboard_bindings[0]
-    assert TestClient(old_binding.app).get("/api/dashboard/snapshot-version").json() == {"version": "release-a"}  # type: ignore[attr-defined]
+    with pytest.raises(CompositionError, match="实际请求租约"):
+        TestClient(old_binding.app).get("/api/dashboard/snapshot-version")
+    import httpx
+    async with lease_runtime_snapshot(manager.snapshot_store):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=old_binding.app), base_url="http://fixture") as old_client:
+            with pytest.raises(CompositionError, match="当前请求 generation"):
+                await old_client.get("/api/dashboard/snapshot-version")
     await manager.snapshot_store.retry_drains()
     assert (old_generation.data_dir / "dashboard-release-a-closed").exists()
     assert old_generation.scope.closed

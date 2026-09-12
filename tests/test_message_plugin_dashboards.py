@@ -219,7 +219,7 @@ async def test_wake_dashboard_matches_target_delivery_and_compiled_module(tmp_pa
             detail="dashboard fixture",
             completed_at=now,
         )
-        direct_receipt = ctx.require(DELIVERY_READ).status(original.notification_id, original.sink.name)
+        direct_receipt = ctx.require(DELIVERY_READ).status(original.notification_id, original.sink["name"])
         assert direct_receipt is not None
         target_message = log.reader(original.target.session_id).get(original.notification_id)
         assert target_message is not None

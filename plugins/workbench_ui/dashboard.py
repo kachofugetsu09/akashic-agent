@@ -8,18 +8,12 @@ from fastapi import FastAPI, HTTPException, Query
 
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugins.snapshot import get_current_runtime_snapshot
 from infra.channels.message_view import session_row
 from agent.plugin_composition.messages import InvalidPage, MessageCatalog
 from agent.plugin_contracts import body_to_dict
 
 
-def _catalog() -> MessageCatalog:
-    snapshot = get_current_runtime_snapshot()
-    if snapshot is None or snapshot.composition_root is None:
-        raise RuntimeError("工作台请求缺少实际插件 snapshot")
-    return snapshot.composition_root.context.require(MESSAGE_CATALOG)
-
+inject = (MESSAGE_CATALOG,)
 
 def register(app: FastAPI, context: DashboardContext) -> None:
     """注册只读页面；请求 middleware 持有实际 generation，注册不打开运行数据。"""
@@ -30,7 +24,7 @@ def register(app: FastAPI, context: DashboardContext) -> None:
         limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, object]:
         try:
-            page = _catalog().sessions(prefix=prefix, visibility=visibility, limit=limit,
+            page = context.require(MESSAGE_CATALOG).sessions(prefix=prefix, visibility=visibility, limit=limit,
                 after=None if cursor is None else (cursor[0], cursor[1]))
         except InvalidPage as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
@@ -44,7 +38,7 @@ def register(app: FastAPI, context: DashboardContext) -> None:
         limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, object]:
         try:
-            page = _catalog().reader(session_id).read_tail(
+            page = context.require(MESSAGE_CATALOG).reader(session_id).read_tail(
                 before_seq=before_seq, through_seq=through_seq, limit=limit,
             )
         except KeyError as error:

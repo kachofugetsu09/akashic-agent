@@ -30,6 +30,7 @@ from starlette.routing import Match, WebSocketRoute
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.model import (
+    CompositionError, ServiceKey,
     resolve_declared_workspace_file,
     resolve_declared_workspace_root,
 )
@@ -40,6 +41,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotStore,
     bind_runtime_snapshot,
+    get_current_runtime_snapshot,
     reset_runtime_snapshot,
 )
 
@@ -262,11 +264,30 @@ class PluginDashboardHost:
             enabled = getattr(module, "plugin_enabled", None)
             if enabled is not None and not callable(enabled):
                 raise RuntimeError("v3 dashboard plugin_enabled 必须是可调用对象")
+            dependencies = getattr(module, "inject", ())
+            if (not isinstance(dependencies, tuple)
+                    or any(not isinstance(key, ServiceKey) for key in dependencies)
+                    or len(set(dependencies)) != len(dependencies)):
+                raise ValueError("Dashboard inject 必须是不重复的 ServiceKey tuple")
+
+            def resolve(key: ServiceKey[object]) -> object:
+                """只在路由实际租约内解析声明能力，旧 Dashboard 不能借新 generation。"""
+                if key not in dependencies:
+                    raise CompositionError("SERVICE_UNDECLARED", f"Dashboard 未声明能力: {key.name}")
+                snapshot = get_current_runtime_snapshot()
+                if snapshot is None or snapshot.composition_root is None:
+                    raise CompositionError("DASHBOARD_SCOPE_MISSING", "Dashboard 能力需要实际请求租约")
+                current = snapshot.generations.get(generation.plugin_id)
+                if current is None or current.generation_id != generation.generation_id:
+                    raise CompositionError("DASHBOARD_GENERATION_MISMATCH", "Dashboard 不属于当前请求 generation")
+                return snapshot.composition_root.context.require(key)
+
             dashboard_context = DashboardContext(
                 plugin_id=generation.plugin_id,
                 plugin_dir=module_path.parent,
                 data_root=data_root,
                 validation=validation,
+                _resolve=resolve,
                 _workspace_roots=tuple(
                     (name, resolve_declared_workspace_root(workspace, name))
                     for name in workspace_roots

@@ -387,3 +387,24 @@ Context 提供已有摘要校验、连续来源范围和已结算前缀算法；
 Markdown 只读材料组合不要求安装 Compaction；真正遇到需要学习的摘要时必须取得
 原摘要读取能力，缺失明确失败，不跳过或伪造来源。Akasha 使用公开只读 embedding
 接口与实际 Message 编码，重建写入器的权限归属继续单独处理。
+
+
+### 9.18 Dashboard 的请求能力入口
+
+Dashboard 模块通过自己的 inject 声明只读查询能力；async 路由使用 DashboardContext.require
+在实际请求租约中取得该能力。Core 不保存业务 key 清单。未声明、没有请求作用域或
+请求 generation 与页面不符均明确拒绝。页面不能取得宿主 Root、任意 SQL 或 writer。
+Akasha、Wake 与工作台使用这一入口；真实 HTTP、持久事实和编译页面内容共同验证。
+
+### 9.19 参考系统与有意的取舍
+
+| 参考 | 采用的机制 | Akashic 的取舍 |
+|---|---|---|
+| 本地 deepseek-harness 的 docs/architecture.md | Core 上安装普通能力插件，profile/bundle 明确组合，可撤销注册随卸载释放 | 分发与组合不能成为 Core 内另一份业务装配表；每个包仍走正式安装链 |
+| [JupyterLab 扩展](https://jupyterlab.readthedocs.io/en/stable/extension/extension_dev.html) | 提供/需要能力决定激活顺序，缺失必需能力明确失败，默认产品也由扩展组成 | 不要求提供者与消费者 import 同一业务 token 包；本地结构与有版本的名字组成 ABI，避免对象身份与包去重要求 |
+| [Backstage 扩展点](https://backstage.io/docs/backend-system/architecture/extension-points/) | 插件拥有自己的小扩展面，演进时使用新名称，失败归属具体 owner | 不建立 Core 业务接口目录；普通插件可声明局部输入，而不是共享所有业务 Protocol |
+| [VS Code 贡献点](https://code.visualstudio.com/api/references/contribution-points) | 包元数据声明 UI 与命令贡献，由宿主接纳 | 保留通用接纳与生命周期；业务展示和业务操作继续由外部插件拥有 |
+
+这些系统都需要协作合同。这里去中心化的是业务语义的所有权与发布路径，而不是消除
+可检验的协作语义。允许依赖公开能力，不允许通过 Python class 身份、兄弟源码或
+宿主私有对象偷渡实现依赖。真正的成功还必须由独立提供者替换和 checkout 缺席验收证明。
