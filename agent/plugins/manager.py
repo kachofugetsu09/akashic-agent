@@ -2563,6 +2563,7 @@ class PluginManager:
                 provisional,
                 before_open=before_open,
                 after_open=open_participants,
+                schedule_previous_drain=False,
             )
             if (
                 channel_state is not None
@@ -2573,6 +2574,8 @@ class PluginManager:
                 # to the Bus.  Recover them only after the new exact catalog
                 # is public and its admissions are open.
                 await self._channel_generation_host.recover_durable_inbounds()
+            if provisional.previous is not None:
+                self._snapshot_store.schedule_retired_drain(provisional.previous)
         except BaseException as publication_error:
             rollback_errors: list[BaseException] = []
             channel_cleanup_failed = False
@@ -2610,19 +2613,23 @@ class PluginManager:
                 except BaseException as caught:
                     rollback_errors.append(caught)
                     endpoint_restore_failed = True
+            published_rollback = self._snapshot_store.current is provisional.candidate
+            if published_rollback:
+                # finalize_provisional has already retired the old snapshot;
+                # restore its committed state before start_formal validates the
+                # old channel catalog.
+                await self._snapshot_store.rollback_published(
+                    provisional,
+                    keep_candidate_latest=promote_latest,
+                    reopen_previous=(reopen_previous_on_failure and not rollback_errors),
+                )
             if channel_state is not None and not channel_cleanup_failed:
                 try:
                     await self._restore_old_channel_publication(channel_state)
                 except BaseException as caught:
                     rollback_errors.append(caught)
                     channel_cleanup_failed = True
-            if self._snapshot_store.current is provisional.candidate:
-                await self._snapshot_store.rollback_published(
-                    provisional,
-                    keep_candidate_latest=promote_latest,
-                    reopen_previous=(reopen_previous_on_failure and not rollback_errors),
-                )
-            else:
+            if not published_rollback:
                 await self._snapshot_store.rollback_provisional(
                     provisional,
                     keep_candidate_latest=promote_latest,
@@ -6577,12 +6584,30 @@ class PluginManager:
         snapshot: RuntimeSnapshot,
     ) -> None:
         transaction = self._snapshot_store.begin_publish(snapshot)
-        _ = await self._commit_snapshot_with_publication_participants(
-            transaction,
-            old_commands=(),
-            new_commands=(),
-            promote_latest=False,
+        has_channel_participant = self._channel_binding_changed(
+            transaction.previous,
+            transaction.candidate,
         )
+        try:
+            _ = await self._commit_snapshot_with_publication_participants(
+                transaction,
+                old_commands=(),
+                new_commands=(),
+                promote_latest=False,
+            )
+        except BaseException:
+            # A post-open participant failure may have restored the old stable
+            # pointer while retaining this transaction for retry.  Startup has
+            # no retry owner for a channel publication, so close that exact
+            # transaction before bubbling the original failure.  A plain
+            # composition prepare failure deliberately keeps its pending
+            # transaction for the existing recovery path.
+            if (
+                has_channel_participant
+                and self._snapshot_store.pending_transaction is transaction
+            ):
+                await self._snapshot_store.abort(transaction)
+            raise
 
     def _collect_candidate_contributions(
         self,

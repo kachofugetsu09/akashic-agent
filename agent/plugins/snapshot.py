@@ -1033,6 +1033,7 @@ class RuntimeSnapshotStore:
         *,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
+        schedule_previous_drain: bool = True,
     ) -> None:
         """Open a provisional stable and retire its rollback snapshot."""
 
@@ -1059,10 +1060,17 @@ class RuntimeSnapshotStore:
             previous.state = "retired"
             previous.accepting_leases = False
         self._provisional = None
-        if previous is not None:
+        if previous is not None and schedule_previous_drain:
             self._schedule_drain(previous)
         async with self._condition:
             self._condition.notify_all()
+
+    def schedule_retired_drain(self, snapshot: RuntimeSnapshot) -> None:
+        """Schedule a retired snapshot only after post-publication work succeeds."""
+
+        if self._current is snapshot or snapshot.state != "retired":
+            raise RuntimeError("只能排空已退役且不再为 stable 的 RuntimeSnapshot")
+        self._schedule_drain(snapshot)
 
     async def rollback_provisional(
         self,

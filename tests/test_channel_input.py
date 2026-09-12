@@ -650,6 +650,51 @@ async def test_same_host_replacement_recovers_reserve_only_row_without_manual_re
 
 
 @pytest.mark.asyncio
+async def test_same_host_replacement_recovery_failure_restores_old_binding(tmp_path):
+    """A post-open recovery error rolls the stable channel owner back."""
+
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+            recover=False,
+        ) as (_, host, custody, _, _, adapter):
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            assert await durable.reserve(mobile_raw())
+            await durable.defer("handoff-1")
+            original = host.current_snapshot
+            recover = host.channel_generation_host.recover_durable_inbounds
+            calls = 0
+
+            async def fail_once():
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise KeyError("temporary recovery failure")
+                return await recover()
+
+            host.channel_generation_host.recover_durable_inbounds = fail_once
+            replacement = await host._compile_topology_snapshot(
+                dict(host._active_generations)
+            )
+            with pytest.raises(KeyError, match="temporary recovery failure"):
+                await host._publish_committed_snapshot(replacement)
+            assert host.current_snapshot is original
+            restored_key = (original.snapshot_id, "akashic")
+            assert host.channel_generation_host._bindings[restored_key].admission_open
+            assert calls == 2
+            assert not manager.inbound_store.list_inbound_handoffs()
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
 async def test_old_port_cannot_settle_handoff_reclaimed_by_next_generation(tmp_path):
     """同一 Host 的新 binding 接管后，旧 port 不能删除同一 handoff。"""
 
