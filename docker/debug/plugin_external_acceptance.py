@@ -24,6 +24,7 @@ import sys
 import tarfile
 import tempfile
 from typing import Any
+from uuid import uuid4
 
 
 _CORE_PACKAGES = frozenset(
@@ -1536,6 +1537,7 @@ async def _exercise_business_composition(
     installed_by_id: dict[str, dict[str, Any]] = {}
     replacement_evidence: dict[str, Any] | None = None
     initial_snapshot: Any = None
+    source_restore: tuple[Path, Path] | None = None
 
     async def run_call(
         *,
@@ -1723,7 +1725,11 @@ async def _exercise_business_composition(
             if replacement.get("remove_original_source", False):
                 if original_provider_source.is_symlink() or not original_provider_source.is_dir():
                     raise ValueError("replacement 原 provider source 不是可删除的 checkout")
-                shutil.rmtree(original_provider_source)
+                backup = original_provider_source.with_name(
+                    original_provider_source.name + ".before-acceptance-" + uuid4().hex
+                )
+                original_provider_source.rename(backup)
+                source_restore = (original_provider_source, backup)
             old_provider_generation_id: str
             old_consumer_generation_id: str
             old_consumer_call: dict[str, Any]
@@ -1833,7 +1839,7 @@ async def _exercise_business_composition(
                     _tree_sha256(core_root) == core_digest_before
                 )
             else:
-                replacement_evidence["checks"]["core_artifact_unchanged"] = True
+                replacement_evidence["core_artifact"] = "not_supplied"
 
     except Exception as error:
         reports.append(
@@ -1848,8 +1854,15 @@ async def _exercise_business_composition(
         try:
             await manager.terminate_all()
         finally:
-            log.close()
-            await bus.aclose()
+            try:
+                log.close()
+                await bus.aclose()
+            finally:
+                if source_restore is not None:
+                    original, backup = source_restore
+                    if original.exists():
+                        raise RuntimeError(f"原源码路径被重新占用，备份保留在 {backup}")
+                    backup.rename(original)
 
     for row in reports:
         row.pop("artifact", None)
@@ -2080,9 +2093,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.workspace is None or args.plugins_home is None or args.core_root is None:
             temp_root = Path(tempfile.mkdtemp(prefix="akashic-external-acceptance-"))
-        root = temp_root
-        workspace = args.workspace or root / "workspace"
-        plugins_home = args.plugins_home or root / "plugins-home"
+        workspace = args.workspace
+        plugins_home = args.plugins_home
+        if workspace is None or plugins_home is None:
+            assert temp_root is not None
+            workspace = workspace or temp_root / "workspace"
+            plugins_home = plugins_home or temp_root / "plugins-home"
         if workspace.resolve(strict=False) == plugins_home.resolve(strict=False):
             raise ValueError("workspace 和 plugins-home 必须是不同目录")
         core_root = args.core_root
@@ -2091,6 +2107,7 @@ def main(argv: list[str] | None = None) -> int:
             if core_tar is None and distribution is not None:
                 core_tar = Path(distribution["_root"]) / str(distribution["core"]["file"])
             if core_tar is not None:
+                assert temp_root is not None
                 core_root = _extract_core_tar(core_tar, temp_root, repo_root)
         if core_root is not None:
             bootstrap_temp_root = Path(

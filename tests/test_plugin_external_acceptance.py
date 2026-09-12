@@ -514,4 +514,56 @@ async def test_business_composition_writes_reads_and_replaces_provider_from_new_
     assert replacement["checks"]["replacement_module_from_new_artifact"] is True
     assert replacement["checks"]["replacement_module_not_old_artifact"] is True
     assert replacement["checks"]["original_source_not_required"] is True
-    assert not provider_old.exists()
+    assert provider_old.exists()
+    assert not list(provider_old.parent.glob(provider_old.name + ".before-acceptance-*"))
+
+
+@pytest.mark.asyncio
+async def test_legal_subsets_run_separately_and_accept_differently_named_provider(tmp_path: Path):
+    """两个独立安装根分别运行，另一家 provider 不需要原包名字或源码。"""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    content = _copy_content_source(sources / "content")
+    roundtrip = _write_plugin_source(
+        sources / "message-roundtrip", name="message_roundtrip", version="1.0.0",
+        module=_MESSAGE_ROUNDTRIP_PLUGIN,
+    )
+    first = await _exercise_business_composition(
+        jobs=[
+            {"label": "content", "source": str(content)},
+            {"label": "message_roundtrip", "source": str(roundtrip),
+             "capability_spec": _roundtrip_spec(message_id="subset-one", text="standalone")},
+        ],
+        repo_root=Path(__file__).resolve().parents[1], marketplace="acceptance",
+        workspace=tmp_path / "first-workspace", plugins_home=tmp_path / "first-home",
+    )
+    assert first["status"] == "passed", first
+    assert {row["plugin_id"] for row in first["reports"]} == {
+        "content@acceptance", "message_roundtrip@acceptance",
+    }
+
+    alternate = _write_plugin_source(
+        sources / "alternate", name="alternate", version="1.0.0",
+        module=_provider_plugin("independent", "1.0.0").replace('name = "provider"', 'name = "alternate"'),
+    )
+    consumer = _write_plugin_source(
+        sources / "consumer", name="consumer", version="1.0.0", module=_CONSUMER_PLUGIN,
+    )
+    second = await _exercise_business_composition(
+        jobs=[
+            {"label": "content", "source": str(content)},
+            {"label": "alternate", "source": str(alternate)},
+            {"label": "consumer", "source": str(consumer), "capability_spec": _roundtrip_spec(
+                message_id="subset-two", text="same-consumer", provider="independent",
+                service="acceptance.consumer.roundtrip.v1",
+            )},
+        ],
+        repo_root=Path(__file__).resolve().parents[1], marketplace="acceptance",
+        workspace=tmp_path / "second-workspace", plugins_home=tmp_path / "second-home",
+    )
+    assert second["status"] == "passed", second
+    assert {row["plugin_id"] for row in second["reports"]} == {
+        "content@acceptance", "alternate@acceptance", "consumer@acceptance",
+    }
+    call = next(row["capability_call"] for row in second["reports"] if row["plugin_id"] == "consumer@acceptance")
+    assert call["message_readback"]["text_parts"] == ("independent:same-consumer",)
