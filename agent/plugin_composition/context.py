@@ -151,6 +151,11 @@ class Context:
         reject_executor_context_access()
         return self._root.instance_token
 
+    def _declared_dependencies(self) -> tuple[ServiceKey[object], ...]:
+        """供 Core 请求边界冻结声明 Fiber 的能力集合。"""
+        reject_executor_context_access()
+        return self._fiber.dependencies
+
     def _plugin_module(self) -> ModuleType | None:
         """Return the exact module mounted on this Fiber when one exists."""
 

@@ -5,12 +5,14 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
+from contextlib import AbstractAsyncContextManager
+from pathlib import Path
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Literal, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias
 
 from session.message import Message
 from session.artifacts import (
@@ -19,6 +21,7 @@ from session.artifacts import (
 )
 
 from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
+from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.model import CompositionError, IncidentView, ServiceKey
 
 
@@ -725,6 +728,12 @@ class ProviderClientFactory(Protocol):
     async def aclose(self) -> None: ...
 
 
+class ChannelTaskSpawner(Protocol):
+    """仅在 adapter.start 内登记所属 Fiber 的后台任务。"""
+
+    async def __call__[T](self, coroutine: Coroutine[Any, Any, T], *, name: str) -> asyncio.Task[T]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ChannelFactoryContext:
     snapshot_id: str
@@ -739,6 +748,9 @@ class ChannelFactoryContext:
     attachment_read: ChannelAttachmentReadPort | None = None
     control: ChannelControlPort | None = None
     turn_stream: TurnStreamPort | None = None
+    data_root: Path | None = None
+    open_scope: Callable[[], AbstractAsyncContextManager[RequestContext]] | None = None
+    spawn_owned: ChannelTaskSpawner | None = None
 
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")
@@ -943,7 +955,7 @@ class ChannelDefinition:
             raise ValueError("inbound channel 必须声明 inbound_identity")
         if not has_inbound and self.inbound_identity is not None:
             raise ValueError("非 inbound channel 不得声明 inbound_identity")
-        object.__setattr__(self, "credential_paths", _credential_paths(self.credential_paths))
+        object.__setattr__(self, "credential_paths", _credential_paths(self.credential_paths, allow_empty=True))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1072,7 +1084,7 @@ class ChannelDescriptor:
             "credential_paths",
             _credential_paths(
                 self.credential_paths,
-                allow_empty=self.owner == "core",
+                allow_empty=True,
             ),
         )
 
@@ -1121,6 +1133,7 @@ class ChannelRegistrySnapshot:
     factories: tuple[ChannelFactoryProvenance, ...]
     identity: str
     root_instance_token: object = field(repr=False, compare=False)
+    _contexts: Mapping[str, tuple[Context, object]] = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         descriptors = tuple(self.descriptors)
@@ -1142,6 +1155,16 @@ class ChannelRegistrySnapshot:
             raise ValueError("channel registry identity 与内容不匹配")
         object.__setattr__(self, "descriptors", descriptors)
         object.__setattr__(self, "factories", factories)
+        contexts = dict(self._contexts)
+        if contexts.keys() != {item.name for item in descriptors if item.owner != "core"}:
+            raise ValueError("每个插件 channel 必须有精确声明 Context")
+        if any(
+            not isinstance(value, tuple) or len(value) != 2
+            or not isinstance(value[0], Context) or value[1] is None
+            for value in contexts.values()
+        ):
+            raise TypeError("channel Context 必须带 activation token")
+        object.__setattr__(self, "_contexts", MappingProxyType(contexts))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1202,6 +1225,7 @@ class CommittedChannelCatalog:
             factories=factories,
             identity=_registry_identity(descriptors, factories),
             root_instance_token=root_token,
+            _contexts={} if plugin_registry is None else plugin_registry._contexts,
         )
         object.__setattr__(self, "core_definitions", definitions)
         object.__setattr__(self, "root_instance_token", root_token)
@@ -1240,6 +1264,7 @@ class _ChannelRegistration:
     activation_token: object
     generation_id: str
     incident_reporter: Callable[[str, str], IncidentView]
+    context: Context
     health: HealthHandle | None = None
 
 
@@ -1272,6 +1297,7 @@ class _ChannelDeclarations:
                 activation_token,
                 ctx.generation_id,
                 ctx.report_incident,
+                ctx,
             )
             return cleanup
 
@@ -1322,6 +1348,7 @@ class _ChannelDeclarations:
             factories=factories,
             identity=_registry_identity(descriptors, factories),
             root_instance_token=root_instance_token,
+            _contexts={item.definition.name: (item.context, item.activation_token) for item in registrations},
         )
         self._frozen = snapshot
         return snapshot
@@ -1334,6 +1361,7 @@ class _ChannelDeclarations:
         activation_token: object,
         generation_id: str,
         incident_reporter: Callable[[str, str], IncidentView],
+        context: Context,
     ) -> tuple[_ChannelRegistration, Callable[[], None]]:
         if self._frozen is not None:
             raise CompositionError(
@@ -1361,6 +1389,7 @@ class _ChannelDeclarations:
             activation_token=activation_token,
             generation_id=generation_id,
             incident_reporter=incident_reporter,
+            context=context,
         )
         self._registrations[definition.name] = registration
 
