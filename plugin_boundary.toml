@@ -149,10 +149,6 @@ note = "统一 embedding space"
 role = "seam"
 note = "模型与 connection 目录"
 
-[capabilities."models.settings.v1"]
-role = "seam"
-note = "原子修改模型设置"
-
 [capabilities."models.drivers.v1"]
 role = "seam"
 note = "Provider 注册模型 driver；已有多个可替换实现"
