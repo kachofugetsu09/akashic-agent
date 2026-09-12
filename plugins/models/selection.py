@@ -1,8 +1,20 @@
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import Protocol, cast
 
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.models import ChatModelSelection
 from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message
+
+
+class ModelSelection(Protocol):
+    """模型选择消息的结构校验与读取能力。"""
+
+    def check(self, part: ContentPart) -> ContentReferences: ...
+
+    def read(self, messages: Sequence[Message]) -> ChatModelSelection | None: ...
+
+
+MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
 
 
 def check_selection(part: ContentPart) -> ContentReferences:
@@ -28,3 +40,11 @@ def selection(messages: Sequence[Message]) -> ChatModelSelection | None:
                     value = cast(Mapping[str, str | None], part.value)
                     return ChatModelSelection(value["model_id"], value["reasoning_effort"])
     return None
+
+
+class SelectionOwner:
+    def check(self, part: ContentPart) -> ContentReferences:
+        return check_selection(part)
+
+    def read(self, messages: Sequence[Message]) -> ChatModelSelection | None:
+        return selection(messages)

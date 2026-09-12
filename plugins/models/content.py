@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 import json
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from agent.media import (
     MAX_IMAGE_DATA_URI_TOTAL_BYTES,
@@ -12,6 +12,7 @@ from agent.media import (
     encode_image_bytes,
     validate_image_attachment_budget,
 )
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
@@ -19,6 +20,29 @@ from agent.plugin_composition.channels import (
 )
 from agent.plugin_contracts import ContentPart, Control, Message, ToolCall, freeze_json
 from agent.plugin_contracts import json_value
+
+
+class ModelContent(Protocol):
+    """模型请求正文与附件的只读投影能力。"""
+
+    async def load_artifacts(
+        self,
+        reader: ChannelAttachmentReadPort,
+        refs: Sequence[AttachmentRef],
+        *,
+        accepts_images: bool,
+    ) -> Mapping[str, tuple[Mapping[str, Any], ...]]: ...
+
+    def render(
+        self,
+        part: ContentPart,
+        *,
+        artifacts: Mapping[str, tuple[Mapping[str, Any], ...]],
+        read_message: Callable[[str], Message | None] | None = None,
+    ) -> tuple[Mapping[str, Any], ...]: ...
+
+
+MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v1")
 
 
 async def load_artifacts(
@@ -92,3 +116,23 @@ def render_content(
             ),
         },
     )
+
+
+class ContentOwner:
+    async def load_artifacts(
+        self,
+        reader: ChannelAttachmentReadPort,
+        refs: Sequence[AttachmentRef],
+        *,
+        accepts_images: bool,
+    ) -> Mapping[str, tuple[Mapping[str, Any], ...]]:
+        return await load_artifacts(reader, refs, accepts_images=accepts_images)
+
+    def render(
+        self,
+        part: ContentPart,
+        *,
+        artifacts: Mapping[str, tuple[Mapping[str, Any], ...]],
+        read_message: Callable[[str], Message | None] | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        return render_content(part, artifacts=artifacts, read_message=read_message)
