@@ -14,7 +14,7 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.messages import MessageReader, MessageWriter
 from agent.plugin_contracts import Body, ContentPart, ContentReferences, Message
-from agent.restart import ExternalRootPermit
+from agent.plugin_composition.tasks import ExternalRootPermit
 
 
 SinkInput = Mapping[str, object]

@@ -6,7 +6,6 @@ from agent.plugin_composition.models import EmbeddingResult, EmbeddingSpaceDescr
 
 from plugins.akasha.domain.model import MemoryConfig
 from plugins.akasha.recall_tool import RecallTool
-from plugins.tools.api import InvalidArguments
 from session.message import Output
 from tests.test_akasha_message_queries import memory_runtime
 
@@ -73,8 +72,7 @@ async def test_recall_rejects_invalid_user_arguments_before_query(tmp_path):
     async with memory_runtime(tmp_path) as (runtime, consumer, log, records, calls, write):
         recall = target(tmp_path, runtime)
         for arguments in ({"query": "  "}, {"query": "q", "limit": 0}, {"query": "q", "source": {}}):
-            with pytest.raises(InvalidArguments):
-                await recall.prepare(arguments)
+            assert isinstance(await recall.prepare(arguments), str)
         assert calls == []
 
 

@@ -133,14 +133,14 @@ async def test_archived_absolute_program_import_uses_current_run_reply_boundary(
     tmp_path,
 ):
     """旧归档程序的绝对 import 会进入当前兼容边界。"""
-    from plugins.conversation.program import run_reply
+    from plugins.reply_program.program import run_reply
 
     sources = tmp_path / "plugins"
     plugin = sources / "legacy_program"
     plugin.mkdir(parents=True)
     (plugin / "plugin.py").write_text("""
 from agent.plugin_composition import ServiceKey
-from plugins.conversation.program import run_reply
+from plugins.reply_program.program import run_reply
 api_version = 3
 name = "legacy_program"
 version = "1.0.0"

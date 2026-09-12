@@ -12,7 +12,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from plugins.delivery.api import Sink
 from plugins.delivery_policy.plugin import input_origin
-from plugins.tools.api import CallSource, InvalidArguments, Result
+from plugins.tools.api import CallSource, Result
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
 
@@ -53,14 +53,14 @@ class InstallPlugin:
         self._ctx = ctx
         self._senders = senders
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """固定实际发起消息的 Session 与发送者，不读取后续输入改变通知地址。"""
         try:
             install = InstallInput.model_validate(json_value(arguments))
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         if source is None or not source.messages:
-            raise InvalidArguments("插件更新需要实际发起消息")
+            return '插件更新需要实际发起消息'
         message = source.messages[-1]
         reader = self._ctx.require(MESSAGE_CATALOG).reader(message.session_id)
         route = input_origin(reader, message.source, through_seq=message.seq)
@@ -70,7 +70,7 @@ class InstallPlugin:
             try:
                 binding = self._senders[name]
             except KeyError as error:
-                raise InvalidArguments(f"发起渠道没有可恢复发送者：{name}") from error
+                return f'发起渠道没有可恢复发送者：{name}'
             sink = Sink(name=name, binding_id=binding, address=address)
         return Request(install=install, session_id=message.session_id, sink=sink).model_dump(mode="json")
 

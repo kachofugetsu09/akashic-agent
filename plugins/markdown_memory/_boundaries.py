@@ -6,7 +6,6 @@ from typing import Protocol, cast
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_contracts import ContentPart, ContentReferences, Message
-from agent.turn_effects import PostCommitEffect
 
 
 class MaterialRegistry(Protocol):
@@ -63,7 +62,7 @@ class TurnProjection(Protocol):
 class ContentFacts(Protocol):
     def is_user_input(self, message: Message) -> bool: ...
 
-    def legacy_post_commit_effect(self, message: Message) -> PostCommitEffect | None: ...
+    def legacy_post_commit_effect(self, message: Message) -> str | None: ...
 
 
 MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")

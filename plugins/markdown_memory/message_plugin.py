@@ -26,7 +26,6 @@ from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextLengthError, LLMResponse, ModelError
 from agent.llm_json import load_json_object_loose
-from agent.turn_effects import PostCommitEffect
 from infra.persistence.json_store import atomic_write_text
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
@@ -627,7 +626,7 @@ async def _unapplied_groups(
     record: StoredSummary, lookup: SummaryLookup, reader: MessageReader,
     store: MarkdownProfileStore, sources: tuple[str, ...], projection: TurnProjection,
     *, compaction: CompactionReader,
-    post_commit_effect: Callable[[Message], PostCommitEffect | None],
+    post_commit_effect: Callable[[Message], str | None],
 ) -> tuple[tuple[Message, ...], ...] | None:
     """从最近已写入的祖先之后取完整组的原文，跳过未使用的摘要不会漏掉它覆盖的事实。"""
     start = 0
@@ -656,7 +655,7 @@ async def _unapplied_groups(
         for turn in projection.project(snapshot[:covered.stop], source):
             ids = (*turn.message_ids, *(identity for _, identity in turn.observations))
             effects = tuple(post_commit_effect(by_id[identity]) for identity in ids)
-            if PostCommitEffect.SUPPRESS in effects:
+            if "suppress" in effects:
                 excluded.update(ids)
     after = covered.start + start
     cuts = (

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence, Mapping
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol, Any, cast
 from uuid import uuid4
 
 from agent.plugin_composition import Context, RuntimeScope, ServiceKey
@@ -17,15 +17,45 @@ from agent.plugin_composition.models import (
     ModelRequest,
     StreamCallback,
 )
-from plugins.context.api import ContextOverflow, Materials, SummaryReducer
-from plugins.tools.menu import InvalidToolCall
 from agent.plugin_composition.messages import MessageReader, MessageWriter
 from agent.plugin_contracts import CallRef, Control, Message, Output, Part, ContentPart, ToolCall, ToolResult
 
-if TYPE_CHECKING:
-    from plugins.content.plugin import ContentView
-    from plugins.context.plugin import ContextBuilder
-    from plugins.tools.menu import ToolMenu
+Materials = Mapping[str, object]
+
+
+class ContentView(Protocol):
+    async def decode(self, text: str, references: tuple[Mapping[str, object], ...] = ()) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]: ...
+
+
+class ContextBuilder(Protocol):
+    def build_attempt(self, snapshot: Sequence[Message], *, materials: Materials,
+                      model: MessageProjection, tools: Sequence[Mapping[str, Any]] = (),
+                      max_output_tokens: int, window_start: str | None = None) -> tuple[ModelRequest, str | None]: ...
+    def reminder_content(self, materials: Materials) -> str | None: ...
+
+
+class DecodedCall(Protocol):
+    @property
+    def binding_id(self) -> str | None: ...
+    @property
+    def arguments(self) -> Mapping[str, object]: ...
+    @property
+    def rejection(self) -> Mapping[str, object] | None: ...
+
+
+class ToolMenu(Protocol):
+    @property
+    def schemas(self) -> tuple[Mapping[str, Any], ...]: ...
+    def name(self, binding_id: str) -> str: ...
+    def decode(self, call: Any) -> DecodedCall: ...
+    async def execute(self, call: CallRef) -> object: ...
+
+
+class SummaryReducer(Protocol):
+    async def __call__(self, snapshot: tuple[Message, ...], materials: Materials,
+                       request: ModelRequest, model: BoundChatModel, projection: MessageProjection,
+                       *, source: str, force: bool) -> Mapping[str, object] | None: ...
+
 
 class MessageProjection(Protocol):
     @property
@@ -172,27 +202,21 @@ async def _complete(
 ) -> AsyncGenerator[tuple[LLMResponse, Materials, str]]:
     """缩减只更新已取得材料中的摘要；provider 容量拒绝最多重试一次。"""
     # 1. 本地容量与软水位先交给同一摘要 owner，其他材料不重新获取。
-    try:
-        request = context.build(
-            snapshot, materials=prepared, model=projection,
-            tools=tools.schemas, max_output_tokens=max_output_tokens,
-        )
-    except ContextOverflow as overflow:
-        if reduce is None:
-            raise
-        summary = await reduce(snapshot, prepared, overflow.request, model, projection, source=source, force=True)
-        if summary == prepared.summary:
-            raise
-        prepared = replace(prepared, summary=summary)
-        request = context.build(snapshot, materials=prepared, model=projection,
-                                tools=tools.schemas, max_output_tokens=max_output_tokens)
-    else:
-        if reduce is not None:
-            summary = await reduce(snapshot, prepared, request, model, projection, source=source, force=False)
-            if summary != prepared.summary:
-                prepared = replace(prepared, summary=summary)
-                request = context.build(snapshot, materials=prepared, model=projection,
-                                        tools=tools.schemas, max_output_tokens=max_output_tokens)
+    def build() -> tuple[ModelRequest, str | None]:
+        return context.build_attempt(snapshot, materials=prepared, model=projection,
+                                     tools=tools.schemas, max_output_tokens=max_output_tokens)
+
+    request, rejection = build()
+    if rejection is not None and reduce is None:
+        raise ContextLengthError(rejection)
+    if reduce is not None:
+        summary = await reduce(snapshot, prepared, request, model, projection,
+                               source=source, force=rejection is not None)
+        if summary is not None and summary != prepared.get("summary"):
+            prepared = {**prepared, "summary": summary}
+            request, rejection = build()
+        if rejection is not None:
+            raise ContextLengthError(rejection)
     # 2. 每次 provider 调用预分配消息 ID；重试先撤掉旧草稿，再开始下一次请求。
     with ExitStack() as previews:
         def begin() -> tuple[str, StreamCallback | None]:
@@ -208,11 +232,12 @@ async def _complete(
             if reduce is None:
                 raise
             summary = await reduce(snapshot, prepared, request, model, projection, source=source, force=True)
-            if summary == prepared.summary:
+            if summary is None or summary == prepared.get("summary"):
                 raise
-            prepared = replace(prepared, summary=summary)
-            request = context.build(snapshot, materials=prepared, model=projection,
-                                    tools=tools.schemas, max_output_tokens=max_output_tokens)
+            prepared = {**prepared, "summary": summary}
+            request, rejection = build()
+            if rejection is not None:
+                raise ContextLengthError(rejection)
             message_id, callback = begin()
             response = await model.complete(replace(request, on_delta=callback))
         # 3. 草稿持续到调用者完成解码与 CAS；异常和取消也会释放预览。
@@ -257,20 +282,18 @@ async def react(
             snapshot, prepared, source=writer.source, context=context, model=model,
             projection=projection, tools=tools, max_output_tokens=max_output_tokens, reduce=reduce, preview=preview,
         ) as (response, prepared, message_id):
-            decoded, metadata = await content.decode(response.content or "", prepared.references)
+            decoded, metadata = await content.decode(response.content or "", cast(tuple[Mapping[str, object], ...], prepared.get("references", ())))
             parts: list[Part] = list(decoded)
             indices: list[int] = []
             actual_calls: list[ToolCall | ContentPart] = []
             for call in response.tool_calls:
                 indices.append(len(parts))
-                try:
-                    binding_id, arguments = tools.decode(call)
-                except InvalidToolCall as error:
-                    actual = ContentPart("model.tool_rejection", {
-                        "name": call.name, "arguments": call.arguments, "error": str(error),
-                    })
+                decoded_call = tools.decode(call)
+                if decoded_call.rejection is not None:
+                    actual = ContentPart("model.tool_rejection", decoded_call.rejection)
                 else:
-                    actual = ToolCall(binding_id, arguments)
+                    assert decoded_call.binding_id is not None
+                    actual = ToolCall(decoded_call.binding_id, decoded_call.arguments)
                 actual_calls.append(actual)
                 parts.append(actual)
             if not parts:
@@ -281,8 +304,9 @@ async def react(
                 reminder=context.reminder_content(prepared),
                 actual_calls=actual_calls,
             ))
-            if prepared.summary is not None:
-                parts.append(ContentPart("context.summary", {"reference": prepared.summary.reference}))
+            summary = cast(Mapping[str, object] | None, prepared.get("summary"))
+            if summary is not None:
+                parts.append(ContentPart("context.summary", {"reference": summary["reference"]}))
             # 3. 内容完成后按来源 CAS 提交；失败的草稿绝不触发工具。
             message = writer.append(
                 message_id, Output(tuple(parts), "continue" if indices else "complete"),
@@ -292,7 +316,7 @@ async def react(
                 return message
 
 
-REACT = ServiceKey[Callable[..., Awaitable[Message]]]("react.v1")
+REACT = ServiceKey[Callable[..., Awaitable[Message]]]("react.v2")
 
 
 async def apply(ctx: Context, config: object) -> None:

@@ -10,11 +10,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ToolCall as ModelToolCall
-from plugins.tools.api import BoundTool, CallSource, InvalidArguments, Result
-from plugins.tools.menu import InvalidToolCall, ToolPresentation, tool_schema
-from plugins.tools.plugin import TOOLS, ToolCatalog, ToolRef, ToolView
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
+
+from ._tool_boundary import (
+    BoundTool,
+    CallSource,
+    ToolCatalog,
+    ToolPresentation,
+    ToolRef,
+    ToolResultValue,
+    ToolView,
+    TOOLS,
+)
 
 api_version = 3
 name = "tool_search"
@@ -26,6 +34,18 @@ TOOL_SEARCH_TOOLS = ServiceKey[ToolView]("tool-search.tools.v1")
 TOOL_SEARCH_PRESENTATION = ServiceKey[
     Callable[[ToolView], ToolPresentation]
 ]("tool-search.presentation.v1")
+
+
+def _tool_schema(description: Mapping[str, object]) -> Mapping[str, Any]:
+    """把 owner 提供的描述转换成模型展示 schema。"""
+    return {
+        "type": "function",
+        "function": {
+            "name": description["name"],
+            "description": description["description"],
+            "parameters": description["parameters"],
+        },
+    }
 
 
 class Query(BaseModel):
@@ -51,7 +71,7 @@ def _groups(catalog: ToolCatalog, view: ToolView) -> tuple[dict[str, object], ..
         if owner not in rows:
             rows[owner] = {"owner": owner, "description": catalog.group_description(ref), "tools": []}
         cast(list[Mapping[str, Any]], rows[owner]["tools"]).append({
-            "schema": tool_schema(ref.description),
+            "schema": _tool_schema(ref.description),
             "risk": ref.description["risk"],
             "search_hint": ref.description["search_hint"],
         })
@@ -111,13 +131,13 @@ class SearchTool:
 
     async def prepare(
         self, arguments: Mapping[str, object], source: CallSource | None = None
-    ) -> Mapping[str, object]:
+    ) -> Mapping[str, object] | str:
         try:
             return Query.model_validate(json_value(arguments)).model_dump(mode="json")
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
         query = Query.model_validate(json_value(arguments))
         matched = _search(self._groups, query)
         excluded = () if query.allowed_risk is None else tuple(
@@ -133,7 +153,7 @@ class SearchTool:
                 for entry in cast(tuple[Mapping[str, Any], ...], group["tools"])
             ),
         } for group in matched)
-        return Result(
+        return ToolResultValue(
             "success",
             (
                 ContentPart(
@@ -155,7 +175,7 @@ class SearchTool:
             ),
         )
 
-    async def query(self, key: str) -> Result | None:
+    async def query(self, key: str) -> ToolResultValue | None:
         return None
 
 
@@ -172,13 +192,13 @@ class SearchPresentation:
             for ref in view.refs
             if catalog.group_always_on(ref)
         )
-        self._direct = ToolView(direct)
+        self._direct = catalog.view(*direct)
         self._groups = _groups(catalog, view)
 
     @property
     def schemas(self) -> tuple[Mapping[str, Any], ...]:
         return (
-            *(tool_schema(ref.description) for ref in self._direct.refs),
+            *(_tool_schema(ref.description) for ref in self._direct.refs),
             {
                 "type": "function",
                 "function": {
@@ -201,17 +221,17 @@ class SearchPresentation:
                 lines.append(f"   {tool['name']}：{short}")
         return "\n".join(lines)
 
-    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
+    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]] | str:
         if call.name != "tool_call":
             if call.name not in {ref.name for ref in self._direct.refs}:
-                raise InvalidToolCall(f"工具不属于当前直接调用目录: {call.name}；请用 tool_search 查询，再用 tool_call 调用。")
+                return f"工具不属于当前直接调用目录: {call.name}；请用 tool_search 查询，再用 tool_call 调用。"
             return call.name, cast(Mapping[str, object], call.arguments)
         try:
             decoded = IndirectCall.model_validate(json_value(call.arguments))
         except ValidationError as error:
-            raise InvalidToolCall(f"tool_call 需要 name 和对象类型的 arguments：{error}") from error
+            return f"tool_call 需要 name 和对象类型的 arguments：{error}"
         if decoded.name not in {ref.name for ref in self._view.refs}:
-            raise InvalidToolCall(f"工具不属于获授 view: {decoded.name}；请用 tool_search 查询当前目录。")
+            return f"工具不属于获授 view: {decoded.name}；请用 tool_search 查询当前目录。"
         return decoded.name, decoded.arguments
 
     def configuration(self, name: str) -> Mapping[str, object] | None:

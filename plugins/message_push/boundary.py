@@ -132,7 +132,7 @@ class ContentProvider(Protocol):
     def bind(self) -> AbstractAsyncContextManager[ContentView]: ...
 
 
-CONTENT = ServiceKey[ContentProvider]("content.v1")
+CONTENT = ServiceKey[ContentProvider]("content.v2")
 
 
 class FinalOutputTurn(Protocol):

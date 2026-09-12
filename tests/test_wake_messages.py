@@ -36,7 +36,7 @@ CONTROLS = {}
 @asynccontextmanager
 async def application(tmp_path, *, wake_delivery=False):
     host, store, log, artifacts, sources = environment(tmp_path, reply=True)
-    for name in ("sources", "conversation", "react", "wake", "delivery", "eventmail", "drift"):
+    for name in ("sources", "conversation", "react", "reply_program", "wake", "delivery", "eventmail", "drift"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     (sources / "wake/akashic.plugin.toml").write_text(

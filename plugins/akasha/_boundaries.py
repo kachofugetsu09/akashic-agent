@@ -7,7 +7,6 @@ from typing import Literal, Protocol
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_contracts import CallRef, ContentPart, Message
-from agent.turn_effects import PostCommitEffect
 
 
 Outcome = Literal["success", "denied", "error", "interrupted"]
@@ -76,7 +75,7 @@ class ContentCapability(Protocol):
 
     def is_user_input(self, message: Message) -> bool: ...
 
-    def legacy_post_commit_effect(self, message: Message) -> PostCommitEffect | None: ...
+    def legacy_post_commit_effect(self, message: Message) -> str | None: ...
 
 
 CONTENT = ServiceKey[ContentCapability]("content.v2")
@@ -108,4 +107,4 @@ class TurnProjection(Protocol):
 TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
 
 
-PostCommitReader = Callable[[Message], PostCommitEffect | None]
+PostCommitReader = Callable[[Message], str | None]

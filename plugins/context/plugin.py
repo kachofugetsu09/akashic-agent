@@ -13,8 +13,8 @@ from agent.plugin_composition.models import ModelRequest
 from agent.plugin_contracts import (
     Message,
 )
-from plugins.context.api import ContextModel, ContextOverflow, MaterialData, Materials, Summary, decode_material, settled_prefixes, summary_range
-from plugins.context.materials import ContextMaterials, MATERIALS
+from .api import ContextModel, ContextOverflow, check_summary, MaterialData, Materials, Summary, decode_material, settled_prefixes, summary_range
+from .materials import ContextMaterials, MATERIALS
 
 api_version = 3
 name = "context"
@@ -67,6 +67,9 @@ def _summary_cutoff(snapshot: tuple[Message, ...], summary: Summary | None) -> i
 
 
 class ContextBuilder:
+    check_summary = staticmethod(check_summary)
+    summary_range = staticmethod(summary_range)
+
     @staticmethod
     def _reminder_content(materials: Materials) -> str | None:
         reminders = [escape(part.text, quote=False) for part in materials.reminders if part.text.strip()]
@@ -171,18 +174,18 @@ class ContextBuilder:
         tools: Sequence[Mapping[str, Any]] = (),
         max_output_tokens: int,
         window_start: str | None = None,
-    ) -> tuple[ModelRequest, bool]:
-        """返回请求及是否因容量不足；把异常类型留在 Context owner 内。"""
+    ) -> tuple[ModelRequest, str | None]:
+        """返回请求及容量拒绝说明；异常类型留在 Context owner 内。"""
         try:
             return self.build(
                 snapshot, materials=materials, model=model, tools=tools,
                 max_output_tokens=max_output_tokens, window_start=window_start,
-            ), False
+            ), None
         except ContextOverflow as overflow:
-            return overflow.request, True
+            return overflow.request, str(overflow)
 
 
-CONTEXT = ServiceKey[ContextBuilder]("context.v1")
+CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 
 
 async def apply(ctx: Context, config: Config | None) -> None:

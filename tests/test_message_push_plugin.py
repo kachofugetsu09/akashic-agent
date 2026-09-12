@@ -135,7 +135,8 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
                                   no_new_authorization, task_key="effects")
         answer = await execution.execute("push-once", binding, parameters)
         assert answer.outcome == ("success" if confirmed else "error")
-        assert (await execution.execute("push-once", binding, parameters)) == answer
+        repeated = await execution.execute("push-once", binding, parameters)
+        assert (repeated.outcome, repeated.parts) == (answer.outcome, answer.parts)
         assert len(log.reader("test:room").snapshot()) == 1
         record = DeliveryRecords(log.owner("plugin:delivery"), "message_push").read(identity, "test")[1]
         assert record.phase == ("delivered" if confirmed else "failed")

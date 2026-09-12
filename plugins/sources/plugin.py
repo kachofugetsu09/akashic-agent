@@ -20,7 +20,7 @@ Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
 Changed = Callable[[MessageReader, str], None]
 
 
-from .session import SourceSession as _SourceSession
+from .session import SourceSession as _SourceSession, check_source
 
 
 class SourceSession(Protocol):
@@ -99,12 +99,14 @@ class Sources:
 
 
 SOURCES = ServiceKey[Sources]("sources.v2")
+SOURCE_CHECK = ServiceKey[Callable[[Task, MessageReader, str, int], None]]("source.check.v1")
 SOURCE_SESSION = ServiceKey[type[_SourceSession]]("source.session.v1")
 SOURCE_CHANGED = ServiceKey[Changed]("source.changed.v1")
 
 
 async def apply(ctx: Context, config: object) -> None:
     sources = Sources()
+    _ = await ctx.provide(SOURCE_CHECK, check_source)
     _ = await ctx.provide(SOURCE_SESSION, _SourceSession)
     _ = await ctx.provide(SOURCES, sources)
     _ = await ctx.provide(CHANNEL_INPUT, sources.accept)

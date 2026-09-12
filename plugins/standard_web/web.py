@@ -12,7 +12,6 @@ from agent.tools.base import normalize_tool_parameters
 from .fetch import WebFetchTool
 from .search import WebSearchTool
 from core.net.http import HttpRequester, RequestBudget, RetryPolicy
-from plugins.tools.api import InvalidArguments
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
 
@@ -24,13 +23,13 @@ class WebTool:
     def __init__(self, backend: WebFetchTool | WebSearchTool):
         self._backend = backend
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         raw = cast(dict[str, Any], json_value(arguments))
         errors = self._backend.validate_params(
             raw, schema=normalize_tool_parameters(self._backend.parameters)
         )
         if errors:
-            raise InvalidArguments("; ".join(errors))
+            return '; '.join(errors)
         return raw
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:

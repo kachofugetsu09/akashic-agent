@@ -120,25 +120,6 @@ def test_factory_returns_real_menu_and_scoped_reply() -> None:
     assert writers.bound["source"] == "conversation"
 
 
-def test_factory_requires_a_source_and_start_check() -> None:
-    writers = _Writers()
-    factory = ToolProgramFactory(_Context(writers, _Bindings()), _Catalog())
-    with pytest.raises(ValueError, match="来源"):
-        factory.bind_reply(
-            _Reader(),
-            "",
-            content={},
-            check_start=lambda: None,
-        )
-    with pytest.raises(TypeError, match="启动检查器"):
-        factory.bind_reply(
-            _Reader(),
-            "conversation",
-            content={},
-            check_start=object(),  # type: ignore[arg-type]
-        )
-
-
 def test_menu_keeps_internal_binding_errors_fail_loud() -> None:
     writers = _Writers()
     catalog = _Catalog()

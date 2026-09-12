@@ -19,6 +19,7 @@ from .api import (
 )
 from .abandon import follow_abandon, reject_start
 from .execution import ToolExecution
+from .program import TOOL_PROGRAM, ToolProgramFactory
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import TASKS
@@ -43,7 +44,7 @@ class ContentCapability(Protocol):
 
 
 # 与 content owner 共享名字，不共享其实现模块或 Python 类型身份。
-CONTENT = ServiceKey[ContentCapability]("content.v1")
+CONTENT = ServiceKey[ContentCapability]("content.v2")
 
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[None]]
@@ -127,7 +128,7 @@ class _ToolView:
         self._check_active()
         return self._target.idempotent
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """贡献先转换，实际工具一次接纳最终参数；授权在这之后执行。"""
         self._check_active()
         if self._preparation is not None:
@@ -302,7 +303,7 @@ class ToolCatalog:
 
         async def authorize_binding(
             binding_id: str, arguments: Mapping[str, object]
-        ) -> Mapping[str, object]:
+        ) -> Mapping[str, object] | str:
             async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
                 await catalog.authorize(metadata, arguments)
             return await authorize(binding_id, arguments)
@@ -520,6 +521,7 @@ async def bind_saved_tool(
 async def apply(ctx: Context, config: object) -> None:
     catalog = ToolCatalog(ctx)
     _ = await ctx.provide(TOOLS, catalog)
+    _ = await ctx.provide(TOOL_PROGRAM, ToolProgramFactory(ctx, catalog))
     _ = await ctx.provide(ALL_TOOLS, catalog._all_view)
 
     def read_name(binding_id: str) -> str:

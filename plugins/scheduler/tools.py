@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from plugins.tools.api import CallSource, InvalidArguments, Result
+from plugins.tools.api import CallSource, Result
 from agent.plugin_contracts import ContentPart
 
 from .schedule import ScheduledJob, compute_fire_at, is_cron_expr, parse_duration
@@ -87,13 +87,13 @@ class ScheduleTool:
         self._kind = kind
         self._now = now
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         """最终 ID、时间与取消集合在 Tool 的 prepared 回执里固定，不在 invoke 重算。"""
         if self._kind == "cancel":
             try:
                 request = CancelInput.model_validate(dict(arguments))
             except ValidationError as error:
-                raise InvalidArguments(str(error)) from error
+                return str(error)
             jobs = self._store.load()
             ids = tuple(job.id for job in jobs if (
                 job.id.startswith(request.id) if request.id else job.name == request.name))
@@ -116,7 +116,7 @@ class ScheduleTool:
             payload = self._store.encode_job(job)
             _ = self._store.decode_job(payload)
         except (ValidationError, ValueError, TypeError, OverflowError, ZoneInfoNotFoundError) as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         label = f"「{job.name}」" if job.name else job.id[:8]
         return {"job": payload, "response": f"已注册定时任务 {label}，首次触发时间：{fire_at.isoformat()}"}
 
@@ -157,9 +157,9 @@ class ListSchedules:
     def __init__(self, store: JobStore):
         self._store = store
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         if arguments:
-            raise InvalidArguments("list_schedules 不接收参数")
+            return 'list_schedules 不接收参数'
         return {}
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:

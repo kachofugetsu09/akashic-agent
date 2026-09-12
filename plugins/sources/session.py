@@ -14,6 +14,18 @@ logger = logging.getLogger(__name__)
 Changed = Callable[[MessageReader, str], None]
 
 
+def check_source(task: Task, reader: MessageReader, source: str, through_seq: int) -> None:
+    """新输入或控制已接纳时禁止新效果，不依赖后台取消信号及时送达。"""
+    from agent.plugin_contracts import Control, Input
+
+    if not task.active or any(
+        message.source == source and isinstance(message.body, (Input, Control))
+        for message in reader.snapshot(after_seq=through_seq)
+    ):
+        raise asyncio.CancelledError
+
+
+
 def needs_reply(messages: Sequence[Message] | MessageReader, source: str) -> bool:
     """来源从输入和控制事实决定是否唤醒；不依赖逻辑 Turn 或消费 cursor。"""
     # 最近 Input 之前的控制和终结只能覆盖更早的 seq，不影响本次唤醒。

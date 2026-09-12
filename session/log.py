@@ -10,7 +10,7 @@ import re
 import sqlite3
 import threading
 from bisect import bisect_right
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Generator, Mapping
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from dataclasses import dataclass
@@ -556,7 +556,7 @@ class MessageCatalog:
             rows = self._log._connection.execute("SELECT key, attributes FROM sessions ORDER BY key").fetchall()
         return MappingProxyType({row["key"]: decode_attributes(row["attributes"]) for row in rows})
 
-    async def follow(self) -> AsyncIterator[Mapping[str, int]]:
+    async def follow(self) -> AsyncGenerator[Mapping[str, int]]:
         """先订阅再取 heads；通知可合并，消费者始终按快照重读事实。"""
         event = asyncio.Event()
         with self._log._lock:

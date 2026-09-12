@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
-from agent.turn_effects import PostCommitEffect
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall, ToolResult
@@ -32,21 +31,16 @@ class Feedback(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
-def _missing_post_commit_effect(_message: Message) -> PostCommitEffect | None:
-    """拒绝在没有 content 资格 owner 时猜测学习资格。"""
-    raise RuntimeError("Akasha 需要 content.v2 的 post_commit_effect reader")
-
-
 class Learning:
     """固定学习材料的纯规则；实际消息、向量和学习图由调用者提供。"""
 
     def __init__(
         self, projection: TurnProjection, *, owner: str,
-        post_commit_effect: PostCommitReader | None = None,
+        post_commit_effect: PostCommitReader,
     ):
         self.projection = projection
         self.owner = owner
-        self._post_commit_effect = post_commit_effect or _missing_post_commit_effect
+        self._post_commit_effect = post_commit_effect
 
     def text(self, message: Message) -> str:
         """只连接可见正文；控制、工具协议和内部模型事实不成为问答文本。"""
@@ -70,7 +64,7 @@ class Learning:
         """一条历史成员被禁止沉淀时，整个问答样本不成为学习材料。"""
         effects = tuple(self._post_commit_effect(message)
                         for message in (*sample.messages, *sample.observations))
-        return PostCommitEffect.SUPPRESS not in effects
+        return "suppress" not in effects
 
     def feedback(
         self, sample: Sample, previous: Sequence[Turn], state: Consumption, bindings: Bindings,

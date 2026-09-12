@@ -193,3 +193,7 @@ note = "客户端只读历史 binding 名称；工具插件拥有描述解释，
 [capabilities."scheduler.inspection.v1"]
 role = "seam"
 note = "scheduler 拥有任务字段和展示；宿主只消费插件只读投影"
+
+[capabilities."models.selection.v1"]
+role = "seam"
+note = "模型选择由普通 models owner 解释；Core 只在当前查询租约内调用"

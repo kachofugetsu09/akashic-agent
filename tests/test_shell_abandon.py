@@ -13,7 +13,7 @@ from bus.event_bus import EventBus
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
-from plugins.conversation.program import run_reply
+from plugins.reply_program.program import run_reply
 from plugins.standard_tools.shell import TOOL_CLEANUP
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION

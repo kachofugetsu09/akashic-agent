@@ -9,7 +9,7 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResolver
 from agent.plugin_composition.rpc import RequestTransport, RpcMethod
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
-from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
+from .result import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition.messages import MessageReader, SessionAttributes
 from agent.plugin_contracts import ContentPart, Input
 
@@ -17,6 +17,8 @@ from .result import read_result, read_result_snapshot
 
 
 class FinalOutputTurn(Protocol):
+    @property
+    def source(self) -> str: ...
     @property
     def ending_message_id(self) -> str | None: ...
     @property

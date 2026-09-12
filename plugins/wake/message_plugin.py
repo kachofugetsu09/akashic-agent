@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 
-from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
+from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS
@@ -15,24 +15,20 @@ from plugins.akasha.interest import SEMANTIC_INTEREST
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.delivery.history import DELIVERY_READ
 from plugins.drift.plugin import DRIFT_CHANGED
-from plugins.content.api import ContentSchema
 from plugins.content.plugin import CONTENT
-from plugins.context.materials import MATERIALS
-from plugins.context.plugin import CONTEXT
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.models.projection import MODEL_CALLS
-from plugins.react.plugin import REACT
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.plugin import TOOLS, ToolView
-from plugins.turn_projection.plugin import TURN_PROJECTION
 
 from .api import Config, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_CHANGED
-from .program import TOOL_CLEANUP, run
+from .program import run
 from .runtime import Runtime
 from .runtime import DashboardView
 from .request import WAKE_PROGRAM, WAKE_TOOLS_VIEW, check_phase, check_request
 from .tools import DecisionTool, SCHEMAS
+
+REPLY_EXECUTE = ServiceKey("reply.execute.v1")
 
 api_version = 3
 name = "wake"
@@ -46,6 +42,7 @@ web_contract_digests = {
     "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
 }
 inject = (
+    REPLY_EXECUTE,
     BINDINGS,
     TASKS,
     MESSAGE_CATALOG,
@@ -53,14 +50,7 @@ inject = (
     OWNER_STATE,
     SESSION_ADMISSION,
     TOOLS,
-    TOOL_CLEANUP,
-    CHAT_MODELS,
     CONTENT,
-    CONTEXT,
-    MATERIALS,
-    REACT,
-    MODEL_CALLS,
-    TURN_PROJECTION,
     DELIVERY,
     DELIVERY_SENDERS,
     EVENTMAIL_WAKE,
@@ -81,13 +71,13 @@ async def apply(ctx: Context, config: Config) -> None:
     """归档注册原程序和私有决定工具；消息与领域状态仅在正式来源执行时打开。"""
     _ = await ctx.require(CONTENT).register(
         ctx,
-        ContentSchema(
-            name="wake",
-            content={
+        {
+            "name": "wake",
+            "content": {
                 "wake.request": check_request,
                 "wake.phase": check_phase,
             },
-        ),
+        },
     )
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)

@@ -37,7 +37,6 @@ from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.tools.plugin import TOOLS
 from agent.plugin_composition.bindings import BINDINGS
 from plugins.content.plugin import CONTENT
-from plugins.content.api import ContentSchema
 from .tools import FeedbackTool, FeedbackArguments, check_feedback
 from .infrastructure.consumption import load_message_nodes
 from pathlib import Path
@@ -47,9 +46,9 @@ name = "akasha"
 version = "1.0.0"
 inject = (TURN_PROJECTION, TOOLS, CONTENT, BINDINGS)
 async def apply(ctx, config):
-    learning = Learning(ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id)
+    learning = Learning(ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id, post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect)
     await ctx.provide(AKASHA_LEARNING, learning)
-    await ctx.require(CONTENT).register(ctx, ContentSchema(name="akasha", content={"akasha.feedback": check_feedback}))
+    await ctx.require(CONTENT).register(ctx, {"name": "akasha", "content": {"akasha.feedback": check_feedback}})
     async def start(event):
         raise AssertionError("restoring learning must not start runtime")
     await ctx.on(RUNTIME_STARTED, start)

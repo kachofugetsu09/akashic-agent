@@ -19,7 +19,7 @@ from agent.plugin_composition.tasks import TASKS
 from plugins.content.plugin import CONTENT
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
-from plugins.conversation.program import run_reply
+from plugins.reply_program.program import run_reply
 from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
 from plugins.tools.plugin import ALL_TOOLS, TOOLS

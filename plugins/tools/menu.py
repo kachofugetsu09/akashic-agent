@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -10,10 +10,6 @@ from agent.plugin_contracts import CallRef, ToolCall
 
 from .execution import MessageReply, Result, ToolExecution
 from .plugin import TOOLS, ToolCatalog, ToolView
-
-
-class InvalidToolCall(ValueError):
-    """模型调用不符合当前展示协议；可反馈模型纠正，不代表工具效果。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,12 +36,6 @@ class ToolCallDecode:
         """判断模型调用是否已经解码到获授 binding。"""
         return self.binding_id is not None
 
-    def __iter__(self) -> Iterator[object]:
-        """兼容旧的成功解包；拒绝结果必须由调用者显式处理。"""
-        if not self.accepted:
-            raise TypeError("被拒绝的工具调用不能解包为 binding 和参数")
-        yield self.binding_id
-        yield self.arguments
 
 
 class ToolPresentation(Protocol):
@@ -57,7 +47,7 @@ class ToolPresentation(Protocol):
     @property
     def system_prompt(self) -> str: ...
 
-    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]: ...
+    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]] | str: ...
 
     def configuration(self, name: str) -> Mapping[str, object] | None: ...
 
@@ -76,9 +66,9 @@ class NativePresentation:
     def system_prompt(self) -> str:
         return ""
 
-    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]]:
+    def decode(self, call: ModelToolCall) -> tuple[str, Mapping[str, object]] | str:
         if call.name not in self._descriptions:
-            raise InvalidToolCall(f"工具不属于获授 view: {call.name}；请使用当前工具目录。")
+            return f"工具不属于获授 view: {call.name}；请使用当前工具目录。"
         return call.name, cast(Mapping[str, object], call.arguments)
 
     def configuration(self, name: str) -> Mapping[str, object] | None:
@@ -169,18 +159,12 @@ class ToolMenu:
 
     def decode(self, call: ModelToolCall) -> ToolCallDecode:
         """把 wire 调用变成真实 binding 或模型可修正的拒绝反馈。"""
-        try:
-            name, arguments = self._presentation.decode(call)
-        except InvalidToolCall as error:
-            return ToolCallDecode(
-                None,
-                cast(Mapping[str, object], call.arguments),
-                {
-                    "name": call.name,
-                    "arguments": cast(Mapping[str, object], call.arguments),
-                    "error": str(error),
-                },
-            )
+        decoded = self._presentation.decode(call)
+        if isinstance(decoded, str):
+            return ToolCallDecode(None, {}, {
+                "name": call.name, "arguments": call.arguments, "error": decoded,
+            })
+        name, arguments = decoded
         identity = self._bound.get(name)
         if identity is None:
             raise PermissionError(f"展示层返回了未获授工具: {name}")

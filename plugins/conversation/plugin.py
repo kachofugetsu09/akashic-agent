@@ -8,12 +8,10 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.plugin_composition.models import MODEL_CATALOG, ChatModelSelection
 from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGate, RESTART_GATE
 from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter
-from plugins.content.plugin import check_text
-from plugins.content.api import check_artifact
 from agent.plugin_contracts import Body, ContentPart, ContentReferences, Control, Input, Message, Output
 
 from .source import update_selection
-from .commands import CONVERSATION_COMMANDS, run_commands
+from .commands import CONTENT, SOURCE_CHECK, CONVERSATION_COMMANDS, run_commands
 
 
 
@@ -63,7 +61,7 @@ api_version = 3
 name = "conversation"
 version = "1.0.0"
 desc = "接纳和控制同一来源的消息，程序由调用者另行选择"
-inject = (MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTART_GATE, MODEL_SELECTION)
+inject = (CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTART_GATE, MODEL_SELECTION)
 
 CONVERSATION = ServiceKey[Callable[[str], SourceSession]]("conversation.v1")
 
@@ -102,7 +100,7 @@ async def apply(ctx: Context, config: object) -> None:
         writers = ctx.require(MESSAGE_WRITERS)
         inputs = writers.bind(
             ctx, author="user", source="conversation", body_types=(Input,),
-            content={"text": check_text, "artifact_ref": check_artifact, "channel.origin": check_origin,
+            content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact, "channel.origin": check_origin,
                      "reply_ref": check_reply_target, "model.selection": check_model},
             update_metadata=update_metadata,
         )
@@ -156,6 +154,7 @@ async def apply(ctx: Context, config: object) -> None:
     async def command(task: Task, reader: MessageReader, source: str) -> Message | None:
         return await run_commands(ctx, task, reader, source)
 
+    _ = await ctx.provide(ServiceKey("conversation.check_origin.v1"), check_origin)
     _ = await ctx.provide(CONVERSATION_COMMANDS, command)
     _ = await ctx.provide(CONVERSATION, open)
     _ = await ctx.require(SOURCES).register(ctx, name="conversation", open=open, accept=accept, channels=None,
