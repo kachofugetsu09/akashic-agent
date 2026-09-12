@@ -65,6 +65,16 @@ class RuntimeScope:
         self._token: object | None = None
         self._closed = False
 
+    @property
+    def snapshot_id(self) -> str:
+        """Expose only the immutable identity carried by this runtime scope."""
+
+        snapshot = getattr(self._lease, "snapshot", None)
+        snapshot_id = getattr(snapshot, "snapshot_id", None)
+        if not isinstance(snapshot_id, str) or not snapshot_id:
+            raise RuntimeError("runtime scope 缺少 snapshot identity")
+        return snapshot_id
+
     async def __aenter__(self) -> None:
         if self._closed or self._token is not None:
             raise RuntimeError("runtime scope 只能进入一次")

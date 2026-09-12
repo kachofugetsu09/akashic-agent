@@ -14,14 +14,20 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from .shell_backend import _log_shell_execution, _shell_env
-from agent.tools.shell_command import resolve_shell
-from agent.tools.shell_security import validate_command
-from agent.tools.unified_exec import (
-    DEFAULT_HARD_TIMEOUT_S, DEFAULT_INITIAL_YIELD_TIME_MS, DEFAULT_MAX_OUTPUT_TOKENS,
-    MAX_HARD_TIMEOUT_S, ExecutionCleanupReport, UnknownExecutionError,
-    clamp_initial_yield_time, clamp_write_stdin_yield_time, format_execution_result,
+from agent.plugin_composition.process_runtime import (
+    DEFAULT_HARD_TIMEOUT_S,
+    DEFAULT_INITIAL_YIELD_TIME_MS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_HARD_TIMEOUT_S,
+    ExecutionCleanupReport,
+    UnknownExecutionError,
+    clamp_initial_yield_time,
+    clamp_write_stdin_yield_time,
+    format_execution_result,
 )
+from agent.plugin_composition.shell_runtime import resolve_shell
+from .shell_backend import _log_shell_execution, _shell_env
+from .shell_security import validate_command
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall
 from agent.plugin_contracts import json_value

@@ -7,8 +7,8 @@ from collections.abc import Iterable
 from google.protobuf.message import Message
 
 from agent.host_bridge import host_bridge_pb2 as pb
-from agent.tools.base import ToolResult
-from agent.tools.unified_exec import (
+from agent.tool_catalog import ToolResult
+from agent.process_runtime import (
     ExecutionCleanupFailure,
     ExecutionCleanupReport,
     ExecutionResult,

@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
-from agent.plugins.archive import sync_directory
+from agent.plugin_composition.archive import sync_directory
 
 from agent.plugins.artifacts import (
     ArtifactPointer,

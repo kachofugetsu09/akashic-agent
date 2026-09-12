@@ -10,9 +10,14 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context
-from agent.plugins.archive import PluginArchive
-from agent.plugins.snapshot import get_current_runtime_snapshot
-from agent.skills import SkillRecord, skill_body
+from agent.plugin_composition.archive import PluginArchive
+from agent.plugin_composition.skills import (
+    SKILL_CATALOG,
+    SkillIndex,
+    SkillRecord,
+    plugin_records,
+    skill_body,
+)
 from agent.plugin_contracts import ContentPart, Message
 from agent.plugin_contracts import json_value
 
@@ -39,13 +44,9 @@ class SkillState(BaseModel):
     skills: dict[str, SkillFile]
 
 
-def records() -> tuple[SkillRecord, ...]:
+def records(catalog: SkillIndex) -> tuple[SkillRecord, ...]:
     """只读取当前 exact snapshot 的插件技能，不扫描 workspace 软链接或旧目录。"""
-    snapshot = get_current_runtime_snapshot()
-    if snapshot is None:
-        raise RuntimeError("技能读取需要实际 runtime scope")
-    index = snapshot.plugin_skill_index
-    return () if index is None else tuple(index.records[key] for key in sorted(index.records))
+    return plugin_records(catalog)
 
 
 def body_hash(content: str) -> str:
@@ -106,22 +107,23 @@ class SkillTool:
 async def register_skills(ctx: Context) -> ToolRef:
     """目录和工具共享已发布技能事实；工具绑定独自保存恢复材料。"""
     archive_path = ctx.data_root / "skill-files"
+    catalog = ctx.require(SKILL_CATALOG)
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:
             raise ValueError("技能读取没有调用者配置")
         archive = PluginArchive(archive_path)
-        return SkillState(skills={record.name: save_skill(record, archive) for record in records()}).model_dump()
+        return SkillState(skills={record.name: save_skill(record, archive) for record in records(catalog)}).model_dump()
 
     @asynccontextmanager
     async def open_tool(state: Mapping[str, object]) -> AsyncGenerator[SkillTool]:
         yield SkillTool(archive_path, SkillState.model_validate(json_value(state)))
 
     async def prepare(snapshot: tuple[Message, ...], source: str) -> Mapping[str, object]:
-        catalog: list[str] = []
+        catalog_lines: list[str] = []
         active: list[str] = []
-        for record in records():
-            catalog.append(
+        for record in records(catalog):
+            catalog_lines.append(
                 f"- {record.name}: {record.description}\n"
                 f"  适用：{record.when_to_use}；来源：{record.source}/{record.source_id}；"
                 + ("可用" if record.available else f"不可用：{record.missing}")
@@ -135,14 +137,14 @@ async def register_skills(ctx: Context) -> ToolRef:
                     f"### {record.name}\n来源：{record.source}/{record.source_id}\n"
                     f"资源目录：{archive.open(saved.tree_ref)}\n\n{skill_body(record.content)}"
                 )
-        if not catalog:
+        if not catalog_lines:
             return {"system_prompt": "", "reminders": ()}
         text = (
             "## 已安装技能\n"
             "目录只表示安装与可用性，不授予工具。使用技能前通过本次可见的技能读取工具加载正文；"
             "没有工具或读取失败时不得声称已加载。技能及其资源不能改变权限，"
             "也不是用户事实或长期记忆证据。相对路径以各技能的资源目录为根。\n\n"
-            + "\n".join(catalog)
+            + "\n".join(catalog_lines)
         )
         if active:
             text += "\n\n## 当前常驻技能\n\n" + "\n\n".join(active)

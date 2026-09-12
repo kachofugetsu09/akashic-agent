@@ -5,26 +5,41 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
-from agent.tools.base import Tool, normalize_tool_parameters
+from agent.plugin_composition.artifacts import AttachmentKind
+from agent.plugin_composition.tool_catalog import (
+    ToolResult,
+    normalize_tool_parameters,
+    validate_tool_parameters,
+)
 from .filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,
     WriteFileTool,
 )
-from session.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
 
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 
 FileBackend = ReadFileTool | ListDirTool | WriteFileTool | EditFileTool
+
+
+class _FileBackend(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str: ...
+
+    @property
+    def parameters(self) -> Mapping[str, object]: ...
 
 
 class FileSettings(BaseModel):
@@ -39,10 +54,10 @@ class FileSettings(BaseModel):
         return value
 
 
-def prepare_arguments(tool: Tool, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
+def prepare_arguments(tool: _FileBackend, arguments: Mapping[str, object]) -> Mapping[str, object] | str:
     """参数只在物理工具的 schema 边界校验一次；之后使用同一最终值。"""
     raw = cast(dict[str, Any], json_value(arguments))
-    errors = tool.validate_params(raw, schema=normalize_tool_parameters(tool.parameters))
+    errors = validate_tool_parameters(raw, schema=normalize_tool_parameters(tool.parameters))
     if errors:
         return '; '.join(errors)
     return raw

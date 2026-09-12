@@ -1,5 +1,6 @@
 from agent.plugin_composition import Context, PROCESSES, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
+from agent.plugin_composition.skills import SKILL_CATALOG
 from .filesystem import (
     EditFileTool,
     ListDirTool,
@@ -17,7 +18,7 @@ api_version = 3
 name = "standard_tools"
 version = "1.0.0"
 desc = "提供文件、命令与技能读取工具"
-inject = (TOOLS, PROCESSES, ARTIFACT_IMPORT, MATERIALS)
+inject = (TOOLS, PROCESSES, ARTIFACT_IMPORT, MATERIALS, SKILL_CATALOG)
 
 STANDARD_TOOLS = ServiceKey[ToolView]("standard-tools.tools.v1")
 

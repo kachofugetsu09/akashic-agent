@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
-from agent.plugins.archive import PluginArchive, tree_entries
+from agent.plugin_composition.archive import PluginArchive, tree_entries
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root

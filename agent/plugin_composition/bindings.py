@@ -12,7 +12,7 @@ from session.log import MessageLog
 from session.message_codec import json_value
 
 if TYPE_CHECKING:
-    from agent.plugins.archive import PluginArchive
+    from agent.plugin_composition.archive import PluginArchive
 
 _T = TypeVar("_T")
 

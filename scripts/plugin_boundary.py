@@ -50,6 +50,10 @@ PLUGIN_ROOT = "plugins"
 # 冻结既有公开模块，不给目录内未来新增的实现自动授予公开资格。
 # 这是兼容清单，不证明其中每个对象已经原子化；扩张须单独评审 owner。
 PLUGIN_ALLOWED_MODULES = frozenset({
+    "agent.control.context",
+    "agent.host_bridge.filesystem",
+    "agent.media",
+    "agent.model_runtime.catalog.litellm_registry",
     "agent.plugin_composition",
     "agent.plugin_composition.access",
     "agent.plugin_composition.artifacts",
@@ -80,8 +84,12 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.runtime_lifecycle",
     "agent.plugin_composition.rpc",
     "agent.plugin_composition.semantic_interest",
+    "agent.plugin_composition.archive",
+    "agent.plugin_composition.process_runtime",
     "agent.plugin_composition.session_compaction",
     "agent.plugin_composition.session_read",
+    "agent.plugin_composition.shell_runtime",
+    "agent.plugin_composition.skills",
     "agent.plugin_composition.tasks",
     "agent.plugin_composition.timers",
     "agent.plugin_composition.tool_catalog",
@@ -89,6 +97,9 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.workload_slots",
     "agent.plugin_contracts",
     "agent.plugin_contracts.message",
+    "core.common.diagnostic_log",
+    "core.error_context",
+    "core.net.http",
 })
 
 # 插件不得 import 的 core 顶层包（用于 R2 的归属判定）。

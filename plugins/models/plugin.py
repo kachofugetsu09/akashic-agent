@@ -59,6 +59,7 @@ async def apply(ctx: Context, config: object) -> None:
     state = ModelsState(
         store,
         root_instance_token=ctx.root_instance_token,
+        context=ctx,
         capability_catalog=LiteLlmCapabilityCatalog(
             ctx.data_root / "litellm-capabilities.json",
             writable=True,

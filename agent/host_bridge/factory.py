@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Protocol
 
 from agent.host_bridge.client import HostBridgeShellProcessManager
 from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
-from agent.tools.unified_exec import ExecutionCleanupReport
-from agent.tools.unified_exec import ExecutionResult
-from agent.tools.unified_exec import ShellProcessManager
+from agent.process_runtime import (
+    ShellProcessManager,
+    ShellProcessManagerProtocol,
+)
 
 _SOCKET_ENV = "AKASHIC_HOST_BRIDGE_SOCKET"
 _TOKEN_ENV = "AKASHIC_HOST_BRIDGE_TOKEN"
@@ -16,39 +16,6 @@ _BOOT_ID_ENV = "AKASHIC_BOOT_ID"
 _MODE_ENV = "AKASHIC_EXECUTION_MODE"
 _RELEASE_COMMIT_ENV = "AKASHIC_RUNTIME_COMMIT"
 _TOOLCHAIN_DIGEST_ENV = "AKASHIC_HOST_TOOLCHAIN_DIGEST"
-
-
-class ShellProcessManagerProtocol(Protocol):
-    async def exec_command(
-        self,
-        *,
-        command: str,
-        argv: list[str],
-        cwd: Path | None,
-        env: dict[str, str],
-        tty: bool,
-        yield_time_ms: int,
-        max_output_tokens: int,
-        hard_timeout_s: int,
-        owner_session_key: str,
-    ) -> ExecutionResult: ...
-    async def write_stdin(
-        self,
-        *,
-        execution_id: int,
-        chars: str,
-        yield_time_ms: int,
-        max_output_tokens: int,
-        owner_session_key: str,
-    ) -> ExecutionResult: ...
-    async def terminate_execution(
-        self, execution_id: int, *, owner_session_key: str
-    ) -> bool: ...
-    async def terminate_owner(
-        self, owner_session_key: str
-    ) -> ExecutionCleanupReport: ...
-    async def shutdown(self) -> ExecutionCleanupReport: ...
-    async def active_execution_ids(self) -> list[int]: ...
 
 
 def build_shell_process_manager() -> ShellProcessManagerProtocol:

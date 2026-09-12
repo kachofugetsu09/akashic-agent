@@ -6,10 +6,14 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 
-from agent.host_bridge.factory import ShellProcessManagerProtocol, build_shell_process_manager
+from agent.host_bridge.factory import build_shell_process_manager
+from agent.process_runtime import (
+    ExecutionCleanupReport,
+    ExecutionResult,
+    ShellProcessManagerProtocol,
+)
 from agent.plugin_composition.context import Context
 from agent.plugin_composition.model import ServiceKey
-from agent.tools.unified_exec import ExecutionCleanupReport, ExecutionResult
 
 
 class ProcessCleanupError(RuntimeError):
