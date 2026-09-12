@@ -7,9 +7,8 @@ from typing import Annotated, Literal, Protocol
 from agent.plugin_composition import ServiceKey
 from pydantic import BaseModel, ConfigDict, Field
 
-from plugins.turn_projection.plugin import Turn
-from session.log import MessageReader
-from session.message import Message
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import Message
 
 Text = Annotated[str, Field(min_length=1)]
 Status = Literal["delivered", "rejected", "failed"]
@@ -31,13 +30,21 @@ class Receipt(BaseModel):
     error: Text | None = None
 
 
+class SenderResult(Protocol):
+    """发送插件返回的窄结果；Delivery 在边界重新校验为自身 Receipt。"""
+
+    status: Status
+    provider_ids: tuple[str, ...]
+    error: str | None
+
+
 class Sender(Protocol):
     @property
     def idempotent(self) -> bool: ...
 
-    async def send(self, key: str, address: str, message: Message) -> Receipt: ...
+    async def send(self, key: str, address: str, message: Message) -> SenderResult: ...
 
-    async def query(self, key: str, address: str) -> Receipt | None:
+    async def query(self, key: str, address: str) -> SenderResult | None:
         """只查询原效果；None 表示缺少可确认回执，不证明没有发送。"""
         ...
 
@@ -45,10 +52,17 @@ class Sender(Protocol):
 OpenSender = Callable[[str], AbstractAsyncContextManager[Sender]]
 
 
+class FinalOutputTurn(Protocol):
+    """最终 Output 等待只需要来源和结尾消息，不依赖 Turn 投影实现。"""
+
+    source: str
+    ending_message_id: str | None
+
+
 class FinalOutputWaiter(Protocol):
     """等待一个已投影 Turn 的最终 Output 完成其外部送达。"""
 
-    async def wait(self, reader: MessageReader, turn: Turn) -> None: ...
+    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None: ...
 
 
 class FinalOutputDelivery:
@@ -67,7 +81,7 @@ class FinalOutputDelivery:
         if self._providers.get(source) is provider:
             del self._providers[source]
 
-    async def wait(self, reader: MessageReader, turn: Turn) -> None:
+    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
         provider = self._providers.get(turn.source)
         if provider is None:
             raise ValueError(f"没有来源 {turn.source!r} 的最终 Output provider")

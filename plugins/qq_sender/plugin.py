@@ -1,18 +1,17 @@
 """固定 OneBot WebSocket 配置的 QQ 出站。"""
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 import logging
-from typing import Self
+from typing import Protocol, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidHandshake
 
-from agent.plugin_composition import CREDENTIALS, Context, CredentialRef
+from agent.plugin_composition import CREDENTIALS, Context, CredentialRef, Effect, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from plugins.delivery.senders import DELIVERY_SENDERS
 
 from .sender import QQSender
 
@@ -20,6 +19,24 @@ api_version = 3
 name = "qq_sender"
 version = "1.0.0"
 desc = "通过固定 OneBot 连接发送 QQ 正文和附件"
+
+
+class SenderTarget(Protocol):
+    idempotent: bool
+
+
+class SenderRegistry(Protocol):
+    async def register(
+        self,
+        ctx: Context,
+        *,
+        name: str,
+        idempotent: bool,
+        open: Callable[[], AbstractAsyncContextManager[SenderTarget]],
+    ) -> Effect: ...
+
+
+DELIVERY_SENDERS = ServiceKey[SenderRegistry]("delivery.senders.v1")
 inject = (DELIVERY_SENDERS, CREDENTIALS, MESSAGE_CATALOG, ARTIFACT_READ)
 
 

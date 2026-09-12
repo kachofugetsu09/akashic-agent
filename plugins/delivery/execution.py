@@ -8,7 +8,7 @@ from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
 from session.log import MessageCatalog, MessageReader, MessageWriter
-from session.message import Body, Message
+from agent.plugin_contracts import Body, Message
 
 from .api import OpenSender, Receipt, Sink
 from .records import Delivery, DeliveryRecords, Selection, delivery_key

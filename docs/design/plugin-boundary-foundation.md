@@ -235,3 +235,15 @@ Web、Mobile 和控制端每次页面或正文投影在同一个 snapshot lease 
 完成后释放；长连接、下载票据和频道对象不缓存业务 provider。新一页使用当前代，
 单页不串代。历史事实与下载摘要检查保持原约束；提供者变化导致表示不匹配时仍明确拒绝，
 不放宽摘要条件。展示测试覆盖新 kind、提供者替换、提供者移除和每页 lease 释放。
+
+
+### 9.6 独立出站 provider
+
+Telegram、QQ 和 Akashic sender 在自己的包中声明注册输入及发送结果，不导入
+Delivery 实现。Delivery 在 sender 边界严格校验结果为其自身回执；字段、状态和
+provider IDs 的持久语义不变，未知效果不变成可重试的成功。实际网络调用及全部附件
+预读仍由 sender 执行；只读日志和 artifact 能力不扩大权限。
+
+最终 Output 的等待只读取来源与结束消息 ID，不依赖 turn_projection 类身份。
+注册表、发送记录、原 binding、lease 与恢复仍归原 owner；本层没有迁移正式数据。
+公开 Message 输入沿用已有 Core 值合同，不新建业务 schema 中心。

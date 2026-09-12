@@ -1,16 +1,15 @@
 """固定配置的 Telegram 出站；不创建 Bot 收件实例。"""
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
-from typing import Self
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Protocol, Self
 from urllib.parse import urlsplit
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.plugin_composition import CREDENTIALS, Context, CredentialRef
+from agent.plugin_composition import CREDENTIALS, Context, CredentialRef, Effect, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from plugins.delivery.senders import DELIVERY_SENDERS
 
 from .sender import TelegramSender
 
@@ -18,6 +17,24 @@ api_version = 3
 name = "telegram_sender"
 version = "1.0.0"
 desc = "用固定凭据发送 Telegram 正文和附件"
+
+
+class SenderTarget(Protocol):
+    idempotent: bool
+
+
+class SenderRegistry(Protocol):
+    async def register(
+        self,
+        ctx: Context,
+        *,
+        name: str,
+        idempotent: bool,
+        open: Callable[[], AbstractAsyncContextManager[SenderTarget]],
+    ) -> Effect: ...
+
+
+DELIVERY_SENDERS = ServiceKey[SenderRegistry]("delivery.senders.v1")
 inject = (DELIVERY_SENDERS, CREDENTIALS, MESSAGE_CATALOG, ARTIFACT_READ)
 
 

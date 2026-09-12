@@ -9,7 +9,7 @@ from agent.plugin_composition import Context
 from plugins.delivery.api import Sink
 from plugins.delivery.execution import Deliveries
 from session.log import MessageCatalog, MessageReader
-from session.message import Message
+from agent.plugin_contracts import Message
 
 logger = logging.getLogger(__name__)
 Select = Callable[[MessageReader, Message], tuple[Sink, ...] | None]

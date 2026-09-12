@@ -28,13 +28,21 @@ def sources(path):
     target.mkdir()
     (target / "plugin.py").write_text('''
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 import json
+from typing import Literal
 from agent.plugin_composition import RUNTIME_STARTED, ServiceKey
-from plugins.delivery.api import Receipt
 api_version = 3
 name = "test_sender"
 version = "1.0.0"
 inject = (ServiceKey("delivery.senders.v1"),)
+
+@dataclass(frozen=True)
+class SendResult:
+    status: Literal["delivered", "rejected", "failed"]
+    provider_ids: tuple[str, ...] = ()
+    error: str | None = None
+
 async def apply(ctx, config):
     async def start(_event):
         path = ctx.data_root / "receiver-starts"
@@ -49,7 +57,7 @@ async def apply(ctx, config):
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a") as file:
                 file.write(json.dumps([key, address, message.message_id, "original-A"]) + "\\n")
-            return Receipt(status="delivered", provider_ids=("original-A",))
+            return SendResult(status="delivered", provider_ids=("original-A",))
         async def query(self, key, address):
             path = ctx.data_root / "sent.jsonl"
             if not path.exists():
@@ -57,7 +65,7 @@ async def apply(ctx, config):
             for line in path.read_text().splitlines():
                 entry = json.loads(line)
                 if entry[0] == key and entry[1] == address:
-                    return Receipt(status="delivered", provider_ids=("original-A",))
+                    return SendResult(status="delivered", provider_ids=("original-A",))
             return None
     @asynccontextmanager
     async def open():
