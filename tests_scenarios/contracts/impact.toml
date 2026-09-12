@@ -53,14 +53,11 @@ scenarios = ["context_history_nondestructive"]
 priority = "p0"
 requirements = ["OUT-001", "OUT-002", "PLG-003", "PLG-008", "SES-002", "SES-005", "SES-006", "TST-001", "TST-003"]
 paths = [
-  "infra/mobile_realtime/**",
+  "plugins/akashic_clients/mobile_realtime/**",
   "agent/plugins/**",
   "agent/turns/outbound.py",
   "bootstrap/app.py",
   "bootstrap/app_server.py",
-  "bootstrap/channel_host.py",
-  "bootstrap/channels.py",
-  "bootstrap/chat_api.py",
   "bus/events.py",
   "bus/events_lifecycle.py",
   "agent/turn_events/**",
@@ -71,7 +68,7 @@ paths = [
   "plugins/wake/**",
   "schema/mobile-realtime-v1.json",
   "schema/archive/mobile-realtime-v1-mobile-pr6.json",
-  "scripts/generate_mobile_realtime_schema.py",
+  "plugins/akashic_clients/mobile_realtime/schema_cli.py",
   "tests/mobile_realtime/**",
   "tests_scenarios/mobile_isolated_gateway.py",
 ]
@@ -100,13 +97,13 @@ requirements = [
 ]
 paths = [
   "frontend/chat/**",
-  "infra/mobile_realtime/gateway.py",
-  "infra/mobile_realtime/protocol.py",
-  "infra/mobile_webui/**",
+  "plugins/akashic_clients/mobile_realtime/gateway.py",
+  "plugins/akashic_clients/mobile_realtime/protocol.py",
+  "plugins/akashic_clients/mobile_webui/**",
   "package-lock.json",
   "schema/mobile-realtime-v1.json",
-  "scripts/generate_mobile_realtime_schema.py",
-  "scripts/publish-mobile-webui.py",
+  "plugins/akashic_clients/mobile_realtime/schema_cli.py",
+  "plugins/akashic_clients/mobile_webui/release_cli.py",
   "tests/mobile_webui/**",
 ]
 depends_on = ["mobile_realtime"]

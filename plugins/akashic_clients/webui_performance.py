@@ -3,11 +3,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, cast
 
 import uvicorn
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.akashic_clients.chat_api import create_chat_app
