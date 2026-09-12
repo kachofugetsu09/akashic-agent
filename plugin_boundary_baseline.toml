@@ -38,7 +38,6 @@ R1 = [
     "migrations/yoyo/20260909_01_close_empty_wake_responses.py|plugins.wake.request",
 ]
 R2 = [
-    "plugins/akasha/dashboard.py|agent.plugins.snapshot",
     "plugins/akasha/infrastructure/sparse_index/builder.py|agent.turn_effects",
     "plugins/akasha/repair.py|session.embedding_store",
     "plugins/codex/driver.py|core.net.http",
@@ -90,8 +89,6 @@ R2 = [
     "plugins/standard_web/web.py|core.net.http",
     "plugins/telegram_sender/sender.py|infra.channels.telegram_utils",
     "plugins/telegram_sender/sender.py|session.artifacts",
-    "plugins/wake/dashboard.py|agent.plugins.snapshot",
-    "plugins/workbench_ui/dashboard.py|agent.plugins.snapshot",
     "plugins/workbench_ui/dashboard.py|infra.channels.message_view",
 ]
 R3 = [

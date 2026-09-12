@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
-from agent.plugin_composition.model import CompositionError
+from agent.plugin_composition.model import CompositionError, ServiceKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,14 @@ class DashboardContext:
         default_factory=lambda: MappingProxyType({}),
         repr=False,
     )
+
+    _resolve: Callable[[ServiceKey[object]], object] | None = field(default=None, repr=False)
+
+    def require[T](self, key: ServiceKey[T]) -> T:
+        """在 async 路由的当前请求租约内取得声明能力，不暴露宿主 Root。"""
+        if self._resolve is None:
+            raise CompositionError("DASHBOARD_SCOPE_MISSING", "Dashboard 没有请求能力入口")
+        return cast(T, self._resolve(cast(ServiceKey[object], key)))
 
     def workspace_root(self, name: str) -> Path:
         """返回与当前 Dashboard generation 相同的声明式 workspace root。"""
