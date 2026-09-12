@@ -83,11 +83,6 @@
       "reason": "提供 Web/Mobile 所需的文档、技能和任务只读检查投影。"
     },
     {
-      "name": "akashic_clients",
-      "depends_on": ["models", "runtime_inspection"],
-      "reason": "提供可替换的 Akashic Web/Mobile 普通 channel；客户端配置和生命周期归插件。"
-    },
-    {
       "name": "prompt",
       "depends_on": ["context"],
       "reason": "拥有 Prompt 材料和首次人格文件初始化。"
@@ -121,6 +116,11 @@
       "name": "reply",
       "depends_on": ["sources", "conversation", "tools", "tool_search", "react", "reply_program"],
       "reason": "把来源输入接到回复执行和持久输出。"
+    },
+    {
+      "name": "akashic_clients",
+      "depends_on": ["models", "reply", "runtime_inspection"],
+      "reason": "提供可替换的 Akashic Web/Mobile 普通 channel；客户端配置和生命周期归插件。"
     },
     {
       "name": "eventmail",
