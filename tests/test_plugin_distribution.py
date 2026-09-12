@@ -387,6 +387,30 @@ def test_distribution_release_manifest_passes_deployment_image_verifier(
     assert deployment.verify_deployment_image(manifest, image_id) == image_id
 
 
+def test_release_environment_exports_distribution_tree(monkeypatch, tmp_path):
+    from scripts.akashic_release import activate
+    from scripts.akashic_release.model import ReleasePaths
+
+    monkeypatch.setattr(activate, "docker_socket_gid", lambda: 961)
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-only-key")
+    paths = ReleasePaths(tmp_path / "release")
+    paths.create_layout()
+    values = activate.release_environment(
+        paths=paths,
+        manifest={
+            "sourceCommit": "a" * 40,
+            "sourceTree": "b" * 40,
+            "hostToolchainIdentity": {"toolchainDigest": "c" * 64},
+            "imageId": "sha256:" + "d" * 64,
+        },
+        current={},
+        mise=tmp_path / "mise",
+    )
+
+    assert values["AKASHIC_RUNTIME_COMMIT"] == "a" * 40
+    assert values["AKASHIC_RUNTIME_TREE"] == "b" * 40
+
+
 def test_formal_host_context_contains_core_and_bundles_only(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
