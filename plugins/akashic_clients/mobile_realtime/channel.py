@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 from ..services import ChatModelSelection, ModelCallStats
@@ -21,18 +22,31 @@ from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentReadLease,
     AttachmentRef,
+    ChannelDurableInboundPort,
+    ChannelPresentationPorts,
     ChannelInboundMessage,
     ChannelAttachmentReadPort,
     ChannelCommitRole,
     ChannelFactoryContext,
     ChannelReady,
     ChannelRuntimePorts,
+    PresentationReceipt,
+    TurnStreamEvent,
+    TurnStreamEventKind,
+    TurnStartedPresentation,
+    StreamDeltaPresentation,
+    ToolPresentation,
+    TurnOutputCompletedPresentation,
     DeliveryStatus as ProviderDeliveryStatus,
+    DeliveryStatus as PresentationDeliveryStatus,
     InboundIdentity,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
     RawInbound,
     StopReceipt,
+    DURABLE_INBOUND_MARKER,
+    DURABLE_HANDOFF_ID,
+    DURABLE_PROVIDER_MESSAGE_ID,
 )
 from ..message_types import (
     AttachmentKind as BusAttachmentKind,
@@ -59,7 +73,6 @@ from ..services import (
 )
 from ..services import InvalidPage, MessageCatalogPort as MessageCatalog, MessageConflict, MessageReaderPort as MessageReader
 from agent.plugin_contracts.message import ContentPart, Input
-from ..services import MessageBusPort as MessageBus
 from ..services import AttachmentStorePort as AttachmentStore
 from ..services import ModelCatalogSnapshot
 from ..services import (
@@ -72,7 +85,6 @@ from ..runtime_inspection import (
     RuntimeInspectionError,
     RuntimeInspectionService,
 )
-from ..services import ClientChannelContext as ChannelContext
 from agent.plugin_composition.message_view import MessageDisplayReader, read_message_rows, session_row
 from .message_view import message_chunks, message_json as _message_json
 from .attachments import (
@@ -131,6 +143,58 @@ class MobileCommandError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class _DurableInboundBridge:
+    """Translate the formal durable channel port to the local command owner."""
+
+    def __init__(self, port: ChannelDurableInboundPort) -> None:
+        self._port = port
+
+    async def reserve_mobile_channel_handoff(self, raw: RawInbound) -> bool:
+        return await self._port.reserve(raw)
+
+    async def defer_mobile_channel_handoff(self, handoff_id: str) -> None:
+        await self._port.defer(handoff_id)
+
+    async def settle_rejected_mobile_input(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> None:
+        await self._port.settle_rejected(
+            session_key=session_key,
+            provider_message_id=client_message_id,
+        )
+
+    def has_pending_mobile_handoff(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> bool:
+        return self._port.has_pending(
+            session_key=session_key,
+            provider_message_id=client_message_id,
+        )
+
+    def pending_mobile_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        client_message_id: str,
+    ) -> tuple[AttachmentRef, ...] | None:
+        return self._port.pending_attachment_refs(
+            session_key=session_key,
+            provider_message_id=client_message_id,
+        )
+
+
+def _event_namespace(**fields: object) -> Any:
+    """Build the legacy event-shaped view from a neutral turn stream payload."""
+
+    return SimpleNamespace(**fields)
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,10 +330,10 @@ class _MobileInboundRuntime:
     ) -> bool:
         """Use only Core's durable recovery ingress for a retained handoff."""
 
-        recovery = ports.recovery_ingress
-        if recovery is None:
-            raise RuntimeError("Mobile v3 ingress 缺少 Core recovery port")
-        return await recovery.recover(raw)
+        durable = ports.durable_inbound
+        if durable is None:
+            raise RuntimeError("Mobile v3 ingress 缺少 durable inbound port")
+        return await durable.recover(raw)
 
     async def wait_quiescent(self) -> None:
         current = asyncio.current_task()
@@ -290,6 +354,7 @@ class MobileV3ChannelAdapter:
         self._context = context
         self._started = False
         self._stopped = False
+        self._stopping = False
 
     async def start(self) -> ChannelReady:
         """Open the v3 binding without starting a second Mobile provider owner."""
@@ -336,9 +401,15 @@ class MobileV3ChannelAdapter:
 
         if self._stopped:
             return StopReceipt(self._context.binding_token, resources_closed=True)
+        self._stopping = True
+        try:
+            self._channel._close_v3_inbound()
+            await self._channel._drain_v3_inbound()
+        except BaseException:
+            self._stopping = False
+            raise
         self._stopped = True
-        self._channel._close_v3_inbound()
-        await self._channel._drain_v3_inbound()
+        self._stopping = False
         return StopReceipt(self._context.binding_token, resources_closed=True)
 
 
@@ -428,9 +499,9 @@ class MobileRealtimeChannel:
         self._messages: MessageCatalog | None = None
         self.reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
         self._runtime = runtime
-        self._ctx: ChannelContext | None = None
-        self._input_bus: MessageBus | None = None
+        self._input_bus: _DurableInboundBridge | None = None
         self._upload_store: AttachmentStore | None = None
+        self._command_catalog: tuple[tuple[str, str], ...] = ()
         self._processing_commands: set[tuple[str, str]] = set()
         self._receipt_completion_failures: set[tuple[str, str]] = set()
         self._active_turn_ids: dict[str, str] = {}
@@ -460,6 +531,9 @@ class MobileRealtimeChannel:
         self._model_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None
         self._channel_attachment_store: ChannelAttachmentArtifactStore | None = None
         self._v3_inbound_runtime = _MobileInboundRuntime()
+        self._presentation_subscription: Any | None = None
+        self._client_sessions: dict[str, str] = {}
+        self._turn_sessions: dict[str, str] = {}
 
     def bind_channel_attachment_store(
         self,
@@ -534,6 +608,143 @@ class MobileRealtimeChannel:
             provider.catalog()
         )
 
+    def bind_command_catalog(self, catalog: tuple[tuple[str, str], ...]) -> None:
+        """Bind a frozen command projection without retaining the registry owner."""
+
+        if self._command_catalog and self._command_catalog != catalog:
+            raise RuntimeError("Mobile command catalog 不允许替换")
+        self._command_catalog = tuple(catalog)
+
+    def attach_presentation(self, ports: ChannelPresentationPorts) -> None:
+        """Subscribe Mobile output projection to the formal turn stream."""
+
+        if ports.turn_stream is None:
+            raise RuntimeError("Mobile presentation 缺少 turn stream")
+        if self._presentation_subscription is not None:
+            raise RuntimeError("Mobile presentation 已绑定")
+        self._presentation_subscription = ports.turn_stream.subscribe(
+            self._on_turn_stream
+        )
+
+    async def _on_turn_stream(self, event: TurnStreamEvent) -> Any:
+        """Convert the neutral stream payload to the Mobile projection owner."""
+
+        payload = event.payload
+        if event.kind is TurnStreamEventKind.TURN_STARTED:
+            assert isinstance(payload, TurnStartedPresentation)
+            session_id = self._session_for_client_message(payload.client_message_id)
+            if session_id is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Mobile presentation 缺少 inbound session 映射",
+                )
+            await self._on_turn_started(
+                _event_namespace(
+                    channel=self.name,
+                    session_key=session_id,
+                    turn_id=payload.turn_id,
+                    control_turn_id=payload.turn_id,
+                    client_message_id=payload.client_message_id,
+                    content="",
+                )
+            )
+        elif event.kind is TurnStreamEventKind.STREAM_DELTA:
+            assert isinstance(payload, StreamDeltaPresentation)
+            session_id = self._turn_sessions.get(payload.turn_id)
+            if session_id is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Mobile presentation 缺少 turn session 映射",
+                )
+            await self._on_stream_delta(
+                _event_namespace(
+                    channel=self.name,
+                    session_key=session_id,
+                    turn_id=payload.turn_id,
+                    content_delta=payload.text_delta,
+                    thinking_delta=payload.reasoning_delta,
+                )
+            )
+        elif event.kind is TurnStreamEventKind.TOOL_STARTED:
+            assert isinstance(payload, ToolPresentation)
+            session_id = self._turn_sessions.get(payload.turn_id)
+            if session_id is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Mobile presentation 缺少 turn session 映射",
+                )
+            await self._on_tool_call_started(
+                _event_namespace(
+                    channel=self.name,
+                    session_key=session_id,
+                    turn_id=payload.turn_id,
+                    call_id=payload.tool_call_id,
+                    tool_name=payload.tool_name,
+                    arguments={},
+                )
+            )
+        elif event.kind is TurnStreamEventKind.TOOL_COMPLETED:
+            assert isinstance(payload, ToolPresentation)
+            session_id = self._turn_sessions.get(payload.turn_id)
+            if session_id is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Mobile presentation 缺少 turn session 映射",
+                )
+            await self._on_tool_call_completed(
+                _event_namespace(
+                    channel=self.name,
+                    session_key=session_id,
+                    turn_id=payload.turn_id,
+                    call_id=payload.tool_call_id,
+                    tool_name=payload.tool_name,
+                    status="completed",
+                    final_arguments={},
+                    result_preview="",
+                )
+            )
+        else:
+            assert isinstance(payload, TurnOutputCompletedPresentation)
+            session_id = self._turn_sessions.get(payload.turn_id)
+            if session_id is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Mobile presentation 缺少 turn session 映射",
+                )
+            await self._on_output_completed(
+                _event_namespace(
+                    channel=self.name,
+                    session_key=session_id,
+                    turn_id=payload.turn_id,
+                    client_message_id=self._client_message_for_turn(payload.turn_id),
+                )
+            )
+        return PresentationReceipt(
+            event.presentation_id,
+            PresentationDeliveryStatus.DELIVERED,
+            provider_ids=("mobile",),
+        )
+
+    def _session_for_client_message(self, client_message_id: str) -> str | None:
+        session_id = self._client_sessions.get(client_message_id)
+        if session_id is not None:
+            return session_id
+        for (session_id, _turn_id), state in self._process_turns.items():
+            if state.client_message_id == client_message_id:
+                return session_id
+        return None
+
+    def _client_message_for_turn(self, turn_id: str) -> str:
+        for (session_id, current_turn), state in self._process_turns.items():
+            if current_turn == turn_id:
+                return state.client_message_id
+        raise RuntimeError(f"Mobile presentation 缺少 turn client message: {turn_id}")
+
     async def refresh_mobile_ui_catalog(self) -> None:
         """目录内容变化时通知所有手机重新拉取插件 UI。"""
 
@@ -560,7 +771,11 @@ class MobileRealtimeChannel:
         self._mobile_ui_catalog_identity = identity
 
     async def start(
-        self, ctx: ChannelContext,
+        self,
+        *,
+        host_boot_id: str,
+        durable_inbound: ChannelDurableInboundPort,
+        attachment_store: AttachmentStore,
     ) -> None:
         """启动上传和输入恢复；消息及回复状态由已绑定的窄读取端口提供。"""
         if self._input_bus is not None:
@@ -569,15 +784,12 @@ class MobileRealtimeChannel:
         # 1. 先由持久 inbox owner 声明宿主 boot；之后才绑定输入和事件监听。
         #    这只追加 reset 边界，不推断或伪造任何 turn 终态。
         _ = self._runtime.storage.mark_transport_boot(
-            ctx.host_boot_id,
+            host_boot_id,
             created_at=datetime.now(timezone.utc),
         )
-        bus = ctx.bus
-        attachment_store = ctx.attachment_store
-        self._ctx = ctx
+        bus = _DurableInboundBridge(durable_inbound)
         self._input_bus = bus
         self._upload_store = attachment_store
-        bus.bind_mobile_channel_inbound_recoverer(self._recover_v3_handoff)
         self._attachments = AttachmentTransferService(
             self._runtime.storage, attachment_store,
             max_attachment_bytes=self._runtime.config.max_attachment_mb * 1024 * 1024,
@@ -597,9 +809,17 @@ class MobileRealtimeChannel:
         self._attachments = None
         self._upload_store = None
         self._input_bus = None
+        subscription = self._presentation_subscription
+        if subscription is not None:
+            subscription.close_admission()
+            await subscription.await_quiescence()
+            await subscription.close()
+            self._presentation_subscription = None
         self._send_received_at.clear()
         self._processing_commands.clear()
         self._receipt_completion_failures.clear()
+        self._client_sessions.clear()
+        self._turn_sessions.clear()
 
     async def handle_command(
         self,
@@ -970,6 +1190,7 @@ class MobileRealtimeChannel:
     def _close_v3_inbound(self) -> None:
         """Prevent new Mobile commands from observing a retired binding."""
 
+        self._runtime.close_admission()
         self._v3_inbound_runtime.close()
 
     async def _drain_v3_inbound(self) -> None:
@@ -1540,17 +1761,11 @@ class MobileRealtimeChannel:
     def _list_commands(self, frame: GenericCommand) -> CommandReply:
         """返回当前已启用插件的快捷命令目录。"""
 
-        # 1. 命令目录由 ChannelContext 统一提供
+        # 1. 命令目录是 apply 阶段冻结的独立能力投影。
         _expect_keys(frame.payload, set())
         items: list[dict[str, str]] = []
         seen: set[str] = set()
-        context = self._require_ctx()
-        catalog = (
-            context.command_catalog_provider()
-            if context.command_catalog_provider is not None
-            else ()
-        )
-        for raw_command, raw_description in catalog:
+        for raw_command, raw_description in self._command_catalog:
             command = raw_command.strip().removeprefix("/")
             description = raw_description.strip()
             if not _BOT_COMMAND_PATTERN.fullmatch(command):
@@ -2054,6 +2269,7 @@ class MobileRealtimeChannel:
         ports, callback_task = self._v3_inbound_runtime.capture()
         bus = self._require_input_bus()
         reserved_handoff_id: str | None = None
+        admitted = False
         try:
             claimed_session = self._runtime.storage.has_session_claim(session_id)
             try:
@@ -2064,6 +2280,7 @@ class MobileRealtimeChannel:
                 )
             except (AttachmentRequestError, AttachmentStateError) as error:
                 raise MobileCommandError("attachment_not_ready", str(error)) from error
+            handoff_id = uuid4().hex
             metadata: dict[str, object] = {
                 "client_request_id": frame.id,
                 "client_message_id": frame.payload.client_message_id,
@@ -2072,7 +2289,10 @@ class MobileRealtimeChannel:
                 "require_existing_session": claimed_session,
                 "session_key_override": session_id,
                 "mobile_v3_handoff": True,
-                "mobile_handoff_id": uuid4().hex,
+                "mobile_handoff_id": handoff_id,
+                DURABLE_INBOUND_MARKER: True,
+                DURABLE_HANDOFF_ID: handoff_id,
+                DURABLE_PROVIDER_MESSAGE_ID: frame.payload.client_message_id,
             }
             if frame.payload.retry_of_client_message_id is not None:
                 metadata["retry_of_client_message_id"] = (
@@ -2128,9 +2348,14 @@ class MobileRealtimeChannel:
                     raise RuntimeError(
                         "Mobile attachment ref 在 handoff reserve 后漂移"
                     )
+            # The neutral turn stream carries the client message identity but
+            # intentionally omits session routing.  Keep this short-lived
+            # inbound mapping until the matching turn reaches terminal state.
+            self._client_sessions[frame.payload.client_message_id] = session_id
             accepted = await self._v3_inbound_runtime.admit(raw, ports=ports)
             if not accepted:
                 raise RuntimeError("Mobile exact ingress 违反 captured binding fence")
+            admitted = True
             reserved_handoff_id = None
             self._runtime.storage.claim_session(
                 device_id=device_id, session_id=session_id, created_at=_utc_now(),
@@ -2166,6 +2391,8 @@ class MobileRealtimeChannel:
         except BaseException:
             if reserved_handoff_id is not None:
                 await bus.defer_mobile_channel_handoff(reserved_handoff_id)
+            if not admitted:
+                _ = self._client_sessions.pop(frame.payload.client_message_id, None)
             raise
         finally:
             self._v3_inbound_runtime.release_capture(callback_task)
@@ -2282,6 +2509,7 @@ class MobileRealtimeChannel:
             control_turn_id=event.control_turn_id or turn_id,
             client_message_id=event.client_message_id,
         )
+        self._turn_sessions[turn_id] = event.session_key
         self._turn_started_at[process_key] = monotonic()
         # 同一 key 的旧终态墓碑（同 turn_id 重试）不得压制新一轮增量。
         _ = self._turn_terminals.pop(process_key, None)
@@ -2939,7 +3167,7 @@ class MobileRealtimeChannel:
                 if media_path.startswith(("http://", "https://")):
                     snapshot = await snapshot_remote_media(
                         media_path,
-                        self._require_ctx().attachment_store,
+                        self._require_upload_store(),
                         max_bytes=(
                             self._runtime.config.max_attachment_mb * 1024 * 1024
                         ),
@@ -3315,12 +3543,10 @@ class MobileRealtimeChannel:
         if error is None:
             return
         self._delta_failure = error
-        ctx = self._ctx
-        if ctx is not None:
-            ctx.log.error(
-                "mobile delta flush 失败",
-                exc_info=(type(error), error, error.__traceback__),
-            )
+        logger.error(
+            "mobile delta flush 失败",
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
     def _raise_delta_failure(self) -> None:
         if self._delta_failure is None:
@@ -3494,11 +3720,14 @@ class MobileRealtimeChannel:
             _ = batch.timer.cancel()
         _ = self._delta_locks.pop((session_id, turn_id), None)
         _ = self._turn_started_at.pop((session_id, turn_id), None)
+        _ = self._turn_sessions.pop(turn_id, None)
         # 4. 只删本 turn 的 send 计时起点，绝不连带同 session 排队消息。
         if client_message_id:
             _ = self._send_received_at.pop((session_id, client_message_id), None)
+            if self._client_sessions.get(client_message_id) == session_id:
+                _ = self._client_sessions.pop(client_message_id, None)
 
-    def _require_input_bus(self) -> MessageBus:
+    def _require_input_bus(self) -> _DurableInboundBridge:
         if self._input_bus is None:
             raise RuntimeError("Mobile 输入总线尚未启动")
         return self._input_bus
@@ -3507,11 +3736,6 @@ class MobileRealtimeChannel:
         if self._upload_store is None:
             raise RuntimeError("Mobile 上传存储尚未启动")
         return self._upload_store
-
-    def _require_ctx(self) -> ChannelContext:
-        if self._ctx is None:
-            raise RuntimeError("MobileRealtimeChannel 尚未启动")
-        return self._ctx
 
     def _require_attachments(self) -> AttachmentTransferService:
         if self._attachments is None:

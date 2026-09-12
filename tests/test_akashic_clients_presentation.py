@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
 from starlette.websockets import WebSocketState
 
 from agent.plugin_composition.channels import (
@@ -21,10 +21,12 @@ from agent.plugin_composition.channels import (
     TurnStreamEventKind,
 )
 from plugins.akashic_clients import plugin
+from plugins.akashic_clients.channel import (
+    build_akashic_channel,
+    register_generation,
+    unregister_generation,
+)
 from plugins.akashic_clients.config import AkashicClientsConfig
-from plugins.akashic_clients.model_control import ScopedModelRpcControl
-from plugins.akashic_clients.capabilities import MODEL_DISCOVER
-from agent.plugin_composition.rpc import RpcMethod
 from plugins.akashic_clients.web_chat import WebChatChannel
 
 
@@ -80,23 +82,30 @@ class _MessageScope:
             self.exited += 1
 
 
-class _RpcScope:
-    def __init__(self, provider: RpcMethod) -> None:
-        self.provider = provider
-        self.entered = 0
-        self.exited = 0
+class _FollowingReader:
+    session_id = "akashic:follow"
 
-    def require(self, key: Any) -> RpcMethod:
-        assert key is MODEL_DISCOVER
-        return self.provider
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
 
-    @asynccontextmanager
-    async def __call__(self):
-        self.entered += 1
-        try:
-            yield self
-        finally:
-            self.exited += 1
+    def head(self) -> int:
+        return 0
+
+    async def follow(self, *, after_seq: int = -1):
+        _ = after_seq
+        self.started.set()
+        await self.release.wait()
+        if False:
+            yield None
+
+
+class _FollowingCatalog:
+    def __init__(self, reader: _FollowingReader) -> None:
+        self.reader_value = reader
+
+    def reader(self, _session_id: str) -> _FollowingReader:
+        return self.reader_value
 
 
 def test_client_plugin_declares_independent_capabilities() -> None:
@@ -147,11 +156,45 @@ async def test_apply_registers_one_formal_channel_definition() -> None:
     assert registry.definition.capabilities == frozenset(
         {
             ChannelCapability.INBOUND,
+            ChannelCapability.DURABLE_INBOUND,
             ChannelCapability.OUTBOUND,
             ChannelCapability.TURN_STREAM,
         }
     )
     plugin.unregister_generation("generation-1")
+
+
+def test_same_generation_allows_distinct_binding_tokens(tmp_path: Path) -> None:
+    generation = "binding-generation"
+    register_generation(generation, AkashicClientsConfig(), tmp_path)
+    try:
+        from agent.plugin_composition.channels import ChannelFactoryContext
+
+        def context(token: str) -> ChannelFactoryContext:
+            return ChannelFactoryContext(
+                snapshot_id=f"snapshot-{token}",
+                generation_id=generation,
+                boot_id="boot-1",
+                binding_token=token,
+                config={},
+                credentials={},
+                provider_client_factory=object(),
+                ingress=None,
+                identity=None,
+            )
+
+        first = build_akashic_channel(context("binding-a"))
+        second = build_akashic_channel(context("binding-b"))
+        assert first is not second
+
+        # A successful stop releases only its exact token so a snapshot
+        # replacement can construct another binding in the same generation.
+        asyncio.run(first.stop())
+        replacement = build_akashic_channel(context("binding-a"))
+        asyncio.run(second.stop())
+        asyncio.run(replacement.stop())
+    finally:
+        unregister_generation(generation)
 
 
 @pytest.mark.asyncio
@@ -247,18 +290,21 @@ async def test_web_message_catalog_is_held_only_inside_request_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_model_rpc_is_resolved_inside_request_scope() -> None:
-    class DiscoverParams(BaseModel):
-        value: int
+async def test_web_admission_close_cancels_follow_and_releases_scope() -> None:
+    channel = WebChatChannel()
+    reader = _FollowingReader()
+    scope = _MessageScope(_FollowingCatalog(reader))
+    channel.bind_message_scope(scope)
+    socket = _Socket()
+    task = asyncio.create_task(channel._follow(socket, reader.session_id, -1))
+    await reader.started.wait()
+    channel._followers[socket] = (reader.session_id, task)
 
-    async def discover(params: DiscoverParams) -> object:
-        return {"status": 200, "body": {"value": params.value}}
+    adapter = SimpleNamespace(binding_token="binding")
+    channel._v3_adapters["binding"] = adapter
+    channel._close_v3_binding(adapter)
+    result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=1)
 
-    scope = _RpcScope(RpcMethod(DiscoverParams, discover))
-    control = ScopedModelRpcControl(scope)
-
-    result = await control.invoke_rpc("models/discover", {"value": 7})
-
-    assert result == {"status": 200, "body": {"value": 7}}
-    assert scope.entered == 1
+    assert task.cancelled()
+    assert isinstance(result[0], asyncio.CancelledError)
     assert scope.exited == 1

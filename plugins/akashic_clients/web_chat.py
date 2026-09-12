@@ -460,6 +460,18 @@ class WebChatChannel:
     def _close_v3_binding(self, adapter: WebNativeChannelAdapter) -> None:
         if self._v3_adapters.get(adapter.binding_token) is not adapter:
             raise RuntimeError("Web v3 binding 未注册")
+        # Host closes admission and then drains binding operations.  A follow
+        # keeps its request scope open while waiting for the next message, so
+        # it must be cancelled at the admission boundary or the host would
+        # wait forever for that scope to release.
+        self._cancel_followers_for_admission()
+
+    def _cancel_followers_for_admission(self) -> None:
+        """Cancel every live follow task before the host starts draining."""
+
+        for _session_id, task in tuple(self._followers.values()):
+            if not task.done() and not task.cancelling():
+                task.cancel()
 
     def _begin_v3_inbound(self) -> tuple[WebNativeChannelAdapter, ChannelRuntimePorts]:
         """在处理 Web frame 前捕获唯一打开的 exact Core binding。"""

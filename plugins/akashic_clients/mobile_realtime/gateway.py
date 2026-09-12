@@ -1363,6 +1363,13 @@ class MobileGatewayRuntime:
             return
         self._publication_monitor_task = asyncio.create_task(self._watch_publication())
 
+    def close_admission(self) -> None:
+        """Cancel long-lived follow readers before the host drains this binding."""
+
+        for task in tuple(self._message_followers.values()):
+            if not task.done() and not task.cancelling():
+                task.cancel()
+
     async def stop(self) -> None:
         """停止新订阅并排空连接 reader，再停止 publication watcher。"""
 
