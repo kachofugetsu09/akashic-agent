@@ -314,6 +314,72 @@ def test_host_runtime_cli_defaults_to_distribution(monkeypatch, tmp_path, capsys
     assert json.loads(capsys.readouterr().out)["mode"] == "distribution"
 
 
+def test_public_release_image_uses_distribution_and_keeps_bridge_identity(
+    monkeypatch, tmp_path
+):
+    import scripts.akashic_release.image as release_image
+
+    calls: list[dict[str, object]] = []
+    image_id = "sha256:" + "a" * 64
+
+    def fake_distribution(**kwargs):
+        calls.append(kwargs)
+        return {
+            "schemaVersion": 2,
+            "imageId": image_id,
+            "runtimeInfo": {"schemaVersion": 3},
+        }
+
+    bridge_identity = {"schemaVersion": 1, "toolchainDigest": "bridge-digest"}
+    monkeypatch.setattr(release_image, "build_distribution_release", fake_distribution)
+    monkeypatch.setattr(
+        release_image,
+        "declared_toolchain_identity",
+        lambda commit, mise_config: bridge_identity,
+    )
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "mise.toml").write_text("[tools]\n", encoding="utf-8")
+    manifest = tmp_path / "release.json"
+
+    result = release_image.prepare_core_image(
+        checkout=checkout,
+        commit="b" * 40,
+        manifest=manifest,
+        image_tag="akashic:test",
+    )
+
+    assert calls[0]["repository"] == checkout
+    assert calls[0]["requested_commit"] == "b" * 40
+    assert result["hostToolchainIdentity"] == bridge_identity
+    assert json.loads(manifest.read_text(encoding="utf-8"))["schemaVersion"] == 2
+
+
+def test_distribution_release_manifest_passes_deployment_image_verifier(
+    monkeypatch, tmp_path
+):
+    import scripts.verify_host_runtime_deployment as deployment
+
+    image_id = "sha256:" + "c" * 64
+    manifest = tmp_path / "release.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 2,
+                "imageId": image_id,
+                "runtimeInfo": {"schemaVersion": 3},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_inspect(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout=image_id + "\n", stderr="")
+
+    monkeypatch.setattr(deployment.subprocess, "run", fake_inspect)
+    assert deployment.verify_deployment_image(manifest, image_id) == image_id
+
+
 def test_formal_host_context_contains_core_and_bundles_only(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
