@@ -14,7 +14,7 @@ from bus.events import (
 )
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.base import AttachmentStore
-from infra.mobile_realtime.remote_media import snapshot_remote_media
+from infra.channels.remote_media import snapshot_remote_media
 
 
 _MAX_IMPORT_BYTES = 50 * 1024 * 1024
