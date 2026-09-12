@@ -529,17 +529,28 @@ def _validate_receipt_state(
         name = item.get("name")
         item_marketplace = item.get("marketplace")
         source_revision = item.get("source_revision")
+        installed_path = item.get("installed_path")
+        data_path = item.get("data_path")
         if (
             not isinstance(name, str)
             or _PATH_SEGMENT.fullmatch(name) is None
             or not isinstance(item_marketplace, str)
             or _PATH_SEGMENT.fullmatch(item_marketplace) is None
+            or item_marketplace != marketplace
             or not isinstance(source_revision, str)
             or _REVISION.fullmatch(source_revision) is None
-            or not isinstance(item.get("installed_path"), str)
-            or not Path(item["installed_path"]).is_absolute()
-            or not isinstance(item.get("data_path"), str)
-            or not Path(item["data_path"]).is_absolute()
+            or not isinstance(installed_path, str)
+            or not Path(installed_path).is_absolute()
+            or not isinstance(data_path, str)
+            or not Path(data_path).is_absolute()
+            or not _under(
+                Path(installed_path),
+                plugins_home / "cache" / item_marketplace / name,
+            )
+            or not _under(
+                Path(data_path),
+                workspace_plugin_data_dir(workspace, name, item_marketplace),
+            )
         ):
             raise ValueError("distribution receipt installed 条目身份无效")
         historical_id = f"{name}@{item_marketplace}"
