@@ -914,6 +914,7 @@ async def attach_open_mobile_v3(channel: Any, ingress: Any) -> Any:
     context = ChannelFactoryContext(
         snapshot_id="device-perf-snapshot",
         generation_id="device-perf-generation",
+        boot_id="test-boot",
         binding_token="device-perf-binding",
         config={},
         credentials={},

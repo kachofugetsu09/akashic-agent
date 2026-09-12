@@ -54,6 +54,7 @@ from agent.plugin_composition.channels import (
     ProviderDeliveryRequest,
     PresentationReceipt,
     RawInbound,
+    DURABLE_INBOUND_MARKER,
     StreamSubscription,
     StopReceipt,
     TurnStreamCallback,
@@ -78,6 +79,31 @@ class InputCustody(Protocol):
     async def prepare_channel_input(self, envelope: InboundEnvelope) -> None: ...
     async def complete_channel_input(self, envelope: InboundEnvelope) -> None: ...
     async def retain_channel_input(self, envelope: InboundEnvelope) -> None: ...
+
+    async def reserve_durable_inbound(self, raw: RawInbound) -> bool: ...
+
+    async def defer_durable_inbound(self, handoff_id: str) -> None: ...
+
+    async def settle_rejected_inbound(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> None: ...
+
+    def has_pending_durable_inbound(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> bool: ...
+
+    def pending_durable_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> tuple[AttachmentRef, ...] | None: ...
 
 
 IdentityResolver = Callable[[str, str], str | None]
@@ -503,8 +529,8 @@ class _ChannelIngress:
         return await self._host._admit_inbound(self._key, raw)
 
 
-class _ChannelRecoveryIngress:
-    """Re-admit one Core-owned durable handoff without weakening provider dedupe."""
+class _ChannelDurableInbound:
+    """Expose only the durable handoff operations declared by one binding."""
 
     def __init__(
         self,
@@ -513,6 +539,56 @@ class _ChannelRecoveryIngress:
     ) -> None:
         self._host = host
         self._key = key
+
+    def _custody(self) -> InputCustody:
+        state = self._host._binding(self._key)
+        if ChannelCapability.DURABLE_INBOUND not in state.capabilities:
+            raise RuntimeError("channel 未声明 durable inbound capability")
+        if state.stopped or state.stopping or not state.admission_open:
+            raise RuntimeError("channel durable inbound admission 已关闭")
+        custody = self._host._input_custody
+        if custody is None:
+            raise RuntimeError("Channel input custody runtime port 未绑定")
+        return custody
+
+    async def reserve(self, raw: RawInbound) -> bool:
+        return await self._custody().reserve_durable_inbound(raw)
+
+    async def defer(self, handoff_id: str) -> None:
+        await self._custody().defer_durable_inbound(handoff_id)
+
+    async def settle_rejected(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> None:
+        await self._custody().settle_rejected_inbound(
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
+
+    def has_pending(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> bool:
+        return self._custody().has_pending_durable_inbound(
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
+
+    def pending_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> tuple[AttachmentRef, ...] | None:
+        return self._custody().pending_durable_attachment_refs(
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
 
     async def recover(self, raw: RawInbound) -> bool:
         return await self._host._recover_inbound(self._key, raw)
@@ -936,6 +1012,7 @@ class ChannelGenerationHost:
         on_before_start: BeforeStartCallback,
         config_revision_checker: ConfigRevisionChecker,
         on_failure: FailureCallback,
+        boot_id: str | None = None,
         snapshot_lease_acquirer: SnapshotLeaseAcquirer | None = None,
         identity_resolver: IdentityResolver | None = None,
         identity_rememberer: IdentityRememberer | None = None,
@@ -951,6 +1028,8 @@ class ChannelGenerationHost:
             raise TypeError("config_revision_checker 必须是 async callback")
         if not callable(on_failure):
             raise TypeError("on_failure 必须可调用")
+        if boot_id is not None:
+            _text(boot_id, "boot_id")
         if snapshot_lease_acquirer is not None and not callable(
             snapshot_lease_acquirer
         ):
@@ -984,6 +1063,10 @@ class ChannelGenerationHost:
         self._on_before_start = on_before_start
         self._config_revision_checker = config_revision_checker
         self._on_failure = on_failure
+        # One host may publish many generations.  Keep this identity on the
+        # host instance so a client can distinguish a process restart from a
+        # normal generation replacement without sharing state across hosts.
+        self._boot_id = boot_id or uuid.uuid4().hex
         self._snapshot_lease_acquirer = snapshot_lease_acquirer
         self._input_custody: InputCustody | None = None
         self._identity_resolver = identity_resolver
@@ -999,10 +1082,28 @@ class ChannelGenerationHost:
         self._start_counts: dict[tuple[str, str], int] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
+    @property
+    def boot_id(self) -> str:
+        """Return the stable identity shared by this host's generations."""
+
+        return self._boot_id
+
     def bind_input_custody(self, custody: InputCustody) -> None:
         """绑定传输接纳的唯一恢复 owner；来源由 exact Root 另行提供。"""
         if self._input_custody is not None:
             raise RuntimeError("Channel input custody 已绑定")
+        for method in (
+            "prepare_channel_input",
+            "complete_channel_input",
+            "retain_channel_input",
+            "reserve_durable_inbound",
+            "defer_durable_inbound",
+            "settle_rejected_inbound",
+            "has_pending_durable_inbound",
+            "pending_durable_attachment_refs",
+        ):
+            if not callable(getattr(custody, method, None)):
+                raise TypeError(f"Channel input custody 缺少 {method}(...)")
         self._input_custody = custody
 
     def bind_control_interrupter(self, interrupter: ControlInterrupter) -> None:
@@ -1619,15 +1720,12 @@ class ChannelGenerationHost:
         if not isinstance(raw, RawInbound):
             raise TypeError("Channel recovery 只接受 RawInbound")
         state = self._binding(key)
-        if state.plugin_id != "core":
-            raise RuntimeError("Channel recovery 只属于 Core durable inbound")
-        if raw.message.metadata.get("mobile_v3_handoff") is not True:
-            raise RuntimeError("Channel recovery 缺少 Mobile durable marker")
         if (
-            ChannelCapability.INBOUND not in state.capabilities
+            ChannelCapability.DURABLE_INBOUND not in state.capabilities
+            or ChannelCapability.INBOUND not in state.capabilities
             or state.inbound_identity is not InboundIdentity.PROVIDER_MESSAGE_ID
         ):
-            raise RuntimeError("channel 未声明可用的 inbound capability")
+            raise RuntimeError("channel 未声明 durable inbound capability")
         if raw.message.channel != state.channel_name:
             raise RuntimeError("RawInbound channel 与 exact binding 不一致")
         if not state.admission_open or state.stopping or state.stopped:
@@ -1668,19 +1766,18 @@ class ChannelGenerationHost:
             raise RuntimeError("RawInbound channel 与 exact binding 不一致")
         if not state.admission_open or state.stopping or state.stopped:
             raise RuntimeError("channel admission 已关闭")
-        if raw.message.metadata.get("mobile_v3_handoff") is True and not (
-            state.plugin_id == "core" and state.channel_name == "akashic"
-        ):
-            raise RuntimeError("Mobile durable handoff 只属于 Core akashic binding")
+        durable_marker = raw.message.metadata.get(DURABLE_INBOUND_MARKER) is True
+        if durable_marker and ChannelCapability.DURABLE_INBOUND not in state.capabilities:
+            raise RuntimeError("durable handoff 只属于声明 durable capability 的 binding")
         session_key = f"{state.channel_name}:{raw.message.chat_id}"
         if "session_key_override" in raw.message.metadata:
             override = raw.message.metadata["session_key_override"]
             if not (
-                state.plugin_id == "core" and state.channel_name == "akashic"
-                and raw.message.metadata.get("mobile_v3_handoff") is True
+                ChannelCapability.DURABLE_INBOUND in state.capabilities
+                and durable_marker
                 and isinstance(override, str) and override.strip()
             ):
-                raise RuntimeError("Session override 只属于已验证的 Mobile durable handoff")
+                raise RuntimeError("Session override 只属于已验证的 durable handoff")
             session_key = override.strip()
         provider_scope = raw.provider_identity or ""
         dedupe_key = (provider_scope, raw.message_id)
@@ -1992,6 +2089,7 @@ class ChannelGenerationHost:
         state.factory_context = ChannelFactoryContext(
             snapshot_id=state.snapshot_id,
             generation_id=state.generation_id,
+            boot_id=self._boot_id,
             binding_token=state.binding_token,
             config=state.config,
             credentials=credentials,
@@ -2061,9 +2159,9 @@ class ChannelGenerationHost:
                         ingress=context.ingress,
                         identity=context.identity,
                         attachment_import=context.attachment_import,
-                        recovery_ingress=(
-                            _ChannelRecoveryIngress(self, key)
-                            if state.plugin_id == "core"
+                        durable_inbound=(
+                            _ChannelDurableInbound(self, key)
+                            if ChannelCapability.DURABLE_INBOUND in state.capabilities
                             else None
                         ),
                     )

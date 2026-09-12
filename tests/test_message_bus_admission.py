@@ -133,8 +133,8 @@ async def test_persistent_cleanup_failure_is_bounded_and_shutdown_cancels_retry(
         "persistent",
         "hello",
         metadata={
-            "client_message_id": "client-persistent",
-            "mobile_v3_handoff": True,
+            "provider_message_id": "client-persistent",
+            "durable_inbound": True,
         },
     )
     await bus.publish_inbound(item)
@@ -179,8 +179,8 @@ async def test_cleanup_finalize_failure_is_fatal_and_observable(
         "fatal",
         "hello",
         metadata={
-            "client_message_id": "client-fatal",
-            "mobile_v3_handoff": True,
+            "provider_message_id": "client-fatal",
+            "durable_inbound": True,
         },
     )
     await bus.publish_inbound(item)
@@ -559,15 +559,15 @@ async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
     manager.save(manager.get_or_create(session_key))
     bus = MessageBus()
     bus.bind_durable_inbound_store(manager.inbound_store)
-    bus.bind_mobile_session_admission_owner(manager.admissions)
+    bus.bind_session_admission_owner(manager.admissions)
     envelope, _ = _v3_inbound(
         channel="akashic",
         message_id="client-delete-before-reserve",
         metadata={
             "session_key_override": session_key,
-            "client_message_id": "client-delete-before-reserve",
-            "mobile_v3_handoff": True,
-            "mobile_handoff_id": "handoff-delete-before-reserve",
+            "provider_message_id": "client-delete-before-reserve",
+            "durable_inbound": True,
+            "durable_handoff_id": "handoff-delete-before-reserve",
         },
     )
     raw = RawInbound(
@@ -577,7 +577,7 @@ async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
         message=envelope.message,
     )
     await bus._durable_handoff_lock.acquire()
-    reserving = asyncio.create_task(bus.reserve_mobile_channel_handoff(raw))
+    reserving = asyncio.create_task(bus.reserve_durable_inbound(raw))
     await asyncio.sleep(0)
     assert not reserving.done()
     assert manager.delete_session(session_key) is True
@@ -607,15 +607,15 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
     store = manager.inbound_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
-    bus.bind_mobile_session_admission_owner(manager.admissions)
+    bus.bind_session_admission_owner(manager.admissions)
     envelope, _ = _v3_inbound(
         channel="akashic",
         message_id="client-close-before-reserve-lock",
         metadata={
             "session_key_override": session_key,
-            "client_message_id": "client-close-before-reserve-lock",
-            "mobile_v3_handoff": True,
-            "mobile_handoff_id": "handoff-close-before-reserve-lock",
+            "provider_message_id": "client-close-before-reserve-lock",
+            "durable_inbound": True,
+            "durable_handoff_id": "handoff-close-before-reserve-lock",
         },
     )
     raw = RawInbound(
@@ -625,7 +625,7 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
         message=envelope.message,
     )
     await bus._durable_handoff_lock.acquire()
-    reserving = asyncio.create_task(bus.reserve_mobile_channel_handoff(raw))
+    reserving = asyncio.create_task(bus.reserve_durable_inbound(raw))
     await asyncio.sleep(0)
     closing = asyncio.create_task(bus.aclose())
     await asyncio.sleep(0)
@@ -638,7 +638,7 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
         await reserving
     await closing
     assert store.list_inbound_handoffs() == []
-    assert bus._mobile_v3_admissions == {}
+    assert bus._durable_admissions == {}
     assert (
         manager.admissions._conn.execute(
             "SELECT 1 FROM session_admissions WHERE session_key = ?",
@@ -653,8 +653,8 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
 @pytest.mark.parametrize('plugin,channel,metadata', [
     ('ordinary', 'feishu', {'session_key_override': 'other-session'}),
     ('core', 'akashic', {'session_key_override': 'other-session'}),
-    ('ordinary', 'feishu', {'session_key_override': 'other-session', 'mobile_v3_handoff': True}),
-    ('core', 'akashic', {'session_key_override': '', 'mobile_v3_handoff': True}),
+    ('ordinary', 'feishu', {'session_key_override': 'other-session', 'durable_inbound': True}),
+    ('core', 'akashic', {'session_key_override': '', 'durable_inbound': True}),
 ])
 async def test_channel_authority_rejects_untrusted_session_override_before_enqueue(plugin, channel, metadata):
     from types import SimpleNamespace
@@ -676,14 +676,50 @@ async def test_channel_authority_rejects_untrusted_session_override_before_enque
         await host._admit_inbound(('snapshot', channel), raw)
 
 
+def test_channel_host_boot_id_is_stable_and_host_scoped():
+    from agent.plugins.channel_generation_host import ChannelGenerationHost
+
+    async def unused(*args):
+        return None
+
+    first = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+        boot_id="app-host-1",
+    )
+    second = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+        boot_id="app-host-2",
+    )
+    generated_a = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+    )
+    generated_b = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+    )
+
+    assert first.boot_id == "app-host-1"
+    assert first.boot_id == first.boot_id
+    assert second.boot_id == "app-host-2"
+    assert first.boot_id != second.boot_id
+    assert generated_a.boot_id and generated_a.boot_id != generated_b.boot_id
+
+
 @pytest.mark.asyncio
 async def test_mobile_envelope_session_must_match_durable_handoff_before_reserve():
     envelope, lease = _v3_inbound(
         channel="akashic",
         metadata={
-            "mobile_v3_handoff": True,
-            "mobile_v3_handoff_id": "handoff-1",
-            "client_message_id": "message-1",
+            "durable_inbound": True,
+            "durable_handoff_id": "handoff-1",
+            "provider_message_id": "message-1",
             "session_key_override": "akashic:authorized",
         },
     )

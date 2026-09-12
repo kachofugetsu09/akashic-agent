@@ -77,6 +77,7 @@ def _canonical_channel_config_value(value: object) -> object:
 
 class ChannelCapability(StrEnum):
     INBOUND = "inbound"
+    DURABLE_INBOUND = "durable_inbound"
     OUTBOUND = "outbound"
     CONTROL = "control"
     TURN_STREAM = "turn_stream"
@@ -113,6 +114,13 @@ JsonValue: TypeAlias = (
     | tuple["JsonValue", ...]
     | Mapping[str, "JsonValue"]
 )
+
+# These keys describe the transport handoff itself.  A provider message ID
+# remains the identity source; metadata only carries the durable reservation.
+DURABLE_INBOUND_MARKER = "durable_inbound"
+DURABLE_HANDOFF_ID = "durable_handoff_id"
+DURABLE_PROVIDER_MESSAGE_ID = "provider_message_id"
+DURABLE_ATTACHMENT_REFS = "durable_attachment_refs"
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +200,34 @@ class ChannelIngressPort(Protocol):
     async def admit(self, raw: RawInbound) -> bool: ...
 
 
-class ChannelRecoveryIngressPort(Protocol):
+class ChannelDurableInboundPort(Protocol):
+    """Expose the one durable handoff owner to a declared channel binding."""
+
+    async def reserve(self, raw: RawInbound) -> bool: ...
+
+    async def defer(self, handoff_id: str) -> None: ...
+
+    async def settle_rejected(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> None: ...
+
+    def has_pending(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> bool: ...
+
+    def pending_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> tuple[AttachmentRef, ...] | None: ...
+
     async def recover(self, raw: RawInbound) -> bool: ...
 
 
@@ -640,7 +675,7 @@ class ChannelRuntimePorts:
     ingress: ChannelIngressPort | None
     identity: ChannelIdentityPort | None
     attachment_import: ChannelAttachmentImportPort | None
-    recovery_ingress: ChannelRecoveryIngressPort | None = None
+    durable_inbound: ChannelDurableInboundPort | None = None
 
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")
@@ -650,10 +685,23 @@ class ChannelRuntimePorts:
             ("ingress", self.ingress, "admit"),
             ("identity", self.identity, "resolve"),
             ("attachment_import", self.attachment_import, "import_bytes"),
-            ("recovery_ingress", self.recovery_ingress, "recover"),
+            ("durable_inbound", self.durable_inbound, "recover"),
         ):
             if value is not None and not callable(getattr(value, method, None)):
                 raise TypeError(f"channel runtime {name} 必须提供 {method}(...)")
+        if self.durable_inbound is not None:
+            for method in (
+                "reserve",
+                "defer",
+                "settle_rejected",
+                "has_pending",
+                "pending_attachment_refs",
+                "recover",
+            ):
+                if not callable(getattr(self.durable_inbound, method, None)):
+                    raise TypeError(
+                        f"channel runtime durable_inbound 必须提供 {method}(...)"
+                    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -738,6 +786,7 @@ class ChannelTaskSpawner(Protocol):
 class ChannelFactoryContext:
     snapshot_id: str
     generation_id: str
+    boot_id: str
     binding_token: str
     config: Mapping[str, object]
     credentials: Mapping[str, CredentialRef]
@@ -755,6 +804,7 @@ class ChannelFactoryContext:
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")
         _text(self.generation_id, "generation_id")
+        _text(self.boot_id, "boot_id")
         _text(self.binding_token, "binding_token")
         config = _freeze_channel_config(self.config)
         if not isinstance(config, Mapping):
@@ -955,6 +1005,13 @@ class ChannelDefinition:
             raise ValueError("inbound channel 必须声明 inbound_identity")
         if not has_inbound and self.inbound_identity is not None:
             raise ValueError("非 inbound channel 不得声明 inbound_identity")
+        if ChannelCapability.DURABLE_INBOUND in self.capabilities and (
+            not has_inbound
+            or self.inbound_identity is not InboundIdentity.PROVIDER_MESSAGE_ID
+        ):
+            raise ValueError(
+                "durable inbound channel 必须同时声明 INBOUND/PROVIDER_MESSAGE_ID"
+            )
         object.__setattr__(self, "credential_paths", _credential_paths(self.credential_paths, allow_empty=True))
 
 
@@ -987,6 +1044,13 @@ class CoreChannelDefinition:
             raise ValueError("inbound core channel 必须声明 inbound_identity")
         if not has_inbound and self.inbound_identity is not None:
             raise ValueError("非 inbound core channel 不得声明 inbound_identity")
+        if ChannelCapability.DURABLE_INBOUND in self.capabilities and (
+            not has_inbound
+            or self.inbound_identity is not InboundIdentity.PROVIDER_MESSAGE_ID
+        ):
+            raise ValueError(
+                "durable inbound channel 必须同时声明 INBOUND/PROVIDER_MESSAGE_ID"
+            )
         factory_export = self.factory_export or (
             "core."
             + self.name.replace("-", "_")
@@ -1079,6 +1143,13 @@ class ChannelDescriptor:
             raise ValueError("inbound channel descriptor 必须声明 inbound_identity")
         if not has_inbound and self.inbound_identity is not None:
             raise ValueError("非 inbound channel descriptor 不得声明 inbound_identity")
+        if ChannelCapability.DURABLE_INBOUND in self.capabilities and (
+            not has_inbound
+            or self.inbound_identity is not InboundIdentity.PROVIDER_MESSAGE_ID
+        ):
+            raise ValueError(
+                "durable inbound channel descriptor 必须同时声明 INBOUND/PROVIDER_MESSAGE_ID"
+            )
         object.__setattr__(
             self,
             "credential_paths",
@@ -1776,7 +1847,12 @@ __all__ = [
     "ChannelControlPort",
     "ChannelDeliveryReceipt",
     "ChannelFactoryContext",
+    "ChannelDurableInboundPort",
     "ChannelIngressPort",
+    "DURABLE_ATTACHMENT_REFS",
+    "DURABLE_HANDOFF_ID",
+    "DURABLE_INBOUND_MARKER",
+    "DURABLE_PROVIDER_MESSAGE_ID",
     "ChannelIdentityPort",
     "ChannelReady",
     "ChannelTerminalStatus",

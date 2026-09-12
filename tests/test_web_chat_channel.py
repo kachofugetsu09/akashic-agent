@@ -171,6 +171,7 @@ def _v3_context(
     return ChannelFactoryContext(
         snapshot_id="snapshot-1",
         generation_id="generation-1",
+        boot_id="test-boot",
         binding_token="binding-1",
         config={},
         credentials={},
@@ -191,6 +192,7 @@ async def _open_inbound_adapter(
     context = ChannelFactoryContext(
         snapshot_id="snapshot-1",
         generation_id="generation-1",
+        boot_id="test-boot",
         binding_token=binding_token,
         config={},
         credentials={},

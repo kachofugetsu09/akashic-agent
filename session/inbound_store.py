@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import threading
@@ -15,6 +16,47 @@ _SCHEMA = {
 )""",
     "idx_inbound_handoffs_session": """CREATE INDEX IF NOT EXISTS idx_inbound_handoffs_session ON inbound_handoffs(session_key, created_at)""",
 }
+
+
+def _project_handoff_metadata(metadata_json: str) -> str:
+    """Project historical handoff metadata onto the neutral durable contract."""
+
+    try:
+        value = json.loads(metadata_json)
+    except (TypeError, ValueError):
+        return metadata_json
+    if not isinstance(value, dict):
+        return metadata_json
+    projected = dict(value)
+    if projected.get("durable_inbound") is not True and projected.get(
+        "mobile_v3_handoff"
+    ) is True:
+        projected["durable_inbound"] = True
+    if "durable_handoff_id" not in projected and isinstance(
+        projected.get("mobile_handoff_id"), str
+    ):
+        projected["durable_handoff_id"] = projected["mobile_handoff_id"]
+    if "provider_message_id" not in projected and isinstance(
+        projected.get("client_message_id"), str
+    ):
+        projected["provider_message_id"] = projected["client_message_id"]
+    if "durable_attachment_refs" not in projected and isinstance(
+        projected.get("mobile_v3_attachment_refs"), list
+    ):
+        projected["durable_attachment_refs"] = projected[
+            "mobile_v3_attachment_refs"
+        ]
+    return json.dumps(projected, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _project_handoff_row(row: sqlite3.Row) -> dict[str, str | None]:
+    """Return one row without modifying its authoritative SQLite bytes."""
+
+    result = {key: cast(str | None, row[key]) for key in row.keys()}
+    metadata_json = result.get("metadata_json")
+    if isinstance(metadata_json, str):
+        result["metadata_json"] = _project_handoff_metadata(metadata_json)
+    return result
 
 
 def init_inbound_handoffs(connection: sqlite3.Connection) -> None:
@@ -73,6 +115,7 @@ class InboundHandoffStore:
     ) -> tuple[str, bool]:
         """在 MessageBus 暴露输入前持久接纳完整交接记录。"""
 
+        metadata_json = _project_handoff_metadata(metadata_json)
         # 1. 固定完整身份；客户端重投只允许传输时间不同。
         fields = (
             handoff_id,
@@ -109,7 +152,10 @@ class InboundHandoffStore:
         def validate_existing(row: sqlite3.Row, *, include_timestamp: bool) -> None:
             expected_identity = identity if include_timestamp else stable_identity
             for column, expected in expected_identity.items():
-                if row[column] != expected:
+                actual = row[column]
+                if column == "metadata_json" and isinstance(actual, str):
+                    actual = _project_handoff_metadata(actual)
+                if actual != expected:
                     raise RuntimeError(
                         "inbound handoff identity conflict: "
                         f"handoff_id={handoff_id} field={column}"
@@ -201,30 +247,30 @@ class InboundHandoffStore:
                 """ + after_sql + " ORDER BY created_at ASC, handoff_id ASC" + limit_sql,
                 parameters,
             ).fetchall()
-        return [{key: cast(str | None, row[key]) for key in row.keys()} for row in rows]
+        return [_project_handoff_row(row) for row in rows]
 
     def has_inbound_handoff(
         self,
         *,
         session_key: str,
-        client_message_id: str,
+        provider_message_id: str,
     ) -> bool:
-        """检查客户端消息是否仍有尚未完成的交接。"""
+        """检查 provider message 是否仍有尚未完成的交接。"""
 
         return self.read_inbound_handoff(
             session_key=session_key,
-            client_message_id=client_message_id,
+            provider_message_id=provider_message_id,
         ) is not None
 
     def read_inbound_handoff(
         self,
         *,
         session_key: str,
-        client_message_id: str,
+        provider_message_id: str,
     ) -> dict[str, str | None] | None:
         """读取一个仍由 durable queue 持有的 exact handoff。"""
 
-        dedupe_key = f"{session_key}:{client_message_id}"
+        dedupe_key = f"{session_key}:{provider_message_id}"
         with self._lock:
             row = self._conn.execute(
                 """
@@ -238,7 +284,7 @@ class InboundHandoffStore:
             ).fetchone()
         if row is None:
             return None
-        return {key: cast(str | None, row[key]) for key in row.keys()}
+        return _project_handoff_row(row)
 
     def complete_inbound_handoff(self, handoff_id: str) -> None:
         """处理 owner 确认完成后释放唯一交接记录。"""
@@ -254,4 +300,3 @@ class InboundHandoffStore:
                 self._conn.rollback()
                 raise RuntimeError(f"inbound handoff not found: {handoff_id}")
             self._conn.commit()
-

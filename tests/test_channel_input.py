@@ -96,7 +96,7 @@ async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recov
     if inbound_store is not None:
         assert admissions is not None
         custody.bind_durable_inbound_store(inbound_store)
-        custody.bind_mobile_session_admission_owner(admissions)
+        custody.bind_session_admission_owner(admissions)
     identities, rollbacks, adapters = {}, [], []
     async def remember(channel, provider, recipient):
         identities[(channel, provider)] = recipient
@@ -116,13 +116,17 @@ async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recov
     channel.bind_input_custody(custody)
     try:
         await host.load_all()
+        capabilities = {ChannelCapability.INBOUND}
+        if inbound_store is not None:
+            capabilities.add(ChannelCapability.DURABLE_INBOUND)
         await host.bind_core_channel_definitions((CoreChannelDefinition(
-            name=channel_name, capabilities=frozenset({ChannelCapability.INBOUND}),
+            name=channel_name, capabilities=frozenset(capabilities),
             factory=factory, inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
             source_revision="test", config_revision="test", generation_id="test",
         ),))
         if inbound_store is not None:
-            custody.bind_mobile_channel_inbound_recoverer(adapters[-1].ports.recovery_ingress.recover)
+            assert adapters[-1].ports.durable_inbound is not None
+            custody.bind_durable_inbound_recoverer(adapters[-1].ports.durable_inbound.recover)
             if recover:
                 await custody.recover_durable_inbounds()
         yield log, host, custody, identities, rollbacks, adapters[-1]
@@ -223,16 +227,16 @@ async def test_mobile_delete_retry_does_not_turn_committed_input_into_failed_acc
             message = RawInbound("mobile-1", ChannelInboundMessage(
                 channel="akashic", chat_id="room", sender="device:one", content="hello",
                 timestamp=datetime(2026, 9, 5, tzinfo=UTC), metadata={
-                    "session_key_override": "akashic:room", "client_message_id": "mobile-1",
-                    "mobile_v3_handoff": True, "mobile_handoff_id": "handoff-1",
+                    "session_key_override": "akashic:room", "provider_message_id": "mobile-1",
+                    "durable_inbound": True, "durable_handoff_id": "handoff-1",
                 },
             ), provider_identity="room", recipient="room")
-            assert await custody.reserve_mobile_channel_handoff(message)
+            assert await custody.reserve_durable_inbound(message)
             assert await adapter.context.ingress.admit(message) is True
             await asyncio.wait_for(retry_started.wait(), 2)
             assert len(log.reader("akashic:room").snapshot()) == 1
-            assert custody.mobile_inbound_cleanup_pending(custody.envelopes[0])
-            assert store.has_inbound_handoff(session_key="akashic:room", client_message_id="mobile-1")
+            assert custody.durable_inbound_cleanup_pending(custody.envelopes[0])
+            assert store.has_inbound_handoff(session_key="akashic:room", provider_message_id="mobile-1")
             with pytest.raises(SessionAdmissionConflictError):
                 manager.delete_session_with_audit("akashic:room")
             jobs = tuple(custody._inbound_cleanup_tasks.values())
@@ -240,7 +244,7 @@ async def test_mobile_delete_retry_does_not_turn_committed_input_into_failed_acc
             await asyncio.wait_for(asyncio.gather(*jobs), 2)
             assert store.list_inbound_handoffs() == []
             assert not custody.envelopes[0].lease.active
-            assert custody._mobile_v3_admissions == {}
+            assert custody._durable_admissions == {}
             assert calls == 2 and rollbacks == []
             assert custody.inbound_size == 0
     finally:
@@ -255,7 +259,7 @@ async def test_retry_uses_message_identity_without_copying_transport_clock_or_ha
     async with runtime(tmp_path) as (log, host, custody, identities, rollbacks, adapter):
         first = raw().message
         second = replace(first, timestamp=first.timestamp + timedelta(hours=1),
-                         metadata={"mobile_handoff_id": "another", "client_request_id": "retry"})
+                         metadata={"durable_handoff_id": "another", "client_request_id": "retry"})
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             accept = snapshot.composition_root.context.require(CHANNEL_INPUT)
             original = await accept("probe:room", "fixed", first)
@@ -320,8 +324,8 @@ def mobile_raw(number=1, *, attachments=()):
     return RawInbound(f"mobile-{number}", ChannelInboundMessage(
         channel="akashic", chat_id="room", sender="device:one", content="hello",
         timestamp=datetime(2026, 9, 5, tzinfo=UTC), attachments=attachments, metadata={
-            "session_key_override": "akashic:room", "client_message_id": f"mobile-{number}",
-            "mobile_v3_handoff": True, "mobile_handoff_id": f"handoff-{number}",
+            "session_key_override": "akashic:room", "provider_message_id": f"mobile-{number}",
+            "durable_inbound": True, "durable_handoff_id": f"handoff-{number}",
         },
     ), provider_identity="room", recipient="room")
 
@@ -346,10 +350,10 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
     handoffs, admissions = InboundHandoffStore(path), SessionAdmissions(path)
     original = MessageBus()
     original.bind_durable_inbound_store(handoffs)
-    original.bind_mobile_session_admission_owner(admissions)
+    original.bind_session_admission_owner(admissions)
     raw_message = mobile_raw()
     try:
-        assert await original.reserve_mobile_channel_handoff(raw_message)
+        assert await original.reserve_durable_inbound(raw_message)
         reserved = handoffs.list_inbound_handoffs()
     finally:
         await original.aclose()
@@ -373,7 +377,7 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
                 assert messages[0] == first
             assert handoffs.list_inbound_handoffs() == []
             assert custody.inbound_size == 0 and custody.completed == 1
-            assert custody._mobile_v3_admissions == {}
+            assert custody._durable_admissions == {}
             assert custody.envelopes[0].snapshot_id == host.current_snapshot.snapshot_id
             assert custody.envelopes[0].binding_token == adapter.context.binding_token
             assert not custody.envelopes[0].lease.active
@@ -393,12 +397,12 @@ async def test_mobile_recovery_pages_past_live_owner_without_replaying_it(tmp_pa
     try:
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             custody.reserve_gate.clear()
-            assert await custody.reserve_mobile_channel_handoff(mobile_raw(1))
+            assert await custody.reserve_durable_inbound(mobile_raw(1))
             live = asyncio.create_task(adapter.context.ingress.admit(mobile_raw(1)))
             await asyncio.wait_for(custody.reserved.wait(), 2)
             for number in (2, 3):
-                assert await custody.reserve_mobile_channel_handoff(mobile_raw(number))
-                await custody.defer_mobile_channel_handoff(f"handoff-{number}")
+                assert await custody.reserve_durable_inbound(mobile_raw(number))
+                await custody.defer_durable_inbound(f"handoff-{number}")
             custody.reserve_gate.set()
             await custody.recover_durable_inbounds()
             assert await live is True
@@ -417,9 +421,9 @@ async def test_mobile_recovery_missing_session_retains_row_and_releases_batch_cl
     manager.save(manager.get_or_create("akashic:room"))
     original = MessageBus()
     original.bind_durable_inbound_store(manager.inbound_store)
-    original.bind_mobile_session_admission_owner(manager.admissions)
+    original.bind_session_admission_owner(manager.admissions)
     for number in (1, 2):
-        assert await original.reserve_mobile_channel_handoff(mobile_raw(number))
+        assert await original.reserve_durable_inbound(mobile_raw(number))
     await original.aclose()
     assert manager.delete_session("akashic:room")
     try:
@@ -447,7 +451,7 @@ async def test_mobile_precommit_cancel_or_shutdown_keeps_exact_attachment_handof
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             custody.reserve_gate.clear()
             message = mobile_raw(attachments=(ref,))
-            assert await custody.reserve_mobile_channel_handoff(message)
+            assert await custody.reserve_durable_inbound(message)
             submit = asyncio.create_task(adapter.context.ingress.admit(message))
             await asyncio.wait_for(custody.reserved.wait(), 2)
             if close_bus:
@@ -459,12 +463,12 @@ async def test_mobile_precommit_cancel_or_shutdown_keeps_exact_attachment_handof
             if close_bus:
                 await custody.aclose()
             assert not log.reader("akashic:room").snapshot()
-            assert custody.pending_mobile_attachment_refs(session_key="akashic:room", client_message_id="mobile-1") == (ref,)
+            assert custody.pending_durable_attachment_refs(session_key="akashic:room", provider_message_id="mobile-1") == (ref,)
             assert not custody.envelopes[0].lease.active
             if close_bus:
-                assert custody._mobile_v3_admissions == {}
+                assert custody._durable_admissions == {}
             else:
-                assert custody._mobile_v3_admissions["handoff-1"].recoverable
+                assert custody._durable_admissions["handoff-1"].recoverable
     finally:
         manager.close()
 
@@ -479,7 +483,7 @@ async def test_mobile_committed_cancel_waits_for_durable_delete_and_exact_releas
     try:
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             custody.complete_gate.clear()
-            assert await custody.reserve_mobile_channel_handoff(mobile_raw())
+            assert await custody.reserve_durable_inbound(mobile_raw())
             submit = asyncio.create_task(adapter.context.ingress.admit(mobile_raw()))
             await asyncio.wait_for(custody.committed.wait(), 2)
             submit.cancel()
@@ -493,7 +497,7 @@ async def test_mobile_committed_cancel_waits_for_durable_delete_and_exact_releas
                 await asyncio.wait_for(submit, 2)
             assert manager.inbound_store.list_inbound_handoffs() == []
             assert not custody.envelopes[0].lease.active
-            assert custody._mobile_v3_admissions == {}
+            assert custody._durable_admissions == {}
     finally:
         manager.close()
 
@@ -515,14 +519,14 @@ async def test_mobile_postcommit_cleanup_shutdown_retains_recoverable_row(tmp_pa
     monkeypatch.setattr(manager.inbound_store, "complete_inbound_handoff", fail_delete)
     try:
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
-            assert await custody.reserve_mobile_channel_handoff(mobile_raw())
+            assert await custody.reserve_durable_inbound(mobile_raw())
             assert await adapter.context.ingress.admit(mobile_raw())
             await asyncio.wait_for(started.wait(), 2)
             await custody.aclose()
             assert len(log.reader("akashic:room").snapshot()) == 1
             assert len(manager.inbound_store.list_inbound_handoffs()) == 1
             assert not custody.envelopes[0].lease.active
-            assert custody._mobile_v3_admissions == {}
+            assert custody._durable_admissions == {}
             assert custody._inbound_cleanup_tasks == {}
     finally:
         manager.close()
@@ -536,7 +540,7 @@ async def test_mobile_prepare_waiting_on_handoff_lock_cannot_commit_after_close(
     manager.save(manager.get_or_create("akashic:room"))
     try:
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
-            assert await custody.reserve_mobile_channel_handoff(mobile_raw())
+            assert await custody.reserve_durable_inbound(mobile_raw())
             await custody._durable_handoff_lock.acquire()
             submit = asyncio.create_task(adapter.context.ingress.admit(mobile_raw()))
             await asyncio.wait_for(custody.prepared.wait(), 2)
@@ -555,7 +559,7 @@ async def test_mobile_prepare_waiting_on_handoff_lock_cannot_commit_after_close(
             assert not log.reader("akashic:room").snapshot()
             assert len(manager.inbound_store.list_inbound_handoffs()) == 1
             assert not custody.envelopes[0].lease.active
-            assert custody._mobile_v3_admissions == {}
+            assert custody._durable_admissions == {}
     finally:
         manager.close()
 
@@ -605,7 +609,7 @@ async def test_mixed_legacy_recovery_keeps_one_page_and_still_accepts_exact_inpu
     manager.save(manager.get_or_create("akashic:room"))
     original = MessageBus()
     original.bind_durable_inbound_store(manager.inbound_store)
-    original.bind_mobile_session_admission_owner(manager.admissions)
+    original.bind_session_admission_owner(manager.admissions)
     try:
         for number, created in [(1, "2020-01-01T00:00:00+00:00"), (2, "9999-01-01T00:00:00+00:00")]:
             manager.inbound_store.reserve_inbound_handoff(
@@ -613,7 +617,7 @@ async def test_mixed_legacy_recovery_keeps_one_page_and_still_accepts_exact_inpu
                 channel="akashic", sender="device:one", chat_id="room", session_key="akashic:room",
                 content="legacy input", timestamp="2026-09-05T00:00:00+00:00", media_json="[]",
                 metadata_json=json.dumps({"client_message_id": f"legacy-{number}"}, separators=(",", ":")), created_at=created)
-        assert await original.reserve_mobile_channel_handoff(mobile_raw())
+        assert await original.reserve_durable_inbound(mobile_raw())
         await original.aclose()
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             assert custody.inbound_size == 1
