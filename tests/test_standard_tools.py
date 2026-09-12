@@ -21,7 +21,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from plugins.standard_tools.shell import SHELL_OWNERS, shell_cleanup
+from plugins.standard_tools.shell import SHELL_OWNERS, TOOL_CLEANUP, shell_cleanup
 from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
@@ -384,6 +384,7 @@ async def test_reply_closes_real_shell_after_settlement_without_changing_output(
                     content=root.require(CONTENT),
                     context=root.require(CONTEXT),
                     tools=catalog,
+                    cleanup=root.require(TOOL_CLEANUP),
                     react=controlled_react,
                     materials=root.require(MATERIALS),
                     turn_projection=root.require(TURN_PROJECTION),

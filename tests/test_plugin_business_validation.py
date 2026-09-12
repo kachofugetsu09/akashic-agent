@@ -30,7 +30,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (CHAT_MODELS, MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION, TASKS,
-          CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, REACT, TOOLS, ALL_TOOLS, TURN_PROJECTION)
+          CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, REACT, TOOLS, ALL_TOOLS, TURN_PROJECTION, ServiceKey("tools.cleanup.v1"))
 async def apply(ctx, config):
     async def validate():
         ctx.require(SESSION_ADMISSION).ensure(ctx, "validation", SessionAttributes("internal", "excluded"))
@@ -48,6 +48,7 @@ async def apply(ctx, config):
                 ctx, task, reader, "validation", models=ctx.require(CHAT_MODELS),
                 content=ctx.require(CONTENT), context=ctx.require(CONTEXT), tools=ctx.require(TOOLS),
                 react=ctx.require(REACT), materials=ctx.require(MATERIALS),
+                cleanup=ctx.require(ServiceKey("tools.cleanup.v1")),
                 turn_projection=ctx.require(TURN_PROJECTION), read_call=ctx.require(MODEL_CALLS),
                 authorize=authorize, tool_view=ctx.require(ALL_TOOLS)(),
                 max_output_tokens=100, max_steps=4,

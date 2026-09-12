@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.effect import Effect
-from plugins.conversation.source import Changed, Conversation
+from agent.plugin_composition.tasks import Task
+from agent.plugin_composition.messages import MessageReader
 from session.message import Message
 
 api_version = 3
@@ -16,12 +18,21 @@ desc = "按来源注册接纳与控制，供渠道和默认回复组合使用"
 inject = ()
 
 Accept = Callable[[str, str, ChannelInboundMessage], Awaitable[Message]]
+Changed = Callable[[MessageReader, str], None]
+
+
+class SourceSession(Protocol):
+    """来源注册表只需要启动一个已打开 Session 的程序。"""
+
+    async def start(
+        self, program: Callable[[Task, MessageReader, str], Awaitable[object]]
+    ) -> Task | None: ...
 
 
 @dataclass(frozen=True)
 class Source:
     name: str
-    open: Callable[[str], Conversation]
+    open: Callable[[str], SourceSession]
     accept: Accept | None = None
     channels: tuple[str, ...] | None = ()
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Mapping
-from contextlib import asynccontextmanager
-from typing import Literal, cast
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.timers import TIMERS
@@ -22,7 +22,7 @@ from plugins.tools.api import Denied
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
-from session.message import Message
+from session.message import CallRef, Message
 
 from .runtime import SchedulerRuntime
 from .store import JobStore
@@ -32,6 +32,26 @@ api_version = 3
 name = "scheduler"
 version = "4.0.0"
 desc = "持久调度，按原触发恢复内部消息与最终通知"
+
+
+class ToolCleanup(Protocol):
+    """Scheduler 只接收工具 owner 的窄收尾边界。"""
+
+    def __call__(
+        self,
+        ctx: Context,
+        reader: MessageReader,
+        source: str,
+        from_seq: int,
+        *,
+        task: Task,
+        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]],
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
+TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
+
+
 inject = (
     TIMERS,
     TOOLS,
@@ -44,6 +64,7 @@ inject = (
     MODEL_CALLS,
     TURN_PROJECTION,
     DELIVERY,
+    TOOL_CLEANUP,
 )
 workspace_files = ("schedules.json",)
 _DISABLED_TOOLS = frozenset({"message_push", "recall_memory", "memorize", "remember_memory", "forget_memory"})
@@ -116,6 +137,7 @@ async def apply(ctx: Context, config: Config) -> None:
             content=ctx.require(CONTENT),
             context=ctx.require(CONTEXT),
             tools=ctx.require(TOOLS),
+            cleanup=ctx.require(TOOL_CLEANUP),
             react=ctx.require(REACT),
             materials=ctx.require(MATERIALS),
             turn_projection=ctx.require(TURN_PROJECTION),

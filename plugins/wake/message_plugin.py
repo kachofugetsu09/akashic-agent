@@ -28,7 +28,7 @@ from plugins.tools.plugin import TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
 
 from .api import Config, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_CHANGED
-from .program import run
+from .program import TOOL_CLEANUP, run
 from .runtime import Runtime
 from .runtime import DashboardView
 from .request import WAKE_PROGRAM, WAKE_TOOLS_VIEW, check_phase, check_request
@@ -53,6 +53,7 @@ inject = (
     OWNER_STATE,
     SESSION_ADMISSION,
     TOOLS,
+    TOOL_CLEANUP,
     CHAT_MODELS,
     CONTENT,
     CONTEXT,

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from collections.abc import Mapping
 
 from agent.plugin_composition import Context
@@ -20,7 +21,6 @@ from plugins.models.projection import CallReader, ContentRenderer, MessageProjec
 from plugins.tools.api import Authorize, MessageReply, result_message_id
 from plugins.tools.menu import ToolMenu, ToolPresentation
 from plugins.tools.plugin import ToolView
-from plugins.standard_tools.shell import shell_cleanup
 from session.log import MessageReader
 from session.message import CallRef, ContentPart, Input, Message, Output, ToolResult
 
@@ -31,6 +31,21 @@ if TYPE_CHECKING:
     from plugins.tools.plugin import ToolCatalog
     from plugins.turn_projection.plugin import TurnProjection
     from plugins.react.plugin import Preview
+
+
+class ToolCleanup(Protocol):
+    """程序消费者提供本次工具 owner 的真实收尾边界。"""
+
+    def __call__(
+        self,
+        ctx: Context,
+        reader: MessageReader,
+        source: str,
+        from_seq: int,
+        *,
+        task: Task,
+        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]],
+    ) -> AbstractAsyncContextManager[None]: ...
 
 
 def check_source(task: Task, reader: MessageReader, source: str, through_seq: int) -> None:
@@ -47,6 +62,7 @@ def check_source(task: Task, reader: MessageReader, source: str, through_seq: in
 async def run_reply(
     ctx: Context, task: Task, reader: MessageReader, source: str, *,
     models: ChatModels, content: Content, context: ContextBuilder, tools: ToolCatalog,
+    cleanup: ToolCleanup,
     react: Callable[..., Awaitable[Message]],
     materials: ContextMaterials,
     turn_projection: TurnProjection,
@@ -87,7 +103,7 @@ async def run_reply(
         chosen = ChatModelSelection(saved.model_ref or None, saved.reasoning_effort or None)
     from_seq = min((message.seq for message in snapshot if message.message_id in open_ids), default=source_head + 1)
     async with (
-        shell_cleanup(ctx, reader, source, from_seq, task=task, drain=tools.drain_calls),
+        cleanup(ctx, reader, source, from_seq, task=task, drain=tools.drain_calls),
         content.bind() as view,
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
         materials.bind(exclude=exclude_materials) as material_view,

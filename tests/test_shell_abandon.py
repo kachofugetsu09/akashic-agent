@@ -14,6 +14,7 @@ from plugins.content.plugin import CONTENT, check_text
 from plugins.context.materials import MATERIALS
 from plugins.context.plugin import CONTEXT
 from plugins.conversation.program import run_reply
+from plugins.standard_tools.shell import TOOL_CLEANUP
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.message import CallRef, ContentPart, Control, Input, Output, ToolCall, ToolResult
@@ -131,6 +132,7 @@ async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tm
                 return await run_reply(
                     ctx, task, reader, "conversation", models=models, content=root.require(CONTENT),
                     context=root.require(CONTEXT), tools=catalog, react=controlled_react,
+                    cleanup=root.require(TOOL_CLEANUP),
                     materials=root.require(MATERIALS), turn_projection=root.require(TURN_PROJECTION),
                     read_call=_unexpected_call_read, authorize=allow, tool_names=("shell",),
                     fixed_bindings={"shell": binding}, max_output_tokens=100, max_steps=4,

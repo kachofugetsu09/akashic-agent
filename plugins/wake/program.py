@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager
+from typing import Protocol
 
-from agent.plugin_composition import CHAT_MODELS, Context
+from agent.plugin_composition import CHAT_MODELS, Context, ServiceKey
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import ModelError
 from agent.plugin_composition.tasks import Task
@@ -18,10 +20,28 @@ from plugins.tools.api import Denied
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
-from session.message import Control, Message
+from session.message import CallRef, Control, Message
 
 from .messages import HINTS, render
 from .request import Request, STAGE_TOOLS, WakeFailure, read_phase
+
+
+class ToolCleanup(Protocol):
+    """Wake 只接收工具 owner 的窄收尾边界。"""
+
+    def __call__(
+        self,
+        ctx: Context,
+        reader: MessageReader,
+        source: str,
+        from_seq: int,
+        *,
+        task: Task,
+        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]],
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
+TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
 
 
 async def run(ctx: Context, task: Task, reader: MessageReader, request: Request) -> Message:
@@ -46,6 +66,7 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             content=ctx.require(CONTENT),
             context=ctx.require(CONTEXT),
             tools=ctx.require(TOOLS),
+            cleanup=ctx.require(TOOL_CLEANUP),
             react=ctx.require(REACT),
             materials=ctx.require(MATERIALS),
             turn_projection=ctx.require(TURN_PROJECTION),
