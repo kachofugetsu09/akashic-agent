@@ -6,7 +6,7 @@ from typing import Protocol, cast
 from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGate, RESTART_GATE
-from agent.control.frame_book import CONTROL_FRAMES
+from agent.plugin_composition.control_frames import CONTROL_FRAMES
 from agent.plugin_composition.rpc import rpc_method_key
 from .result import TURN_PROJECTION
 from agent.plugin_composition.channels import ChannelInboundMessage

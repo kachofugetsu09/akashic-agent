@@ -482,3 +482,17 @@ Markdown JSON 解析属于自身；日期、原子文件写入、Turn effect 持
 embedding writer 使用实际 owner 的精确公共入口。没有另建业务接口全集，writer
 没有被伪装成只读检索端口。Prompt、Core 初始化及公开合同相关 63 项测试通过，
 定向 pyright 0 errors；静态边界 R1=29、R2=6、R3=0。最终 Gate 与 CI 尚未运行。
+
+### 9.24 控制连接与页面协议的实际公共原子
+
+控制连接 drain 路由、结束 claim 与取消回收的同一实现位于公开 control_frames；
+Core 连接与普通插件共用实际 owner，没有另建投递账本。programmatic 的 RPC 参数
+在本包校验，通用 RpcMethod 接受 Pydantic BaseModel，不要求继承宿主业务参数类。
+
+Web、Mobile、控制 API 与 Workbench 共用 Message 页面协议的纯投影实现；公开
+message_view 不读取业务配置或解析模型内容，特定 ContentPart 展示仍由已发布
+回调提供。旧 Core 路径只是同一实现的内部兼容入口，没有业务插件 reexport。
+
+程序请求、结果、MessagePush、页面、元数据与重启定向 58 项测试通过，RPC 输入
+调整后再验证 9 项通过；定向 pyright 0 errors。静态 R1=29、R2=0、R3=0，剩余
+Core 业务 import 是历史迁移链。静态清零不代替外部替换与概念审查。
