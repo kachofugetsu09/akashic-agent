@@ -6,7 +6,7 @@ from typing import Protocol
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.models import ModelRequest
-from agent.plugin_contracts import CallRef, Control, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import CallRef, Message
 
 
 MaterialData = Mapping[str, object]
@@ -29,6 +29,10 @@ class ContextModel(Protocol):
 
 
 class ContextBuilder(Protocol):
+    def settled_prefixes(self, messages: tuple[Message, ...]) -> tuple[int, ...]: ...
+
+    def summary_range(self, snapshot: tuple[Message, ...], source_message_ids: tuple[str, ...]) -> range: ...
+
     def build_attempt(
         self, snapshot: Sequence[Message], *, materials: MaterialData,
         model: ContextModel, tools: Sequence[Mapping[str, object]] = (),
@@ -113,39 +117,3 @@ MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")
 TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
 COMPACTION_SUMMARIES = ServiceKey[SummaryLookup]("compaction.summaries.v1")
 COMPACTION_READER = ServiceKey[CompactionReader]("compaction.reader.v1")
-
-
-def settled_prefixes(messages: tuple[Message, ...]) -> tuple[int, ...]:
-    """返回工具已结算或被明确放弃的前缀长度。"""
-    pending: dict[CallRef, Message] = {}
-    ends: list[int] = []
-    for index, message in enumerate(messages):
-        body = message.body
-        if isinstance(body, Output):
-            pending.update(
-                (CallRef(message.message_id, position), message)
-                for position, part in enumerate(body.parts)
-                if isinstance(part, ToolCall)
-            )
-        elif isinstance(body, ToolResult):
-            _ = pending.pop(body.call_ref, None)
-        elif isinstance(body, Control) and body.action == "abandon":
-            pending = {
-                ref: call for ref, call in pending.items()
-                if call.source != message.source or call.seq > body.through_seq
-            }
-        if not pending:
-            ends.append(index + 1)
-    return tuple(ends)
-
-
-def summary_range(snapshot: tuple[Message, ...], source_message_ids: tuple[str, ...]) -> range:
-    """按不可变消息身份定位摘要的连续覆盖区间。"""
-    identities = tuple(message.message_id for message in snapshot)
-    if not source_message_ids or source_message_ids[0] not in identities:
-        raise ValueError("摘要来源缺少实际消息")
-    start = identities.index(source_message_ids[0])
-    end = start + len(source_message_ids)
-    if identities[start:end] != source_message_ids:
-        raise ValueError("摘要来源不等于实际连续消息范围")
-    return range(start, end)

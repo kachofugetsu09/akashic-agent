@@ -8,6 +8,7 @@ from agent.plugin_composition.models import (
     LLMResponse, ModelCapabilities, ModelRequest, ModelRole, RateLimitError,
 )
 from plugins.compaction.message_summary import HEADINGS, SummaryError, closed_groups, summarize, summary_groups, window_starts
+from plugins.context.plugin import ContextBuilder
 from plugins.turn_projection.plugin import TurnProjection
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
@@ -52,8 +53,8 @@ def test_closed_prefix_never_splits_interleaved_sources_or_tool_batches():
         message(6, ToolResult(CallRef("1", 1), "success", ())),
         message(7, Input((ContentPart("text", "unanswered tail"),))),
     )
-    assert closed_groups(rows[:6], TurnProjection()) == ()
-    assert closed_groups(rows, TurnProjection()) == (rows[:7],)
+    assert closed_groups(rows[:6], TurnProjection(), settled_prefixes=ContextBuilder.settled_prefixes) == ()
+    assert closed_groups(rows, TurnProjection(), settled_prefixes=ContextBuilder.settled_prefixes) == (rows[:7],)
 
 
 def test_completed_turns_merge_overlapping_sources_but_open_batches_can_compact():
@@ -69,10 +70,10 @@ def test_completed_turns_merge_overlapping_sources_but_open_batches_can_compact(
         message(8, ToolResult(CallRef("7", 0), "success", ())),
     )
     projection = TurnProjection()
-    assert closed_groups(rows, projection) == (rows[:6], rows[6:])
-    assert window_starts(rows, projection) == (0, 6)
+    assert closed_groups(rows, projection, settled_prefixes=ContextBuilder.settled_prefixes) == (rows[:6], rows[6:])
+    assert window_starts(rows, projection, settled_prefixes=ContextBuilder.settled_prefixes) == (0, 6)
     # 先前摘要可能在当时的 open batch 后结束；本代只继续其实际剩余区间。
-    assert closed_groups(rows, projection, after=3) == (rows[3:6], rows[6:])
+    assert closed_groups(rows, projection, settled_prefixes=ContextBuilder.settled_prefixes, after=3) == (rows[3:6], rows[6:])
 
 
 @pytest.mark.parametrize("late_result", [False, True])
@@ -94,7 +95,7 @@ def test_abandon_closes_summary_prefix_without_inventing_a_tool_result(tmp_path,
         *((message(4, ToolResult(CallRef("1", 0), "success", (ContentPart("text", "late fact"),))),)
           if late_result else ()),
     )
-    assert closed_groups(rows, TurnProjection())[0] == rows[:3]
+    assert closed_groups(rows, TurnProjection(), settled_prefixes=ContextBuilder.settled_prefixes)[0] == rows[:3]
     projection = MessageProjection(provider, check_summary=_model_summary_check, source="conversation", read_call=store.read_call,
         render_content=lambda part: render_content(part, artifacts={}), tool_name=lambda binding: "old-tool",
         keep_input_ids=("3",))
@@ -128,7 +129,8 @@ async def test_summary_provider_excludes_late_abandoned_result_across_generation
         message(7, Output((ContentPart("text", "new answer"),), "complete")),
     )
     original = tuple(rows)
-    groups = closed_groups(rows, TurnProjection(), after=3 if prior_summary else 0)
+    groups = closed_groups(rows, TurnProjection(), settled_prefixes=ContextBuilder.settled_prefixes,
+                           after=3 if prior_summary else 0)
     _, calls = await summarize(summary_groups(groups, rows), previous=summary_text() if prior_summary else "",
                                model=provider, fallback=provider)
     assert "late excluded fact" not in str(requests)

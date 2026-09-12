@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Protocol, cast
+from typing import Protocol
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_contracts import ContentPart, ContentReferences, Message
@@ -59,6 +59,14 @@ class TurnProjection(Protocol):
     def project(self, messages: Sequence[Message], source: str) -> tuple[Turn, ...]: ...
 
 
+class ContextBuilder(Protocol):
+    def check_summary(self, part: ContentPart) -> ContentReferences: ...
+
+    def summary_range(
+        self, snapshot: tuple[Message, ...], source_message_ids: tuple[str, ...],
+    ) -> range: ...
+
+
 class ContentFacts(Protocol):
     def is_user_input(self, message: Message) -> bool: ...
 
@@ -66,30 +74,8 @@ class ContentFacts(Protocol):
 
 
 MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v3")
+CONTEXT = ServiceKey[ContextBuilder]("context.v2")
 COMPACTION_SUMMARIES = ServiceKey[SummaryLookup]("compaction.summaries.v1")
 COMPACTION_READER = ServiceKey[CompactionReader]("compaction.reader.v1")
 CONTENT = ServiceKey[ContentFacts]("content.v2")
 TURN_PROJECTION = ServiceKey[TurnProjection]("turn.projection.v1")
-
-
-def check_summary(part: ContentPart) -> ContentReferences:
-    """校验已发布摘要的 binding 引用，不解析摘要正文。"""
-    value = part.value
-    if not isinstance(value, Mapping):
-        raise ValueError("context.summary 必须是对象")
-    data = dict(cast(Mapping[str, object], value))
-    if set(data) != {"reference"} or not isinstance(data["reference"], str) or not data["reference"]:
-        raise ValueError("context.summary 必须包含唯一的摘要 binding 引用")
-    return ContentReferences(binding_ids=(data["reference"],))
-
-
-def summary_range(snapshot: tuple[Message, ...], source_message_ids: tuple[str, ...]) -> range:
-    """按摘要 owner 发布的消息身份定位连续覆盖区间。"""
-    identities = tuple(message.message_id for message in snapshot)
-    if not source_message_ids or source_message_ids[0] not in identities:
-        raise ValueError("摘要来源缺少实际消息")
-    start = identities.index(source_message_ids[0])
-    end = start + len(source_message_ids)
-    if identities[start:end] != source_message_ids:
-        raise ValueError("摘要来源不等于实际连续消息范围")
-    return range(start, end)

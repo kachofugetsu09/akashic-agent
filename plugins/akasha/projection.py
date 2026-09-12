@@ -5,11 +5,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
+from typing import Protocol
+
 from agent.plugin_composition.messages import MessageCatalog
-from agent.plugin_contracts import Message, Output
-from agent.plugin_contracts import Input
-from session.message_codec import encode_body
-from session.embedding_store import EmbeddingRecords
+from agent.plugin_contracts import Input, Message, Output, encode_body
 import numpy as np
 
 from .domain.model import Turn, TurnFeedback
@@ -19,6 +18,10 @@ from ._boundaries import TurnProjection
 
 
 type CausalKey = tuple[datetime, str, int, str]
+
+
+class EmbeddingRecords(Protocol):
+    def read(self, message: Message, *, model: str, dimension: int) -> tuple[float, ...] | None: ...
 
 
 @dataclass(frozen=True, slots=True)

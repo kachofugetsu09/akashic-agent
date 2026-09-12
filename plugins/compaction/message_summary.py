@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from agent.plugin_composition.models import (
     BoundChatModel, ContextLengthError, ModelRequest, ModelTimeoutError,
@@ -12,7 +12,7 @@ from agent.plugin_composition.models import (
 )
 from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import body_to_dict
-from ._boundaries import TurnProjection, settled_prefixes
+from ._boundaries import TurnProjection
 
 logger = logging.getLogger(__name__)
 
@@ -73,15 +73,21 @@ def _protected_cuts(messages: tuple[Message, ...], projection: TurnProjection,
     return protected
 
 
-def window_starts(messages: tuple[Message, ...], projection: TurnProjection) -> tuple[int, ...]:
+def window_starts(
+    messages: tuple[Message, ...], projection: TurnProjection, *,
+    settled_prefixes: Callable[[tuple[Message, ...]], tuple[int, ...]],
+) -> tuple[int, ...]:
     """首次窗口只能从完整单元开始，当前未结束工作也作为整体保留。"""
     protected = _protected_cuts(messages, projection, keep_open=True)
     return tuple(index for index in (0, *settled_prefixes(messages))
                  if index < len(messages) and index not in protected)
 
 
-def closed_groups(messages: tuple[Message, ...], projection: TurnProjection,
-                  *, after: int = 0) -> tuple[tuple[Message, ...], ...]:
+def closed_groups(
+    messages: tuple[Message, ...], projection: TurnProjection, *,
+    settled_prefixes: Callable[[tuple[Message, ...]], tuple[int, ...]],
+    after: int = 0,
+) -> tuple[tuple[Message, ...], ...]:
     """完整 Turn 不拆开；open 工作只在已结算批次后提供压缩边界。"""
     groups: list[tuple[Message, ...]] = []
     ends = set(settled_prefixes(messages)) - _protected_cuts(messages, projection, keep_open=False)

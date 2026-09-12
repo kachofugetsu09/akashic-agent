@@ -6,6 +6,7 @@ import pytest
 
 from plugins.compaction.records import ImportedSummaryRecord, LegacySummarySource, SummaryLookup, SummaryRecord, SummaryRecords
 from plugins.content.plugin import check_text
+from plugins.context.plugin import ContextBuilder
 from session.log import MessageConflict, MessageLog, OwnerTransaction
 from session.message import ContentPart, Input
 
@@ -67,17 +68,17 @@ def test_summary_publication_is_create_only_and_stale_parent_cannot_win_after_re
         inputs(log)
         records = SummaryRecords(log.owner("compaction"))
         original = log.reader("s").snapshot()
-        first = records.publish(record("first"), log.reader("s"), parent=None)
-        second = records.publish(record("second", parent=first, ids=("u1", "u2")), log.reader("s"), parent=first)
-        assert records.publish(first, log.reader("s"), parent=None) == first
+        first = records.publish(record("first"), log.reader("s"), parent=None, summary_range=ContextBuilder.summary_range)
+        second = records.publish(record("second", parent=first, ids=("u1", "u2")), log.reader("s"), parent=first, summary_range=ContextBuilder.summary_range)
+        assert records.publish(first, log.reader("s"), parent=None, summary_range=ContextBuilder.summary_range) == first
         assert records.head("s") == second
         with pytest.raises(ValueError, match="漂移"):
-            records.publish(first.model_copy(update={"content": "overwritten"}), log.reader("s"), parent=None)
+            records.publish(first.model_copy(update={"content": "overwritten"}), log.reader("s"), parent=None, summary_range=ContextBuilder.summary_range)
         assert log.reader("s").snapshot() == original
     with closing(MessageLog(path)) as log:
         records = SummaryRecords(log.owner("compaction"))
         with pytest.raises(MessageConflict, match="parent"):
-            records.publish(record("loser", parent=first, ids=("u1", "u2")), log.reader("s"), parent=first)
+            records.publish(record("loser", parent=first, ids=("u1", "u2")), log.reader("s"), parent=first, summary_range=ContextBuilder.summary_range)
         assert records.read("loser") is None
         assert records.head("s") == second and records.read("first") == first
         assert log.reader("s").snapshot() == original
@@ -100,7 +101,7 @@ def test_imported_head_keeps_exact_legacy_row_and_accepts_native_child(tmp_path)
                             content={"text": check_text})
         writer.append("u3", Input((ContentPart("text", "third input"),)))
         native = records.publish(record("new-5", parent=head, ids=("u1", "u2", "u3")),
-                                 log.reader("s"), parent=head)
+                                 log.reader("s"), parent=head, summary_range=ContextBuilder.summary_range)
         assert native.generation == 5
         assert records.head("s") == native
 
@@ -120,9 +121,9 @@ def test_failed_head_update_rolls_back_new_summary_and_rejects_wrong_source(tmp_
     with closing(MessageLog(tmp_path / "sessions.db")) as log:
         inputs(log)
         records = SummaryRecords(log.owner("compaction"))
-        first = records.publish(record("first"), log.reader("s"), parent=None)
+        first = records.publish(record("first"), log.reader("s"), parent=None, summary_range=ContextBuilder.summary_range)
         with pytest.raises(ValueError, match="范围"):
-            records.publish(record("wrong", parent=first, ids=("u1", "missing")), log.reader("s"), parent=first)
+            records.publish(record("wrong", parent=first, ids=("u1", "missing")), log.reader("s"), parent=first, summary_range=ContextBuilder.summary_range)
         assert records.read("wrong") is None
         save = OwnerTransaction.save
         def fail_head(self, key, value, *, expected_version):
@@ -131,7 +132,7 @@ def test_failed_head_update_rolls_back_new_summary_and_rejects_wrong_source(tmp_
             return save(self, key, value, expected_version=expected_version)
         monkeypatch.setattr(OwnerTransaction, "save", fail_head)
         with pytest.raises(OSError, match="write failure"):
-            records.publish(record("next", parent=first, ids=("u1", "u2")), log.reader("s"), parent=first)
+            records.publish(record("next", parent=first, ids=("u1", "u2")), log.reader("s"), parent=first, summary_range=ContextBuilder.summary_range)
         assert records.head("s") == first
         assert records.read("next") is None
 
@@ -142,11 +143,11 @@ def test_summary_keeps_recent_start_and_only_extends_its_actual_range(tmp_path):
         writer = log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
         writer.append("u3", Input((ContentPart("text", "third"),)))
         records = SummaryRecords(log.owner("compaction"))
-        first = records.publish(record("recent", ids=("u2",)), log.reader("s"), parent=None)
+        first = records.publish(record("recent", ids=("u2",)), log.reader("s"), parent=None, summary_range=ContextBuilder.summary_range)
         for ids in (("u1", "u2", "u3"), ("u2",)):
             with pytest.raises(ValueError, match="来源"):
-                records.publish(record("bad", parent=first, ids=ids), log.reader("s"), parent=first)
-        second = records.publish(record("extended", parent=first, ids=("u2", "u3")), log.reader("s"), parent=first)
+                records.publish(record("bad", parent=first, ids=ids), log.reader("s"), parent=first, summary_range=ContextBuilder.summary_range)
+        second = records.publish(record("extended", parent=first, ids=("u2", "u3")), log.reader("s"), parent=first, summary_range=ContextBuilder.summary_range)
         assert records.head("s") == second
         assert log.reader("s").get("u1").body.parts[0].value == "first original input"
 
@@ -202,7 +203,7 @@ async def apply(ctx, config):
             ctx = snapshot.composition_root.context
             async with ctx.require(MATERIALS).bind() as view:
                 prepared = await view.prepare(log.reader("s").snapshot(), "conversation")
-            reference = prepared.summary.reference
+                reference = prepared["summary"]["reference"]
             metadata = ctx.require(BINDINGS).describe(reference, COMPACTION_SUMMARIES)
             assert metadata == {"record_ref": "first", "session_id": "s"}
         writer = log.writer("s", author="assistant", source="conversation", body_types=(Output,),
@@ -212,7 +213,7 @@ async def apply(ctx, config):
         with pytest.raises(PermissionError):
             log.writer("s", author="user", source="conversation", body_types=(Input,),
                        content={"text": check_text}).append("forged", Input((used,)))
-        records.publish(record("second", parent=first, ids=("u1", "u2")), log.reader("s"), parent=first)
+        records.publish(record("second", parent=first, ids=("u1", "u2")), log.reader("s"), parent=first, summary_range=ContextBuilder.summary_range)
     finally:
         await host.terminate_all()
         log.close()

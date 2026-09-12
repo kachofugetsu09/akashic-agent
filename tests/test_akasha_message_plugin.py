@@ -111,14 +111,14 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 inputs.append("q", Input((ContentPart("text", "remember the detail"),)))
                 async with ctx.require(MATERIALS).bind() as materials:
                     material = await materials.prepare(log.reader("s").snapshot(), "conversation")
-                assert [ref.ref for ref in material.references] == ["u", "a"]
+                assert [ref["ref"] for ref in material["references"]] == ["u", "a"]
                 # 普通兴趣服务只嵌入候选，复用真实已完成问答的固定向量。
                 before_interest = (tmp_path / "embedding-calls.txt").read_text()
                 interest = ctx.require(ServiceKey("akasha.semantic-interest.v1"))
                 assert await interest.score(["candidate interest", ""], cutoff=datetime.now(timezone.utc).isoformat()) == (0.999, 0.0)
                 assert (tmp_path / "embedding-calls.txt").read_text()[len(before_interest):] == "['candidate interest']\n"
                 read_recall = ctx.require(ServiceKey("akasha.recalls.v1"))
-                observed = read_recall(material.references[0].retrieval_ref)
+                observed = read_recall(material["references"][0]["retrieval_ref"])
                 assert observed.graph_version == 1
                 # 显式归档材料查询不争抢仍在运行的正式学习 writer。
                 from plugins.akasha.infrastructure.lease import WriterLease
@@ -132,7 +132,7 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 async with host.open_binding(tuple(archive_refs)) as archived:
                     async with archived.require(MATERIALS).bind() as view:
                         copied = await view.prepare(log.reader("s").snapshot(), "conversation")
-                    assert [ref.ref for ref in copied.references] == ["u", "a"]
+                    assert [ref["ref"] for ref in copied["references"]] == ["u", "a"]
                 assert logical_state_sha256(graph) == before_graph
                 with pytest.raises(RuntimeError, match="already has a writer"):
                     WriterLease(graph)
@@ -157,14 +157,15 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 assert recalled.source.call_ref == ref
                 assert recalled.graph_version == 1
                 before = (tmp_path / "embedding-calls.txt").read_text()
-                assert await execution.execute_call(reply) == result
+                replayed = await execution.execute_call(reply)
+                assert (replayed.outcome, replayed.parts) == (result.outcome, result.parts)
                 assert (tmp_path / "embedding-calls.txt").read_text() == before
                 assert len([message for message in log.reader("s").snapshot()
                             if isinstance(message.body, ToolResult)]) == 1
                 async with ctx.require(MATERIALS).bind() as materials:
                     after_tool = await materials.prepare(log.reader("s").snapshot(), "conversation")
-                assert [reference.ref for reference in after_tool.references] == ["u", "a"]
-                assert {reference.retrieval_ref for reference in after_tool.references} == {retrieval_ref}
+                assert [reference["ref"] for reference in after_tool["references"]] == ["u", "a"]
+                assert {reference["retrieval_ref"] for reference in after_tool["references"]} == {retrieval_ref}
                 # 同 owner 的另一条调用也不能借用先前 CallRef 的查询事实。
                 outputs.append("forged-request", Output((ToolCall(identity, {"query": "another query"}),), "continue"))
                 forged_ref = CallRef("forged-request", 0)
@@ -200,7 +201,7 @@ async def test_prepared_recall_survives_config_change_and_source_removal(tmp_pat
                 inputs.append("q", Input((ContentPart("text", "recall it"),)))
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(log.reader("s").snapshot(), "conversation")
-                assert [reference.ref for reference in result.references] == ["u", "a"]
+                    assert [reference["ref"] for reference in result["references"]] == ["u", "a"]
                 async with open_tool(bindings, identity) as tool:
                     prepared = await tool.prepare({"query": "original memory"})
 
@@ -340,7 +341,7 @@ async def test_mobile_inspector_bounds_long_messages_without_dropping_hit_member
                 inputs.append("query", Input((ContentPart("text", "recall it"),)))
                 async with ctx.require(MATERIALS).bind() as materials:
                     prepared = await materials.prepare(log.reader("s").snapshot(), "conversation")
-                identity = prepared.references[0].retrieval_ref
+                    identity = prepared["references"][0]["retrieval_ref"]
         provider = PluginMobileUiProvider(host)
         try:
             detail = await provider.query("akasha", revision, "inspector.detail", {"query_id": identity},

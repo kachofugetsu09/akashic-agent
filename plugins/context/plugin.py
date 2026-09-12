@@ -69,6 +69,7 @@ def _summary_cutoff(snapshot: tuple[Message, ...], summary: Summary | None) -> i
 class ContextBuilder:
     check_summary = staticmethod(check_summary)
     summary_range = staticmethod(summary_range)
+    settled_prefixes = staticmethod(settled_prefixes)
 
     @staticmethod
     def _reminder_content(materials: Materials) -> str | None:

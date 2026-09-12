@@ -10,9 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from agent.plugin_composition import ServiceKey
 
 from agent.plugin_composition.messages import MessageConflict, MessageReader, OwnerStore, OwnerTransaction
-from agent.plugin_contracts import json_value
-from ._boundaries import summary_range
-
+from agent.plugin_contracts import Message, json_value
 Text = Annotated[str, Field(min_length=1)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -241,6 +239,7 @@ class SummaryRecords:
 
     def publish(
         self, record: SummaryRecord, reader: MessageReader, *, parent: StoredSummary | None,
+        summary_range: Callable[[tuple[Message, ...], tuple[str, ...]], range],
     ) -> SummaryRecord:
         """原子检查 parent 与消息前缀，再只增摘要并推进本 Session 指针。"""
         self._state.check_access(reader)
@@ -266,7 +265,7 @@ class SummaryRecords:
                 raise ValueError("后续摘要不能撤回已有来源")
 
             # 2. 源消息与摘要在同一 authority 的事务中校验；读取模块无正文写权。
-            _ = summary_range(reader.snapshot(), record.source_message_ids)
+            _ = summary_range(tuple(reader.snapshot()), record.source_message_ids)
             _ = tx.save("summary:" + record.reference,
                         cast(Mapping[str, object], record.model_dump(mode="json")), expected_version=None)
             key = "head:" + record.session_id

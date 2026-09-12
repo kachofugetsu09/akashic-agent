@@ -13,8 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import BoundEmbeddingModel
-from session.embedding_store import MessageEmbeddings
-from agent.plugin_composition.messages import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import json_value
 from ._boundaries import CallSource, Result, TOOLS
