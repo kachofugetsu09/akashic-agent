@@ -225,10 +225,10 @@ def build_release(
     base_image: str,
     arch_snapshot: str,
 ) -> dict[str, Any]:
-    """Build the legacy checkout image for the explicit bridge compatibility path.
+    """Build the legacy checkout image for explicit development compatibility.
 
-    The formal CLI never selects this builder implicitly.  The old operator
-    bridge still calls it directly until that release flow is migrated.
+    The formal CLI and public ``akashic-release`` path use the distribution
+    builder; callers must opt into this compatibility image explicitly.
     """
 
     repository = repository.resolve(strict=True)
