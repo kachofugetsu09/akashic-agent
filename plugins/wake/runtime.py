@@ -12,22 +12,26 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.models import ChatModelSelection
 from agent.plugin_composition.timers import TIMERS
-from plugins.akasha.interest import SEMANTIC_INTEREST
-from plugins.delivery.api import Sink
-from plugins.delivery.history import DELIVERY_READ
-from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
-from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
-from plugins.tools.plugin import TOOLS, ToolView
 from agent.plugin_composition.messages import MessageReader, OwnerRecord
 from agent.plugin_contracts import Message
 from agent.plugin_contracts import body_to_dict
 
 from .admission import Admission, Duties
+from ._boundary import (
+    AKASHA_TOOLS,
+    DELIVERY_READ,
+    DELIVERY_SENDERS,
+    SEMANTIC_INTEREST,
+    STANDARD_WEB_TOOLS,
+    SinkValue,
+    TOOLS,
+    ToolView,
+    WAKE_TOOLS_VIEW,
+)
 from .api import Config, DRIFT_WAKE, EVENTMAIL_WAKE
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
-from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, WAKE_TOOLS_VIEW
+from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
 from .source import Pointer, Source
 from .state import WakeState, WakeStateReader
 
@@ -172,15 +176,23 @@ class Runtime:
         if owner == "alert" and alert is None:
             return None
         bindings = ctx.require(BINDINGS)
-        sink = Sink(name=target.channel, address=target.recipient,
-            binding_id=ctx.require(DELIVERY_SENDERS).bind(target.channel, bindings))
+        sink: SinkValue = {
+            "name": target.channel,
+            "address": target.recipient,
+            "binding_id": ctx.require(DELIVERY_SENDERS).bind(target.channel, bindings),
+        }
         metadata = ctx.require(MESSAGE_CATALOG).reader(target.session_id).metadata()
         model = ctx.require(MODEL_SELECTION).read_saved(metadata if metadata is not None else {})
-        view = ToolView.combine(
-            ctx.require(WAKE_TOOLS_VIEW),
-            ctx.require(AKASHA_TOOLS),
-            ctx.require(STANDARD_WEB_TOOLS),
-        )
+        catalog = ctx.require(TOOLS)
+        view: ToolView = catalog.view(*(
+            ref
+            for source_view in (
+                ctx.require(WAKE_TOOLS_VIEW),
+                ctx.require(AKASHA_TOOLS),
+                ctx.require(STANDARD_WEB_TOOLS),
+            )
+            for ref in source_view.refs
+        ))
         return Request(
             flow_id=flow_id,
             owner=owner,
@@ -190,7 +202,7 @@ class Runtime:
             sink=sink,
             program_binding=bindings.bind(WAKE_PROGRAM, {}),
             tools={
-                name: ctx.require(TOOLS).bind(view.select(name), bindings)
+                name: catalog.bind(view.select(name), bindings)
                 for name in WAKE_TOOLS[owner]
             },
             snapshot_seq=admission.pool.snapshot_seq,

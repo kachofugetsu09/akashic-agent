@@ -9,7 +9,6 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.snapshot import lease_runtime_snapshot
-from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
@@ -23,7 +22,6 @@ from plugins.wake.request import (
     WAKE_PROGRAM,
     WAKE_TOOLS_VIEW,
 )
-from plugins.tools.plugin import ToolView
 from plugins.wake.source import Source
 from plugins.wake.state import WakeState
 from session.message import Input, Output, ToolResult
@@ -178,18 +176,23 @@ async def apply(ctx, config):
 
 def request(ctx, owner, now, *, proposals=(), alert_ref=None):
     bindings = ctx.require(BINDINGS)
-    view = ToolView.combine(
-        ctx.require(WAKE_TOOLS_VIEW),
-        ctx.require(AKASHA_TOOLS),
-        ctx.require(STANDARD_WEB_TOOLS),
-    )
+    catalog = ctx.require(TOOLS)
+    view = catalog.view(*(
+        ref
+        for source_view in (
+            ctx.require(WAKE_TOOLS_VIEW),
+            ctx.require(AKASHA_TOOLS),
+            ctx.require(STANDARD_WEB_TOOLS),
+        )
+        for ref in source_view.refs
+    ))
     return Request(
         flow_id="a" * 32,
         owner=owner,
         now=now,
         timezone="UTC",
         target=DeliveryTarget(channel="test", recipient="room", session_id="test:room"),
-        sink=Sink(name="test", binding_id=ctx.require(DELIVERY_SENDERS).bind("test", bindings), address="room"),
+        sink={"name": "test", "binding_id": ctx.require(DELIVERY_SENDERS).bind("test", bindings), "address": "room"},
         program_binding=bindings.bind(WAKE_PROGRAM, {}),
         tools={
             name: ctx.require(TOOLS).bind(view.select(name), bindings)

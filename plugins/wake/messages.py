@@ -6,12 +6,12 @@ from datetime import datetime, timedelta
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from plugins.delivery.history import DeliveryHistory
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import json_value
 
 from .content import _candidate_payloads, _string
+from ._boundary import DeliveryHistory
 from .request import Request, Stage
 from .selection import propose_content
 from .tools import SCHEMAS, Screen, Share, Alert, Skip

@@ -5,10 +5,10 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from plugins.tools.api import CallSource, Result
 from agent.plugin_contracts import ContentPart, Output, ToolCall
 from agent.plugin_contracts import json_value
 
+from ._boundary import CallSource, ToolResultValue
 from .request import STAGE_TOOLS, read_phase, read_request
 from .content import _candidate_payloads
 from .selection import propose_content
@@ -96,8 +96,8 @@ class DecisionTool:
                 return f'candidate_id 不属于本轮候选: {unknown}。请逐字复制候选中的完整 ID，不得截短；本次决定未记录。'
         return result.model_dump(mode="json")
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
-        return Result("success", (ContentPart("text", "Wake 决定已记录。"),))
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
+        return ToolResultValue("success", (ContentPart("text", "Wake 决定已记录。"),))
 
-    async def query(self, key: str) -> Result | None:
+    async def query(self, key: str) -> ToolResultValue | None:
         return None
