@@ -157,7 +157,7 @@ paths = [
   "agent/plugins/model_*.py",
   "agent/plugins/snapshot.py",
   "agent/tools/filesystem.py",
-  "agent/migrations/akasha_*.py",
+  "plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha_*.py",
   "agent/model_runtime/**",
   "bootstrap/app.py",
   "bootstrap/chat_api.py",
@@ -172,7 +172,7 @@ paths = [
   "plugins/akasha/**",
   "plugins/compaction/**",
   "plugins/markdown_memory/**",
-  "migrations/akasha_*/**",
+  "plugins/legacy_upgrade/legacy_upgrade_migrations/support/akasha/**",
   "docker/debug/model_plugin_fixture.py",
   "docker/debug/akasha_v2_runtime_probe.py",
   "docker/debug/programmatic_control_probe.py",
@@ -180,7 +180,7 @@ paths = [
   "docker/debug/wake_v3_provider_e2e.py",
   "eval/**",
   "benchmark/harbor_v4flash/**",
-  "migrations/yoyo/*model*.py",
+  "plugins/legacy_upgrade/legacy_upgrade_migrations/*model*.py",
   "tests/model_plugin_fakes.py",
   "tests/test_*model*.py",
   "tests/semantic/test_model_owner_contract.py",
@@ -308,11 +308,11 @@ paths = [
   "agent/config_models.py",
   "agent/core/**",
   "agent/plugin_composition/runtime_lifecycle.py",
-  "agent/llm_json.py",
+  "plugins/markdown_memory/llm_json.py",
   "agent/model_runtime/**",
-  "agent/persona.py",
+  "plugins/prompt/persona.py",
   "agent/restart.py",
-  "agent/skills.py",
+  "plugins/standard_tools/skills.py",
   "agent/supervisor.py",
   "agent/tool_runtime.py",
   "agent/tools/**",
@@ -324,7 +324,7 @@ paths = [
   "core/net/**",
   "infra/__init__.py",
   "main.py",
-  "prompts/**",
+  "plugins/prompt/**",
   "tests/test_context_compaction_contract.py",
   "tests/test_shell_tool.py",
   "tests/test_unified_exec.py",
@@ -332,6 +332,10 @@ paths = [
 ]
 deleted_paths = [
   "agent/policies/__init__.py",
+  "agent/llm_json.py",
+  "agent/persona.py",
+  "agent/skills.py",
+  "prompts/**",
   "agent/provider.py",
   "agent/tool_bundles.py",
   "infra/providers/**",
@@ -411,8 +415,8 @@ scenarios = ["companion_tool_context_contract"]
 [groups.companion_external_io]
 priority = "p0"
 requirements = ["SEC-002", "FS-001", "SES-006", "ERR-001", "TST-001", "TST-003"]
-paths = ["core/net/http.py", "bootstrap/chat_api.py", "infra/channels/base.py", "infra/channels/delivery.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
-deleted_paths = ["agent/tools/web_fetch.py"]
+paths = ["core/net/http.py", "bootstrap/chat_api.py", "infra/channels/base.py", "plugins/delivery/**", "plugins/qq_channel/**", "plugins/qq_sender/**", "plugins/telegram_channel/**", "plugins/telegram_sender/**", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
+deleted_paths = ["agent/tools/web_fetch.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py"]
 depends_on = ["runtime", "mobile_realtime"]
 scenarios = ["companion_external_io_contract"]
 
