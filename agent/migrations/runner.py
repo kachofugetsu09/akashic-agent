@@ -96,6 +96,7 @@ class MigrationRunner:
                 installed_cache_root=self.installed_cache_root,
             )
             requirements = load_migration_requirements(self.migration_catalog)
+            applied_ids = _read_applied_ids(self.ledger_path)
             core_ids = tuple(migration.id for migration in core_migrations)
             bundle_ids = tuple(
                 migration_id
@@ -111,12 +112,13 @@ class MigrationRunner:
                 bundles,
                 core_migration_ids=core_ids,
                 requirements=requirements,
+                applied_ids=applied_ids,
                 require_missing_bundles=False,
             )
             validate_pending_requirements(
                 applicable,
                 loaded_ids=core_ids + bundle_ids,
-                applied_ids=_read_applied_ids(self.ledger_path),
+                applied_ids=applied_ids,
                 bundles=bundles,
             )
             if fresh and baseline is not None:
