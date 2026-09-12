@@ -70,6 +70,8 @@
 | [0062](0062-tools-flow-through-provider-views.md) | accepted / implemented | 工具通过 provider view 流向消费者 | CTX-004、CTX-007、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016、PLG-018 |
 
 | [0063](0063-execution-failures-have-terminal-results.md) | accepted | 执行失败明确收尾，恢复依据原回执 | Tools、Delivery、Wake、Mobile、Models |
+| [0064](0064-plugin-boundary-is-machine-enforced.md) | superseded by 0065 | 插件边界静态门的初始设计 | PLG-001～PLG-017、GOV-001～GOV-005、TST-001～TST-008 |
+| [0065](0065-plugin-boundary-checks-do-not-grant-core-ownership.md) | accepted | 边界检查不授予 Core 归属，按外置与替换验收 | PLG-014、PLG-016、STA-001、CAP-001、TST-003 |
 
 ## 新增规则
 

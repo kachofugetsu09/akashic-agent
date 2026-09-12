@@ -1,7 +1,8 @@
-"""兼容入口；公开消息词汇表由 `agent.plugin_contracts` 拥有。
+"""插件公开结构合同。
 
-本模块保留原导入路径，避免一次性改动既有调用点。新代码和插件应导入
-`agent.plugin_contracts`（或经 `agent.plugin_composition` 的公开导出）。
+本模块只承载 Core 自己拥有的值合同，不是所有业务共享代码的收容层。
+业务 schema、模型内容解释、存储实现和默认流程仍由相应 owner 提供。
+公开模块清单由边界门检查；业务协作可在 Core 外声明合同。
 """
 
 from agent.plugin_contracts.message import (

@@ -1,0 +1,183 @@
+# Akashic 插件边界清单：当前在 Core 源码中声明的字面 ServiceKey。
+#
+# 本文件的每个条目必须对应代码中真实存在的 ServiceKey，反之亦然；
+# 由 `python scripts/plugin_boundary.py check` 强制（R4）。
+# 新增声明必须登记 role，否则静态门失败；登记不授予运行时权限。
+#
+# role 是待逐项复核的现状分类，不是目标 Core 白名单：
+#   core  —— 当前由 Core 提供；仍须证明其事实或通用机制归属。
+#   seam  —— 协作入口；可替换性必须另外用独立实现验证。
+#   bundle—— 默认装配；不得赋予第一方实现特殊入口。
+#   claim —— 单 owner 占用声明，不是可注入服务。
+#
+# Runtime 不读取本表。表不证明消费者权限、原子性或独立安装成功。
+# 业务合同可以由普通插件生态拥有；不要求所有共享类型迁入 Core。
+
+[capabilities]
+
+# ── Message 与 Session 权威事实 ───────────────────────────────
+[capabilities."core.message_catalog"]
+role = "core"
+note = "读取已提交 Message；不授予写入"
+
+[capabilities."core.message_writers"]
+role = "core"
+note = "按绑定权限追加 Input/Output/ToolResult/Control"
+
+[capabilities."core.message_embeddings"]
+role = "core"
+note = "读取和追加 Message embedding"
+
+[capabilities."core.session_admission"]
+role = "core"
+note = "create-once 建立带固定属性的 Session"
+
+[capabilities."core.owner_state"]
+role = "core"
+note = "按插件 owner 隔离的同库事务空间"
+
+[capabilities."core.bindings"]
+role = "core"
+note = "exact Root 的工具 binding 归档与解析"
+
+[capabilities."core.session_read"]
+role = "core"
+note = "只读既有 Session 投影"
+
+[capabilities."core.session_compaction_storage"]
+role = "core"
+note = "Session 压缩投影的持久存储"
+
+[capabilities."core.interaction_undo"]
+role = "core"
+note = "显式撤销最近一次 interaction"
+
+[capabilities."core.conversation.semantic_interest"]
+role = "core"
+note = "当前 Core 中的业务评分，目标归属待复核；登记不批准留在 Core"
+
+# ── 外部效果与投递 ───────────────────────────────────────────
+[capabilities."core.deliveries"]
+role = "core"
+note = "一条完整逻辑消息的发送边界与 receipt"
+
+[capabilities."core.durable_deliveries"]
+role = "core"
+note = "跨崩溃恢复的投递尝试与结算"
+
+[capabilities."core.artifact_read"]
+role = "core"
+note = "有界字节读取租约"
+
+[capabilities."core.artifact_import"]
+role = "core"
+note = "来源导入与不可变引用"
+
+[capabilities."core.credentials"]
+role = "seam"
+note = "按插件 owner 打开短凭据租约；来源可替换"
+
+# ── 外部运行：进程、MCP、容器 ────────────────────────────────
+[capabilities."core.processes"]
+role = "core"
+note = "宿主统一保留的进程集合与清理核对"
+
+[capabilities."core.managed_processes"]
+role = "core"
+note = "受 Core 监督的进程声明注册表"
+
+[capabilities."core.mcp_servers"]
+role = "core"
+note = "generation-bound MCP server 声明注册表"
+
+[capabilities."core.workloads"]
+role = "core"
+note = "窄 Controller 管理的容器 workload 注册表"
+
+[capabilities.executor]
+role = "core"
+note = "有界纯同步 worker 池"
+
+# ── 人类与模型入口 ───────────────────────────────────────────
+[capabilities."core.commands"]
+role = "core"
+note = "人类命令、alias 与 handler 注册表"
+
+[capabilities."core.tool_catalog"]
+role = "core"
+note = "exact Root 的工具定义与 bound handler"
+
+[capabilities."core.ui_slots"]
+role = "core"
+note = "Mobile 页面、查询与导航注册表"
+
+[capabilities."core.channels"]
+role = "seam"
+note = "inbound/outbound Channel 适配注册表；多实现可替换"
+
+[capabilities."channel.input.v1"]
+role = "seam"
+note = "Channel 入站入口；由 CHANNELS 的注册者提供"
+
+# ── 调度、生命周期与发布 ─────────────────────────────────────
+[capabilities."core.timers"]
+role = "seam"
+note = "one-shot deadline wait；不拥有 recurrence 或 job 语义"
+
+[capabilities."core.tasks"]
+role = "core"
+note = "按通用 key 串行准入的短命工作与资源"
+
+[capabilities."core.restart_gate.v1"]
+role = "core"
+note = "重启提交权与外部效果 permit"
+
+[capabilities."core.control_frames.v1"]
+role = "core"
+note = "控制帧路由与声明"
+
+[capabilities."core.plugin_updates"]
+role = "core"
+note = "插件 install/uninstall/revert 状态"
+
+# ── 模型协作入口：声明位置不等于提供者归属 ──────────────────
+[capabilities."models.chat.v1"]
+role = "seam"
+note = "按冻结 revision 取得 chat model"
+
+[capabilities."models.embeddings.v1"]
+role = "seam"
+note = "统一 embedding space"
+
+[capabilities."models.catalog.v1"]
+role = "seam"
+note = "模型与 connection 目录"
+
+[capabilities."models.settings.v1"]
+role = "seam"
+note = "原子修改模型设置"
+
+[capabilities."models.drivers.v1"]
+role = "seam"
+note = "Provider 注册模型 driver；已有多个可替换实现"
+
+[capabilities."models.call-stats.v1"]
+role = "core"
+note = "模型调用统计读取"
+
+# ── 占用声明 ─────────────────────────────────────────────────
+[capabilities."plugin.claim.embedding_memory"]
+role = "claim"
+note = "embedding-memory 单 owner 占用；同一 Root 只允许一个"
+
+# 已记录为「文档承诺、代码未实现」的名字。
+# 本清单断言这些名字在 Python 代码中不存在（R5）：一旦有人实现，
+# 门会失败，强制同时更新文档与 [capabilities] 登记，避免文档漂移。
+[phantom.SCOPED_TURNS]
+note = "多份设计文档称其为已具备的 Turn 原子；实际由 plugins/reply 的 run_reply 顶替"
+
+[phantom.CONTINUATIONS]
+note = "content-wake 设计列为现有原子；代码中无此 ServiceKey"
+
+[phantom.BACKGROUND_JOBS]
+note = "插件手册与 skill 文档仍在教学使用；代码中无此 ServiceKey"

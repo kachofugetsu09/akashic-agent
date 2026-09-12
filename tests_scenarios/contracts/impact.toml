@@ -125,6 +125,7 @@ priority = "p0"
 requirements = ["PLG-001", "PLG-004", "PLG-009", "PLG-017", "RUN-016", "WSP-006"]
 paths = [
   "agent/plugin_composition/**",
+  "agent/plugin_contracts/**",
   "agent/plugins/**",
   "agent/workloads/**",
   "docker/computer/**",
@@ -132,7 +133,10 @@ paths = [
   "packages/akashic-web-ui-v1/**",
   "packages/akashic-workbench-ui-v2/**",
   "packages/akashic-models-ui-v1/**",
+  "plugin_boundary.toml",
+  "plugin_boundary_baseline.toml",
   "plugins/**",
+  "scripts/plugin_boundary.py",
   "scripts/plugin_composition_experiment.py",
   "bootstrap/tools.py",
   "tests/test_plugin_*.py",
