@@ -25,9 +25,11 @@ from plugins.content.api import (
     ContentCheck,
     ContentSchema,
     Reference,
+    ReferenceData,
     Span,
     TextProtocol,
     TextSource,
+    decode_reference,
 )
 
 api_version = 3
@@ -93,21 +95,21 @@ def _literal_ranges(text: str) -> tuple[tuple[int, int], ...]:
 
 
 async def _decode_text(
-    text: str, protocols: Sequence[tuple[str, TextProtocol]], references: tuple[Reference, ...] = ()
+    text: str, protocols: Sequence[tuple[str, TextProtocol]], references: Sequence[ReferenceData] = ()
 ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]:
     """一次组装整份原文，冲突明确失败；不按安装先后串行改写文本。"""
     if not isinstance(text, str):
         raise TypeError("待解码内容必须是字符串")
-    references = tuple(references)
-    if any(not isinstance(ref, Reference) for ref in references):
-        raise TypeError("引用必须来自已校验的 Reference")
+    validated_references: tuple[Reference, ...] = tuple(
+        decode_reference(value) for value in references
+    )
     protected = _literal_ranges(text)
     source = TextSource(text, protected)
     spans: list[tuple[str, Span]] = []
     metadata: dict[str, object] = {}
     # 1. 每个 decoder 都接收同一个不可变原文和引用集合。
     for owner, protocol in sorted(protocols, key=lambda item: item[1].name):
-        decoded, extra = await protocol.decode(source, references)
+        decoded, extra = await protocol.decode(source, validated_references)
         if not isinstance(extra, Mapping):
             raise TypeError(f"{protocol.name} 的 metadata 必须是 JSON 对象")
         if extra:
@@ -157,7 +159,7 @@ class ContentView(Protocol):
     def checks(self) -> Mapping[str, ContentCheck]: ...
 
     async def decode(
-        self, text: str, references: tuple[Reference, ...] = ()
+        self, text: str, references: Sequence[ReferenceData] = ()
     ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]: ...
 
 
@@ -207,7 +209,7 @@ class _ContentView:
         return validate
 
     async def decode(
-        self, text: str, references: tuple[Reference, ...] = ()
+        self, text: str, references: Sequence[ReferenceData] = ()
     ) -> tuple[tuple[ContentPart, ...], Mapping[str, object]]:
         self._check_active()
         protocols = tuple(

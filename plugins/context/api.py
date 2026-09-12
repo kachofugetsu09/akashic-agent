@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Protocol, cast
 
 from agent.plugin_composition.models import BoundChatModel, ModelRequest
-from plugins.content.api import Reference, decode_reference, reference_data
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Control, Message, Output, ToolCall, ToolResult
 
 
 MaterialData = Mapping[str, object]
+SummaryData = Mapping[str, object]
 
 
 def settled_prefixes(messages: tuple[Message, ...]) -> tuple[int, ...]:
@@ -99,7 +100,7 @@ class Materials:
     system_prompt: str
     reminders: tuple[Reminder, ...] = ()
     summary: Summary | None = None
-    references: tuple[Reference, ...] = ()
+    references: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.system_prompt, str):
@@ -110,10 +111,15 @@ class Materials:
         if self.summary is not None and not isinstance(self.summary, Summary):
             raise TypeError("摘要必须来自已发布的 Summary")
         references = tuple(self.references)
-        if any(not isinstance(ref, Reference) for ref in references):
-            raise TypeError("引用必须是材料 owner 已取得的 Reference")
+        normalized_references: list[Mapping[str, object]] = []
+        for reference in references:
+            if not isinstance(reference, Mapping) or any(
+                not isinstance(key, str) for key in reference
+            ):
+                raise TypeError("引用必须是结构化映射")
+            normalized_references.append(MappingProxyType(dict(reference)))
         object.__setattr__(self, "reminders", parts)
-        object.__setattr__(self, "references", references)
+        object.__setattr__(self, "references", tuple(normalized_references))
 
 
 def _object(value: object, label: str) -> Mapping[str, object]:
@@ -129,6 +135,12 @@ def _sequence(value: object, label: str) -> tuple[object, ...]:
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise TypeError(f"{label} 必须是数组")
     return tuple(cast(Sequence[object], value))
+
+
+def _reference(value: object) -> Mapping[str, object]:
+    """保留引用的结构数据；引用字段的领域校验由 Content owner 完成。"""
+    data = _object(value, "reference")
+    return MappingProxyType(dict(data))
 
 
 def _summary(value: object) -> Summary | None:
@@ -168,7 +180,7 @@ def decode_material(value: object) -> Materials:
         raise TypeError("materials.system_prompt 必须是字符串")
     reminders = tuple(_reminder(item) for item in _sequence(data.get("reminders", ()), "materials.reminders"))
     summary = _summary(data.get("summary"))
-    references = tuple(decode_reference(item) for item in _sequence(data.get("references", ()), "materials.references"))
+    references = tuple(_reference(item) for item in _sequence(data.get("references", ()), "materials.references"))
     return Materials(prompt, reminders, summary, references)
 
 
@@ -183,7 +195,7 @@ def material_data(materials: Materials) -> MaterialData:
         "system_prompt": materials.system_prompt,
         "reminders": tuple({"name": item.name, "text": item.text, "priority": item.priority} for item in materials.reminders),
         "summary": summary,
-        "references": tuple(reference_data(item) for item in materials.references),
+        "references": tuple(dict(item) for item in materials.references),
     }
 
 
@@ -221,7 +233,7 @@ class SummaryReducer(Protocol):
         self, snapshot: tuple[Message, ...], materials: MaterialData,
         request: ModelRequest, model: BoundChatModel, projection: ContextModel,
         *, source: str, force: bool,
-    ) -> MaterialData | None: ...
+    ) -> SummaryData | None: ...
 
 
 class ContextOverflow(ValueError):

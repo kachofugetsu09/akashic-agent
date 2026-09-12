@@ -77,7 +77,6 @@ def test_completed_turns_merge_overlapping_sources_but_open_batches_can_compact(
 
 @pytest.mark.parametrize("late_result", [False, True])
 def test_abandon_closes_summary_prefix_without_inventing_a_tool_result(tmp_path, late_result):
-    from plugins.context.api import Materials, Summary
     from plugins.context.plugin import ContextBuilder
     from plugins.models.content import render_content
     from plugins.models.projection import MessageProjection
@@ -99,7 +98,9 @@ def test_abandon_closes_summary_prefix_without_inventing_a_tool_result(tmp_path,
     projection = MessageProjection(provider, check_summary=_model_summary_check, source="conversation", read_call=store.read_call,
         render_content=lambda part: render_content(part, artifacts={}), tool_name=lambda binding: "old-tool",
         keep_input_ids=("3",))
-    request = ContextBuilder().build(rows, materials=Materials("", summary=Summary("saved", ("0", "1", "2"), "abandoned work")),
+    request = ContextBuilder().build(rows, materials={
+        "summary": {"reference": "saved", "source_message_ids": ("0", "1", "2"), "content": "abandoned work"},
+    },
                                      model=projection, max_output_tokens=100)
     assert [row["role"] for row in request.messages] == ["user", "user"]
     assert request.messages[-1]["content"][0]["text"] == "new work"

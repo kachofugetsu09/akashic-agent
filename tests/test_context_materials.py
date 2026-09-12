@@ -7,9 +7,8 @@ import pytest
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, lease_runtime_snapshot
-from plugins.content.api import Reference
 from agent.plugin_composition.models import BoundChatModel, LLMResponse, ModelRequest
-from plugins.context.api import ContextModel, MaterialData, Materials, Reminder, Summary
+from plugins.context.api import ContextModel, MaterialData, Materials
 from plugins.context.materials import ContextMaterials
 from session.message import Message
 
@@ -118,9 +117,9 @@ async def test_materials_fix_explicit_order_and_keep_retrieval_evidence_out_of_p
         await service.register(ctx, name="persona", prepare=persona, prompt=True, priority=100)
         async with service.bind() as view:
             result = await view.prepare((), "conversation")
-            assert result.system_prompt == "fixed persona"
-            assert result.reminders == (Reminder("memory", "published profile", 300),)
-            assert result.references == (Reference("memory:1", retrieval_ref="retrieval:1"),)
+            assert result["system_prompt"] == "fixed persona"
+            assert result["reminders"] == (_reminder("memory", "published profile", 300),)
+            assert result["references"] == (_reference("memory:1", retrieval_ref="retrieval:1"),)
             assert calls == ["memory", "persona"]
         with pytest.raises(RuntimeError, match="关闭"):
             await view.prepare((), "conversation")
@@ -155,13 +154,13 @@ async def test_program_excludes_retrieval_without_running_it_or_losing_persona()
         await service.register(ctx, name="memory", prepare=memory, priority=200)
         async with service.bind(exclude=frozenset({"memory"})) as view:
             result = await view.prepare((), "scheduler:job")
-        assert result.system_prompt == "fixed persona"
-        assert not result.reminders
+        assert result["system_prompt"] == "fixed persona"
+        assert not result["reminders"]
         assert calls == ["persona"]
         # 显式排除不改变全局注册；普通回复仍能取得原有检索。
         async with service.bind() as view:
             result = await view.prepare((), "conversation")
-        assert result.reminders[0].text == "retrieved private context"
+        assert result["reminders"][0]["text"] == "retrieved private context"
 
 
 @pytest.mark.asyncio
@@ -221,15 +220,15 @@ async def test_only_summary_owner_can_reduce_and_closed_view_cannot_publish():
 async def test_reduction_preserves_durable_identity_and_recognizes_no_progress(case):
     from agent.plugin_composition.models import ModelRequest
 
-    previous = Summary("published", ("u1", "a1"), "durable text")
+    previous = _summary("published", ("u1", "a1"), "durable text")
     async def prepare(snapshot, source):
-        return _material(summary=_summary(previous.reference, previous.source_message_ids, previous.content))
+        return _material(summary=previous)
     async def reduce(snapshot, materials, request, model, projection, *, source, force):
         return {
             "none": None,
-            "same": _summary(previous.reference, previous.source_message_ids, previous.content),
-            "new_ref_only": _summary("new", previous.source_message_ids, previous.content),
-            "changed_same_ref": _summary(previous.reference, previous.source_message_ids, "changed text"),
+            "same": previous,
+            "new_ref_only": _summary("new", previous["source_message_ids"], previous["content"]),
+            "changed_same_ref": _summary(previous["reference"], previous["source_message_ids"], "changed text"),
             "lost_source": _summary("new", ("u1",), "changed text"),
         }[case]
     async with catalog(summary_source=("summary", "trusted")) as (ctx, service, evil):
@@ -241,8 +240,9 @@ async def test_reduction_preserves_durable_identity_and_recognizes_no_progress(c
                     await view.reduce((), material, ModelRequest(messages=[]), _UNREACHED_MODEL, _UNREACHED_PROJECTION,
                                       source="conversation", force=True)
             else:
-                assert await view.reduce((), material, ModelRequest(messages=[]), _UNREACHED_MODEL, _UNREACHED_PROJECTION,
-                                         source="conversation", force=True) is material.summary
+                result = await view.reduce((), material, ModelRequest(messages=[]), _UNREACHED_MODEL, _UNREACHED_PROJECTION,
+                                            source="conversation", force=True)
+                assert result is None
 
 
 @pytest.mark.asyncio
@@ -265,8 +265,8 @@ async def test_reminder_order_uses_owner_and_name_and_keeps_each_request_snapsho
             before = await view.prepare((), "conversation")
             current = "new"
             after = await view.prepare((), "conversation")
-        assert [item.text for item in before.reminders] == ["early", "evil-a", "old", "trusted-z"]
-        assert [item.text for item in after.reminders] == ["early", "evil-a", "new", "trusted-z"]
+        assert [item["text"] for item in before["reminders"]] == ["early", "evil-a", "old", "trusted-z"]
+        assert [item["text"] for item in after["reminders"]] == ["early", "evil-a", "new", "trusted-z"]
 
 
 @pytest.mark.asyncio
@@ -334,4 +334,4 @@ async def test_system_priority_sorts_output_without_reordering_preparation():
         async with service.bind() as view:
             result = await view.prepare((), "conversation")
     assert calls == ["a", "z"]
-    assert result.system_prompt == "second\n\nfirst"
+    assert result["system_prompt"] == "second\n\nfirst"

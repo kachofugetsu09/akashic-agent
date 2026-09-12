@@ -20,7 +20,6 @@ from agent.plugins.snapshot import (
 from plugins.content.plugin import (
     CONTENT,
     ContentSchema,
-    Reference,
     Span,
     TextProtocol,
     apply,
@@ -65,6 +64,10 @@ async def bound_content(definitions):
 async def decode_text(text, protocols, references=()):
     async with bound_content(protocols) as view:
         return await view.decode(text, references)
+
+
+def reference_data(ref: str, resolved_ref=None, retrieval_ref=None):
+    return {"ref": ref, "resolved_ref": resolved_ref, "retrieval_ref": retrieval_ref}
 
 
 def citation_protocol():
@@ -128,7 +131,7 @@ def visible(parts):
 @pytest.mark.asyncio
 async def test_meme_and_citation_are_independent_of_registration_order():
     raw = '回答。 §cited:["known","unknown"]§ <meme:HAPPY> <other:literal>'
-    references = (Reference("known", "memory@revision", "retrieval-ticket"),)
+    references = (reference_data("known", "memory@revision", "retrieval-ticket"),)
     first, metadata = await decode_text(raw, (meme_protocol([]), citation_protocol()), references)
     second, other_metadata = await decode_text(
         raw, (citation_protocol(), meme_protocol([])), references
@@ -165,7 +168,7 @@ async def test_literal_markers_are_preserved_and_do_not_suppress_retrieval_fallb
     parts, metadata = await decode_text(
         raw,
         (meme_protocol(picks), citation_protocol()),
-        (Reference("actual", "revision", "ticket"),),
+        (reference_data("actual", "revision", "ticket"),),
     )
     assert visible(parts) == raw
     assert picks == []
@@ -299,7 +302,7 @@ async def test_plain_schema_needs_no_text_protocol_and_owns_its_kind():
 @pytest.mark.asyncio
 async def test_citation_fallback_requires_real_retrieval_and_conflicting_proof_fails():
     parts, metadata = await decode_text(
-        "answer", (citation_protocol(),), (Reference("direct", "revision"),)
+        "answer", (citation_protocol(),), (reference_data("direct", "revision"),)
     )
     assert parts == (ContentPart("text", "answer"),)
     assert metadata == {}
@@ -308,8 +311,8 @@ async def test_citation_fallback_requires_real_retrieval_and_conflicting_proof_f
             "[§same]",
             (citation_protocol(),),
             (
-                Reference("same", "revision-1", "ticket-1"),
-                Reference("same", "revision-2", "ticket-2"),
+                reference_data("same", "revision-1", "ticket-1"),
+                reference_data("same", "revision-2", "ticket-2"),
             ),
         )
 

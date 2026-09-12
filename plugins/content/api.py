@@ -120,6 +120,9 @@ class Reference:
             raise ValueError("引用的解析目标与查询凭据必须是非空字符串或 None")
 
 
+ReferenceData = Mapping[str, object]
+
+
 def decode_reference(value: object) -> Reference:
     """在内容边界把 provider 的普通引用映射转换为已校验的 Reference。"""
     if not isinstance(value, Mapping):
