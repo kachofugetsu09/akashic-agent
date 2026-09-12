@@ -45,17 +45,11 @@ _ALLOWED_CORE_MIGRATION_MODULES = frozenset({
     "agent.plugin_composition.artifacts",
     "agent.plugin_composition.messages",
     "agent.plugin_contracts",
+    "agent.plugin_contracts.json_store",
     "agent.plugin_contracts.message",
-    "agent.turn_effects",
-    "core.common.timekit",
+    "agent.plugin_contracts.timekit",
+    "agent.plugin_contracts.turn_effects",
     "core.net.http",
-    "infra.persistence.json_store",
-    "memory2.embedder",
-    "session.embedding_store",
-    "session.identities",
-    "session.log",
-    "session.message",
-    "session.message_codec",
 })
 
 

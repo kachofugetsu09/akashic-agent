@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 
 from .session_db_backup import backup_sqlite_database
-from session.log import (
+from .legacy_message_log import (
     SessionAttributes, _session_schemas, _SESSION_ATTRIBUTES_COLUMN, _sql,
     decode_attributes, encode_attributes,
 )

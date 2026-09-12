@@ -8,7 +8,7 @@ from agent.migrations.context import current_migration_context
 from .support.plugin_data import builtin_plugin_data_dir
 from .support.akasha_config import load_akasha_config, resolve_memory_path
 from .support.akasha_loader import load_turns
-from session.log import MessageLog
+from .support.legacy_message_log import MessageLog
 
 __depends__ = {"20260905_03_model_calls"}
 __transactional__ = False

@@ -7,10 +7,13 @@ import sqlite3
 import pytest
 
 from plugins.legacy_upgrade.legacy_upgrade_migrations.support.legacy_summaries import migrate_legacy_summaries
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.legacy_message_log import (
+    OwnerTransaction as LegacyOwnerTransaction,
+)
 from plugins.legacy_upgrade.legacy_upgrade_migrations.support.session_attributes import migrate as migrate_attributes
 from plugins.compaction.records import SummaryLookup, SummaryRecords
 from plugins.content.plugin import check_text
-from session.log import MessageLog, OwnerTransaction
+from session.log import MessageLog
 from session.message import ContentPart, Input
 from session.store import SessionStore
 
@@ -190,7 +193,7 @@ def test_write_failure_rolls_back_every_import_then_retry_succeeds(
 ):
     summary(workspace, 1, 0, ["u0"])
     before = dump(workspace)
-    original = OwnerTransaction.save
+    original = LegacyOwnerTransaction.save
 
     def fail(self, key, value, *, expected_version):
         if key == "head:s":
@@ -198,7 +201,7 @@ def test_write_failure_rolls_back_every_import_then_retry_succeeds(
         return original(self, key, value, expected_version=expected_version)
 
     with monkeypatch.context() as patch:
-        patch.setattr(OwnerTransaction, "save", fail)
+        patch.setattr(LegacyOwnerTransaction, "save", fail)
         with pytest.raises(OSError, match="injected"):
             migrate_legacy_summaries(workspace)
     assert dump(workspace) == before

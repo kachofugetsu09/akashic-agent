@@ -10,13 +10,13 @@ from typing import Any, cast
 from uuid import uuid4
 
 from .session_db_backup import backup_sqlite_database
-from agent.turn_effects import post_commit_effect
+from agent.plugin_contracts.turn_effects import post_commit_effect
 from .content_api import check_artifact, check_turn_input, legacy_post_commit_effect
 from .content_plugin import check_text
 from .conversation_plugin import check_origin
-from session.log import MessageLog, OwnerTransaction, _sql  # pyright: ignore[reportPrivateUsage]
-from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
-from session.message_codec import json_value
+from .legacy_message_log import MessageLog, OwnerTransaction, _sql  # pyright: ignore[reportPrivateUsage]
+from agent.plugin_contracts.message import ContentPart, ContentReferences, Control, Input, Message, Output
+from agent.plugin_contracts.message import json_value
 
 _OWNER = "migration:turn-messages-v1"
 _TURNS = """CREATE TABLE turns (

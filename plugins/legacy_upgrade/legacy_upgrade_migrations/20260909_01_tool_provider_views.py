@@ -9,7 +9,7 @@ from yoyo import step
 
 from agent.migrations.context import current_migration_context
 from .support.plugin_data import builtin_plugin_data_dir, validate_workspace_plugin_data_path
-from infra.persistence.json_store import atomic_write_text
+from agent.plugin_contracts.json_store import atomic_write_text
 
 __depends__ = {"20260908_01_legacy_summaries"}
 __transactional__ = False

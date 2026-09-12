@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pytest
 import toml
+import httpx
 from session.store import SessionStore
 from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
-from memory2.embedder import Embedder
+from core.net import http as core_http
 from agent.migrations.runner import MigrationRunner
 from agent.migrations.context import bind_migration_context
 from plugins.akasha.infrastructure.loader import load_turns
@@ -363,14 +364,33 @@ def test_public_runner_rekeys_both_clients_and_rebuilds_queryable_akasha(
 ) -> None:
     """Exercise the public runner, real Akasha rebuild, and idempotent replay."""
 
-    async def embed_missing(
-        _embedder: Embedder,
-        texts: list[str],
-    ) -> list[list[float]]:
-        assert texts == ["Mobile answer"]
-        return [[1.0, 1.0]]
+    def embed_response(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["input"] == ["Mobile answer"]
+        return httpx.Response(
+            200,
+            request=request,
+            json={"data": [{"index": 0, "embedding": [1.0, 1.0]}]},
+        )
 
-    monkeypatch.setattr(Embedder, "embed_batch", embed_missing)
+    class _Resources:
+        """Give the copied external bundle a deterministic provider boundary."""
+
+        def __init__(self) -> None:
+            self._client = httpx.AsyncClient(transport=httpx.MockTransport(embed_response))
+            self.external_default = core_http.HttpRequester(
+                client=self._client,
+                retry_policy=core_http.RetryPolicy(
+                    max_attempts=1, base_delay_s=0.0, max_delay_s=0.0
+                ),
+                default_timeout_s=1.0,
+                default_budget=core_http.RequestBudget(total_timeout_s=2.0),
+            )
+
+        async def aclose(self) -> None:
+            await self._client.aclose()
+
+    monkeypatch.setattr(core_http, "SharedHttpResources", _Resources)
 
     root = tmp_path / "installation"
     workspace = root / "workspace"
