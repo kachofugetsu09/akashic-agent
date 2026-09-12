@@ -166,14 +166,14 @@ class OnlineMemoryRuntime:
             )
         )
         if not suffix:
-            raise ValueError("TurnCommitted did not append a new sparse turn")
+            raise ValueError("Committed message pair did not append a new sparse turn")
         latest = suffix[-1]
         if (
             latest.user_message_id != user_message_id
             or latest.assistant_message_id != assistant_message_id
         ):
             raise ValueError(
-                "TurnCommitted is not the latest canonical sparse turn"
+                "Committed message pair is not the latest canonical sparse turn"
             )
         return StagedOnlineCommit(
             base_version=self.cycle.state_version,
@@ -223,7 +223,7 @@ class OnlineMemoryRuntime:
                 != staged.assistant_message_id
             ):
                 raise ValueError(
-                    "TurnCommitted is not the latest canonical sparse turn"
+                    "Committed message pair is not the latest canonical sparse turn"
                 )
 
             # 2. Publish durable state before exposing the completed transaction.

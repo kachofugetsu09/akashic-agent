@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-import subprocess
-import sys
 from typing import Any, AsyncIterator, cast
 
 import pytest
@@ -23,9 +21,7 @@ from agent.plugins.snapshot import (
     bind_runtime_snapshot,
     reset_runtime_snapshot,
 )
-from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from bus.event_bus import EventBus
-from bus.events_lifecycle import TurnCommitted
 from core.memory.events import MemoryWritten
 
 
@@ -238,22 +234,6 @@ async def test_emit_event_listener_failure_is_fail_loud() -> None:
             root.context.emit(EmitEventKey[object]("test.emit.failure"), object())
 
 
-def test_after_turn_event_contract_imports_without_phase_runtime() -> None:
-    code = (
-        "from agent.turn_events.after_turn import AFTER_TURN_COMMITTED; "
-        "import sys; "
-        "assert 'agent.lifecycle.phases.after_turn' not in sys.modules; "
-        "assert AFTER_TURN_COMMITTED.name == 'turn.after_turn.committed'"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-
-
 @pytest.mark.asyncio
 async def test_event_bus_does_not_bridge_into_plugin_composition() -> None:
     observed: list[MemoryWritten] = []
@@ -330,18 +310,6 @@ async def test_event_bus_rejects_inherited_wrong_task_binding(
         await root.dispose()
 
     assert caught.value.code == "RUNTIME_SNAPSHOT_BINDING_MISMATCH"
-
-
-def _committed_event() -> TurnCommitted:
-    return TurnCommitted(
-        session_key="session",
-        channel="test",
-        chat_id="chat",
-        input_message="hello",
-        persisted_user_message="hello",
-        assistant_response="world",
-        tools_used=[],
-    )
 
 
 def _memory_written_event() -> MemoryWritten:

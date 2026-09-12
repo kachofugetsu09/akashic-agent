@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import re
-import sqlite3
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
@@ -49,7 +48,6 @@ from bus.events_lifecycle import (
     ToolCallStarted,
     TurnOutputCompleted,
     TurnStarted,
-    TurnCommitted,
 )
 from agent.plugins.mobile_ui import (
     MobileUiPluginUnavailable,
@@ -2620,29 +2618,6 @@ class MobileRealtimeChannel:
                 turn_id=turn_id,
                 payload={"client_message_id": event.client_message_id},
                 required_capability=TURN_OUTPUT_COMPLETED_CAPABILITY,
-            )
-
-    async def _on_turn_committed(self, event: TurnCommitted) -> None:
-        """Close MobileDB cross-database mappings after SessionDB binding commits."""
-
-        if event.channel != self.name or not event.client_message_id:
-            return
-        message_id = event.persisted_user_message_id
-        if not message_id:
-            return
-        try:
-            self._mark_attachment_imports_bound(
-                session_id=event.session_key,
-                client_message_id=event.client_message_id,
-                message_id=message_id,
-            )
-        except (OSError, sqlite3.Error) as error:
-            logger.error(
-                "mobile attachment mapping remains recoverable after Session commit "
-                "session=%s client_message_id=%s error=%s",
-                event.session_key,
-                event.client_message_id,
-                error,
             )
 
     def _mark_attachment_imports_bound(
