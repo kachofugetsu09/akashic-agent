@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.models import (
@@ -25,64 +25,6 @@ MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ..
     "models.call-history.v1"
 )
 MODEL_DISPLAY = ServiceKey[DisplayRenderer]("message.display:model.facts")
-
-
-class ModelProjection(Protocol):
-    """当前绑定模型的只读消息投影能力。"""
-
-    @property
-    def context_window(self) -> int | None: ...
-
-    @property
-    def max_tool_schemas(self) -> int | None: ...
-
-    def estimate(self, request: ModelRequest) -> int: ...
-
-    def facts(
-        self,
-        response: LLMResponse,
-        call_indices: Sequence[int],
-        *,
-        reminder: str | None = None,
-        actual_calls: Sequence[ToolCall | ContentPart] | None = None,
-    ) -> ContentPart: ...
-
-    def render(
-        self,
-        messages: tuple[Message, ...],
-        *,
-        after_seq: int,
-        summary_reference: str | None = None,
-        fresh: bool = False,
-    ) -> ModelRequest: ...
-
-
-class ModelProjectionFactory(Protocol):
-    """由 models owner 创建一次执行绑定的消息投影。"""
-
-    def create(
-        self,
-        model: BoundChatModel,
-        *,
-        source: str,
-        render_content: ContentRenderer,
-        tool_name: Callable[[str], str],
-        read_call: CallReader,
-        check_summary: ContentCheck,
-        keep_input_ids: tuple[str, ...] = (),
-    ) -> ModelProjection: ...
-
-
-class ModelMessageChecks(Protocol):
-    """模型消息协议的结构校验 owner。"""
-
-    def check_facts(self, part: ContentPart) -> ContentReferences: ...
-
-    def check_tool_rejection(self, part: ContentPart) -> ContentReferences: ...
-
-
-MODEL_PROJECTION = ServiceKey[ModelProjectionFactory]("models.projection.v1")
-MODEL_MESSAGE_CHECKS = ServiceKey[ModelMessageChecks]("models.message-checks.v1")
 
 
 def response_facts(
@@ -535,32 +477,15 @@ def _same_json(value: Any, saved: Any) -> bool:
 
 
 class ProjectionOwner:
-    def create(
-        self,
-        model: BoundChatModel,
-        *,
-        source: str,
-        render_content: ContentRenderer,
-        tool_name: Callable[[str], str],
-        read_call: CallReader,
-        check_summary: ContentCheck,
-        keep_input_ids: tuple[str, ...] = (),
-    ) -> ModelProjection:
-        """创建绑定本次模型执行的只读投影。"""
-        return MessageProjection(
-            model,
-            source=source,
-            render_content=render_content,
-            tool_name=tool_name,
-            read_call=read_call,
-            check_summary=check_summary,
-            keep_input_ids=keep_input_ids,
-        )
+    """直接签发模型 owner 的投影，不建立第二份请求状态。"""
+
+    create = staticmethod(MessageProjection)
 
 
 class MessageChecksOwner:
-    def check_facts(self, part: ContentPart) -> ContentReferences:
-        return check_facts(part)
+    check_facts = staticmethod(check_facts)
+    check_tool_rejection = staticmethod(check_tool_rejection)
 
-    def check_tool_rejection(self, part: ContentPart) -> ContentReferences:
-        return check_tool_rejection(part)
+
+MODEL_PROJECTION = ServiceKey[ProjectionOwner]("models.projection.v1")
+MODEL_MESSAGE_CHECKS = ServiceKey[MessageChecksOwner]("models.message-checks.v1")

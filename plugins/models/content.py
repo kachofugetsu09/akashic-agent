@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 import json
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 from agent.media import (
     MAX_IMAGE_DATA_URI_TOTAL_BYTES,
@@ -20,29 +20,6 @@ from agent.plugin_composition.channels import (
 )
 from agent.plugin_contracts import ContentPart, Control, Message, ToolCall, freeze_json
 from agent.plugin_contracts import json_value
-
-
-class ModelContent(Protocol):
-    """模型请求正文与附件的只读投影能力。"""
-
-    async def load_artifacts(
-        self,
-        reader: ChannelAttachmentReadPort,
-        refs: Sequence[AttachmentRef],
-        *,
-        accepts_images: bool,
-    ) -> Mapping[str, tuple[Mapping[str, Any], ...]]: ...
-
-    def render(
-        self,
-        part: ContentPart,
-        *,
-        artifacts: Mapping[str, tuple[Mapping[str, Any], ...]],
-        read_message: Callable[[str], Message | None] | None = None,
-    ) -> tuple[Mapping[str, Any], ...]: ...
-
-
-MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v1")
 
 
 async def load_artifacts(
@@ -119,20 +96,10 @@ def render_content(
 
 
 class ContentOwner:
-    async def load_artifacts(
-        self,
-        reader: ChannelAttachmentReadPort,
-        refs: Sequence[AttachmentRef],
-        *,
-        accepts_images: bool,
-    ) -> Mapping[str, tuple[Mapping[str, Any], ...]]:
-        return await load_artifacts(reader, refs, accepts_images=accepts_images)
+    """模型正文与附件解释使用原函数，权限由传入的只读端口限定。"""
 
-    def render(
-        self,
-        part: ContentPart,
-        *,
-        artifacts: Mapping[str, tuple[Mapping[str, Any], ...]],
-        read_message: Callable[[str], Message | None] | None = None,
-    ) -> tuple[Mapping[str, Any], ...]:
-        return render_content(part, artifacts=artifacts, read_message=read_message)
+    load_artifacts = staticmethod(load_artifacts)
+    render = staticmethod(render_content)
+
+
+MODEL_CONTENT = ServiceKey[ContentOwner]("models.content.v1")

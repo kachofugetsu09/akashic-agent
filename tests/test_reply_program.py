@@ -35,7 +35,7 @@ from session.message import ContentPart, Control, Input, Output, ToolResult
 @pytest.mark.parametrize("case", ["complete", "interrupt", "input_before_effect", "input_during_reduction", "summarized_input"])
 async def test_ordinary_program_keeps_content_live_until_real_tool_settlement(tmp_path, case, monkeypatch):
     sources = tmp_path / "plugins"
-    for name in ("content", "context", "tools", "turn_projection"):
+    for name in ("content", "context", "tools", "turn_projection", "models"):
         shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     path = sources / "probe"

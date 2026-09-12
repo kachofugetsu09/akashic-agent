@@ -1,3 +1,4 @@
+from plugins.context.api import check_summary as _model_summary_check
 import asyncio
 import importlib.util
 import sqlite3
@@ -331,7 +332,7 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
     )
     projection = MessageProjection(
         model,
-        source="conversation",
+        check_summary=_model_summary_check, source="conversation",
         render_content=lambda part: ({"type": "text", "text": part.value},),
         tool_name=lambda binding: {"old-tool-binding": "original_name"}[binding],
         read_call=store.read_call,
@@ -355,14 +356,14 @@ async def test_message_projection_keeps_provider_ids_and_interrupted_inputs(
     assert projection.render(messages, after_seq=4).messages == ()
     for keep in (("1",), ("4",), ("missing",), ("0", "0")):
         invalid = MessageProjection(
-            model, source="conversation", render_content=lambda part: (),
+            model, check_summary=_model_summary_check, source="conversation", render_content=lambda part: (),
             tool_name=lambda binding: "unused", read_call=store.read_call,
             keep_input_ids=keep,
         )
         with pytest.raises(ValueError, match="真实 Input"):
             invalid.render(messages, after_seq=4)
     repeated = MessageProjection(
-        model, source="conversation",
+        model, check_summary=_model_summary_check, source="conversation",
         render_content=lambda part: ({"type": "text", "text": part.value},),
         tool_name=lambda binding: "unused", read_call=store.read_call,
         keep_input_ids=("2", "0"),
@@ -408,7 +409,7 @@ async def test_message_projection_keeps_source_continuation_and_rejects_unsafe_s
     )
     projection = MessageProjection(
         model,
-        source="conversation",
+        check_summary=_model_summary_check, source="conversation",
         render_content=lambda part: ({"type": "text", "text": part.value},),
         tool_name=lambda binding: "unused",
         read_call=store.read_call,
@@ -420,7 +421,7 @@ async def test_message_projection_keeps_source_continuation_and_rejects_unsafe_s
         projection.render((message, later_other_source), after_seq=0)
     changed = MessageProjection(
         _BoundChat(replace(descriptor, binding_id="new-model"), Driver(), store),
-        source="conversation",
+        check_summary=_model_summary_check, source="conversation",
         render_content=lambda part: (),
         tool_name=lambda binding: "unused",
         read_call=store.read_call,
@@ -556,7 +557,7 @@ async def test_abandon_preserves_text_and_completed_calls_but_excludes_abandoned
         names.append(binding)
         assert binding == 'completed'
         return 'completed_tool'
-    projection = MessageProjection(model, source='conversation',
+    projection = MessageProjection(model, check_summary=_model_summary_check, source='conversation',
         render_content=lambda part: ({'type': 'text', 'text': part.value},),
         tool_name=tool_name, read_call=store.read_call)
     request = projection.render(tuple(messages), after_seq=-1)
@@ -598,7 +599,7 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
         message(1, Output((ContentPart("text", "old answer"), response_facts(response, [])), "complete")),
         message(2, Input((ContentPart("text", "current question"),))),
     )
-    projection = MessageProjection(model, source="conversation", read_call=store.read_call,
+    projection = MessageProjection(model, check_summary=_model_summary_check, source="conversation", read_call=store.read_call,
         render_content=lambda part: render_content(part, artifacts={}), tool_name=lambda binding: "unused",
         keep_input_ids=("2",))
     summary = Summary("summary-binding", ("0", "1"), "saved old work")
@@ -866,7 +867,7 @@ def test_repeated_projection_keeps_dynamic_content_and_live_call_validation(stor
     message = Message("answer", "s", 0, datetime.now(UTC), "assistant", "chat",
                       Output((ContentPart("text", "body"), facts), "complete"))
     block: dict[str, object] = {"type": "text", "text": "first"}
-    projection = MessageProjection(_BoundChat(descriptor, _DriverContract(), store), source="chat",
+    projection = MessageProjection(_BoundChat(descriptor, _DriverContract(), store), check_summary=_model_summary_check, source="chat",
         render_content=lambda part: (block,), tool_name=lambda binding: "unused", read_call=store.read_call)
     first = projection.render((message,), after_seq=-1)
     projection.render((message,), after_seq=-1)

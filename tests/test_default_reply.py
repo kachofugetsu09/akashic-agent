@@ -1,3 +1,4 @@
+from plugins.context.api import check_summary as _model_summary_check
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -66,7 +67,9 @@ from types import SimpleNamespace
 from pathlib import Path
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall
-from plugins.models.projection import MODEL_CALLS
+from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.tools.api import Result
@@ -121,6 +124,10 @@ async def apply(ctx, config):
     await ctx.provide(ServiceKey("tools.cleanup.v1"), shell_cleanup)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
     await ctx.provide(ServiceKey("fixture.calls"), calls)
 '''.replace("EFFECT_PATH", repr(str(tmp_path / "effect.txt"))))
     if provider_effect_data:
@@ -312,7 +319,7 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
                 bindings = ctx.require(BINDINGS)
                 def tool_name(binding):
                     return cast(str, cast(Mapping[str, object], bindings.describe(binding, TOOLS)["tool"])["name"])
-                projection = MessageProjection(model, source="conversation", render_content=lambda part: render_content(part, artifacts={}),
+                projection = MessageProjection(model, check_summary=_model_summary_check, source="conversation", render_content=lambda part: render_content(part, artifacts={}),
                                                tool_name=tool_name, read_call=ctx.require(MODEL_CALLS))
                 before = log.reader("s").snapshot()
                 retained = projection.render(before, after_seq=-1)

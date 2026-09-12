@@ -20,10 +20,17 @@ from plugins.tools.api import Denied
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import CallRef, Control, Message
+from agent.plugin_contracts import ContentPart, CallRef, Control, Message
 
 from .messages import HINTS, render
 from .request import Request, STAGE_TOOLS, WakeFailure, read_phase
+
+
+class ModelContent(Protocol):
+    def render(self, part: ContentPart, *, artifacts: Mapping[str, tuple[Mapping[str, object], ...]]) -> tuple[Mapping[str, object], ...]: ...
+
+
+MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v1")
 
 
 class ToolCleanup(Protocol):
@@ -71,7 +78,7 @@ async def run(ctx: Context, task: Task, reader: MessageReader, request: Request)
             materials=ctx.require(MATERIALS),
             turn_projection=ctx.require(TURN_PROJECTION),
             read_call=ctx.require(MODEL_CALLS),
-            render_content=render,
+            render_content=lambda part: render(part, fallback=lambda item: ctx.require(MODEL_CONTENT).render(item, artifacts={})),
             authorize=authorize,
             tool_view=None,
             fixed_bindings=fixed,

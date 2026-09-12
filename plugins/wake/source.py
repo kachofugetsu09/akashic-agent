@@ -4,18 +4,18 @@ import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.content.plugin import check_text
 from plugins.delivery.plugin import DELIVERY
-from plugins.models.selection import check_selection
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from agent.plugin_contracts import ContentPart, Input, Message, Output
+from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message, Output
 
 from .api import EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY
 from .content import (_candidate_id, _content_candidates, _datetime, _mapping,
@@ -25,6 +25,13 @@ from .request import Phase, Request, Stage, WAKE_PROGRAM, check_phase, check_req
 from .selection import propose_content, propose_drift
 from .state import WakeState
 from .tools import Alert, Screen, Share, Skip
+
+
+class ModelSelection(Protocol):
+    def check(self, part: ContentPart) -> ContentReferences: ...
+
+
+MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
 
 
 class Pointer(BaseModel):
@@ -138,7 +145,7 @@ class Source:
         if not task.active:
             raise asyncio.CancelledError
         writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Input,),
-            content={"wake.phase": check_phase, "model.selection": check_selection, "text": check_text})(request.session_id)
+            content={"wake.phase": check_phase, "model.selection": ctx.require(MODEL_SELECTION).check, "text": check_text})(request.session_id)
         try:
             phase = Phase(input_id=request.input_id, stage=stage)
             _ = writer.append(request.phase_id(stage), Input((ContentPart("wake.phase", phase.model_dump(mode="json")),

@@ -10,12 +10,18 @@ from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGa
 from agent.plugin_composition.messages import MessageConflict, MessageReader, MessageWriter
 from plugins.content.plugin import check_text
 from plugins.content.api import check_artifact
-from plugins.models.selection import check_selection
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
 
 from .source import update_selection
 from .commands import CONVERSATION_COMMANDS, run_commands
 
+
+
+class ModelSelection(Protocol):
+    def check(self, part: ContentPart) -> ContentReferences: ...
+
+
+MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
 
 
 class SourceSession(Protocol):
@@ -70,7 +76,7 @@ async def apply(ctx: Context, config: object) -> None:
 
     def open(session_id: str) -> SourceSession:
         def check_model(part: ContentPart) -> ContentReferences:
-            references = check_selection(part)
+            references = ctx.require(MODEL_SELECTION).check(part)
             value = cast(Mapping[str, str | None], part.value)
             _ = ctx.require(MODEL_CATALOG).validate_chat_selection(
                 ChatModelSelection(value["model_id"], value["reasoning_effort"]),
