@@ -58,8 +58,10 @@ command = [
   "pytest",
   "-q",
   "tests/semantic/test_contract_oracles.py::test_workspace_oracle_rejects_official_path_mutant",
+  "tests/test_message_log.py",
+  "tests/test_plugin_distribution.py",
 ]
-observes = ["workspace_path", "plugin_home_path", "fresh_config"]
+observes = ["workspace_path", "plugin_home_path", "fresh_config", "current_schema_reopen", "partial_schema_rejected_before_write", "no_global_migration_ledger"]
 mutants = ["official_workspace_path"]
 
 [scenarios.shell_execution_contract]
@@ -349,7 +351,6 @@ command = [
   "tests/test_model_call_records.py",
   "tests/test_model_execution.py::test_model_execution_pins_binding_and_rejects_child_task_inheritance",
   "tests/test_default_reply.py::test_installed_default_reply_is_an_independent_log_consumer",
-  "tests/test_migration_runner.py",
 ]
 observes = [
   "ordinary_install_without_repository_source",
@@ -363,8 +364,6 @@ observes = [
   "akasha_embedding_binding",
   "public_model_control_socket",
   "catalog_secret_redaction",
-  "core_model_config_retirement",
-  "migration_chain",
 ]
 mutants = ["model_consumer_imports_plugin_source"]
 

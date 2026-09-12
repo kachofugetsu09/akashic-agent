@@ -4717,42 +4717,6 @@ def _install_control_failure_plugin(sandbox: Path) -> None:
     )
 
 
-def _seed_memory_context_fixture(
-    compose: list[str],
-    repo: Path,
-    env: dict[str, str],
-) -> None:
-    """只完成生产迁移；历史消息由真实程序化 ingress 追加。"""
-
-    script = """
-from pathlib import Path
-from agent.migrations import migrate_installation
-
-config = Path("/sandbox/config.toml")
-workspace = Path("/sandbox/workspace")
-migrate_installation(config, workspace)
-"""
-    seeded = subprocess.run(
-        [
-            *compose,
-            "run",
-            "--rm",
-            "--no-deps",
-            "-T",
-            "--entrypoint",
-            "python",
-            "akashic-control-gate",
-            "-c",
-            script,
-        ],
-        cwd=repo,
-        env=env,
-        check=False,
-    )
-    if seeded.returncode != 0:
-        raise GateFailure(f"memory context fixture seed failed: {seeded.returncode}")
-
-
 def _run_stdio_check(
     compose: list[str],
     repo: Path,
@@ -5170,8 +5134,6 @@ def _run_host(gate: str) -> int:
         )
         if build.returncode != 0:
             raise GateFailure(f"control-gate image build failed: {build.returncode}")
-        if gate == "memory-context":
-            _seed_memory_context_fixture(compose, repo, env)
         up = subprocess.run(
             [*compose, "up", "-d", "model-gate", "akashic-control-gate"],
             cwd=repo,

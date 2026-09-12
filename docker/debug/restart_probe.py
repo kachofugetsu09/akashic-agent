@@ -24,7 +24,6 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from agent.plugins.reload_journal import ReloadJournal
-from agent.migrations.runner import MigrationRunner
 from docker.debug.programmatic_control_probe import (
     CheckResult,
     GateFailure,
@@ -1265,10 +1264,6 @@ def _unsupervised_tool_absence_check(report_dir: Path) -> CheckResult:
     endpoint = Path("/sandbox/unsupervised.sock")
     config_path.write_text(config, encoding="utf-8")
     _initialize_current_workspace(workspace, Path("/app"))
-    # Initialize this disposable workspace through the real migration owner.
-    _ = MigrationRunner(
-        repo_root=Path("/app"), config_path=config_path, workspace=workspace,
-    ).run()
     source_registry = WORKSPACE / "model-registry.sqlite3"
     target_registry = workspace / "model-registry.sqlite3"
     with (

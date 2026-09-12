@@ -99,7 +99,7 @@ class WakeState:
                 connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
             elif version != _SCHEMA_VERSION:
                 raise RuntimeError(
-                    "Wake state 必须先运行 yoyo 20260909_02_execution_failures: "
+                    "Wake state schema 不匹配，不支持此数据库结构: "
                     f"schema version {version}"
                 )
             self._validate_tables(

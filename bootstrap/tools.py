@@ -424,7 +424,7 @@ def build_core_runtime(
     from agent.plugins.manager import PluginManager
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
 
-    # 1. MessageLog 先核对 schema，旧库不能借普通启动绕过 yoyo。
+    # 1. MessageLog 先核对当前 schema，不在普通启动中改写旧库。
     bus = MessageBus()
     event_bus = EventBus()
     with ExitStack() as cleanup:

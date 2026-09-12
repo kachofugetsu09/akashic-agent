@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
-import hashlib
 import json
 import logging
 from contextlib import aclosing, asynccontextmanager
@@ -24,7 +23,6 @@ from agent.plugin_composition import (
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextLengthError, LLMResponse, ModelError
-from agent.plugin_contracts.json_store import atomic_write_text
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
 from ._boundaries import (
@@ -48,8 +46,7 @@ desc = "把已使用摘要的确切原文投影到 MEMORY.md 和 SELF.md"
 _UPDATE_LOCK_NAME = "markdown-profile-update.lock"
 workspace_files = (
     "memory/MEMORY.md", "memory/SELF.md", "memory/markdown-profile-writes.db",
-    "memory/markdown-profile.lock", "memory/PENDING.md", "memory/PENDING.snapshot.md",
-    "memory/PENDING.retired.md",
+    "memory/markdown-profile.lock",
     f"memory/{_UPDATE_LOCK_NAME}",
 )
 
@@ -265,176 +262,12 @@ def _check_profile_response(response: LLMResponse, messages: tuple[Message, ...]
     return draft
 
 
-async def start_store(
-    store: MarkdownProfileStore,
-    lock_path: Path,
-    pending_path: Path,
-    snapshot_path: Path,
-    retired_path: Path,
-) -> None:
-    """Recover document commits, then retire the old pending queue."""
-
+async def start_store(store: MarkdownProfileStore, lock_path: Path) -> None:
+    """恢复当前文档提交；历史 PENDING 文件不属于在线输入。"""
     async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)):
         async with profile_lock(lock_path):
             for source_ref in store.pending_source_refs():
                 store.apply_pending(source_ref)
-        await _migrate_pending(
-            store,
-            lock_path,
-            pending_path,
-            snapshot_path,
-            retired_path,
-        )
-
-
-async def _migrate_pending(
-    store: MarkdownProfileStore,
-    lock_path: Path,
-    pending_path: Path,
-    snapshot_path: Path,
-    retired_path: Path,
-) -> None:
-    """Merge exact retired queue bytes once, then preserve their file boundary."""
-
-    async with profile_lock(lock_path):
-        migration = store.read_legacy_pending_migration()
-        if migration is None:
-            pending = (
-                pending_path.read_text(encoding="utf-8")
-                if pending_path.exists()
-                else ""
-            )
-            snapshot = (
-                snapshot_path.read_text(encoding="utf-8")
-                if snapshot_path.exists()
-                else ""
-            )
-            if not pending and not snapshot:
-                return
-            migration = {
-                "version": 1,
-                "pending": pending,
-                "pending_digest": content_digest(pending),
-                "snapshot": snapshot,
-                "snapshot_digest": content_digest(snapshot),
-            }
-            store.write_legacy_pending_migration(migration)
-        pending = migration.get("pending")
-        snapshot = migration.get("snapshot")
-        pending_digest = migration.get("pending_digest")
-        snapshot_digest = migration.get("snapshot_digest")
-        if not all(
-            isinstance(value, str)
-            for value in (pending, snapshot, pending_digest, snapshot_digest)
-        ):
-            raise ValueError("legacy PENDING migration receipt schema 无效")
-        assert isinstance(pending, str)
-        assert isinstance(snapshot, str)
-        if (
-            content_digest(pending) != pending_digest
-            or content_digest(snapshot) != snapshot_digest
-        ):
-            raise ValueError("legacy PENDING migration receipt digest 无效")
-        encoded_migration = json.dumps(
-            migration,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        digest = hashlib.sha256(encoded_migration.encode("utf-8")).hexdigest()
-        source_ref = f"legacy-pending:{digest}"
-        combined = "\n".join(item for item in (snapshot, pending) if item)
-        if not store.is_applied(source_ref):
-            draft = store.read_draft(source_ref)
-            if draft is None:
-                draft = _prepare_legacy_draft(combined, store)
-                _ = store.write_draft(
-                    source_ref,
-                    draft,
-                    session_key="legacy-pending",
-                    generation=0,
-                )
-            check_draft(draft)
-            store.apply_draft(source_ref, draft)
-        archive = json.dumps(
-            {"source_ref": source_ref, **migration},
-            ensure_ascii=False,
-            sort_keys=True,
-            indent=2,
-        ) + "\n"
-        if retired_path.exists() and retired_path.read_text(encoding="utf-8") != archive:
-            raise RuntimeError("PENDING retired archive 内容冲突")
-        current_pending = pending_path.read_text(encoding="utf-8") if pending_path.exists() else ""
-        current_snapshot = (
-            snapshot_path.read_text(encoding="utf-8") if snapshot_path.exists() else ""
-        )
-        if current_pending not in {"", pending}:
-            raise RuntimeError("PENDING.md 在退休 receipt 后出现新内容，拒绝清空")
-        if current_snapshot not in {"", snapshot}:
-            raise RuntimeError("PENDING.snapshot.md 在退休 receipt 后出现新内容，拒绝清空")
-        atomic_write_text(retired_path, archive, domain="pending_retirement")
-        atomic_write_text(pending_path, "", domain="pending_retirement")
-        atomic_write_text(snapshot_path, "", domain="pending_retirement")
-        store.mark_legacy_pending_retired(source_ref)
-
-
-
-def _prepare_legacy_draft(
-    pending_items: str,
-    store: MarkdownProfileStore,
-) -> dict[str, object]:
-    """Preserve every retired pending line without another model interpretation."""
-
-    current_memory = store.read_memory()
-    current_self = store.read_self()
-    memory = _merge_legacy_pending(current_memory, pending_items)
-    _validate_memory(memory)
-    _validate_self(current_self)
-    return {
-        "version": 1,
-        "memory": memory,
-        "self": current_self,
-        "memory_before": current_memory,
-        "self_before": current_self,
-        "memory_before_digest": content_digest(current_memory),
-        "self_before_digest": content_digest(current_self),
-        "memory_after_digest": content_digest(memory),
-        "self_after_digest": content_digest(current_self),
-    }
-
-
-def _merge_legacy_pending(memory: str, pending_items: str) -> str:
-    """Map old tagged lines into the fixed MEMORY schema without dropping text."""
-
-    if not pending_items.strip():
-        return memory
-    content = memory
-    if not content.strip():
-        content = "\n\n".join(_MEMORY_HEADINGS) + "\n"
-    grouped: dict[str, list[str]] = {heading: [] for heading in _MEMORY_HEADINGS[1:]}
-    grouped[_MEMORY_OPTIONAL_HEADING] = []
-    heading_by_tag = {
-        "identity": _MEMORY_HEADINGS[1],
-        "health_long_term": _MEMORY_HEADINGS[1],
-        "preference": _MEMORY_HEADINGS[2],
-        "key_info": _MEMORY_HEADINGS[3],
-        "requested_memory": _MEMORY_HEADINGS[3],
-        "correction": _MEMORY_HEADINGS[3],
-        "agent_context": _MEMORY_OPTIONAL_HEADING,
-    }
-    for raw_line in pending_items.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        tag = ""
-        if line.startswith("- [") and "]" in line:
-            tag = line[3 : line.index("]")].strip().lower()
-        target = heading_by_tag.get(tag, _MEMORY_HEADINGS[3])
-        preserved = line if line.startswith("- ") else f"- [legacy_pending] {line}"
-        grouped[target].append(preserved)
-    for heading, lines in grouped.items():
-        content = _append_section_lines(content, heading, lines)
-    return content.rstrip() + "\n"
 
 
 def _append_section_lines(content: str, heading: str, lines: list[str]) -> str:
@@ -811,8 +644,7 @@ async def apply(ctx: Context, config: Config) -> None:
         async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)), profile_lock(lock_path):
             store = MarkdownProfileStore(ctx.workspace_file("memory/MEMORY.md"), ctx.workspace_file("memory/SELF.md"),
                                          ctx.workspace_file("memory/markdown-profile-writes.db"))
-        await start_store(store, lock_path, ctx.workspace_file("memory/PENDING.md"),
-                           ctx.workspace_file("memory/PENDING.snapshot.md"), ctx.workspace_file("memory/PENDING.retired.md"))
+        await start_store(store, lock_path)
         watcher = await ctx.spawn(follow(ctx.require(MESSAGE_CATALOG)), name="markdown-memory")
 
     async def stop(_event: object) -> None:

@@ -24,7 +24,6 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.install import install_git_plugin
-from agent.migrations.runner import initialize_empty_workspace
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
 from agent.plugins.static_manifest import load_static_plugin_manifest
@@ -434,11 +433,7 @@ def install_profile(
     if not config_path.is_file():
         raise ValueError(f"runtime config 必须是普通文件: {config_path}")
     workspace.mkdir(parents=True, exist_ok=True)
-    initialize_empty_workspace(
-        repo_root=_SOURCE_ROOT,
-        workspace=workspace,
-        config_path=config_path,
-    )
+
     plugins_home.mkdir(parents=True, exist_ok=True)
 
     installed: list[dict[str, Any]] = []

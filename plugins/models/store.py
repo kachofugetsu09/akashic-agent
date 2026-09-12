@@ -1511,11 +1511,11 @@ def require_model_calls_schema(connection: sqlite3.Connection) -> None:
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='model_calls'"
     ).fetchone()
     if row is None:
-        raise RuntimeError("model_calls 缺失，请先运行对应 yoyo 迁移")
+        raise RuntimeError("model_calls 缺失，不支持此数据库结构")
     if "".join(str(row[0]).lower().split()) != "".join(
         MODEL_CALLS_SCHEMA.lower().split()
     ):
-        raise RuntimeError("model_calls schema 不匹配，请先运行对应 yoyo 迁移")
+        raise RuntimeError("model_calls schema 不匹配，不支持此数据库结构")
 
 
 _SCHEMA = MODEL_CALLS_SCHEMA + ";\n" + """

@@ -265,7 +265,7 @@ def _reject_removed_context_configuration(
     data: dict,
     agent_context: dict,
 ) -> None:
-    """Fail loudly when a pre-ledger context key bypasses migration."""
+    """拒绝不属于当前配置合同的旧上下文字段。"""
 
     # 1. Legacy message-count and runtime-percent keys are no longer accepted.
     raw_compaction = agent_context.get("compaction")
@@ -275,12 +275,12 @@ def _reject_removed_context_configuration(
         or (isinstance(raw_compaction, dict) and "memory_window" in raw_compaction)
     ):
         raise ValueError(
-            "removed configuration: memory_window; run the session compaction migration"
+            "removed configuration: memory_window; unsupported configuration"
         )
     if isinstance(raw_compaction, dict) and "trigger_percent" in raw_compaction:
         raise ValueError(
             "removed configuration: agent.context.compaction.trigger_percent; "
-            "run the session compaction migration"
+            "unsupported configuration"
         )
     if raw_compaction is not None:
         raise ValueError(
@@ -305,7 +305,7 @@ def _reject_retired_agent_configuration(data: dict, agent_cfg: dict) -> None:
             + "; prompt plugin reads workspace memory/VEDA.md"
         )
 
-    # 2. Reply budget is plugin-owned; migration must run before this loader.
+    # 2. Reply budget is plugin-owned; old Core fields are unsupported.
     iteration_fields = []
     if "max_iterations" in data:
         iteration_fields.append("max_iterations")
@@ -315,7 +315,7 @@ def _reject_retired_agent_configuration(data: dict, agent_cfg: dict) -> None:
         raise ValueError(
             "removed configuration: "
             + ", ".join(iteration_fields)
-            + "; run the reply max_steps migration"
+            + "; unsupported configuration"
         )
 
     # 3. Tool discovery has no lossless global boolean mapping.
@@ -412,12 +412,12 @@ def _reject_removed_proactive_configuration(data: dict) -> None:
 
 
 def _reject_retired_model_configuration(data: dict) -> None:
-    """Reject model and memory facts after their plugin-owner migrations."""
+    """拒绝不属于 Core 的旧模型和记忆配置。"""
 
     retired = [name for name in ("llm", "memory") if name in data]
     if retired:
         names = ", ".join(f"[{name}]" for name in retired)
-        raise ValueError(f"{names} 已迁移到普通模型插件；请先运行 workspace migration")
+        raise ValueError(f"{names} 属于普通模型插件；不支持此旧配置结构")
 
 
 __all__ = [

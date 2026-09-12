@@ -44,7 +44,6 @@ PROTECTED_CONTRACT_PATHS = (
     "tests_scenarios/contracts/**",
     "docker/debug/gate.py",
     "scripts/measure_production_sloc.py",
-    "scripts/check_yoyo_migrations.py",
     ".github/workflows/**",
 )
 

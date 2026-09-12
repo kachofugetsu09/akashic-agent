@@ -593,3 +593,33 @@ def test_command_receipt_completion_rejects_byte_overflow_without_losing_process
         ("device-1", "command-1"),
     ).fetchone()
     assert row["status"] == "processing"
+
+
+@pytest.mark.parametrize("partial", [True, False])
+def test_incomplete_schema_is_rejected_before_database_writes(tmp_path, partial):
+    path = tmp_path / "mobile.sqlite3"
+    if partial:
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute("CREATE TABLE mobile_devices (device_id TEXT PRIMARY KEY)")
+            connection.commit()
+    else:
+        MobileRealtimeStorage(path).close()
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute("DROP INDEX idx_mobile_attachments_outbound_identity")
+            connection.commit()
+    before = path.read_bytes()
+    with pytest.raises(RuntimeError, match="Mobile schema 不匹配"):
+        MobileRealtimeStorage(path)
+    assert path.read_bytes() == before
+
+
+def test_current_schema_reopen_preserves_epoch_and_all_stored_facts(tmp_path):
+    path = tmp_path / "mobile.sqlite3"
+    MobileRealtimeStorage(path).close()
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("UPDATE mobile_connection_epoch SET last_epoch=17 WHERE singleton=1")
+        connection.commit()
+        before = tuple(connection.iterdump())
+    MobileRealtimeStorage(path).close()
+    with closing(sqlite3.connect(path)) as connection:
+        assert tuple(connection.iterdump()) == before

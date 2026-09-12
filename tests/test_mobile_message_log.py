@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import sqlite3
 from typing import cast
 from collections import deque
 from contextlib import closing
@@ -25,7 +26,6 @@ from plugins.models.projection import check_facts, display_facts
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 from tests.mobile_realtime.test_channel import _Runtime, _generic_frame, _register_device
-from tests.test_message_log_migration import snapshot
 
 
 @pytest.fixture
@@ -55,6 +55,15 @@ def append(log, session, identity, body, call_ref=None):
     checks['model.facts'] = check_facts
     return log.writer(session, author='真实作者', source='来源', body_types=(type(body),),
                       content=checks, call_ref=call_ref, check_call=lambda call: None).append(identity, body)
+
+
+def sqlite_snapshot(path):
+    """Return a stable SQL dump for read-only mobile history assertions."""
+    with closing(sqlite3.connect(path)) as connection:
+        return "\n".join(connection.iterdump())
+
+
+snapshot = sqlite_snapshot
 
 
 @pytest.mark.asyncio

@@ -142,7 +142,7 @@ class ArtifactStore:
                     ).fetchone()
                     if row is not None:
                         if _sql(row["sql"]) != _sql(expected):
-                            raise RuntimeError(f"{name} schema 不匹配，请先完成对应迁移")
+                            raise RuntimeError(f"{name} schema 不匹配，不支持此数据库结构")
                         existing.add(name)
                 if "attachment_imports" in existing and "attachments" not in existing:
                     raise RuntimeError("attachment_imports 存在但 attachments 缺失")

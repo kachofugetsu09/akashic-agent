@@ -116,13 +116,13 @@ class JobStore:
         return result
 
     def decode(self, raw: object) -> ScheduleState:
-        """只接纳当前文件 schema；旧数组必须由 yoyo 在停写状态下迁移。"""
+        """只接纳当前文件 schema，不在普通启动中升级旧数组。"""
         if not isinstance(raw, dict):
-            raise ValueError(f"job_store schema 无效，请先迁移：path={self.path}")
+            raise ValueError(f"job_store schema 无效，不支持此文件结构：path={self.path}")
         raw = cast(dict[str, Any], raw)
         if (set(raw) != {"version", "jobs", "operations", "fires"}
                 or type(raw["version"]) is not int or raw["version"] != 2):
-            raise ValueError(f"job_store schema 无效，请先迁移：path={self.path}")
+            raise ValueError(f"job_store schema 无效，不支持此文件结构：path={self.path}")
         jobs = self.decode_jobs(raw["jobs"])
         operations: dict[str, Operation] = {}
         if not isinstance(raw["operations"], dict) or not isinstance(raw["fires"], dict):
@@ -153,7 +153,7 @@ class JobStore:
         return ScheduleState({job.id: job for job in jobs}, operations, fires)
 
     def decode_jobs(self, raw: object) -> list[ScheduledJob]:
-        """当前文档与显式旧数组迁移共用同一任务 schema owner。"""
+        """解析当前任务文档的 schema。"""
         if not isinstance(raw, list):
             raise ValueError(f"job_store 任务必须是 JSON 列表：path={self.path}")
 

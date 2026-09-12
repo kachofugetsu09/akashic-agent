@@ -1059,7 +1059,6 @@ importlib-metadata==8.9.0 \
     # via
     #   litellm
     #   ncatbot
-    #   yoyo-migrations
 jeepney==0.9.0 \
     --hash=sha256:97e5714520c16fc0a45695e5365a2e11b81ea79bba796e26f9f1d178cb182683 \
     --hash=sha256:cf0e9e845622b81e4a28df94c40345400256ec608d0e55bb8a3feaa9163f5732
@@ -2898,10 +2897,6 @@ sqlite-vec==0.1.9 \
     --hash=sha256:4a28dc12fa4b53d7b1dced22da2488fade444e96b5d16fd2d698cd670675cf32 \
     --hash=sha256:4e921e592f24a5f9a18f590b6ddd530eb637e2d474e3b1972f9bbeb773aa3cb9
     # via -r docker/host-runtime/../../requirements.txt
-sqlparse==0.5.5 \
-    --hash=sha256:12a08b3bf3eec877c519589833aed092e2444e68240a3577e8e26148acc7b1ba \
-    --hash=sha256:e20d4a9b0b8585fdf63b10d30066c7c94c5d7a7ec47c889a2d83a3caa93ff28e
-    # via yoyo-migrations
 sse-starlette==3.4.8 \
     --hash=sha256:6e82314c786709a3cd9520f2285cf9fff90e181e598e8a357b0cf80f66afba0d \
     --hash=sha256:ed89ffbb75cbf78a5fe2f2109cd584792ee7f9dfac96f791db546df8f15f3f9c
@@ -2914,10 +2909,6 @@ starlette==1.6.0 \
     #   fastapi
     #   mcp
     #   sse-starlette
-tabulate==0.10.0 \
-    --hash=sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d \
-    --hash=sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3
-    # via yoyo-migrations
 telegramify-markdown==1.2.0 \
     --hash=sha256:e9fe82b56a1d98045b72a98b09134351e9d36c96d1df240d99e953a89da06325 \
     --hash=sha256:f9fb021ec5f944cf312b5aa022e0f7e156ea4651e70fa3df82f3c0a5182f6dfb
@@ -3308,9 +3299,6 @@ yarl==1.24.5 \
     --hash=sha256:ff405d91509d88e8d44129cd87b18d70acd1f0c1aeabd7bc3c46792b1fe2acba \
     --hash=sha256:ffcd54362564dc1a30fb74d8b8a6e5a6b11ebd5e27266adc3b7427a21a6c9104
     # via aiohttp
-yoyo-migrations==9.0.0 \
-    --hash=sha256:fc65d3a6d9449c1c54d64ff2ff98e32a27da356057c60e3471010bfb19ede081
-    # via -r docker/host-runtime/../../requirements.txt
 yt-dlp==2026.7.4 \
     --hash=sha256:b094813404f87a9dd2186f00815231df32e5fd8a5403be0f807b3bb2d21a4432 \
     --hash=sha256:f11f2b11d5a8ac4059f9bdf29fa4407dc7c6bb00c5097e95ca22a7a9db518266

@@ -1013,29 +1013,6 @@ def test_settings_restart_bridge_exposes_candidate_rejection() -> None:
     assert failures == ["Gateway 拒绝候选模型配置"]
 
 
-def test_supervised_gateway_skips_duplicate_startup_migration(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[Path, Path]] = []
-    monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
-    monkeypatch.setattr(
-        main_module,
-        "migrate_installation",
-        lambda config, workspace: calls.append((config, workspace)),
-    )
-
-    assert (
-        main_module._prepare_startup_migrations(
-            ["gateway"],
-            tmp_path / "config.toml",
-            tmp_path,
-        )
-        is None
-    )
-    assert calls == []
-
-
 def test_platform_boundary_exposes_supervisor_on_linux_and_macos(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

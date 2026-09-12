@@ -81,7 +81,7 @@ class MessageConsumer:
             return cls(path, turns=[], state=state, config=config)
         state = load_consumption(path)
         if state is None:
-            raise ValueError("旧学习图尚未完成 yoyo 消费切换")
+            raise ValueError("学习图缺少当前消费状态，不支持此数据库结构")
         turns = load_legacy_prefix(state, legacy_index)
         space = None
         if state.legacy_prefix.count:

@@ -191,29 +191,6 @@ class MarkdownProfileStore:
             return None
         return _required_string(receipt, "content")
 
-    def read_legacy_pending_migration(self) -> dict[str, object] | None:
-        return self._read_receipt(
-            "legacy-pending-migration-v1",
-            "legacy_pending_source_v1",
-        )
-
-    def write_legacy_pending_migration(
-        self,
-        payload: dict[str, object],
-    ) -> None:
-        _ = self._write_once(
-            "legacy-pending-migration-v1",
-            "legacy_pending_source_v1",
-            payload,
-        )
-
-    def mark_legacy_pending_retired(self, source_ref: str) -> None:
-        _ = self._write_once(
-            "legacy-pending-migration-v1",
-            "legacy_pending_retired_v1",
-            {"source_ref": source_ref},
-        )
-
     def apply_draft(self, source_ref: str, payload: dict[str, object]) -> None:
         """Install independent document drafts and converge after any crash point."""
 

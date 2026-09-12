@@ -459,7 +459,7 @@ class DurableDeliveryStore:
     def _validate_schema(connection: sqlite3.Connection) -> None:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version != _SCHEMA_VERSION:
-            raise RuntimeError(f"unsupported durable delivery schema: {version}; run yoyo 20260909_02_execution_failures")
+            raise RuntimeError(f"unsupported durable delivery schema: {version}")
         tables = {
             str(row["name"]): str(row["sql"])
             for row in connection.execute(

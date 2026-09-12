@@ -583,7 +583,7 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("existing", ["MEMORY.md", "markdown-profile-writes.db", "PENDING.md"])
+@pytest.mark.parametrize("existing", ["MEMORY.md", "markdown-profile-writes.db"])
 async def test_unstarted_markdown_does_not_treat_partial_state_as_initial(tmp_path, existing):
     async with application(tmp_path) as (log, host):
         memory = tmp_path / "workspace/memory"
@@ -998,3 +998,21 @@ def test_profile_rejects_invalid_model_additions_before_building_a_durable_draft
         _check_profile_response(LLMResponse(json.dumps(payload)), (), before[0], before[1],
                                    is_user_input=is_user_input)
     assert (store.read_memory(), store.read_self(), store.read_writes(None, 10)) == before
+
+
+@pytest.mark.asyncio
+async def test_start_keeps_retired_pending_files_out_of_current_profiles(tmp_path):
+    from plugins.markdown_memory.message_plugin import start_store
+    from plugins.markdown_memory.store import MarkdownProfileStore
+
+    pending = tmp_path / "PENDING.md"
+    snapshot = tmp_path / "PENDING.snapshot.md"
+    pending.write_text("historical pending fact", encoding="utf-8")
+    snapshot.write_text("historical snapshot fact", encoding="utf-8")
+    store = MarkdownProfileStore(tmp_path / "MEMORY.md", tmp_path / "SELF.md",
+                                 tmp_path / "markdown-profile-writes.db")
+    paths = (pending, snapshot, store.memory_path, store.self_path)
+    before = {path: path.read_bytes() for path in paths}
+    await start_store(store, tmp_path / "markdown-profile.lock")
+    assert {path: path.read_bytes() for path in paths} == before
+    assert store.read_writes(None, 10) == ()

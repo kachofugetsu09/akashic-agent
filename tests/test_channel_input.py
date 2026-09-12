@@ -328,31 +328,21 @@ def mobile_raw(number=1, *, attachments=()):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("committed", [False, True])
-@pytest.mark.parametrize("legacy_database", [False, True])
 async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
-    tmp_path, committed, legacy_database, monkeypatch,
+    tmp_path, committed,
 ):
-    """同一新库或迁移库重开后只恢复输入交接，不构造旧执行器。"""
-    import runpy
-    import yoyo
-    from agent.migrations.context import bind_migration_context
+    """重开当前 schema 只恢复输入交接，不构造旧执行器。"""
     from agent.plugin_composition.channels import CHANNEL_INPUT
     from agent.plugins.snapshot import lease_runtime_snapshot
     from session.admissions import SessionAdmissions
     from session.inbound_store import InboundHandoffStore
     from session.log import SessionAttributes
-    from session.store import SessionStore
 
-    # 1. 先落 durable 输入；旧库迁移必须保留这条尚未完成的交接。
+    # 1. 先落 durable 输入。
     path = tmp_path / "sessions.db"
-    if legacy_database:
-        old = SessionStore(path)
-        old.create_session(key="akashic:room")
-        old.close()
-    else:
-        log = MessageLog(path)
-        log.ensure_session("akashic:room", SessionAttributes())
-        log.close()
+    log = MessageLog(path)
+    log.ensure_session("akashic:room", SessionAttributes())
+    log.close()
     handoffs, admissions = InboundHandoffStore(path), SessionAdmissions(path)
     original = MessageBus()
     original.bind_durable_inbound_store(handoffs)
@@ -365,17 +355,6 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
         await original.aclose()
         handoffs.close()
         admissions.close()
-    if legacy_database:
-        monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-        with bind_migration_context(workspace=tmp_path, config_path=tmp_path / "config.toml"):
-            for number, name in [(1, "message_log"), (2, "owner_records"), (3, "model_calls"),
-                                 (5, "message_embeddings"), (6, "message_artifacts")]:
-                from tests.legacy_migration_loader import load_migration_module
-                module = load_migration_module(f"20260905_{number:02d}_{name}")
-                migrate = module[f"migrate_{name}"]
-                assert callable(migrate)
-                migrate(None)
-
     # 2. 分别模拟正文提交前与提交后进程结束，重开都不能重复正文。
     if committed:
         async with runtime(tmp_path, channel_name="akashic") as (log, host, *rest):
@@ -583,29 +562,16 @@ async def test_mobile_prepare_waiting_on_handoff_lock_cannot_commit_after_close(
 
 @pytest.mark.asyncio
 async def test_channel_input_imported_artifact_is_pinned_and_read_lease_closed(tmp_path, monkeypatch):
-    import runpy
-    import yoyo
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    from agent.migrations.context import bind_migration_context
     from agent.plugin_composition.channels import AttachmentKind
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
-    from session.store import SessionStore
     from session.artifact_store import ArtifactStore
 
-    SessionStore(tmp_path / "sessions.db").close()
+    MessageLog(tmp_path / "sessions.db").close()
     store = ArtifactStore(tmp_path / "sessions.db")
     artifacts = ChannelAttachmentArtifactStore(workspace=tmp_path, metadata_store=store)
     try:
         ref = await artifacts.import_bytes(b"evidence", kind=AttachmentKind.FILE,
                                            filename="evidence.txt", media_type="text/plain")
-        with bind_migration_context(workspace=tmp_path, config_path=tmp_path / "config.toml"):
-            for number, name in [(1, "message_log"), (2, "owner_records"), (3, "model_calls"),
-                                 (5, "message_embeddings"), (6, "message_artifacts")]:
-                from tests.legacy_migration_loader import load_migration_module
-                module = load_migration_module(f"20260905_{number:02d}_{name}")
-                migrate = module[f"migrate_{name}"]
-                assert callable(migrate)
-                migrate(None)
         opened = []
         acquire = artifacts.acquire
         async def track(ref):

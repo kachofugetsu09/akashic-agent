@@ -82,7 +82,7 @@ def test_change_classes_allow_single_class_and_reject_mixed_contract_changes() -
         ["agent/core/passive_turn.py", "tests/test_agent_core_foundation.py"]
     )
     migration_with_test = gate.classify_change_paths(
-        ["migrations/20260722_example/migration.py", "tests/test_migration_runner.py"]
+        ["migrations/20260722_example/migration.py", "tests/test_message_log.py"]
     )
 
     assert protected_only == {

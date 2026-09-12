@@ -1,5 +1,4 @@
 from contextlib import closing
-import json
 import sqlite3
 
 import pytest
@@ -8,11 +7,9 @@ from session.identities import ChannelIdentities
 from session.log import MessageLog, SessionAttributes
 
 
-def _history(tmp_path, *, legacy=False):
-    from session.store import SessionStore
-
+def _history(tmp_path):
     path = tmp_path / "sessions.db"
-    with closing(SessionStore(path) if legacy else MessageLog(path)):
+    with closing(MessageLog(path)):
         pass
     config = tmp_path / "config.toml"
     config.write_text('[channels.telegram]\nchannel_name="telegram_work"\n')
@@ -31,96 +28,6 @@ def _history(tmp_path, *, legacy=False):
                 (key, updated, updated, metadata),
             )
     return path, config
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-def test_yoyo_preserves_known_aliases_original_data_and_unknown_sources(tmp_path, monkeypatch, legacy):
-    from tests.legacy_migration_loader import load_migration_module
-    from agent.migrations.context import bind_migration_context
-
-    path, config = _history(tmp_path, legacy=legacy)
-    with closing(sqlite3.connect(path)) as db:
-        original = tuple(db.iterdump())
-        sessions = db.execute("SELECT * FROM sessions ORDER BY key").fetchall()
-    entry = load_migration_module("20260906_04_channel_identities")
-    steps = entry["steps"]
-    assert isinstance(steps, list)
-    migrate = steps[0]
-    assert callable(migrate)
-    with bind_migration_context(config_path=config, workspace=tmp_path):
-        migrate(None)
-    with closing(ChannelIdentities(path)) as identities:
-        assert identities.load("telegram_work") == {"alice": "z"}
-        assert identities.resolve("feishu", "ou_123") == "room"
-        assert identities.resolve("qq", "00123") == "room"
-        assert not identities.migration_completed("unknown")
-        assert not identities.migration_completed("telegramXwork")
-    backup = next((tmp_path / "backups/channel-identities").glob("*/sessions.db"))
-    with closing(sqlite3.connect(backup)) as db:
-        assert tuple(db.iterdump()) == original
-    manifest = json.loads(backup.with_name("manifest.json").read_text())
-    assert manifest["sqlite_integrity"] == "ok"
-    with closing(sqlite3.connect(path)) as db:
-        assert db.execute("SELECT * FROM sessions ORDER BY key").fetchall() == sessions
-        committed = tuple(db.iterdump())
-    with bind_migration_context(config_path=config, workspace=tmp_path):
-        migrate(None)
-    with closing(sqlite3.connect(path)) as db:
-        assert tuple(db.iterdump()) == committed
-    assert len(tuple((tmp_path / "backups/channel-identities").glob("*/manifest.json"))) == 1
-
-
-def test_identity_migration_failure_rolls_back_all_channels_and_retries(tmp_path, monkeypatch):
-    from plugins.legacy_upgrade.legacy_upgrade_migrations.support import channel_identities as migration
-
-    path, config = _history(tmp_path)
-    with closing(sqlite3.connect(path)) as db:
-        original = tuple(db.iterdump())
-    seed = migration.seed_channel_identities
-
-    def fail_after_write(connection, channel, mapping):
-        seed(connection, channel, mapping)
-        raise OSError("migration interrupted")
-
-    monkeypatch.setattr(migration, "seed_channel_identities", fail_after_write)
-    with pytest.raises(OSError, match="interrupted"):
-        migration.migrate(path, config, tmp_path / "backup1")
-    with closing(sqlite3.connect(path)) as db:
-        assert tuple(db.iterdump()) == original
-    monkeypatch.setattr(migration, "seed_channel_identities", seed)
-    migration.migrate(path, config, tmp_path / "backup2")
-    with closing(ChannelIdentities(path)) as identities:
-        assert identities.resolve("telegram_work", "alice") == "z"
-
-
-def test_migrated_empty_routes_do_not_parse_obsolete_metadata(tmp_path):
-    from plugins.legacy_upgrade.legacy_upgrade_migrations.support.channel_identities import migrate
-
-    path, config = _history(tmp_path)
-    with closing(ChannelIdentities(path)) as identities:
-        identities.seed("feishu", {})
-    with closing(sqlite3.connect(path)) as db, db:
-        db.execute("UPDATE sessions SET metadata='broken old metadata' WHERE key='feishu:room'")
-    migrate(path, config, tmp_path / "backup")
-    with closing(ChannelIdentities(path)) as identities:
-        assert identities.load("feishu") == {}
-        assert identities.migration_completed("feishu")
-
-
-def test_migration_rejects_unmarked_routes_before_any_change(tmp_path):
-    from plugins.legacy_upgrade.legacy_upgrade_migrations.support.channel_identities import migrate
-
-    path, config = _history(tmp_path)
-    with closing(ChannelIdentities(path)):
-        pass
-    with closing(sqlite3.connect(path)) as db, db:
-        db.execute("INSERT INTO channel_identities VALUES ('feishu','ou_old','old','time')")
-        original = tuple(db.iterdump())
-    with pytest.raises(ValueError, match="缺少迁移标记"):
-        migrate(path, config, tmp_path / "backup")
-    with closing(sqlite3.connect(path)) as db:
-        assert tuple(db.iterdump()) == original
-    assert not (tmp_path / "backup").exists()
 
 
 def test_legacy_channel_config_has_a_recoverable_plugin_migration(tmp_path):

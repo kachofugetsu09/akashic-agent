@@ -72,7 +72,7 @@ def test_core_rejects_legacy_schema_before_admission_cleanup(tmp_path):
     legacy.close()
     with closing(sqlite3.connect(workspace / "sessions.db")) as connection:
         before = tuple(connection.iterdump())
-    with pytest.raises(RuntimeError, match="schema|迁移"):
+    with pytest.raises(RuntimeError, match="已有数据库不符合当前结构|不支持此数据库结构"):
         bootstrap.build_core_runtime(Config(), workspace, SharedHttpResources(),
                                      clear_stale_session_admissions=True)
     with closing(sqlite3.connect(workspace / "sessions.db")) as connection:

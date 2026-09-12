@@ -443,8 +443,7 @@ async def test_validation_reply_reads_real_memory_without_starting_learning(tmp_
                     consumer.close()
             profile = MarkdownProfileStore(memory / "MEMORY.md", memory / "SELF.md",
                                            memory / "markdown-profile-writes.db")
-            await start_store(profile, memory / "markdown-profile.lock", memory / "PENDING.md",
-                              memory / "PENDING.snapshot.md", memory / "PENDING.retired.md")
+            await start_store(profile, memory / "markdown-profile.lock")
             (memory / "MEMORY.md").write_text("known hiking preference")
         source = tmp_path / "source"
         _write_v3_plugin(source, name="probe", module_source=REPLY_MODULE)

@@ -182,7 +182,30 @@ def test_opening_old_schema_requires_migration_without_changing_it(tmp_path):
     with closing(sqlite3.connect(path)) as connection:
         connection.execute("CREATE TABLE messages (id TEXT PRIMARY KEY, content TEXT)")
         before = connection.execute("SELECT name,sql FROM sqlite_master").fetchall()
-    with pytest.raises(RuntimeError, match="yoyo"):
+    with pytest.raises(RuntimeError, match="attachments 缺失，已有数据库不符合当前结构"):
+        MessageLog(path)
+    with closing(sqlite3.connect(path)) as connection:
+        assert (
+            connection.execute("SELECT name,sql FROM sqlite_master").fetchall()
+            == before
+        )
+
+
+def test_opening_sessions_only_schema_rejects_without_changing_it(tmp_path):
+    path = tmp_path / "sessions.db"
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            """CREATE TABLE sessions (
+                key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                metadata TEXT,
+                next_seq INTEGER NOT NULL DEFAULT 0,
+                attributes TEXT NOT NULL DEFAULT '{\"learning\": \"eligible\", \"visibility\": \"listed\"}'
+            )"""
+        )
+        before = connection.execute("SELECT name,sql FROM sqlite_master").fetchall()
+    with pytest.raises(RuntimeError, match="attachments 缺失，已有数据库不符合当前结构"):
         MessageLog(path)
     with closing(sqlite3.connect(path)) as connection:
         assert (

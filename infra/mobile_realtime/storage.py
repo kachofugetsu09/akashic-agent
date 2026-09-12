@@ -239,6 +239,135 @@ CREATE TABLE IF NOT EXISTS mobile_attachment_imports (
 """
 
 
+MOBILE_SCHEMA = f"""
+            CREATE TABLE IF NOT EXISTS mobile_server_identity (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                server_id TEXT NOT NULL,
+                keyset_manifest_path TEXT NOT NULL,
+                public_key_fingerprint TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mobile_connection_epoch (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                last_epoch INTEGER NOT NULL CHECK(last_epoch >= 0)
+            );
+
+            INSERT INTO mobile_connection_epoch(singleton, last_epoch)
+            VALUES(1, 0)
+            ON CONFLICT(singleton) DO NOTHING;
+
+            CREATE TABLE IF NOT EXISTS mobile_pairing_sessions (
+                pairing_id TEXT PRIMARY KEY,
+                secret_hash TEXT,
+                expires_at TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(
+                    status IN ('pending', 'confirmed', 'consumed', 'expired')
+                ),
+                CHECK(
+                    (status = 'consumed' AND secret_hash IS NULL)
+                    OR (status != 'consumed' AND secret_hash IS NOT NULL)
+                )
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mobile_pairing_expiry
+            ON mobile_pairing_sessions(status, expires_at);
+
+            -- 2. 已配对设备与严格单调 cursor
+            CREATE TABLE IF NOT EXISTS mobile_devices (
+                device_id TEXT PRIMARY KEY,
+                public_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT,
+                capabilities TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mobile_devices_public_key
+            ON mobile_devices(public_key);
+
+            CREATE TABLE IF NOT EXISTS mobile_device_cursors (
+                device_id TEXT PRIMARY KEY,
+                next_event_seq INTEGER NOT NULL CHECK(next_event_seq >= 1),
+                sent_event_seq INTEGER NOT NULL CHECK(sent_event_seq >= 0),
+                acknowledged_event_seq INTEGER NOT NULL CHECK(
+                    acknowledged_event_seq >= 0
+                ),
+                CHECK(acknowledged_event_seq <= sent_event_seq),
+                CHECK(sent_event_seq < next_event_seq),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE CASCADE
+            );
+
+            -- 3. 每设备 P0 durable inbox
+            CREATE TABLE IF NOT EXISTS mobile_device_inbox (
+                device_id TEXT NOT NULL,
+                event_seq INTEGER NOT NULL CHECK(event_seq >= 1),
+                event_id TEXT NOT NULL,
+                priority TEXT NOT NULL CHECK(priority = 'P0'),
+                envelope_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(device_id, event_seq),
+                UNIQUE(device_id, event_id),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mobile_inbox_created
+            ON mobile_device_inbox(device_id, created_at);
+
+            -- 4. 命令收据跨重连提供幂等回复
+            {COMMAND_RECEIPT_SCHEMA}
+
+            -- 5. 记录首次创建关系；认证设备共享 mobile 会话读取权限
+            CREATE TABLE IF NOT EXISTS mobile_device_sessions (
+                device_id TEXT NOT NULL,
+                session_id TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(device_id, session_id),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE CASCADE
+            );
+
+            -- 6. 附件元数据只暴露不透明 ID，本地路径留在服务端边界内
+            CREATE TABLE IF NOT EXISTS mobile_attachments (
+                attachment_id TEXT PRIMARY KEY,
+                device_id TEXT,
+                session_id TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK(direction IN ('upload', 'outbound')),
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+                sha256 TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                transferred_bytes INTEGER NOT NULL CHECK(transferred_bytes >= 0),
+                state TEXT NOT NULL CHECK(state IN ('transferring', 'ready', 'failed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                CHECK(transferred_bytes <= size_bytes),
+                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
+                    ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_mobile_attachments_session
+            ON mobile_attachments(session_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_mobile_attachments_outbound_identity
+            ON mobile_attachments(
+                session_id, direction, state, filename, content_type, sha256, size_bytes
+            );
+
+            CREATE TABLE IF NOT EXISTS mobile_message_attachments (
+                message_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                attachment_id TEXT NOT NULL,
+                PRIMARY KEY(message_id, ordinal),
+                FOREIGN KEY(attachment_id) REFERENCES mobile_attachments(attachment_id)
+                    ON DELETE CASCADE
+            );
+
+            {ATTACHMENT_IMPORT_SCHEMA}
+            """
+
 class MobileRealtimeStorage:
     """持有移动端数据库 schema，并原子维护设备游标与 durable inbox。"""
 
@@ -250,28 +379,19 @@ class MobileRealtimeStorage:
         self._db.row_factory = sqlite3.Row
         self._closed = False
 
-        # 1. 建立 SQLite 运行约束
         with self._lock:
-            journal_mode = self._db.execute("PRAGMA journal_mode=WAL").fetchone()
-            if journal_mode is None or str(journal_mode[0]).lower() != "wal":
-                raise RuntimeError("mobile realtime 数据库未能启用 WAL")
-            _ = self._db.execute("PRAGMA synchronous=NORMAL")
-            _ = self._db.execute("PRAGMA foreign_keys=ON")
-
-            # 2. 已有输入状态必须先经过显式 yoyo；启动只创建新库 schema。
             try:
-                for table, marker in (("mobile_command_receipts", "handoff_pending"),
-                                      ("mobile_attachment_imports", "'rejected'")):
-                    row = self._db.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
-                    if row is not None and marker not in row[0]:
-                        raise RuntimeError("Mobile 输入状态需要先运行 yoyo 20260906_05_mobile_input_rejections")
-                row = self._db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='mobile_command_receipts'").fetchone()
-                if row is not None:
-                    actual = "".join(row[0].replace('"mobile_command_receipts"', 'mobile_command_receipts').lower().split()).rstrip(';')
-                    expected = "".join(COMMAND_RECEIPT_SCHEMA.lower().split()).replace("ifnotexists", "").rstrip(';')
-                    if actual != expected:
-                        raise RuntimeError("Mobile 命令 schema 不匹配，需要先运行 yoyo 20260909_02_execution_failures")
-                self._init_schema()
+                # 1. 任何持久写入前区分空库与完整当前库。
+                fresh = self._check_schema()
+                journal_mode = self._db.execute("PRAGMA journal_mode=WAL").fetchone()
+                if journal_mode is None or str(journal_mode[0]).lower() != "wal":
+                    raise RuntimeError("mobile realtime 数据库未能启用 WAL")
+                _ = self._db.execute("PRAGMA synchronous=NORMAL")
+                _ = self._db.execute("PRAGMA foreign_keys=ON")
+                # 2. 当前库重开不补表、不重建索引、不修改 epoch。
+                if fresh:
+                    _ = self._db.executescript(MOBILE_SCHEMA)
+                    self._db.commit()
             except BaseException:
                 self._db.close()
                 raise
@@ -2067,142 +2187,36 @@ class MobileRealtimeStorage:
             raise RuntimeError("已完成命令收据在同一事务中消失")
         return _command_receipt_from_row(row)
 
-    def _init_schema(self) -> None:
-        """创建移动端身份、配对、设备、cursor 和 inbox 表。"""
-
-        # 1. 身份与配对状态
-        _ = self._db.executescript(
-            f"""
-            CREATE TABLE IF NOT EXISTS mobile_server_identity (
-                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                server_id TEXT NOT NULL,
-                keyset_manifest_path TEXT NOT NULL,
-                public_key_fingerprint TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS mobile_connection_epoch (
-                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                last_epoch INTEGER NOT NULL CHECK(last_epoch >= 0)
-            );
-
-            INSERT INTO mobile_connection_epoch(singleton, last_epoch)
-            VALUES(1, 0)
-            ON CONFLICT(singleton) DO NOTHING;
-
-            CREATE TABLE IF NOT EXISTS mobile_pairing_sessions (
-                pairing_id TEXT PRIMARY KEY,
-                secret_hash TEXT,
-                expires_at TEXT NOT NULL,
-                status TEXT NOT NULL CHECK(
-                    status IN ('pending', 'confirmed', 'consumed', 'expired')
-                ),
-                CHECK(
-                    (status = 'consumed' AND secret_hash IS NULL)
-                    OR (status != 'consumed' AND secret_hash IS NOT NULL)
+    def _check_schema(self) -> bool:
+        """只允许空库初始化，已有库必须完整符合当前 owner 的表与约束。"""
+        def objects(connection: sqlite3.Connection) -> dict[str, str]:
+            return {
+                name: "".join(sql.replace('"', '').lower().split()).rstrip(';')
+                for name, sql in connection.execute(
+                    "SELECT name, sql FROM sqlite_master "
+                    "WHERE sql IS NOT NULL AND substr(name, 1, 7) != 'sqlite_'"
                 )
-            );
+            }
 
-            CREATE INDEX IF NOT EXISTS idx_mobile_pairing_expiry
-            ON mobile_pairing_sessions(status, expires_at);
-
-            -- 2. 已配对设备与严格单调 cursor
-            CREATE TABLE IF NOT EXISTS mobile_devices (
-                device_id TEXT PRIMARY KEY,
-                public_key TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                revoked_at TEXT,
-                capabilities TEXT NOT NULL
-            );
-
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_mobile_devices_public_key
-            ON mobile_devices(public_key);
-
-            CREATE TABLE IF NOT EXISTS mobile_device_cursors (
-                device_id TEXT PRIMARY KEY,
-                next_event_seq INTEGER NOT NULL CHECK(next_event_seq >= 1),
-                sent_event_seq INTEGER NOT NULL CHECK(sent_event_seq >= 0),
-                acknowledged_event_seq INTEGER NOT NULL CHECK(
-                    acknowledged_event_seq >= 0
-                ),
-                CHECK(acknowledged_event_seq <= sent_event_seq),
-                CHECK(sent_event_seq < next_event_seq),
-                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
-                    ON DELETE CASCADE
-            );
-
-            -- 3. 每设备 P0 durable inbox
-            CREATE TABLE IF NOT EXISTS mobile_device_inbox (
-                device_id TEXT NOT NULL,
-                event_seq INTEGER NOT NULL CHECK(event_seq >= 1),
-                event_id TEXT NOT NULL,
-                priority TEXT NOT NULL CHECK(priority = 'P0'),
-                envelope_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY(device_id, event_seq),
-                UNIQUE(device_id, event_id),
-                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
-                    ON DELETE CASCADE
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_mobile_inbox_created
-            ON mobile_device_inbox(device_id, created_at);
-
-            -- 4. 命令收据跨重连提供幂等回复
-            {COMMAND_RECEIPT_SCHEMA}
-
-            -- 5. 记录首次创建关系；认证设备共享 mobile 会话读取权限
-            CREATE TABLE IF NOT EXISTS mobile_device_sessions (
-                device_id TEXT NOT NULL,
-                session_id TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY(device_id, session_id),
-                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
-                    ON DELETE CASCADE
-            );
-
-            -- 6. 附件元数据只暴露不透明 ID，本地路径留在服务端边界内
-            CREATE TABLE IF NOT EXISTS mobile_attachments (
-                attachment_id TEXT PRIMARY KEY,
-                device_id TEXT,
-                session_id TEXT NOT NULL,
-                direction TEXT NOT NULL CHECK(direction IN ('upload', 'outbound')),
-                filename TEXT NOT NULL,
-                content_type TEXT NOT NULL,
-                size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
-                sha256 TEXT NOT NULL,
-                local_path TEXT NOT NULL,
-                transferred_bytes INTEGER NOT NULL CHECK(transferred_bytes >= 0),
-                state TEXT NOT NULL CHECK(state IN ('transferring', 'ready', 'failed')),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                CHECK(transferred_bytes <= size_bytes),
-                FOREIGN KEY(device_id) REFERENCES mobile_devices(device_id)
-                    ON DELETE SET NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_mobile_attachments_session
-            ON mobile_attachments(session_id, created_at);
-
-            DROP INDEX IF EXISTS idx_mobile_attachments_outbound_identity;
-            CREATE INDEX idx_mobile_attachments_outbound_identity
-            ON mobile_attachments(
-                session_id, direction, state, filename, content_type, sha256, size_bytes
-            );
-
-            CREATE TABLE IF NOT EXISTS mobile_message_attachments (
-                message_id TEXT NOT NULL,
-                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
-                attachment_id TEXT NOT NULL,
-                PRIMARY KEY(message_id, ordinal),
-                FOREIGN KEY(attachment_id) REFERENCES mobile_attachments(attachment_id)
-                    ON DELETE CASCADE
-            );
-
-            {ATTACHMENT_IMPORT_SCHEMA}
-            """
-        )
-        self._db.commit()
+        actual = objects(self._db)
+        if not actual:
+            return True
+        # 1. 用同一建库定义生成 SQLite 自己保存的结构，避免维护第二份表目录。
+        reference = sqlite3.connect(":memory:")
+        try:
+            reference.executescript(MOBILE_SCHEMA)
+            expected = objects(reference)
+        finally:
+            reference.close()
+        if actual != expected:
+            changed = sorted(name for name in actual.keys() | expected.keys()
+                             if actual.get(name) != expected.get(name))
+            raise RuntimeError(f"Mobile schema 不匹配，不支持此数据库结构: {', '.join(changed)}")
+        if self._db.execute(
+            "SELECT 1 FROM mobile_connection_epoch WHERE singleton=1"
+        ).fetchone() is None:
+            raise RuntimeError("Mobile connection epoch 缺失，不支持此数据库结构")
+        return False
 
     def _insert_device(self, device: DeviceRecord) -> None:
         if device.revoked_at is not None:

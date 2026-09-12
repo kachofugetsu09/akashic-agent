@@ -15,7 +15,7 @@ from plugins.models.projection import check_facts, display_facts
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 from tests.test_message_artifacts import storage
-from tests.test_message_log_migration import migration, old_workspace, run, snapshot
+from tests.test_mobile_message_log import snapshot
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -111,24 +111,6 @@ def test_message_view_has_no_plugin_implementation_imports_and_degrades_without_
         {"kind": "tool_call", "binding_id": "missing-binding", "display": "unavailable"},
     ]
     assert "secret" not in json.dumps(parts, ensure_ascii=False)
-
-
-def test_migrated_history_stays_inside_original_message(migration, old_workspace):
-    run(migration, old_workspace)
-    path = old_workspace / "sessions.db"
-    before = snapshot(path)
-    with closing(MessageLog(path)) as log:
-        rows = [_mapping(row) for row in message_rows(log.reader("s").read_tail())]
-    assert [(row["id"], row["seq"]) for row in rows] == [("user", 4), ("reply", 8), ("nullable", 9)]
-    transcript = _mapping(cast(list[object], _mapping(rows[1]["body"])["parts"])[2])
-    assert transcript["kind"] == "history.transcript"
-    archive = _mapping(transcript["archive"])
-    assert '"result": "old result"' in cast(str, archive["raw"])
-    assert archive["completeness"] == "unknown"
-    assert _mapping(cast(list[object], _mapping(rows[2]["body"])["parts"])[0])["archive"] is not None
-    assert _mapping(_mapping(cast(list[object], _mapping(rows[2]["body"])["parts"])[0])["archive"])["content_was_null"] is True
-    assert all(row["source"] == "legacy-unattributed" for row in rows)
-    assert snapshot(path) == before
 
 
 def test_web_catalog_and_history_use_real_log_without_session_manager(tmp_path):

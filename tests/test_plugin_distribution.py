@@ -130,7 +130,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
         config_path=tmp_path / "profile-config.toml",
     )
     assert [item["name"] for item in profile_receipt["installed"]] == ["one", "two"]
-    assert (tmp_path / "profile-workspace/migrations.sqlite3").is_file()
+    assert not (tmp_path / "profile-workspace/migrations.sqlite3").exists()
     assert config.read_text() == "[runtime]\nworkspace = \"profile-workspace\"\n"
     context_config = tmp_path / "profile-workspace/plugin-data/one-distribution/config.local.toml"
     assert tomllib.loads(context_config.read_text()) == {

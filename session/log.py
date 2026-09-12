@@ -173,18 +173,6 @@ _SCHEMA = {
                     ) WHERE json_extract(body, '$.kind')='tool_result';""",
 }
 
-_OLD_MESSAGE_SCHEMA = _SCHEMA["messages"].replace(
-    "                        " + _MESSAGE_METADATA_COLUMN + ",\n", ""
-)
-
-_LEGACY_ATTACHMENT_SCHEMA = """CREATE TABLE message_attachments (
-    message_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
-    artifact_id TEXT NOT NULL, direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
-    PRIMARY KEY (message_id, ordinal),
-    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
-    FOREIGN KEY (artifact_id) REFERENCES attachments(artifact_id)
-)"""
-
 _LEGACY_SESSION_SCHEMA = """CREATE TABLE sessions (
     key TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     last_consolidated INTEGER NOT NULL DEFAULT 0, metadata TEXT,
@@ -208,10 +196,9 @@ def _sql(value: str) -> str:
 
 
 def _session_schemas() -> Mapping[str, bool]:
-    """保留两条已知旧表 lineage，属性列的身份只有存储 owner 定义。"""
+    """接纳已升级到当前属性合同的已知表结构。"""
     values = {_sql(_SCHEMA["sessions"]): True}
     for old in (_LEGACY_SESSION_SCHEMA, _OLD_SESSION_SCHEMA):
-        values[_sql(old)] = False
         base = old.rstrip().rstrip(";").rstrip()
         values[_sql(base[:-1] + ", " + _SESSION_ATTRIBUTES_COLUMN + ")")] = True
     return values
@@ -219,23 +206,23 @@ def _session_schemas() -> Mapping[str, bool]:
 
 def _check_schema(connection: sqlite3.Connection) -> None:
     """启动前核对表与约束，不能把同列名的异构库当作已经迁移。"""
+    existing = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE substr(name, 1, 7) != 'sqlite_' LIMIT 1"
+    ).fetchone() is not None
     for name, statement in _SCHEMA.items():
         row = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name=?",
             (name,),
         ).fetchone()
         if row is None:
+            if existing:
+                raise RuntimeError(f"{name} 缺失，已有数据库不符合当前结构")
             continue
         allowed = {_sql(statement)}
-        if name == "messages":
-            # 已发布 yoyo 的中间步骤仍通过同一日志读取/追加无扩展消息。
-            allowed.add(_sql(_OLD_MESSAGE_SCHEMA))
         if name == "sessions":
             allowed.update(_session_schemas())
-        if name == "message_attachments":
-            allowed.add(_sql(_LEGACY_ATTACHMENT_SCHEMA))
         if _sql(row["sql"]) not in allowed:
-            raise RuntimeError(f"{name} schema 不匹配，请先完成对应 yoyo 迁移")
+            raise RuntimeError(f"{name} schema 不匹配，不支持此数据库结构")
 
 
 class MessageConflict(ValueError):
@@ -259,22 +246,9 @@ class MessageLog:
         _ = self._connection.execute("PRAGMA foreign_keys=ON")
         try:
             _check_schema(self._connection)
-            fresh = (
-                self._connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name='messages'"
-                ).fetchone()
-                is None
-            )
             with self._connection:
-                for name, statement in _SCHEMA.items():
-                    # 新库由 owner 初始化；已有库的新持久能力只能由 yoyo 接纳。
-                    if name in {"owner_records", "message_embeddings", "ix_message_embeddings_hash",
-                                "attachments", "message_attachments", "idx_message_attachments_artifact"} and not fresh:
-                        continue
+                for statement in _SCHEMA.values():
                     _ = self._connection.execute(statement)
-            self._has_metadata = "metadata" in {
-                row["name"] for row in self._connection.execute("PRAGMA table_info(messages)")
-            }
         except BaseException:
             self._connection.close()
             raise
@@ -338,7 +312,7 @@ class MessageLog:
                 ).fetchone()
                 is None
             ):
-                raise RuntimeError("owner_records 缺失，请先运行对应 yoyo 迁移")
+                raise RuntimeError("owner_records 缺失，不支持此数据库结构")
         return OwnerStore(self, name)
 
     def ensure_session(self, session_id: str, attributes: SessionAttributes) -> SessionAttributes:
@@ -538,11 +512,11 @@ class MessageCatalog:
                    COALESCE(t.head_seq,-1) AS head_seq,
                    m.id AS first_id, m.seq AS first_seq, m.ts AS first_ts,
                    m.author AS first_author, m.source AS first_source, m.body AS first_body,
-                   %s AS first_metadata
+                   m.metadata AS first_metadata
             FROM page p LEFT JOIN stats t ON t.session_key=p.key
             LEFT JOIN messages m ON m.session_key=p.key AND m.seq=t.first_seq
             ORDER BY julianday(p.updated_at) DESC, p.key ASC
-        """ % (" AND ".join(where), "m.metadata" if self._log._has_metadata else "'{}'")
+        """ % " AND ".join(where)
         with self._log._read() as connection:
             total = connection.execute("SELECT COUNT(*) FROM sessions s WHERE " + base_where, values).fetchone()[0]
             rows = connection.execute(sql, [*page_values, limit + 1]).fetchall()
@@ -897,8 +871,6 @@ class MessageWriter:
         message_metadata = freeze_metadata({} if metadata is None else metadata)
         if self._check_metadata is None and not message_metadata.keys() <= self._message_metadata_keys:
             raise PermissionError("writer 未获授这些 Message metadata 命名空间")
-        if message_metadata and not self._log._has_metadata:
-            raise RuntimeError("Message metadata 尚未完成 yoyo 迁移")
         connection = self._log._connection
         old = connection.execute(
             "SELECT * FROM messages WHERE id=?", (message_id,)
@@ -948,12 +920,12 @@ class MessageWriter:
         message = Message(
             message_id, self._session_id, seq, now, self._author, self._source, body, message_metadata
         )
-        columns = "id,session_key,seq,ts,author,source,body"
-        values = (message_id, self._session_id, seq, stamp, self._author, self._source, payload)
-        if self._log._has_metadata:
-            columns += ",metadata"
-            values += (json.dumps(json_value(message_metadata), ensure_ascii=False,
-                                  sort_keys=True, separators=(",", ":"), allow_nan=False),)
+        columns = "id,session_key,seq,ts,author,source,body,metadata"
+        values = (
+            message_id, self._session_id, seq, stamp, self._author, self._source, payload,
+            json.dumps(json_value(message_metadata), ensure_ascii=False,
+                       sort_keys=True, separators=(",", ":"), allow_nan=False),
+        )
         _ = connection.execute(
             f"INSERT INTO messages ({columns}) VALUES ({','.join('?' for _ in values)})", values,
         )
@@ -1016,7 +988,7 @@ class MessageWriter:
             connection = self._log._connection
             row = connection.execute("SELECT sql FROM sqlite_master WHERE name='message_attachments'").fetchone()
             if row is None or _sql(row[0]) != _sql(_SCHEMA["message_attachments"]):
-                raise RuntimeError("附件引用写入需要先完成对应 yoyo 迁移")
+                raise RuntimeError("附件引用表缺失，不支持此数据库结构")
             for artifact_id in set(artifacts):
                 row = connection.execute(
                     "SELECT state FROM attachments WHERE artifact_id=?", (artifact_id,)

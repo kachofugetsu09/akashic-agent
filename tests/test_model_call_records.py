@@ -1,10 +1,8 @@
 from plugins.context.api import check_summary as _model_summary_check
 import asyncio
-import importlib.util
 import sqlite3
 from collections.abc import Mapping, Sequence
 from contextlib import closing
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -22,8 +20,6 @@ from agent.plugin_composition.models import (
 )
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
-from agent.migrations.context import bind_migration_context
-from tests.legacy_migration_loader import load_migration_module, load_migration_namespace
 
 
 class _DriverContract:
@@ -159,7 +155,7 @@ async def test_failure_and_cancel_record_unknown_cost_without_retry(
 
 
 @pytest.mark.asyncio
-async def test_missing_migration_or_wrong_binding_stops_before_io(store, descriptor):
+async def test_missing_schema_or_wrong_binding_stops_before_io(store, descriptor):
     class Driver(_DriverContract):
         async def complete(self, request):
             pytest.fail("provider I/O must not start")
@@ -173,7 +169,7 @@ async def test_missing_migration_or_wrong_binding_stops_before_io(store, descrip
     with closing(sqlite3.connect(store.path)) as connection, connection:
         connection.execute("DROP TABLE model_calls")
     store.initialize()
-    with pytest.raises(RuntimeError, match="yoyo"):
+    with pytest.raises(RuntimeError, match="不支持此数据库结构"):
         await model.complete(ModelRequest(()))
 
 
@@ -199,67 +195,6 @@ async def test_settlement_failure_keeps_provider_failure_and_durable_unknown(
     (call_id,) = call_ids(store)
     assert store.read_call(call_id)["state"] == "started"
     assert store.read_call(call_id)["usage"] is None
-
-
-@pytest.fixture
-def migration():
-    return load_migration_namespace("20260905_03_model_calls")
-
-
-def dump(path):
-    with closing(sqlite3.connect(path)) as connection:
-        return tuple(connection.iterdump())
-
-
-def run_migration(migration, workspace):
-    with bind_migration_context(
-        workspace=workspace, config_path=workspace / "config.toml"
-    ):
-        migration.migrate_model_calls(None)
-
-
-def test_migration_preserves_registry_and_lost_ack_preserves_real_call(
-    store, descriptor, migration, timing_migration
-):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("DROP TABLE model_calls")
-    before = dump(store.path)
-    run_migration(migration, store.path.parent)
-    backups = list(
-        (store.path.parent / "backups/model-calls-v1").glob("*/model-registry.sqlite3")
-    )
-    assert len(backups) == 1
-    assert dump(backups[0]) == before
-    old_schema = dump(store.path)
-    run_migration(migration, store.path.parent)
-    assert dump(store.path) == old_schema
-    run_timing_migration(timing_migration, store.path.parent)
-    from tests.test_execution_failure_migration import load_migration
-    failure = load_migration()
-    migrate_failure = failure["_migrate"]
-    assert callable(migrate_failure)
-    migrate_failure(store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
-    call_id = store.start_call(descriptor, ModelRequest(()))
-    # 模拟 provider 已接到请求，进程在收到响应前崩溃；不会重放或把费用补成零。
-    reopened = ModelsStore(store.path, store.backup_dir)
-    reopened.initialize()
-    assert reopened.read_call(call_id)["state"] == "started"
-    assert reopened.read_call(call_id)["usage"] is None
-    after = dump(store.path)
-    migrate_failure(store.path, "model_calls", failure["_MODEL_OLD"], failure["_MODEL_NEW"], store.path.parent / "failure-backups")
-    assert dump(store.path) == after
-    assert store.read_snapshot().revision == 0
-
-
-def test_migration_rejects_same_name_with_other_schema_without_write(store, migration):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("DROP TABLE model_calls")
-        connection.execute("CREATE TABLE model_calls (id TEXT)")
-    before = dump(store.path)
-    with pytest.raises(RuntimeError, match="schema"):
-        run_migration(migration, store.path.parent)
-    assert dump(store.path) == before
-    assert not store.backup_dir.exists()
 
 
 @pytest.mark.asyncio
@@ -635,19 +570,6 @@ async def test_summary_starts_fresh_codex_input_and_resumes_only_its_own_respons
     assert response.continuation is not None and facts["continuation"] is not None
 
 
-@pytest.fixture
-def timing_migration(monkeypatch):
-    import yoyo
-    from tests.legacy_migration_loader import load_migration_module
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    return load_migration_module("20260906_06_model_call_timing")
-
-
-def run_timing_migration(migration, workspace):
-    with bind_migration_context(workspace=workspace, config_path=workspace / "config.toml"):
-        migration["migrate_model_call_timing"](None)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_call_timing_survives_reopen_and_preserves_delta_and_usage(store, descriptor, monkeypatch, cancel):
@@ -719,48 +641,6 @@ async def test_nonstreaming_call_does_not_enable_stream_or_invent_first_token(st
     assert stats.usage is None
 
 
-def test_timing_migration_keeps_all_old_calls_unknown_and_backup_exact(store, descriptor, migration, timing_migration):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("DROP TABLE model_calls")
-    run_migration(migration, store.path.parent)
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.executemany(
-            "INSERT INTO model_calls(id,binding_json,request_digest,state,usage_json,failure,started_at,finished_at) VALUES (?,?,?,?,?,?,?,?)",
-            [(state, '{"model":"old"}', "digest", state, None, None, "2026-01-01", None) for state in ("started", "success", "unknown")],
-        )
-    before = dump(store.path)
-    with pytest.raises(RuntimeError, match="schema"):
-        store.start_call(descriptor, ModelRequest(()))
-    with pytest.raises(RuntimeError, match="yoyo"):
-        store.read_call_stats("success")
-    assert dump(store.path) == before
-    run_timing_migration(timing_migration, store.path.parent)
-    backups = list((store.path.parent / "backups/model-call-timing").glob("*/model-registry.sqlite3"))
-    assert len(backups) == 1 and dump(backups[0]) == before
-    with closing(sqlite3.connect(store.path)) as connection:
-        rows = connection.execute("SELECT state,first_token_ms,duration_ms FROM model_calls ORDER BY rowid").fetchall()
-    assert rows == [(state, None, None) for state in ("started", "success", "unknown")]
-    after = dump(store.path)
-    run_timing_migration(timing_migration, store.path.parent)
-    assert dump(store.path) == after
-    assert len(list((store.path.parent / "backups/model-call-timing").glob("*"))) == 1
-    assert store.read_snapshot().revision == 0
-
-
-@pytest.mark.parametrize("mutation", ["ALTER TABLE model_calls ADD COLUMN extra TEXT", "CREATE TRIGGER extra AFTER INSERT ON model_calls BEGIN SELECT 1; END"])
-def test_timing_migration_rejects_unknown_schema_without_mutation(store, migration, timing_migration, mutation):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute("DROP TABLE model_calls")
-    run_migration(migration, store.path.parent)
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute(mutation)
-    before = dump(store.path)
-    with pytest.raises(RuntimeError):
-        run_timing_migration(timing_migration, store.path.parent)
-    assert dump(store.path) == before
-    assert not (store.path.parent / "backups/model-call-timing").exists()
-
-
 @pytest.mark.asyncio
 async def test_failed_call_id_announcement_does_not_invent_provider_duration(store, descriptor):
     class Driver(_DriverContract):
@@ -776,17 +656,6 @@ async def test_failed_call_id_announcement_does_not_invent_provider_duration(sto
     stats = store.read_call_stats(call_id)
     assert stats.state == 'error' and stats.first_token_ms is None and stats.duration_ms is None
     assert stats.usage is None
-
-
-def test_timing_migration_keeps_its_target_when_runtime_schema_evolves(store, migration, timing_migration, monkeypatch):
-    with closing(sqlite3.connect(store.path)) as connection, connection:
-        connection.execute('DROP TABLE model_calls')
-    run_migration(migration, store.path.parent)
-    monkeypatch.setattr('plugins.models.store.MODEL_CALLS_SCHEMA', 'CREATE TABLE model_calls (future TEXT)')
-    run_timing_migration(timing_migration, store.path.parent)
-    with closing(sqlite3.connect(store.path)) as connection:
-        columns = [row[1] for row in connection.execute('PRAGMA table_info(model_calls)')]
-    assert columns[-2:] == ['first_token_ms', 'duration_ms']
 
 
 def test_grouped_call_reads_see_settlement_and_close(store, descriptor):

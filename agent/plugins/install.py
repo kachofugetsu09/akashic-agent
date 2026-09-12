@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from agent.migrations.bundles import validate_migration_artifact
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.reload_journal import ReloadJournal
 from agent.plugin_composition.archive import sync_directory
@@ -180,9 +179,6 @@ def install_git_plugin(
         if re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
             raise RuntimeError(f"插件 Git HEAD 无效: {source_revision}")
         static_manifest = load_static_plugin_manifest(clone_root)
-        # 迁移 bundle 在 cache/pointer 变化前完成完整性与 import 边界校验；
-        # 其执行仍由 runtime 启动前的 MigrationRunner 负责。
-        _ = validate_migration_artifact(clone_root, static_manifest=static_manifest)
         plugin_name = _validate_path_segment(static_manifest.name, "插件 name")
         plugin_version = _validate_path_segment(
             static_manifest.version,

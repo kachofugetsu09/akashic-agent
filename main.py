@@ -197,10 +197,6 @@ if __name__ == "__main__" and _run_lightweight_command():
 
 from agent.config import Config, resolve_app_server_endpoint
 from agent.control.client import ControlClient, RemoteControlError
-from agent.migrations import (
-    MigrationOutcome,
-    migrate_installation,
-)
 from agent.restart import RestartGate, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
@@ -275,32 +271,6 @@ def _print_init_summary(summary: InitSummary) -> None:
         print("\n下一步：")
         for step in summary.next_steps:
             print(f"  {step}")
-
-
-def _prepare_startup_migrations(
-    args: list[str],
-    config_path: Path,
-    workspace: Path,
-) -> MigrationOutcome | None:
-    """只为会加载本地 runtime 的命令执行启动迁移。"""
-
-    command = args[0] if args and not args[0].startswith("--") else ""
-    if command not in {
-        "",
-        "setup",
-        "init",
-        "supervise",
-        "gateway",
-        "app-server",
-        "dashboard",
-    }:
-        return None
-    if command == "gateway" and os.environ.get("AKASHIC_SUPERVISED") == "1":
-        return None
-    outcome = migrate_installation(config_path, workspace)
-    if outcome.state == "migrated":
-        print(f"启动迁移完成: migrations={len(outcome.migrations)}")
-    return outcome
 
 
 def _parse_csv_flag(value: str | None) -> list[str]:
@@ -675,16 +645,6 @@ if __name__ == "__main__":
         dashboard_host = host_value
     if port_value is not None:
         dashboard_port = int(port_value)
-
-    try:
-        migration_outcome = _prepare_startup_migrations(
-            args,
-            Path(config_path),
-            workspace,
-        )
-    except RuntimeError as exc:
-        print(f"启动迁移失败: {exc}", file=sys.stderr)
-        sys.exit(1)
 
     if args and args[0] == "setup":
         from bootstrap.setup_wizard import run_setup_wizard
