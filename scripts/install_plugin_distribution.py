@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import tarfile
 import tempfile
 from typing import Any
@@ -65,6 +66,15 @@ def _check_sha256(path: Path, expected: object, label: str) -> None:
     actual = _sha256(path)
     if actual != expected:
         raise ValueError(f"{label} sha256 不一致: expected={expected} actual={actual}")
+
+
+def _git(*arguments: str) -> str:
+    """运行只读 Git 校验并返回标准输出。"""
+
+    result = subprocess.run(
+        ["git", *arguments], check=True, capture_output=True, text=True
+    )
+    return result.stdout.strip()
 
 
 def verify_distribution(distribution: Path) -> dict[str, Any]:
@@ -162,7 +172,10 @@ def extract_core(
     core = _distribution_file(root, core_data["file"], "Core artifact")
     _check_sha256(core, core_data["sha256"], "Core artifact")
     names = _tar_names(core)
-    target = destination.expanduser().resolve(strict=False)
+    raw_target = destination.expanduser()
+    if raw_target.is_symlink():
+        raise FileExistsError(f"Core 目标不能是符号链接: {raw_target}")
+    target = raw_target.resolve(strict=False)
     if target.exists():
         if target.is_symlink() or not target.is_dir() or any(target.iterdir()):
             raise FileExistsError(f"Core 目标必须是一次性空目录: {target}")
@@ -179,6 +192,34 @@ def extract_core(
             if not (target / relative).is_file():
                 raise ValueError(f"Core artifact 缺少 Web 静态产物: {relative}")
     return target
+
+
+def _preflight_bundle(
+    bundle: Path,
+    *,
+    row: dict[str, Any],
+    source_commit: str,
+) -> None:
+    """在正式安装前验证 bundle revision 与不可变来源记录。"""
+
+    _ = _git("bundle", "verify", str(bundle))
+    with tempfile.TemporaryDirectory(prefix="akashic-plugin-preflight-") as directory:
+        clone = Path(directory) / "source"
+        _ = _git("clone", "--no-local", "--no-checkout", str(bundle), str(clone))
+        revision = str(row["source_revision"])
+        actual = _git(
+            "-C", str(clone), "rev-parse", "--verify", f"{revision}^{{commit}}"
+        )
+        if actual != revision:
+            raise ValueError(
+                f"插件 {row['name']} bundle source_revision 不可解析: {revision}"
+            )
+        provenance = json.loads(
+            _git("-C", str(clone), "show", f"{revision}:.akashic-source.json")
+        )
+        expected = {"commit": source_commit, "path": row["source_path"]}
+        if provenance != expected:
+            raise ValueError(f"插件 {row['name']} bundle provenance 不一致")
 
 
 def _load_profile(path: Path) -> tuple[str, str, list[dict[str, Any]], dict[str, Any]]:
@@ -345,12 +386,7 @@ def install_profile(
         for item in report["plugins"]
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
-    workspace = workspace.expanduser().resolve(strict=False)
-    plugins_home = plugins_home.expanduser().resolve(strict=False)
-    workspace.mkdir(parents=True, exist_ok=True)
-    plugins_home.mkdir(parents=True, exist_ok=True)
-
-    installed: list[dict[str, Any]] = []
+    selected_rows: list[tuple[dict[str, Any], Path]] = []
     for entry in entries:
         name = str(entry["name"])
         row = rows.get(name)
@@ -360,6 +396,20 @@ def install_profile(
             distribution_root, row["file"], f"插件 {name} bundle"
         )
         _check_sha256(bundle, row["sha256"], f"插件 {name} bundle")
+        _preflight_bundle(
+            bundle,
+            row=row,
+            source_commit=str(report["source_commit"]),
+        )
+        selected_rows.append((row, bundle))
+    workspace = workspace.expanduser().resolve(strict=False)
+    plugins_home = plugins_home.expanduser().resolve(strict=False)
+    workspace.mkdir(parents=True, exist_ok=True)
+    plugins_home.mkdir(parents=True, exist_ok=True)
+
+    installed: list[dict[str, Any]] = []
+    for entry, (row, bundle) in zip(entries, selected_rows, strict=True):
+        name = str(entry["name"])
         try:
             result = install_git_plugin(
                 workspace=workspace,
@@ -369,7 +419,8 @@ def install_profile(
                 plugins_home=plugins_home,
             )
         except Exception as error:
-            raise RuntimeError(f"正式安装插件失败: {name}") from error
+            error.add_note(f"正式安装插件失败: {name}")
+            raise
         provenance_path = result.installed_path / ".akashic-source.json"
         provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
         expected_provenance = {
