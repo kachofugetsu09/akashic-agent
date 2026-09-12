@@ -9,8 +9,7 @@ import json
 from typing import cast
 
 from agent.plugin_composition.bindings import Bindings
-from session.embedding_store import MessageEmbeddings
-from agent.plugin_composition.messages import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 from agent.plugin_contracts import Input, Message
 
 from .application.consumer import MessageConsumer, run_memory_job

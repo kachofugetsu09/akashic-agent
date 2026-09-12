@@ -16,7 +16,7 @@ from .records import StoredSummary, SummaryLookup, SummaryRecord, SummaryRecords
 from .message_summary import SummaryError, closed_groups, source_text, summarize, summary_groups, window_starts
 from ._boundaries import (
     COMPACTION_READER, COMPACTION_SUMMARIES, CONTEXT, MATERIALS, TURN_PROJECTION,
-    ContextModel, MaterialData, TurnProjection, summary_range,
+    ContextModel, MaterialData, TurnProjection,
 )
 
 api_version = 3
@@ -34,13 +34,16 @@ class Config(BaseModel):
 class _CompactionReader:
     """Markdown 只取得 compaction 的纯读取算法，不取得发布或模型权限。"""
 
+    def __init__(self, *, settled_prefixes: Callable[[tuple[Message, ...]], tuple[int, ...]]):
+        self._settled_prefixes = settled_prefixes
+
     def source_text(self, messages: Sequence[Message]) -> str:
         return source_text(messages)
 
     def window_starts(
         self, messages: tuple[Message, ...], projection: TurnProjection,
     ) -> tuple[int, ...]:
-        return window_starts(messages, projection)
+        return window_starts(messages, projection, settled_prefixes=self._settled_prefixes)
 
     def summary_groups(
         self, groups: tuple[tuple[Message, ...], ...], snapshot: tuple[Message, ...],
@@ -50,6 +53,8 @@ class _CompactionReader:
 
 async def apply(ctx: Context, config: Config) -> None:
     """注册只读材料和归档解析；apply 不打开 writer 或调用模型。"""
+    context = ctx.require(CONTEXT)
+
     def records() -> SummaryRecords:
         return SummaryRecords(ctx.require(OWNER_STATE).open(ctx))
 
@@ -76,7 +81,9 @@ async def apply(ctx: Context, config: Config) -> None:
     _ = await ctx.on(RUNTIME_STOPPING, stop)
     lookup = SummaryLookup(read, head)
     _ = await ctx.provide(COMPACTION_SUMMARIES, lookup)
-    _ = await ctx.provide(COMPACTION_READER, _CompactionReader())
+    _ = await ctx.provide(COMPACTION_READER, _CompactionReader(
+        settled_prefixes=context.settled_prefixes,
+    ))
 
     def material(record: StoredSummary) -> MaterialData:
         reference = ctx.require(BINDINGS).bind(COMPACTION_SUMMARIES, {
@@ -114,7 +121,9 @@ async def apply(ctx: Context, config: Config) -> None:
         if parent is None:
             origin: int | None = None
             # 首次窗口从最近完整单元累加；完整业务输入不得越过软水位或硬边界。
-            for index in reversed(window_starts(snapshot, turns)):
+            for index in reversed(window_starts(
+                snapshot, turns, settled_prefixes=context.settled_prefixes,
+            )):
                 candidate, error = ctx.require(CONTEXT).build_attempt(
                     snapshot, materials=materials, model=projection,
                     tools=request.tools, max_output_tokens=request.max_output_tokens,
@@ -129,9 +138,11 @@ async def apply(ctx: Context, config: Config) -> None:
                 raise SummaryError("当前完整工作与固定材料超过首次窗口容量")
             start = origin
         else:
-            covered = summary_range(snapshot, parent.source_message_ids)
+            covered = context.summary_range(snapshot, parent.source_message_ids)
             origin, start = covered.start, covered.stop
-        groups = closed_groups(snapshot, turns, after=start)
+        groups = closed_groups(
+            snapshot, turns, settled_prefixes=context.settled_prefixes, after=start,
+        )
         selected: tuple[tuple[Message, ...], ...] = ()
         # 原文保留量来自实际 Model 投影，包含尚未闭合的尾部与当前输入。
         for size in range(len(groups), 0, -1):
@@ -176,7 +187,9 @@ async def apply(ctx: Context, config: Config) -> None:
         record = record.model_copy(update={"tokens_after": after})
         # 3. binding 可以先固定，但读者只有在摘要事务成功后才取得此引用。
         reader = ctx.require(MESSAGE_CATALOG).reader(record.session_id)
-        _ = records().publish(record, reader, parent=parent)
+        _ = records().publish(
+            record, reader, parent=parent, summary_range=context.summary_range,
+        )
         return summary
 
     _ = await ctx.require(MATERIALS).register(ctx, name="compaction", prepare=prepare, reduce=reduce, priority=500)

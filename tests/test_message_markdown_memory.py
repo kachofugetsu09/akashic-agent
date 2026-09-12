@@ -12,9 +12,12 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryRecord, SummaryRecords
+from plugins.content.api import is_user_input
 from plugins.content.plugin import check_text
 from plugins.context.api import check_summary
+from plugins.context.plugin import ContextBuilder
 from plugins.context.materials import MATERIALS
+from plugins.markdown_memory._boundaries import COMPACTION_READER, CONTENT, CONTEXT
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from plugins.markdown_memory.store import MarkdownProfileStore
 from session.log import MessageLog, SessionAttributes
@@ -25,7 +28,7 @@ from session.message import ContentPart, Input, Output
 async def application(tmp_path, *, start=False, transient_failure=False, draft_failures=0):
     sources = tmp_path / "plugins"
     if not sources.exists():
-        for name in ("context", "compaction", "markdown_memory", "turn_projection"):
+        for name in ("content", "context", "compaction", "markdown_memory", "turn_projection"):
             shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                             ignore=shutil.ignore_patterns("__pycache__"))
         for name in ("compaction", "markdown_memory"):
@@ -174,7 +177,7 @@ async def test_excluded_session_never_reaches_markdown_even_when_source_is_allow
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
             assert not (tmp_path / "requests.jsonl").exists()
             assert not store.is_applied(summary.reference)
             assert log.reader("s").get("input").body.parts[0].value == "fact-one"
@@ -198,7 +201,7 @@ async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts
             async def consume(message):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
+                    sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
             await consume(use)
             assert not (tmp_path / "requests.jsonl").exists()
             assert not store.is_applied(suppressed.reference)
@@ -239,7 +242,7 @@ async def test_markdown_does_not_reintroduce_abandoned_late_result_from_raw_rang
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
             assert "fact-two" not in (tmp_path / "requests.jsonl").read_text()
             assert "fact-three" in store.read_memory()
             assert store.is_applied(child.reference)
@@ -268,7 +271,9 @@ def publish(log, reference, parent=None):
         source_message_ids=tuple(message.message_id for message in log.reader("s").snapshot()),
         content="actual summary", model_call_ids=("summary-model:" + reference,), trigger="soft_limit",
         context_window=32000, max_output_tokens=4096, keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000)
-    return SummaryRecords(log.owner("plugin:compaction")).publish(record, log.reader("s"), parent=parent)
+    return SummaryRecords(log.owner("plugin:compaction")).publish(
+        record, log.reader("s"), parent=parent, summary_range=ContextBuilder.summary_range,
+    )
 
 
 async def record_use(
@@ -316,7 +321,7 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                 prepared = await materials.prepare(log.reader("s").snapshot(), "conversation")
-            assert "fact-two" in prepared.system_prompt
+                assert "fact-two" in prepared["system_prompt"]
         await record_use(log, host, used, "duplicate-use", "complete")
     async with application(tmp_path, start=True) as (log, host):
         await wait_applied(tmp_path, host, used.reference)
@@ -329,7 +334,7 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
             assert message is not None
             await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS),
                           store=profile_store(tmp_path), models=ctx.require(CHAT_MODELS),
-                          lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                          lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
 
 
@@ -360,7 +365,7 @@ async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(t
             with pytest.raises(OSError, match="second document failure"):
                 await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
         assert not store.is_applied(record.reference)
         assert "fact-one" in store.read_memory()
         assert store.read_self() == before_self
@@ -406,7 +411,7 @@ async def test_delayed_parent_output_cannot_reapply_older_facts_after_child(tmp_
             for message in (first, late):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                               models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                              sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                              sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
         assert store.latest_applied("s") == (child.reference, child.generation)
         assert store.is_applied(child.reference) and not store.is_applied(parent.reference)
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
@@ -432,7 +437,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
             ctx = snapshot.composition_root.context
             with pytest.raises(OSError, match="partial preparation"):
                 await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
-                    models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                    models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
         assert store.read_draft(record.reference) is not None
         assert not store.is_applied(record.reference)
     async with application(tmp_path, start=True) as (log, host):
@@ -442,7 +447,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
             message = log.reader("s").get("used")
             assert message is not None
             await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
-                          models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                          models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
         assert store.is_applied(record.reference)
         assert store.latest_applied("s") == (record.reference, record.generation)
         assert "fact-one" in store.read_memory()
@@ -517,7 +522,7 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
                 ctx = snapshot.composition_root.context
                 await plugin.project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION))
+                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
 
         monkeypatch.setattr(plugin, "prepare_profile_draft", paused_prepare)
         first = asyncio.create_task(update())
@@ -540,8 +545,8 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                     prepared = await asyncio.wait_for(materials.prepare((), "conversation"), 1)
-            assert before[1].strip() in prepared.system_prompt
-            assert "fact-one" not in prepared.system_prompt
+                assert before[1].strip() in prepared["system_prompt"]
+                assert "fact-one" not in prepared["system_prompt"]
             assert (store.read_memory(), store.read_self(), store.read_writes(None, 100)) == before
             if cancel_first:
                 first.cancel()
@@ -587,7 +592,7 @@ async def test_an_update_lock_alone_does_not_create_a_partial_profile_state(tmp_
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                 prepared = await materials.prepare((), "conversation")
-        assert "# Akashic 的自我认知" in prepared.system_prompt
+        assert "# Akashic 的自我认知" in prepared["system_prompt"]
         assert tuple(path.parent.iterdir()) == (path,)
 
 
@@ -609,7 +614,7 @@ async def test_default_markdown_uses_programmatic_admission_for_real_summary_pro
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
+                sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
             assert store.is_applied(summary.reference) is (learning == "eligible")
             assert (tmp_path / "requests.jsonl").exists() is (learning == "eligible")
         assert log.reader("s").get("input").body.parts[0].value == "fact-one"
@@ -632,7 +637,7 @@ def test_new_user_fact_cannot_use_an_assistant_or_background_claim(tmp_path, evi
         draft = {"memory_before": before, "memory": before + "- 用户喜欢红色\n", "self_before": "", "self": "",
                  "evidence": {"memory": {"- 用户喜欢红色": [evidence_id]}, "self": {}}}
         with pytest.raises(ValueError, match="用户事实|实际消息"):
-            check_evidence(draft, log.reader("s").snapshot())
+            check_evidence(draft, log.reader("s").snapshot(), is_user_input=is_user_input)
         assert len(log.reader("s").snapshot()) == 3
     finally:
         log.close()
@@ -647,7 +652,7 @@ def test_moving_an_operation_note_into_user_facts_requires_new_evidence():
              "memory": headings + "- 红色主题\n## 助手操作上下文\n",
              "self_before": "", "self": "", "evidence": {"memory": {}, "self": {}}}
     with pytest.raises(ValueError, match="实际消息"):
-        check_evidence(draft, ())
+        check_evidence(draft, (), is_user_input=is_user_input)
 
 
 @pytest.mark.asyncio
@@ -747,7 +752,7 @@ async def test_profile_input_omits_large_legacy_replay_but_preserves_user_eviden
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("legacy-unattributed",), projection=ctx.require(TURN_PROJECTION))
+                sources=("legacy-unattributed",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
         prompts = (tmp_path / "requests.jsonl").read_text()
         request = json.loads(prompts.splitlines()[0])
         rows = json.loads(request.split("本次精确来源：\n", 1)[1])
@@ -767,6 +772,7 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
     import json
     from types import SimpleNamespace
     from plugins.markdown_memory.message_plugin import prepare_profile_draft
+    from plugins.compaction.message_plugin import _CompactionReader
     from plugins.compaction.message_summary import closed_groups
     from plugins.turn_projection.plugin import TurnProjection
     from agent.plugin_composition.models import ChatModels, LLMResponse, TransportError
@@ -779,7 +785,8 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
             writer.append(f"step-{index}", Output((ContentPart("text", "continue"),), "continue"))
             writer.append(f"answer-{index}", Output((ContentPart("text", "done"),), "complete"))
         original = log.reader("s").snapshot()
-        groups = closed_groups(original, TurnProjection())
+        groups = closed_groups(original, TurnProjection(), settled_prefixes=ContextBuilder.settled_prefixes)
+        compaction = _CompactionReader(settled_prefixes=ContextBuilder.settled_prefixes)
         store = profile_store(tmp_path)
         if large_profile:
             (tmp_path / "workspace/memory/MEMORY.md").write_text(
@@ -812,9 +819,15 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
         models = cast(ChatModels, SimpleNamespace(independent_execution=execution))
         if fail_second:
             with pytest.raises(TransportError, match="second batch"):
-                await prepare_profile_draft(groups, before[0], before[1], models)
+                await prepare_profile_draft(
+                    groups, before[0], before[1], models,
+                    compaction=compaction, is_user_input=is_user_input,
+                )
         else:
-            draft = await prepare_profile_draft(groups, before[0], before[1], models)
+            draft = await prepare_profile_draft(
+                groups, before[0], before[1], models,
+                compaction=compaction, is_user_input=is_user_input,
+            )
             assert draft["memory_before"] == before[0]
             assert isinstance(draft["memory"], str)
             assert "- fact-0" in draft["memory"] and "- fact-1" in draft["memory"]
@@ -853,7 +866,7 @@ async def test_profile_keeps_allowed_turn_inside_mixed_source_group(tmp_path):
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=Config().sources, projection=ctx.require(TURN_PROJECTION))
+                sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
         prompt = (tmp_path / "requests.jsonl").read_text()
         assert "fact-one" not in prompt and "fact-two" not in prompt
         assert "fact-three" in store.read_memory() and store.is_applied(summary.reference)
@@ -917,9 +930,11 @@ def test_profile_additions_preserve_owner_files_and_enforce_evidence(tmp_path, c
         response = LLMResponse(json.dumps({"additions": additions}), finish_reason="length" if case == "truncated" else "stop")
         if case not in {"no_change", "new_fact", "empty_memory", "self"}:
             with pytest.raises(ValueError):
-                _check_profile_response(response, log.reader("s").snapshot(), memory, before_self)
+                _check_profile_response(response, log.reader("s").snapshot(), memory, before_self,
+                                         is_user_input=is_user_input)
         else:
-            draft = _check_profile_response(response, log.reader("s").snapshot(), memory, before_self)
+            draft = _check_profile_response(response, log.reader("s").snapshot(), memory, before_self,
+                                            is_user_input=is_user_input)
             assert draft["self_before"] == before_self
             assert draft["memory_before"] == memory
             if case == "no_change":
@@ -965,5 +980,6 @@ def test_profile_rejects_invalid_model_additions_before_building_a_durable_draft
     else:
         additions.append(entry)
     with pytest.raises(_InvalidDraft):
-        _check_profile_response(LLMResponse(json.dumps(payload)), (), before[0], before[1])
+        _check_profile_response(LLMResponse(json.dumps(payload)), (), before[0], before[1],
+                                   is_user_input=is_user_input)
     assert (store.read_memory(), store.read_self(), store.read_writes(None, 10)) == before

@@ -8,8 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
-from session.embedding_store import MessageEmbeddings
-from agent.plugin_composition.messages import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall, ToolResult
 from ._boundaries import PostCommitReader, TOOLS, TurnProjection
 from .domain.model import Turn, TurnFeedback

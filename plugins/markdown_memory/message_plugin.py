@@ -30,9 +30,9 @@ from infra.persistence.json_store import atomic_write_text
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
 from ._boundaries import (
-    COMPACTION_READER, COMPACTION_SUMMARIES, CONTENT, MATERIALS,
-    CompactionReader, ContentFacts, StoredSummary, SummaryLookup, TURN_PROJECTION, TurnProjection,
-    check_summary, summary_range,
+    COMPACTION_READER, COMPACTION_SUMMARIES, CONTENT, CONTEXT, MATERIALS,
+    CompactionReader, ContentFacts, ContextBuilder, StoredSummary, SummaryLookup,
+    TURN_PROJECTION, TurnProjection,
 )
 
 if TYPE_CHECKING:
@@ -55,8 +55,8 @@ workspace_files = (
 )
 
 MaterialData = Mapping[str, object]
-inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, CONTENT, COMPACTION_SUMMARIES,
-          COMPACTION_READER, TURN_PROJECTION)
+inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
+          TURN_PROJECTION)
 
 
 _MEMORY_HEADINGS = (
@@ -627,6 +627,7 @@ async def _unapplied_groups(
     store: MarkdownProfileStore, sources: tuple[str, ...], projection: TurnProjection,
     *, compaction: CompactionReader,
     post_commit_effect: Callable[[Message], str | None],
+    summary_range: Callable[[tuple[Message, ...], tuple[str, ...]], range],
 ) -> tuple[tuple[Message, ...], ...] | None:
     """从最近已写入的祖先之后取完整组的原文，跳过未使用的摘要不会漏掉它覆盖的事实。"""
     start = 0
@@ -676,7 +677,8 @@ async def project(
     store: MarkdownProfileStore, models: ChatModels, lock_path: Path,
     sources: tuple[str, ...], projection: TurnProjection,
     content: ContentFacts,
-    compaction: CompactionReader,
+    context: ContextBuilder,
+    compaction: CompactionReader | None,
 ) -> None:
     """只处理已提交的模型 Output；两份文件沿原 before-image receipt 恢复。"""
     if reader.attributes.learning != "eligible" or message.source not in sources or not isinstance(message.body, Output):
@@ -686,7 +688,9 @@ async def project(
         return
     if len(refs) != 1:
         raise ValueError("一个 Output 只能声明实际使用的一份摘要")
-    reference = check_summary(refs[0]).binding_ids[0]
+    if compaction is None:
+        raise RuntimeError("Markdown 摘要投影需要 compaction.reader.v1")
+    reference = context.check_summary(refs[0]).binding_ids[0]
     user_input = content.is_user_input
     post_commit_effect = content.legacy_post_commit_effect
     # 1. 更新串行；两文件锁只保护已提交档案的读取和安装，不覆盖模型等待。
@@ -703,6 +707,7 @@ async def project(
             groups = await _unapplied_groups(
                 record, lookup, reader, store, sources, projection,
                 compaction=compaction, post_commit_effect=post_commit_effect,
+                summary_range=context.summary_range,
             )
             if not groups:
                 return
@@ -727,6 +732,7 @@ async def project(
 
 async def apply(ctx: Context, config: Config) -> None:
     """启动后才创建文件与跟随日志；归档 apply 不写入正式记忆。"""
+    context = ctx.require(CONTEXT)
     store: MarkdownProfileStore | None = None
     watcher: asyncio.Task[None] | None = None
     lock_path = ctx.workspace_file("memory/markdown-profile.lock")
@@ -777,11 +783,12 @@ async def apply(ctx: Context, config: Config) -> None:
                             )
                             for message in messages:
                                 try:
+                                    compaction = ctx.get(COMPACTION_READER)
                                     await project(message, reader=reader, bindings=ctx.require(BINDINGS),
                                                   store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
                                     sources=config.sources, projection=ctx.require(TURN_PROJECTION),
                                     content=ctx.require(CONTENT),
-                                    compaction=ctx.require(COMPACTION_READER))
+                                    context=context, compaction=compaction)
                                 except ModelError as error:
                                     if not error.retryable:
                                         raise
