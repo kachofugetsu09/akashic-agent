@@ -7,12 +7,11 @@ host resolves these keys inside each request scope.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 from agent.plugin_composition import MODEL_CALL_STATS, MODEL_CATALOG, ServiceKey
 from agent.plugin_composition.commands import COMMANDS
-from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.message_view import MessageDisplayReader
@@ -38,9 +37,6 @@ class ModelSelectionReader(Protocol):
 REPLY_STATUS = ServiceKey[ReplyStatusReader]("reply.status.v2")
 MODEL_SELECTION = ServiceKey[ModelSelectionReader]("models.selection.v1")
 MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
-ARTIFACT_RESOLVE = ServiceKey[
-    Callable[[tuple[str, ...]], tuple[AttachmentRef, ...]]
-]("core.artifact_resolve.v1")
 MOBILE_UI = ServiceKey[MobileUiProvider]("core.mobile_ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("core.web_ui.v1")
 
@@ -71,7 +67,6 @@ CLIENT_CAPABILITIES = (
     MESSAGE_CATALOG,
     COMMANDS,
     MESSAGE_DISPLAY,
-    ARTIFACT_RESOLVE,
     MOBILE_UI,
     WEB_UI,
     MODEL_CATALOG,
@@ -85,7 +80,6 @@ CLIENT_CAPABILITIES = (
 
 __all__ = [
     "CLIENT_CAPABILITIES",
-    "ARTIFACT_RESOLVE",
     "INSPECTION_DOCUMENTS_GET",
     "INSPECTION_DOCUMENTS_LIST",
     "INSPECTION_JOBS_GET",

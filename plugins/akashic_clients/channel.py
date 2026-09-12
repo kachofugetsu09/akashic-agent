@@ -26,7 +26,6 @@ from agent.plugin_composition.channels import (
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 
 from .capabilities import (
-    ARTIFACT_RESOLVE,
     MESSAGE_DISPLAY,
     MOBILE_UI,
     MODEL_SELECTION,
@@ -50,6 +49,13 @@ from .services import (
 )
 from .services import ArtifactReadLeasePort, MobileUiProvider, WebUiProvider
 from agent.plugin_composition.message_view import MessageDisplayReader
+from .scoped_capabilities import (
+    ScopedCommandCatalog,
+    ScopedMessageDisplay,
+    ScopedMobileUiProvider,
+    ScopedWebUiProvider,
+    open_request_scope,
+)
 
 
 _SERVER_START_TIMEOUT_SECONDS = 10.0
@@ -77,14 +83,13 @@ class _ChannelArtifactReadLease:
 class _ChannelArtifactStore:
     """Compose the host's import/read/resolution atoms for one binding."""
 
-    def __init__(self, context: ChannelFactoryContext, resolver: Any) -> None:
+    def __init__(self, context: ChannelFactoryContext) -> None:
         if context.attachment_import is None or context.attachment_read is None:
             raise RuntimeError("akashic channel 缺少 attachment import/read port")
-        if not callable(resolver):
-            raise TypeError("akashic channel 缺少 artifact resolver")
         self._import = context.attachment_import
         self._read = context.attachment_read
-        self._resolve = resolver
+        if not callable(getattr(self._read, "resolve_refs", None)):
+            raise TypeError("akashic channel attachment_read 缺少 resolve_refs(ids)")
 
     async def import_bytes(
         self,
@@ -104,7 +109,7 @@ class _ChannelArtifactStore:
         )
 
     def resolve_refs(self, artifact_ids: tuple[str, ...]) -> tuple[AttachmentRef, ...]:
-        refs = self._resolve(artifact_ids)
+        refs = cast(Any, self._read).resolve_refs(artifact_ids)
         if not isinstance(refs, tuple) or any(not isinstance(ref, AttachmentRef) for ref in refs):
             raise TypeError("artifact resolver 必须返回 AttachmentRef tuple")
         if tuple(ref.artifact_id for ref in refs) != artifact_ids:
@@ -235,11 +240,16 @@ class _GenerationAkashicAdapter:
         self._model_selection_reader: ModelSelectionReader | None = None
         self._model_stats_reader: ModelStatsReader | None = None
         self._runtime_inspection: ScopedRpcRuntimeInspection | None = None
-        self._messages: MessageCatalogPort | None = None
-        self._message_display: MessageDisplayReader | None = None
-        self._mobile_ui_provider: MobileUiProvider | None = None
-        self._web_ui_provider: WebUiProvider | None = None
-        self._command_catalog: tuple[tuple[str, str], ...] = ()
+        self._message_display: MessageDisplayReader = ScopedMessageDisplay(
+            self._open_request_scope
+        )
+        self._mobile_ui_provider: MobileUiProvider = ScopedMobileUiProvider(
+            self._open_request_scope
+        )
+        self._web_ui_provider: WebUiProvider = ScopedWebUiProvider(
+            self._open_request_scope
+        )
+        self._command_catalog = ScopedCommandCatalog()
         self._artifact_store: _ChannelArtifactStore | None = None
         self._web = WebChatChannel("akashic") if state.config.web.enabled else None
         self._mobile: MobileRealtimeChannel | None = None
@@ -265,7 +275,7 @@ class _GenerationAkashicAdapter:
         return self._started and not self._stopped
 
     async def _resolve_capabilities(self) -> None:
-        """Prepare request-scoped capability readers without retaining providers."""
+        """Validate declared capabilities without retaining provider objects."""
 
         open_scope = self._context.open_scope
         if open_scope is None:
@@ -275,21 +285,16 @@ class _GenerationAkashicAdapter:
         self._model_selection_reader = self._read_model_selection
         self._model_stats_reader = self._read_model_stats
         self._runtime_inspection = ScopedRpcRuntimeInspection(open_scope)
-        async with open_scope() as scope:
-            self._messages = cast(MessageCatalogPort, scope.require(MESSAGE_CATALOG))
-            self._message_display = cast(
-                MessageDisplayReader, scope.require(MESSAGE_DISPLAY)
-            )
-            self._mobile_ui_provider = scope.require(MOBILE_UI)
-            self._web_ui_provider = scope.require(WEB_UI)
-            resolver = scope.require(ARTIFACT_RESOLVE)
-            commands = scope.require(COMMANDS)
-            descriptors = commands.freeze().descriptors
-            self._command_catalog = tuple(
-                (descriptor.name, descriptor.description)
-                for descriptor in descriptors
-            )
-        self._artifact_store = _ChannelArtifactStore(self._context, resolver)
+        async with self._open_request_scope() as scope:
+            for key in (
+                MESSAGE_CATALOG,
+                COMMANDS,
+                MESSAGE_DISPLAY,
+                MOBILE_UI,
+                WEB_UI,
+            ):
+                _ = scope.require(key)
+        self._artifact_store = _ChannelArtifactStore(self._context)
         if self._context.data_root is None:
             raise RuntimeError("akashic clients 缺少 plugin data root")
         self._upload_store = AttachmentStore(self._context.data_root / "uploads")
@@ -301,14 +306,36 @@ class _GenerationAkashicAdapter:
             self._web.bind_message_display(self._message_display)
 
     @asynccontextmanager
+    async def _open_request_scope(self) -> AsyncIterator[Any]:
+        """Open one exact binding scope for a short client operation."""
+
+        opener = self._context.open_scope
+        if opener is None:
+            raise RuntimeError("akashic channel 缺少 host request scope")
+        async with open_request_scope(opener) as scope:
+            yield scope
+
+    @asynccontextmanager
     async def _message_scope(self) -> AsyncIterator[MessageCatalogPort]:
         """Resolve the message catalog only for one HTTP or WebSocket operation."""
 
         open_scope = self._context.open_scope
         if open_scope is None:
             raise RuntimeError("akashic message catalog 缺少 host request scope")
-        async with open_scope() as scope:
+        async with self._open_request_scope() as scope:
             yield cast(MessageCatalogPort, scope.require(MESSAGE_CATALOG))
+
+    @asynccontextmanager
+    async def _mobile_ui_scope(self) -> AsyncIterator[MobileUiProvider]:
+        """Expose one exact Mobile UI provider to an HTTP operation."""
+
+        async with self._open_request_scope() as scope:
+            yield cast(MobileUiProvider, scope.require(MOBILE_UI))
+
+    def _read_command_catalog(self) -> tuple[tuple[str, str], ...]:
+        """Build the command projection from the active request scope."""
+
+        return self._command_catalog()
 
     async def _follow_reply_status(self, session_id: str):
         """Keep the reply status read inside this subscription's exact scope."""
@@ -416,7 +443,7 @@ class _GenerationAkashicAdapter:
             model_catalog_reader=self._model_catalog_reader,
             model_selection_reader=self._model_selection_reader,
             message_display=self._message_display,
-            plugin_ui_provider=self._mobile_ui_provider,
+            mobile_ui_scope=self._mobile_ui_scope,
             web_ui_provider=self._web_ui_provider,
             attachment_store=self._upload_store,
             artifact_store=artifact_store,
@@ -468,18 +495,12 @@ class _GenerationAkashicAdapter:
         self._mobile_adapter = self._mobile.build_v3_adapter(self._context)
         if self._runtime_ports is not None:
             self._mobile_adapter.attach_runtime(self._runtime_ports)
-        messages = self._messages
-        if messages is None:
-            raise RuntimeError("akashic Mobile 缺少 message catalog")
         if self._runtime_inspection is None or self._model_catalog_reader is None:
             raise RuntimeError("akashic Mobile capability 尚未解析")
-        if self._artifact_store is None or self._mobile_ui_provider is None:
+        if self._artifact_store is None:
             raise RuntimeError("akashic Mobile capability 尚未解析")
-        self._mobile.bind_messages(messages, self._reply_status)
-        message_display = self._message_display
-        if message_display is None:
-            raise RuntimeError("akashic Mobile 缺少 message display provider")
-        self._mobile.bind_message_display(message_display)
+        self._mobile.bind_message_scope(self._message_scope, self._reply_status)
+        self._mobile.bind_message_display(self._message_display)
         self._mobile.bind_runtime_inspection(self._runtime_inspection)
         self._mobile.bind_model_catalog(self._model_catalog_reader)
         model_selection_reader = self._model_selection_reader
@@ -488,9 +509,12 @@ class _GenerationAkashicAdapter:
             raise RuntimeError("akashic Mobile 缺少 model reader")
         self._mobile.bind_model_selection(model_selection_reader)
         self._mobile.bind_model_stats(model_stats_reader)
-        self._mobile.bind_mobile_ui_provider(self._mobile_ui_provider)
+        self._mobile.bind_mobile_ui_provider(
+            self._mobile_ui_provider,
+            scope=self._mobile_ui_scope,
+        )
         self._mobile.bind_channel_attachment_store(self._artifact_store)
-        self._mobile.bind_command_catalog(self._command_catalog)
+        self._mobile.bind_command_catalog(self._read_command_catalog)
         if self._mobile_presentation is not None:
             self._mobile.attach_presentation(self._mobile_presentation)
 

@@ -6,8 +6,15 @@ import json
 import logging
 import re
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+)
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +93,7 @@ from ..runtime_inspection import (
     RuntimeInspectionService,
 )
 from agent.plugin_composition.message_view import MessageDisplayReader, read_message_rows, session_row
+from agent.plugin_composition.messages import MESSAGE_CATALOG
 from .message_view import message_chunks, message_json as _message_json
 from .attachments import (
     AttachmentChunk,
@@ -106,6 +114,7 @@ from .protocol import (
     TURN_OUTPUT_COMPLETED_CAPABILITY,
 )
 from .plugin_ui import PluginUiQuery, PluginUiQueryScheduler
+from ..scoped_capabilities import active_scope
 from .remote_media import (
     RemoteMediaError,
     RemoteMediaSnapshot,
@@ -126,6 +135,11 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_DIRECT_MESSAGE_CATALOG: ContextVar[MessageCatalog | None] = ContextVar(
+    "akashic_mobile_direct_message_catalog",
+    default=None,
+)
 
 _EPHEMERAL_QUERY_COMMAND_TYPES = frozenset(
     {
@@ -496,12 +510,12 @@ class MobileRealtimeChannel:
     v3_inbound_identity = InboundIdentity.PROVIDER_MESSAGE_ID
 
     def __init__(self, runtime: MobileGatewayRuntime) -> None:
-        self._messages: MessageCatalog | None = None
+        self._message_scope: Callable[[], AbstractAsyncContextManager[MessageCatalog]] | None = None
         self.reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
         self._runtime = runtime
         self._input_bus: _DurableInboundBridge | None = None
         self._upload_store: AttachmentStore | None = None
-        self._command_catalog: tuple[tuple[str, str], ...] = ()
+        self._command_catalog: Callable[[], tuple[tuple[str, str], ...]] | None = None
         self._processing_commands: set[tuple[str, str]] = set()
         self._receipt_completion_failures: set[tuple[str, str]] = set()
         self._active_turn_ids: dict[str, str] = {}
@@ -514,6 +528,7 @@ class MobileRealtimeChannel:
         self._delta_failure: BaseException | None = None
         self._attachments: AttachmentTransferService | None = None
         self._mobile_ui_provider: MobileUiProvider | None = None
+        self._mobile_ui_scope: Callable[[], AbstractAsyncContextManager[MobileUiProvider]] | None = None
         self._mobile_ui_scheduler: PluginUiQueryScheduler | None = None
         self._mobile_ui_catalog_identity = ""
         self._mobile_ui_hot_connections: dict[str, int] = {}
@@ -591,29 +606,73 @@ class MobileRealtimeChannel:
         self, messages: MessageCatalog,
         reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     ) -> None:
-        """绑定宿主只读日志；Gateway 不加载旧 Session 对象或取得写权限。"""
-        if self._messages is not None:
-            raise RuntimeError("Mobile MessageCatalog 已绑定")
-        self._messages = messages
+        """Bind a direct catalog for isolated transport tests."""
+        if self._message_scope is not None:
+            raise RuntimeError("Mobile MessageCatalog scope 已绑定")
+
+        @asynccontextmanager
+        async def direct_scope() -> AsyncGenerator[MessageCatalog, None]:
+            token = _DIRECT_MESSAGE_CATALOG.set(messages)
+            try:
+                yield messages
+            finally:
+                _DIRECT_MESSAGE_CATALOG.reset(token)
+
+        self._message_scope = direct_scope
         self.reply_status = reply_status
 
-    def bind_mobile_ui_provider(self, provider: MobileUiProvider) -> None:
-        """绑定读取当前插件快照的移动 UI 提供器。"""
+    def bind_message_scope(
+        self,
+        scope: Callable[[], AbstractAsyncContextManager[MessageCatalog]],
+        reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
+    ) -> None:
+        """Bind the host scope used by each command and message follow."""
+
+        if self._message_scope is not None:
+            raise RuntimeError("Mobile MessageCatalog scope 已绑定")
+        if not callable(scope):
+            raise TypeError("Mobile MessageCatalog scope 必须可调用")
+        self._message_scope = scope
+        if reply_status is not None:
+            self.reply_status = reply_status
+
+    @asynccontextmanager
+    async def open_message_scope(self) -> AsyncGenerator[MessageCatalog, None]:
+        """Hold one exact message scope for a command or live follow."""
+
+        if self._message_scope is not None:
+            async with self._message_scope() as messages:
+                yield messages
+            return
+        raise MobileCommandError("session_log_unavailable", "会话日志尚未绑定")
+
+    def bind_mobile_ui_provider(
+        self,
+        provider: MobileUiProvider,
+        *,
+        scope: Callable[[], AbstractAsyncContextManager[MobileUiProvider]] | None = None,
+    ) -> None:
+        """Bind a projection object and optional exact provider scope."""
 
         if self._mobile_ui_provider is not None:
             raise RuntimeError("Mobile UI provider 已绑定")
         self._mobile_ui_provider = provider
+        self._mobile_ui_scope = scope
         self._mobile_ui_scheduler = PluginUiQueryScheduler(provider)
-        self._mobile_ui_catalog_identity = _mobile_ui_catalog_identity(
-            provider.catalog()
-        )
 
-    def bind_command_catalog(self, catalog: tuple[tuple[str, str], ...]) -> None:
-        """Bind a frozen command projection without retaining the registry owner."""
+    def bind_command_catalog(
+        self,
+        catalog: Callable[[], tuple[tuple[str, str], ...]] | tuple[tuple[str, str], ...],
+    ) -> None:
+        """Bind a request-scoped command projection or an explicit test value."""
 
-        if self._command_catalog and self._command_catalog != catalog:
+        if self._command_catalog is not None:
             raise RuntimeError("Mobile command catalog 不允许替换")
-        self._command_catalog = tuple(catalog)
+        if callable(catalog):
+            self._command_catalog = catalog
+        else:
+            frozen = tuple(catalog)
+            self._command_catalog = lambda: frozen
 
     def attach_presentation(self, ports: ChannelPresentationPorts) -> None:
         """Subscribe Mobile output projection to the formal turn stream."""
@@ -748,6 +807,11 @@ class MobileRealtimeChannel:
     async def refresh_mobile_ui_catalog(self) -> None:
         """目录内容变化时通知所有手机重新拉取插件 UI。"""
 
+        if self._mobile_ui_scope is not None and active_scope() is None:
+            async with self._mobile_ui_scope():
+                await self.refresh_mobile_ui_catalog()
+            return
+
         provider = self._mobile_ui_provider
         if provider is None:
             return
@@ -780,7 +844,6 @@ class MobileRealtimeChannel:
         """启动上传和输入恢复；消息及回复状态由已绑定的窄读取端口提供。"""
         if self._input_bus is not None:
             raise RuntimeError("MobileRealtimeChannel 已启动")
-        self._require_messages()
         # 1. 先由持久 inbox owner 声明宿主 boot；之后才绑定输入和事件监听。
         #    这只追加 reset 边界，不推断或伪造任何 turn 终态。
         _ = self._runtime.storage.mark_transport_boot(
@@ -822,6 +885,19 @@ class MobileRealtimeChannel:
         self._turn_sessions.clear()
 
     async def handle_command(
+        self,
+        *,
+        device_id: str,
+        frame: ClientCommand,
+    ) -> CommandReply:
+        """Run a command while retaining its exact message capability scope."""
+
+        if self._message_scope is None or active_scope() is not None:
+            return await self._handle_command(device_id=device_id, frame=frame)
+        async with self.open_message_scope():
+            return await self._handle_command(device_id=device_id, frame=frame)
+
+    async def _handle_command(
         self,
         *,
         device_id: str,
@@ -971,6 +1047,25 @@ class MobileRealtimeChannel:
         device_id: str,
         frame: GenericCommand,
     ) -> CommandReply:
+        """Run one UI command against the exact provider generation."""
+
+        if self._mobile_ui_scope is None or active_scope() is not None:
+            return await self._handle_plugin_ui_command(
+                device_id=device_id,
+                frame=frame,
+            )
+        async with self._mobile_ui_scope():
+            return await self._handle_plugin_ui_command(
+                device_id=device_id,
+                frame=frame,
+            )
+
+    async def _handle_plugin_ui_command(
+        self,
+        *,
+        device_id: str,
+        frame: GenericCommand,
+    ) -> CommandReply:
         """执行不写 command receipt 的 committed Mobile Plugin UI 请求。"""
 
         try:
@@ -1012,6 +1107,26 @@ class MobileRealtimeChannel:
                 "sha256": sha256, "encoding": "utf-8", "media_type": "application/json"}
 
     async def read_message_content(
+        self, *, session_id: str, message_id: str, byte_length: int, sha256: str,
+    ) -> bytes:
+        """Read message content under the exact scope used by the request."""
+
+        if self._message_scope is None or active_scope() is not None:
+            return await self._read_message_content(
+                session_id=session_id,
+                message_id=message_id,
+                byte_length=byte_length,
+                sha256=sha256,
+            )
+        async with self.open_message_scope():
+            return await self._read_message_content(
+                session_id=session_id,
+                message_id=message_id,
+                byte_length=byte_length,
+                sha256=sha256,
+            )
+
+    async def _read_message_content(
         self, *, session_id: str, message_id: str, byte_length: int, sha256: str,
     ) -> bytes:
         """读取与分页相同的完整展示 JSON；不暴露私有 binding 或模型续传数据。"""
@@ -1241,6 +1356,25 @@ class MobileRealtimeChannel:
             self._v3_inbound_runtime.release_capture(task)
 
     async def deliver_v3(
+        self,
+        request: ProviderDeliveryRequest,
+        *,
+        attachment_read: ChannelAttachmentReadPort | None,
+    ) -> ProviderDeliveryReceipt:
+        """Deliver one typed request inside one exact message scope."""
+
+        if self._message_scope is None or active_scope() is not None:
+            return await self._deliver_v3(
+                request,
+                attachment_read=attachment_read,
+            )
+        async with self.open_message_scope():
+            return await self._deliver_v3(
+                request,
+                attachment_read=attachment_read,
+            )
+
+    async def _deliver_v3(
         self,
         request: ProviderDeliveryRequest,
         *,
@@ -1726,11 +1860,9 @@ class MobileRealtimeChannel:
             }
             for runtime in project_chat_runtimes(current)
         ]
-        if self._messages is None:
-            raise MobileCommandError("session_log_unavailable", "会话日志尚未绑定")
         if self._model_selection_reader is None:
             raise MobileCommandError("model_selection_unavailable", "模型选择服务不可用")
-        metadata = self._messages.reader(session_id).metadata()
+        metadata = self._require_messages().reader(session_id).metadata()
         try:
             selection = await self._model_selection_reader(
                 metadata if metadata is not None else {}
@@ -1768,7 +1900,10 @@ class MobileRealtimeChannel:
         _expect_keys(frame.payload, set())
         items: list[dict[str, str]] = []
         seen: set[str] = set()
-        for raw_command, raw_description in self._command_catalog:
+        reader = self._command_catalog
+        if reader is None:
+            raise RuntimeError("Mobile command catalog 尚未绑定")
+        for raw_command, raw_description in reader():
             command = raw_command.strip().removeprefix("/")
             description = raw_description.strip()
             if not _BOT_COMMAND_PATTERN.fullmatch(command):
@@ -3569,9 +3704,13 @@ class MobileRealtimeChannel:
         return state
 
     def _require_messages(self) -> MessageCatalog:
-        if self._messages is None:
-            raise MobileCommandError("session_log_unavailable", "会话日志尚未绑定")
-        return self._messages
+        scope = active_scope()
+        if scope is not None:
+            return cast(MessageCatalog, scope.require(MESSAGE_CATALOG))
+        direct = _DIRECT_MESSAGE_CATALOG.get()
+        if direct is not None:
+            return direct
+        raise MobileCommandError("session_log_unavailable", "会话日志尚未绑定")
 
     def _require_mobile_session(self, value: str | None) -> str:
         session_id = self._normalize_session_id(value)

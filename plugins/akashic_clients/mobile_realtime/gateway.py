@@ -704,26 +704,68 @@ class MobileGatewayRuntime:
         """订阅命令只替换当前连接的 reader，不写命令收据或 durable inbox。"""
         from .channel import MobileCommandError
 
+        message_scope = self.channel.open_message_scope()
+        await message_scope.__aenter__()
         try:
             reader, after_seq = self.channel.prepare_message_follow(frame)
         except MobileCommandError as error:
+            await message_scope.__aexit__(None, None, None)
             async with connection.send_lock:
                 await _send_reply(connection.websocket, frame_id=frame.id,
                     connection_epoch=connection.connection_epoch, reply_type="session.follow.error",
                     payload={"code": error.code, "message": str(error)}, session_id=frame.session_id, turn_id=None)
             return
-        await self._cancel_message_follow(connection.websocket)
-        if self._stopping or self._connections.get(device_id) is not connection:
-            return
-        async with connection.send_lock:
-            await _send_reply(connection.websocket, frame_id=frame.id,
-                connection_epoch=connection.connection_epoch, reply_type="session.follow.ok",
-                payload={"version": 2, "through_seq": reader.head()}, session_id=reader.session_id, turn_id=None)
-        if self._stopping or self._connections.get(device_id) is not connection:
-            return
-        self._message_followers[connection.websocket] = tasks.create_task(
-            self._follow_message_session(reader, after_seq, device_id, connection,
-                display_only=cast(bool, frame.payload.get("display_only", False))))
+        except BaseException:
+            await message_scope.__aexit__(None, None, None)
+            raise
+        try:
+            await self._cancel_message_follow(connection.websocket)
+            if self._stopping or self._connections.get(device_id) is not connection:
+                await message_scope.__aexit__(None, None, None)
+                return
+            async with connection.send_lock:
+                await _send_reply(connection.websocket, frame_id=frame.id,
+                    connection_epoch=connection.connection_epoch, reply_type="session.follow.ok",
+                    payload={"version": 2, "through_seq": reader.head()}, session_id=reader.session_id, turn_id=None)
+            if self._stopping or self._connections.get(device_id) is not connection:
+                await message_scope.__aexit__(None, None, None)
+                return
+            self._message_followers[connection.websocket] = tasks.create_task(
+                self._follow_message_session_scoped(
+                    reader,
+                    after_seq,
+                    device_id,
+                    connection,
+                    message_scope,
+                    display_only=cast(bool, frame.payload.get("display_only", False)),
+                )
+            )
+        except BaseException:
+            await message_scope.__aexit__(None, None, None)
+            raise
+
+    async def _follow_message_session_scoped(
+        self,
+        reader: MessageReader,
+        after_seq: int,
+        device_id: str,
+        connection: ActiveMobileConnection,
+        message_scope: Any,
+        *,
+        display_only: bool = False,
+    ) -> None:
+        """Keep the exact message scope until the live follower is cancelled."""
+
+        try:
+            await self._follow_message_session(
+                reader,
+                after_seq,
+                device_id,
+                connection,
+                display_only=display_only,
+            )
+        finally:
+            await message_scope.__aexit__(None, None, None)
 
     async def _follow_message_session(
         self, reader: MessageReader, after_seq: int, device_id: str,
