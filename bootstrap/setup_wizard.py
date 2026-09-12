@@ -65,7 +65,7 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
     _divider()
     click.echo("\n正在生成 Core 配置并运行插件配置命令...")
 
-    _atomic_write_with_backup(config_path, _render_config(), mode=0o600)
+    _atomic_write_with_backup(config_path, _render_config(workspace), mode=0o600)
     _ok(f"{config_path} 已生成")
     _validate_config(config_path, workspace)
 
@@ -223,18 +223,24 @@ def _validate_config(config_path: Path, workspace: Path) -> None:
         raise SystemExit(1) from error
 
 
-def _render_config() -> str:
-    return _render_channels()
+def _render_config(workspace: Path) -> str:
+    """Render only Core settings; client settings belong to installed plugins."""
 
-
-def _render_channels() -> str:
     return "\n".join(
         [
-            "# Web Chat 由 Supervisor 在唯一入口 2236 提供。",
-            "[channels.chat]",
-            "enabled = true",
+            "[runtime]",
+            f"workspace = {workspace.as_posix()!r}",
             "",
-            "# 外部 channel 插件的配置由各自的 setup 声明写入 workspace/plugin-data。",
+            "# 本地程序化控制面；listen 留空时按 workspace 派生 Unix socket。",
+            "[app_server]",
+            "enabled = true",
+            "listen = \"\"",
+            "max_connections = 32",
+            "ingress_queue_size = 128",
+            "outbound_queue_size = 512",
+            "",
+            "# 外部 channel 与客户端插件的配置由各自的 setup 声明写入",
+            "# workspace/plugin-data；Core 不读取业务配置表。",
             "",
         ]
     )

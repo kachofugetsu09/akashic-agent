@@ -154,24 +154,23 @@ def test_load_config_has_no_legacy_agent_fields(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("snippet", "owner"),
+    "snippet",
     [
-        ('[agent]\nsystem_prompt = "old"', "prompt plugin"),
-        ("[agent]\nmax_iterations = 1", "reply max_steps"),
-        ("[agent.tools]\nsearch_enabled = true", "tool discovery"),
-        ("[agent]\ndev_mode = false", "no runtime owner"),
-        ('[agent.wiring]\ntoolsets = ["meta_common"]', "no runtime owner"),
+        '[agent]\nsystem_prompt = "old"',
+        "[agent]\nmax_iterations = 1",
+        "[agent.tools]\nsearch_enabled = true",
+        "[agent]\ndev_mode = false",
+        '[agent.wiring]\ntoolsets = ["meta_common"]',
     ],
 )
 def test_load_config_rejects_retired_agent_fields(
     tmp_path: Path,
     snippet: str,
-    owner: str,
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(snippet + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match=owner):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         load_config(config_path, workspace=tmp_path)
 
 
@@ -199,7 +198,7 @@ def test_load_config_rejects_retired_pending_optimizer_keys(tmp_path: Path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="PENDING/MemoryOptimizer 已移除"):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         _ = load_config(config_path, workspace=tmp_path)
 
 
@@ -253,7 +252,7 @@ spawn_enabled = false
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="spawn_enabled 已移除"):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         load_config(config_path, workspace=tmp_path)
 
 
@@ -267,15 +266,7 @@ def test_load_config_rejects_retired_proactive_before_workspace_access(
     workspace = tmp_path / "workspace"
     config_path.write_text(body, encoding="utf-8")
 
-    def reject_workspace_backed_config(_: dict, __: Path):
-        raise AssertionError("legacy config must fail before opening workspace-backed config")
-
-    monkeypatch.setattr(
-        "agent.config._load_channels_config",
-        reject_workspace_backed_config,
-    )
-
-    with pytest.raises(ValueError, match=r"\[proactive\] 已移除"):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         load_config(config_path, workspace=workspace)
 
     assert not workspace.exists()
@@ -293,7 +284,7 @@ token = "legacy-token"
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="migrate_legacy_channels.py"):
+    with pytest.raises(ValueError, match="Core 配置不支持字段"):
         load_config(config_path, workspace=tmp_path / "workspace")
 
 
@@ -425,7 +416,7 @@ def test_load_config_rejects_non_table_sections(
     config_path = tmp_path / "config.toml"
     config_path.write_text(f"{snippet}\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="必须是 TOML table") as exc_info:
+    with pytest.raises(ValueError, match="Core 配置不支持字段|必须是 TOML table") as exc_info:
         load_config(config_path, workspace=tmp_path)
 
     assert field in str(exc_info.value)
@@ -435,7 +426,7 @@ def test_load_config_rejects_non_table_sections(
     ("field", "snippet"),
     [
         ("agent.dev_mode", '[agent]\ndev_mode = "false"'),
-        ("channels.chat.enabled", '[channels.chat]\nenabled = "false"'),
+        ("app_server.enabled", '[app_server]\nenabled = "false"'),
     ],
 )
 def test_load_config_rejects_string_booleans(
@@ -890,7 +881,8 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert "[llm]" not in config_text
     assert "[memory]" not in config_text
     assert "2236 的“模型”页" in config_text
-    assert "[channels.chat]" in config_text
+    assert "[channels.chat]" not in config_text
+    assert "[mobile_realtime]" not in config_text
     assert "6322" not in config_text
     assert "[runtime]\n" in config_text
     assert 'workspace = "~/.akashic/workspace"' in config_text
