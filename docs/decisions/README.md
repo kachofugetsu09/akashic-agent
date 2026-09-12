@@ -26,7 +26,7 @@
 | [0018](0018-chat-webui-has-one-source-and-two-adapters.md) | accepted | 对话 WebUI 使用一个源码真源和两个平台适配器 | WEBUI-001～WEBUI-003、MOB-001、TST-007～TST-008 |
 | [0019](0019-mobile-long-messages-use-bounded-events.md) | accepted | Mobile 长消息使用有界正文事件和紧凑终态 | MOB-001、MOB-003、MOB-005、MOB-007、SES-001 |
 | [0020](0020-mobile-history-content-uses-authenticated-http-ranges.md) | accepted | Mobile 历史长正文使用认证 HTTP Range 恢复 | MOB-001、MOB-003、MOB-006、MOB-007、SES-001、TST-005、TST-008 |
-| [0021](0021-yoyo-workspace-ledger-defines-migration-origin.md) | accepted | Yoyo workspace 账本定义迁移原点 | MIG-001、MIG-002、WSP-003、BAK-001 |
+| [0021](0021-yoyo-workspace-ledger-defines-migration-origin.md) | superseded by [0066](0066-retire-global-yoyo-migrations.md) | Yoyo workspace 账本定义迁移原点（历史） | MIG-001、MIG-002、WSP-003、BAK-001 |
 | [0022](0022-mobile-webui-uses-server-selected-generations.md) | accepted | 移动 WebUI 使用服务端选择的不可变 generation | WEBUI-001～WEBUI-006、MOB-001～MOB-004、TST-006～TST-008 |
 | [0023](0023-akashic-tokens-own-material-3-semantics.md) | superseded | Akashic Token 拥有 Material 3 设计语义 | WEBUI-001～WEBUI-007 |
 | [0024](0024-plugin-self-validation-uses-stable-and-latest.md) | superseded | 插件自验证使用 stable/latest 与 session 级并发 | RUN-007、OUT-004、PLG-013、CTRL-003、TST-001～TST-006 |
@@ -72,6 +72,11 @@
 | [0063](0063-execution-failures-have-terminal-results.md) | accepted | 执行失败明确收尾，恢复依据原回执 | Tools、Delivery、Wake、Mobile、Models |
 | [0064](0064-plugin-boundary-is-machine-enforced.md) | superseded by 0065 | 插件边界静态门的初始设计 | PLG-001～PLG-017、GOV-001～GOV-005、TST-001～TST-008 |
 | [0065](0065-plugin-boundary-checks-do-not-grant-core-ownership.md) | accepted | 边界检查不授予 Core 归属，按外置与替换验收 | PLG-014、PLG-016、STA-001、CAP-001、TST-003 |
+| [0066](0066-retire-global-yoyo-migrations.md) | accepted | 退役全局 Yoyo 迁移，由插件 owner 持有 schema 生命周期 | MIG-001、MIG-002、PLG-019、WSP-003、BAK-001 |
+
+`0066` 是当前全局 schema 初始化与演进的唯一有效语义。较早决策中关于 Yoyo、Git cursor、
+`legacy_upgrade` 或全局 migration runner 的段落保留为历史证据；除非文件明确标记为当前合同，
+不得把这些段落当作启动、安装或升级指令。
 
 ## 新增规则
 

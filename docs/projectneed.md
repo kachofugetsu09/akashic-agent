@@ -494,15 +494,17 @@ metadata 与正文同事务提交，参与同 ID 幂等核对，提交后不可�
 
 Included compaction checkpoint 是 Markdown 记忆唯一的自动写入触发。MEMORY 与 SELF 分别按
 `source_ref + kind` 幂等提交；一份失败不得伪装另一份成功，也不得回滚 Session ledger。
-每次替换前先保留恢复点，并以校验、fsync 和原子 replace 发布。旧非空 PENDING 只允许在
-带备份和 receipt 的一次性迁移中合并，在线 runtime 不再创建或消费 PENDING。
+每次替换前先保留恢复点，并以校验、fsync 和原子 replace 发布。旧非空 PENDING 只作为历史
+输入保留，当前 breaking baseline 不由在线 runtime 或全局迁移自动合并、清空或删除；若未来
+要处理，必须由明确 owner 使用独立备份和 receipt 合同完成。
 
 ### MEM-003 破坏性重写前留下不可覆盖恢复点
 
 MEMORY 和 SELF 使用同目录临时文件、fsync 与原子 replace。覆盖前保留已校验
 的唯一历史备份；备份失败时不得继续覆盖。`RECENT_CONTEXT.md` 已退役，不是新的
-长期记忆或上下文输入对象；旧安装只允许由带完整备份和校验的 Yoyo migration 归档、
-删除。
+长期记忆或上下文输入对象；当前 breaking baseline 不通过全局迁移归档或删除旧文件。
+既有 workspace 必须已经符合当前 owner 的 schema 与文件合同；需要处理不匹配状态时由实际
+owner 以独立、带备份的管理操作 fail-loud，不由 Core 猜测或自动升级。
 
 ### MEM-004 事实摄入按 source_ref 幂等
 
@@ -523,8 +525,8 @@ session、channel、chat、source_ref 和预算在每次 post-response run 创�
 ### MEM-008 长期记忆状态不可互相替代
 
 `MEMORY.md` 与 `SELF.md` 属于必须持久保存的活动记忆状态。升级前遗留的非空
-`PENDING.md` 是尚未迁移的历史事实，必须先备份并按 MEM-002 一次性合并，不能因功能退役
-直接删除。
+`PENDING.md` 是尚未处理的历史事实，当前版本必须保留并在 owner 缺少明确处理合同前拒绝
+猜测其语义；不能因功能退役自动合并、清空或删除。
 退役的 `memory2.db` 仍可能保存无法从 SessionDB 无损恢复的结构化记忆、强化、替换和人工
 管理结果，因此只能作为历史归档保留，runtime 不得读取、导入或更新它。模型窗口摘要属于
 session compaction ledger 的派生 checkpoint，不替代上述记忆状态；旧
@@ -533,7 +535,7 @@ session compaction ledger 的派生 checkpoint，不替代上述记忆状态；�
 
 ### MEM-009 Akasha 使用固定输入确定性重建
 
-`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有完成的 Turn 投影属于普通学习样本；被中断、失败或明确标为 `effects.post_commit=suppress` 的消息段保留在原始会话中，但不要求 embedding，也不进入显式记忆图。历史排除字段由启动 Yoyo 一次性迁为同一个 effect；runtime 与 replay 不保留旧字段解码器。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
+`akasha.db` 和 graph snapshot 是派生 sidecar。完整重建只读取 `sessions.db/messages`、对应的 `message_embeddings`、固定算法和固定配置，不引入 LLM 重新解释历史，也不重新生成已经存在的 embedding。只有完成的 Turn 投影属于普通学习样本；被中断、失败或明确标为 `effects.post_commit=suppress` 的消息段保留在原始会话中，但不要求 embedding，也不进入显式记忆图。历史排除字段的转换属于已完成的历史版本事实；当前 runtime 只读取统一的 effect 表示，不保留旧字段解码器。既有 owner schema 缺列或形状不匹配时必须在写入前失败。同一组输入必须得到可复现的图；合法学习样本缺少或模型不匹配的 embedding 必须使完整重建失败并报告缺口，不能静默跳过后仍声称成功。
 
 用户按 SES-003 撤销一组 Message 后，Akasha 必须从剩余固定输入重建 sidecar；source event 的 embedding + staging、source 删除、pending 清理和派生发布由同一管理协调流程串行化，不能在新完成 Turn 已落库但 embedding 尚未持久化时开始 rebuild。两份 sidecar 之间的发布崩溃窗口必须在重启时通过身份失配确定性收敛；当前进程若未能重建，则 memory query 和管理读取保持 fail-loud。
 
@@ -805,6 +807,12 @@ ToolCall。固定目录在 system 中按插件列出声明用途及各工具简�
 TTL 或 epoch。格式错误或当前目录中不存在的模型调用必须保存明确的未执行反馈，允许模型在原步数上限内纠正；
 不得伪造实际工具请求或执行成功。通用 ReAct、工具执行和回复程序不得按搜索工具、间接调用工具或来源名称分支。
 
+### PLG-019 插件拥有自己的 schema 生命周期
+
+拥有持久 `plugin-data`、workspace 文件或业务数据库的插件，同时拥有该状态的 schema identity lineage 集合、空 workspace 初始化、既有状态核对和未来演进。首次使用空 workspace 时，插件可以直接创建自己声明的当前 schema；已有状态必须精确命中 owner 已声明、已全部升级且仍合法的 lineage 集合。这里的“精确”是命中允许的 schema identity 和数据不变量，不要求与全新库 DDL 逐字相等；例如 sessions owner 可以明列含已知额外列和合法 `attributes` 表示的 lineage。缺列、未知版本、部分升级、损坏或不完整形状都要在任何业务写入前 fail-loud。Core 只提供已授权的路径、租约和生命周期，不建立全业务 schema 目录，也不猜测插件状态。
+
+插件之间需要共享持久能力时，仍通过版本化 `ServiceKey`、结构合同或 typed event 组合；插件不得导入兄弟实现或把兄弟的 schema 当作自己的兼容输入。未来 schema 演进由拥有该状态的插件以自己的备份、恢复和显式版本合同负责，不注册到 Core 的全局迁移 runner。当前 breaking baseline 不执行跨插件或全局 workspace 自动升级。
+
 ## 11. Workspace、文件和进程
 
 ### WSP-001 Workspace 可写状态显式归属
@@ -815,9 +823,9 @@ TTL 或 epoch。格式错误或当前目录中不存在的模型调用必须保�
 
 plugin、marketplace、snapshot 等名称必须是安全单片段；resolved path 位于 workspace；已存在父组件不得是 symlink。高风险写入需要 OS 级 no-follow 或隔离边界。
 
-### WSP-003 数据迁移离线、持锁并原子发布
+### WSP-003 状态初始化与演进由 owner 原子发布
 
-迁移先获得 workspace 单实例锁。SQLite 使用在线 backup 与 integrity check；全部内容写到唯一 staging，再一次性发布。目标已存在时拒绝合并，源数据保留到独立清理步骤。
+每个持久状态 owner 在自己的边界内检查 schema identity lineage 集合，并在空 workspace 中创建当前结构。owner 必须明列哪些已知 lineage 已全部升级且仍合法；需要改变既有状态时，owner 自己负责锁、SQLite online backup、`integrity_check`、staging、原子发布和失败恢复。目标已存在但不命中允许 lineage 或数据不变量时拒绝继续，不能由 Core 合并、猜测或静默降级。当前 breaking baseline 不运行全局迁移 runner，也不把跨插件状态放进一个中央迁移账本。
 
 ### WSP-004 Workspace 是 Akashic 运行数据根
 
@@ -834,13 +842,13 @@ candidate 只能使用隔离 data root。停止、更新、禁用或普通卸载
 物理删除仍需名称不同的用户操作、影响预览、恢复点和再次确认。一个可写目录同一时刻只能有一个 formal
 Workload writer；容器名、镜像和 endpoint 都不是持久状态 owner。
 
-### MIG-001 兼容迁移由 workspace Yoyo 账本一次性推进
+### MIG-001 插件 owner 直接建立并核对当前 schema
 
-迁移框架只从 `migrations/yoyo/` 加载已注册脚本，以 `<workspace>/migrations.sqlite3` 的成功回执判断待执行集合。迁移在 runtime、provider 和业务写入 owner 启动前持有 workspace 单实例锁执行；任一步失败时不得记录成功回执，runtime 不得启动。既有 migration ID 只追加不修改，修正通过新的 ID 和依赖关系表达。
+当前 runtime 不加载全局迁移 runner、`migrations/yoyo/` 或 `<workspace>/migrations.sqlite3` 账本。空 workspace 的数据库、文件和插件数据由实际 owner 直接创建当前 schema；Core 只提供路径、生命周期和组合，不维护业务 schema 中央目录。已有状态必须通过 owner 已声明的、已全部升级的合法 schema identity lineage 集合检查；缺失、未知、部分升级或不匹配在任何业务写入前 fail-loud，不猜测、不清库、不以默认值启动。允许的 lineage 不要求与全新库 DDL 逐字相等，具体额外列和 `attributes` 等表示由实际 owner 明列。
 
-### MIG-002 当前结构是迁移原点
+### MIG-002 Breaking baseline 不执行历史 workspace upgrade
 
-新系统不接管 Git cursor 时代的迁移历史。历史脚本保留为源码证据，但不注册、不自动执行，也不据此推断旧安装状态。原点迁移只清除退役的配置 companion cursor、lock 和 backups；配置、会话、记忆及其他业务数据保持不变。此后的兼容变换只能新增到 Yoyo 目录，不依赖 Git HEAD、分支拓扑、浅克隆状态或人工产品版本号。
+本次 breaking baseline 假定既有用户数据、schema 和 config 已经是当前结构。历史 Git cursor、Yoyo、`legacy_upgrade`、迁移 bundle、append-only gate 与相关 runner 只作为 Git 恢复点中的历史源码，不注册、不自动执行，也不承担当前安装的兼容入口；当前版本不修改正式 DB、Message 或历史 ledger 来完成升级。未来 schema 演进由各插件 owner 自己声明、备份、恢复和执行，不能重新建立 Core 中央迁移合同或跨插件升级器。
 
 ### FS-001 文件写入限于 allowed root
 

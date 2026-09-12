@@ -2,6 +2,14 @@
 
 这份文件只保存 Akashic Agent 当前仍未完成的工作。事项完成后删除，不保留“已完成”记录。
 
+## P0 · 退役全局 Yoyo 迁移（breaking baseline）
+
+按 [0066](decisions/0066-retire-global-yoyo-migrations.md) 完成代码、安装链和文档的累计收口：
+移除全局 Yoyo、`legacy_upgrade`、迁移 bundle、runner 与 append-only gate；空 workspace 由实际
+owner 创建当前 schema，既有不匹配状态在业务写入前 fail-loud。当前版本假定用户数据、schema 和
+config 已经是当前状态，不对正式 DB、Message 或历史 ledger 做升级写入。实现证据由代码、默认
+profile 与本地插件组合验收提供；本条在 root 核对全部安装和本地插件前保持未完成。
+
 ## P0 · 插件正交化实施与最终验收
 
 按 [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 与

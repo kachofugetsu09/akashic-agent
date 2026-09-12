@@ -3,6 +3,8 @@
 - 状态：第 1、2 步保留；维护者已授权完整外置与正交化实施，按 stacked PR 交付。
 - 更新：2026-09-12。
 - 决策：[0065](../decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md)，取代 [0064](../decisions/0064-plugin-boundary-is-machine-enforced.md) 的机械迁移路线。
+- 当前 breaking baseline：[0066](../decisions/0066-retire-global-yoyo-migrations.md) 退役全局 Yoyo、`legacy_upgrade` 与迁移 runner；本文件中的历史迁移证据不再是当前安装或启动说明。
+- 本文不单独证明代码、默认 profile 或 Gate 已验收；实现状态以代码、测试和累计 stacked PR 核对为准。
 - 长期约束：PLG-003、PLG-006、PLG-008、PLG-010、PLG-014、PLG-016、STA-001、CAP-001。
 
 ## 1. 目标与判断标准
@@ -27,14 +29,27 @@ Core 保留插件基座、具有明确事实或机制 owner 的原子能力，�
 - 角色表只盘点 Core 文件中出现的字面 ServiceKey。它不是运行时注册表，
   不检查所有动态表达式，不证明能力归属或替换成功。
 
+### 2.1 当前持久 schema 也必须由插件拥有
+
+当前安装不再使用全局迁移账本来替插件解释业务状态。每个拥有 `plugin-data`、workspace 文件
+或业务数据库的插件，负责空 workspace 创建当前 schema、打开时对已声明 schema lineage 集合的
+精确检查以及未来自己的备份、恢复和演进。该集合可以包含已全部升级且仍合法的多个 lineage，
+不要求与全新库 DDL 逐字相等；已有状态未命中时，在业务写入前 fail-loud；Core 只授予路径、lease
+和生命周期，不猜测版本或维护全业务 schema 目录。插件协作沿本文件的 `ServiceKey`/typed event
+边界进行，不能通过兄弟源码 import 或迁移实现建立隐式依赖。
+
+历史 Yoyo、`legacy_upgrade`、migration bundle 和 Core runner 的验证记录保留为审计材料，统一
+受 [0066](../decisions/0066-retire-global-yoyo-migrations.md) 取代；它们不构成当前执行路径。
+
 ## 3. 本次允许与禁止的变化
 
-#593 完善静态检查、测试与设计依据；#594 核实并删除原有 11 个遗留模块。
-两层分别提交与验证，不合并 PR，不部署，不迁移正式 workspace。
+#593 完善静态检查、测试与设计依据；#594 核实并删除原有 11 个遗留模块；#0066 进一步退役全局
+Yoyo、`legacy_upgrade`、migration bundle、runner 与 append-only gate。各层分别提交与验证，
+不合并 PR，不部署，不迁移正式 workspace。
 #595 的现有路线停止；保留分支与提交作为参考，不以其剩余 import 数量继续推进。
 
-持久状态增、改、逻辑失效、物理减少均无变化。Message、Session、memory、plugin-data、
-迁移文件和外部效果协议全部保留。测试只创建一次性数据。
+持久状态增、改、逻辑失效、物理减少均无变化。Message、Session、memory、plugin-data 和外部
+效果协议全部保留；旧迁移文件只在 Git 恢复点中保留历史证据，不属于当前安装。测试只创建一次性数据。
 恢复点由原 PR commit 和任务开始前的 Git bundle 提供；代码回退不冒充运行数据回退。
 
 ## 4. 静态门究竟证明什么
@@ -519,7 +534,11 @@ SDK 的空插件发现目录使用本代独有临时树，停止后清理；不�
 证明它们不能同时改共享 SDK 配置，旧代关闭后新代可进入。渠道 9 项和宿主相关
 50 项测试通过，定向 pyright 0 errors；完整 Gate 与 CI 仍按用户顺序最后处理。
 
-### 9.26 历史迁移外置的当前证据与未完成项
+### 9.26 历史迁移外置证据（已被 0066 取代）
+
+> 历史记录：本节及相邻的 9.31、9.33 记录的是全局 Yoyo 退役前的外置方案和验证结果。
+> 它们只用于审计与 Git 恢复，不是当前启动、安装或升级指令。当前语义以
+> [0066](../decisions/0066-retire-global-yoyo-migrations.md)、`MIG-001` 和 `MIG-002` 为准。
 
 48 个历史步骤及其冻结 helper 已进入普通 legacy_upgrade artifact，Core 保留起点
 和 ID/依赖索引；安装时验证 catalog 与全部包文件摘要，不从 checkout 猜测实现。
@@ -594,7 +613,7 @@ retry 均在外部效果之前阻断，journal 保持 pending。没有正式数�
 68 项资产/候选/归档/外置组合回归通过；补查清理重试与运行入口的 88 项测试通过，
 定向类型检查零错误。完整 Gate 与 CI 仍在所有实施层完成后统一执行。
 
-### 9.31 新工作区起点与真实重启
+### 9.31 历史：新工作区起点与真实重启（已被 0066 取代）
 
 - Core 为明确的新建 workspace 记录独立起点，列出创建前的历史迁移 ID；这些 ID 不写成 Yoyo 已执行记录。已有状态而没有起点时仍要求缺失的历史 owner，不能猜测数据格式。
 - 记录与业务文件名无关，不认识 VEDA、memes 或 Context 路径。临时账本完成后以不覆盖既有文件的方式发布；异常中断留下的未知状态保持失败可见。
@@ -608,7 +627,7 @@ retry 均在外部效果之前阻断，journal 保持 pending。没有正式数�
 - Web/Mobile 与调度检查组合验证 125 项通过，新增真实技能 owner 的租约读取补验通过（该文件共 3 项）。类型检查无错误。最终分发 profile 与外置产物验收在后续层合并核对。
 
 
-### 9.33 整组行为回归与不兼容范围
+### 9.33 历史：整组行为回归与不兼容范围（已被 0066 取代）
 
 安装、配置和插件 Python 导入接口采用新的显式边界；旧 checkout 自动装配、Core
 业务初始化和兄弟插件类身份不作为兼容路径。已有 workspace 的历史升级仍由显式

@@ -1,6 +1,6 @@
 # 0021 · Yoyo workspace 账本定义迁移原点
 
-- 状态：accepted
+- 状态：superseded by [0066 · 退役全局 Yoyo 迁移，由插件 owner 持有 schema 生命周期](0066-retire-global-yoyo-migrations.md)
 - 日期：2026-08-02
 - 取代：[0005 · Git cursor 驱动一次性兼容迁移](0005-git-cursor-drives-one-shot-migrations.md)
 - 关联条款：MIG-001、MIG-002、WSP-003、BAK-001、TST-002、TST-005

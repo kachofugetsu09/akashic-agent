@@ -187,6 +187,25 @@ Provider 返回结构化 `ModelUsage` 和公开错误类型；未知能力保持
 `drift.proposals.v1`。这些不是 Core 能力总表：owner 定义结构合同，consumer 只通过 key 连接。
 `EMBEDDING_MEMORY_PLUGIN` 是当前 embedding-memory owner claim，同一 Root 只允许一个 owner。
 
+### 4.6 插件拥有自己的持久 schema
+
+插件只要声明并写入自己的 `plugin-data`、workspace 文件或业务数据库，就同时拥有该状态的
+schema identity lineage 集合、初始化、打开检查和未来演进。空 workspace 首次使用时，插件直接
+创建当前结构；已有状态必须精确命中 owner 已声明、已全部升级且仍合法的 lineage 集合。这里的
+“精确”不要求与全新库 DDL 逐字相等；例如 sessions owner 可以明列含已知额外列和合法 `attributes`
+表示的 lineage。缺列、未知版本、部分升级、损坏或不完整形状要在业务写入前 fail-loud，不能猜测
+旧版本、清空数据或用默认值继续启动。
+
+Core 只分配 `data_root`、已声明的 workspace 路径、generation lease 和生命周期。它不加载全局
+Yoyo/legacy migration、不创建 `<workspace>/migrations.sqlite3`，也不维护全业务 schema 目录。
+需要演进既有状态时，由实际 owner 自己负责备份、恢复、锁、staging 和版本合同；该合同不注册到
+Core 的中央 runner。当前 breaking baseline 假定用户数据、schema 和 config 已经是当前状态，
+不提供跨插件或全局 workspace 自动升级。
+
+插件之间要操作另一个插件的状态时，先声明对方提供的版本化 `ServiceKey` 或 typed event，取得
+窄 view 后调用；消费者不导入对方源码、schema 类或迁移实现。这样新概念由拥有它的插件定义，
+组合仍通过能力声明产生，Core 不因业务数量增长而变成接口中心。
+
 ## 5. Dashboard 与 Web
 
 `dashboard_module = "dashboard.py"` 让 Core 用 `DashboardContext` 加载模块。Dashboard 只能通过

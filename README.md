@@ -123,14 +123,19 @@ enabled = true
 channel_name = "web"
 ```
 
-当前代码形状是新的迁移原点。启动时 Yoyo 只读取 `migrations/yoyo/`，并在
-`<workspace>/migrations.sqlite3` 记录已成功执行的迁移；它不依赖 Git 历史、分支或版本号。
-旧 Git cursor 时代的脚本保留为历史源码，但不会注册或自动执行，也不承诺接管旧格式。
-原点迁移只删除退役的 `config.toml.migration-{cursor,lock,backups}` companion state，
-不修改配置与业务数据。
+当前版本采用一个明确的 breaking baseline：发布前提是已有用户数据、schema 和 config 已经处于
+当前结构。启动时不加载全局 Yoyo、`legacy_upgrade`、迁移 bundle 或 `<workspace>/migrations.sqlite3`
+账本，也不会猜测旧安装并自动改写正式状态。
 
-新增迁移前请阅读 [Yoyo 迁移维护手册](./docs/design/git-migration-authoring.md)。已注册脚本
-只追加不修改；修正错误时新增 migration ID。
+空 workspace 由实际插件 owner 直接创建自己的当前 schema；已有状态由 owner 按自己声明的、已全部
+升级且仍合法的 schema lineage 集合检查，不要求与全新库 DDL 逐字相等，未命中就在业务写入前
+fail-loud。Core 只提供插件路径、租约、生命周期和组合，不维护全业务 schema 目录。未来 schema
+演进由拥有该状态的插件自行负责备份、恢复和版本合同，通过版本化能力声明与其他插件协作。
+
+完整决策见 [0066 · 退役全局 Yoyo 迁移](./docs/decisions/0066-retire-global-yoyo-migrations.md)。
+旧 [0021](./docs/decisions/0021-yoyo-workspace-ledger-defines-migration-origin.md) 与
+[Yoyo 迁移维护手册（历史）](./docs/design/git-migration-authoring.md) 仅用于审计；它们不提供
+当前启动、升级或脚本执行入口。
 
 `workspace` 默认是 `~/.akashic/workspace`。临时切换隔离环境时传
 `--workspace PATH`；它的优先级高于 `AKASHIC_WORKSPACE` 和 `config.toml`。
