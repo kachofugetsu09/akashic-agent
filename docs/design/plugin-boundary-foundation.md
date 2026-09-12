@@ -557,3 +557,15 @@ skill_roots 在加载边界转换，不能同时使用两种声明。standard_to
 
 未完成的归属：Core 启停与发布仍有旧 Skill 软链接投影，Mobile 检查仍消费专用技能
 服务；这两项仍需继续收口。此层不宣称所有 Skill 业务已经离开 Core。
+
+### 9.29 正式安装的回复与送达闭环
+
+16 个真实业务包分别走正式 Git 安装链，原安装源码目录移至命名恢复点。运行时
+逐包核对实际模块来自该 generation 的归档树；不替换 Models、reply_program、
+delivery 或 TelegramSender。用本地 HTTP 服务实现 OpenAI 与 Telegram 外部协议，
+通过实际模型配置入口和 CHANNEL_INPUT 接纳一条输入。
+
+验收得到一条完整回复和一次发送请求，再通过实际最终 Output 等待能力取得
+delivered 回执。关闭所有 runtime 后重新打开消息库，原 Input/Output 字节语义未变，
+送达记录仍保留 provider ID 731。该测试通过；不声称测试了真实 Telegram 网络、
+Bot 收件或 checkout 完全不可见的进程（后二者有各自独立验收）。
