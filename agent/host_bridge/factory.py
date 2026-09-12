@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from agent.host_bridge.client import HostBridgeShellProcessManager
-from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
+from agent.host_bridge.client import HostBridgeRequirementsChecker
 from agent.process_runtime import (
     ShellProcessManager,
     ShellProcessManagerProtocol,
@@ -65,7 +65,7 @@ def build_file_bridge() -> HostBridgeShellProcessManager | None:
     return None
 
 
-def build_skill_capability_checker() -> HostBridgeSkillCapabilityChecker | None:
+def build_requirements_checker() -> HostBridgeRequirementsChecker | None:
     """Build the host requirement checker only in explicit bridge mode."""
 
     mode = os.environ.get(_MODE_ENV, "local")
@@ -74,6 +74,6 @@ def build_skill_capability_checker() -> HostBridgeSkillCapabilityChecker | None:
     if mode != "host-bridge":
         raise RuntimeError(f"{_MODE_ENV} 只能是 local 或 host-bridge")
     socket_path, boot_id, token, release_commit, toolchain_digest = _bridge_identity()
-    return HostBridgeSkillCapabilityChecker(
+    return HostBridgeRequirementsChecker(
         socket_path, boot_id, token, release_commit, toolchain_digest
     )

@@ -14,7 +14,7 @@ from agent.host_bridge import host_bridge_pb2 as pb
 from agent.host_bridge import host_bridge_pb2_grpc as rpc
 
 from agent.host_bridge.client import HostBridgeShellProcessManager
-from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
+from agent.host_bridge.client import HostBridgeRequirementsChecker
 from agent.host_bridge.factory import build_shell_process_manager
 from agent.host_bridge.protocol import CHANNEL_OPTIONS
 from agent.host_bridge.server import HostBridgeService, _host_environment
@@ -446,7 +446,7 @@ async def test_skill_capability_rpc_fails_loud_on_authentication_error(
     tmp_path: Path,
 ) -> None:
     async with _running_bridge(tmp_path) as socket_path:
-        checker = HostBridgeSkillCapabilityChecker(
+        checker = HostBridgeRequirementsChecker(
             socket_path,
             "boot-skills",
             "wrong-token",
@@ -456,7 +456,7 @@ async def test_skill_capability_rpc_fails_loud_on_authentication_error(
 
         with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
             await asyncio.to_thread(
-                checker.check_skill_requirements,
+                checker.check_requirements,
                 ["sh"],
                 ["PATH"],
             )
