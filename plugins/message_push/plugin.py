@@ -6,7 +6,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
-from agent.control.frame_book import CONTROL_FRAMES
+from agent.plugin_composition.control_frames import CONTROL_FRAMES
 from agent.plugin_composition.tasks import RESTART_GATE
 
 from .boundary import (

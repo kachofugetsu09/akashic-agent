@@ -2,7 +2,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from .models import StrictModel
+from pydantic import BaseModel
 
 
 class RequestTransport(Protocol):
@@ -11,18 +11,18 @@ class RequestTransport(Protocol):
     connection_id: str
 
 
-TransportCall = Callable[[StrictModel, RequestTransport], Awaitable[object]]
+TransportCall = Callable[[BaseModel, RequestTransport], Awaitable[object]]
 
 
 @dataclass(frozen=True)
 class RpcMethod:
     """一个固定协议入口的参数边界与处理函数。"""
 
-    params: type[StrictModel]
-    call: Callable[[StrictModel], Awaitable[object]]
+    params: type[BaseModel]
+    call: Callable[[BaseModel], Awaitable[object]]
     call_with_transport: TransportCall | None = None
 
-    async def invoke(self, params: StrictModel, transport: RequestTransport | None) -> object:
+    async def invoke(self, params: BaseModel, transport: RequestTransport | None) -> object:
         if self.call_with_transport is not None:
             if transport is None:
                 raise RuntimeError("动态 RPC 缺少 RequestTransport")

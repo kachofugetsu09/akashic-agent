@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from infra.channels.message_view import session_row
+from agent.plugin_contracts.message_view import session_row
 from agent.plugin_composition.messages import InvalidPage, MessageCatalog
 from agent.plugin_contracts import body_to_dict
 
