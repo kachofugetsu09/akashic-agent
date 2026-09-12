@@ -1,13 +1,33 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
+from typing import Protocol
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_contracts import ContentPart
-from plugins.tools.api import Result
-from plugins.tools.plugin import TOOLS
+
+
+@dataclass(frozen=True)
+class Result:
+    outcome: str
+    parts: tuple[ContentPart, ...]
+
+
+class Tools(Protocol):
+    async def declare_group(self, ctx: Context, *, description: str) -> object: ...
+
+    async def register(
+        self, ctx: Context, *, name: str, description: str,
+        parameters: Mapping[str, object],
+        open: Callable[[Mapping[str, object]], AbstractAsyncContextManager[object]],
+        idempotent: bool, risk: str,
+    ) -> Mapping[str, object]: ...
+
+
+TOOLS = ServiceKey[Tools]("tools.v1")
 
 api_version = 3
 name = "memory_recall"
