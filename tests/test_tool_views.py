@@ -13,7 +13,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.tools.api import MessageReply
-from plugins.tools.menu import InvalidToolCall, ToolMenu
+from plugins.tools.menu import ToolMenu
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView, open_tool
 from session.log import MessageLog
 from session.message import CallRef
@@ -152,14 +152,17 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
             ).execute("invalid", binding, {"value": 7})
             assert invalid.outcome == "error"
             assert invalid.parts[0].value == "value must be text"
-            with pytest.raises(InvalidToolCall, match="获授 view"):
-                menu.decode(
-                    ModelToolCall(
-                        "unknown",
-                        "tool_call",
-                        {"name": "missing", "arguments": {}},
-                    )
+            rejected = menu.decode(
+                ModelToolCall(
+                    "unknown",
+                    "tool_call",
+                    {"name": "missing", "arguments": {}},
                 )
+            )
+            assert not rejected.accepted
+            assert rejected.rejection is not None
+            assert rejected.rejection["name"] == "tool_call"
+            assert "获授 view" in rejected.rejection["error"]
             narrow = ToolView.combine(
                 catalog.view(view.select("example")),
                 ctx.require(TOOL_SEARCH_TOOLS),
@@ -172,14 +175,17 @@ async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(
                 view=narrow,
                 presentation=ctx.require(TOOL_SEARCH_PRESENTATION)(narrow),
             )
-            with pytest.raises(InvalidToolCall, match="获授 view"):
-                narrow_menu.decode(
-                    ModelToolCall(
-                        "not-awarded",
-                        "tool_call",
-                        {"name": "example_status", "arguments": {"value": "ok"}},
-                    )
+            rejected = narrow_menu.decode(
+                ModelToolCall(
+                    "not-awarded",
+                    "tool_call",
+                    {"name": "example_status", "arguments": {"value": "ok"}},
                 )
+            )
+            assert not rejected.accepted
+            assert rejected.rejection is not None
+            assert rejected.rejection["name"] == "tool_call"
+            assert "获授 view" in rejected.rejection["error"]
     finally:
         await host.terminate_all()
         log.close()
