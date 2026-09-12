@@ -741,7 +741,15 @@ class MobileGatewayRuntime:
                             device_id=device_id, connection_epoch=connection.connection_epoch)
 
         async with asyncio.TaskGroup() as tasks:
-            _ = tasks.create_task(send(follow_messages(reader, after_seq=after_seq, display_only=display_only), "messages.appended"))
+            _ = tasks.create_task(send(
+                follow_messages(
+                    reader,
+                    after_seq=after_seq,
+                    display_only=display_only,
+                    providers=self.channel.message_display,
+                ),
+                "messages.appended",
+            ))
             if self.channel.reply_status is None:
                 await self.publish_connection_control(control_type="session.message", device_id=device_id,
                     connection_epoch=connection.connection_epoch, payload={"type": "reply.status", "version": 2,

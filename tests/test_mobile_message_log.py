@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent.config_models import MobileRealtimeConfig
-from infra.channels.message_view import message_rows
+from infra.channels.message_view import MessageDisplayProviders, message_rows
 from infra.mobile_realtime.auth import DeviceAuthenticator
 from infra.mobile_realtime.channel import MobileCommandError, MobileRealtimeChannel
 from fastapi import WebSocket
@@ -21,7 +21,7 @@ from infra.mobile_realtime.inbox import DurableInboxManager
 from infra.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
 from infra.mobile_realtime.pairing import PairingService
 from infra.mobile_realtime.storage import MobileRealtimeStorage
-from plugins.models.projection import check_facts
+from plugins.models.projection import check_facts, display_part
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 from tests.mobile_realtime.test_channel import _Runtime, _generic_frame, _register_device
@@ -36,6 +36,12 @@ def mobile(tmp_path):
         runtime = _Runtime(storage)
         channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
         channel.bind_messages(log.catalog())
+        channel.bind_message_display(
+            MessageDisplayProviders(
+                tool_name=lambda binding_id: binding_id,
+                part_display=(display_part,),
+            )
+        )
         yield log, runtime, channel, device
 
 
@@ -73,7 +79,10 @@ async def test_mobile_history_reads_full_message_prefix_and_directory_without_ol
     assert all(item['title'] == '新对话' for page in (first, second) for item in page['items'])
     await channel._get_history(device, command('history.get', session, page_size=2))
     page = runtime.events[-1]['payload']
-    assert page['items'] == message_rows(log.reader(session).read_page(limit=2))
+    assert page['items'] == message_rows(
+        log.reader(session).read_page(limit=2),
+        providers=channel.message_display,
+    )
     assert page['through_seq'] == 2 and page['next_after_seq'] == 1 and page['has_more']
     assert snapshot(tmp_path / 'sessions.db') == before
     append(log, session, 'later', Input((ContentPart('text', '新增'),)))
@@ -212,7 +221,13 @@ async def test_mobile_large_messages_download_whole_json_and_page_budget_never_t
     page = runtime.events[-1]['payload']
     assert page['has_more'] and len(page['items']) < 16
     assert len(json.dumps(page, ensure_ascii=False).encode()) < 240 * 1024
-    expected = {row['id']: row for row in message_rows(log.reader(session).read_page(limit=200))}
+    expected = {
+        row['id']: row
+        for row in message_rows(
+            log.reader(session).read_page(limit=200),
+            providers=channel.message_display,
+        )
+    }
     for row in page['items'][:4]:
         assert set(row) == {'id', 'session_id', 'seq', 'message_ref'}
         ref = row['message_ref']

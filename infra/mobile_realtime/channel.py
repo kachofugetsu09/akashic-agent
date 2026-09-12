@@ -77,7 +77,7 @@ from infra.mobile_realtime.runtime_inspection import (
     RuntimeInspectionService,
 )
 from infra.channels.contract import ChannelContext
-from infra.channels.message_view import message_rows, session_row
+from infra.channels.message_view import MessageDisplayProviders, message_rows, session_row
 from infra.mobile_realtime.message_view import message_chunks, message_json as _message_json
 from infra.mobile_realtime.attachments import (
     AttachmentChunk,
@@ -451,6 +451,7 @@ class MobileRealtimeChannel:
         self._mobile_ui_catalog_identity = ""
         self._mobile_ui_hot_connections: dict[str, int] = {}
         self._runtime_inspection: RuntimeInspectionService | None = None
+        self._message_display: MessageDisplayProviders | None = None
         self._model_catalog_reader: (
             Callable[[], Awaitable[ModelCatalogSnapshot]] | None
         ) = None
@@ -474,6 +475,19 @@ class MobileRealtimeChannel:
         if self._runtime_inspection is not None:
             raise RuntimeError("Runtime inspection service 已绑定")
         self._runtime_inspection = service
+
+    def bind_message_display(self, providers: MessageDisplayProviders) -> None:
+        """绑定一个 exact generation 的只读消息展示回调快照。"""
+        if not isinstance(providers, MessageDisplayProviders):
+            raise TypeError("消息展示 provider 类型无效")
+        if self._message_display is not None and self._message_display != providers:
+            raise RuntimeError("Mobile 消息展示 provider 已绑定")
+        self._message_display = providers
+
+    @property
+    def message_display(self) -> MessageDisplayProviders:
+        """返回当前展示请求使用的 provider；未绑定时显式显示 unavailable。"""
+        return self._message_display or MessageDisplayProviders()
 
     def bind_model_stats(self, reader: Callable[[str], Awaitable[ModelCallStats]]) -> None:
         if self._model_stats_reader is not None:
@@ -809,7 +823,11 @@ class MobileRealtimeChannel:
         page = reader.read_page(after_seq=message.seq - 1, through_seq=message.seq, limit=1)
         # 摘要明确选择表示；新展示清单和升级前的未完成下载都可重开。
         for display_only in (True, False):
-            rows = message_rows(page, display_only=display_only)
+            rows = message_rows(
+                page,
+                display_only=display_only,
+                providers=self.message_display,
+            )
             if not rows:
                 raise MobileCommandError("message_not_found", "消息不存在")
             content = _message_json(rows[0])
@@ -1952,7 +1970,11 @@ class MobileRealtimeChannel:
         except InvalidPage as error:
             raise MobileCommandError("invalid_pagination", str(error)) from error
         try:
-            page_payload: dict[str, object] = {"version": 2, "items": message_rows(page, display_only=display_only),
+            page_payload: dict[str, object] = {"version": 2, "items": message_rows(
+                page,
+                display_only=display_only,
+                providers=self.message_display,
+            ),
                 "after_seq": after_seq, "through_seq": page.through_seq, "has_more": page.has_more,
                 "next_after_seq": page.messages[-1].seq if page.messages else after_seq}
             if backward:

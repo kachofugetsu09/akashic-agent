@@ -46,7 +46,7 @@ from bus.events_lifecycle import (
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.contract import ChannelContext
-from infra.channels.message_view import follow_messages
+from infra.channels.message_view import MessageDisplayProviders, follow_messages
 from session.log import MessageCatalog, MessageConflict
 
 logger = logging.getLogger(__name__)
@@ -212,6 +212,7 @@ class WebChatChannel:
         self._v3_adapters: dict[str, WebNativeChannelAdapter] = {}
         self._messages: MessageCatalog | None = None
         self._reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None
+        self._message_display: MessageDisplayProviders | None = None
         self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
         self._stopping = False
 
@@ -224,6 +225,19 @@ class WebChatChannel:
             raise RuntimeError("Web 消息读取已绑定")
         self._messages = messages
         self._reply_status = reply_status
+
+    def bind_message_display(self, providers: MessageDisplayProviders) -> None:
+        """绑定一个 exact generation 的只读消息展示回调快照。"""
+        if not isinstance(providers, MessageDisplayProviders):
+            raise TypeError("消息展示 provider 类型无效")
+        if self._message_display is not None and self._message_display != providers:
+            raise RuntimeError("Web 消息展示 provider 已绑定")
+        self._message_display = providers
+
+    @property
+    def message_display(self) -> MessageDisplayProviders:
+        """返回当前展示请求使用的 provider；未绑定时显式显示 unavailable。"""
+        return self._message_display or MessageDisplayProviders()
 
     @staticmethod
     def _socket_id(websocket: WebSocket) -> str:
@@ -826,7 +840,8 @@ class WebChatChannel:
 
         async with asyncio.TaskGroup() as tasks:
             _ = tasks.create_task(send("messages.appended", follow_messages(
-                self._messages.reader(session_id), after_seq=after_seq, display_only=True)))
+                self._messages.reader(session_id), after_seq=after_seq, display_only=True,
+                providers=self.message_display)))
             if self._reply_status is None:
                 await websocket.send_json({"type": "reply.status", "version": 2,
                     "session_id": session_id, "snapshot_id": None, "available": False, "items": []})

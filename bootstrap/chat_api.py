@@ -29,7 +29,7 @@ from agent.plugins.model_catalog import (
     default_chat_model_id,
     project_chat_runtimes,
 )
-from infra.channels.message_view import message_rows, session_row
+from infra.channels.message_view import MessageDisplayProviders, message_rows, session_row
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.web_chat_channel import (
@@ -85,6 +85,7 @@ def create_chat_app(
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
+    message_display: MessageDisplayProviders | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
@@ -94,6 +95,8 @@ def create_chat_app(
 ) -> FastAPI:
     if messages is not None:
         channel.bind_message_readers(messages, reply_status)
+    if message_display is not None:
+        channel.bind_message_display(message_display)
     channel.bind_attachment_store(AttachmentStore(workspace / "uploads"))
     metadata_store: ArtifactStore | None = None
     if channel.artifact_store is None and channel._ctx is not None:
@@ -351,7 +354,11 @@ def create_chat_app(
             raise HTTPException(status_code=404, detail="会话不存在") from error
         except InvalidPage as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        items = message_rows(page, display_only=True)
+        items = message_rows(
+            page,
+            display_only=True,
+            providers=channel.message_display,
+        )
         return {"version": 2, "items": items, "through_seq": page.through_seq,
                 "has_more": page.has_more,
                 "before_seq": page.messages[0].seq if page.has_more else None}
@@ -477,6 +484,7 @@ def build_chat_server(
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
+    message_display: MessageDisplayProviders | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
@@ -491,6 +499,7 @@ def build_chat_server(
             channel=channel,
             mobile_pairing_admin=mobile_pairing_admin,
             runtime_inspection=runtime_inspection,
+            message_display=message_display,
             plugin_ui_provider=plugin_ui_provider,
             web_ui_provider=web_ui_provider,
             model_catalog_reader=model_catalog_reader,

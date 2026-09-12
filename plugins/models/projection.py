@@ -29,10 +29,12 @@ from .store import ModelCallReader
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
+DisplayRenderer = Callable[[ContentPart], Mapping[str, object] | None]
 MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
 MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
     "models.call-history.v1"
 )
+MODEL_DISPLAY = ServiceKey[DisplayRenderer]("models.display.v1")
 
 
 def response_facts(
@@ -152,6 +154,13 @@ def display_facts(part: ContentPart) -> dict[str, object]:
     _ = check_facts(part)
     value = cast(Mapping[str, object], part.value)
     return {"call_record_id": value["call_record_id"], "thinking": value["thinking"]}
+
+
+def display_part(part: ContentPart) -> Mapping[str, object] | None:
+    """只处理模型 owner 的内容块；其他插件内容交给下一个 provider。"""
+    if part.kind != "model.facts":
+        return None
+    return display_facts(part)
 
 
 class MessageProjection:
