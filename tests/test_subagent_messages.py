@@ -57,9 +57,8 @@ def mapping_part(part: ContentPart | ToolCall) -> Mapping[str, object]:
 
 @asynccontextmanager
 async def application(tmp_path, *, background=False, start=True, block=False, block_main=False, main_tool=False):
-    host, store, log, artifacts, sources = environment(tmp_path, reply=True)
+    host, store, log, artifacts, sources = environment(tmp_path, reply=True, models=False)
     for name in (
-        "sources",
         "conversation",
         "react",
         "subagent",

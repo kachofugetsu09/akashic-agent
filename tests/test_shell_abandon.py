@@ -1,7 +1,5 @@
 import asyncio
 import json
-from pathlib import Path
-import shutil
 
 import pytest
 
@@ -89,18 +87,6 @@ async def test_real_tools_watcher_restarts_and_settles_offline_abandon_once(tmp_
 @pytest.mark.parametrize("pause_first", [False, True])
 async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tmp_path, monkeypatch, pause_first):
     host, store, log, _artifacts, _source = environment(tmp_path, reply=True)
-    # run_reply now consumes the real source lifecycle checker; mount its
-    # source-neutral provider in this focused shell fixture.
-    shutil.copytree(
-        Path(__file__).parents[1] / "plugins" / "sources",
-        _source / "sources",
-        ignore=shutil.ignore_patterns("__pycache__"),
-    )
-    shutil.copytree(
-        Path(__file__).parents[1] / "plugins" / "models",
-        _source / "models",
-        ignore=shutil.ignore_patterns("__pycache__"),
-    )
     tasks = Tasks()
     entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     old_process = None
