@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
-from agent.config_models import MobileRealtimeConfig
+from plugins.akashic_clients.config import MobileRealtimeConfig
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.snapshot import RuntimeSnapshotStore
 from bootstrap.reply_status import RuntimeReplyStatus
