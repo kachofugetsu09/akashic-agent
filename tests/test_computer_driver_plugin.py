@@ -12,11 +12,9 @@ import pytest
 
 from agent.plugin_composition import (
     MCP_SERVERS,
-    TOOL_CATALOG,
     WORKLOADS,
     CompositionRoot,
     PluginRuntime,
-    PluginTools,
     PluginWorkloads,
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
@@ -29,7 +27,6 @@ from plugins.tools.api import MessageReply
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection import plugin as turn_projection_plugin
 from session.log import MessageLog
-from agent.plugin_composition.tool_catalog import _freeze_plugin_tools
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
     validate_module_exports,
@@ -56,7 +53,6 @@ async def test_computer_plugin_mounts_with_static_manifest(tmp_path: Path) -> No
     path = Path(plugin.__file__).parent
     manifest = load_static_plugin_manifest(path)
     validate_module_exports(manifest, plugin, plugin_root=path)
-    assert TOOL_CATALOG not in plugin.inject
     assert any(key.name == "tools.v1" for key in plugin.inject)
     assert manifest.mcp_servers[0].required_tools == ()
     assert manifest.mcp_servers[0].candidate_read_only_tools == ()

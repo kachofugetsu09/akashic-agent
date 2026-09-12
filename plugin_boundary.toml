@@ -99,10 +99,6 @@ note = "有界纯同步 worker 池"
 role = "core"
 note = "人类命令、alias 与 handler 注册表"
 
-[capabilities."core.tool_catalog"]
-role = "core"
-note = "exact Root 的工具定义与 bound handler"
-
 [capabilities."core.ui_slots"]
 role = "core"
 note = "Mobile 页面、查询与导航注册表"

@@ -20,7 +20,6 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     SESSION_READ,
     TIMERS,
-    TOOL_CATALOG,
     UI_SLOTS,
     CompositionRoot,
     PluginRuntime,
@@ -29,7 +28,7 @@ from agent.plugin_composition import (
     RuntimeStopping,
     SessionReadService,
 )
-from agent.plugin_composition.tool_catalog import PluginTools, _freeze_plugin_tools
+from plugins.tools.plugin import TOOLS, ToolCatalog
 from agent.plugin_composition.ui_slots import PluginUiSlots
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from bus.events_lifecycle import TurnCommitted
@@ -252,7 +251,7 @@ async def test_wake_followup_reaches_emotion_once_on_next_timer(
     )
     root = CompositionRoot("pf-emotion-" + "-".join(order))
     timer = ManualTimer()
-    tools = PluginTools(root.instance_token)
+    tools = ToolCatalog(root.context)
     ui = PluginUiSlots()
     drift = EmptyDrift()
     session_read = SessionReadService(
@@ -260,18 +259,12 @@ async def test_wake_followup_reaches_emotion_once_on_next_timer(
     )
     _ = await root.context.provide(SESSION_READ, session_read)
     _ = await root.context.provide(TIMERS, PluginTimers(timer))
-    _ = await root.context.provide(TOOL_CATALOG, tools)
+    _ = await root.context.provide(TOOLS, tools)
     _ = await root.context.provide(UI_SLOTS, ui)
     _ = await root.context.provide(modules["emotion"].DRIFT_PROPOSALS, drift)
     _ = await root.context.provide(modules["emotion"].DRIFT_WAKE, drift)
     for plugin_id in order:
         await _mount(root, modules[plugin_id], plugin_id, roots[plugin_id], tmp_path)
-    _ = _freeze_plugin_tools(
-        tools,
-        root.instance_token,
-        {plugin_id: root.generation_id for plugin_id in order},
-    )
-
     feedback_db = tmp_path / "plugin-data/proactive_feedback/proactive_feedback.db"
     emotion_db = tmp_path / "workspace/emotion/emotion.db"
     try:
