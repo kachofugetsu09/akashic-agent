@@ -80,7 +80,10 @@ class _ChannelRegistry:
 
 class _ApplyContext:
     generation_id = "generation-1"
-    runtime = SimpleNamespace(workspace=Path("/tmp/akashic-clients-test"))
+    runtime = SimpleNamespace(
+        generation_id=generation_id,
+        workspace=Path("/tmp/akashic-clients-test"),
+    )
 
     def __init__(self, registry: _ChannelRegistry) -> None:
         self.registry = registry

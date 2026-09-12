@@ -31,10 +31,14 @@ async def apply(ctx: Context, config: AkashicClientsConfig) -> None:
     if not config.enabled:
         return
 
-    register_generation(ctx.generation_id, config, ctx.runtime.workspace)
+    # Context.generation_id identifies the whole composition Root.  The
+    # channel host resolves factories with the plugin generation identity, so
+    # bind this state to the exact runtime generation owned by this plugin.
+    generation_id = ctx.runtime.generation_id
+    register_generation(generation_id, config, ctx.runtime.workspace)
 
     async def cleanup() -> None:
-        unregister_generation(ctx.generation_id)
+        unregister_generation(generation_id)
 
     _ = await ctx.effect(lambda: cleanup, label="akashic-clients-generation")
     await ctx.require(CHANNELS).register(
