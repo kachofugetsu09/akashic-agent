@@ -43,6 +43,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "channel_credentials",
         "credential_paths",
         "migration",
+        "setup",
     }
 )
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?")
@@ -111,6 +112,13 @@ class StaticMigrationDeclaration:
 
 
 @dataclass(frozen=True, slots=True)
+class StaticSetupDeclaration:
+    """Import-free declaration for an optional plugin setup command."""
+
+    entrypoint: str
+
+
+@dataclass(frozen=True, slots=True)
 class StaticPluginManifest:
     """Validated immutable identity, runtime and validation policy."""
 
@@ -128,6 +136,7 @@ class StaticPluginManifest:
     identity_digest: str
     credential_paths: tuple[str, ...] = ()
     migration: StaticMigrationDeclaration | None = None
+    setup: StaticSetupDeclaration | None = None
 
     @property
     def all_credential_paths(self) -> tuple[str, ...]:
@@ -282,6 +291,7 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     channel_credentials = _channel_credentials(raw.get("channel_credentials", {}))
     credential_paths = _credential_paths(raw.get("credential_paths", []), "credential_paths")
     migration = _migration_declaration(root, raw.get("migration", {}))
+    setup = _setup_declaration(root, raw.get("setup", {}))
     _check_credential_overlap(set(credential_paths) | {
         path for _channel, paths in channel_credentials for path in paths
     }, "credential_paths/channel_credentials")
@@ -317,6 +327,8 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
             "catalog": migration.catalog,
             "catalog_sha256": migration.catalog_sha256,
         }
+    if setup is not None:
+        identity["setup"] = {"entrypoint": setup.entrypoint}
     identity_digest = hashlib.sha256(
         json.dumps(
             identity,
@@ -340,6 +352,7 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         identity_digest=identity_digest,
         credential_paths=credential_paths,
         migration=migration,
+        setup=setup,
     )
 
 
@@ -373,6 +386,28 @@ def _migration_declaration(
             f"expected={digest}, actual={actual}"
         )
     return StaticMigrationDeclaration(catalog=catalog, catalog_sha256=digest)
+
+
+def _setup_declaration(
+    root: Path,
+    raw: object,
+) -> StaticSetupDeclaration | None:
+    """Validate one optional plugin-owned interactive setup entrypoint."""
+
+    if raw == {}:
+        return None
+    table = _table(raw, "setup")
+    _exact_keys(table, {"entrypoint"}, "setup")
+    entrypoint = _relative_artifact_path(
+        root,
+        table.get("entrypoint"),
+        label="setup.entrypoint",
+        must_exist=True,
+        require_file=True,
+    )
+    if not entrypoint.endswith(".py"):
+        raise ValueError("setup.entrypoint 必须指向 Python 文件")
+    return StaticSetupDeclaration(entrypoint=entrypoint)
 
 
 def _channel_credentials(

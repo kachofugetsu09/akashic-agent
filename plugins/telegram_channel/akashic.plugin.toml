@@ -6,3 +6,6 @@ entrypoint = "plugin.py"
 
 [channel_credentials]
 telegram = ["token"]
+
+[setup]
+entrypoint = "setup.py"
