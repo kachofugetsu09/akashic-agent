@@ -123,6 +123,25 @@ async def test_core_reports_scheduler_unavailable_without_provider(tmp_path: Pat
     assert error.value.code == "scheduler_unavailable"
 
 
+@pytest.mark.asyncio
+async def test_core_reports_skills_unavailable_without_provider(tmp_path: Path) -> None:
+    from agent.plugin_composition import CompositionRoot
+    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
+
+    root = CompositionRoot("skill-inspection")
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    store.install(snapshot)
+    service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=store)
+    try:
+        with pytest.raises(RuntimeInspectionError, match="技能检查服务尚未绑定") as error:
+            await service.list_capabilities()
+        assert error.value.code == "skills_unavailable"
+    finally:
+        await store.close()
+        await root.dispose()
+
+
 def test_core_runtime_inspection_has_no_scheduler_implementation_import() -> None:
     source = (Path(__file__).parents[1] / "infra/mobile_realtime/runtime_inspection.py").read_text(
         encoding="utf-8"

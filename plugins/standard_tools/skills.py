@@ -17,7 +17,13 @@ from agent.plugin_contracts import json_value
 
 from ._materials_boundary import MATERIALS
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
-from .skill_catalog import SkillCatalogParser, SkillRecord, skill_body
+from .skill_catalog import (
+    SKILL_INSPECTION,
+    SkillCatalogParser,
+    SkillInspectionProvider,
+    SkillRecord,
+    skill_body,
+)
 
 class SkillQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -106,6 +112,8 @@ async def register_skills(ctx: Context) -> ToolRef:
         if cached_catalog is None:
             cached_catalog = parser.parse(read_assets())
         return cached_catalog
+
+    await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_catalog))
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:

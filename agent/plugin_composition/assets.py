@@ -28,7 +28,7 @@ class InstalledAsset:
 
 INSTALLED_ASSETS = ServiceKey[
     Callable[[], tuple[InstalledAsset, ...]]
-] ("core.installed_assets.v1")
+]("core.installed_assets.v1")
 
 
 __all__ = ["INSTALLED_ASSETS", "InstalledAsset"]

@@ -9,16 +9,27 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable, Mapping
 from typing import Any, Literal, Protocol, cast
 
 import yaml
 
 from agent.host_bridge.factory import build_skill_capability_checker
 from agent.plugin_composition.assets import InstalledAsset
+from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.shell_runtime import resolve_shell
 
 
 SkillSource = Literal["plugin"]
+
+
+class SkillInspectionReader(Protocol):
+    def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
+
+
+SKILL_INSPECTION = ServiceKey[SkillInspectionReader](
+    "standard_tools.skill_inspection.v1"
+)
 
 
 class SkillCapabilityChecker(Protocol):
@@ -240,4 +251,31 @@ class SkillCatalogParser:
         return False
 
 
-__all__ = ["SkillCatalogParser", "SkillRecord", "skill_body"]
+class SkillInspectionProvider:
+    """向宿主发布当前固定 generation 的技能只读投影。"""
+
+    def __init__(self, read_catalog: Callable[[], tuple[SkillRecord, ...]]) -> None:
+        self._read_catalog = read_catalog
+
+    def list_skills(self) -> tuple[Mapping[str, object], ...]:
+        return tuple(
+            {
+                "name": record.name,
+                "display_name": record.display_name,
+                "description": record.description,
+                "source": record.source,
+                "source_id": record.source_id,
+                "available": record.available,
+                "missing": record.missing,
+            }
+            for record in self._read_catalog()
+        )
+
+
+__all__ = [
+    "SKILL_INSPECTION",
+    "SkillCatalogParser",
+    "SkillInspectionProvider",
+    "SkillRecord",
+    "skill_body",
+]

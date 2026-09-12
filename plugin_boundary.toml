@@ -73,6 +73,10 @@ note = "有界字节读取租约"
 role = "core"
 note = "来源导入与不可变引用"
 
+[capabilities."core.installed_assets.v1"]
+role = "core"
+note = "读取 exact generation 固定的来源中立声明资产树；不解释内容"
+
 [capabilities."core.credentials"]
 role = "seam"
 note = "按插件 owner 打开短凭据租约；来源可替换"
@@ -194,10 +198,10 @@ note = "客户端只读历史 binding 名称；工具插件拥有描述解释，
 role = "seam"
 note = "scheduler 拥有任务字段和展示；宿主只消费插件只读投影"
 
+[capabilities."standard_tools.skill_inspection.v1"]
+role = "seam"
+note = "standard_tools 拥有技能解析与可用性，宿主只消费只读投影"
+
 [capabilities."models.selection.v1"]
 role = "seam"
 note = "模型选择由普通 models owner 解释；Core 只在当前查询租约内调用"
-
-[capabilities."core.skill_catalog.v1"]
-role = "core"
-note = "当前 exact generation 的只读插件技能索引；不授予扫描或写入权限"

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from agent.plugins.scope import PluginScope
-    from agent.plugins.skill_host import PreparedSkillCatalog
+    from agent.plugins.skill_host import PreparedAssetCatalog
     from agent.plugins.static_manifest import StaticPluginManifest
     from agent.plugins.snapshot import RuntimeSnapshot
 
@@ -98,7 +98,7 @@ class PluginGeneration:
     formal_root_stopped: bool = False
     formal_root_released: bool = False
     entrypoint: str = "plugin.py"
-    skill_catalog: PreparedSkillCatalog | None = None
+    asset_catalog: PreparedAssetCatalog | None = None
     runtime_snapshot: RuntimeSnapshot | None = None
     prepare_started: bool = False
     retire_started: bool = False

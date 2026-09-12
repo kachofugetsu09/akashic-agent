@@ -156,7 +156,16 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
             metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
             state = cast(Mapping[str, object], metadata["state"])
             assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
-            original_root = snapshot.plugin_skill_index.records["example"].root_dir
+            catalog_id = snapshot.asset_catalog_generation_id
+            assert catalog_id is not None
+            catalog = host._asset_host.get(catalog_id)
+            assert catalog is not None
+            asset = next(
+                item
+                for item in catalog.assets
+                if item.owner_id == "fixture_skills" and item.category == "skills"
+            )
+            original_root = asset.root_dir / "example"
         # 原安装改变后，工具打开的是 capture 已归档的完整资源。
         (tmp_path / "plugins/fixture_skills/skills/example/resource.txt").write_text("resource-b")
         (tmp_path / "plugins/fixture_skills/skills/example/SKILL.md").write_text("---\ndescription: updated\n---\n新版指令")
