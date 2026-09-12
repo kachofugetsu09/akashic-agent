@@ -185,3 +185,7 @@ note = "插件手册与 skill 文档仍在教学使用；代码中无此 Service
 [capabilities."reply.status.v2"]
 role = "seam"
 note = "客户端消费插件已投影的短命回复状态，不取得内部状态类"
+
+[capabilities."tools.display-name.v1"]
+role = "seam"
+note = "客户端只读历史 binding 名称；工具插件拥有描述解释，不允许打开或执行工具"

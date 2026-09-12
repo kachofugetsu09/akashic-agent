@@ -17,6 +17,7 @@ from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from core.net.http import SharedHttpResources
 from infra.control.stdio import StdioAppServer
+from bootstrap.message_display import RuntimeMessageDisplay
 from session.log import MessageCatalog
 from session.message import Message
 
@@ -78,6 +79,7 @@ def build_control_service(
         MessageCatalog(core.message_log), core.workspace, accept=accept,
         attachments=core.channel_attachment_store.resolve_refs,
         reply_status=RuntimeReplyStatus(manager.snapshot_store).follow,
+        message_display=RuntimeMessageDisplay(manager.snapshot_store),
         plugin_install=install, plugin_status=manager.candidate_status,
         plugin_update=lambda identity: asdict(manager.read_update(identity)),
         plugin_promote=promote, plugin_discard=discard, plugin_drain=drain,

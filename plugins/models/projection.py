@@ -29,10 +29,12 @@ from .store import ModelCallReader
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
+DisplayRenderer = Callable[[ContentPart], Mapping[str, object]]
 MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
 MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
     "models.call-history.v1"
 )
+MODEL_DISPLAY = ServiceKey[DisplayRenderer]("message.display:model.facts")
 
 
 def response_facts(

@@ -256,7 +256,7 @@ class ConnectionRouter:
         if method == "session/list":
             return self._service.list_sessions(values["cursor"], values["limit"])
         if method == "message/read":
-            return self._service.read_messages(values["session_id"], values["after_seq"],
+            return await self._service.read_messages(values["session_id"], values["after_seq"],
                                                 values["through_seq"], values["limit"])
         if method == "message/send":
             return await self._service.send_message(cast(MessageSendParams, params))

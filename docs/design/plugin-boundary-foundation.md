@@ -222,3 +222,16 @@ reply 或 react 实现。客户端线上 JSON 字段不变；Python 服务 ABI �
 来源插件只使用本地 SourceSession 结构，不导入 conversation 实现。
 `MessageReader` 通过既有公开 messages 模块提供；它读取 Core 权威 Message 日志，
 不授予任意 SQL、删除或外部发送能力，也不包含业务投影。
+
+
+### 9.5 消息展示由内容 owner 提供
+
+客户端页面通过 `message.display:<kind>` 消费该内容的只读展示函数。内容插件分别
+提供自己拥有的 kind，不增加 Core 业务列表；同一 key 的冲突由已有组合层拒绝。
+插件选择可以公开的字段，未知内容明确标记 unavailable，不把内部 continuation 直传客户端。
+工具名称沿用工具插件的只读 binding 描述能力，不重开工具或按当前名称重新绑定。
+
+Web、Mobile 和控制端每次页面或正文投影在同一个 snapshot lease 内解析并调用，
+完成后释放；长连接、下载票据和频道对象不缓存业务 provider。新一页使用当前代，
+单页不串代。历史事实与下载摘要检查保持原约束；提供者变化导致表示不匹配时仍明确拒绝，
+不放宽摘要条件。展示测试覆盖新 kind、提供者替换、提供者移除和每页 lease 释放。

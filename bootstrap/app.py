@@ -17,6 +17,7 @@ from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
 from bootstrap.chat_api import build_chat_server
+from bootstrap.message_display import RuntimeMessageDisplay
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.web_runtime import (
@@ -250,6 +251,7 @@ class AppRuntime:
             channel_attachment_store = self.core.channel_attachment_store
             messages = MessageCatalog(self.core.message_log)
             reply_status = RuntimeReplyStatus(manager.snapshot_store).follow
+            message_display = RuntimeMessageDisplay(manager.snapshot_store)
             if self.config.app_server.enabled:
                 assert app_server_endpoint is not None
                 self.app_server = SocketAppServer(
@@ -300,6 +302,7 @@ class AppRuntime:
                     self.workspace,
                 )
                 self.mobile_gateway_runtime.channel.bind_messages(messages, reply_status)
+                self.mobile_gateway_runtime.channel.bind_message_display(message_display)
                 self.mobile_gateway_runtime.channel.bind_runtime_inspection(
                     runtime_inspection
                 )
@@ -440,6 +443,7 @@ class AppRuntime:
                     model_control=model_control,
                     messages=messages,
                     reply_status=reply_status,
+                    message_display=message_display,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

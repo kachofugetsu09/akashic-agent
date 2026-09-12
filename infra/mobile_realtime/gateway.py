@@ -741,7 +741,15 @@ class MobileGatewayRuntime:
                             device_id=device_id, connection_epoch=connection.connection_epoch)
 
         async with asyncio.TaskGroup() as tasks:
-            _ = tasks.create_task(send(follow_messages(reader, after_seq=after_seq, display_only=display_only), "messages.appended"))
+            _ = tasks.create_task(send(
+                follow_messages(
+                    reader,
+                    after_seq=after_seq,
+                    display_only=display_only,
+                    reader_display=self.channel.message_display,
+                ),
+                "messages.appended",
+            ))
             if self.channel.reply_status is None:
                 await self.publish_connection_control(control_type="session.message", device_id=device_id,
                     connection_epoch=connection.connection_epoch, payload={"type": "reply.status", "version": 2,
@@ -1952,7 +1960,7 @@ class MobileGatewayRuntime:
         if connection is None or connection.websocket is not websocket:
             return
         try:
-            descriptor = self.channel.prepare_message_content(frame)
+            descriptor = await self.channel.prepare_message_content(frame)
             session_id = frame.session_id
             if session_id is None:
                 raise RuntimeError("message content prepare 缺少 session_id")
@@ -1987,7 +1995,7 @@ class MobileGatewayRuntime:
                 turn_id=None,
             )
 
-    def read_message_content_http(
+    async def read_message_content_http(
         self,
         *,
         ticket: str,
@@ -2013,7 +2021,7 @@ class MobileGatewayRuntime:
                 status_code=412,
             )
         try:
-            content = self.channel.read_message_content(
+            content = await self.channel.read_message_content(
                 session_id=verified.session_id,
                 message_id=verified.message_id,
                 byte_length=verified.byte_length,
@@ -2418,7 +2426,7 @@ def create_mobile_gateway_app(runtime: MobileGatewayRuntime) -> FastAPI:
 
         try:
             ticket = _message_content_http_bearer(request)
-            content, start, end, total, sha256 = runtime.read_message_content_http(
+            content, start, end, total, sha256 = await runtime.read_message_content_http(
                 ticket=ticket,
                 range_header=request.headers.get("range"),
                 if_range=request.headers.get("if-range"),
