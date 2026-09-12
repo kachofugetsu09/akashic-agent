@@ -440,14 +440,16 @@ def build_core_runtime(
         _ = cleanup.callback(inbound_store.close)
         if clear_stale_session_admissions:
             admissions.clear_stale()
-        bus.bind_mobile_session_admission_owner(admissions)
+        bus.bind_session_admission_owner(admissions)
         bus.bind_durable_inbound_store(inbound_store)
         attachments = ChannelAttachmentArtifactStore(
             workspace=workspace, metadata_store=artifact_metadata,
         )
         # 2. PluginManager 分配日志、归档和资源能力，不持有旧 SessionManager。
         if restart_gate is None:
-            restart_gate = RestartGate(boot_id="unmanaged", supervised=False)
+            # 每次真实 Core host 启动都必须有新的 transport identity；不能用
+            # 固定字符串，否则相邻 unmanaged 进程会被客户端误认为同一次启动。
+            restart_gate = RestartGate(boot_id=uuid4().hex, supervised=False)
         control_frames = FrameBook()
         resolved_plugin_dirs = (
             _resolve_plugin_dirs(workspace)

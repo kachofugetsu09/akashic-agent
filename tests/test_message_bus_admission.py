@@ -722,6 +722,18 @@ def test_plugin_manager_passes_supervisor_boot_id_to_channel_host(tmp_path: Path
     assert manager.channel_generation_host.boot_id == gate.boot_id
 
 
+def test_plugin_manager_without_gate_gets_one_fresh_host_boot_id(tmp_path: Path) -> None:
+    from agent.plugins.manager import PluginManager
+    from bus.event_bus import EventBus
+
+    first = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "first")
+    second = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "second")
+
+    assert first.channel_generation_host.boot_id
+    assert first.channel_generation_host.boot_id != second.channel_generation_host.boot_id
+    assert first._host_boot_id == first.channel_generation_host.boot_id
+
+
 @pytest.mark.asyncio
 async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> None:
     from agent.plugin_composition.channels import ChannelCapability, InboundIdentity

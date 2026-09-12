@@ -89,7 +89,7 @@ class InputCustody(Protocol):
         recoverer: Callable[[RawInbound], Awaitable[bool]],
     ) -> None: ...
 
-    async def defer_durable_inbound(self, handoff_id: str) -> None: ...
+    async def defer_durable_inbound(self, handoff_id: str) -> bool: ...
 
     async def settle_rejected_inbound(
         self,
@@ -612,13 +612,18 @@ class _ChannelDurableInbound:
     ) -> _DurableReservation | None:
         if handoff_id is not None:
             reservation = state.durable_reservations.get(handoff_id)
-            if reservation is None:
+            if reservation is None or self._host._durable_reservation_owners.get(
+                reservation.handoff_id
+            ) != self._key:
                 return None
             return reservation
         for reservation in state.durable_reservations.values():
             if (
                 reservation.session_key == session_key
                 and reservation.provider_message_id == provider_message_id
+                and self._host._durable_reservation_owners.get(
+                    reservation.handoff_id
+                ) == self._key
             ):
                 return reservation
         return None
@@ -628,9 +633,12 @@ class _ChannelDurableInbound:
         reservation = self._reservation_metadata(raw)
         if reservation.channel != state.channel_name:
             raise RuntimeError("RawInbound channel 与 exact binding 不一致")
+        owner = self._host._durable_reservation_owners.get(reservation.handoff_id)
+        if owner is not None and owner != self._key:
+            raise RuntimeError("durable inbound reservation 已由另一 binding 持有")
         accepted = await self._custody().reserve_durable_inbound(raw)
         if accepted:
-            state.durable_reservations[reservation.handoff_id] = reservation
+            self._host._remember_durable_reservation(self._key, reservation)
         return accepted
 
     async def defer(self, handoff_id: str) -> None:
@@ -638,8 +646,10 @@ class _ChannelDurableInbound:
         reservation = self._remembered_reservation(state, handoff_id=handoff_id)
         if reservation is None:
             raise RuntimeError("durable inbound defer 不属于 exact binding reservation")
-        await self._custody(allow_closed=True).defer_durable_inbound(handoff_id)
-        state.durable_reservations.pop(handoff_id, None)
+        released = await self._custody(allow_closed=True).defer_durable_inbound(handoff_id)
+        if not released:
+            raise RuntimeError("durable inbound reservation 仍有执行 owner")
+        self._host._forget_durable_reservation(self._key, handoff_id)
 
     async def settle_rejected(
         self,
@@ -660,7 +670,7 @@ class _ChannelDurableInbound:
             session_key=session_key,
             provider_message_id=provider_message_id,
         )
-        state.durable_reservations.pop(reservation.handoff_id, None)
+        self._host._forget_durable_reservation(self._key, reservation.handoff_id)
 
     def has_pending(
         self,
@@ -1191,6 +1201,7 @@ class ChannelGenerationHost:
         self._control_interrupter = control_interrupter
         self._control_response_dispatcher = control_response_dispatcher
         self._bindings: dict[tuple[str, str], _ChannelBindingState] = {}
+        self._durable_reservation_owners: dict[str, tuple[str, str]] = {}
         self._binding_leases: set[ChannelBindingLease] = set()
         self._tombstones: dict[tuple[str, str], ChannelCleanupTombstone] = {}
         self._start_counts: dict[tuple[str, str], int] = {}
@@ -2014,7 +2025,7 @@ class ChannelGenerationHost:
                     await custody.complete_channel_input(envelope)
                     handoff_id = raw.message.metadata.get(DURABLE_HANDOFF_ID)
                     if isinstance(handoff_id, str):
-                        state.durable_reservations.pop(handoff_id, None)
+                        self._forget_durable_reservation(key, handoff_id)
 
             commit = asyncio.create_task(commit_input(), name=f"channel-input:{raw.message_id}")
             await _await_task_after_cancellation(commit)
@@ -2490,6 +2501,7 @@ class ChannelGenerationHost:
             for subscription in subscriptions:
                 await subscription.close()
             failures: list[ChannelCleanupFailure] = []
+            failures.extend(await self._defer_durable_reservations(key, state))
             receipt = state.stop_receipt
             if not state.adapter_stop_succeeded:
                 state.adapter_stop_settled = False
@@ -2699,6 +2711,62 @@ class ChannelGenerationHost:
                 raise RuntimeError(f"channel binding cleanup 未完成: {key[1]}")
             raise KeyError(key[1])
         return state
+
+    def _remember_durable_reservation(
+        self,
+        key: tuple[str, str],
+        reservation: _DurableReservation,
+    ) -> None:
+        owner = self._durable_reservation_owners.get(reservation.handoff_id)
+        if owner is not None and owner != key:
+            raise RuntimeError("durable inbound reservation 已由另一 binding 持有")
+        self._durable_reservation_owners[reservation.handoff_id] = key
+        self._binding(key).durable_reservations[reservation.handoff_id] = reservation
+
+    def _forget_durable_reservation(
+        self,
+        key: tuple[str, str],
+        handoff_id: str,
+    ) -> None:
+        owner = self._durable_reservation_owners.get(handoff_id)
+        if owner == key:
+            self._durable_reservation_owners.pop(handoff_id, None)
+        self._binding(key).durable_reservations.pop(handoff_id, None)
+
+    async def _defer_durable_reservations(
+        self,
+        key: tuple[str, str],
+        state: _ChannelBindingState,
+    ) -> tuple[ChannelCleanupFailure, ...]:
+        """转交 stop 前仍未接纳的 reservation，并清除旧 binding 权限。"""
+
+        custody = self._input_custody
+        if custody is None:
+            return ()
+        failures: list[ChannelCleanupFailure] = []
+        for handoff_id in tuple(state.durable_reservations):
+            try:
+                released = await custody.defer_durable_inbound(handoff_id)
+                if not released:
+                    failures.append(
+                        _cleanup_failure(
+                            state,
+                            "durable-inbound-reservation",
+                            f"handoff {handoff_id} 仍有执行 owner",
+                        )
+                    )
+                    continue
+                self._forget_durable_reservation(key, handoff_id)
+            except BaseException as error:
+                failures.append(
+                    _cleanup_failure(
+                        state,
+                        "durable-inbound-reservation",
+                        str(error),
+                        error,
+                    )
+                )
+        return tuple(failures)
 
     def _generation_keys(self, generation_id: str) -> tuple[tuple[str, str], ...]:
         return tuple(key for key in self._bindings if key[0] == generation_id)

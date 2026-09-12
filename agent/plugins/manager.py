@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from types import ModuleType, UnionType
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Mapping
 from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
+from uuid import uuid4
 
 from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 
@@ -372,6 +373,9 @@ class PluginManager:
             if workload_socket:
                 workload_controller = UnixWorkloadController(Path(workload_socket))
         self._workload_controller = workload_controller
+        # PluginManager 也可以由嵌入式/测试 host 直接构造；该 host 仍需一
+        # 次性的 boot identity，不能退回固定的 unmanaged marker。
+        self._host_boot_id = restart_gate.boot_id if restart_gate is not None else uuid4().hex
         self._restart_gate = restart_gate
         self._owns_control_frames = control_frames is None
         self._control_frames = FrameBook() if control_frames is None else control_frames
@@ -405,7 +409,7 @@ class PluginManager:
             on_before_start=self._reserve_channel_binding,
             config_revision_checker=self._check_channel_config_revision,
             on_failure=self._on_channel_cleanup_failure,
-            boot_id=(restart_gate.boot_id if restart_gate is not None else "unmanaged"),
+            boot_id=self._host_boot_id,
             snapshot_lease_acquirer=self._snapshot_store.lease,
             identity_resolver=self._resolve_channel_identity,
             identity_rememberer=self._remember_channel_identity,
@@ -5550,7 +5554,7 @@ class PluginManager:
             elif gate is None:
                 # 直接使用 PluginManager 的测试/嵌入式运行没有 Supervisor；仍提供
                 # 一个允许正常 work 的 unmanaged gate，不伪造可提交的重启通道。
-                gate = RestartGate(boot_id="unmanaged", supervised=False)
+                gate = RestartGate(boot_id=self._host_boot_id, supervised=False)
                 self._restart_gate = gate
             _ = await root.context.provide(RESTART_GATE, gate)
         if CONTROL_FRAMES in requested:

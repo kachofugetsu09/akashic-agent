@@ -416,6 +416,7 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
         await original.aclose()
         handoffs.close()
         admissions.close()
+
     # 2. 分别模拟正文提交前与提交后进程结束，重开都不能重复正文。
     if committed:
         async with runtime(tmp_path, channel_name="akashic") as (log, host, *rest):
@@ -441,6 +442,108 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
     finally:
         handoffs.close()
         admissions.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_transfers_reserve_only_handoff_and_revokes_old_port(tmp_path):
+    """旧 binding 停止后，reserve-only row 由下一 Host 恢复且旧 port 失权。"""
+
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    raw_message = mobile_raw()
+    old_durable = None
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+            recover=False,
+        ) as (log, _, _, _, _, adapter):
+            old_durable = adapter.ports.durable_inbound
+            assert old_durable is not None
+            assert await old_durable.reserve(raw_message)
+            assert log.reader("akashic:room").snapshot() == ()
+        assert old_durable is not None
+        with pytest.raises(KeyError):
+            await old_durable.settle_rejected(
+                session_key="akashic:room",
+                provider_message_id="mobile-1",
+            )
+        assert manager.inbound_store.list_inbound_handoffs()
+
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+        ) as (log, _, custody, _, _, adapter):
+            assert [item.message_id for item in log.reader("akashic:room").snapshot()] == [
+                "mobile-1"
+            ]
+            assert manager.inbound_store.list_inbound_handoffs() == []
+            assert custody.completed == 1
+            assert adapter.ports.durable_inbound is not None
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
+async def test_old_port_cannot_settle_handoff_reclaimed_by_next_generation(tmp_path):
+    """同一 Host 的新 binding 接管后，旧 port 不能删除同一 handoff。"""
+
+    from dataclasses import replace
+    from session.manager import SessionManager
+    from agent.plugins.channel_generation_host import _ChannelDurableInbound
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+            recover=False,
+        ) as (_, host, _, _, _, adapter):
+            old_port = adapter.ports.durable_inbound
+            assert old_port is not None
+            raw_message = mobile_raw()
+            assert await old_port.reserve(raw_message)
+            channel_host = host.channel_generation_host
+            old_key = (host.current_snapshot.snapshot_id, "akashic")
+            old_state = channel_host._bindings[old_key]
+            old_state.admission_open = False
+            old_state.stopping = True
+            assert await channel_host._defer_durable_reservations(old_key, old_state) == ()
+
+            next_key = ("next-snapshot", "akashic")
+            channel_host._bindings[next_key] = replace(
+                old_state,
+                snapshot_id=next_key[0],
+                generation_id=next_key[0],
+                binding_token="next-binding",
+                admission_open=True,
+                stopping=False,
+                stopped=False,
+                durable_reservations={},
+            )
+            try:
+                new_port = _ChannelDurableInbound(channel_host, next_key)
+                assert await new_port.reserve(raw_message)
+                with pytest.raises(RuntimeError, match="exact binding reservation"):
+                    await old_port.settle_rejected(
+                        session_key="akashic:room",
+                        provider_message_id="mobile-1",
+                    )
+                assert manager.inbound_store.has_inbound_handoff(
+                    channel="akashic",
+                    session_key="akashic:room",
+                    provider_message_id="mobile-1",
+                )
+            finally:
+                channel_host._bindings.pop(next_key, None)
+    finally:
+        manager.close()
 
 
 @pytest.mark.asyncio

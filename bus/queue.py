@@ -606,12 +606,16 @@ class MessageBus:
             handoff_id, session_key = self._durable_identity(
                 raw.message_id, raw.message
             )
-            _, acquired = self._ensure_durable_admission(
+            admission, acquired = self._ensure_durable_admission(
                 handoff_id,
                 session_key,
                 channel=raw.message.channel,
                 require_existing=cast(bool, raw.message.metadata.get("require_existing_session", True)),
             )
+            if admission.envelope is not None:
+                # 一个已被当前 binding 接管的 handoff 不能被第二次 reserve
+                # 伪装成新的 owner；调用方保留自己的 duplicate 语义。
+                return False
             try:
                 persisted_id, created = self._reserve_durable_handoff(
                     raw.message_id,
@@ -625,26 +629,29 @@ class MessageBus:
                 if acquired:
                     self._release_new_durable_admission(handoff_id)
                 return False
+            admission.recoverable = False
+            self._recovery_claimed.discard(handoff_id)
             return True
 
-    async def defer_durable_inbound(self, handoff_id: str) -> None:
+    async def defer_durable_inbound(self, handoff_id: str) -> bool:
         """Expose a failed provisional saga to same-process exact recovery."""
 
         task = asyncio.create_task(
             self._defer_durable_inbound(handoff_id),
             name=f"durable-inbound-defer:{handoff_id}",
         )
-        await _await_cleanup_after_cancellation(task)
+        return await _await_cleanup_after_cancellation(task)
 
-    async def _defer_durable_inbound(self, handoff_id: str) -> None:
+    async def _defer_durable_inbound(self, handoff_id: str) -> bool:
         async with self._durable_handoff_lock:
             admission = self._durable_admissions.get(handoff_id)
             if admission is None:
-                return
+                return True
             if admission.envelope is not None:
-                return
+                return False
             admission.recoverable = True
             self._recovery_claimed.discard(handoff_id)
+            return True
 
     async def settle_rejected_inbound(
         self,
@@ -1717,7 +1724,7 @@ async def _await_channel_receipt_after_cancellation(
     return receipt
 
 
-async def _await_cleanup_after_cancellation(task: asyncio.Task[None]) -> None:
+async def _await_cleanup_after_cancellation(task: asyncio.Task[_T]) -> _T:
     """Finish terminal cleanup before restoring caller cancellation."""
 
     cancelled = False
@@ -1726,6 +1733,7 @@ async def _await_cleanup_after_cancellation(task: asyncio.Task[None]) -> None:
             await asyncio.shield(task)
         except asyncio.CancelledError:
             cancelled = True
-    task.result()
+    result = task.result()
     if cancelled:
         raise asyncio.CancelledError
+    return result

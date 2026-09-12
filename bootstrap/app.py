@@ -178,6 +178,13 @@ class AppRuntime:
     ) -> None:
         self.config = config
         self.workspace = workspace
+        if restart_gate is None and readiness is not None:
+            # fixture/嵌入式 host 没有 supervisor 时，readiness 仍是该 host
+            # 的启动边界；让 Core、Channel Host 和 readiness 使用同一身份。
+            restart_gate = RestartGate(
+                boot_id=readiness.boot_id,
+                supervised=False,
+            )
         self.restart_gate = restart_gate
         self.readiness = readiness
         self.http_resources = SharedHttpResources()
