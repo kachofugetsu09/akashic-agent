@@ -3,10 +3,20 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from dataclasses import asdict
+from typing import Protocol
+
+from agent.plugin_composition import ServiceKey
 
 from agent.plugins.snapshot import RuntimeSnapshotStore
-from plugins.reply.status import REPLY_STATUS, ReplyActivity
+
+
+class ReplyStatusRead(Protocol):
+    """客户端只消费已投影的数据，不依赖回复插件内部状态类。"""
+
+    def follow(self, session_id: str) -> AsyncGenerator[tuple[dict[str, object], ...], None]: ...
+
+
+REPLY_STATUS = ServiceKey[ReplyStatusRead]("reply.status.v2")
 
 
 class RuntimeReplyStatus:
@@ -34,7 +44,7 @@ class RuntimeReplyStatus:
 
             # 2. 通知只提示重新读取当前状态；旧 generation 的 token 不重放。
             changed = asyncio.create_task(self._store.wait_for_stable_change(snapshot))
-            pending: asyncio.Task[tuple[ReplyActivity, ...]] | None = None
+            pending: asyncio.Task[tuple[dict[str, object], ...]] | None = None
             follower = read.follow(session_id)
             try:
                 while self._store.current is snapshot:
@@ -49,7 +59,7 @@ class RuntimeReplyStatus:
                         yield {**base, "available": False, "items": []}
                         _ = await changed
                         break
-                    yield {**base, "available": True, "items": [asdict(item) for item in items]}
+                    yield {**base, "available": True, "items": list(items)}
             finally:
                 # 3. 切页、断线和卸载结束正在等的读取，不能留下后台订阅。
                 if pending is not None:

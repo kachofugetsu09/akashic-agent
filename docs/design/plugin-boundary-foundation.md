@@ -199,3 +199,16 @@ Git bundle 由原 `install_git_plugin` 安装，不给第一方插件增加 sour
 这一步只证明包边界及安装输入，不能证明每个包已经可以独立 apply。
 跨插件实现导入、宿主业务入口和默认组合仍需后续迁移；Core archive 尚不宣称是完整
 可启动发布镜像。Docker、前端资源和历史升级的完整验收在累计收口中完成。
+
+
+### 9.3 空载与客户端预览
+
+生产默认只加载已安装源；开发 checkout 通过 `plugin_dirs` 或
+`AKASHIC_EXTRA_PLUGIN_DIRS` 显式选择。空组合沿正常编译和发布路径形成真实 Root，
+而不是让管理端遇到 None。该变化不把缺失业务能力当作已具备聊天能力。
+
+回复插件内部继续保存短命 `ReplyActivity`。客户端订阅改用 `reply.status.v2`，
+由插件直接提供序列化状态；控制 adapter 只声明自己的窄 `follow` 输入，不 import
+reply 或 react 实现。客户端线上 JSON 字段不变；Python 服务 ABI 从内部 dataclass
+变为已投影数据，因此明确升级 key。旧 generation 的预览仍在切换时撤下，
+订阅不长期占用执行 lease，历史 Message 与回执不变。
