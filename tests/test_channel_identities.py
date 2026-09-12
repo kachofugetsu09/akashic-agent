@@ -35,17 +35,14 @@ def _history(tmp_path, *, legacy=False):
 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_yoyo_preserves_known_aliases_original_data_and_unknown_sources(tmp_path, monkeypatch, legacy):
-    import runpy
-    from pathlib import Path
-    import yoyo
+    from tests.legacy_migration_loader import load_migration_module
     from agent.migrations.context import bind_migration_context
 
     path, config = _history(tmp_path, legacy=legacy)
     with closing(sqlite3.connect(path)) as db:
         original = tuple(db.iterdump())
         sessions = db.execute("SELECT * FROM sessions ORDER BY key").fetchall()
-    monkeypatch.setattr(yoyo, "step", lambda callback: callback)
-    entry = runpy.run_path(str(Path(__file__).parents[1] / "migrations/yoyo/20260906_04_channel_identities.py"))
+    entry = load_migration_module("20260906_04_channel_identities")
     with bind_migration_context(config_path=config, workspace=tmp_path):
         entry["steps"][0](None)
     with closing(ChannelIdentities(path)) as identities:
@@ -70,7 +67,7 @@ def test_yoyo_preserves_known_aliases_original_data_and_unknown_sources(tmp_path
 
 
 def test_identity_migration_failure_rolls_back_all_channels_and_retries(tmp_path, monkeypatch):
-    from agent.migrations import channel_identities as migration
+    from plugins.legacy_upgrade.legacy_upgrade_migrations.support import channel_identities as migration
 
     path, config = _history(tmp_path)
     with closing(sqlite3.connect(path)) as db:
@@ -136,9 +133,9 @@ allow_from = ["alice"]
         + "\n",
         encoding="utf-8",
     )
-    assert migrate_legacy_channels(config, workspace) == ("telegram_channel",)
+    assert migrate_legacy_channels(config, workspace, marketplace="installed") == ("telegram_channel",)
     assert "channels.telegram" not in config.read_text(encoding="utf-8")
-    plugin = workspace / "plugin-data/telegram_channel-builtin/config.local.toml"
+    plugin = workspace / "plugin-data/telegram_channel-installed/config.local.toml"
     assert 'token = "123:token"' in plugin.read_text(encoding="utf-8")
     assert (tmp_path / "config.toml.before-channel-plugin-migration.bak").exists()
 
@@ -152,7 +149,7 @@ def test_channel_migration_rejects_custom_telegram_identity_without_silent_rekey
     config.write_text(original, encoding="utf-8")
 
     with pytest.raises(ValueError, match="自定义 channels.telegram.channel_name"):
-        migrate_legacy_channels(config, workspace)
+        migrate_legacy_channels(config, workspace, marketplace="installed")
 
     assert config.read_text(encoding="utf-8") == original
     assert not workspace.exists()
@@ -165,8 +162,8 @@ def test_channel_migration_preserves_legacy_empty_channel_as_disabled_plugin(tmp
     workspace = tmp_path / "workspace"
     config.write_text("[channels.telegram]\n", encoding="utf-8")
 
-    assert migrate_legacy_channels(config, workspace) == ("telegram_channel",)
-    plugin = workspace / "plugin-data/telegram_channel-builtin/config.local.toml"
+    assert migrate_legacy_channels(config, workspace, marketplace="installed") == ("telegram_channel",)
+    plugin = workspace / "plugin-data/telegram_channel-installed/config.local.toml"
     assert plugin.read_text(encoding="utf-8") == "enabled = false\nallow_from = []\n"
 
 
