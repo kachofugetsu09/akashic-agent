@@ -21,8 +21,11 @@ def verify_deployment_image(release_manifest: Path, image: str) -> str:
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
         raise RuntimeError("部署必须使用完整 content-addressed image ID")
     release = json.loads(release_manifest.read_text(encoding="utf-8"))
-    if release.get("schemaVersion") != 1 or release.get("imageId") != image:
+    schema_version = release.get("schemaVersion")
+    if schema_version not in {1, 2} or release.get("imageId") != image:
         raise RuntimeError("部署 image 与 release manifest 不一致")
+    if schema_version == 2 and not isinstance(release.get("runtimeInfo"), dict):
+        raise RuntimeError("distribution release manifest 缺少 runtimeInfo")
     actual = subprocess.run(
         ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
         check=True,

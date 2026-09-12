@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "name": "default-local",
+  "marketplace": "release",
+  "description": "本地聊天与持久会话的最小正式组合；通道凭据和 Computer Workload 由后续 profile 明确加入。",
+  "initialization": {
+    "plugin_configs": [
+      {
+        "owner": "context",
+        "config": {
+          "prompt_sources": {
+            "default_prompt": "prompt@release",
+            "markdown_memory": "markdown_memory@release",
+            "skills": "standard_tools@release"
+          },
+          "summary_source": ["compaction", "compaction@release"]
+        }
+      }
+    ]
+  },
+  "plugins": [
+    {
+      "name": "models",
+      "depends_on": [],
+      "reason": "提供模型目录、连接设置和一次执行所需的冻结选择。"
+    },
+    {
+      "name": "openai-compatible",
+      "depends_on": ["models"],
+      "reason": "提供可由 models 选择的 OpenAI-compatible 驱动；不包含凭据。"
+    },
+    {
+      "name": "content",
+      "depends_on": [],
+      "reason": "拥有消息正文与附件内容边界。"
+    },
+    {
+      "name": "context",
+      "depends_on": [],
+      "reason": "提供上下文材料注册与构建能力。"
+    },
+    {
+      "name": "turn_projection",
+      "depends_on": [],
+      "reason": "把持久消息投影成 Turn；不读取插件私有数据库。"
+    },
+    {
+      "name": "sources",
+      "depends_on": [],
+      "reason": "登记会话来源并提供来源级输入边界。"
+    },
+    {
+      "name": "tools",
+      "depends_on": ["content"],
+      "reason": "拥有工具目录、授权、执行与展示绑定。"
+    },
+    {
+      "name": "tool_search",
+      "depends_on": ["tools"],
+      "reason": "提供工具搜索及其 Prompt 展示。"
+    },
+    {
+      "name": "standard_tools",
+      "depends_on": ["tools"],
+      "reason": "提供本地文件、Shell 和 Skill 等标准工具；不启动 Computer。"
+    },
+    {
+      "name": "runtime_inspection",
+      "depends_on": [],
+      "reason": "提供 Web/Mobile 所需的文档、技能和任务只读检查投影。"
+    },
+    {
+      "name": "prompt",
+      "depends_on": ["context"],
+      "reason": "拥有 Prompt 材料和首次人格文件初始化。"
+    },
+    {
+      "name": "compaction",
+      "depends_on": ["models", "context", "turn_projection"],
+      "reason": "提供显式上下文压缩；其摘要状态仍由该包持久化。"
+    },
+    {
+      "name": "markdown_memory",
+      "depends_on": ["models", "context", "turn_projection", "content"],
+      "reason": "提供 Markdown profile 读取与显式学习；默认不改变 programmatic 排除。"
+    },
+    {
+      "name": "react",
+      "depends_on": ["models", "context", "tools", "tool_search"],
+      "reason": "组合模型、Prompt、工具和消息的 ReAct 执行。"
+    },
+    {
+      "name": "conversation",
+      "depends_on": ["models", "sources", "content", "tools"],
+      "reason": "提供普通会话来源、输入校验和消息写入。"
+    },
+    {
+      "name": "reply_program",
+      "depends_on": ["models", "content", "context", "turn_projection", "tools", "react", "conversation"],
+      "reason": "提供一次回复所需的实际执行能力；来源监听仍由 reply 插件拥有。"
+    },
+    {
+      "name": "reply",
+      "depends_on": ["sources", "conversation", "tools", "tool_search", "react", "reply_program"],
+      "reason": "把来源输入接到回复执行和持久输出。"
+    },
+    {
+      "name": "eventmail",
+      "depends_on": [],
+      "reason": "提供事件投递和恢复所需的持久事件邮箱。"
+    },
+    {
+      "name": "delivery",
+      "depends_on": [],
+      "reason": "拥有输出投递记录、sender binding 和恢复边界。"
+    },
+    {
+      "name": "delivery_policy",
+      "depends_on": ["delivery"],
+      "reason": "应用来源级投递策略，不包含具体外部通道。"
+    },
+    {
+      "name": "message_push",
+      "depends_on": ["tools", "content", "delivery"],
+      "reason": "提供已授权的消息推送工具，默认不配置外部发送器。"
+    },
+    {
+      "name": "programmatic",
+      "depends_on": ["sources", "content", "turn_projection"],
+      "reason": "提供本地控制面来源和程序化会话入口。"
+    }
+  ]
+}
