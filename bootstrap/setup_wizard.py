@@ -18,6 +18,7 @@ import click
 
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
+    load_plugin_manifest,
     plugins_root,
     workspace_plugin_data_dir,
 )
@@ -80,7 +81,9 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
 def _run_declared_plugin_setups(workspace: Path) -> None:
     """Run each plugin-owned setup entrypoint from its validated manifest."""
 
-    cache_root = (plugins_root() / "cache").resolve(strict=False)
+    plugin_home = plugins_root()
+    enabled_plugins = load_plugin_manifest(plugin_home)
+    cache_root = (plugin_home / "cache").resolve(strict=False)
     sources = resolve_plugin_sources(
         (),
         installed_cache_root=cache_root,
@@ -97,6 +100,10 @@ def _run_declared_plugin_setups(workspace: Path) -> None:
                 f"插件 {manifest.name} installed cache identity 不一致: "
                 f"{source.plugin_name}"
             )
+        plugin_id = f"{manifest.name}@{source.marketplace}"
+        if enabled_plugins.get(plugin_id, True) is False:
+            _hint(f"跳过已禁用插件配置：{plugin_id}")
+            continue
         plugin_root = source.plugin_root.resolve(strict=True)
         if not plugin_root.is_relative_to(cache_root):
             raise RuntimeError(

@@ -10,6 +10,7 @@ import pytest
 
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.install import install_git_plugin
+from agent.plugins.manifest import set_plugin_enabled
 from agent.plugins.source_resolver import ResolvedPluginSource
 from agent.plugins.static_manifest import load_static_plugin_manifest
 from bootstrap import setup_wizard
@@ -194,6 +195,39 @@ def test_setup_runner_reads_formal_install_artifact(
 
     config = workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
     assert config.read_text(encoding="utf-8").splitlines()[0] == "fixture_setup@lab"
+
+
+def test_setup_runner_skips_disabled_installed_plugin(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "fixture_setup-source"
+    source.mkdir()
+    _write_plugin(source)
+    _commit_source(source)
+    plugin_home = tmp_path / "plugin-home"
+    workspace = tmp_path / "workspace"
+    _ = install_git_plugin(
+        workspace=workspace,
+        source=str(source),
+        marketplace="lab",
+        plugins_home=plugin_home,
+    )
+    _ = set_plugin_enabled(
+        "fixture_setup@lab",
+        enabled=False,
+        plugins_home=plugin_home,
+    )
+    monkeypatch.setattr(setup_wizard, "plugins_root", lambda: plugin_home)
+
+    def unexpected_setup(*args, **kwargs):
+        raise AssertionError("disabled plugin setup must not start")
+
+    monkeypatch.setattr(setup_wizard.subprocess, "run", unexpected_setup)
+    setup_wizard._run_declared_plugin_setups(workspace)
+
+    assert not (
+        workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
+    ).exists()
 
 
 def test_setup_runner_rejects_checkout_plugin_source(
