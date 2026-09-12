@@ -159,6 +159,15 @@ class MobileCommandError(ValueError):
         self.code = code
 
 
+@dataclass(frozen=True, slots=True)
+class MessageFollowRequest:
+    """Validated scalar inputs for one Mobile message follow."""
+
+    session_id: str
+    after_seq: int
+    display_only: bool
+
+
 class _DurableInboundBridge:
     """Translate the formal durable channel port to the local command owner."""
 
@@ -2346,17 +2355,24 @@ class MobileRealtimeChannel:
         return CommandReply(type="history.get.ok", session_id=session_id,
                             payload={key: value for key, value in payload.items() if key != "items"})
 
-    def prepare_message_follow(self, frame: GenericCommand) -> tuple[MessageReader, int]:
-        """在协议边界验证 Session 与续读 cursor，只交出窄读取端口。"""
+    def validate_message_follow(self, frame: GenericCommand) -> MessageFollowRequest:
+        """在协议边界验证 follow 的标量输入，不读取跨任务的 Message provider。"""
         _expect_message_log_version(frame.payload)
         _expect_keys(frame.payload, {"message_log_version", "after_seq", "display_only"})
-        _message_display_only(frame.payload)
-        session_id = self._normalize_session_id(frame.session_id)
-        after_seq = _message_cursor(frame.payload.get("after_seq", -1), "after_seq")
-        reader = self._require_messages().reader(session_id)
-        if after_seq > reader.head():
+        return MessageFollowRequest(
+            session_id=self._normalize_session_id(frame.session_id),
+            after_seq=_message_cursor(frame.payload.get("after_seq", -1), "after_seq"),
+            display_only=_message_display_only(frame.payload),
+        )
+
+    def prepare_message_follow(
+        self, request: MessageFollowRequest
+    ) -> MessageReader:
+        """在已打开的 request scope 内创建本次 follow 的 reader。"""
+        reader = self._require_messages().reader(request.session_id)
+        if request.after_seq > reader.head():
             raise MobileCommandError("invalid_pagination", "after_seq 超过会话当前 head")
-        return reader, after_seq
+        return reader
 
     async def _send_message(
         self,
