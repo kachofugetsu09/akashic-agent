@@ -411,6 +411,7 @@ class PluginManager:
             on_failure=self._on_channel_cleanup_failure,
             boot_id=self._host_boot_id,
             snapshot_lease_acquirer=self._snapshot_store.lease,
+            recovery_snapshot_lease_acquirer=self._acquire_channel_recovery_lease,
             identity_resolver=self._resolve_channel_identity,
             identity_rememberer=self._remember_channel_identity,
             identity_rollbacker=self._rollback_channel_identity,
@@ -426,6 +427,19 @@ class PluginManager:
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
         self._durable_delivery_sender: DurableSender | None = None
         self._durable_delivery_recovered = False
+
+    def _acquire_channel_recovery_lease(
+        self,
+        snapshot_id: str,
+    ) -> RuntimeSnapshotLease:
+        """Retain the exact current snapshot for internal durable recovery."""
+
+        snapshot = self._snapshot_store.current
+        if snapshot is None or snapshot.snapshot_id != snapshot_id:
+            raise RuntimeError("Channel durable recovery snapshot owner 不一致")
+        if snapshot.accepting_leases:
+            return self._snapshot_store.lease(snapshot_id)
+        return self._snapshot_store.retain_recovery_target(snapshot)
 
     @property
     def loaded_count(self) -> int:

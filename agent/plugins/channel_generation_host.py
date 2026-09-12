@@ -1150,6 +1150,7 @@ class ChannelGenerationHost:
         on_failure: FailureCallback,
         boot_id: str | None = None,
         snapshot_lease_acquirer: SnapshotLeaseAcquirer | None = None,
+        recovery_snapshot_lease_acquirer: SnapshotLeaseAcquirer | None = None,
         identity_resolver: IdentityResolver | None = None,
         identity_rememberer: IdentityRememberer | None = None,
         identity_rollbacker: IdentityRollbacker | None = None,
@@ -1170,6 +1171,10 @@ class ChannelGenerationHost:
             snapshot_lease_acquirer
         ):
             raise TypeError("snapshot_lease_acquirer 必须可调用")
+        if recovery_snapshot_lease_acquirer is not None and not callable(
+            recovery_snapshot_lease_acquirer
+        ):
+            raise TypeError("recovery_snapshot_lease_acquirer 必须可调用")
         if (identity_resolver is None) != (identity_rememberer is None):
             raise TypeError("identity resolver/rememberer 必须同时绑定")
         if identity_resolver is not None and not callable(identity_resolver):
@@ -1204,6 +1209,12 @@ class ChannelGenerationHost:
         # normal generation replacement without sharing state across hosts.
         self._boot_id = boot_id or uuid.uuid4().hex
         self._snapshot_lease_acquirer = snapshot_lease_acquirer
+        # Recovery is the only internal path allowed to retain a closed,
+        # drained current snapshot.  Standalone hosts without a Manager use
+        # the ordinary acquirer for both paths.
+        self._recovery_snapshot_lease_acquirer = (
+            recovery_snapshot_lease_acquirer or snapshot_lease_acquirer
+        )
         self._input_custody: InputCustody | None = None
         self._identity_resolver = identity_resolver
         self._identity_rememberer = identity_rememberer
@@ -1886,12 +1897,18 @@ class ChannelGenerationHost:
             raise RuntimeError(
                 f"durable inbound channel binding 不唯一: {raw.message.channel}"
             )
-        return await self._recover_inbound(candidates[0], raw)
+        return await self._recover_inbound(
+            candidates[0],
+            raw,
+            _use_recovery_snapshot_lease=True,
+        )
 
     async def _recover_inbound(
         self,
         key: tuple[str, str],
         raw: RawInbound,
+        *,
+        _use_recovery_snapshot_lease: bool = False,
     ) -> bool:
         """Replace only a prior accepted claim for one durable recovery."""
 
@@ -1919,10 +1936,15 @@ class ChannelGenerationHost:
                 key,
                 raw,
                 _retained_claim=dedupe_key,
+                _use_recovery_snapshot_lease=_use_recovery_snapshot_lease,
             )
 
         # 2. 进程重启时无内存 claim，由 current binding 新建正常 claim。
-        return await self._admit_inbound(key, raw)
+        return await self._admit_inbound(
+            key,
+            raw,
+            _use_recovery_snapshot_lease=_use_recovery_snapshot_lease,
+        )
 
     async def _admit_inbound(
         self,
@@ -1930,6 +1952,7 @@ class ChannelGenerationHost:
         raw: RawInbound,
         *,
         _retained_claim: tuple[str, str] | None = None,
+        _use_recovery_snapshot_lease: bool = False,
     ) -> bool:
         """在 exact Root 接纳 Input，再完成传输收束；没有回复队列。"""
 
@@ -1969,7 +1992,11 @@ class ChannelGenerationHost:
             raise RuntimeError("Channel retained recovery claim 不一致")
         if not retained_claim and dedupe_key in state.inbound_message_id_set:
             return False
-        acquirer = self._snapshot_lease_acquirer
+        acquirer = (
+            self._recovery_snapshot_lease_acquirer
+            if _use_recovery_snapshot_lease
+            else self._snapshot_lease_acquirer
+        )
         custody = self._input_custody
         if acquirer is None or custody is None:
             raise RuntimeError("Channel ingress runtime ports 未绑定")

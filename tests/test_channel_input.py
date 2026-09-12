@@ -204,6 +204,39 @@ async def test_durable_prepare_requires_prior_port_reservation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_durable_recovery_retains_closed_current_snapshot_lease(tmp_path):
+    """暂停快照期间的 Host recovery 仍可使用 exact current lease。"""
+
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+            recover=False,
+        ) as (_, host, custody, _, _, adapter):
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            assert await durable.reserve(mobile_raw())
+            assert await durable.defer("handoff-1") is None
+
+            snapshot = host.snapshot_store.pause_admission()
+            assert snapshot is host.current_snapshot
+            assert snapshot is not None
+            await host.snapshot_store.wait_for_no_leases(snapshot)
+            await host.channel_generation_host.recover_durable_inbounds()
+
+            assert custody.completed == 1
+            assert manager.inbound_store.list_inbound_handoffs() == []
+            await host.snapshot_store.resume(snapshot)
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
 async def test_exact_root_input_commits_without_queue_model_or_delivery(tmp_path):
     async with runtime(tmp_path) as (log, host, custody, identities, rollbacks, adapter):
         assert await adapter.context.ingress.admit(raw()) is True
