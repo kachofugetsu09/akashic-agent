@@ -10,11 +10,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_composition.timers import TIMERS
-from plugins.content.api import check_artifact
-from plugins.content.plugin import check_text
-from plugins.delivery.api import Sink
-from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
+from .inputs import CONTENT, DELIVERY, DELIVERY_SENDERS
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MessageReader, SessionAttributes
 from agent.plugin_contracts import ContentPart, Input, Message, Output
@@ -144,13 +140,11 @@ class SchedulerRuntime:
                 return
             writer = ctx.require(MESSAGE_WRITERS).bind(
                 ctx, author="scheduler", source="scheduler", body_types=(Output,),
-                content={"text": check_text, "artifact_ref": check_artifact},
+                content={"text": ctx.require(CONTENT).check_text, "artifact_ref": ctx.require(CONTENT).check_artifact},
             )(target.session_id)
             task.on_close(writer.expire)
             binding = ctx.require(DELIVERY_SENDERS).bind(fire.job.channel, ctx.require(BINDINGS))
-            notification, selected = delivery.publish(writer, fire.notification_id, Output(parts, "complete"), (Sink(
-                name=fire.job.channel, binding_id=binding, address=fire.job.chat_id,
-            ),))
+            notification, selected = delivery.publish(writer, fire.notification_id, Output(parts, "complete"), ({"name": fire.job.channel, "binding_id": binding, "address": fire.job.chat_id},))
 
         # 2. Scheduler 只恢复自己原定的非空选路；空集合不能冒称通知已送达。
         if selected is None:
@@ -198,7 +192,7 @@ class SchedulerRuntime:
             assert fire.job.prompt is not None
             writer = ctx.require(MESSAGE_WRITERS).bind(
                 ctx, author="scheduler", source="scheduler", body_types=(Input,),
-                content={"text": check_text},
+                content={"text": ctx.require(CONTENT).check_text},
             )(fire.session_id)
             task.on_close(writer.expire)
             _ = writer.append("scheduler-input:" + fire.key, Input((ContentPart("text", fire.job.prompt),)))

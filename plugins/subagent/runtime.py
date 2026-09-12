@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from functools import partial
 from datetime import UTC, datetime
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -11,10 +12,10 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from plugins.content.plugin import check_text
-from plugins.conversation.plugin import CONVERSATION
-from plugins.delivery.plugin import DELIVERY
-from plugins.reply.api import REPLY_PROGRAM
+from .inputs import CONTENT, CHECK_ORIGIN
+from .inputs import CONVERSATION
+from .inputs import DELIVERY
+from .inputs import REPLY_PROGRAM
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output
 from agent.plugin_contracts import json_value
@@ -67,7 +68,7 @@ class Subagents:
         _ = ctx.require(SESSION_ADMISSION).ensure(ctx, request.session_id,
             SessionAttributes(visibility="internal", learning="excluded"))
         writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="subagent", source="subagent",
-            body_types=(Input,), content={"text": check_text, "subagent.request": check_request})(request.session_id)
+            body_types=(Input,), content={"text": ctx.require(CONTENT).check_text, "subagent.request": partial(check_request, check_origin=ctx.require(CHECK_ORIGIN))})(request.session_id)
         body = Input((ContentPart("text", text), ContentPart("subagent.request", request.model_dump())))
         def commit(tx: OwnerTransaction) -> None:
             previous = tx.read(key)

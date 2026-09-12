@@ -28,7 +28,6 @@ api_version = 3
 name = "tools"
 version = "1.0.0"
 desc = "声明工具并固定实际实现；一次调用的回执独立于会话"
-inject = ()
 
 
 ContentCheck = Callable[[ContentPart], ContentReferences]
@@ -45,6 +44,7 @@ class ContentCapability(Protocol):
 
 # 与 content owner 共享名字，不共享其实现模块或 Python 类型身份。
 CONTENT = ServiceKey[ContentCapability]("content.v2")
+inject = (CONTENT,)
 
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[None]]
@@ -520,6 +520,7 @@ async def bind_saved_tool(
 
 async def apply(ctx: Context, config: object) -> None:
     catalog = ToolCatalog(ctx)
+    _ = await ctx.provide(ServiceKey("tools.bind-saved.v1"), bind_saved_tool)
     _ = await ctx.provide(TOOLS, catalog)
     _ = await ctx.provide(TOOL_PROGRAM, ToolProgramFactory(ctx, catalog))
     _ = await ctx.provide(ALL_TOOLS, catalog._all_view)

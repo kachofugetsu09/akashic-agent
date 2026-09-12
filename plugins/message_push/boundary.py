@@ -20,6 +20,9 @@ from agent.plugin_contracts import Body, CallRef, ContentPart, ContentReferences
 class CallSource(Protocol):
     """工具 owner 提供的只读调用前缀。"""
 
+    @property
+    def effect_key(self) -> str: ...
+
     call_ref: CallRef
     messages: tuple[Message, ...]
 

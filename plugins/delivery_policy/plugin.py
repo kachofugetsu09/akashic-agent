@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import partial
+
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable, Mapping
@@ -9,7 +11,7 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import Context, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition import ServiceKey, Context, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.restart import ExternalRootPermit, RestartRejectedError
@@ -137,6 +139,7 @@ async def apply(ctx: Context, config: Config) -> None:
     """正式启动后跟随日志；不把策略、学习或来源 ACK 放进发送原子能力。"""
     final_delivery = DeliveryFinalOutput(ctx)
     origin_check = ctx.require(ORIGIN_CHECK)
+    _ = await ctx.provide(ServiceKey("delivery.input-origin.v1"), partial(input_origin, check_origin=origin_check))
     for source in config.sources:
         ctx.require(FINAL_OUTPUT_DELIVERY).register(source, final_delivery)
     watcher: asyncio.Task[None] | None = None

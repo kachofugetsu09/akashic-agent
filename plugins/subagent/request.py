@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from typing import Literal
+from collections.abc import Callable
+
+from typing_extensions import TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from plugins.delivery.api import Sink
 from agent.plugin_contracts import ContentPart, ContentReferences
 from agent.plugin_contracts import json_value
 
@@ -14,6 +16,12 @@ PROFILE_TOOLS: dict[str, tuple[str, ...]] = {
     "scripting": ("read_file", "list_dir", "write_file", "edit_file", "shell", "write_stdin", "task_stop"),
     "general": ("read_file", "list_dir", "web_fetch", "web_search", "write_file", "edit_file", "shell", "write_stdin", "task_stop"),
 }
+
+
+class SinkInput(TypedDict):
+    name: str
+    binding_id: str
+    address: str
 
 
 class SpawnInput(BaseModel):
@@ -38,7 +46,7 @@ class Request(BaseModel):
     parent_message_id: str = Field(min_length=1)
     parent_part_index: int = Field(ge=0)
     origin: dict[str, str] | None
-    sink: Sink | None
+    sink: SinkInput | None
     program_binding: str = Field(min_length=1)
     tools: dict[str, str]
 
@@ -51,14 +59,13 @@ class Request(BaseModel):
         return "subagent-input:" + self.job_id
 
 
-def check_request(part: ContentPart) -> ContentReferences:
+def check_request(part: ContentPart, *, check_origin: Callable[[ContentPart], ContentReferences]) -> ContentReferences:
     request = Request.model_validate(json_value(part.value))
     if set(request.tools) != set(PROFILE_TOOLS[request.profile]):
         raise ValueError("子任务工具选择与 profile 不一致")
     if request.origin is not None:
-        from plugins.conversation.plugin import check_origin
         _ = check_origin(ContentPart("channel.origin", request.origin))
     if request.background and (request.origin is None or request.sink is None):
         raise ValueError("后台子任务缺少原发送目标")
     return ContentReferences(binding_ids=(request.program_binding, *request.tools.values(),
-                                         *((request.sink.binding_id,) if request.sink is not None else ())))
+                                         *((request.sink["binding_id"],) if request.sink is not None else ())))

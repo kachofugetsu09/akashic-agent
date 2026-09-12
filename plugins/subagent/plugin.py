@@ -12,13 +12,13 @@ from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING,
 
 
 
-from plugins.conversation.plugin import CONVERSATION
+from .inputs import CONTENT, CHECK_ORIGIN, CONVERSATION, TOOL_BIND_SAVED
 
-from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.reply.api import REPLY_PROGRAM
+from .inputs import DELIVERY
+from .inputs import DELIVERY_SENDERS
+from .inputs import REPLY_PROGRAM
 
-from plugins.tools.plugin import ALL_TOOLS, TOOLS
+from .inputs import ALL_TOOLS, TOOLS
 
 from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
@@ -43,6 +43,9 @@ desc = "独立内部消息任务，固定工具权限并向父会话回传"
 
 
 inject = (
+    CONTENT,
+    CHECK_ORIGIN,
+    TOOL_BIND_SAVED,
     BINDINGS,
     TASKS,
     MESSAGE_CATALOG,

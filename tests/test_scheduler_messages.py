@@ -179,8 +179,10 @@ async def test_archived_schedule_tool_recovers_original_operation_after_source_r
         try:
             bindings = Bindings(log, restarted._archive, restarted.open_binding)
             async with open_tool(bindings, tool) as bound:
-                assert await bound.query("original-schedule") == result
-                assert await bound.invoke("original-schedule", prepared) == result
+                recovered = await bound.query("original-schedule")
+                repeated = await bound.invoke("original-schedule", prepared)
+                assert (recovered.outcome, recovered.parts) == (result.outcome, result.parts)
+                assert (repeated.outcome, repeated.parts) == (result.outcome, result.parts)
             assert store.load() == [original]
             assert store.read().fires == {}
             assert log.catalog().snapshot_heads() == {}
