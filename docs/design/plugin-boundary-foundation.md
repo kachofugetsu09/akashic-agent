@@ -428,3 +428,23 @@ loop 卸载资源、取消长连接并 join 实际线程，不能取消 to_threa
 本层不把安装默认禁用渠道等同于真实联网验收。QQ 的 provider 超时配置和完整外部
 入站→Message→回复→回执组合继续核对；原 Telegram/QQ 旧 bus live handlers 在当前
 源码没有事件生产者，不据此声明恢复了 live preview。
+
+### 9.21 源码不可见的整组安装与启动证据
+
+验收 runner 从固定 revision 的 Core tar 和独立 Git bundle 开始，使用正式安装链，
+从 import 路径移除所有 checkout 与 editable 路径，并记录实际模块来源。当前 40 个
+包均安装、apply 并进入 generation；Core 空根和整组 AppRuntime 均实际启动、退出，
+退出时检查后台任务、socket 和 snapshot 释放。
+
+能力枚举不计为调用。runner 对选定的已发布服务执行带输入与预期输出的调用；当前
+已验证 models 的 Message 展示事实转换。测试 workload controller 只提供本地协议
+夹具，不能据此宣称真实容器、渠道发送或所有业务组合通过。
+
+这批证据固定在 1d4ede3af3e7e412d615d7f074508737def9f837 构建的产物，Core tar
+SHA-256 为 0ae58a6601e30077a95dd4a721dc5398286298a84f840b14a8fa0cf1da8307a0。
+后续仍须覆盖真实 CLI 迁移入口、合法子集、原 provider 不在场的替换及最终业务结果。
+历史 Yoyo Message 元数据迁移仍引用旧 codec 的私有解析 helper；保留指向同一实现
+的 Core 内部别名，迁移包拆分前不能因移动公开 codec 破坏旧数据入口。
+
+按用户指定顺序，逐层发布 draft PR 并继续实施，全部实现后统一完成 Gate、CI 与
+概念评审；本节的本地证据不代表这些检查已通过。
