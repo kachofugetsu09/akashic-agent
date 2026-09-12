@@ -124,11 +124,20 @@
     {
       "id": "observe",
       "repository": "https://github.com/akashic-plugins/observe",
-      "branch": "codex/turn-committed-only-20260823",
-      "resolved_sha": "f9cd7cdb91d05a1646cc15854509bacb628355d3",
-      "pull_request": "https://github.com/akashic-plugins/observe/pull/5",
-      "role": "committed_turn_observer",
-      "atoms": ["turn.after_committed"],
+      "branch": "codex/observe-message-boundary-20260913",
+      "resolved_sha": "2123ae50cd8703620c374f2652864230af131563",
+      "pull_request": "https://github.com/akashic-plugins/observe/pull/10",
+      "role": "message_history_observer",
+      "atoms": [
+        "core.message_catalog",
+        "turn.projection.v1",
+        "models.calls.v1",
+        "models.call-history.v1",
+        "akasha.recall-records.v1",
+        "markdown-memory.writes.v1",
+        "tools.display-name.v1",
+        "core.ui_slots"
+      ],
       "test_cwd": "tests",
       "cases": ["tests/test_plugin.py"]
     }

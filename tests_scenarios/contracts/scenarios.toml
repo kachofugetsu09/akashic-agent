@@ -304,7 +304,7 @@ command = [
   "tests/test_plugin_hot_reload.py",
   "tests/test_plugin_install.py",
 ]
-observes = ["candidate_generation", "active_generation", "turn_committed_event_position", "rollback"]
+observes = ["candidate_generation", "active_generation", "generation_publication_order", "rollback"]
 mutants = ["candidate_visible_before_activation", "plugin_uninstall_deletes_data"]
 
 [scenarios.plugin_workload_contract]

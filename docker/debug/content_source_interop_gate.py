@@ -341,7 +341,10 @@ def _verify_core(contract: InteropContract) -> dict[str, object]:
         raise GateError(
             f"当前 Core 不包含批准合同: {contract.core_contract} head={head}"
         )
-    missing = [case for case in contract.core_cases if not (ROOT / case).is_file()]
+    missing = [
+        case for case in contract.core_cases
+        if not (ROOT / case.split("::", 1)[0]).is_file()
+    ]
     if missing:
         raise GateError(f"Core fixture 缺失: {missing}")
     return {

@@ -57,7 +57,6 @@ from bus.events_lifecycle import (
     ToolCallStarted,
     TurnOutputCompleted,
     TurnStarted,
-    TurnCommitted,
 )
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
