@@ -1,14 +1,12 @@
 import asyncio
-import importlib.util
 import json
 from pathlib import Path
 import shutil
 
 import pytest
-import yoyo
 
 from agent.migrations.context import bind_migration_context
-from agent.migrations.session_attributes import migrate as migrate_attributes
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.session_attributes import migrate as migrate_attributes
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
@@ -23,6 +21,7 @@ from agent.plugin_composition.tasks import Tasks
 from session.log import MessageLog, OwnerTransaction
 from session.store import SessionStore
 from session.artifact_store import ArtifactStore
+from tests.legacy_migration_loader import load_migration_namespace
 from tests.test_delivery_bindings import sources
 
 
@@ -31,19 +30,14 @@ def storage(workspace):
     workspace.mkdir()
     store = SessionStore(workspace / "sessions.db")
     store.close()
-    migrations = Path(__file__).parents[1] / "migrations/yoyo"
-    with bind_migration_context(workspace=workspace, config_path=workspace / "config.toml"), pytest.MonkeyPatch.context() as patch:
-        patch.setattr(yoyo, "step", lambda callback: callback)
+    with bind_migration_context(workspace=workspace, config_path=workspace / "config.toml"):
         for name, callback in (
             ("20260905_01_message_log", "migrate_message_log"),
             ("20260905_02_owner_records", "migrate_owner_records"),
             ("20260905_05_message_embeddings", "migrate_message_embeddings"),
             ("20260905_06_message_artifacts", "migrate_message_artifacts"),
         ):
-            spec = importlib.util.spec_from_file_location(name, migrations / f"{name}.py")
-            assert spec is not None and spec.loader is not None
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            module = load_migration_namespace(name)
             getattr(module, callback)(None)
     migrate_attributes(workspace / "sessions.db", workspace / "backups/attributes")
     return ArtifactStore(workspace / "sessions.db"), MessageLog(workspace / "sessions.db")
