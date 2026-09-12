@@ -115,8 +115,9 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 | `CHANNELS` / `CHANNEL_INPUT` | 注册 blueprint，按绑定调用入站入口 | inbound/outbound Channel 适配 |
 | `DELIVERY` / `DELIVERY_READ` | 打开发送 admission 或只读历史 | Delivery 发送、恢复和查询 |
 
-旧 Core `TOOL_CATALOG` 及其注册、冻结和快照装配已删除。`DELIVERIES` 和
-`DURABLE_DELIVERIES` 仍承担旧持久状态的边界，不是新插件应采用的发送入口。
+旧 Core `TOOL_CATALOG` 及其注册、冻结和快照装配已删除。旧 `DELIVERIES`、
+`DURABLE_DELIVERIES` ServiceKey 和注入也已退役。Core 保留中立的持久投递记录、
+恢复与只读升级检查，保护旧 `prepared/provider_started` 状态；移除接口不会删除记录或重发旧效果。
 工具消费者通过 `tools.v1` ServiceKey 和本地结构接口协作，
 不能 import `plugins.tools.api` 或其他兄弟插件实现。工具结果提供 `outcome` 与 `parts`；
 Tools owner 在入口校验。ToolResult Message 是对话调用的持久结果正文。

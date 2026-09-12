@@ -64,9 +64,7 @@ from agent.plugin_composition.model import (
     TopologyView,
     WriteObservation,
 )
-from agent.plugin_composition.deliveries import DELIVERIES, PluginDeliveries
 from agent.plugin_composition.durable_deliveries import (
-    DURABLE_DELIVERIES,
     DurableBindingAttempt,
     DurableDeliveryRequest,
     DurableDeliveryView,
@@ -376,9 +374,6 @@ __all__ = [
     "RawInbound",
     "ServiceKey",
     "ServiceView",
-    "DELIVERIES",
-    "PluginDeliveries",
-    "DURABLE_DELIVERIES",
     "DurableBindingAttempt",
     "DurableDeliveryRequest",
     "DurableDeliveryView",

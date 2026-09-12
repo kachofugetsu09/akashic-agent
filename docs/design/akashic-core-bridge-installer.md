@@ -6,15 +6,18 @@
 
 ## 1. 目标与边界
 
-用户通过一条命令安装或升级同一 Git commit 的 Akashic Core 与 Python HostBridge。未指定
-`--commit` 时解析远端 `main` 的最新完整 SHA；指定时只接受远端可达的 40 位 SHA。安装器展示
-current/target identity 并等待确认，只有 `--yes` 允许无人值守。
+用户通过一条命令安装或升级同一 Git commit 的 Akashic Core 与 Python HostBridge。公开 bootstrap
+脚本只在临时目录取得 clean exact checkout，再进入 release manager；该 checkout 是构建输入和 Host
+Bridge identity 输入，不是 Core 的业务插件运行目录。未指定 `--commit` 时解析远端 `main` 的最新完整
+SHA；指定时只接受远端可达的 40 位 SHA。安装器展示 current/target identity 并等待确认，只有 `--yes`
+允许无人值守。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh \
+  | sh -s -- --yes
 
 curl -fsSL https://raw.githubusercontent.com/kachofugetsu09/akashic-agent/main/scripts/install-akashic.sh \
-  | sh -s -- --commit <40-character-sha>
+  | sh -s -- --commit <40-character-sha> --yes
 ```
 
 Core 与 Bridge 保持同仓库、同 commit、同 release manifest，但继续运行在不同权限域。Core 不获得
@@ -39,7 +42,9 @@ plugin generation、MCP control plane 或部署事务。外围服务仍由私有
 
 ## 2. 选定方案
 
-第一版采用目标机按精确 commit 构建的 source-resolved local release。它复用现有 exact Git archive、
+第一版采用目标机按精确 commit 构建的 Core distribution local release。构建器从该 commit 生成不含业务
+`plugins/` 的 `core.tar`、每个插件独立的 Git bundle、受校验的 profile/report 和 distribution image；
+镜像只从 `core.tar` 启动 Core，插件由 distribution entrypoint 通过正式 installer 安装。它复用现有
 Core image identity、toolchain digest、Bridge doctor 和 systemd 合同，不依赖 GitHub Release，也不要求
 每个 `main` commit 已有可下载的 CI artifact。
 
@@ -62,13 +67,19 @@ bootstrap import graph 只能依赖 Python 标准库。准备完成后，Bridge 
 scripts/install-akashic.sh
   └─ scripts/akashic_release/
      ├─ cli.py       参数、确认与稳定退出码
-     ├─ source.py    main SHA 解析、远端可达性、shallow checkout
-     ├─ image.py     Core 构建和 exact image ID 验证
+     ├─ source.py    main SHA 解析、远端可达性、临时 shallow checkout
+     ├─ image.py     Core distribution 构建和 exact image ID 验证
      ├─ bridge.py    Bridge venv、toolchain identity 与 doctor
      ├─ manifest.py  release manifest、receipt 与原子 JSON
      ├─ systemd.py   unit 安装、启停和状态观察
      ├─ activate.py  激活、真实健康检查和上一代恢复
      └─ migrate.py   正式 Workspace 迁移编排与停止边界
+
+正式 image 的临时 build context
+  ├─ core.tar                       Core 源码，不含业务 plugins/
+  ├─ <plugin>.bundle                每个外部插件独立 Git 制品
+  ├─ profiles/default.json          首次安装配方及通用 plugin config
+  └─ distribution-entrypoint.sh    receipt-aware install + Core 启动
 ```
 
 非平凡模块保持单一职责；命令执行和文件持久化复用仓库现有 runner、原子 JSON 与 release identity
@@ -76,7 +87,7 @@ scripts/install-akashic.sh
 
 ```text
 /srv/data/services/akashic/
-├─ runtime-sources/<commit>/       一代只读 shallow checkout
+├─ runtime-sources/<commit>/       Host Bridge、Compose 和 identity 校验的一代只读 checkout
 ├─ bridge-venvs/<commit>/          一代 Bridge Python 环境
 ├─ releases/<commit>.json          不可变 release manifest
 ├─ activation/                     active/previous/failed receipts
@@ -136,8 +147,10 @@ Core 与 Bridge 在现有 release 事务中按同 commit 成对升级；旧 V1 r
 2. 未指定 commit 时用远端 Git ref 解析 `origin/main`，不从本地 remote-tracking ref 推断。
 3. 指定 commit 时校验完整 SHA、远端可达性和 commit object。
 4. 展示 current/target SHA、提交标题与 generation 状态；交互确认或验证 `--yes`。
-5. 在 `.staging-<run-id>` 准备 shallow checkout、Core image、Bridge venv 和 manifest。
-6. 核对 commit/tree、source inventory、dependency locks、image ID、toolchain digest 和 Bridge doctor。
+5. 在 `.staging-<run-id>` 准备临时 shallow checkout、Core tar、独立插件 bundles、profile、Core image、
+   Bridge venv 和 manifest。
+6. 核对 commit/tree、Core 与 bundle source inventory、dependency locks、image ID、toolchain digest 和
+   Bridge doctor；Core tar 必须没有业务 `plugins/`。
 7. 全部通过后把 staging 原子发布成不可变 generation。
 
 hua-home 构建使用清华、科大 Arch package cache、清华 PyPI 和 npmmirror；Arch 数据库仍固定到
@@ -186,6 +199,13 @@ unit、daemon-reload、enable 和 unit 控制的窄步骤调用 sudo；服务进
 首次激活从系统 Python 发起时，UDS/gRPC probe 仍以候选 generation 的 Bridge Python 子进程运行；
 系统 Python 缺少 `grpcio` 不得成为部署前置条件。
 
+激活事务从 release manifest 原子生成 `runtime.env` 的 generation 字段：
+`AKASHIC_RUNTIME_COMMIT`、`AKASHIC_RUNTIME_TREE`、`AKASHIC_IMAGE`、
+`AKASHIC_RELEASE_MANIFEST` 与 `AKASHIC_RUNTIME_CHECKOUT`。distribution image 内的
+`runtime-info.json` 保存相同 commit/tree 和 Core digest；容器入口每次启动都会比对它们，release doctor
+还会复核 image、Host Bridge checkout、toolchain 与 Bridge RPC。operator 不得手改这些字段来绕过
+identity 检查，应重新准备一个完整 generation。
+
 ### 5.3 软件恢复
 
 候选激活失败时停止候选，原子恢复旧 runtime.env，依次启动并真实验证旧 Bridge 与 Core，再写 failed
@@ -198,13 +218,25 @@ error（若有）和人工命令；不能因第二个异常覆盖第一次失败
 
 ### 5.4 CLI
 
+公开 bootstrap 与已安装的稳定 CLI 分工如下：
+
 ```text
-akashic-release install [--commit SHA] [--yes]
+scripts/install-akashic.sh [--commit SHA] [--yes] [--no-activate]
+  → 临时 exact checkout
+  → scripts/akashic_release/cli.py install --source-checkout CHECKOUT
+  → build_distribution_release（Core tar + 独立 bundle）
+  → activate_release（runtime.env + systemd + 真实健康检查）
+
 akashic-release doctor
 akashic-release rollback [--yes]
 akashic-release pair-mobile
 akashic-release migrate --snapshot-manifest PATH
 ```
+
+`akashic-release install` 是 bootstrap 调用的底层命令，必须带一个已经核对过的
+`--source-checkout CHECKOUT`；operator 不应把它当成运行时从当前工作目录扫描插件的入口。正式 builder
+默认是 distribution 模式；`build_host_runtime_release.py --legacy-checkout` 只供旧开发兼容，不能写入
+正式发行操作手册或部署命令。
 
 `pair-mobile` 只访问当前 release 的 loopback WebChat 管理入口，在 SSH 终端用锁定的 `qrcode`
 依赖直接绘制一次性二维码，等待已验签手机 claim，并要求 operator 输入相同的六位确认码后才批准。
@@ -216,6 +248,30 @@ akashic-release migrate --snapshot-manifest PATH
 
 重复安装当前健康 generation 返回 `already_active` 并只执行 verify。active receipt、runtime.env、实际
 Bridge/Core identity 任一不一致时，install/rollback 拒绝继续并要求先运行 doctor。
+
+首次容器启动由 `distribution-entrypoint.sh` 调用
+`scripts/install_plugin_distribution.py --ensure-profile --receipt <workspace>/runtime/distribution-install.json`。
+没有 receipt 时，它先预检 profile 所需的全部 bundle，再初始化空 workspace、正式安装插件并写入配置和
+receipt；已有 receipt 时只校验历史 receipt 与当前 manifest/artifact，不按 shipped profile 重新安装、
+启用或覆盖用户组合。通过普通运行时控制面卸载或替换插件后重启仍保持当前组合；普通卸载保留
+`plugin-data`。软件 rollback 只恢复上一代 release/env，不回滚已经提交的 Workspace 数据或外部效果。
+
+每个发行候选还要从仓库外的 `core.tar` 证明 Core-only 启停。可复用下面的仓库外制品验收命令；runner
+先执行 Core bootstrap 的 AppRuntime 启动和停止，再执行 bundle 组合，报告中的 `core_bootstrap.status`
+与 stop 证据必须闭合。该结果只证明 Core 制品没有 checkout/plugins 兜底，不能替代默认 profile 和正式
+插件组合验收。
+
+```bash
+release_dir="$(mktemp -d /var/tmp/akashic-distribution.XXXXXX)"
+release_sha="<full-40-character-sha>"
+python scripts/build_plugin_distribution.py \
+  --repository "$PWD" --revision "$release_sha" --output "$release_dir"
+python docker/debug/plugin_external_acceptance.py \
+  --distribution "$release_dir/distribution.json" \
+  --core-tar "$release_dir/core.tar" \
+  --repo-root "$PWD" \
+  --output "$release_dir/acceptance.json"
+```
 
 ## 6. MCP 与 Skill 修复
 
