@@ -2,12 +2,15 @@
 
 这份文件只保存 Akashic Agent 当前仍未完成的工作。事项完成后删除，不保留“已完成”记录。
 
-## P0 · 插件边界后续设计
+## P0 · 插件正交化实施与最终验收
 
 按 [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 与
-[阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 推进：后续先验证一个完整切片的外置安装、独立替换、缺依赖与 generation 行为。
-不沿 #595 的机械迁移路线继续，不把全部业务合同搬入 Core。
-Core 中的业务装配、宽泛 snapshot 访问和公开模块中的实现泄漏仍需逐项决定 owner。
+[阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 完成已授权的 stacked PR 实施。
+剩余集中在：历史 artifact 的私有宿主依赖与纯历史 Core owner、正式安装配置入口、
+分发首次初始化与重启保留用户组合，以及合并后无 checkout 的最终产物验收。
+实现全部完成后统一处理完整测试、独立概念评审、Gate 和 CI；不等待 CI 阻塞下一实施层。
+验收必须覆盖 Core-only CLI/AppRuntime、独立子集和异名 provider、generation/归档生命周期、
+实际 Message 与持久送达闭环；不能以 import 数量清零代替这些证据。
 
 ## P0 · Akashic Channel 与 Web/Mobile Adapter 实现
 

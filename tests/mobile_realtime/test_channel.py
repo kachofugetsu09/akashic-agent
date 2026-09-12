@@ -1060,10 +1060,10 @@ async def test_native_v3_mobile_passive_keeps_file_after_post_commit_db_error(
 
 
 class _RuntimeInspection:
-    def list_documents(self) -> dict[str, object]:
+    async def list_documents(self) -> dict[str, object]:
         return {"items": [{"id": "memory"}]}
 
-    def get_document(self, document_id: str) -> dict[str, object]:
+    async def get_document(self, document_id: str) -> dict[str, object]:
         return {"id": document_id, "markdown": "# Memory"}
 
 

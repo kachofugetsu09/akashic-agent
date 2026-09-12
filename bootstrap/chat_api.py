@@ -306,13 +306,13 @@ def create_chat_app(
             raise _plugin_ui_http_error(error) from error
 
     @app.get("/api/chat/runtime/documents")
-    def list_runtime_documents() -> dict[str, object]:
-        return _require_runtime_inspection(runtime_inspection).list_documents()
+    async def list_runtime_documents() -> dict[str, object]:
+        return await _require_runtime_inspection(runtime_inspection).list_documents()
 
     @app.get("/api/chat/runtime/documents/{document_id}")
-    def read_runtime_document(document_id: str) -> dict[str, object]:
+    async def read_runtime_document(document_id: str) -> dict[str, object]:
         try:
-            return _require_runtime_inspection(runtime_inspection).get_document(
+            return await _require_runtime_inspection(runtime_inspection).get_document(
                 document_id
             )
         except RuntimeInspectionError as error:

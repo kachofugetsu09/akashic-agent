@@ -99,7 +99,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_contracts",
     "agent.plugin_contracts.json_store",
     "agent.plugin_contracts.message",
-    "agent.plugin_contracts.message_view",
+    "agent.plugin_composition.message_view",
     "core.common.diagnostic_log",
     "core.error_context",
     "core.net.http",

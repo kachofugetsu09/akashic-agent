@@ -1387,7 +1387,7 @@ class MobileRealtimeChannel:
             _expect_keys(frame.payload, set())
             return CommandReply(
                 type="runtime.document.list.ok",
-                payload=self._require_runtime_inspection().list_documents(),
+                payload=await self._require_runtime_inspection().list_documents(),
             )
         if frame.type == "runtime.document.get":
             _expect_keys(frame.payload, {"document_id"})
@@ -1397,7 +1397,7 @@ class MobileRealtimeChannel:
             )
             return CommandReply(
                 type="runtime.document.get.ok",
-                payload=self._require_runtime_inspection().get_document(document_id),
+                payload=await self._require_runtime_inspection().get_document(document_id),
             )
         if frame.type == "scheduler.job.list":
             _expect_keys(frame.payload, set())

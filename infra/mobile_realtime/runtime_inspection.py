@@ -5,56 +5,19 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
-from agent.plugin_composition import ServiceKey, TopologyFiberView
+from agent.plugin_composition import TopologyFiberView
+from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
-    RuntimeSnapshotLease,
     RuntimeSnapshotStore,
     lease_runtime_snapshot,
 )
 
-_MAX_DOCUMENT_BYTES = 192 * 1024
 _MAX_RECENT_PLUGIN_INCIDENTS = 20
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeDocument:
-    id: str
-    title: str
-    relative_path: str
-    group: str
-    description: str
-
-
-_DOCUMENTS = (
-    RuntimeDocument(
-        "memory",
-        "长期记忆",
-        "memory/MEMORY.md",
-        "memory",
-        "沉淀后的长期事实、偏好与经验。",
-    ),
-    RuntimeDocument(
-        "self",
-        "自我认知",
-        "memory/SELF.md",
-        "identity",
-        "Agent 对自身状态与能力边界的认识。",
-    ),
-    RuntimeDocument(
-        "veda",
-        "VEDA 人格",
-        "memory/VEDA.md",
-        "identity",
-        "Agent 的人格真源。",
-    ),
-)
-_DOCUMENT_BY_ID = {document.id: document for document in _DOCUMENTS}
 
 
 class RuntimeInspectionError(ValueError):
@@ -63,150 +26,104 @@ class RuntimeInspectionError(ValueError):
         self.code = code
 
 
-class _SchedulerInspection(Protocol):
-    """Core 运行时检查消费的 scheduler 只读投影。"""
-
-    def list_jobs(self) -> tuple[Mapping[str, object], ...]:
-        ...
-
-    def get_job(self, job_id: str) -> Mapping[str, object] | None:
-        ...
-
-
-# 只保留值级 seam，Core 不导入 scheduler 实现或数据模型。ServiceKey 按名称相等，
-# scheduler 插件从自己的 inspection 模块注册同名 key。
-_SCHEDULER_INSPECTION = ServiceKey[_SchedulerInspection](
-    "scheduler.inspection.v1"
-)
-
-
-class _SkillInspection(Protocol):
-    """Core 只消费 standard_tools 发布的技能只读投影。"""
-
-    def list_skills(self) -> tuple[Mapping[str, object], ...]:
-        ...
-
-
-# ServiceKey 按名称相等；Core 不导入 standard_tools 的 provider 实现。
-_SKILL_INSPECTION = ServiceKey[_SkillInspection](
-    "standard_tools.skill_inspection.v1"
-)
-
-
 class RuntimeInspectionService:
-    """从运行时 owner 投影移动端可读的文档、任务与能力。"""
+    """将当前 generation 的插件 RPC 响应转换到既有客户端协议。"""
 
-    def __init__(
-        self,
-        *,
-        workspace: Path,
-        snapshot_store: RuntimeSnapshotStore | None,
-    ) -> None:
-        self._workspace = workspace.expanduser().resolve()
+    def __init__(self, *, workspace: Path, snapshot_store: RuntimeSnapshotStore | None) -> None:
         self._snapshot_store = snapshot_store
 
-    def list_documents(self) -> dict[str, object]:
-        return {"items": [self._document_summary(item) for item in _DOCUMENTS]}
+    async def list_documents(self) -> dict[str, object]:
+        async with self._snapshot() as snapshot:
+            response = await _call(snapshot, "inspection/documents.list", {})
+            if response is None:
+                return {"items": [], "unavailable": [_unavailable("documents", "documents_unavailable")]}
+            return _checked_response(response)
 
-    def get_document(self, document_id: str) -> dict[str, object]:
-        document = _DOCUMENT_BY_ID.get(document_id)
-        if document is None:
-            raise RuntimeInspectionError(
-                "document_not_found",
-                f"未知运行时文档: {document_id}",
-            )
-        path = self._workspace / document.relative_path
-        try:
-            size = path.stat().st_size
-        except FileNotFoundError as exc:
-            raise RuntimeInspectionError(
-                "document_unavailable",
-                f"运行时文档不存在: {document.relative_path}",
-            ) from exc
-        if size > _MAX_DOCUMENT_BYTES:
-            raise RuntimeInspectionError(
-                "document_too_large",
-                f"运行时文档超过 192 KiB: {document.relative_path}",
-            )
-        try:
-            content = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise RuntimeInspectionError(
-                "document_invalid_utf8",
-                f"运行时文档不是合法 UTF-8: {document.relative_path}",
-            ) from exc
-        return {**self._document_summary(document), "markdown": content}
+    async def get_document(self, document_id: str) -> dict[str, object]:
+        return await self._required_call("inspection/documents.get", {"document_id": document_id},
+                                         "documents_unavailable", "运行时文档检查服务尚未绑定")
 
     async def list_jobs(self) -> dict[str, object]:
-        """返回一个 generation 的 scheduler 投影并释放读取 lease。"""
-        async with self._scheduler_inspection() as service:
-            return {"items": [dict(item) for item in service.list_jobs()]}
+        return await self._required_call("inspection/jobs.list", {},
+                                         "scheduler_unavailable", "调度检查服务尚未绑定")
 
     async def get_job(self, job_id: str) -> dict[str, object]:
-        """返回一个 scheduler 投影，不解释其中的业务字段。"""
-        async with self._scheduler_inspection() as service:
-            item = service.get_job(job_id)
-            if item is None:
-                raise RuntimeInspectionError("job_not_found", f"定时任务不存在: {job_id}")
-            return dict(item)
+        return await self._required_call("inspection/jobs.get", {"job_id": job_id},
+                                         "scheduler_unavailable", "调度检查服务尚未绑定")
 
-    @asynccontextmanager
-    async def _scheduler_inspection(self) -> AsyncIterator[_SchedulerInspection]:
-        """解析与调用持有同一代 lease，客户端不保留 provider。"""
-        store = self._snapshot_store
-        if store is None or store.current is None:
-            raise RuntimeInspectionError("scheduler_unavailable", "调度检查服务尚未绑定")
-        async with lease_runtime_snapshot(store) as snapshot:
-            root = snapshot.composition_root
-            service = None if root is None else root.context.get(_SCHEDULER_INSPECTION)
-            if service is None:
-                raise RuntimeInspectionError("scheduler_unavailable", "调度检查服务尚未绑定")
-            yield service
+    async def _required_call(self, method: str, params: dict[str, object],
+                             code: str, message: str) -> dict[str, object]:
+        """在同一个任务 lease 内解析、校验参数并完成插件调用。"""
+        if self._snapshot_store is None or self._snapshot_store.current is None:
+            raise RuntimeInspectionError(code, message)
+        async with self._snapshot() as snapshot:
+            response = await _call(snapshot, method, params)
+            if response is None:
+                raise RuntimeInspectionError(code, message)
+            return _checked_response(response)
 
     async def list_capabilities(self) -> dict[str, object]:
-        async with await self._acquire_snapshot() as snapshot:
-            return {
+        async with self._snapshot() as snapshot:
+            response = await _call(snapshot, "inspection/skills.list", {})
+            payload: dict[str, object] = {
                 "snapshot_id": snapshot.snapshot_id,
                 "plugins": _plugin_items(snapshot),
-                "skills": _skill_items(snapshot),
+                "skills": [],
                 "mcp_servers": _mcp_items(snapshot),
             }
+            if response is None or "unavailable" in response:
+                payload["unavailable"] = [_unavailable("skills", "skills_unavailable")]
+            else:
+                payload["skills"] = response["items"]
+            return payload
 
     async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]:
-        async with await self._acquire_snapshot() as snapshot:
+        async with self._snapshot() as snapshot:
             server = _find_mcp_item(snapshot, owner_id, server_name)
             if server is None:
-                raise RuntimeInspectionError(
-                    "mcp_not_found",
-                    f"MCP server 不存在: {owner_id}/{server_name}",
-                )
+                raise RuntimeInspectionError("mcp_not_found", f"MCP server 不存在: {owner_id}/{server_name}")
             tools = cast(list[dict[str, object]], server["tools"])
-            return {
-                "owner_id": owner_id,
-                "name": server_name,
-                "tool_count": len(tools),
-                "tools": tools,
-                "markdown": _mcp_markdown(owner_id, server_name, tools),
-            }
+            return {"owner_id": owner_id, "name": server_name, "tool_count": len(tools),
+                    "tools": tools, "markdown": _mcp_markdown(owner_id, server_name, tools)}
 
-    async def _acquire_snapshot(self) -> RuntimeSnapshotLease:
-        if self._snapshot_store is None or self._snapshot_store.current is None:
-            raise RuntimeInspectionError(
-                "runtime_snapshot_unavailable",
-                "运行时能力快照尚未就绪",
-            )
-        return await self._snapshot_store.acquire()
+    @asynccontextmanager
+    async def _snapshot(self) -> AsyncIterator[RuntimeSnapshot]:
+        """引用计数和当前任务绑定共同覆盖完整读取。"""
+        store = self._snapshot_store
+        if store is None or store.current is None:
+            raise RuntimeInspectionError("runtime_snapshot_unavailable", "运行时能力快照尚未就绪")
+        async with lease_runtime_snapshot(store) as snapshot:
+            yield snapshot
 
-    def _document_summary(self, document: RuntimeDocument) -> dict[str, object]:
-        path = self._workspace / document.relative_path
-        return {
-            "id": document.id,
-            "title": document.title,
-            "relative_path": document.relative_path,
-            "group": document.group,
-            "description": document.description,
-            "available": path.is_file(),
-        }
+
+async def _call(snapshot: RuntimeSnapshot, method: str, params: dict[str, object]) -> dict[str, object] | None:
+    """复用正式 RpcMethod 合同；插件拥有具体参数模型与业务行为。"""
+    root = snapshot.composition_root
+    if root is None:
+        return None
+    operation = root.context.get(rpc_method_key(method))
+    if operation is None:
+        return None
+    result = await operation.invoke(operation.params.model_validate(params), None)
+    if not isinstance(result, Mapping):
+        raise TypeError(f"{method} response 必须是对象")
+    return dict(result)
+
+
+def _checked_response(response: dict[str, object]) -> dict[str, object]:
+    unavailable = response.get("unavailable")
+    if unavailable is not None:
+        if not isinstance(unavailable, Mapping):
+            raise TypeError("inspection unavailable 必须是对象")
+        code, message = unavailable["code"], unavailable["message"]
+        if not isinstance(code, str) or not isinstance(message, str):
+            raise TypeError("inspection unavailable 的 code/message 必须是字符串")
+        raise RuntimeInspectionError(code, message)
+    return response
+
+
+def _unavailable(kind: str, code: str) -> dict[str, str]:
+    return {"kind": kind, "code": code, "status": "unavailable"}
 
 
 def _plugin_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
@@ -359,19 +276,6 @@ def _top_level_plugin_owners(
             )
         owners[name] = current
     return owners
-
-
-def _skill_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
-    """读取普通插件的技能投影；缺少 provider 时明确报告不可用。"""
-
-    root = snapshot.composition_root
-    service = None if root is None else root.context.get(_SKILL_INSPECTION)
-    if service is None:
-        raise RuntimeInspectionError(
-            "skills_unavailable",
-            "技能检查服务尚未绑定",
-        )
-    return [dict(item) for item in service.list_skills()]
 
 
 def _mcp_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:

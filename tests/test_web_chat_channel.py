@@ -648,16 +648,16 @@ def test_chat_runtime_routes_share_read_only_inspection_projection(
     tmp_path: Path,
 ) -> None:
     class RuntimeInspection:
-        def list_documents(self) -> dict[str, object]:
+        async def list_documents(self) -> dict[str, object]:
             return {"items": [{"id": "veda", "title": "VEDA 人格"}]}
 
-        def get_document(self, document_id: str) -> dict[str, object]:
+        async def get_document(self, document_id: str) -> dict[str, object]:
             return {"id": document_id, "markdown": "# VEDA"}
 
-        def list_jobs(self) -> dict[str, object]:
+        async def list_jobs(self) -> dict[str, object]:
             return {"items": [{"id": "morning", "name": "晨间提醒"}]}
 
-        def get_job(self, job_id: str) -> dict[str, object]:
+        async def get_job(self, job_id: str) -> dict[str, object]:
             return {"id": job_id, "markdown": "# 晨间提醒"}
 
         async def list_capabilities(self) -> dict[str, object]:
@@ -1459,10 +1459,9 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
 async def _message_runtime(tmp_path: Path, *, bus=None):
     """真实 conversation 接纳与 Channel binding，共用同库身份记录。"""
     source = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", source / "conversation",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copytree(Path(__file__).parents[1] / "plugins/sources", source / "sources",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    for name in ("conversation", "sources", "content", "models"):
+        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
+                        ignore=shutil.ignore_patterns("__pycache__"))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     log = MessageLog(workspace / "sessions.db")
