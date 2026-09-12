@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 from collections.abc import AsyncIterator
 import shutil
 from contextlib import asynccontextmanager, nullcontext
@@ -165,7 +166,7 @@ async def apply(ctx, config):
             async def run(task, reader, source):
                 return await run_reply(
                     ctx, task, reader, source, models=Models(), content=root.require(CONTENT),
-                    context=root.require(CONTEXT), tools=root.require(TOOLS), react=react,
+                    context=root.require(CONTEXT), tools=root.require(TOOLS), react=partial(react, capture_scope=ctx.capture_runtime_scope),
                     cleanup=lambda *_args, **_kwargs: nullcontext(),
                     materials=root.require(MATERIALS), render_content=lambda part: render_content(part, artifacts={}),
                     turn_projection=root.require(TURN_PROJECTION),

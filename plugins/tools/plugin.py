@@ -47,7 +47,7 @@ CONTENT = ServiceKey[ContentCapability]("content.v2")
 inject = (CONTENT,)
 
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
-BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[None]]
+BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[str | None]]
 OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[ProviderBoundTool]]
 Capture = Callable[[Mapping[str, object]], Mapping[str, object]]
 
@@ -305,7 +305,9 @@ class ToolCatalog:
             binding_id: str, arguments: Mapping[str, object]
         ) -> Mapping[str, object] | str:
             async with bindings.open(binding_id, TOOLS) as (catalog, metadata):
-                await catalog.authorize(metadata, arguments)
+                refusal = await catalog.authorize(metadata, arguments)
+                if refusal is not None:
+                    return refusal
             return await authorize(binding_id, arguments)
 
         return ToolExecution(
@@ -472,7 +474,7 @@ class ToolCatalog:
 
     async def authorize(
         self, metadata: Mapping[str, object], arguments: Mapping[str, object]
-    ) -> None:
+    ) -> str | None:
         """只执行 binding 固定的独立限制；旧无字段 binding 不追附当前限制。"""
         if "authorize" not in metadata:
             return
@@ -488,7 +490,7 @@ class ToolCatalog:
         if authorization is None or metadata["authorize"] != authorization.name:
             raise ValueError("归档工具限制与 binding 不一致")
         async with self._ctx.runtime_scope():
-            await authorization.authorize(arguments)
+            return await authorization.authorize(arguments)
 
 TOOLS = ServiceKey[ToolCatalog]("tools.v1")
 ALL_TOOLS = ServiceKey[Callable[[], ToolView]]("tools.all.v1")

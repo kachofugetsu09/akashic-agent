@@ -28,19 +28,21 @@ TOOLS = ServiceKey("tools.v1")
 
 def write_plugins(path):
     path.mkdir()
-    shutil.copytree(
-        Path(__file__).resolve().parents[1] / "plugins" / "tools",
-        path / "tools",
-        ignore=shutil.ignore_patterns("__pycache__"),
-    )
+    for name in ("tools", "content"):
+        shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / name,
+                        path / name, ignore=shutil.ignore_patterns("__pycache__"))
     target = path / "target"
     target.mkdir()
     (target / "plugin.py").write_text("""
 from contextlib import asynccontextmanager
 from pathlib import Path
 from agent.plugin_composition import ServiceKey
-from plugins.tools.execution import Result
-from session.message import ContentPart
+from dataclasses import dataclass
+from agent.plugin_contracts import ContentPart
+@dataclass(frozen=True)
+class Result:
+    outcome: str
+    parts: tuple[ContentPart, ...]
 api_version = 3
 name = "target"
 version = "1.0.0"
@@ -92,7 +94,6 @@ def add_authorize(path):
     policy.mkdir()
     (policy / "plugin.py").write_text("""
 from agent.plugin_composition import ServiceKey
-from plugins.tools.api import Denied
 api_version = 3
 name = "authorize"
 version = "1.0.0"
@@ -100,7 +101,7 @@ inject = (ServiceKey("tools.v1"), ServiceKey("fixture.example-ref"))
 async def apply(ctx, config):
     async def authorize(arguments):
         if arguments["value"] == "restore:blocked":
-            raise Denied("blocked by fixed policy")
+            return "blocked by fixed policy"
     await ctx.require(inject[0]).register_authorize(
         ctx, tool=ctx.require(inject[1]), name="fixed-policy", authorize=authorize,
     )
