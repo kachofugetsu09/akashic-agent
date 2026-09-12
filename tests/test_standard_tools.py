@@ -56,14 +56,15 @@ def _unexpected_call_read(identity: str) -> Mapping[str, object]:
     raise AssertionError(f"controlled reply unexpectedly read model call {identity}")
 
 
-def environment(tmp_path, *, reply=False):
+def environment(tmp_path, *, reply=False, models=True):
     source = tmp_path / "plugins"
     for name in (
         "tools",
         "content",
         "context",
         "standard_tools",
-        *(("turn_projection", "sources", "models") if reply else ()),
+        *(("turn_projection", "sources") if reply else ()),
+        *(("models",) if reply and models else ()),
     ):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
