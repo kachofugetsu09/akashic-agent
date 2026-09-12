@@ -6,6 +6,8 @@ import hashlib
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 import tomllib
 from contextlib import closing
 from pathlib import Path
@@ -1208,7 +1210,10 @@ def test_fresh_init_runs_migrations_before_message_log_owner_creates_schema(
     assert not sessions.exists()
 
     first = _runner(root).run()
-    assert first.migrations == _CURRENT_IDS
+    assert first.migrations == ("20260802_01_yoyo_origin",)
+    with closing(sqlite3.connect(workspace / "migrations.sqlite3")) as connection:
+        applied = {row[0] for row in connection.execute("SELECT migration_id FROM _yoyo_migration")}
+        assert applied == {"20260802_01_yoyo_origin"}
     assert not sessions.exists()
 
     message_log = MessageLog(sessions)
@@ -1246,3 +1251,22 @@ def test_fresh_init_runs_migrations_before_message_log_owner_creates_schema(
     second = _runner(root).run()
     assert second.state == "current"
     assert second.migrations == ()
+
+
+def test_core_only_cli_restarts_after_creating_runtime_data(tmp_path: Path) -> None:
+    """真实 CLI 在创建当前持久状态后重启，不要求不存在的历史插件。"""
+    config = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    environment = dict(os.environ)
+    environment["AKASHIC_PLUGIN_HOME"] = str(tmp_path / "plugin-home")
+    environment["PYTHONPATH"] = os.pathsep.join((str(_PROJECT_ROOT / "sdk/python/src"), str(_PROJECT_ROOT)))
+    arguments = ["--config", str(config), "--workspace", str(workspace)]
+    for command in (["init", *arguments], ["--inspect-modules", *arguments], ["--inspect-modules", *arguments]):
+        result = subprocess.run(
+            [sys.executable, str(_PROJECT_ROOT / "main.py"), *command],
+            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=40,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert (workspace / "sessions.db").is_file()
+    with closing(sqlite3.connect(workspace / "migrations.sqlite3")) as connection:
+        assert {row[0] for row in connection.execute("SELECT migration_id FROM _yoyo_migration")} == {_ORIGIN_ID}

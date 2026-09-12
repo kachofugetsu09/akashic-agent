@@ -193,6 +193,10 @@ def test_fresh_core_only_workspace_skips_uninstalled_legacy_requirements(
     outcome = _runner(root).run()
 
     assert outcome.migrations == (core_id,)
+    # 真正创建现代持久数据后，第二次启动仍使用记录的起点，不重新猜测旧 schema。
+    from session.log import MessageLog
+    log = MessageLog(root / "workspace/sessions.db")
+    log.close()
     assert _runner(root).run().state == "current"
 
 

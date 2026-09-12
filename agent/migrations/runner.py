@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Literal, Sequence
@@ -84,7 +86,8 @@ class MigrationRunner:
         """加载不可变目录并提交全部缺失迁移。"""
 
         # 1. 初始化由 workspace 持有的迁移账本
-        has_authoritative_state = _workspace_has_authoritative_state(self.workspace)
+        fresh = _workspace_is_empty(self.workspace, self.config_path)
+        baseline = _read_baseline(self.ledger_path)
         try:
             self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
             core_migrations = _read_migrations(str(self.migrations_root))
@@ -99,19 +102,25 @@ class MigrationRunner:
                 for bundle in bundles
                 for migration_id in bundle.migration_ids
             )
+            if baseline is None and fresh:
+                baseline = tuple(item.migration_id for item in requirements
+                                 if item.migration_id not in core_ids + bundle_ids)
+            applicable = tuple(item for item in requirements
+                               if item.migration_id not in (baseline or ()))
             validate_bundle_dependencies(
                 bundles,
                 core_migration_ids=core_ids,
                 requirements=requirements,
-                require_missing_bundles=has_authoritative_state,
+                require_missing_bundles=False,
             )
             validate_pending_requirements(
-                requirements,
+                applicable,
                 loaded_ids=core_ids + bundle_ids,
                 applied_ids=_read_applied_ids(self.ledger_path),
                 bundles=bundles,
-                require_missing_bundles=has_authoritative_state,
             )
+            if fresh and baseline is not None:
+                _save_baseline(self.ledger_path, baseline)
             backend = get_backend(self._ledger_uri())
             os.chmod(self.ledger_path, 0o600)
 
@@ -128,7 +137,11 @@ class MigrationRunner:
                 migrations = _read_migrations(
                     str(self.migrations_root), bundles
                 )
-                pending = backend.to_apply(migrations)
+                selected = type(migrations)(
+                    (item for item in migrations if item.id not in (baseline or ())),
+                    migrations.post_apply,
+                )
+                pending = backend.to_apply(selected)
                 migration_ids = tuple(migration.id for migration in pending)
                 backend.apply_migrations(pending)
         except (MigrationBundleBlocked, MigrationBundleError):
@@ -170,39 +183,68 @@ def migrate_installation(config_path: Path, workspace: Path) -> MigrationOutcome
     ).run()
 
 
-_KNOWN_EMPTY_ASSETS = frozenset(
-    {
-        "VEDA.md",
-        "memes/manifest.json",
-        "plugin-data/context-builtin/config.local.toml",
-    }
-)
+def _workspace_is_empty(workspace: Path, config_path: Path) -> bool:
+    """只有锁与调用者配置之外没有任何文件时才能建立新 workspace 起点。"""
+    ignored = {WorkspaceInstanceLock(workspace).path, config_path}
+    return not any(path not in ignored and (path.is_file() or path.is_symlink())
+                   for path in workspace.rglob("*"))
 
 
-def _workspace_has_authoritative_state(workspace: Path) -> bool:
-    """识别需要历史 owner 才能安全升级的已存在 workspace 状态。"""
+def _read_baseline(path: Path) -> tuple[str, ...] | None:
+    """读取明确的新建起点；不根据运行后出现的数据文件推测历史。"""
+    if not path.exists():
+        return None
+    with closing(sqlite3.connect(f"file:{quote(path.as_posix(), safe='/')}?mode=ro", uri=True)) as connection:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='_akashic_workspace_origin'"
+        ).fetchone()
+        if exists is None:
+            return None
+        rows = connection.execute("SELECT version, baseline_ids FROM _akashic_workspace_origin").fetchall()
+    if len(rows) != 1 or rows[0][0] != 1:
+        raise ValueError("workspace 迁移起点损坏")
+    values = json.loads(rows[0][1])
+    if not isinstance(values, list) or any(not isinstance(item, str) or not item for item in values):
+        raise ValueError("workspace 迁移起点 ID 无效")
+    if len(set(values)) != len(values):
+        raise ValueError("workspace 迁移起点 ID 重复")
+    return tuple(values)
 
-    if not workspace.exists():
-        return False
-    for path in workspace.rglob("*"):
-        if not path.is_file() and not path.is_symlink():
-            continue
-        relative = path.relative_to(workspace).as_posix()
-        if relative == "migrations.sqlite3":
-            continue
-        if relative in _KNOWN_EMPTY_ASSETS:
-            continue
-        if path.name in {"sessions.db", "model-registry.sqlite3", "schedules.json"}:
-            return True
-        if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-            return True
-        if relative.startswith("runtime/"):
-            return True
-        if relative.startswith("memory/") and path.name != "VEDA.md":
-            return True
-        if relative.startswith("plugin-data/"):
-            return True
-    return False
+
+def _save_baseline(path: Path, baseline: tuple[str, ...]) -> None:
+    """单独记录不适用于新 workspace 的历史 ID，不伪造 Yoyo 已执行记录。"""
+    # 先完成私有临时账本，再以不覆盖既有文件的方式发布。
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".workspace-origin-", dir=path.parent)
+    temporary = Path(temporary_name)
+    os.close(descriptor)
+    try:
+        with closing(sqlite3.connect(temporary)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "CREATE TABLE _akashic_workspace_origin (version INTEGER NOT NULL, baseline_ids TEXT NOT NULL)"
+            )
+            connection.execute("INSERT INTO _akashic_workspace_origin VALUES (1, ?)", (json.dumps(baseline),))
+        with temporary.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        temporary.unlink()
+
+
+def initialize_empty_workspace(*, repo_root: Path, workspace: Path, config_path: Path) -> None:
+    """显式 init 在任何插件写入前记录起点；既有 workspace 保持原样。"""
+    workspace = workspace.resolve()
+    config_path = config_path.resolve()
+    lock = WorkspaceInstanceLock(workspace)
+    lock.acquire()
+    try:
+        if _workspace_is_empty(workspace, config_path):
+            requirements = load_migration_requirements(repo_root / "migrations/catalog.toml")
+            _save_baseline(workspace / "migrations.sqlite3", tuple(
+                item.migration_id for item in requirements if item.bundle_id is not None
+            ))
+    finally:
+        lock.release()
 
 
 def _read_applied_ids(path: Path) -> tuple[str, ...]:
