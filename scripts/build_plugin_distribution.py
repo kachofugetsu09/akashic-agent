@@ -9,8 +9,17 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
+
+
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if str(_SOURCE_ROOT) not in sys.path:
+    # Direct script execution has ``scripts/`` as sys.path[0].  The builder
+    # needs the checked out manifest parser, while the produced Core must
+    # remain independent of this checkout.
+    sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.static_manifest import load_static_plugin_manifest
 
@@ -78,7 +87,8 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
             identity = git(package, "rev-parse", "HEAD").decode().strip()
             bundle = output / (manifest.name + ".bundle")
             git(package, "bundle", "create", str(bundle.resolve()), "HEAD", "source")
-            rows.append({"name": manifest.name, "source_path": root, "file": bundle.name,
+            rows.append({"name": manifest.name, "source_commit": commit,
+                         "source_path": root, "file": bundle.name,
                          "source_revision": identity, "sha256": hashlib.sha256(bundle.read_bytes()).hexdigest()})
     report["plugins"] = rows
     (output / "distribution.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
