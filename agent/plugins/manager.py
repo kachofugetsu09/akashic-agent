@@ -32,6 +32,7 @@ from session.artifact_store import ArtifactStore
 from agent.plugins.config import read_config_source
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
+from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
 from agent.plugin_composition.messages import (
@@ -176,8 +177,7 @@ from agent.plugins.reload_journal import (
     ReloadPhase,
     ReloadRecoveryAction,
 )
-from agent.plugins.skill_host import PluginSkillHost
-from agent.plugin_composition.skills import SKILL_CATALOG, SkillRecord
+from agent.plugins.skill_host import PluginAssetHost
 from agent.plugins.web_ui import resolve_web_module
 from agent.workloads.client import UnixWorkloadController, WorkloadController
 from agent.plugins.snapshot import (
@@ -379,7 +379,7 @@ class PluginManager:
         self._candidate_prepare_lock = asyncio.Lock()
         self._fresh_importer = FreshPluginImporter()
         self._manager_namespace = secrets.token_hex(4)
-        self._skill_host = PluginSkillHost(workspace)
+        self._asset_host = PluginAssetHost()
         self._composition_runtime_generations: dict[str, PluginGeneration] = {}
         if workload_controller is None:
             workload_socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
@@ -406,7 +406,7 @@ class PluginManager:
         self._runtime_starting_roots: set[object] = set()
         self._runtime_lifecycle_lock = asyncio.Lock()
         self._runtime_services_enabled = False
-        self._snapshot_skill_catalogs: dict[str, str] = {}
+        self._snapshot_asset_catalogs: dict[str, str] = {}
         self._reload_journal = ReloadJournal(workspace)
         self._channel_provider_factory_resolver: (
             Callable[
@@ -1594,7 +1594,7 @@ class PluginManager:
                 self._activate_published_generation(generation, None)
             except Exception as error:
                 raise _StablePluginFailed(generation, "publish", error) from error
-        self._snapshot_skill_catalogs[snapshot.snapshot_id] = catalog_id
+        self._snapshot_asset_catalogs[snapshot.snapshot_id] = catalog_id
         await self._publish_committed_snapshot(snapshot)
         for generation in staged:
             generation.boot_created_data_dir = False
@@ -1616,7 +1616,7 @@ class PluginManager:
             and pending.candidate is snapshot
         )
         if snapshot is not None and not store_owned_pending:
-            _ = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
+            _ = self._snapshot_asset_catalogs.pop(snapshot.snapshot_id, None)
         for generation in reversed(staged):
             _ = self._active_generations.pop(generation.plugin_id, None)
             if not store_owned_pending:
@@ -1642,7 +1642,7 @@ class PluginManager:
         ):
             await snapshot.composition_root.dispose()
         if catalog_id is not None and not store_owned_pending:
-            self._skill_host.close(catalog_id)
+            self._asset_host.close(catalog_id)
 
     async def _retry_stable_batch_without_failed(
         self,
@@ -2078,9 +2078,9 @@ class PluginManager:
             if self._dashboard_validation_releaser is not None:
                 await self._dashboard_validation_releaser(snapshot)
             await composition_root.dispose()
-        catalog_id = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
+        catalog_id = self._snapshot_asset_catalogs.pop(snapshot.snapshot_id, None)
         if catalog_id is not None:
-            self._skill_host.close(catalog_id)
+            self._asset_host.close(catalog_id)
         state = "aborted" if snapshot.state == "aborted" else "retired"
         current = self._snapshot_store.current
         for generation in unreferenced_generations:
@@ -2374,7 +2374,7 @@ class PluginManager:
             if self._dashboard_preparer is not None:
                 self._dashboard_preparer(snapshot)
         except BaseException:
-            self._skill_host.close(catalog_id)
+            self._asset_host.close(catalog_id)
             await self._dispose_unreferenced_composition_root(snapshot)
             raise
 
@@ -2399,7 +2399,7 @@ class PluginManager:
         if (
             exclusive_endpoint_changed or v3_channel_catalog_changed
         ) and get_current_runtime_lease() is not None:
-            self._skill_host.close(catalog_id)
+            self._asset_host.close(catalog_id)
             await self._dispose_unreferenced_composition_root(snapshot)
             raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换独占端点")
         quiesced = self._snapshot_store.pause_admission() if publication_gated else None
@@ -2410,7 +2410,7 @@ class PluginManager:
                     await self._endpoint_quiescer()
                 if exclusive_endpoint_changed or v3_channel_catalog_changed:
                     await self._snapshot_store.wait_for_no_leases(quiesced)
-            self._snapshot_skill_catalogs[snapshot.snapshot_id] = catalog_id
+            self._snapshot_asset_catalogs[snapshot.snapshot_id] = catalog_id
             transaction = self._snapshot_store.begin_publish(snapshot)
             await self._post_snapshot_invariants(snapshot)
         except BaseException:
@@ -2418,8 +2418,8 @@ class PluginManager:
                 await self._snapshot_store.abort(transaction)
             else:
                 await self._snapshot_store.resume(quiesced)
-                _ = self._snapshot_skill_catalogs.pop(snapshot.snapshot_id, None)
-                self._skill_host.close(catalog_id)
+                _ = self._snapshot_asset_catalogs.pop(snapshot.snapshot_id, None)
+                self._asset_host.close(catalog_id)
                 await self._dispose_unreferenced_composition_root(snapshot)
             if self._endpoint_resumer is not None and exclusive_endpoint_changed:
                 await self._endpoint_resumer()
@@ -2741,20 +2741,9 @@ class PluginManager:
         catalog_id = f"topology:{self._generation_sequence}:{secrets.token_hex(4)}"
         ordered = list(generations.values())
         active_ordered = self._static_active_generations(ordered)
-        catalog = self._skill_host.prepare(
+        catalog = self._asset_host.prepare(
             catalog_id,
-            normal_roots=PluginSkillHost.roots_for(active_ordered, drift=False),
-            drift_roots=PluginSkillHost.roots_for(active_ordered, drift=True),
-            ignored_normal_roots=tuple(
-                root
-                for generation in active_ordered
-                for root in generation.contributions.skill_roots
-            ),
-            ignored_drift_roots=tuple(
-                root
-                for generation in active_ordered
-                for root in generation.contributions.drift_skill_roots
-            ),
+            asset_roots=PluginAssetHost.roots_for(active_ordered),
         )
         composition_root, created_root = await self._resolve_composition_root(
             generations
@@ -2767,12 +2756,11 @@ class PluginManager:
                 core_channel_definitions=self._core_channel_definitions,
             )
             _validate_static_manifest_runtime(snapshot, generations)
-            snapshot.skill_catalog_generation_id = catalog_id
-            snapshot.plugin_skill_index = catalog.normal_plugins
+            snapshot.asset_catalog_generation_id = catalog_id
             self._refresh_composition_runtime_tools(snapshot)
             return snapshot, catalog_id
         except BaseException:
-            self._skill_host.close(catalog_id)
+            self._asset_host.close(catalog_id)
             if created_root and composition_root is not None:
                 await composition_root.dispose()
             raise
@@ -4231,9 +4219,9 @@ class PluginManager:
             or self._snapshot_store.pending_candidate is not snapshot
         ):
             raise RuntimeError("RuntimeSnapshot 候选事务不一致")
-        catalog_id = snapshot.skill_catalog_generation_id
-        if catalog_id is not None and self._skill_host.get(catalog_id) is None:
-            raise RuntimeError("RuntimeSnapshot skill catalog 不可用")
+        catalog_id = snapshot.asset_catalog_generation_id
+        if catalog_id is not None and self._asset_host.get(catalog_id) is None:
+            raise RuntimeError("RuntimeSnapshot asset catalog 不可用")
         for item in snapshot.generations.values():
             if item.scope.closed:
                 raise RuntimeError("RuntimeSnapshot 插件作用域已关闭")
@@ -4474,18 +4462,6 @@ class PluginManager:
                     "prepared_generation": None,
                     "gate_status": "active",
                     "candidate_revision": source_revision,
-                    "skills": (
-                        list(active.skill_catalog.names)
-                        if active.skill_catalog is not None
-                        else []
-                    ),
-                    "skill_descriptions": _skill_descriptions(active),
-                    "drift_skill_descriptions": _drift_skill_descriptions(active),
-                    "skill_body_hashes": _skill_body_hashes(active, drift=False),
-                    "drift_skill_body_hashes": _skill_body_hashes(
-                        active,
-                        drift=True,
-                    ),
                     "mcp_tools": _mcp_tool_names(active),
                     "snapshot_id": (
                         self.current_snapshot.snapshot_id
@@ -4516,27 +4492,6 @@ class PluginManager:
                 "gate_status": gate.status if gate is not None else "failed",
                 "candidate_revision": (
                     gate.candidate_revision if gate is not None else ""
-                ),
-                "skills": (
-                    list(prepared.skill_catalog.names)
-                    if prepared is not None and prepared.skill_catalog is not None
-                    else []
-                ),
-                "skill_descriptions": (
-                    _skill_descriptions(prepared) if prepared is not None else {}
-                ),
-                "drift_skill_descriptions": (
-                    _drift_skill_descriptions(prepared) if prepared is not None else {}
-                ),
-                "skill_body_hashes": (
-                    _skill_body_hashes(prepared, drift=False)
-                    if prepared is not None
-                    else {}
-                ),
-                "drift_skill_body_hashes": (
-                    _skill_body_hashes(prepared, drift=True)
-                    if prepared is not None
-                    else {}
                 ),
                 "mcp_tools": _mcp_tool_names(prepared) if prepared is not None else [],
                 "snapshot_id": (
@@ -4899,35 +4854,15 @@ class PluginManager:
             ]
             catalog_generations.append(generation)
             catalog_generations = self._static_active_generations(catalog_generations)
-            ignored_generations = self._static_active_generations(
-                [*self._active_generations.values(), generation]
-            )
             try:
-                skill_catalog = self._skill_host.prepare(
+                asset_catalog = self._asset_host.prepare(
                     generation_id,
-                    normal_roots=PluginSkillHost.roots_for(
-                        catalog_generations,
-                        drift=False,
-                    ),
-                    drift_roots=PluginSkillHost.roots_for(
-                        catalog_generations,
-                        drift=True,
-                    ),
-                    ignored_normal_roots=tuple(
-                        root
-                        for item in ignored_generations
-                        for root in item.contributions.skill_roots
-                    ),
-                    ignored_drift_roots=tuple(
-                        root
-                        for item in ignored_generations
-                        for root in item.contributions.drift_skill_roots
-                    ),
+                    asset_roots=PluginAssetHost.roots_for(catalog_generations),
                 )
             except Exception as error:
                 gate_result = _with_gate_check(
                     gate_result,
-                    check_id="skill_catalog",
+                    check_id="asset_catalog",
                     passed=False,
                     evidence=str(error),
                 )
@@ -4935,16 +4870,19 @@ class PluginManager:
                 raise _CandidateRejected(gate_result) from error
             gate_result = _with_gate_check(
                 gate_result,
-                check_id="skill_catalog",
+                check_id="asset_catalog",
                 passed=True,
-                evidence=list(skill_catalog.names),
+                evidence=[
+                    (asset.owner_id, asset.category)
+                    for asset in asset_catalog.assets
+                ],
             )
             self._gate_results[plugin_id] = gate_result
             generation.gate_result = gate_result
-            generation.skill_catalog = skill_catalog
+            generation.asset_catalog = asset_catalog
             scope.defer(
-                "skill_catalog",
-                lambda: self._skill_host.close(generation_id),
+                "asset_catalog",
+                lambda: self._asset_host.close(generation_id),
             )
             if not activate:
                 validation_root = (
@@ -5739,19 +5677,24 @@ class PluginManager:
             for generation in mount_order
             for key in cast(ComposablePlugin, generation.instance).inject
         }
-        if SKILL_CATALOG in requested:
-            def read_skill_catalog() -> tuple[SkillRecord, ...]:
-                """绑定与材料只读取实际调用所在快照的安装目录。"""
+        if INSTALLED_ASSETS in requested:
+            def read_installed_assets() -> tuple[InstalledAsset, ...]:
+                """读取当前 runtime scope 固定的原始声明资产树。"""
                 snapshot = get_current_runtime_snapshot()
+                if snapshot is None:
+                    raise RuntimeError("读取声明资产需要当前任务的 runtime scope")
                 current = snapshot.composition_root
-                if current is None or current.context.require(SKILL_CATALOG) is not read_skill_catalog:
-                    raise RuntimeError("技能目录不属于当前 runtime scope")
-                index = snapshot.plugin_skill_index
-                if index is None:
-                    raise RuntimeError("当前 snapshot 没有已发布技能目录")
-                return tuple(index.records[key] for key in sorted(index.records))
+                if current is None or current.context.require(INSTALLED_ASSETS) is not read_installed_assets:
+                    raise RuntimeError("声明资产不属于当前 runtime scope")
+                catalog_id = snapshot.asset_catalog_generation_id
+                if catalog_id is None:
+                    raise RuntimeError("当前 snapshot 没有声明资产目录")
+                catalog = self._asset_host.get(catalog_id)
+                if catalog is None:
+                    raise RuntimeError("当前 snapshot 声明资产目录不可用")
+                return catalog.assets
 
-            _ = await root.context.provide(SKILL_CATALOG, read_skill_catalog)
+            _ = await root.context.provide(INSTALLED_ASSETS, read_installed_assets)
         if CREDENTIALS in requested:
             clients = CredentialClients(None if candidate or self._validation_only else {
                 generation.plugin_id: CoreProviderClientFactory(
@@ -6878,6 +6821,14 @@ class PluginManager:
         plugin_id: str,
         plugin_dir: Path,
     ) -> PluginContributions:
+        asset_roots = tuple(
+            (
+                category,
+                _resolve_declared_roots(plugin_dir, declared),
+            )
+            for category, declared in instance.asset_roots
+        )
+        asset_map = dict(asset_roots)
         return PluginContributions(
             manifest={
                 "name": instance.name,
@@ -6885,14 +6836,9 @@ class PluginManager:
                 "desc": instance.desc,
                 "author": instance.author,
             },
-            skill_roots=_resolve_declared_roots(
-                plugin_dir,
-                instance.skill_roots,
-            ),
-            drift_skill_roots=_resolve_declared_roots(
-                plugin_dir,
-                instance.drift_skill_roots,
-            ),
+            asset_roots=asset_roots,
+            skill_roots=asset_map.get("skills", ()),
+            drift_skill_roots=asset_map.get("drift_skills", ()),
             dashboard_module=_resolve_dashboard_module(
                 plugin_dir,
                 instance.dashboard_module,
@@ -7774,7 +7720,7 @@ def _replace_snapshot_payload(
         raise RuntimeError("只能刷新无 lease 的 candidate snapshot")
     for name in (
         "generations",
-        "skill_catalog_generation_id",
+        "asset_catalog_generation_id",
         "dashboard_bindings",
         "web_ui_catalog",
         "web_ui_catalog_identity",
@@ -7790,7 +7736,6 @@ def _replace_snapshot_payload(
         "workload_registry",
         "workload_registry_identity",
         "tool_registry",
-        "plugin_skill_index",
         "command_registry",
         "plugin_tool_catalog",
         "plugin_tool_catalog_identity",
@@ -8167,41 +8112,6 @@ def _path_metadata(path: Path) -> bytes:
     return f"{path}:{stat.st_mtime_ns}:{stat.st_size}".encode()
 
 
-def _skill_descriptions(generation: PluginGeneration) -> dict[str, str]:
-    catalog = generation.skill_catalog
-    if catalog is None:
-        return {}
-    return {
-        name: record.description
-        for name, record in sorted(catalog.normal.records.items())
-    }
-
-
-def _drift_skill_descriptions(generation: PluginGeneration) -> dict[str, str]:
-    catalog = generation.skill_catalog
-    if catalog is None:
-        return {}
-    return {
-        name: record.description
-        for name, record in sorted(catalog.drift.records.items())
-    }
-
-
-def _skill_body_hashes(
-    generation: PluginGeneration,
-    *,
-    drift: bool,
-) -> dict[str, str]:
-    catalog = generation.skill_catalog
-    if catalog is None:
-        return {}
-    records = catalog.drift.records if drift else catalog.normal.records
-    return {
-        name: hashlib.sha256(record.content.encode()).hexdigest()
-        for name, record in sorted(records.items())
-    }
-
-
 def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
     snapshot = generation.runtime_snapshot
     if snapshot is None or snapshot.tool_registry is None:
@@ -8224,14 +8134,12 @@ def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
 def _log_candidate_status(result: dict[str, object]) -> None:
     logger.info(
         "plugin_candidate_status plugin=%s gate=%s active=%s prepared=%s "
-        "revision=%s counts=skills:%d,drift_skills:%d,mcp:%d",
+        "revision=%s mcp_tools=%d",
         result["plugin_id"],
         result["gate_status"],
         result["active_generation"],
         result["prepared_generation"] or "-",
         str(result["candidate_revision"])[:12],
-        len(cast(list[object], result["skills"])),
-        len(cast(dict[object, object], result["drift_skill_descriptions"])),
         len(cast(list[object], result["mcp_tools"])),
     )
     logger.debug(

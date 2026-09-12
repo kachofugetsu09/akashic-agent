@@ -24,7 +24,6 @@ from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from session.log import MessageLog
 from session.artifact_store import ArtifactStore
 from session.message import ContentPart, Input, Output, ToolResult
-from tests.test_message_push_plugin import storage
 
 
 def prompt_sources(sources):
@@ -63,7 +62,10 @@ async def apply(ctx, config):
 @asynccontextmanager
 async def application(tmp_path):
     sources = tmp_path / "plugins"
-    store, log = storage(tmp_path / "workspace")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    log = MessageLog(workspace / "sessions.db")
+    store = ArtifactStore(workspace / "sessions.db")
     for name in ("content", "context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
@@ -146,6 +148,24 @@ async def test_prompt_fails_on_missing_or_corrupt_veda_without_reset(tmp_path, p
 
 
 @pytest.mark.asyncio
+async def test_skill_catalog_cache_still_requires_the_calling_task_lease(tmp_path):
+    async with application(tmp_path) as (_, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            service = snapshot.composition_root.context.require(
+                ServiceKey("standard_tools.skill_inspection.v1")
+            )
+            assert [item["name"] for item in service.list_skills()] == ["example"]
+
+            async def inherited_task():
+                return service.list_skills()
+
+            with pytest.raises(RuntimeError, match="当前任务的 runtime scope"):
+                await asyncio.create_task(inherited_task())
+        with pytest.raises(RuntimeError, match="当前任务的 runtime scope"):
+            service.list_skills()
+
+
+@pytest.mark.asyncio
 async def test_load_skill_reopens_original_tree_after_source_removal_and_restart(tmp_path):
     async with application(tmp_path) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
@@ -156,7 +176,16 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
             metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
             state = cast(Mapping[str, object], metadata["state"])
             assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
-            original_root = snapshot.plugin_skill_index.records["example"].root_dir
+            catalog_id = snapshot.asset_catalog_generation_id
+            assert catalog_id is not None
+            catalog = host._asset_host.get(catalog_id)
+            assert catalog is not None
+            asset = next(
+                item
+                for item in catalog.assets
+                if item.owner_id == "fixture_skills" and item.category == "skills"
+            )
+            original_root = asset.root_dir / "example"
         # 原安装改变后，工具打开的是 capture 已归档的完整资源。
         (tmp_path / "plugins/fixture_skills/skills/example/resource.txt").write_text("resource-b")
         (tmp_path / "plugins/fixture_skills/skills/example/SKILL.md").write_text("---\ndescription: updated\n---\n新版指令")

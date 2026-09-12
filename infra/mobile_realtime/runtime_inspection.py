@@ -17,7 +17,6 @@ from agent.plugins.snapshot import (
     RuntimeSnapshotStore,
     lease_runtime_snapshot,
 )
-from agent.skills import SkillRecord, SkillsLoader
 
 _MAX_DOCUMENT_BYTES = 192 * 1024
 _MAX_RECENT_PLUGIN_INCIDENTS = 20
@@ -78,6 +77,19 @@ class _SchedulerInspection(Protocol):
 # scheduler 插件从自己的 inspection 模块注册同名 key。
 _SCHEDULER_INSPECTION = ServiceKey[_SchedulerInspection](
     "scheduler.inspection.v1"
+)
+
+
+class _SkillInspection(Protocol):
+    """Core 只消费 standard_tools 发布的技能只读投影。"""
+
+    def list_skills(self) -> tuple[Mapping[str, object], ...]:
+        ...
+
+
+# ServiceKey 按名称相等；Core 不导入 standard_tools 的 provider 实现。
+_SKILL_INSPECTION = ServiceKey[_SkillInspection](
+    "standard_tools.skill_inspection.v1"
 )
 
 
@@ -156,7 +168,7 @@ class RuntimeInspectionService:
             return {
                 "snapshot_id": snapshot.snapshot_id,
                 "plugins": _plugin_items(snapshot),
-                "skills": _skill_items(self._workspace, snapshot),
+                "skills": _skill_items(snapshot),
                 "mcp_servers": _mcp_items(snapshot),
             }
 
@@ -349,28 +361,17 @@ def _top_level_plugin_owners(
     return owners
 
 
-def _skill_items(workspace: Path, snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
-    records: dict[str, SkillRecord] = {
-        record.name: record
-        for record in SkillsLoader(workspace).list_skill_records(
-            filter_unavailable=False
+def _skill_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
+    """读取普通插件的技能投影；缺少 provider 时明确报告不可用。"""
+
+    root = snapshot.composition_root
+    service = None if root is None else root.context.get(_SKILL_INSPECTION)
+    if service is None:
+        raise RuntimeInspectionError(
+            "skills_unavailable",
+            "技能检查服务尚未绑定",
         )
-    }
-    if snapshot.plugin_skill_index is not None:
-        for name, record in snapshot.plugin_skill_index.records.items():
-            _ = records.setdefault(name, record)
-    return [
-        {
-            "name": record.name,
-            "display_name": record.display_name,
-            "description": record.description,
-            "source": record.source,
-            "source_id": record.source_id,
-            "available": record.available,
-            "missing": record.missing,
-        }
-        for record in sorted(records.values(), key=lambda item: item.name)
-    ]
+    return [dict(item) for item in service.list_skills()]
 
 
 def _mcp_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:

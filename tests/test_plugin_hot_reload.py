@@ -19,6 +19,7 @@ from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 from starlette.websockets import WebSocketDisconnect
 
 from agent.plugin_composition import CompositionError
+from agent.plugin_composition.assets import InstalledAsset
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
 from agent.plugins.dashboard_host import (
     DashboardBinding,
@@ -27,7 +28,7 @@ from agent.plugins.dashboard_host import (
 )
 from agent.plugins.manager import PluginManager, _source_revision
 from agent.plugins.manifest import write_plugin_manifest
-from agent.plugins.skill_host import SkillSnapshot
+from agent.plugins.skill_host import AssetSnapshot
 from agent.plugins.skill_links import PluginSkillLinker
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
@@ -36,7 +37,7 @@ from agent.plugins.snapshot import (
     lease_runtime_snapshot,
 )
 from agent.plugins.watcher import PluginWatcher
-from agent.skills import SkillsLoader
+from plugins.standard_tools.skill_catalog import SkillCatalogParser
 from agent.tools.registry import ToolRegistry
 from bootstrap.dashboard_api import create_dashboard_app
 from bus.event_bus import EventBus
@@ -143,7 +144,7 @@ def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
 
 
 def test_skill_snapshot_cleanup_removes_readonly_image_copies() -> None:
-    snapshot = SkillSnapshot()
+    snapshot = AssetSnapshot()
     nested = snapshot.root / "selected" / "skill"
     nested.mkdir(parents=True)
     skill_file = nested / "SKILL.md"
@@ -397,7 +398,7 @@ async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
+async def test_asset_host_leaves_skill_duplicates_to_standard_tools(tmp_path: Path):
     first_dir = _write_plugin(
         tmp_path / "plugins",
         "first_skills",
@@ -411,8 +412,13 @@ async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
     manager = _manager(tmp_path, workspace=tmp_path / "workspace")
     await manager.load_all()
     first = manager.generation("first_skills")
-    assert first is not None and first.skill_catalog is not None
-    assert first.skill_catalog.normal.get("shared").source_id == "first_skills"  # type: ignore[union-attr]
+    assert first is not None and first.asset_catalog is not None
+    first_asset = next(
+        asset
+        for asset in first.asset_catalog.assets
+        if asset.category == "skills"
+    )
+    assert (first_asset.root_dir / "shared" / "SKILL.md").is_file()
 
     second_dir = _write_plugin(
         tmp_path / "plugins",
@@ -427,10 +433,21 @@ async def test_skill_catalog_rejects_cross_plugin_duplicates(tmp_path: Path):
 
     await manager.load_all()
 
-    gate = manager.latest_gate("second_skills")
-    assert gate is not None and gate.status == "failed"
-    assert gate.checks[-1].check_id == "skill_catalog"
-    assert manager.generation("second_skills") is None
+    second = manager.generation("second_skills")
+    assert second is not None and second.asset_catalog is not None
+    second_asset = next(
+        asset
+        for asset in second.asset_catalog.assets
+        if asset.category == "skills"
+    )
+    with pytest.raises(RuntimeError, match="Skill 名称重复"):
+        SkillCatalogParser(capability_checker=None).parse(
+            (
+                InstalledAsset("first_skills", "skills", first_dir / "skills"),
+                InstalledAsset("second_skills", "skills", second_dir / "skills"),
+            )
+        )
+    assert (second_asset.root_dir / "shared" / "SKILL.md").is_file()
     await manager.terminate_all()
 
 
@@ -457,9 +474,17 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
     manager = _manager(tmp_path, workspace=workspace)
     await manager.load_all()
     active = manager.generation("skill_reload")
-    assert active is not None and active.skill_catalog is not None
-    active_record = active.skill_catalog.normal.get("shared")
-    assert active_record is not None
+    assert active is not None and active.asset_catalog is not None
+    active_asset = next(
+        asset
+        for asset in active.asset_catalog.assets
+        if asset.category == "skills"
+    )
+    active_root = active_asset.root_dir / "shared"
+    assert active_root.is_dir()
+    assert active_root.joinpath("SKILL.md").read_text(encoding="utf-8").endswith(
+        "body a\n"
+    )
 
     release_b_skill = plugin_dir / "skills-b" / "shared"
     release_b_skill.mkdir(parents=True)
@@ -473,12 +498,17 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
 
     prepared = await manager.prepare_candidate("skill_reload")
 
-    assert prepared is not None and prepared.skill_catalog is not None
-    prepared_record = prepared.skill_catalog.normal.get("shared")
-    assert prepared_record is not None
-    assert active_record.description == "release a"
-    assert prepared_record.description == "release b"
-    assert active_record.root_dir != prepared_record.root_dir
+    assert prepared is not None and prepared.asset_catalog is not None
+    prepared_asset = next(
+        asset
+        for asset in prepared.asset_catalog.assets
+        if asset.category == "skills"
+    )
+    prepared_root = prepared_asset.root_dir / "shared"
+    assert prepared_root.joinpath("SKILL.md").read_text(encoding="utf-8").endswith(
+        "body b\n"
+    )
+    assert active_root != prepared_root
     await manager.discard_prepared("skill_reload")
     await manager.terminate_all()
 
@@ -497,8 +527,8 @@ async def test_skill_catalog_cleanup_failure_is_reported(
     manager = _manager(tmp_path)
     await manager.load_all()
     generation = manager.generation("skill_cleanup")
-    assert generation is not None and generation.skill_catalog is not None
-    snapshot_root = generation.skill_catalog.snapshot.root
+    assert generation is not None and generation.asset_catalog is not None
+    snapshot_root = generation.asset_catalog.snapshot.root
     real_rmtree = shutil.rmtree
 
     def fail_snapshot_cleanup(path: Path, *args: Any, **kwargs: Any) -> None:
@@ -510,7 +540,7 @@ async def test_skill_catalog_cleanup_failure_is_reported(
     await manager.terminate_all()
 
     assert any(
-        failure.resource == "skill_catalog"
+        failure.resource == "asset_catalog"
         and failure.error == "snapshot cleanup failed"
         for failure in manager.cleanup_failures
     )
@@ -624,10 +654,9 @@ async def test_installed_candidate_promotion_syncs_stable_skill_projection(
         workspace=workspace,
         plugin_roots=manager.skill_projection_roots,
     ).sync(manager.active_plugins())
-    loader = SkillsLoader(workspace, builtin_skills_dir=tmp_path / "builtin")
     stable_link = workspace / "skills" / "stable-skill"
     assert stable_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "stable-skill"
-    assert loader.load_skill_body("stable-skill") == "stable body\n"
+    assert (stable_link / "SKILL.md").read_text(encoding="utf-8") == "stable body\n"
 
     write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
     assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
@@ -650,7 +679,7 @@ async def test_installed_candidate_promotion_syncs_stable_skill_projection(
     assert promoted["publication_state"] == "promoted"
     assert not stable_link.exists()
     assert candidate_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "candidate-skill"
-    assert loader.load_skill_body("candidate-skill") == "candidate body\n"
+    assert (candidate_link / "SKILL.md").read_text(encoding="utf-8") == "candidate body\n"
     await manager.terminate_all()
 
 

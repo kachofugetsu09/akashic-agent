@@ -14,7 +14,6 @@ from agent.control.scoped_turn import TurnAdmissionRetiredError
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
 from agent.tools.registry import ToolRegistry
-from agent.plugin_composition.skills import SkillIndex
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,
@@ -72,7 +71,7 @@ RuntimeSelector = Literal["stable", "latest"]
 class RuntimeSnapshot:
     snapshot_id: str
     generations: Mapping[str, PluginGeneration]
-    skill_catalog_generation_id: str | None
+    asset_catalog_generation_id: str | None
     dashboard_bindings: tuple[object, ...] = ()
     web_ui_catalog: WebUiCatalog | None = None
     web_ui_catalog_identity: str | None = None
@@ -91,7 +90,6 @@ class RuntimeSnapshot:
     plugin_tool_catalog_identity: str | None = None
     plugin_tool_facades: tuple[PluginTools, ...] = field(default=(), repr=False)
     tool_registry: ToolRegistry | None = None
-    plugin_skill_index: SkillIndex | None = None
     command_registry: CommandRegistry | None = None
     composition_root: CompositionSnapshotRoot | None = None
     composition_topology: TopologyView | None = None
@@ -148,28 +146,10 @@ class RuntimeSnapshotCompiler:
         ordered = [generations[key] for key in sorted(generations)]
         if any(generation.plugin_id != key for key, generation in generations.items()):
             raise RuntimeError("RuntimeSnapshot generation key 与 plugin_id 不一致")
-        catalog_owner = catalog_generation or next(
-            (
-                generation
-                for generation in reversed(ordered)
-                if generation.skill_catalog
-            ),
-            None,
-        )
-        if (
-            catalog_owner is not None
-            and generations.get(catalog_owner.plugin_id) is not catalog_owner
-        ):
-            raise RuntimeError("RuntimeSnapshot catalog owner 不属于 generations")
         identity = "|".join(
             f"{generation.plugin_id}:{generation.generation_id}:"
             f"{generation.source_revision}:{generation.config_revision}"
             for generation in ordered
-        )
-        identity += "|skill:" + (
-            catalog_owner.skill_catalog.generation_id
-            if catalog_owner is not None and catalog_owner.skill_catalog is not None
-            else ""
         )
         identity += f"|snapshot:{snapshot_revision}"
         composition_topology: TopologyView | None = None
@@ -488,13 +468,6 @@ class RuntimeSnapshotCompiler:
                     f"{item.plugin_id}:{item.generation_id}:{item.source_revision}:{item.config_revision}"
                     for item in ordered
                 ),
-                "skill:"
-                + (
-                    catalog_owner.skill_catalog.generation_id
-                    if catalog_owner is not None
-                    and catalog_owner.skill_catalog is not None
-                    else ""
-                ),
                 f"snapshot:{snapshot_revision}",
                 "composition:"
                 + (
@@ -529,11 +502,7 @@ class RuntimeSnapshotCompiler:
         return RuntimeSnapshot(
             snapshot_id=snapshot_id,
             generations=MappingProxyType(dict(generations)),
-            skill_catalog_generation_id=(
-                catalog_owner.skill_catalog.generation_id
-                if catalog_owner is not None and catalog_owner.skill_catalog is not None
-                else None
-            ),
+            asset_catalog_generation_id=None,
             web_ui_catalog=web_ui_catalog,
             web_ui_catalog_identity=(
                 None if web_ui_catalog is None else web_ui_catalog.identity
@@ -566,11 +535,6 @@ class RuntimeSnapshotCompiler:
                 None if plugin_tool_catalog is None else plugin_tool_catalog.identity
             ),
             plugin_tool_facades=plugin_tool_facades,
-            plugin_skill_index=(
-                catalog_owner.skill_catalog.normal_plugins
-                if catalog_owner is not None and catalog_owner.skill_catalog is not None
-                else None
-            ),
             command_registry=command_registry,
             composition_root=composition_root,
             composition_topology=composition_topology,

@@ -18,7 +18,8 @@ from agent.host_bridge.client import HostBridgeSkillCapabilityChecker
 from agent.host_bridge.factory import build_shell_process_manager
 from agent.host_bridge.protocol import CHANNEL_OPTIONS
 from agent.host_bridge.server import HostBridgeService, _host_environment
-from agent.skills import SkillsLoader
+from agent.plugin_composition.assets import InstalledAsset
+from plugins.standard_tools.skill_catalog import SkillCatalogParser
 from agent.tools.base import ToolResult
 
 
@@ -423,12 +424,15 @@ async def test_skills_loader_checks_requirements_in_host_bridge_namespace(
         await manager.claim_boot()
 
         record = await asyncio.to_thread(
-            lambda: SkillsLoader(
-                workspace,
-                builtin_skills_dir=tmp_path / "builtin",
-            )
-            .build_index()
-            .records["host-capability"]
+            lambda: SkillCatalogParser().parse(
+                (
+                    InstalledAsset(
+                        "workspace",
+                        "skills",
+                        workspace / "skills",
+                    ),
+                )
+            )[0]
         )
 
         assert record.available is False
