@@ -85,6 +85,6 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
     _ = await ctx.provide(MODEL_CONTENT, ContentOwner())
     _ = await ctx.provide(MODEL_SELECTION, SelectionOwner())
-    for method, operation in rpc_methods(BoundModelControl()).items():
+    for method, operation in rpc_methods(BoundModelControl(ctx)).items():
         _ = await ctx.provide(rpc_method_key(method), operation)
     _ = await ctx.on(SNAPSHOT_SEALING, state.seal)
