@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from agent.plugin_composition import (
+    AttachmentKind,
     ChannelFactoryContext,
     AttachmentRef,
     CredentialRef,
@@ -68,10 +69,42 @@ class _ProviderFactory:
         return None
 
 
+class _AttachmentLease:
+    def __init__(self, ref: AttachmentRef, data: bytes) -> None:
+        self.ref = ref
+        self._data = data
+        self.closed = False
+
+    async def read_bytes(self, *, max_bytes: int) -> bytes:
+        if len(self._data) > max_bytes:
+            raise ValueError("fixture lease max_bytes")
+        return self._data
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _AttachmentRead:
+    def __init__(self, allowed: AttachmentRef, data: bytes) -> None:
+        self.allowed = allowed
+        self.data = data
+        self.acquired: list[AttachmentRef] = []
+        self.leases: list[_AttachmentLease] = []
+
+    async def acquire(self, ref: AttachmentRef) -> _AttachmentLease:
+        self.acquired.append(ref)
+        if ref != self.allowed:
+            raise PermissionError("fixture attachment lease denied")
+        lease = _AttachmentLease(ref, self.data)
+        self.leases.append(lease)
+        return lease
+
+
 def _context(
     *,
     config: dict[str, object],
     credentials: dict[str, CredentialRef] | None = None,
+    attachment_read: object | None = None,
 ) -> tuple[ChannelFactoryContext, _Ingress, _ProviderFactory]:
     ingress = _Ingress()
     provider = _ProviderFactory()
@@ -85,6 +118,7 @@ def _context(
         ingress=ingress,
         identity=_Identity(),
         attachment_import=_AttachmentImport(),
+        attachment_read=attachment_read,
     )
     return context, ingress, provider
 
@@ -110,6 +144,14 @@ class _TelegramBot:
     async def send_message(self, *, chat_id: int, text: str, **_: object) -> Any:
         self.sent.append(("text", chat_id, text))
         return SimpleNamespace(message_id=11)
+
+    async def send_photo(self, *, chat_id: int, **_: object) -> Any:
+        self.sent.append(("photo", chat_id, ""))
+        return SimpleNamespace(message_id=12)
+
+    async def send_document(self, *, chat_id: int, **_: object) -> Any:
+        self.sent.append(("document", chat_id, ""))
+        return SimpleNamespace(message_id=13)
 
 
 class _TelegramApplication:
@@ -172,9 +214,20 @@ async def test_telegram_external_owner_handles_inbound_delivery_and_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(telegram_channel, "Application", _TelegramApplicationFactory)
+    outbound_data = b"outbound-image"
+    outbound_ref = AttachmentRef(
+        "outbound-attachment",
+        AttachmentKind.IMAGE,
+        "reply.jpg",
+        "image/jpeg",
+        len(outbound_data),
+        hashlib.sha256(outbound_data).hexdigest(),
+    )
+    attachment_read = _AttachmentRead(outbound_ref, outbound_data)
     context, ingress, provider = _context(
         config={"allow_from": ["alice"]},
         credentials={"token": CredentialRef(("token",))},
+        attachment_read=attachment_read,
     )
     adapter = telegram_channel.build_telegram_channel(context)
     adapter.attach_runtime(
@@ -213,6 +266,8 @@ async def test_telegram_external_owner_handles_inbound_delivery_and_stop(
     assert len(ingress.messages) == 1
     assert ingress.messages[0].message.content == "hello"
     assert ingress.messages[0].recipient == "1001"
+    await adapter._on_update(update, SimpleNamespace(bot=adapter._app.bot))
+    assert len(ingress.messages) == 1
 
     receipt = await adapter.deliver(
         ProviderDeliveryRequest(
@@ -224,6 +279,19 @@ async def test_telegram_external_owner_handles_inbound_delivery_and_stop(
     )
     assert receipt.status is DeliveryStatus.DELIVERED
     assert adapter._app.bot.sent == [("text", 1001, "reply")]
+
+    attachment_receipt = await adapter.deliver(
+        ProviderDeliveryRequest(
+            binding_token=context.binding_token,
+            delivery_id="delivery-attachment",
+            recipient="1001",
+            body="",
+            attachments=(outbound_ref,),
+        )
+    )
+    assert attachment_receipt.status is DeliveryStatus.DELIVERED
+    assert adapter._app.bot.sent[-1] == ("photo", 1001, "")
+    assert attachment_read.leases[0].closed
 
     async def get_file(_file_id):
         async def download():
@@ -245,14 +313,130 @@ async def test_telegram_external_owner_handles_inbound_delivery_and_stop(
     assert adapter._app is None
 
 
+@pytest.mark.asyncio
+async def test_telegram_start_failure_and_stop_failure_never_report_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(telegram_channel, "Application", _TelegramApplicationFactory)
+
+    async def fail_initialize(self) -> None:
+        raise RuntimeError("fixture initialize failure")
+
+    monkeypatch.setattr(_TelegramApplication, "initialize", fail_initialize)
+    context, _, provider = _context(
+        config={"allow_from": []},
+        credentials={"token": CredentialRef(("token",))},
+    )
+    adapter = telegram_channel.build_telegram_channel(context)
+    adapter.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    with pytest.raises(RuntimeError, match="fixture initialize failure"):
+        await adapter.start()
+    failed = await adapter.stop()
+    assert not failed.resources_closed
+    assert any(item.resource == "startup" for item in failed.failures)
+    assert provider.client.closed
+
+    monkeypatch.undo()
+    monkeypatch.setattr(telegram_channel, "Application", _TelegramApplicationFactory)
+    context, _, provider = _context(
+        config={"allow_from": []},
+        credentials={"token": CredentialRef(("token",))},
+    )
+    adapter = telegram_channel.build_telegram_channel(context)
+    adapter.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    await adapter.start()
+
+    async def fail_updater_stop() -> None:
+        raise RuntimeError("fixture updater stop failure")
+
+    adapter._app.updater.stop = fail_updater_stop
+    failed = await adapter.stop()
+    assert not failed.resources_closed
+    assert any(item.resource == "updater" for item in failed.failures)
+    assert adapter._app is not None
+    assert provider.client.closed
+
+
+@pytest.mark.asyncio
+async def test_telegram_cancelled_stop_waiter_does_not_cancel_shared_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(telegram_channel, "Application", _TelegramApplicationFactory)
+    context, _, _ = _context(
+        config={"allow_from": []},
+        credentials={"token": CredentialRef(("token",))},
+    )
+    adapter = telegram_channel.build_telegram_channel(context)
+    adapter.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    await adapter.start()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stop_waiter() -> None:
+        started.set()
+        await release.wait()
+        adapter._app.running = False
+
+    adapter._app.stop = stop_waiter
+    cleanup = asyncio.create_task(adapter.stop())
+    await started.wait()
+    waiter = asyncio.create_task(adapter.stop())
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert not cleanup.done()
+    release.set()
+    receipt = await cleanup
+    assert receipt.resources_closed
+    assert adapter._app is None
+
+
 class _QQApi:
     async def send_private_text(self, user_id: int, text: str) -> Any:
         return SimpleNamespace(message_id=f"private:{user_id}:{text}")
 
 
 class _QQBot:
-    def __init__(self, api: _QQApi) -> None:
+    def __init__(
+        self,
+        api: _QQApi,
+        *,
+        backend_error: BaseException | None = None,
+        hold_backend: bool = False,
+        unload_error: BaseException | None = None,
+    ) -> None:
         self.api = api
+        self.backend_error = backend_error
+        self.hold_backend = hold_backend
+        self.backend_release = threading.Event()
+        self.unload_error = unload_error
         self.callbacks: dict[str, Any] = {}
         self.exited = False
         self.ready = threading.Event()
@@ -262,6 +446,8 @@ class _QQBot:
         self.adapter = SimpleNamespace(connect_websocket=self.connect_websocket)
 
     async def unload_all(self) -> None:
+        if self.unload_error is not None:
+            raise self.unload_error
         self.unloaded = True
 
     def _decorator(self, name: str):
@@ -295,11 +481,44 @@ class _QQBot:
 
     def run_backend(self) -> _QQApi:
         """模拟 SDK：连接在独立线程运行，startup 后才返回 API。"""
+        if self.backend_error is not None:
+            raise self.backend_error
         self.thread = threading.Thread(target=self.start)
         self.thread.start()
         if not self.ready.wait(5):
             raise RuntimeError("fixture startup 未就绪")
+        if self.hold_backend and not self.backend_release.wait(5):
+            raise RuntimeError("fixture backend release timeout")
         return self.api
+
+
+def _install_qq_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    bot: _QQBot,
+    *,
+    config: SimpleNamespace | None = None,
+) -> SimpleNamespace:
+    ncatbot = ModuleType("ncatbot")
+    ncatbot_core = ModuleType("ncatbot.core")
+    ncatbot_utils = ModuleType("ncatbot.utils")
+    ncatbot_core.BotClient = lambda: bot  # type: ignore[attr-defined]
+    config = config or SimpleNamespace(
+        bt_uin="original",
+        root="original-root",
+        check_ncatbot_update=True,
+        skip_ncatbot_install_check=False,
+        websocket_timeout=15,
+        napcat=SimpleNamespace(remote_mode=False, enable_webui=True),
+        enable_webui_interaction=True,
+        plugin=SimpleNamespace(plugins_dir="original-plugins"),
+    )
+    ncatbot_utils.ncatbot_config = config
+    monkeypatch.setitem(sys.modules, "ncatbot", ncatbot)
+    monkeypatch.setitem(sys.modules, "ncatbot.core", ncatbot_core)
+    monkeypatch.setitem(sys.modules, "ncatbot.utils", ncatbot_utils)
+    monkeypatch.setattr(qq_channel, "_NCATBOT_DIR", tmp_path / "ncatbot")
+    return config
 
 
 @pytest.mark.asyncio
@@ -376,6 +595,201 @@ async def test_qq_external_owner_handles_inbound_delivery_and_stop(
     assert stopped.resources_closed
     assert bot.exited
     assert bot.unloaded
+    assert bot.thread is not None and not bot.thread.is_alive()
+
+
+def test_qq_sdk_timeout_is_bound_per_adapter_without_global_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SDK 两次 websocket.connect 都从这个实例的 globals 读取配置。"""
+    import ncatbot.core.adapter.adapter as sdk_adapter
+
+    calls: list[dict[str, object]] = []
+
+    async def connect(_uri: str, **kwargs: object) -> object:
+        calls.append(kwargs)
+        raise RuntimeError("fixture connect")
+
+    monkeypatch.setattr(sdk_adapter.websockets, "connect", connect)
+    adapter = sdk_adapter.Adapter()
+    scoped = qq_channel._bind_websocket_timeout(adapter.connect_websocket, 7.25)
+    with pytest.raises(RuntimeError, match="fixture connect"):
+        asyncio.run(scoped())
+    assert calls == [{"close_timeout": 0.2, "max_size": 2**30, "open_timeout": 7.25}]
+    assert sdk_adapter.Adapter.connect_websocket.__globals__["websockets"].connect is connect
+
+
+@pytest.mark.asyncio
+async def test_qq_start_failure_and_cancellation_never_report_closed(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed_bot = _QQBot(_QQApi(), backend_error=RuntimeError("fixture startup failure"))
+    config = _install_qq_fixture(monkeypatch, tmp_path, failed_bot)
+    context, _, _ = _context(config={"bot_uin": "9001"})
+    adapter = qq_channel.build_qq_channel(context)
+    adapter.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    with pytest.raises(RuntimeError, match="fixture startup failure"):
+        await adapter.start()
+    failed_receipt = await adapter.stop()
+    assert not failed_receipt.resources_closed
+    assert any(item.resource == "startup" for item in failed_receipt.failures)
+    assert config.bt_uin == "original"
+    assert config.plugin.plugins_dir == "original-plugins"
+
+    cancelled_bot = _QQBot(_QQApi(), hold_backend=True)
+    config = _install_qq_fixture(monkeypatch, tmp_path, cancelled_bot, config=config)
+    context, _, _ = _context(config={"bot_uin": "9002"})
+    adapter = qq_channel.build_qq_channel(context)
+    adapter.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    starting = asyncio.create_task(adapter.start())
+    await asyncio.to_thread(cancelled_bot.ready.wait, 2)
+    starting.cancel()
+    cancelled_bot.backend_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await starting
+    cancelled_receipt = await adapter.stop()
+    assert not cancelled_receipt.resources_closed
+    assert any(item.error_type == "CancelledError" for item in cancelled_receipt.failures)
+    assert cancelled_bot.thread is not None and not cancelled_bot.thread.is_alive()
+    assert config.bt_uin == "original"
+
+
+@pytest.mark.asyncio
+async def test_qq_ncatbot_config_is_exclusive_and_restored_between_generations(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_bot = _QQBot(_QQApi())
+    config = _install_qq_fixture(monkeypatch, tmp_path, first_bot)
+    context, _, _ = _context(config={"bot_uin": "7001"})
+    first = qq_channel.build_qq_channel(context)
+    first.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    await first.start()
+    assert config.bt_uin == "7001"
+
+    second_bot = _QQBot(_QQApi())
+    sys.modules["ncatbot.core"].BotClient = lambda: second_bot  # type: ignore[attr-defined]
+    context, _, _ = _context(config={"bot_uin": "7002"})
+    second = qq_channel.build_qq_channel(context)
+    second.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    with pytest.raises(RuntimeError, match="另一代"):
+        await second.start()
+    assert config.bt_uin == "7001"
+    assert (await first.stop()).resources_closed
+    assert config.bt_uin == "original"
+
+    context, _, _ = _context(config={"bot_uin": "7002"})
+    third = qq_channel.build_qq_channel(context)
+    third.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    await third.start()
+    assert config.bt_uin == "7002"
+    assert (await third.stop()).resources_closed
+    assert config.bt_uin == "original"
+
+
+@pytest.mark.asyncio
+async def test_qq_stop_failure_and_cancelled_waiter_share_unconfirmed_cleanup(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bot = _QQBot(_QQApi(), unload_error=RuntimeError("fixture unload failure"))
+    _install_qq_fixture(monkeypatch, tmp_path, bot)
+    context, _, _ = _context(config={"bot_uin": "9001"})
+    adapter = qq_channel.build_qq_channel(context)
+    adapter.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    await adapter.start()
+    first, second = await asyncio.gather(adapter.stop(), adapter.stop())
+    assert first is second
+    assert not first.resources_closed
+    assert any(item.resource == "connection" for item in first.failures)
+
+    bot = _QQBot(_QQApi())
+    _install_qq_fixture(monkeypatch, tmp_path, bot)
+    context, _, _ = _context(config={"bot_uin": "9001"})
+    adapter = qq_channel.build_qq_channel(context)
+    adapter.attach_runtime(
+        ChannelRuntimePorts(
+            snapshot_id=context.snapshot_id,
+            generation_id=context.generation_id,
+            binding_token=context.binding_token,
+            ingress=context.ingress,
+            identity=context.identity,
+            attachment_import=context.attachment_import,
+        )
+    )
+    await adapter.start()
+    started = threading.Event()
+    release = threading.Event()
+
+    async def unload_waiter() -> None:
+        started.set()
+        await asyncio.to_thread(release.wait, 2)
+        bot.unloaded = True
+
+    bot.plugin_loader.unload_all = unload_waiter
+    cleanup = asyncio.create_task(adapter.stop())
+    await asyncio.to_thread(started.wait, 2)
+    waiter = asyncio.create_task(adapter.stop())
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert not cleanup.done()
+    release.set()
+    receipt = await cleanup
+    assert receipt.resources_closed
     assert bot.thread is not None and not bot.thread.is_alive()
 
 
