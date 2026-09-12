@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -13,17 +14,26 @@ import sys
 import subprocess
 import tarfile
 import tempfile
+from collections.abc import Mapping
 from typing import Any
+
+import toml
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 from agent.plugins.install import install_git_plugin
+from agent.migrations.runner import initialize_empty_workspace
+from agent.plugins.artifacts import read_pointers, resolve_pointer
+from agent.plugins.manifest import load_plugin_manifest, workspace_plugin_data_dir
+from agent.plugins.static_manifest import load_static_plugin_manifest
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_CONFIG_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_FORMAL_INSTALLER = "agent.plugins.install.install_git_plugin"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -221,6 +231,28 @@ def _preflight_bundle(
             raise ValueError(f"插件 {row['name']} bundle provenance 不一致")
 
 
+def _validate_toml_value(value: object, *, location: str, depth: int = 0) -> None:
+    """Validate the JSON value subset that the generic plugin config can write."""
+
+    if depth > 32:
+        raise ValueError(f"{location} 嵌套过深")
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if not isinstance(key, str) or _CONFIG_KEY.fullmatch(key) is None:
+                raise ValueError(f"{location} 含非法 TOML key: {key!r}")
+            _validate_toml_value(child, location=f"{location}.{key}", depth=depth + 1)
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_toml_value(child, location=f"{location}[{index}]", depth=depth + 1)
+        return
+    if isinstance(value, bool) or isinstance(value, int) or isinstance(value, str):
+        return
+    if isinstance(value, float) and math.isfinite(value):
+        return
+    raise ValueError(f"{location} 含不支持的 TOML 值: {type(value).__name__}")
+
+
 def _load_profile(path: Path) -> tuple[str, str, list[dict[str, Any]], dict[str, Any]]:
     document = _read_json(path.expanduser().resolve(strict=True))
     if document.get("schema_version") != 1:
@@ -264,100 +296,87 @@ def _load_profile(path: Path) -> tuple[str, str, list[dict[str, Any]], dict[str,
         normalized.append({"name": name, "depends_on": list(depends_on), "reason": reason})
         selected.add(name)
 
-    for key in ("authorization", "prompt"):
-        owner = initialization.get(key)
-        if not isinstance(owner, dict) or not isinstance(owner.get("owner"), str):
-            raise ValueError(f"profile initialization.{key} 必须声明 owner")
-        if owner["owner"] not in selected:
-            raise ValueError(
-                f"profile initialization.{key}.owner 不在已选插件中: {owner['owner']}"
-            )
-    materials = initialization.get("context_materials")
-    if materials is not None:
-        if not isinstance(materials, dict):
-            raise ValueError("profile initialization.context_materials 必须是 object")
-        if not isinstance(materials.get("owner"), str) or materials["owner"] not in selected:
-            raise ValueError(
-                "profile initialization.context_materials.owner 不在已选插件中"
-            )
-        prompt_sources = materials.get("prompt_sources")
+    unknown_initialization = set(initialization) - {"plugin_configs"}
+    if unknown_initialization:
+        raise ValueError(
+            "profile initialization 只接受通用 plugin_configs: "
+            f"{sorted(unknown_initialization)}"
+        )
+    raw_configs = initialization.get("plugin_configs", [])
+    if not isinstance(raw_configs, list):
+        raise ValueError("profile initialization.plugin_configs 必须是 array")
+    plugin_configs: list[dict[str, Any]] = []
+    config_owners: set[str] = set()
+    for index, raw in enumerate(raw_configs):
+        if not isinstance(raw, dict):
+            raise ValueError(f"profile initialization.plugin_configs[{index}] 必须是 object")
+        owner = raw.get("owner")
+        config = raw.get("config")
         if (
-            not isinstance(prompt_sources, dict)
-            or not prompt_sources
-            or any(
-                not isinstance(name, str)
-                or not name.strip()
-                or not isinstance(owner, str)
-                or not owner.strip()
-                or owner not in selected
-                for name, owner in prompt_sources.items()
-            )
+            not isinstance(owner, str)
+            or _PATH_SEGMENT.fullmatch(owner) is None
+            or owner not in selected
+            or owner in config_owners
+            or not isinstance(config, dict)
         ):
             raise ValueError(
-                "profile initialization.context_materials.prompt_sources 必须引用已选插件"
+                f"profile initialization.plugin_configs[{index}] owner/config 无效或重复"
             )
-        summary_source = materials.get("summary_source")
-        if (
-            not isinstance(summary_source, list)
-            or len(summary_source) != 2
-            or any(not isinstance(item, str) or not item.strip() for item in summary_source)
-            or summary_source[1] not in selected
-        ):
-            raise ValueError(
-                "profile initialization.context_materials.summary_source 必须引用已选插件"
-            )
+        _validate_toml_value(config, location=f"plugin_configs[{index}].config")
+        plugin_configs.append({"owner": owner, "config": config})
+        config_owners.add(owner)
+    initialization = {"plugin_configs": plugin_configs}
     return profile_name, marketplace, normalized, initialization
 
 
-def _write_context_materials(
+def _write_plugin_configs(
     workspace: Path,
     *,
     marketplace: str,
-    declaration: dict[str, Any],
-) -> dict[str, str]:
-    """原子创建 profile 声明的 Context 材料授权，绝不覆盖既有工作区配置。"""
+    declarations: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Atomically create declared plugin configs without knowing their fields."""
 
-    config_dir = workspace / "plugin-data" / f"context-{marketplace}"
-    config_path = config_dir / "config.local.toml"
-    if config_path.exists() or config_path.is_symlink():
-        if config_path.is_symlink() or not config_path.is_file():
-            raise ValueError(f"Context 材料配置不是普通文件: {config_path}")
-        return {"path": str(config_path), "status": "existing"}
-
-    prompt_sources = declaration["prompt_sources"]
-    summary_source = declaration["summary_source"]
-    prompt_entries = ", ".join(
-        f'{name} = "{owner}@{marketplace}"'
-        for name, owner in sorted(prompt_sources.items())
-    )
-    content = (
-        f"prompt_sources = {{{prompt_entries}}}\n"
-        f'summary_source = ["{summary_source[0]}", "{summary_source[1]}@{marketplace}"]\n'
-    )
-    config_dir.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".config.local.", suffix=".tmp", dir=config_dir
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, config_path)
-        except FileExistsError:
+    results: list[dict[str, str]] = []
+    for declaration in declarations:
+        owner = declaration["owner"]
+        config = declaration["config"]
+        config_path = workspace_plugin_data_dir(workspace, owner, marketplace) / "config.local.toml"
+        config_dir = config_path.parent
+        if config_path.exists() or config_path.is_symlink():
             if config_path.is_symlink() or not config_path.is_file():
-                raise ValueError(f"Context 材料配置不是普通文件: {config_path}")
-            return {"path": str(config_path), "status": "existing"}
-        directory_fd = os.open(config_dir, os.O_RDONLY)
+                raise ValueError(f"插件配置不是普通文件: {config_path}")
+            results.append({"owner": owner, "path": str(config_path), "status": "existing"})
+            continue
+
+        _validate_toml_value(config, location=f"plugin_configs[{owner}].config")
+        content = toml.dumps(config)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".config.local.", suffix=".tmp", dir=config_dir
+        )
+        temporary = Path(temporary_name)
         try:
-            os.fsync(directory_fd)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, config_path)
+            except FileExistsError:
+                if config_path.is_symlink() or not config_path.is_file():
+                    raise ValueError(f"插件配置不是普通文件: {config_path}")
+                results.append({"owner": owner, "path": str(config_path), "status": "existing"})
+                continue
+            directory_fd = os.open(config_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
-            os.close(directory_fd)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return {"path": str(config_path), "status": "created"}
+            temporary.unlink(missing_ok=True)
+        results.append({"owner": owner, "path": str(config_path), "status": "created"})
+    return results
 
 
 def install_profile(
@@ -366,6 +385,7 @@ def install_profile(
     *,
     workspace: Path,
     plugins_home: Path,
+    config_path: Path,
 ) -> dict[str, Any]:
     """按 profile 顺序调用正式 install_git_plugin，不扫描 checkout。"""
 
@@ -403,7 +423,15 @@ def install_profile(
         selected_rows.append((row, bundle))
     workspace = workspace.expanduser().resolve(strict=False)
     plugins_home = plugins_home.expanduser().resolve(strict=False)
+    config_path = config_path.expanduser().resolve(strict=True)
+    if not config_path.is_file():
+        raise ValueError(f"runtime config 必须是普通文件: {config_path}")
     workspace.mkdir(parents=True, exist_ok=True)
+    initialize_empty_workspace(
+        repo_root=_SOURCE_ROOT,
+        workspace=workspace,
+        config_path=config_path,
+    )
     plugins_home.mkdir(parents=True, exist_ok=True)
 
     installed: list[dict[str, Any]] = []
@@ -437,26 +465,172 @@ def install_profile(
                 "data_path": str(result.data_path),
             }
         )
-    context_materials = initialization.get("context_materials")
-    context_config = None
-    if context_materials is not None:
-        assert isinstance(context_materials, dict)
-        context_config = _write_context_materials(
-            workspace,
-            marketplace=marketplace,
-            declaration=context_materials,
-        )
+    plugin_configs = initialization.get("plugin_configs", [])
+    assert isinstance(plugin_configs, list)
+    config_results = _write_plugin_configs(
+        workspace,
+        marketplace=marketplace,
+        declarations=plugin_configs,
+    )
     return {
         "schema_version": 1,
         "distribution_source_commit": report["source_commit"],
         "distribution_source_tree": report["source_tree"],
         "profile": profile_name,
         "marketplace": marketplace,
-        "initialization_owners": initialization,
-        "context_materials_config": context_config,
-        "formal_installer": "agent.plugins.install.install_git_plugin",
+        "initialization": initialization,
+        "plugin_configs": config_results,
+        "formal_installer": _FORMAL_INSTALLER,
         "installed": installed,
     }
+
+
+def _validate_receipt_state(
+    receipt: dict[str, Any],
+    *,
+    report: dict[str, Any],
+    profile_name: str,
+    marketplace: str,
+    entries: list[dict[str, Any]],
+    workspace: Path,
+    plugins_home: Path,
+) -> None:
+    """Validate a prior install against current pointers, artifacts and manifest."""
+
+    if receipt.get("schema_version") != 1:
+        raise ValueError("distribution receipt schema_version 必须为 1")
+    if receipt.get("distribution_source_commit") != report["source_commit"]:
+        raise ValueError("distribution receipt source_commit 与当前 distribution 不一致")
+    if receipt.get("distribution_source_tree") != report["source_tree"]:
+        raise ValueError("distribution receipt source_tree 与当前 distribution 不一致")
+    if receipt.get("profile") != profile_name or receipt.get("marketplace") != marketplace:
+        raise ValueError("distribution receipt profile 与当前 profile 不一致")
+    if receipt.get("formal_installer") != _FORMAL_INSTALLER:
+        raise ValueError("distribution receipt 缺少正式安装器身份")
+
+    installed = receipt.get("installed")
+    expected_names = tuple(str(entry["name"]) for entry in entries)
+    if (
+        not isinstance(installed, list)
+        or len(installed) != len(expected_names)
+        or {item.get("name") for item in installed if isinstance(item, dict)}
+        != set(expected_names)
+    ):
+        raise ValueError("distribution receipt installed 与 profile 不一致")
+
+    manifest = load_plugin_manifest(plugins_home)
+    for item in installed:
+        if not isinstance(item, dict):
+            raise ValueError("distribution receipt installed 条目必须是 object")
+        name = item.get("name")
+        item_marketplace = item.get("marketplace")
+        source_revision = item.get("source_revision")
+        if (
+            not isinstance(name, str)
+            or _PATH_SEGMENT.fullmatch(name) is None
+            or item_marketplace != marketplace
+            or not isinstance(source_revision, str)
+            or _REVISION.fullmatch(source_revision) is None
+        ):
+            raise ValueError("distribution receipt installed 条目身份无效")
+        plugin_id = f"{name}@{marketplace}"
+        if plugin_id not in manifest:
+            raise ValueError(f"distribution receipt 插件未在当前 manifest 中: {plugin_id}")
+
+        plugin_base = plugins_home / "cache" / marketplace / name
+        pointers = read_pointers(plugin_base)
+        if pointers is None or pointers.stable.path is None:
+            raise ValueError(f"distribution receipt 插件缺少 stable artifact: {plugin_id}")
+        artifact = resolve_pointer(plugin_base, pointers.stable)
+        if artifact is None:
+            raise ValueError(f"distribution receipt stable artifact 为空: {plugin_id}")
+        static_manifest = load_static_plugin_manifest(artifact)
+        if static_manifest.name != name:
+            raise ValueError(
+                f"distribution receipt artifact 身份不一致: {plugin_id} -> {static_manifest.name}"
+            )
+
+        data_path = workspace_plugin_data_dir(workspace, name, marketplace)
+        if data_path.is_symlink() or not data_path.is_dir():
+            raise ValueError(f"distribution receipt 插件数据目录缺失: {data_path}")
+
+
+def ensure_profile(
+    distribution: Path,
+    profile: Path,
+    *,
+    workspace: Path,
+    plugins_home: Path,
+    config_path: Path,
+    receipt_path: Path,
+) -> dict[str, Any]:
+    """Install once, then validate the durable receipt without changing composition."""
+
+    receipt_path = receipt_path.expanduser()
+    if receipt_path.is_symlink():
+        raise ValueError(f"distribution receipt 不能是符号链接: {receipt_path}")
+    config_path = config_path.expanduser().resolve(strict=True)
+    if not config_path.is_file():
+        raise ValueError(f"runtime config 必须是普通文件: {config_path}")
+    if receipt_path.exists():
+        if not receipt_path.is_file():
+            raise ValueError(f"distribution receipt 不是普通文件: {receipt_path}")
+        distribution_root = distribution.expanduser().resolve(strict=True)
+        report = verify_distribution(distribution_root)
+        profile_path = profile.expanduser().resolve(strict=True)
+        profile_rows = report.get("profiles", [])
+        if not any(
+            isinstance(item, dict)
+            and _distribution_file(distribution_root, item.get("path"), "profile")
+            == profile_path
+            for item in profile_rows
+        ):
+            raise ValueError("profile 不属于已验证的 distribution artifact")
+        profile_name, marketplace, entries, _ = _load_profile(profile_path)
+        receipt = _read_json(receipt_path)
+        _validate_receipt_state(
+            receipt,
+            report=report,
+            profile_name=profile_name,
+            marketplace=marketplace,
+            entries=entries,
+            workspace=workspace.expanduser().resolve(strict=False),
+            plugins_home=plugins_home.expanduser().resolve(strict=False),
+        )
+        return {**receipt, "status": "existing"}
+
+    result = install_profile(
+        distribution,
+        profile,
+        workspace=workspace,
+        plugins_home=plugins_home,
+        config_path=config_path,
+    )
+    return {**result, "status": "installed"}
+
+
+def _write_receipt(path: Path, result: dict[str, Any]) -> None:
+    """Atomically publish one durable installer receipt."""
+
+    path = path.expanduser()
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(f"distribution receipt 不是普通文件: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -465,11 +639,15 @@ def main() -> None:
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--plugins-home", type=Path, required=True)
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--core-root", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--ensure-profile", action="store_true")
     args = parser.parse_args()
 
+    if args.verify_only and args.ensure_profile:
+        parser.error("--verify-only 不能与 --ensure-profile 同时使用")
     report = verify_distribution(args.distribution)
     if args.verify_only:
         result: dict[str, Any] = {
@@ -478,20 +656,32 @@ def main() -> None:
             "plugin_count": len(report["plugins"]),
         }
     else:
+        if args.config is None:
+            parser.error("安装 profile 必须提供 --config")
         if args.core_root is not None:
             extract_core(args.distribution, args.core_root, report=report)
-        result = install_profile(
-            args.distribution,
-            args.profile,
-            workspace=args.workspace,
-            plugins_home=args.plugins_home,
-        )
+        if args.ensure_profile:
+            if args.receipt is None:
+                parser.error("--ensure-profile 必须提供 --receipt")
+            result = ensure_profile(
+                args.distribution,
+                args.profile,
+                workspace=args.workspace,
+                plugins_home=args.plugins_home,
+                config_path=args.config,
+                receipt_path=args.receipt,
+            )
+        else:
+            result = install_profile(
+                args.distribution,
+                args.profile,
+                workspace=args.workspace,
+                plugins_home=args.plugins_home,
+                config_path=args.config,
+            )
     if args.receipt is not None:
-        args.receipt.parent.mkdir(parents=True, exist_ok=True)
-        args.receipt.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        if not (args.ensure_profile and result.get("status") == "existing"):
+            _write_receipt(args.receipt, result)
     print(json.dumps(result, ensure_ascii=False))
 
 

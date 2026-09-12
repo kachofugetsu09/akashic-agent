@@ -34,10 +34,8 @@ CORE_PATHS = (
     "infra",
     "session",
     "utils",
-    "mcp_servers",
     "host_bridge",
     "memory2",
-    "prompts",
     "migrations",
     "main.py",
     "config.example.toml",
@@ -339,7 +337,9 @@ def _copy_runtime_wiring(
     for source_path, output_name in _RUNTIME_WIRING:
         content = _git_file(repository, commit, source_path)
         if content is None:
-            continue
+            raise ValueError(
+                f"固定提交缺少发行 runtime wiring: {source_path}"
+            )
         target = output / output_name
         target.write_bytes(content)
         if target.name.endswith(".sh"):

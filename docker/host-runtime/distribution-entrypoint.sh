@@ -34,6 +34,8 @@ mkdir -p "$WORKSPACE" "$PLUGIN_HOME"
     --profile /opt/akashic/distribution/profiles/default.json \
     --workspace "$WORKSPACE" \
     --plugins-home "$PLUGIN_HOME" \
+    --config "$CONFIG" \
+    --ensure-profile \
     --receipt "$WORKSPACE/runtime/distribution-install.json"
 
 command="${1:-supervise}"

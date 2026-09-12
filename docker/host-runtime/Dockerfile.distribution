@@ -42,7 +42,7 @@ RUN printf '%s\n' \
 WORKDIR /opt/akashic
 
 # The only source material copied into this image is the generated Core tar.
-COPY core.tar /tmp/akashic-core.tar
+COPY core.tar /opt/akashic/distribution/core.tar
 COPY distribution.json /opt/akashic/distribution/distribution.json
 COPY profiles /opt/akashic/distribution/profiles
 COPY *.bundle /opt/akashic/distribution/
@@ -51,9 +51,9 @@ COPY distribution-entrypoint.sh /opt/akashic/distribution-entrypoint.sh
 RUN test -n "${AKASHIC_SOURCE_COMMIT}" \
     && test -n "${AKASHIC_SOURCE_TREE}" \
     && test -n "${AKASHIC_CORE_SHA256}" \
-    && test "$(sha256sum /tmp/akashic-core.tar | cut -d' ' -f1)" = "${AKASHIC_CORE_SHA256}" \
+    && test "$(sha256sum /opt/akashic/distribution/core.tar | cut -d' ' -f1)" = "${AKASHIC_CORE_SHA256}" \
     && mkdir -p /opt/akashic/source \
-    && tar -xf /tmp/akashic-core.tar -C /opt/akashic/source \
+    && tar -xf /opt/akashic/distribution/core.tar -C /opt/akashic/source \
     && test ! -e /opt/akashic/source/plugins \
     && test -f /opt/akashic/source/config.example.toml \
     && test -f /opt/akashic/source/docker/host-runtime/requirements.lock
@@ -82,7 +82,7 @@ RUN mkdir -p /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugi
         --base-image "${AKASHIC_BASE_IMAGE}" \
         --arch-snapshot "${AKASHIC_ARCH_SNAPSHOT}" \
         --pypi-index-url "${AKASHIC_PYPI_INDEX_URL}" \
-    && rm -rf /tmp/akashic-core.tar /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
+    && rm -rf /tmp/akashic-distribution-workspace /tmp/akashic-distribution-plugins \
     && chown -R root:root /opt/akashic \
     && chmod -R a-w /opt/akashic \
     && chmod 0555 /opt/akashic/distribution-entrypoint.sh
