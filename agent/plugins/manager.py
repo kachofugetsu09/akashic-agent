@@ -55,7 +55,6 @@ from agent.plugin_composition import (
     WORKLOADS,
     MCP_SERVERS,
     SESSION_READ,
-    SESSION_COMPACTION_STORAGE,
     DELIVERIES,
     DURABLE_DELIVERIES,
     TIMERS,
@@ -75,7 +74,6 @@ from agent.plugin_composition import (
     PluginTools,
     PluginRuntime,
     SessionReadService,
-    SessionCompactionStorage,
     PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
@@ -192,6 +190,7 @@ from bus.event_bus import EventBus
 from infra.persistence.json_store import atomic_save_json
 
 logger = logging.getLogger(__name__)
+PLUGIN_ARCHIVE_BINDING_API = 2
 U = TypeVar("U")
 
 
@@ -4683,7 +4682,7 @@ class PluginManager:
                 "entrypoint": static_manifest.entrypoint if static_manifest else "plugin.py",
                 "source_type": mod["source_type"],
                 "data_dir": data_dir.resolve().relative_to(self._workspace.resolve()).as_posix(),
-                "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": 1},
+                "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
             })
             generation = PluginGeneration(
                 plugin_id=plugin_id,
@@ -5219,12 +5218,15 @@ class PluginManager:
         generations: dict[str, PluginGeneration] = {}
         asset_scopes = ExitStack()
         try:
-            for index, ref in enumerate(components):
-                record = self._archive.read_descriptor(ref)
+            records = tuple(self._archive.read_descriptor(ref) for ref in components)
+            # 先检查整个闭包，不能导入前半段后才发现后续组件属于旧接口。
+            for record in records:
                 if record["version"] != 2 or record["runtime"] != {
-                    "python_tag": sys.implementation.cache_tag, "binding_api": 1,
+                    "python_tag": sys.implementation.cache_tag,
+                    "binding_api": PLUGIN_ARCHIVE_BINDING_API,
                 }:
-                    raise RuntimeError("插件归档运行合同不兼容")
+                    raise RuntimeError("插件归档运行合同不兼容；保留原归档并使用原 Core 恢复")
+            for index, (ref, record) in enumerate(zip(components, records, strict=True)):
                 plugin_dir = self._archive.open(cast(str, record["code"]))
                 revision = cast(str, record["source_revision"])
                 if _source_revision(plugin_dir) != revision:
@@ -5287,8 +5289,8 @@ class PluginManager:
                 for module_path in modules:
                     self._remove_module_tree(module_path)
 
-    def _read_existing_session_compaction(self, session_key: str):
-        """读取同一 Session 的消息与 active compaction 语义。"""
+    def _read_existing_session(self, session_key: str):
+        """读取既有 Session 及其 active compaction 边界。"""
 
         session_manager = self._session_manager
         if session_manager is None:
@@ -5651,25 +5653,11 @@ class PluginManager:
             for item in mount_order
         ):
             session_read = (
-                SessionReadService(self._read_existing_session_compaction)
+                SessionReadService(self._read_existing_session)
                 if not candidate
                 else SessionReadService.candidate_validation()
             )
             _ = await root.context.provide(SESSION_READ, session_read)
-        if self._session_manager is not None and any(
-            SESSION_COMPACTION_STORAGE
-            in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            compaction_storage = (
-                SessionCompactionStorage(self._session_manager)
-                if not candidate
-                else SessionCompactionStorage.candidate_validation()
-            )
-            _ = await root.context.provide(
-                SESSION_COMPACTION_STORAGE,
-                compaction_storage,
-            )
         if any(
             DELIVERIES in cast(ComposablePlugin, item.instance).inject
             for item in mount_order

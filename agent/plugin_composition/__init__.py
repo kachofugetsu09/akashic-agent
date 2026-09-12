@@ -69,14 +69,6 @@ from agent.plugin_composition.session_read import (
     SessionReadService,
     SessionReadSnapshot,
 )
-from agent.plugin_composition.session_compaction import (
-    SESSION_COMPACTION_STORAGE,
-    SessionCompactionStorage,
-)
-from agent.plugin_composition.semantic_interest import (
-    CONVERSATION_SEMANTIC_INTEREST,
-    ConversationSemanticInterest,
-)
 from agent.plugin_composition.deliveries import DELIVERIES, PluginDeliveries
 from agent.plugin_composition.durable_deliveries import (
     DURABLE_DELIVERIES,
@@ -328,8 +320,6 @@ __all__ = [
     "TransportError",
     "UpdateConnection",
     "UsageCoverage",
-    "CONVERSATION_SEMANTIC_INTEREST",
-    "ConversationSemanticInterest",
     "CompositionError",
     "CompositionReceipt",
     "CompositionRoot",
@@ -440,8 +430,6 @@ __all__ = [
     "SESSION_READ",
     "SessionReadService",
     "SessionReadSnapshot",
-    "SESSION_COMPACTION_STORAGE",
-    "SessionCompactionStorage",
     "ServiceKey",
     "ServiceView",
     "DELIVERIES",

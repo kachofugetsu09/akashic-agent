@@ -116,8 +116,9 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 | `DELIVERY` / `DELIVERY_READ` | 打开发送 admission 或只读历史 | Delivery 发送、恢复和查询 |
 
 `TOOL_CATALOG`、`DELIVERIES` 和 `DURABLE_DELIVERIES` 是旧 Core 组合图中的保留导出，不是当前插件
-消费者应采用的能力入口。工具插件的公开结构合同在 `plugins.tools.api`：`CallSource`、`MessageReply`、
-`Result` 和 `BoundTool`；ToolResult Message 是对话调用的结果正文。
+消费者应采用的能力入口。工具消费者通过声明的 ServiceKey 和本地结构接口协作，
+不能 import `plugins.tools.api` 或其他兄弟插件实现。工具结果提供 `outcome` 与 `parts`；
+Tools owner 在入口校验。ToolResult Message 是对话调用的持久结果正文。
 
 ### 4.2 Message、Session 与上下文
 
@@ -134,9 +135,9 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 | `COMPACTION_SUMMARIES` | `plugins.compaction` | 读取已发布摘要记录和父链 |
 | `TURN_PROJECTION` | `plugins.turn_projection` | 从 Message 日志读取无状态 Turn 投影 |
 
-`SESSION_READ`、`SESSION_COMPACTION_STORAGE`、`PROVIDER_REQUEST_PROJECTION` 和
-`CONTEXT_PROJECTION_FACTS` 仍可能出现在旧定义、导出或兼容分支中；它们不属于当前
-Context/Compaction 的生产 public capability 表。
+`SESSION_COMPACTION_STORAGE` 和旧语义兴趣评分已退役；当前 Context/Compaction
+直接消费 Message 与普通材料能力。`SESSION_READ` 仅供尚未更新的旧外部锁接口，
+正式 Message runtime 不提供旧 SessionManager；该外部消费者必须迁到 MESSAGE_CATALOG。
 
 Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影，不是 Core Service 中的可变执行对象。
 消费者自行保存 cursor 和学习状态；投影不能授权消息写入、工具执行或外部发送。
@@ -219,3 +220,12 @@ committed snapshot ── stable/latest pointer ── request lease
 6. 长时或可恢复工作：`TASKS`、`TIMERS`。
 7. 外部进程、MCP、容器：`MANAGED_PROCESSES`、`MCP_SERVERS`、`WORKLOADS`。
 8. 找不到匹配能力时先定义窄 Service，不给 Manager 增加新的固定插件方法。
+
+
+### 归档接口版本
+
+组件归档的 `runtime.binding_api` 当前为 2。Core 在打开任何组件源码前核对完整
+闭包的接口版本和 Python tag；ABI 1 明确不兼容，不能混用新接口或从当前插件补齐。
+原 descriptor、源码树、binding 引用和已开始效果的回执保持原位，旧归档需要原 Core
+版本及其安装环境恢复。该接口版本与 Python environment descriptor 的版本独立。
+新版本创建的归档仍能在原安装移除后，按原配置与 generation 闭包恢复。
