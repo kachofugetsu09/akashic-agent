@@ -12,18 +12,8 @@ from agent.plugin_composition.models import (
     ModelContinuation,
     ModelRequest,
 )
-from session.message import (
-    ContentReferences,
-    CallRef,
-    ContentPart,
-    Control,
-    Input,
-    Message,
-    Output,
-    ToolCall,
-    ToolResult,
-)
-from session.message_codec import json_value
+from agent.plugin_contracts import ContentReferences, CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import json_value
 from plugins.context.api import check_summary
 from .store import ModelCallReader
 

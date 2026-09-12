@@ -11,7 +11,7 @@ from telegramify_markdown.entity import split_entities
 from infra.channels.telegram_utils import strip_chunk
 from agent.plugin_composition.artifacts import ArtifactRead
 from session.artifacts import AttachmentKind, AttachmentRef
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Control, Message
 
 

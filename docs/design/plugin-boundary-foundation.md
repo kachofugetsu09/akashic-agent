@@ -256,3 +256,18 @@ provider IDs 的持久语义不变，未知效果不变成可重试的成功。�
 与调度执行共用原 owner 的实例，不增加并行存储。每次 Web/Mobile 查询在一个 snapshot
 lease 内完成；缺 provider 明确返回 scheduler_unavailable，空列表只表示查询成功且无任务。
 本层只读取调度事实，不创建、改写、失效或减少计划。
+
+
+### 9.8 Core 消息原子输入
+
+公开 `agent.plugin_contracts` 保留 Core 自己的 Message 值、冻结 JSON 和当前 body
+表示，不接纳模型、调度、投递或材料 schema。`json_value` 和 `body_to_dict` 与这些
+现有值同属一个 owner；历史持久编码与解码仍由 session 存储层拥有，旧表示不改写。
+
+既有 messages 能力模块显式公开其已经签发的 reader、writer、catalog、固定 owner
+记录与事务类型，以及冲突和分页错误。它们不提供 MessageLog、SQL、任意 owner
+选择或删除；writer 的授权、事务 CAS 与追加检查保持原路径。状态依旧由原插件
+保存自身记录，只允许原 CAS 更新；Message 正常只追加，没有新增物理减少路径。
+
+消费者可依赖这一组来源中立原子输入，不必为了类型注解导入 session 私有实现。
+这是公开已有 Core 原子合同，不是把业务对象搬入共享目录；业务协作继续使用局部输入。

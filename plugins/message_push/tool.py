@@ -16,8 +16,9 @@ from plugins.delivery.api import Receipt, Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from session.artifacts import AttachmentKind
-from session.message import ContentPart, Output
-from session.message_codec import decode_body, encode_body, json_value
+from agent.plugin_contracts import ContentPart, Output
+from session.message_codec import decode_body, encode_body
+from agent.plugin_contracts import json_value
 
 
 class PushInput(BaseModel):

@@ -21,8 +21,8 @@ from plugins.react.plugin import REACT
 from plugins.tools.api import Denied
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.log import MessageReader
-from session.message import CallRef, Message
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import CallRef, Message
 
 from .runtime import SchedulerRuntime
 from .store import JobStore

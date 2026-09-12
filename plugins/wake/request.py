@@ -7,11 +7,11 @@ from typing import Literal, Self
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.tasks import Task
-from session.log import MessageReader
+from agent.plugin_composition.messages import MessageReader
 
 from plugins.delivery.api import Sink
-from session.message import ContentPart, ContentReferences, Control, Input, Message
-from session.message_codec import json_value
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
+from agent.plugin_contracts import json_value
 
 from .api import DeliveryTarget
 from plugins.tools.plugin import ToolView

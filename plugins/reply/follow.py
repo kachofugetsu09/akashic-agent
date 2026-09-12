@@ -9,7 +9,7 @@ from agent.plugin_composition import Context
 from agent.plugin_composition.tasks import Task
 from agent.restart import RestartGate
 from plugins.sources.plugin import Source, Sources
-from session.log import MessageCatalog, MessageReader
+from agent.plugin_composition.messages import MessageCatalog, MessageReader
 
 logger = logging.getLogger(__name__)
 Program = Callable[[Task, MessageReader, str], Awaitable[object]]

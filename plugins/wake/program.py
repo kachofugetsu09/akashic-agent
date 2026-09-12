@@ -19,8 +19,8 @@ from plugins.react.plugin import REACT, StepLimit
 from plugins.tools.api import Denied
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.log import MessageReader
-from session.message import CallRef, Control, Message
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import CallRef, Control, Message
 
 from .messages import HINTS, render
 from .request import Request, STAGE_TOOLS, WakeFailure, read_phase

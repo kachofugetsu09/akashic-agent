@@ -20,6 +20,8 @@ from agent.plugin_contracts.message import (
     ToolResult,
     freeze_json,
     freeze_metadata,
+    json_value,
+    body_to_dict,
 )
 
 __all__ = [
@@ -37,4 +39,6 @@ __all__ = [
     "ToolResult",
     "freeze_json",
     "freeze_metadata",
+    "json_value",
+    "body_to_dict",
 ]

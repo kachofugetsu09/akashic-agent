@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager, AsyncExitStack
 from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from session.log import MessageCatalog, MessageReader, MessageWriter
+from agent.plugin_composition.messages import MessageCatalog, MessageReader, MessageWriter
 from agent.plugin_contracts import Body, Message
 
 from .api import OpenSender, Receipt, Sink

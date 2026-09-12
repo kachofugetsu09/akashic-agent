@@ -16,8 +16,8 @@ from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from agent.plugin_composition.bindings import BINDINGS
-from session.log import MessageReader, SessionAttributes
-from session.message import ContentPart, Input, Message, Output
+from agent.plugin_composition.messages import MessageReader, SessionAttributes
+from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .schedule import LatencyTracker, compute_actual_trigger
 from .store import Fire, JobStore, aware, fire_key

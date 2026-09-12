@@ -22,8 +22,8 @@ from plugins.models.projection import MODEL_CALLS
 from plugins.react.plugin import REACT
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.message import ContentPart, Output
-from session.message_codec import json_value
+from agent.plugin_contracts import ContentPart, Output
+from agent.plugin_contracts import json_value
 
 from .tool import InstallPlugin, InstallInput, Request
 from .validation import PLUGIN_VALIDATION, TOOL_CLEANUP, Validation

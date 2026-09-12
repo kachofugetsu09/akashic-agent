@@ -9,7 +9,7 @@ from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessa
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.messages import MessageReader
-from session.message import Message
+from agent.plugin_contracts import Message
 
 api_version = 3
 name = "sources"

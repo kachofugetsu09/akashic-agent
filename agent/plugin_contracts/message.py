@@ -223,3 +223,59 @@ class Message:
             raise TypeError("消息 body 类型无效")
         if isinstance(self.body, Control) and self.body.through_seq >= self.seq:
             raise ValueError("Control 只能指向之前的已接纳前缀")
+
+
+def json_value(value: object) -> object:
+    """把已校验的不可变 JSON 转回可序列化容器。"""
+    if isinstance(value, Mapping):
+        return {
+            key: json_value(item)
+            for key, item in cast(Mapping[str, object], value).items()
+        }
+    if isinstance(value, tuple):
+        return [json_value(item) for item in cast(tuple[object, ...], value)]
+    return value
+
+
+def body_to_dict(body: Body) -> dict[str, object]:
+    """返回当前运行时消息字段，供展示和上下文使用。"""
+    data: dict[str, object]
+    if isinstance(body, Control):
+        data = {
+            "kind": "control",
+            "action": body.action,
+            "through_seq": body.through_seq,
+            "reason": body.reason,
+        }
+    else:
+        parts: list[dict[str, object]] = [
+            (
+                {
+                    "kind": "tool_call",
+                    "binding_id": part.binding_id,
+                    "arguments": json_value(part.arguments),
+                }
+                if isinstance(part, ToolCall)
+                else {"kind": part.kind, "value": json_value(part.value)}
+            )
+            for part in body.parts
+        ]
+        if isinstance(body, Input):
+            data = {"kind": "input", "parts": parts}
+        elif isinstance(body, Output):
+            data = {
+                "kind": "output",
+                "parts": parts,
+                "finish": body.finish,
+            }
+        else:
+            data = {
+                "kind": "tool_result",
+                "parts": parts,
+                "outcome": body.outcome,
+                "call_ref": {
+                    "message_id": body.call_ref.message_id,
+                    "part_index": body.call_ref.part_index,
+                },
+            }
+    return data

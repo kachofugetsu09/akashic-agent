@@ -27,8 +27,8 @@ from plugins.tools.api import Denied
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.log import MessageReader
-from session.message import CallRef, Message
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import CallRef, Message
 
 from .api import REPLY_PROGRAM
 from .follow import follow
