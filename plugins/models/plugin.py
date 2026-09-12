@@ -26,6 +26,10 @@ from .projection import (
 )
 from .selection import MODEL_SELECTION, SelectionOwner
 from agent.plugin_composition.models import MODEL_CALL_STATS
+from agent.plugin_composition.model_settings_http import BoundModelControl
+from agent.plugin_composition.rpc import rpc_method_key
+
+from .model_settings_http import rpc_methods
 
 api_version = 3
 name = "models"
@@ -82,4 +86,6 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
     _ = await ctx.provide(MODEL_CONTENT, ContentOwner())
     _ = await ctx.provide(MODEL_SELECTION, SelectionOwner())
+    for method, operation in rpc_methods(BoundModelControl()).items():
+        _ = await ctx.provide(rpc_method_key(method), operation)
     _ = await ctx.on(SNAPSHOT_SEALING, state.seal)

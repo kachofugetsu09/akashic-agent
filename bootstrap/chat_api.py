@@ -4,13 +4,13 @@ import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugins.mobile_ui import (
     MobileUiPluginUnavailable,
@@ -46,7 +46,6 @@ from infra.mobile_realtime.storage import PairingStateError
 from session.artifact_store import ArtifactStore
 
 if TYPE_CHECKING:
-    from agent.plugin_composition.model_settings_http import ModelControl
     from infra.mobile_realtime.gateway import MobilePairingAdmin
 
 
@@ -79,6 +78,111 @@ class WebUiProvider(Protocol):
     async def state(self) -> dict[str, str]: ...
 
 
+class ModelRpcInvoker(Protocol):
+    async def invoke_rpc(
+        self,
+        method: str,
+        params: Mapping[str, object],
+    ) -> object: ...
+
+
+def _model_rpc_validation_detail(error: ValueError | ValidationError) -> object:
+    if isinstance(error, ValidationError):
+        return error.errors(include_input=False, include_context=False)
+    return [{"type": "json_invalid", "msg": "JSON 无效"}]
+
+
+async def _model_rpc_response(
+    control: ModelRpcInvoker,
+    method: str,
+    params: Mapping[str, object],
+) -> Response:
+    """Dispatch a plugin-owned model method without importing its schema."""
+    try:
+        result = await control.invoke_rpc(method, params)
+    except ModelControlUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except ValidationError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=_model_rpc_validation_detail(error),
+        ) from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=_model_rpc_validation_detail(error),
+        ) from error
+    if not isinstance(result, Mapping):
+        raise RuntimeError(f"{method} RPC response 必须是对象")
+    response = cast(Mapping[str, object], result)
+    status = response.get("status")
+    body = response.get("body")
+    if type(status) is not int or status < 100 or status > 599:
+        raise RuntimeError(f"{method} RPC response status 无效")
+    if not isinstance(body, Mapping):
+        raise RuntimeError(f"{method} RPC response body 必须是对象")
+    return JSONResponse(
+        content=dict(cast(Mapping[str, object], body)),
+        status_code=status,
+    )
+
+
+def _include_model_settings_routes(app: FastAPI, control: ModelRpcInvoker) -> None:
+    """Keep the existing Web paths as thin adapters to model-plugin RPC."""
+
+    @app.get("/api/chat/model-settings/calls/{call_id}")
+    async def model_call_stats(call_id: str) -> Response:
+        return await _model_rpc_response(
+            control,
+            "models/call_stats",
+            {"call_id": call_id},
+        )
+
+    @app.get("/api/chat/model-settings/catalog")
+    async def model_catalog() -> Response:
+        return await _model_rpc_response(control, "models/catalog", {})
+
+    @app.post("/api/chat/model-settings/discover")
+    async def model_discover(request: Request) -> Response:
+        try:
+            payload = await request.json()
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=_model_rpc_validation_detail(error),
+            ) from error
+        if not isinstance(payload, Mapping):
+            raise HTTPException(
+                status_code=422,
+                detail="请求体必须是对象",
+            )
+        return await _model_rpc_response(
+            control,
+            "models/discover",
+            cast(Mapping[str, object], payload),
+        )
+
+    @app.post("/api/chat/model-settings/command")
+    async def model_command(request: Request) -> Response:
+        try:
+            payload = await request.json()
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=_model_rpc_validation_detail(error),
+            ) from error
+        if not isinstance(payload, Mapping):
+            raise HTTPException(
+                status_code=422,
+                detail="请求体必须是对象",
+            )
+        return await _model_rpc_response(
+            control,
+            "models/command",
+            cast(Mapping[str, object], payload),
+        )
+
+
 def create_chat_app(
     *,
     workspace: Path,
@@ -92,7 +196,7 @@ def create_chat_app(
     model_selection_reader: Callable[
         [Mapping[str, object]], Awaitable[ChatModelSelection]
     ] | None = None,
-    model_control: ModelControl | None = None,
+    model_control: ModelRpcInvoker | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
 ) -> FastAPI:
@@ -121,9 +225,7 @@ def create_chat_app(
 
     app = FastAPI(title="Akashic Chat API", lifespan=lifespan)
     if model_control is not None:
-        from agent.plugin_composition.model_settings_http import create_model_settings_router
-
-        app.include_router(create_model_settings_router(model_control))
+        _include_model_settings_routes(app, model_control)
     app.state.workspace = workspace
     app.state.channel = channel
     project_root = Path(__file__).resolve().parent.parent
@@ -507,7 +609,7 @@ def build_chat_server(
     model_selection_reader: Callable[
         [Mapping[str, object]], Awaitable[ChatModelSelection]
     ] | None = None,
-    model_control: ModelControl | None = None,
+    model_control: ModelRpcInvoker | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
     uds: str,

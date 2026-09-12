@@ -10,13 +10,17 @@ from agent.plugin_composition.models import (
     ChatModelSelection,
     ModelRequest,
 )
-from agent.plugin_composition.model_settings_http import (
-    ModelControlUnavailable,
-    create_model_settings_router,
-)
+from agent.plugin_composition.rpc import rpc_method_key
+from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from plugins.models.selection import MODEL_SELECTION, SelectionOwner
+from plugins.models.model_settings_http import (
+    create_model_settings_router,
+    rpc_methods,
+)
+from bootstrap.chat_api import create_chat_app
+from infra.channels.web_chat_channel import WebChatChannel
 from tests.test_model_call_records import descriptor, store, dump
 from tests.test_mobile_message_log import mobile
 from tests.mobile_realtime.test_channel import _generic_frame
@@ -95,6 +99,64 @@ async def test_http_and_mobile_read_same_call_without_receipts_or_credentials(st
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
                 assert (await client.get(f'/api/chat/model-settings/calls/{call_id}')).status_code == 503
             assert (await channel.handle_command(device_id=device, frame=frame)).payload['code'] == 'model_stats_unavailable'
+            assert absent.lease_count == 0
+        finally:
+            await absent_root.dispose()
+    finally:
+        await snapshots.close()
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_chat_model_route_dispatches_plugin_rpc_under_one_snapshot_lease(
+    store, descriptor, tmp_path
+):
+    call_id = store.start_call(descriptor, ModelRequest(()))
+    root = CompositionRoot("rpc")
+
+    class Control:
+        async def call_stats(self, requested: str):
+            return store.read_call_stats(requested)
+
+    async def plugin(ctx):
+        for name, operation in rpc_methods(Control()).items():
+            await ctx.provide(rpc_method_key(name), operation)
+
+    await root.mount(plugin, name="models")
+    snapshot = RuntimeSnapshotCompiler().compile(
+        {}, composition_root=root, snapshot_revision="rpc"
+    )
+    snapshots = RuntimeSnapshotStore()
+    snapshots.install(snapshot)
+    control = RuntimeModelControl(snapshots)
+    app = create_chat_app(
+        workspace=tmp_path / "chat",
+        channel=WebChatChannel(),
+        model_control=control,
+    )
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/chat/model-settings/calls/{call_id}")
+            missing = await client.get("/api/chat/model-settings/calls/missing")
+        assert response.status_code == 200
+        assert response.json() == asdict(store.read_call_stats(call_id))
+        assert missing.status_code == 404
+        assert snapshot.lease_count == 0
+        absent_root = CompositionRoot("absent-rpc")
+        absent = RuntimeSnapshotCompiler().compile(
+            {}, composition_root=absent_root, snapshot_revision="absent-rpc"
+        )
+        await snapshots.commit(snapshots.begin_publish(absent))
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                unavailable = await client.get(
+                    f"/api/chat/model-settings/calls/{call_id}"
+                )
+            assert unavailable.status_code == 503
             assert absent.lease_count == 0
         finally:
             await absent_root.dispose()
