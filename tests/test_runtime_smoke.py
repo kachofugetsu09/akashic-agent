@@ -35,15 +35,6 @@ class _FakeDashboardServer:
             await asyncio.sleep(0)
 
 
-class _FakeChatServer:
-    def __init__(self) -> None:
-        self.should_exit = False
-
-    async def serve(self) -> None:
-        while not self.should_exit:
-            await asyncio.sleep(0)
-
-
 def test_plugin_uninstall_uses_runtime_control_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -496,10 +487,6 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     monkeypatch.setattr(
         bootstrap_app, "build_dashboard_server", lambda **_: _FakeDashboardServer()
     )
-    monkeypatch.setattr(
-        bootstrap_app, "build_chat_server", lambda **_: _FakeChatServer()
-    )
-
     monkeypatch.setattr(main.Path, "home", lambda: tmp_path)
 
     await main.serve(str(config_path), tmp_path)

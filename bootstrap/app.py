@@ -16,15 +16,9 @@ from agent.restart import RestartGate
 from agent.config_models import Config
 from bootstrap.channel_host import ChannelHost
 from bootstrap.channels import start_channels
-from bootstrap.chat_api import build_chat_server
-from bootstrap.message_display import RuntimeMessageDisplay
 from bootstrap.cleanup import run_cleanup_steps
 from bootstrap.dashboard_api import build_dashboard_server
-from bootstrap.web_runtime import (
-    chat_socket_path,
-    dashboard_socket_path,
-    prepare_runtime_socket,
-)
+from bootstrap.web_runtime import dashboard_socket_path, prepare_runtime_socket
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
@@ -246,18 +240,12 @@ class AppRuntime:
                 if is_tcp_endpoint(app_server_endpoint):
                     workspace_token = ensure_workspace_token(self.workspace)
             from bootstrap.app_server import build_control_service
-            from bootstrap.reply_status import RuntimeReplyStatus
-            from session.log import MessageCatalog
 
             self.control_service = build_control_service(
                 self.core, workspace_token=workspace_token,
                 boot_id=self.readiness.boot_id if self.readiness else None,
                 ready=(lambda: self.readiness.ready) if self.readiness else None,
             )
-            channel_attachment_store = self.core.channel_attachment_store
-            messages = MessageCatalog(self.core.message_log)
-            reply_status = RuntimeReplyStatus(manager.snapshot_store).follow
-            message_display = RuntimeMessageDisplay(manager.snapshot_store)
             if self.config.app_server.enabled:
                 assert app_server_endpoint is not None
                 self.app_server = SocketAppServer(
@@ -273,88 +261,6 @@ class AppRuntime:
             plugin_manager = getattr(self.core, "plugin_manager", None)
             if self.readiness is not None:
                 self.readiness.mark_stage("services.ready")
-            from infra.mobile_realtime.runtime_inspection import (
-                RuntimeInspectionService,
-            )
-
-            runtime_inspection = RuntimeInspectionService(
-                workspace=self.workspace,
-                snapshot_store=(
-                    plugin_manager.snapshot_store
-                    if plugin_manager is not None
-                    else None
-                ),
-            )
-            plugin_ui_provider = None
-            web_ui_provider = None
-            model_catalog_reader = None
-            model_selection_reader = None
-            model_control = None
-            if plugin_manager is not None:
-                from agent.plugins.mobile_ui import PluginMobileUiProvider
-                from agent.plugins.model_control import RuntimeModelControl
-                from agent.plugins.web_ui import PluginWebUiProvider
-
-                plugin_ui_provider = PluginMobileUiProvider(plugin_manager)
-                web_ui_provider = PluginWebUiProvider(plugin_manager.snapshot_store)
-                model_control = RuntimeModelControl(plugin_manager.snapshot_store)
-                model_catalog_reader = model_control.catalog
-                model_selection_reader = model_control.read_saved
-            if self.config.mobile_realtime.enabled:
-                from infra.mobile_realtime.gateway import (
-                    build_mobile_gateway_runtime,
-                )
-
-                self.mobile_gateway_runtime, _ = build_mobile_gateway_runtime(
-                    self.config.mobile_realtime,
-                    self.workspace,
-                )
-                self.mobile_gateway_runtime.channel.bind_messages(messages, reply_status)
-                self.mobile_gateway_runtime.channel.bind_message_display(message_display)
-                self.mobile_gateway_runtime.channel.bind_runtime_inspection(
-                    runtime_inspection
-                )
-                self.mobile_gateway_runtime.channel.bind_channel_attachment_store(
-                    channel_attachment_store
-                )
-                if model_catalog_reader is not None:
-                    self.mobile_gateway_runtime.channel.bind_model_catalog(
-                        model_catalog_reader
-                    )
-                if model_control is not None:
-                    self.mobile_gateway_runtime.channel.bind_model_stats(
-                        model_control.call_stats
-                    )
-                    self.mobile_gateway_runtime.channel.bind_model_selection(
-                        model_control.read_saved
-                    )
-                if plugin_ui_provider is not None:
-                    self.mobile_gateway_runtime.channel.bind_mobile_ui_provider(
-                        plugin_ui_provider
-                    )
-            extra_channels = []
-            if (
-                self.config.channels.chat.enabled
-                or self.mobile_gateway_runtime is not None
-            ):
-                from infra.channels.akashic_channel import AkashicChannel
-
-                if self.config.channels.chat.enabled:
-                    from infra.channels.web_chat_channel import WebChatChannel
-
-                    self.web_chat_channel = WebChatChannel()
-                    self.web_chat_channel.bind_artifact_store(channel_attachment_store)
-                    self.web_chat_channel.bind_message_readers(messages, reply_status)
-                extra_channels.append(
-                    AkashicChannel(
-                        web=self.web_chat_channel,
-                        mobile=(
-                            None
-                            if self.mobile_gateway_runtime is None
-                            else self.mobile_gateway_runtime.channel
-                        ),
-                    )
-                )
             command_catalog_provider: Callable[
                 [], tuple[tuple[str, str], ...]
             ] | None = None
@@ -366,23 +272,17 @@ class AppRuntime:
 
                 command_catalog_provider = current_command_catalog
 
+            # Web/Mobile client owners are ordinary installed plugins.  Keep an
+            # empty neutral host for the command endpoint callback and lifecycle
+            # shape, but never construct Core's historical ``akashic`` channel.
             self.channel_host = await start_channels(
                 bus=self.bus,
                 workspace=self.workspace,
                 http_resources=self.http_resources,
                 event_bus=event_bus,
                 command_catalog_provider=command_catalog_provider,
-                extra_channels=extra_channels,
+                extra_channels=[],
             )
-            if plugin_manager is not None:
-                from bootstrap.core_channel_adapter import build_core_channel_definition
-
-                await plugin_manager.bind_core_channel_definitions(
-                    tuple(
-                        build_core_channel_definition(channel)
-                        for channel in self.channel_host.channels
-                    )
-                )
             await self.channel_host.start_all()
             # 渠道已打开 exact ingress 后恢复 Input；不依赖回复 worker。
             await self.bus.recover_durable_inbounds()
@@ -410,55 +310,10 @@ class AppRuntime:
                 self.dashboard_server.serve(),
                 name="dashboard_server",
             )
-            if self.config.mobile_realtime.enabled:
-                from infra.mobile_realtime.gateway import (
-                    build_mobile_gateway_server,
-                )
-
-                assert self.mobile_gateway_runtime is not None
-                mobile_keyset = self.mobile_gateway_runtime.keyset
-                self.mobile_gateway_server = build_mobile_gateway_server(
-                    self.mobile_gateway_runtime,
-                    mobile_keyset,
-                )
-                self.mobile_gateway_task = asyncio.create_task(
-                    self.mobile_gateway_server.serve(),
-                    name="mobile_gateway_server",
-                )
-            if self.web_chat_channel is not None:
-                self.chat_server = build_chat_server(
-                    workspace=self.workspace,
-                    channel=self.web_chat_channel,
-                    uds=prepare_runtime_socket(chat_socket_path(self.workspace)),
-                    mobile_pairing_admin=(
-                        self.mobile_gateway_runtime.admin
-                        if self.mobile_gateway_runtime is not None
-                        else None
-                    ),
-                    runtime_inspection=runtime_inspection,
-                    plugin_ui_provider=plugin_ui_provider,
-                    web_ui_provider=web_ui_provider,
-                    model_catalog_reader=model_catalog_reader,
-                    model_selection_reader=model_selection_reader,
-                    model_control=model_control,
-                    messages=messages,
-                    reply_status=reply_status,
-                    message_display=message_display,
-                )
-                self.chat_task = asyncio.create_task(
-                    self.chat_server.serve(),
-                    name="chat_server",
-                )
             if plugin_manager is not None:
-                mobile_ui_refresh = (
-                    self.mobile_gateway_runtime.channel.refresh_mobile_ui_catalog
-                    if self.mobile_gateway_runtime is not None
-                    else None
-                )
                 self.plugin_watcher = PluginWatcher(
                     plugin_manager,
                     baseline_revision="",
-                    after_reconcile=mobile_ui_refresh,
                 )
                 self.plugin_watcher_task = asyncio.create_task(
                     self.plugin_watcher.run(),
