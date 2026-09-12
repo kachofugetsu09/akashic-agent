@@ -63,7 +63,7 @@ def environment(tmp_path, *, reply=False):
         "content",
         "context",
         "standard_tools",
-        *(("turn_projection",) if reply else ()),
+        *(("turn_projection", "sources", "models") if reply else ()),
     ):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,
@@ -76,10 +76,10 @@ def environment(tmp_path, *, reply=False):
 api_version = 3
 name = "probe"
 version = "1.0.0"
-inject = (ServiceKey("core.bindings"),)
+inject = (ServiceKey("core.bindings"), *REPLY_INJECT)
 async def apply(ctx, config):
     await ctx.provide(ServiceKey("standard-tools-probe"), ctx)
-''')
+'''.replace('REPLY_INJECT', '(ServiceKey("source.check.v1"), ServiceKey("models.selection.v1"))' if reply else '()'))
     workspace = tmp_path / "workspace"
     store, log = storage(workspace)
     context_config = workspace / "plugin-data/context-builtin/config.local.toml"
