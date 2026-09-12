@@ -6,8 +6,8 @@ from plugins.standard_tools.filesystem import (
     ReadFileTool,
     WriteFileTool,
 )
-from plugins.context.materials import MATERIALS
-from plugins.tools.plugin import TOOLS, ToolView
+from ._materials_boundary import MATERIALS
+from ._tool_boundary import TOOLS, ToolView
 
 from .files import register_file
 from .shell import register_shell

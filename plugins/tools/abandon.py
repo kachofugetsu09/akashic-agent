@@ -9,7 +9,7 @@ from agent.plugin_composition.tasks import TaskAdmission, TaskSlot
 from plugins.tools.api import Denied, MessageReply, Result, durable_call_key
 from plugins.tools.execution import _fingerprint, finish
 from session.log import MessageCatalog, MessageReader, OwnerStore
-from session.message import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import CallRef, ContentPart, Control, Message, Output, ToolCall, ToolResult
 
 
 class LegacyReplyIdentityUnavailable(ValueError):

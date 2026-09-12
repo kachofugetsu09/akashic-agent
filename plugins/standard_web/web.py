@@ -12,11 +12,11 @@ from agent.tools.base import normalize_tool_parameters
 from plugins.standard_web.fetch import WebFetchTool
 from plugins.standard_web.search import WebSearchTool
 from core.net.http import HttpRequester, RequestBudget, RetryPolicy
-from plugins.tools.api import CallSource, Result
 from plugins.tools.api import InvalidArguments
-from plugins.tools.plugin import TOOLS, ToolRef
-from session.message import ContentPart
+from agent.plugin_contracts import ContentPart
 from session.message_codec import json_value
+
+from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 
 class WebTool:
     idempotent = False
@@ -33,16 +33,16 @@ class WebTool:
             raise InvalidArguments("; ".join(errors))
         return raw
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
         text = await self._backend.execute(**cast(dict[str, Any], json_value(arguments)))
         value: object = json.loads(text)
         if not isinstance(value, dict):
             raise TypeError("Web 后端结果必须是 JSON 对象")
         if "error" in value and not isinstance(value["error"], str):
             raise TypeError("Web 后端 error 必须是字符串")
-        return Result("error" if "error" in value else "success", (ContentPart("text", text),))
+        return ToolResultValue("error" if "error" in value else "success", (ContentPart("text", text),))
 
-    async def query(self, key: str) -> Result | None:
+    async def query(self, key: str) -> ToolResultValue | None:
         return None
 
 
@@ -60,9 +60,9 @@ async def register_web(ctx: Context) -> tuple[ToolRef, ...]:
 
     refs: list[ToolRef] = []
     for backend, open_tool in ((WebFetchTool, open_fetch), (WebSearchTool, open_search)):
-        refs.append(await ctx.require(TOOLS).register(
+        refs.append(cast(ToolRef, await ctx.require(TOOLS).register(
             ctx, name=backend.name, description=backend.description,
             parameters=normalize_tool_parameters(backend.parameters), open=open_tool,
             risk="read-only",
-        ))
+        )))
     return tuple(refs)

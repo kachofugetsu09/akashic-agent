@@ -1,5 +1,6 @@
 from agent.plugin_composition import Context, ServiceKey
-from plugins.tools.plugin import TOOLS, ToolView
+
+from ._tool_boundary import TOOLS, ToolView
 
 from .web import register_web
 

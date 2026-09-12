@@ -5,16 +5,18 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 import re
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import Bindings
-from session.message import CallRef, ToolResult, freeze_json
+from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, ToolResult, freeze_json
 from session.log import MessageReader
 from agent.restart import ExternalRootPermit
-from plugins.content.plugin import check_text
 
-from plugins.tools.api import Authorize, BoundTool, CallSource, MessageReply, Result, display_name, result_message_id
+from plugins.tools.api import (
+    Authorize, BoundTool, CallSource, MessageReply, ProviderBoundTool, Result,
+    coerce_result, display_name, result_message_id,
+)
 from plugins.tools.abandon import follow_abandon, reject_start
 from plugins.tools.execution import ToolExecution
 from agent.plugin_composition.bindings import BINDINGS
@@ -27,9 +29,21 @@ version = "1.0.0"
 desc = "声明工具并固定实际实现；一次调用的回执独立于会话"
 inject = ()
 
+
+ContentCheck = Callable[[ContentPart], ContentReferences]
+
+
+class ContentCapability(Protocol):
+    @property
+    def checks(self) -> Mapping[str, ContentCheck]: ...
+
+
+# 与 content owner 共享名字，不共享其实现模块或 Python 类型身份。
+CONTENT = ServiceKey[ContentCapability]("content.v1")
+
 Prepare = Callable[[Mapping[str, object]], Awaitable[Mapping[str, object]]]
 BindingAuthorize = Callable[[Mapping[str, object]], Awaitable[None]]
-OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[BoundTool]]
+OpenTarget = Callable[[Mapping[str, object]], AbstractAsyncContextManager[ProviderBoundTool]]
 Capture = Callable[[Mapping[str, object]], Mapping[str, object]]
 
 
@@ -95,7 +109,7 @@ class _Authorization:
 class _ToolView:
     """每次打开只访问固定目标，释放后不能保留入口再执行。"""
 
-    def __init__(self, target: BoundTool, preparation: _Preparation | None):
+    def __init__(self, target: ProviderBoundTool, preparation: _Preparation | None):
         self._target = target
         self._preparation = preparation
         self._active = True
@@ -121,11 +135,12 @@ class _ToolView:
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
         self._check_active()
-        return await self._target.invoke(key, arguments)
+        return coerce_result(await self._target.invoke(key, arguments))
 
     async def query(self, key: str) -> Result | None:
         self._check_active()
-        return await self._target.query(key)
+        result = await self._target.query(key)
+        return None if result is None else coerce_result(result)
 
     def close(self) -> None:
         self._active = False
@@ -514,6 +529,10 @@ async def apply(ctx: Context, config: object) -> None:
         nonlocal watcher
         async def reply(reader: MessageReader, source: str, ref: CallRef) -> MessageReply:
             async with ctx.runtime_scope():
+                checks = ctx.require(CONTENT).checks
+                check_text = checks.get("text")
+                if check_text is None:
+                    raise RuntimeError("content capability 没有 text 检查器")
                 writer = ctx.require(MESSAGE_WRITERS).bind(
                     ctx, author="tool", source=source, body_types=(ToolResult,), content={"text": check_text},
                 )(reader.session_id, call_ref=ref)

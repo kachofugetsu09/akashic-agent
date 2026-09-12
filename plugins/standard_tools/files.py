@@ -18,11 +18,12 @@ from plugins.standard_tools.filesystem import (
     ReadFileTool,
     WriteFileTool,
 )
-from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS, ToolRef
+from plugins.tools.api import InvalidArguments
 from session.artifacts import AttachmentKind
-from session.message import ContentPart
+from agent.plugin_contracts import ContentPart
 from session.message_codec import json_value
+
+from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
 
 FileBackend = ReadFileTool | ListDirTool | WriteFileTool | EditFileTool
 
@@ -58,7 +59,7 @@ class FileTool:
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
         return prepare_arguments(self._backend, arguments)
 
-    async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:
+    async def invoke(self, key: str, arguments: Mapping[str, object]) -> ToolResultValue:
         """读取真实结果，保留明确错误和可由 Model 投影的图片附件。"""
         # 1. 不在文件工具内根据当前主模型丢弃图片，也不按提示文字猜成功。
         raw = cast(dict[str, Any], json_value(arguments))
@@ -67,14 +68,14 @@ class FileTool:
             else await self._backend.execute(**raw)
         )
         if isinstance(value, str):
-            return Result("success", (ContentPart("text", value),))
+            return ToolResultValue("success", (ContentPart("text", value),))
         if value.mobile_attention is not None or value.runtime_provenance:
             raise ValueError("文件后端返回了未声明的交互或来源字段")
         parts = [ContentPart("text", value.text)] if value.text else []
         # 2. 保存后端实际返回的 model-safe 图片；临时文件不是权威 Artifact。
         for block in value.content_blocks:
             parts.append(await self._import_image(block))
-        return Result("error" if value.is_error else "success", tuple(parts))
+        return ToolResultValue("error" if value.is_error else "success", tuple(parts))
 
     async def _import_image(self, block: Mapping[str, object]) -> ContentPart:
         image = block.get("image_url")
@@ -95,7 +96,7 @@ class FileTool:
             ref = await self._ctx.require(ARTIFACT_IMPORT).import_source(str(path), AttachmentKind.IMAGE)
         return ContentPart("artifact_ref", ref.artifact_id)
 
-    async def query(self, key: str) -> Result | None:
+    async def query(self, key: str) -> ToolResultValue | None:
         return None
 
 
@@ -123,7 +124,7 @@ async def register_file(
         "读取文件。文本带行号，支持 offset/limit 分页；图片保存为附件并交给当前模型查看。"
         if backend_type is ReadFileTool else prototype.description
     )
-    return await ctx.require(TOOLS).register(
+    return cast(ToolRef, await ctx.require(TOOLS).register(
         ctx,
         name=prototype.name,
         description=description,
@@ -133,4 +134,4 @@ async def register_file(
         risk=(
             "read-only" if backend_type in (ReadFileTool, ListDirTool) else "read-write"
         ),
-    )
+    ))
