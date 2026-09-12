@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from agent.persona import AKASHIC_BEHAVIOR_RULES
-from prompts.completion import VERIFIABLE_COMPLETION_RULES
+from .completion import VERIFIABLE_COMPLETION_RULES
+from .persona import AKASHIC_BEHAVIOR_RULES
 
 
 def build_identity(*, workspace: Path) -> str:

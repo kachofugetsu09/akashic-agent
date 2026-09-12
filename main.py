@@ -7,7 +7,6 @@
   python main.py supervise          显式进入 supervisor（兼容别名）
   python main.py app-server --stdio 启动父进程托管控制面
   python main.py exec ...           非交互执行一个 turn
-  python main.py veda-reset         重建 workspace 默认人格
 """
 
 from __future__ import annotations
@@ -119,7 +118,6 @@ def _run_lightweight_command() -> bool:
     args = sys.argv[1:]
     if not args or args[0] not in {
         "plugin-install-trusted-batch",
-        "veda-reset",
     }:
         return False
     command = args[0]
@@ -133,7 +131,7 @@ def _run_lightweight_command() -> bool:
         workspace = _workspace_from_args(
             args,
             Path(config_path),
-            allow_default=command == "veda-reset",
+            allow_default=False,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -189,24 +187,6 @@ def _run_lightweight_command() -> bool:
                 print(f"{item['pluginId']}: {item['sourceRevision']}")
         return True
 
-    if command == "veda-reset":
-        from agent.persona import reset_veda
-
-        try:
-            result = reset_veda(workspace)
-        except (OSError, RuntimeError) as exc:
-            raise SystemExit(f"Veda 重建失败: {exc}") from exc
-        if not result.changed:
-            print(f"Veda 已是默认内容: {result.path}")
-            print(f"sha256={result.default_sha256}")
-            return True
-        print(f"Veda 已重建: {result.path}")
-        if result.backup_path is not None:
-            print(f"原内容备份: {result.backup_path}")
-            print(f"原内容 sha256={result.previous_sha256}")
-        print(f"默认内容 sha256={result.default_sha256}")
-        print("新人格从下一次提示词组装开始生效。")
-        return True
 
     return False
 
@@ -223,7 +203,6 @@ from agent.migrations import (
 )
 from agent.restart import RestartGate, SupervisorCommitChannel
 from agent.supervisor import RESTART_EXIT_CODE, run_supervisor
-from agent.persona import read_veda
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.manifest import set_plugin_enabled
 from bootstrap.app import build_app_runtime
@@ -240,7 +219,6 @@ _HELP = """\
 命令:
   setup                         运行交互式初始化向导
   init                          非交互初始化配置和工作区
-  veda-reset                    备份并重建 workspace 默认人格
   gateway                       启动未托管 Agent 服务（调试）
   supervise                     显式进入 supervisor（兼容别名）
   app-server --stdio            在 stdio 上运行程序化控制面
@@ -531,7 +509,6 @@ async def serve(config_path: str, workspace: Path) -> int:
     commit_channel = SupervisorCommitChannel.from_environment()
     if commit_channel is not None:
         commit_channel.stage("gateway.starting")
-    _ = read_veda(workspace)
     config = Config.load(config_path, workspace=workspace)
     if commit_channel is not None:
         commit_channel.stage("config.loaded")
@@ -853,7 +830,6 @@ if __name__ == "__main__":
             sys.exit(2)
         from bootstrap.app_server import run_stdio_app_server
 
-        _ = read_veda(workspace)
         config = Config.load(config_path, workspace=workspace)
         asyncio.run(run_stdio_app_server(config, workspace))
         sys.exit(0)

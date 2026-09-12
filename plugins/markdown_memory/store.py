@@ -8,7 +8,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 
-from infra.persistence.json_store import atomic_write_text
+from agent.plugin_contracts.json_store import atomic_write_text
 from agent.plugin_composition import ServiceKey
 
 

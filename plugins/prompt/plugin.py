@@ -5,11 +5,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 from typing import Protocol, cast
 
-from agent.persona import read_veda_file
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_contracts import Input, Message
 from agent.plugin_contracts import json_value
 
+from .persona import read_veda_file
 from .text import build_behavior_rules, build_identity, build_telegram_rendering_prompt
 
 api_version = 3

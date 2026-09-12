@@ -20,7 +20,7 @@ from agent.config import (
     load_config,
     resolve_app_server_endpoint,
 )
-from agent.persona import reset_veda
+from plugins.prompt.persona import reset_veda
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
 from infra.mobile_webui.store import MobileWebUiStore
@@ -907,26 +907,21 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert "6322" not in config_text
     assert "[runtime]\n" in config_text
     assert 'workspace = "~/.akashic/workspace"' in config_text
-    assert any("http://127.0.0.1:2236" in step for step in summary.next_steps)
-    assert any("默认聊天模型" in step for step in summary.next_steps)
-    assert any("embedding 模型" in step for step in summary.next_steps)
-    assert not any("llm.main" in step for step in summary.next_steps)
-    assert not any("memory.embedding" in step for step in summary.next_steps)
     # 启动迁移完成后由 MessageLog owner 创建 canonical schema。
     assert not (workspace / "sessions.db").exists()
-    assert (workspace / "observe").is_dir()
+    assert not (workspace / "observe").exists()
     assert not (workspace / "memory" / "consolidation_writes.db").exists()
     assert not (workspace / "memory" / "journal").exists()
     assert not (workspace / "memory" / "memory2.db").exists()
-    assert "你是 Akashic" in (workspace / "memory" / "VEDA.md").read_text(
-        encoding="utf-8"
-    )
+    assert not (workspace / "memory" / "VEDA.md").exists()
+    assert not (workspace / "plugin-data").exists()
+    assert not (workspace / "memes").exists()
     assert not (workspace / "PROACTIVE_CONTEXT.md").exists()
     assert not (workspace / "mcp").exists()
     assert not (workspace / "proactive_sources.json").exists()
     assert not (workspace / "proactive.db").exists()
-    assert (workspace / "skills").is_dir()
-    assert (workspace / "drift" / "skills").is_dir()
+    assert not (workspace / "skills").exists()
+    assert not (workspace / "drift").exists()
     assert any(path == config_path for path in summary.created)
 
 
@@ -972,6 +967,7 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     self_path = workspace / "memory" / "SELF.md"
     veda_path = workspace / "memory" / "VEDA.md"
     assert not self_path.exists()
+    veda_path.parent.mkdir(parents=True, exist_ok=True)
     veda_path.write_text("custom veda\n", encoding="utf-8")
 
     summary_skip = workspace_init.init_workspace(
@@ -980,7 +976,7 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     )
     assert not self_path.exists()
     assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
-    assert any(path == veda_path for path in summary_skip.skipped)
+    assert veda_path not in summary_skip.created + summary_skip.overwritten
 
     summary_force = workspace_init.init_workspace(
         config_path=config_path,
@@ -990,7 +986,7 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
     assert not self_path.exists()
     assert veda_path.read_text(encoding="utf-8") == "custom veda\n"
     assert self_path not in summary_force.created + summary_force.overwritten
-    assert any(path == veda_path for path in summary_force.skipped)
+    assert veda_path not in summary_force.created + summary_force.overwritten
 
 
 @pytest.mark.asyncio

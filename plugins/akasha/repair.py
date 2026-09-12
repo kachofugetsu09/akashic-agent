@@ -14,7 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from agent.plugin_composition import EmbeddingSpaceDescriptor, Embeddings
-from session.embedding_store import MessageEmbeddingStore
+from agent.plugin_composition.messages import MessageEmbeddingStore
 
 from .application.rebuild import rebuild_memory
 from .config import AkashaConfig, resolve_memory_path

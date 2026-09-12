@@ -14,7 +14,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_DIR = REPO_ROOT / "agent" / "plugin_contracts"
 
 # 词汇表只允许依赖标准库与本层自身。
-VALUE_LIBRARIES = {"__future__", "collections", "dataclasses", "datetime", "json", "math", "types", "typing"}
+# The contract layer also owns source-neutral atomic file and time primitives;
+# their standard-library I/O dependencies are allowed without admitting a
+# repository implementation module.
+VALUE_LIBRARIES = {
+    "__future__", "collections", "dataclasses", "datetime", "enum", "json",
+    "logging", "math", "os", "pathlib", "secrets", "stat", "types", "typing",
+    "zoneinfo",
+}
 
 VOCABULARY_NAMES = (
     "Body",
@@ -84,3 +91,18 @@ def test_message_identity_survives_both_paths() -> None:
     assert isinstance(message, contracts.Message)
     assert isinstance(message.body, contracts.Input)
     assert isinstance(message.body.parts[0], contracts.ContentPart)
+
+
+def test_source_neutral_primitives_preserve_legacy_identity() -> None:
+    """迁移后的原子工具和 Turn effect 不能生成第二套函数或枚举身份。"""
+
+    from agent.plugin_contracts.json_store import atomic_write_text
+    from agent.plugin_contracts.timekit import parse_iso
+    from agent.plugin_contracts.turn_effects import PostCommitEffect
+    from agent.turn_effects import PostCommitEffect as legacy_effect
+    from core.common.timekit import parse_iso as legacy_parse_iso
+    from infra.persistence.json_store import atomic_write_text as legacy_write
+
+    assert atomic_write_text is legacy_write
+    assert parse_iso is legacy_parse_iso
+    assert PostCommitEffect is legacy_effect

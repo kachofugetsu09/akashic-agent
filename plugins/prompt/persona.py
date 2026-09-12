@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from infra.persistence.json_store import atomic_write_text
+from agent.plugin_contracts.json_store import atomic_write_text
 
 
 VEDA_RELATIVE_PATH = Path("memory/VEDA.md")
-DEFAULT_VEDA_PATH = Path(__file__).resolve().parents[1] / "prompts" / "VEDA.md"
+DEFAULT_VEDA_PATH = Path(__file__).with_name("VEDA.md")
 
 
 class VedaLoadError(RuntimeError):
@@ -39,7 +39,7 @@ def _decode_veda(payload: bytes, *, path: Path) -> str:
     except UnicodeDecodeError as exc:
         raise VedaLoadError(
             f"Veda 不是合法 UTF-8: {path}；"
-            "请运行 `python main.py veda-reset` 恢复默认人格"
+            "请显式运行已安装 Prompt 包的 persona.py --workspace PATH 恢复默认人格"
         ) from exc
 
     # 2. 空人格没有可执行语义，必须由显式命令恢复。
@@ -47,7 +47,7 @@ def _decode_veda(payload: bytes, *, path: Path) -> str:
     if not content:
         raise VedaLoadError(
             f"Veda 内容为空: {path}；"
-            "请运行 `python main.py veda-reset` 恢复默认人格"
+            "请显式运行已安装 Prompt 包的 persona.py --workspace PATH 恢复默认人格"
         )
     return content
 
@@ -63,7 +63,7 @@ def read_veda_file(path: Path) -> str:
     except FileNotFoundError as exc:
         raise VedaLoadError(
             f"缺少 Veda: {path}；"
-            "请运行 `python main.py veda-reset` 恢复默认人格"
+            "请显式运行已安装 Prompt 包的 persona.py --workspace PATH 恢复默认人格"
         ) from exc
     return _decode_veda(payload, path=path)
 
@@ -159,3 +159,20 @@ AKASHIC_BEHAVIOR_RULES = """你有工具执行能力，必须先验证再回答�
 绝对不用 emoji（Unicode 表情符号 🙂🎉 之类）。任何情况下都不用，包括结尾。颜文字（纯文字符号）可以用，但要克制；轻松、暧昧、害羞、得意这些场景可以更常用一点，但一次 0 到 1 个就够。
 
 加粗用 **文字** 格式时，引号必须放在星号外面，写成 "**文字**" 而不是 **"文字"**。"""
+
+
+def main() -> None:
+    """显式维护已安装包的人格文件，缺失与损坏都先记录可恢复结果。"""
+    import argparse
+    import json
+    from dataclasses import asdict
+
+    parser = argparse.ArgumentParser(description="备份并重建 Prompt 默认人格")
+    parser.add_argument("--workspace", type=Path, required=True)
+    args = parser.parse_args()
+    result = reset_veda(args.workspace)
+    print(json.dumps(asdict(result), ensure_ascii=False, default=str))
+
+
+if __name__ == "__main__":
+    main()
