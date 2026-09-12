@@ -17,9 +17,9 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 from agent.plugin_composition import MobileUiRpcInvalidRequest
-from plugins.turn_projection.plugin import Turn as MessageTurn, TurnProjection
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Output
+from ._boundaries import Turn, TurnProjection
 from .recalls import ContextSource, ProgramSource, Recall, ToolSource
 from .config import AkashaConfig, resolve_memory_path
 from .infrastructure.sparse_index.schema import (
@@ -1016,7 +1016,7 @@ class RecallInspector:
         self._read = read
         self._list = list_records
         self._catalog = catalog
-        self._turns: tuple[tuple[str, str, int], tuple[MessageTurn, ...], tuple[tuple[str, int, bool], ...]] | None = None
+        self._turns: tuple[tuple[str, str, int], tuple[Turn, ...], tuple[tuple[str, int, bool], ...]] | None = None
 
     def recent(self, *, page: int = 1, page_size: int = 30, session_id: str = "") -> dict[str, object]:
         rows = tuple((identity, recall) for identity, recall in self._list()

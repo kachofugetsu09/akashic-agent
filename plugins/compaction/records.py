@@ -11,7 +11,7 @@ from agent.plugin_composition import ServiceKey
 
 from agent.plugin_composition.messages import MessageConflict, MessageReader, OwnerStore, OwnerTransaction
 from agent.plugin_contracts import json_value
-from plugins.context.api import summary_range
+from ._boundaries import summary_range
 
 Text = Annotated[str, Field(min_length=1)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]

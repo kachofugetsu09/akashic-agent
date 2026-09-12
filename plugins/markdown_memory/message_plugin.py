@@ -9,8 +9,8 @@ import logging
 from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
 from dataclasses import replace
-from typing import TYPE_CHECKING, AsyncGenerator, Protocol, cast
-from collections.abc import Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, AsyncGenerator, cast
+from collections.abc import Callable, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,7 +21,6 @@ from agent.plugin_composition import (
     Context,
     ModelRequest,
     ModelRole,
-    ServiceKey,
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
@@ -29,13 +28,13 @@ from agent.plugin_composition.models import BoundChatModel, ChatModels, ContextL
 from agent.llm_json import load_json_object_loose
 from agent.turn_effects import PostCommitEffect
 from infra.persistence.json_store import atomic_write_text
-from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryLookup, StoredSummary
-from plugins.compaction.message_summary import source_text, summary_groups, window_starts
-from plugins.content.api import is_user_input, legacy_post_commit_effect
-from plugins.context.api import check_summary, summary_range
-from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
+from ._boundaries import (
+    COMPACTION_READER, COMPACTION_SUMMARIES, CONTENT, MATERIALS,
+    CompactionReader, ContentFacts, StoredSummary, SummaryLookup, TURN_PROJECTION, TurnProjection,
+    check_summary, summary_range,
+)
 
 if TYPE_CHECKING:
     from agent.plugin_composition.messages import MessageReader
@@ -57,18 +56,8 @@ workspace_files = (
 )
 
 MaterialData = Mapping[str, object]
-
-
-class MaterialRegistry(Protocol):
-    async def register(
-        self, ctx: Context, *, name: str,
-        prepare: Callable[[tuple[Message, ...], str], Awaitable[MaterialData]],
-        priority: int = 0, prompt: bool = False, reduce: object | None = None,
-    ) -> object: ...
-
-
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v2")
-inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, TURN_PROJECTION)
+inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, CONTENT, COMPACTION_SUMMARIES,
+          COMPACTION_READER, TURN_PROJECTION)
 
 
 _MEMORY_HEADINGS = (
@@ -100,7 +89,9 @@ class ProfileDraftError(ModelError):
     retryable = True
 
 
-def _profile_source_rows(messages: tuple[Message, ...]) -> tuple[str, ...]:
+def _profile_source_rows(
+    messages: tuple[Message, ...], *, compaction: CompactionReader,
+) -> tuple[str, ...]:
     """正文逐字保留；历史回放与原始 extra 不重复投送，证据仍核对完整 Message。"""
     rows: list[str] = []
     for message in messages:
@@ -115,7 +106,7 @@ def _profile_source_rows(messages: tuple[Message, ...]) -> tuple[str, ...]:
             message_view = replace(message, body=body)
         else:
             message_view = message
-        row = json.loads(source_text((message_view,)))[0]
+        row = json.loads(compaction.source_text((message_view,)))[0]
         for part in row["body"].get("parts", []):
             if part["kind"] == "history.provenance":
                 provenance = part["value"]
@@ -155,11 +146,14 @@ async def prepare_profile_draft(
     before_memory: str,
     before_self: str,
     chat_models: ChatModels,
+    *,
+    compaction: CompactionReader,
+    is_user_input: Callable[[Message], bool],
 ) -> dict[str, object]:
     """分批核对精确正文；全部成功后才把完整草稿交给原持久 writer。"""
     memory, self_profile = before_memory, before_self
     messages = tuple(message for group in groups for message in group)
-    rows = tuple(_profile_source_rows(group) for group in groups)
+    rows = tuple(_profile_source_rows(group, compaction=compaction) for group in groups)
     evidence: dict[str, dict[str, list[str]]] = {"memory": {}, "self": {}}
     offset = 0
     async with chat_models.independent_execution() as execution:
@@ -168,7 +162,9 @@ async def prepare_profile_draft(
             size = _profile_batch_size(rows[offset:], memory, self_profile, provider)
             source = "[" + ",".join(row for group in rows[offset:offset + size] for row in group) + "]"
             selected = tuple(message for group in groups[offset:offset + size] for message in group)
-            batch = await _prepare_profile_batch(selected, source, memory, self_profile, provider)
+            batch = await _prepare_profile_batch(
+                selected, source, memory, self_profile, provider, is_user_input=is_user_input,
+            )
             memory, self_profile = cast(str, batch["memory"]), cast(str, batch["self"])
             batch_evidence = cast(dict[str, dict[str, list[str]]], batch["evidence"])
             for document in evidence:
@@ -183,13 +179,14 @@ async def prepare_profile_draft(
         "memory_before_digest": content_digest(before_memory), "self_before_digest": content_digest(before_self),
         "memory_after_digest": content_digest(memory), "self_after_digest": content_digest(self_profile),
     }
-    check_evidence(draft, messages)
+    check_evidence(draft, messages, is_user_input=is_user_input)
     return draft
 
 
 async def _prepare_profile_batch(messages: tuple[Message, ...], source: str,
                                  current_memory: str, current_self: str,
-                                 provider: BoundChatModel) -> dict[str, object]:
+                                 provider: BoundChatModel, *,
+                                 is_user_input: Callable[[Message], bool]) -> dict[str, object]:
     """校验一批新增事实与当前内存档案，不写文件或推进 receipt。"""
     prompt = _profile_prompt(current_memory, current_self, source)
     # 新增条目与模型推理共享输出预算，采用 provider 已声明的生成上限。
@@ -201,7 +198,10 @@ async def _prepare_profile_batch(messages: tuple[Message, ...], source: str,
             max_output_tokens=output_cap, disable_reasoning=True,
         ))
         try:
-            return _check_profile_response(response, messages, current_memory, current_self)
+            return _check_profile_response(
+                response, messages, current_memory, current_self,
+                is_user_input=is_user_input,
+            )
         except _InvalidDraft as error:
             if repaired:
                 raise ProfileDraftError(str(error)) from error
@@ -214,7 +214,8 @@ async def _prepare_profile_batch(messages: tuple[Message, ...], source: str,
 
 
 def _check_profile_response(response: LLMResponse, messages: tuple[Message, ...],
-                            current_memory: str, current_self: str) -> dict[str, object]:
+                            current_memory: str, current_self: str, *,
+                            is_user_input: Callable[[Message], bool]) -> dict[str, object]:
     """只验证模型草稿；原始 Message 的解析错误保持原异常。"""
     if response.finish_reason == "length":
         raise _InvalidDraft("模型输出达到生成上限，草稿尚未完整")
@@ -262,7 +263,7 @@ def _check_profile_response(response: LLMResponse, messages: tuple[Message, ...]
     }
     # 2. 持久草稿沿原结构、保留和来源资格检查；不接受模型自报的用户身份。
     check_draft(draft)
-    check_evidence(draft, messages)
+    check_evidence(draft, messages, is_user_input=is_user_input)
     return draft
 
 
@@ -504,10 +505,14 @@ def check_draft(payload: dict[str, object]) -> None:
     _validate_preserved_bullets(self_before, self_profile, document="SELF.md")
 
 
-def check_evidence(draft: dict[str, object], messages: tuple[Message, ...]) -> None:
+def check_evidence(
+    draft: dict[str, object], messages: tuple[Message, ...], *,
+    is_user_input: Callable[[Message], bool],
+) -> None:
     """新增条目必须引用实际原文；用户档案拒绝助手或内部来源作唯一证据。"""
     # 1. 来源资格来自已过滤的真实 Message，不由模型输出自报。
     by_id = {item.message_id: item for item in messages}
+    user_input = is_user_input
     evidence = draft.get("evidence")
     if not isinstance(evidence, dict) or set(evidence) != {"memory", "self"}:
         raise _InvalidDraft("Markdown 新条目缺少 evidence")
@@ -544,7 +549,7 @@ def check_evidence(draft: dict[str, object], messages: tuple[Message, ...]) -> N
             user_fact = (document == "memory" and heading != _MEMORY_OPTIONAL_HEADING
                          or document == "self" and heading in _SELF_HEADINGS[2:])
             if user_fact and not any(
-                is_user_input(by_id[key]) for key in ids
+                user_input(by_id[key]) for key in ids
             ):
                 raise _InvalidDraft("用户事实必须引用真实用户 Input，不能仅引用助手或后台结果")
         if set(cited) != added:
@@ -618,9 +623,12 @@ async def profile_lock(path: Path, *, create: bool = True) -> AsyncGenerator[Non
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-async def _unapplied_groups(record: StoredSummary, lookup: SummaryLookup, reader: MessageReader,
-                        store: MarkdownProfileStore, sources: tuple[str, ...],
-                        projection: TurnProjection) -> tuple[tuple[Message, ...], ...] | None:
+async def _unapplied_groups(
+    record: StoredSummary, lookup: SummaryLookup, reader: MessageReader,
+    store: MarkdownProfileStore, sources: tuple[str, ...], projection: TurnProjection,
+    *, compaction: CompactionReader,
+    post_commit_effect: Callable[[Message], PostCommitEffect | None],
+) -> tuple[tuple[Message, ...], ...] | None:
     """从最近已写入的祖先之后取完整组的原文，跳过未使用的摘要不会漏掉它覆盖的事实。"""
     start = 0
     latest = store.latest_applied(record.session_id)
@@ -647,22 +655,30 @@ async def _unapplied_groups(record: StoredSummary, lookup: SummaryLookup, reader
     for source in sources:
         for turn in projection.project(snapshot[:covered.stop], source):
             ids = (*turn.message_ids, *(identity for _, identity in turn.observations))
-            effects = tuple(legacy_post_commit_effect(by_id[identity]) for identity in ids)
+            effects = tuple(post_commit_effect(by_id[identity]) for identity in ids)
             if PostCommitEffect.SUPPRESS in effects:
                 excluded.update(ids)
     after = covered.start + start
-    cuts = (after, *(index for index in window_starts(snapshot[:covered.stop], projection) if index > after), covered.stop)
+    cuts = (
+        after,
+        *(index for index in compaction.window_starts(snapshot[:covered.stop], projection) if index > after),
+        covered.stop,
+    )
     groups = tuple(snapshot[left:right] for left, right in zip(cuts, cuts[1:]))
     selected = tuple(tuple(message for message in group
                            if message.source in sources and message.message_id not in excluded)
                      for group in groups)
     # 批次切点来自完整前缀；学习资格与迟到结果沿原 source/放弃边界过滤。
-    return summary_groups(selected, snapshot[:covered.stop])
+    return compaction.summary_groups(selected, snapshot[:covered.stop])
 
 
-async def project(message: Message, *, reader: MessageReader, bindings: Bindings,
-                  store: MarkdownProfileStore, models: ChatModels, lock_path: Path,
-                  sources: tuple[str, ...], projection: TurnProjection) -> None:
+async def project(
+    message: Message, *, reader: MessageReader, bindings: Bindings,
+    store: MarkdownProfileStore, models: ChatModels, lock_path: Path,
+    sources: tuple[str, ...], projection: TurnProjection,
+    content: ContentFacts,
+    compaction: CompactionReader,
+) -> None:
     """只处理已提交的模型 Output；两份文件沿原 before-image receipt 恢复。"""
     if reader.attributes.learning != "eligible" or message.source not in sources or not isinstance(message.body, Output):
         return
@@ -672,6 +688,8 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
     if len(refs) != 1:
         raise ValueError("一个 Output 只能声明实际使用的一份摘要")
     reference = check_summary(refs[0]).binding_ids[0]
+    user_input = content.is_user_input
+    post_commit_effect = content.legacy_post_commit_effect
     # 1. 更新串行；两文件锁只保护已提交档案的读取和安装，不覆盖模型等待。
     async with profile_lock(lock_path.with_name(_UPDATE_LOCK_NAME)):
         async with profile_lock(lock_path):
@@ -683,15 +701,21 @@ async def project(message: Message, *, reader: MessageReader, bindings: Bindings
             if store.is_applied(record.reference):
                 return
             draft = store.read_draft(record.reference)
-            groups = await _unapplied_groups(record, lookup, reader, store, sources, projection)
+            groups = await _unapplied_groups(
+                record, lookup, reader, store, sources, projection,
+                compaction=compaction, post_commit_effect=post_commit_effect,
+            )
             if not groups:
                 return
             selected = tuple(message for group in groups for message in group)
         # 模型属于当前 Markdown 作用域；先关闭旧摘要的只读归档 scope。
         if draft is None:
-            draft = await prepare_profile_draft(groups, before_memory, before_self, models)
+            draft = await prepare_profile_draft(
+                groups, before_memory, before_self, models,
+                compaction=compaction, is_user_input=user_input,
+            )
         if draft.get("version") == 2:
-            check_evidence(draft, selected)
+            check_evidence(draft, selected, is_user_input=user_input)
         elif draft.get("version") != 1:
             raise ValueError("不支持的 Markdown 草稿版本")
         # 2. 读者只会看到完整的旧档案或新档案；两次文件安装与回执在同一短锁内。
@@ -756,7 +780,9 @@ async def apply(ctx: Context, config: Config) -> None:
                                 try:
                                     await project(message, reader=reader, bindings=ctx.require(BINDINGS),
                                                   store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
-                                                  sources=config.sources, projection=ctx.require(TURN_PROJECTION))
+                                    sources=config.sources, projection=ctx.require(TURN_PROJECTION),
+                                    content=ctx.require(CONTENT),
+                                    compaction=ctx.require(COMPACTION_READER))
                                 except ModelError as error:
                                     if not error.retryable:
                                         raise

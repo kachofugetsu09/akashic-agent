@@ -13,13 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.models import BoundEmbeddingModel
-from plugins.content.api import Reference
-from plugins.tools.api import CallSource, InvalidArguments, Result
-from plugins.tools.plugin import TOOLS
 from session.embedding_store import MessageEmbeddings
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import json_value
+from ._boundaries import CallSource, Result, TOOLS
 
 from .application.consumer import run_memory_job
 from .application.snapshot import read_memory
@@ -61,13 +59,13 @@ def check_recall(part: ContentPart) -> ContentReferences:
 def tool_references(
     snapshot: tuple[Message, ...], source: str, learning: Learning,
     bindings: Bindings, records: RecallRecords,
-) -> tuple[Reference, ...]:
+) -> tuple[Mapping[str, object], ...]:
     """只有实际 Akasha 调用产生且属于该 CallRef 的查询记录能授予本地引用。"""
     turns = learning.projection.project(snapshot, source)
     if not turns or turns[-1].status != "open":
         return ()
     by_id = {message.message_id: message for message in snapshot}
-    references: dict[str, Reference] = {}
+    references: dict[str, Mapping[str, object]] = {}
     for call_ref, identity in turns[-1].observations:
         result = by_id[identity].body
         if not isinstance(result, ToolResult) or result.outcome != "success":
@@ -91,8 +89,11 @@ def tool_references(
                 or recall.source.session_id != request.session_id or recall.source.call_ref != call_ref):
                 raise ValueError("召回记录不属于实际工具调用")
             for message_id in recall.presented_message_ids:
-                references[message_id] = Reference(message_id, resolved_ref=message_id,
-                                                   retrieval_ref=marker.retrieval_ref)
+                references[message_id] = {
+                    "ref": message_id,
+                    "resolved_ref": message_id,
+                    "retrieval_ref": marker.retrieval_ref,
+                }
     return tuple(references.values())
 
 
@@ -120,12 +121,14 @@ class RecallTool:
         self._open_embedding = open_embedding
         self._max_chars = max_chars
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object]:
+    async def prepare(
+        self, arguments: Mapping[str, object], source: CallSource | None = None,
+    ) -> Mapping[str, object] | str:
         """只固定用户查询和实际 CallRef；后来输入不会改变参数出处。"""
         try:
             request = RecallArguments.model_validate(json_value(arguments))
         except ValidationError as error:
-            raise InvalidArguments(str(error)) from error
+            return str(error)
         origin = None if source is None else ToolSource(
             session_id=source.messages[0].session_id, call_ref=source.call_ref,
         )
