@@ -5,7 +5,7 @@ import pytest
 
 from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, ContextLengthError, InvalidRequestError,
-    LLMResponse, ModelCapabilities, ModelRequest, ModelRole, RateLimitError,
+    LLMResponse, ModelCapabilities, ModelRequest, RateLimitError,
 )
 from plugins.compaction.message_summary import HEADINGS, SummaryError, closed_groups, summarize, summary_groups, window_starts
 from plugins.context.plugin import ContextBuilder
@@ -23,7 +23,7 @@ def model(store, complete, *, identity="main", window=10000):
     descriptor = BoundModelDescriptor(
         binding_id=identity, plugin_snapshot_id="snapshot", model_revision=0,
         model_id=identity, connection_id="fixture", driver_id="fixture", driver_contract_version="1",
-        auth_identity="fixture", model=identity, role=ModelRole.AGENT, reasoning_effort=None,
+        auth_identity="fixture", model=identity, role="agent", reasoning_effort=None,
         capabilities=ModelCapabilities(context_window=window, max_output_tokens=800),
         capability_sources=CapabilitySources(), capability_digest="fixture",
     )

@@ -318,7 +318,7 @@ async def _process_instance(
 
             # ── Judge ─────────────────────────────────────────────────────────
             if not result["error"]:
-                from agent.plugin_composition import CHAT_MODELS, ModelRole
+                from agent.plugin_composition import CHAT_MODELS
                 from agent.plugins.snapshot import lease_runtime_snapshot
 
                 manager = rt.core.plugin_manager
@@ -331,7 +331,7 @@ async def _process_instance(
                     chat_models = root.context.require(CHAT_MODELS)
                     async with chat_models.execution() as execution:
                         result["judge_correct"] = await judge_answer(
-                            execution.chat(ModelRole.DEFAULT),
+                            execution.chat("default"),
                             question=result["question"],
                             gold=result["gold_answer"],
                             predicted=result["predicted_answer"],

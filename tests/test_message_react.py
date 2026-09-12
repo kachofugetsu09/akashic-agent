@@ -11,7 +11,7 @@ import pytest
 from agent.plugin_composition.models import (
     BoundChatModel, BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
     ModelRequest,
-    ModelRole, ToolCall as ModelToolCall,
+    ToolCall as ModelToolCall,
 )
 from agent.plugin_composition.tasks import Task, Tasks
 from plugins.content.plugin import _decode_text, check_text
@@ -43,7 +43,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
     descriptor = BoundModelDescriptor(
         binding_id="model", plugin_snapshot_id="snapshot", model_revision=0,
         model_id="model", connection_id="connection", driver_id="driver",
-        driver_contract_version="1", auth_identity="test", model="test", role=ModelRole.AGENT,
+        driver_contract_version="1", auth_identity="test", model="test", role="agent",
         reasoning_effort=None, capabilities=ModelCapabilities(context_window=10000),
         capability_sources=CapabilitySources(), capability_digest="test",
     )

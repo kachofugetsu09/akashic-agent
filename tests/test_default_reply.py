@@ -72,7 +72,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from pathlib import Path
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
 from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
 from plugins.models.content import MODEL_CONTENT, ContentOwner
 from plugins.models.selection import MODEL_SELECTION, SelectionOwner
@@ -102,7 +102,7 @@ async def apply(ctx, config):
     descriptor = BoundModelDescriptor(
         binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture",
-        driver_contract_version="1", auth_identity="fixture", model="fixture", role=ModelRole.AGENT,
+        driver_contract_version="1", auth_identity="fixture", model="fixture", role="agent",
         reasoning_effort=None, capabilities=ModelCapabilities(context_window=10000),
         capability_sources=CapabilitySources(), capability_digest="fixture",
     )
@@ -310,7 +310,6 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             import json
             from agent.plugin_composition import CHAT_MODELS
             from agent.plugin_composition.bindings import BINDINGS
-            from agent.plugin_composition.models import ModelRole
             from plugins.models.content import render_content
             from plugins.models.projection import MODEL_CALLS, MessageProjection
             from plugins.tools.plugin import TOOLS
@@ -320,7 +319,7 @@ async def test_default_reply_discovers_then_calls_tool_without_react_search_bran
             ctx = snapshot.composition_root.context
             # 新投影从持久日志重建；摘要覆盖搜索结果时，只有请求视图失去 schema。
             async with ctx.require(CHAT_MODELS).execution() as execution:
-                model = execution.chat(ModelRole.AGENT)
+                model = execution.chat("agent")
                 bindings = ctx.require(BINDINGS)
                 def tool_name(binding):
                     return cast(str, cast(Mapping[str, object], bindings.describe(binding, TOOLS)["tool"])["name"])

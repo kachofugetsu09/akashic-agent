@@ -50,7 +50,6 @@ from agent.plugin_composition import (
     ModelExecution,
     ModelKind,
     ModelRequest,
-    ModelRole,
     ModelUnavailableError,
     SavedEmbedding,
     ServiceKey,
@@ -62,10 +61,13 @@ from agent.plugin_composition import (
     UpdateConnection,
 )
 
-from .store import ModelsStore, StoredConnection, StoredModel, StoredSnapshot
+from .store import MODEL_ROLES, ModelsStore, StoredConnection, StoredModel, StoredSnapshot
 
 logger = logging.getLogger(__name__)
 _AUTH_ATTEMPT_TTL_SECONDS = 15 * 60
+_DEFAULT_ROLE = "default"
+_AGENT_ROLE = "agent"
+_VISION_ROLE = "vision"
 
 
 class _CapabilityCatalog(Protocol):
@@ -212,7 +214,7 @@ class _Execution:
         snapshot: StoredSnapshot,
         model_id: str | None,
         reasoning_effort: str | None,
-        chat: Mapping[ModelRole, BoundChatModel],
+        chat: Mapping[str, BoundChatModel],
     ) -> None:
         self.owner_task = asyncio.current_task()
         self.state = state
@@ -222,11 +224,11 @@ class _Execution:
         self.reasoning_effort = reasoning_effort
         self._chat = MappingProxyType(dict(chat))
 
-    def chat(self, role: ModelRole) -> BoundChatModel:
+    def chat(self, role: str) -> BoundChatModel:
         try:
             return self._chat[role]
         except KeyError as exc:
-            raise ModelUnavailableError(f"模型角色不可用: {role.value}") from exc
+            raise ModelUnavailableError(f"模型角色不可用: {role}") from exc
 
 
 _CURRENT_EXECUTION: ContextVar[_Execution | None] = ContextVar(
@@ -238,7 +240,7 @@ _CURRENT_EXECUTION: ContextVar[_Execution | None] = ContextVar(
 def _check_vision_binding(snapshot: StoredSnapshot) -> None:
     """Reject a corrupt historical vision binding before any driver opens."""
 
-    model_id = snapshot.role_bindings.get(ModelRole.VISION.value)
+    model_id = snapshot.role_bindings.get(_VISION_ROLE)
     if model_id is None:
         return
     model = snapshot.models.get(model_id)
@@ -449,10 +451,7 @@ class ModelsState:
             revision=snapshot.revision,
             connections=connections,
             models=models,
-            role_bindings={
-                ModelRole(role): model_id
-                for role, model_id in snapshot.role_bindings.items()
-            },
+            role_bindings=dict(snapshot.role_bindings),
             default_embedding_model_id=snapshot.default_embedding_model_id,
         )
 
@@ -631,17 +630,17 @@ class ModelsState:
         opened: dict[str, DriverConnection],
     ) -> _Execution:
         _check_vision_binding(snapshot)
-        chat: dict[ModelRole, BoundChatModel] = {}
-        for role in ModelRole:
-            model_id = snapshot.role_bindings.get(role.value)
-            binding_role = role.value
-            if explicit_model_id is not None and role is ModelRole.AGENT:
+        chat: dict[str, BoundChatModel] = {}
+        for role in MODEL_ROLES:
+            model_id = snapshot.role_bindings.get(role)
+            binding_role = role
+            if explicit_model_id is not None and role == _AGENT_ROLE:
                 model_id = explicit_model_id
             if model_id is None:
-                if role is ModelRole.DEFAULT:
+                if role == _DEFAULT_ROLE:
                     raise ModelUnavailableError("尚未配置 default 聊天模型")
-                default_id = snapshot.role_bindings.get(ModelRole.DEFAULT.value)
-                if role is ModelRole.VISION:
+                default_id = snapshot.role_bindings.get(_DEFAULT_ROLE)
+                if role == _VISION_ROLE:
                     if (
                         default_id is None
                         or "image"
@@ -649,12 +648,12 @@ class ModelsState:
                     ):
                         continue
                 model_id = default_id
-                binding_role = ModelRole.DEFAULT.value
+                binding_role = _DEFAULT_ROLE
             if model_id is None:
                 continue
             effort = (
                 reasoning_effort
-                if explicit_model_id and role is ModelRole.AGENT
+                if explicit_model_id and role == _AGENT_ROLE
                 else snapshot.role_reasoning_efforts.get(binding_role)
                 or snapshot.models[model_id].default_reasoning_effort
             )
@@ -680,7 +679,7 @@ class ModelsState:
         plugin_snapshot_id: str,
         snapshot: StoredSnapshot,
         model_id: str,
-        role: ModelRole,
+        role: str,
         effort: str | None,
         opened: dict[str, DriverConnection],
     ) -> BoundChatModel:
@@ -1258,7 +1257,7 @@ class ModelsState:
             driver_contract_version=definition.contract_version,
             auth_identity=connection.auth_identity,
             model=model.model,
-            role=ModelRole.DEFAULT,
+            role=_DEFAULT_ROLE,
             reasoning_effort=None,
             capabilities=model.capabilities,
             capability_sources=model.capability_sources,

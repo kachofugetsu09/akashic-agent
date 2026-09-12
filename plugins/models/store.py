@@ -552,11 +552,9 @@ class ModelsStore:
 
         model_id = _required(command.model_id, "model_id")
         role = command.role
-        role_value = (
-            None
-            if role is None
-            else str(role.value if hasattr(role, "value") else role)
-        )
+        if role is not None and type(role) is not str:
+            raise ValueError("model role must be a string")
+        role_value = role
 
         def write(connection: sqlite3.Connection) -> None:
             if role_value is None:

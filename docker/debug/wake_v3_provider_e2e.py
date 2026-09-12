@@ -32,7 +32,6 @@ from agent.plugin_composition import (
     LLMResponse,
     ModelCapabilities,
     ModelKind,
-    ModelRole,
     SetDefaultModel,
     ToolCall,
 )
@@ -553,7 +552,7 @@ async def run_suite(
                     raise GateFailure("MODEL_SNAPSHOT_ROOT_MISSING")
                 chat_models = composition_root.context.require(CHAT_MODELS)
                 async with chat_models.execution() as execution:
-                    selected_model = execution.chat(ModelRole.DEFAULT)
+                    selected_model = execution.chat("default")
                     model_evidence = {
                         "revision": catalog.revision,
                         "model_id": selected_model.descriptor.model_id,
@@ -681,7 +680,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelRole
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities
 from plugins.models.content import MODEL_CONTENT, ContentOwner
 from plugins.models.projection import (
     MODEL_CALLS,
@@ -724,7 +723,7 @@ from tests.model_plugin_fakes import _MODEL_PROVIDERS
         binding_id="wake-e2e-fixture-model", plugin_snapshot_id="wake-e2e-fixture",
         model_revision=1, model_id="wake-e2e-fixture", connection_id="fixture",
         driver_id="fixture", driver_contract_version="1", auth_identity="fixture",
-        model=getattr(provider, "model", "wake-e2e-fixture"), role=ModelRole.AGENT,
+        model=getattr(provider, "model", "wake-e2e-fixture"), role="agent",
         reasoning_effort=None, capabilities=ModelCapabilities(context_window=64_000),
         capability_sources=CapabilitySources(), capability_digest="wake-e2e-fixture",
     )
@@ -904,7 +903,7 @@ async def _configure_selected_model(manager: PluginManager) -> None:
             capability_sources=CapabilitySources(context_window="e2e-profile"),
         )
     )
-    for role in (ModelRole.DEFAULT, ModelRole.FAST, ModelRole.AGENT):
+    for role in ("default", "fast", "agent"):
         receipt = await control.apply(
             SetDefaultModel(receipt.revision, role, "wake-e2e-model")
         )

@@ -16,7 +16,7 @@ def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, obje
 
     roles_by_model: dict[str, list[str]] = {}
     for role, model_id in snapshot.role_bindings.items():
-        roles_by_model.setdefault(model_id, []).append(role.value)
+        roles_by_model.setdefault(model_id, []).append(role)
     connections = {
         connection.connection_id: connection for connection in snapshot.connections
     }
@@ -61,7 +61,7 @@ def default_chat_model_id(snapshot: ModelCatalogSnapshot) -> str:
     """Return the configured default model without inventing a fallback."""
 
     for role, model_id in snapshot.role_bindings.items():
-        if role.value == "default":
+        if role == "default":
             return model_id
     return ""
 

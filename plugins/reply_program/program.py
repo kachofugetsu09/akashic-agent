@@ -6,7 +6,7 @@ from typing import Any, cast
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_WRITERS, MessageReader
-from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest, ModelRole
+from agent.plugin_composition.models import BoundChatModel, ChatModels, ModelRequest
 from agent.plugin_composition.tasks import Task
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 
@@ -68,7 +68,7 @@ async def run_reply(
         models.execution(model_id=chosen.model_id, reasoning_effort=chosen.reasoning_effort) as execution,
         materials.bind(exclude=exclude_materials) as material_view,
     ):
-        model = execution.chat(ModelRole.AGENT)
+        model = execution.chat("agent")
         writers = ctx.require(MESSAGE_WRITERS)
         keep_input_ids = tuple(
             item.message_id for item in snapshot

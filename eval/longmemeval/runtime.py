@@ -15,7 +15,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.plugin_composition import CHAT_MODELS, BoundModelDescriptor, ModelRole
+from agent.plugin_composition import CHAT_MODELS, BoundModelDescriptor
 from agent.plugins.snapshot import lease_runtime_snapshot
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ async def create_runtime(
                 raise RuntimeError("RuntimeSnapshot 缺少 composition Root")
             chat_models = root.context.require(CHAT_MODELS)
             async with chat_models.execution() as execution:
-                descriptor = execution.chat(ModelRole.AGENT).descriptor
+                descriptor = execution.chat("agent").descriptor
     except BaseException:
         await core.stop()
         await http.aclose()

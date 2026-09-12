@@ -29,7 +29,6 @@ from agent.plugin_composition import (
     ModelCatalogSnapshot,
     ModelDescriptor,
     ModelKind,
-    ModelRole,
 )
 from agent.plugin_composition.channels import (
     AttachmentKind as V3AttachmentKind,
@@ -1102,8 +1101,8 @@ class _ModelCatalogReader:
                 ),
             ),
             role_bindings={
-                ModelRole.DEFAULT: "model-a",
-                ModelRole.AGENT: "model-a",
+                "default": "model-a",
+                "agent": "model-a",
             },
             default_embedding_model_id=None,
         )
