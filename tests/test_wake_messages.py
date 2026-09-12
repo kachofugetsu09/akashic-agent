@@ -488,7 +488,7 @@ async def test_reasoning_only_response_defers_one_flow_and_runtime_handles_the_n
 async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory_cue(tmp_path):
     from plugins.content.plugin import check_text
     from plugins.conversation.source import update_selection
-    from plugins.models.selection import check_selection
+    from plugins.models.selection import MODEL_SELECTION, check_selection
     from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     from plugins.akasha.learning import Learning
@@ -498,7 +498,10 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         now = datetime.now(timezone.utc)
         writer = log.writer("test:room", author="user", source="fixture", body_types=(Input,),
             content={"text": check_text, "model.selection": check_selection},
-            metadata_keys=frozenset({"model_selection", "model_runtime_override"}), update_metadata=update_selection)
+            metadata_keys=frozenset({"model_selection", "model_runtime_override"}),
+            update_metadata=lambda body: update_selection(
+                body, write_saved=ctx.require(MODEL_SELECTION).write_saved,
+            ))
         def select(identity, model):
             writer.append(identity, Input((ContentPart("model.selection", {"model_id": model, "reasoning_effort": "high"}),)))
         select("old", "chosen-original")

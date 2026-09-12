@@ -64,6 +64,7 @@ from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.mobile_realtime.attachments import attachment_descriptor
 from infra.mobile_realtime.channel import MobileRealtimeChannel
 from infra.mobile_realtime.gateway import MobileGatewayRuntime
+from plugins.models.selection import read_saved
 from infra.mobile_realtime.protocol import (
     GenericCommand,
     MAX_JSON_FRAME_BYTES,
@@ -1206,6 +1207,7 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
             }}),))
         channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
         channel.bind_model_catalog(_ModelCatalogReader())
+        channel.bind_model_selection(read_saved)
         channel.bind_messages(log.catalog())
 
         reply = await channel.handle_command(

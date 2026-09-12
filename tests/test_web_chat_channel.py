@@ -46,6 +46,7 @@ from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore
 from infra.channels.web_chat_channel import UploadTooLargeError, WebChatChannel
 from bootstrap.core_channel_adapter import build_core_channel_definition
+from plugins.models.selection import read_saved
 from session.manager import Session, SessionManager
 from session.log import MessageLog
 from session.identities import ChannelIdentities
@@ -437,6 +438,7 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
             workspace=tmp_path,
             channel=channel,
             model_catalog_reader=read_catalog,
+            model_selection_reader=read_saved,
             messages=log.catalog(),
         )
 

@@ -15,7 +15,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
-from agent.plugin_composition.models import ModelCallStats
+from agent.plugin_composition.models import ChatModelSelection, ModelCallStats
 from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 
 from agent.plugin_composition.channels import (
@@ -60,7 +60,6 @@ from agent.plugins.mobile_ui import (
     MobileUiStaleRevision,
 )
 from agent.control.models import TurnStatus
-from agent.model_runtime.session_selection import read_session_model_selection
 from session.log import InvalidPage, MessageCatalog, MessageConflict, MessageReader
 from session.message import ContentPart, Input
 from bus.queue import MessageBus
@@ -455,6 +454,9 @@ class MobileRealtimeChannel:
         self._model_catalog_reader: (
             Callable[[], Awaitable[ModelCatalogSnapshot]] | None
         ) = None
+        self._model_selection_reader: (
+            Callable[[Mapping[str, object]], ChatModelSelection] | None
+        ) = None
         self._model_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None
         self._channel_attachment_store: ChannelAttachmentArtifactStore | None = None
         self._v3_inbound_runtime = _MobileInboundRuntime()
@@ -501,6 +503,15 @@ class MobileRealtimeChannel:
         if self._model_catalog_reader is not None:
             raise RuntimeError("Model catalog reader 已绑定")
         self._model_catalog_reader = reader
+
+    def bind_model_selection(
+        self,
+        reader: Callable[[Mapping[str, object]], ChatModelSelection],
+    ) -> None:
+        """绑定模型 owner 的持久选择读取能力。"""
+        if self._model_selection_reader is not None:
+            raise RuntimeError("Model selection reader 已绑定")
+        self._model_selection_reader = reader
 
     def bind_messages(
         self, messages: MessageCatalog,
@@ -1523,18 +1534,18 @@ class MobileRealtimeChannel:
         ]
         if self._messages is None:
             raise MobileCommandError("session_log_unavailable", "会话日志尚未绑定")
+        if self._model_selection_reader is None:
+            raise MobileCommandError("model_selection_unavailable", "模型选择服务不可用")
         metadata = self._messages.reader(session_id).metadata()
-        selection = read_session_model_selection(metadata if metadata is not None else {})
+        selection = self._model_selection_reader(metadata if metadata is not None else {})
         return CommandReply(
             type="model.catalog.get.ok",
             session_id=session_id,
             payload={
                 "generation_id": current.revision,
                 "default_runtime": default_chat_model_id(current),
-                "selected_runtime_id": selection.model_ref if selection else "",
-                "selected_reasoning_effort": (
-                    selection.reasoning_effort if selection else ""
-                ),
+                "selected_runtime_id": selection.model_id or "",
+                "selected_reasoning_effort": selection.reasoning_effort or "",
                 "runtimes": runtimes,
             },
         )

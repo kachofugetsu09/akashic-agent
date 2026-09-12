@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from agent.model_runtime.session_selection import read_session_model_selection
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
@@ -16,6 +15,7 @@ from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugins.manager import PluginManager
 from bus.event_bus import EventBus
 from plugins.conversation.plugin import CONVERSATION
+from plugins.models.selection import read_saved
 from session.log import MessageLog, SessionAttributes, WriterExpired
 from session.message import ContentPart, Control, Input, Output
 from tests.test_default_reply import application
@@ -113,7 +113,7 @@ async def test_explicit_switch_clear_and_replay_share_one_session_fact(tmp_path)
             await terminal(log, 1)
             metadata = log.reader("test:room").metadata()
             assert metadata is not None
-            assert read_session_model_selection(metadata).reasoning_effort == "low"
+            assert read_saved(metadata).reasoning_effort == "low"
             assert "model_runtime_override" not in metadata
             await accept("test:room", "u2", inbound({"model_runtime_id": ""}))
             await terminal(log, 2)
@@ -152,7 +152,7 @@ async def test_direct_conversation_uses_same_validation_and_atomic_metadata_writ
             await conversation.accept("u1", Input((part,)))
             metadata = log.reader("test:room").metadata()
             assert metadata is not None
-            assert read_session_model_selection(metadata).model_ref == "saved"
+            assert read_saved(metadata).model_id == "saved"
             # SQLite 在真正 metadata UPDATE 处失败，整批正文与 Session 字段必须不变。
             with closing(sqlite3.connect(tmp_path / "sessions.db")) as connection, connection:
                 connection.execute("CREATE TRIGGER reject_selection BEFORE UPDATE OF metadata ON sessions BEGIN SELECT RAISE(ABORT, 'selection fault'); END")
@@ -199,7 +199,7 @@ async def test_saved_disabled_model_fails_reply_without_falling_back(tmp_path):
             assert context.require(ServiceKey("fixture.selected")) == []
             metadata = log.reader("test:room").metadata()
             assert metadata is not None
-            assert read_session_model_selection(metadata).model_ref == "saved"
+            assert read_saved(metadata).model_id == "saved"
 
 
 @pytest.mark.parametrize("raw", ['[]', '{"x":1,"x":2}', '{"x":NaN}', '{broken'])

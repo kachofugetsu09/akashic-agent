@@ -4,13 +4,13 @@ import asyncio
 import hashlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Protocol, cast
 
 from agent.control.timer import TimerReceipt, TimerStatus
-from agent.model_runtime.session_selection import read_session_model_selection
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.plugin_composition.models import ChatModelSelection
 from agent.plugin_composition.timers import TIMERS
 from plugins.akasha.interest import SEMANTIC_INTEREST
 from plugins.delivery.api import Sink
@@ -30,6 +30,13 @@ from .messages import recent_context
 from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM, WAKE_TOOLS_VIEW
 from .source import Pointer, Source
 from .state import WakeState, WakeStateReader
+
+
+class ModelSelection(Protocol):
+    def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection: ...
+
+
+MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
 
 
 class DashboardView:
@@ -168,7 +175,7 @@ class Runtime:
         sink = Sink(name=target.channel, address=target.recipient,
             binding_id=ctx.require(DELIVERY_SENDERS).bind(target.channel, bindings))
         metadata = ctx.require(MESSAGE_CATALOG).reader(target.session_id).metadata()
-        model = read_session_model_selection(metadata if metadata is not None else {})
+        model = ctx.require(MODEL_SELECTION).read_saved(metadata if metadata is not None else {})
         view = ToolView.combine(
             ctx.require(WAKE_TOOLS_VIEW),
             ctx.require(AKASHA_TOOLS),
@@ -190,7 +197,7 @@ class Runtime:
             items=tuple(dict(item) for item in admission.pool.items),
             proposals=tuple(dict(item) for item in admission.proposals),
             alert_ref=None if alert is None else cast(dict[str, str], dict(alert)),
-            model_id=model.model_ref or None, reasoning_effort=model.reasoning_effort or None,
+            model_id=model.model_id, reasoning_effort=model.reasoning_effort,
             rules=read_archived_rules(ctx.data_root) or "",
             history=recent_context(ctx.require(MESSAGE_CATALOG), ctx.require(DELIVERY_READ),
                                    target=target.session_id, now=now),
