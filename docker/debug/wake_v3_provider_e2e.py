@@ -40,6 +40,8 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
+from infra.channels.artifacts import ChannelAttachmentArtifactStore
+from session.artifact_store import ArtifactStore
 from session.log import MessageLog
 from plugins.wake.request import Request, read_request
 from plugins.wake.source import Pointer
@@ -340,6 +342,7 @@ class RuntimeStack:
     event_bus: EventBus
     message_log: MessageLog
     manager: PluginManager
+    artifact_metadata: ArtifactStore
     after_load: Callable[[], Awaitable[None]] | None = None
     uses_test_model: bool = True
 
@@ -359,6 +362,7 @@ class RuntimeStack:
                 await self.event_bus.aclose()
             finally:
                 self.message_log.close()
+                self.artifact_metadata.close()
                 if self.uses_test_model:
                     unregister_test_model_provider(self.workspace)
 
@@ -602,6 +606,10 @@ def _build_stack(
 
     event_bus = EventBus()
     message_log = MessageLog(workspace / "sessions.db")
+    artifact_metadata = ArtifactStore(workspace / "sessions.db")
+    artifacts = ChannelAttachmentArtifactStore(
+        workspace=workspace, metadata_store=artifact_metadata
+    )
 
     plugin_dirs = [
         Path(__file__).resolve().parents[2] / "plugins" / name
@@ -609,9 +617,13 @@ def _build_stack(
             "content",
             "context",
             "delivery",
+            "delivery_policy",
             "drift",
             "eventmail",
             "react",
+            "reply_program",
+            "sources",
+            "standard_tools",
             "tools",
             "turn_projection",
             "wake",
@@ -632,6 +644,7 @@ def _build_stack(
         event_bus=event_bus,
         workspace=workspace,
         message_log=message_log,
+        channel_attachment_store=artifacts,
         installed_cache_root=root / "plugin-home" / "cache",
     )
     if not model_plugin_dirs:
@@ -644,6 +657,7 @@ def _build_stack(
         event_bus,
         message_log,
         manager,
+        artifact_metadata,
         after_load=(
             (
                 (lambda: _configure_selected_model(manager))
@@ -668,7 +682,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, ModelCapabilities, ModelRole
-from plugins.models.projection import MODEL_CALLS
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.projection import (
+    MODEL_CALLS,
+    MODEL_MESSAGE_CHECKS,
+    MODEL_PROJECTION,
+    MessageChecksOwner,
+    ProjectionOwner,
+)
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from tests.model_plugin_fakes import _MODEL_PROVIDERS
@@ -714,9 +736,14 @@ from tests.model_plugin_fakes import _MODEL_PROVIDERS
             yield SimpleNamespace(chat=lambda role: model)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
 """ if include_models else ""
     text = f'''from contextlib import asynccontextmanager, closing
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, ServiceKey
+from plugins.conversation.plugin import check_origin
 from plugins.akasha.interest import SEMANTIC_INTEREST
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.delivery.api import Receipt
@@ -751,6 +778,9 @@ class NoopTool:
 
 async def apply(ctx: Context, config: object):
     del config
+    # The isolated fixture does not mount the full conversation source, but
+    # Delivery Policy still consumes the real conversation-owned origin check.
+    await ctx.provide(ServiceKey("conversation.check_origin.v1"), check_origin)
     await ctx.provide(SEMANTIC_INTEREST, ZeroSemanticInterest())
     @asynccontextmanager
     async def open_tool(state):
@@ -884,9 +914,15 @@ def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
     """Write only isolated plugin-local configuration needed by the fixture chain."""
 
     wake = workspace / "plugin-data" / "wake-builtin"
+    context = workspace / "plugin-data" / "context-builtin"
     recording = workspace / "plugin-data" / "recording_channel-builtin"
     wake.mkdir(parents=True)
+    context.mkdir(parents=True)
     recording.mkdir(parents=True)
+    _ = (context / "config.local.toml").write_text(
+        'prompt_sources = {skills = "standard_tools"}\n',
+        encoding="utf-8",
+    )
     _ = (wake / "config.local.toml").write_text(
         '[delivery]\nchannel = "recording"\n'
         'recipient = "fixture-recipient"\n'

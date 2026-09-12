@@ -509,13 +509,12 @@ async def test_abandon_waits_for_started_owner_and_retains_real_success(environm
 
 @pytest.mark.asyncio
 async def test_invalid_arguments_result_and_receipt_roll_back_together(environment, monkeypatch):
-    from plugins.tools.api import InvalidArguments
     log, state, tasks, probe, permissions, execution = environment
     reply = dialogue(log)
     prepares = []
     async def invalid(arguments, source=None):
         prepares.append(source.call_ref)
-        raise InvalidArguments("unknown target")
+        return "unknown target"
     probe.prepare = invalid
     save = OwnerTransaction.save
     def fail_receipt(self, key, value, **kwargs):

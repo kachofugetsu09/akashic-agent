@@ -1,9 +1,7 @@
 """正式 Core 构造只取得消息与资源 owner，不重开旧回复执行权。"""
-import shutil
 from contextlib import closing
 import sqlite3
 from collections.abc import Mapping
-from pathlib import Path
 
 import pytest
 
@@ -16,30 +14,23 @@ from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageCatalog, MessageLog
 from session.message import ContentPart, Input
 from session.store import SessionStore
-
-
-def _copy_checkout_plugins(tmp_path: Path) -> Path:
-    source = tmp_path / "plugins"
-    shutil.copytree(
-        Path(__file__).parents[1] / "plugins",
-        source,
-        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
-    )
-    return source
+from tests.fixtures.formal_plugins import (
+    FULL_RUNTIME_PLUGINS,
+    MINIMAL_MESSAGE_PLUGINS,
+    install_formal_plugins,
+)
 
 
 @pytest.mark.asyncio
 async def test_core_opens_message_schema_and_real_source_without_legacy_execution(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    source = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", source / "conversation")
-    shutil.copytree(Path(__file__).parents[1] / "plugins/sources", source / "sources")
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
+    plugin_home, _ = install_formal_plugins(tmp_path, MINIMAL_MESSAGE_PLUGINS)
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     http = SharedHttpResources()
     core = bootstrap.build_core_runtime(Config(), workspace, http,
-                                        clear_stale_session_admissions=True)
+                                        clear_stale_session_admissions=True,
+                                        plugin_dirs=[])
     try:
         await core.start()
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
@@ -84,13 +75,13 @@ async def test_core_loads_complete_builtin_message_composition(tmp_path, monkeyp
     workspace.mkdir()
     from bootstrap.init_workspace import init_workspace
     _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    source = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins", source,
-                    ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
+    plugin_home, _ = install_formal_plugins(
+        tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[])
     try:
         await core.start()
         snapshot = core.plugin_manager.current_snapshot
@@ -140,10 +131,13 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
 
     workspace = tmp_path / "workspace"
     _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [_copy_checkout_plugins(tmp_path)])
+    plugin_home, _ = install_formal_plugins(
+        tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[])
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
@@ -152,7 +146,7 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
             catalog = ctx.require(MODEL_CATALOG).snapshot()
             assert not catalog.role_bindings
             assert catalog.default_embedding_model_id is None
-            health = [item for item in snapshot.composition_root.receipt().health if item.owner == "akasha"]
+            health = [item for item in snapshot.composition_root.receipt().health if item.owner == "akasha@fixture"]
             assert len(health) == 1 and not health[0].required and not health[0].healthy
             assert health[0].reason is not None and "embedding" in health[0].reason
         assert not (workspace / "memory/akasha.db").exists()
@@ -201,13 +195,13 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
     await web.SockSite(runner, sock).start()
     workspace = tmp_path / "workspace"
     _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    source = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins", source,
-                    ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [source])
+    plugin_home, _ = install_formal_plugins(
+        tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     http = SharedHttpResources()
-    core = bootstrap.build_core_runtime(Config(), workspace, http)
+    core = bootstrap.build_core_runtime(Config(), workspace, http, plugin_dirs=[])
     try:
         await core.start()
         await core.plugin_manager.start_runtime()
@@ -258,7 +252,10 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 root_descriptor = archive.read_descriptor(root_ref)
                 components = root_descriptor.get("components")
                 assert isinstance(components, (list, tuple))
-                assert {archive.read_descriptor(ref)["plugin_id"] for ref in components} == {"models", "openai-compatible"}
+                assert {archive.read_descriptor(ref)["plugin_id"] for ref in components} == {
+                    "models@fixture",
+                    "openai-compatible@fixture",
+                }
                 outer = core.message_log.read_binding(binding)
                 assert isinstance(outer, Mapping)
                 outer_root_ref = outer.get("root_ref")
@@ -266,9 +263,9 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 outer_descriptor = archive.read_descriptor(outer_root_ref)
                 outer_components = outer_descriptor.get("components")
                 assert isinstance(outer_components, (list, tuple))
-                assert "openai-compatible" not in {archive.read_descriptor(ref)["plugin_id"] for ref in outer_components}
-                shutil.rmtree(source / "openai_compatible")
-                shutil.rmtree(source / "models")
+                assert "openai-compatible@fixture" not in {
+                    archive.read_descriptor(ref)["plugin_id"] for ref in outer_components
+                }
                 async def authorize(binding, arguments):
                     return {"approved": True}
                 await control.apply(AddModel(3, "second", "local", ModelKind.EMBEDDING, "second", capabilities, CapabilitySources()))
@@ -276,7 +273,11 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 sent = len(calls)
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                status = next(part.text for part in result.reminders if part.name == "status")
+                status = next(
+                    part["text"]
+                    for part in result["reminders"]
+                    if part["name"] == "status"
+                )
                 assert "召回不可用" in status and "重建" in status
                 assert logical_state_sha256(graph) == before and len(calls) == sent
                 recalled = await tools.execution(authorize).execute("old-model-after-default-switch", binding, {"query": "saved memory"})
@@ -285,7 +286,7 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 await control.apply(SetDefaultModel(5, None, "first"))
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
-                assert not any(part.name == "status" for part in result.reminders)
+                assert not any(part["name"] == "status" for part in result["reminders"])
                 assert all(item.healthy for item in snapshot.composition_root.receipt().health if item.owner == "akasha")
                 assert logical_state_sha256(graph) == before
                 assert core.plugin_manager.current_snapshot is root
@@ -369,8 +370,11 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     await web.SockSite(runner, sock).start()
     workspace = tmp_path / "workspace"
     _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [_copy_checkout_plugins(tmp_path)])
+    plugin_home, _ = install_formal_plugins(
+        tmp_path, FULL_RUNTIME_PLUGINS, configure_materials=True,
+        initialize_persona=True,
+    )
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     ready = asyncio.Event()
     class Readiness(RuntimeReadiness):
         def mark_ready(self):
@@ -414,7 +418,11 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             with closing(sqlite3.connect(workspace / "sessions.db")) as database:
                 before = tuple(database.iterdump())
             snapshot = app.core.plugin_manager.current_snapshot
-            module = next(item for item in snapshot.web_ui_catalog.modules if item.plugin_id == "workbench-ui")
+            module = next(
+                item
+                for item in snapshot.web_ui_catalog.modules
+                if item.plugin_id == "workbench-ui@fixture"
+            )
             headers = {"x-akashic-web-snapshot": snapshot.snapshot_id,
                 "x-akashic-web-catalog": snapshot.web_ui_catalog.identity,
                 "x-akashic-web-module": module.plugin_id, "x-akashic-web-generation": module.generation_id}

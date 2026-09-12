@@ -1,3 +1,4 @@
+from plugins.content.api import legacy_post_commit_effect
 from datetime import UTC, datetime
 from typing import cast
 from collections.abc import Mapping
@@ -91,7 +92,7 @@ def test_actual_retrieval_keeps_all_interrupted_members_after_graph_advances(tmp
     log = MessageLog(tmp_path / "sessions.db")
     consumer = None
     try:
-        rule = Learning(TurnProjection(), owner="akasha")
+        rule = Learning(TurnProjection(), owner="akasha", post_commit_effect=legacy_post_commit_effect)
         vectors = MessageEmbeddings(log).bind(rule.text)
         def add(
             identity: str,

@@ -2,7 +2,6 @@ import asyncio
 import json
 import hashlib
 import logging
-import shutil
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -33,6 +32,7 @@ from session.inbound_store import InboundHandoffStore
 from session.log import MessageLog, SessionAttributes
 from session.message import ContentPart, ContentReferences, Control, Input, Output
 from tests.mobile_realtime.test_channel import _Runtime, _register_device
+from tests.fixtures.formal_plugins import MINIMAL_MESSAGE_PLUGINS, install_formal_plugins
 
 
 def command(session: str, number: int = 0, **payload: object) -> MessageSendCommand:
@@ -49,12 +49,7 @@ def command(session: str, number: int = 0, **payload: object) -> MessageSendComm
 @asynccontextmanager
 async def runtime(tmp_path, *, device=None, store_type=InboundHandoffStore):
     """每次重开同库，使用真实 MessageBus、conversation 与 Channel binding。"""
-    source = tmp_path / 'plugins'
-    if not (source / "conversation").exists():
-        shutil.copytree(Path(__file__).parents[1] / 'plugins/conversation', source / 'conversation',
-                        ignore=shutil.ignore_patterns('__pycache__'))
-        shutil.copytree(Path(__file__).parents[1] / 'plugins/sources', source / 'sources',
-                        ignore=shutil.ignore_patterns('__pycache__'))
+    plugin_home, _ = install_formal_plugins(tmp_path, MINIMAL_MESSAGE_PLUGINS)
     workspace = tmp_path / 'workspace'
     workspace.mkdir(exist_ok=True)
     db = workspace / 'sessions.db'
@@ -77,8 +72,9 @@ async def runtime(tmp_path, *, device=None, store_type=InboundHandoffStore):
     channel.bind_messages(log.catalog())
     channel.bind_channel_attachment_store(physical)
     event_bus = EventBus()
-    manager = PluginManager([source], event_bus=event_bus, workspace=workspace,
-        message_log=log, channel_identities=identities, channel_attachment_store=physical, installed_cache_root=tmp_path / 'cache')
+    manager = PluginManager([], event_bus=event_bus, workspace=workspace,
+        message_log=log, channel_identities=identities, channel_attachment_store=physical,
+        installed_cache_root=plugin_home / 'cache')
     manager.channel_generation_host.bind_input_custody(bus)
     http_resources = SharedHttpResources()
     context = ChannelContext(

@@ -453,19 +453,18 @@ async def test_content_binding_keeps_registered_protocol_owner_after_source_remo
     protocol.mkdir()
     (protocol / "plugin.py").write_text("""
 from agent.plugin_composition import ServiceKey
-from plugins.content.api import TextProtocol, Span
 from session.message import ContentPart, ContentReferences
 api_version = 3
 name = "protocol"
 version = "1.0.0"
-inject = (ServiceKey("content.v1"),)
+inject = (ServiceKey("content.v2"),)
 async def apply(ctx, config):
     async def decode(source, references):
-        return (Span(len(source.text), len(source.text), (ContentPart("sample", "fixed A"),)),), {}
-    await ctx.require(inject[0]).register(ctx, TextProtocol(
-        name="sample", content={"sample": lambda part: ContentReferences()},
-        prompt="Protocol A", decode=decode,
-    ))
+        return ({"start": len(source.text), "end": len(source.text), "parts": (ContentPart("sample", "fixed A"),)},), {}
+    await ctx.require(inject[0]).register(ctx, {
+        "name": "sample", "content": {"sample": lambda part: ContentReferences()},
+        "prompt": "Protocol A", "decode": decode,
+    })
 """)
     host = manager(tmp_path, [sources])
     log = MessageLog(tmp_path / "messages.db")
@@ -497,7 +496,6 @@ async def apply(ctx, config):
 async def test_archived_context_accepts_public_summary_from_another_plugin(tmp_path):
     from datetime import UTC, datetime
     from agent.plugin_composition.models import ModelRequest
-    from plugins.context.api import Materials, Summary
     from session.message import Input, Message, Output
 
     sources = tmp_path / "plugins"
@@ -505,7 +503,7 @@ async def test_archived_context_accepts_public_summary_from_another_plugin(tmp_p
                     ignore=shutil.ignore_patterns("__pycache__"))
     host = manager(tmp_path, [sources])
     log = MessageLog(tmp_path / "messages.db")
-    key = ServiceKey("context.v1")
+    key = ServiceKey("context.v2")
     try:
         await host.load_all()
         bindings = Bindings(log, host._archive, host.open_binding)
@@ -527,7 +525,7 @@ async def test_archived_context_accepts_public_summary_from_another_plugin(tmp_p
                 return 1
         async with bindings.open(identity, key) as (context, metadata):
             request = context.build(snapshot,
-                                    materials=Materials("", summary=Summary("saved", ("u", "a"), "summary")),
+                                    materials={"summary": {"reference": "saved", "source_message_ids": ("u", "a"), "content": "summary"}},
                                     model=Model(), max_output_tokens=1)
             assert "summary" in request.messages[0]["content"]
     finally:

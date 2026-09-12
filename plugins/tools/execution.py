@@ -22,7 +22,7 @@ from agent.plugin_contracts import json_value
 
 from .api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
-    durable_call_key,
+    coerce_result, durable_call_key,
 )
 
 
@@ -52,14 +52,14 @@ class ToolExecution:
         """独立程序使用自身持久 key，无需创建 Session 或伪造工具调用消息。"""
         if not isinstance(key, str) or not key:
             raise ValueError("工具调用必须有稳定 key")
-        return await self._execute("program:" + key, binding_id, arguments, None)
+        return coerce_result(await self._execute("program:" + key, binding_id, arguments, None))
 
     async def execute_call(self, reply: MessageReply) -> Result:
         """同一已提交调用只有一个效果身份，与等待者及结果展示位置无关。"""
         self._state.check_access(reply.reader, reply.writer)
         call = reply.request()
         key = durable_call_key(reply.call_ref)
-        return await self._execute(key, call.binding_id, call.arguments, reply)
+        return coerce_result(await self._execute(key, call.binding_id, call.arguments, reply))
 
     async def deny_call(self, reply: MessageReply, reason: str) -> Result:
         """结算不再获准启动的调用；已有执行先排空，崩溃后的 start 不能伪称未发生。"""
@@ -88,7 +88,7 @@ class ToolExecution:
 
         task = await self._tasks.admit((self._task_key, key), admit)
         # 普通拒绝仍等待已跨过 start 的 owner；明确放弃使用独立的控制消费者。
-        result = cast(Result, await task.join())
+        result = coerce_result(await task.join())
         if self._record(key, fingerprint) is None:
             raise RuntimeError("工具结算缺少回执")
         return result
