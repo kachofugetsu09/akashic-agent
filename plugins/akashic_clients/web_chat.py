@@ -44,7 +44,6 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from .message_types import ChannelMessage, DeliveryReceipt, DeliveryStatus
 from .services import AttachmentStorePort as AttachmentStore
 from .services import ArtifactStorePort as ChannelAttachmentArtifactStore
-from .services import ClientChannelContext as ChannelContext
 from agent.plugin_composition.message_view import MessageDisplayReader, follow_messages
 from .services import (
     MessageCatalogPort as MessageCatalog,
@@ -208,7 +207,6 @@ class WebChatChannel:
 
     def __init__(self, channel_name: str = "akashic") -> None:
         self.name = channel_name
-        self._ctx: ChannelContext | None = None
         self._attachments: AttachmentStore | None = None
         self._artifact_store: ChannelAttachmentArtifactStore | None = None
         self._connections: dict[str, set[WebSocket]] = {}
@@ -288,7 +286,7 @@ class WebChatChannel:
     def _connection_count(self, session_key: str) -> int:
         return len(self._connections.get(session_key, set()))
 
-    async def start(self, ctx: ChannelContext | None = None) -> None:
+    async def start(self) -> None:
         """Start Web transport state without subscribing to a global event bus.
 
         Live turn presentation will be attached through the formal channel
@@ -296,9 +294,7 @@ class WebChatChannel:
         identity.  Keeping this owner free of the legacy event bus prevents a
         Core event type from becoming a hidden client dependency.
         """
-        if ctx is not None:
-            self._ctx = ctx
-            self._attachments = ctx.attachment_store
+        return None
 
     def bind_attachment_store(self, store: AttachmentStore) -> None:
         """在 channel 启动前为独立 Chat API 绑定显式附件目录。"""
@@ -1422,12 +1418,6 @@ class WebChatChannel:
         if not attempt_turn_id:
             raise RuntimeError("Web lifecycle event 缺少 turn_id")
         return attempt_turn_id
-
-    def _require_ctx(self) -> ChannelContext:
-        if self._ctx is None:
-            raise RuntimeError("WebChatChannel 尚未启动")
-        return self._ctx
-
 
 def _reply_source_text(target: dict[str, Any]) -> str:
     content = str(target["content"])

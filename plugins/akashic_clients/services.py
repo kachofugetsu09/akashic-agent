@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -102,15 +101,6 @@ class ToolCallCompletedEvent(Protocol):
     turn_id: str
 
 
-class LifecycleEventTypes(Protocol):
-    """宿主提供的事件类型身份；客户端不依赖 Core 事件模块。"""
-
-    turn_started: type[object]
-    stream_delta_ready: type[object]
-    tool_call_started: type[object]
-    tool_call_completed: type[object]
-    turn_output_completed: type[object]
-
 class AttachmentStorePort(Protocol):
     """客户端临时上传与 Mobile 分片共享的文件 owner。"""
 
@@ -160,24 +150,6 @@ ModelSelectionReader = Callable[[Mapping[str, object]], Awaitable[ChatModelSelec
 ModelStatsReader = Callable[[str], Awaitable[ModelCallStats]]
 
 
-class MessageBusPort(Protocol):
-    """Mobile durable handoff 需要的最小总线能力。"""
-
-    def bind_mobile_channel_inbound_recoverer(self, recoverer: Callable[..., Awaitable[bool]]) -> None: ...
-    async def settle_rejected_mobile_input(self, *, session_key: str, client_message_id: str) -> None: ...
-    def has_pending_mobile_handoff(self, *, session_key: str, client_message_id: str) -> bool: ...
-    def pending_mobile_attachment_refs(self, *, session_key: str, client_message_id: str) -> tuple[AttachmentRef, ...] | None: ...
-
-
-class EventBusPort(Protocol):
-    def on(self, event_type: type[object], callback: Callable[[object], Awaitable[None]]) -> object: ...
-    def off(self, event_type: type[object], callback: Callable[[object], Awaitable[None]]) -> object: ...
-
-
-class HttpResourcesPort(Protocol):
-    """保留给旧远程媒体 owner 的共享资源投影。"""
-
-
 class MobileUiProvider(Protocol):
     def catalog(self) -> dict[str, object]: ...
     def asset(self, plugin_id: str, plugin_revision: str, kind: str, sha256: str) -> dict[str, object]: ...
@@ -222,26 +194,6 @@ class MobilePairingAdminPort(Protocol):
     def create_offer(self) -> dict[str, object]: ...
     def pending_claim(self, pairing_id: str) -> dict[str, object] | None: ...
     def approve(self, pairing_id: str, confirmation_code: str) -> dict[str, object]: ...
-
-
-@dataclass(slots=True)
-class ClientChannelContext:
-    """旧 channel 代码使用的最小结构上下文，由宿主一次性注入。"""
-
-    host_boot_id: str
-    bus: MessageBusPort
-    event_bus: EventBusPort
-    lifecycle_events: LifecycleEventTypes
-    attachment_store: AttachmentStorePort
-    http_resources: HttpResourcesPort | None
-    log: logging.Logger
-    command_catalog_provider: Callable[[], tuple[tuple[str, str], ...]] | None = None
-
-
-class ClientChannel(Protocol):
-    name: str
-    async def start(self, ctx: ClientChannelContext) -> None: ...
-    async def stop(self) -> None: ...
 
 
 def turn_milestone(logger: logging.Logger, event: str, **fields: object) -> None:
@@ -292,8 +244,7 @@ def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, obje
 
 __all__ = [
     "ArtifactReadLeasePort", "ArtifactStorePort", "AttachmentStorePort",
-    "ClientChannel", "ClientChannelContext", "EventBusPort", "InvalidPage",
-    "LifecycleEventTypes", "MessageBusPort", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
+    "InvalidPage", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
     "MessagePagePort", "MessageReaderPort", "SessionEntryPort", "SessionPagePort", "Message",
     "StreamDeltaReadyEvent", "ToolCallCompletedEvent", "ToolCallStartedEvent", "TurnOutputCompletedEvent",
     "TurnStartedEvent",
