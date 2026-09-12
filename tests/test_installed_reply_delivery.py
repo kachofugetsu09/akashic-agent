@@ -12,10 +12,7 @@ from aiohttp import web
 import pytest
 
 from agent.config_models import Config
-from agent.plugin_composition import (
-    AddConnection, AddModel, CapabilitySources, ModelCapabilities, ModelKind,
-    ServiceKey, SetDefaultModel,
-)
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_contracts import Input, Output
 from agent.plugins.install import install_git_plugin
@@ -25,6 +22,17 @@ from bootstrap.init_workspace import init_workspace
 from bootstrap.tools import build_core_runtime
 from core.net.http import SharedHttpResources
 from session.log import MessageLog
+
+
+async def _model_command(control: RuntimeModelControl, payload: dict[str, object]) -> dict[str, object]:
+    """Configure the installed Models owner through its public RPC boundary."""
+
+    result = await control.invoke_rpc("models/command", payload)
+    assert isinstance(result, dict)
+    assert result.get("status") == 200, result
+    body = result.get("body")
+    assert isinstance(body, dict)
+    return body
 
 
 @pytest.mark.asyncio
@@ -120,16 +128,36 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
 
         # 2. 用实际模型配置入口绑定 HTTP driver；没有替换业务能力或实际执行函数。
         control = RuntimeModelControl(host.snapshot_store)
-        await control.apply(AddConnection(
-            0, "local", "Local", "openai-compatible", endpoint + "/v1",
-            "fixture", {"api_key": "fixture"},
-        ))
-        await control.apply(AddModel(
-            1, "fixture", "local", ModelKind.CHAT, "fixture",
-            ModelCapabilities(context_window=32000, max_output_tokens=8192, supports_tool_calls=True),
-            CapabilitySources(),
-        ))
-        await control.apply(SetDefaultModel(2, "default", "fixture"))
+        await _model_command(control, {
+            "type": "add_connection",
+            "expected_revision": 0,
+            "connection_id": "local",
+            "name": "Local",
+            "driver_id": "openai-compatible",
+            "endpoint": endpoint + "/v1",
+            "auth_identity": "fixture",
+            "credential": {"api_key": "fixture"},
+        })
+        await _model_command(control, {
+            "type": "add_model",
+            "expected_revision": 1,
+            "model_id": "fixture",
+            "connection_id": "local",
+            "kind": "chat",
+            "model": "fixture",
+            "capabilities": {
+                "context_window": 32000,
+                "max_output_tokens": 8192,
+                "supports_tool_calls": True,
+            },
+            "capability_sources": {},
+        })
+        await _model_command(control, {
+            "type": "set_default",
+            "expected_revision": 2,
+            "role": "default",
+            "model_id": "fixture",
+        })
         await host.start_runtime()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             accepted = await snapshot.composition_root.context.require(CHANNEL_INPUT)(

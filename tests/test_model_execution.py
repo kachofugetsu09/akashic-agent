@@ -14,20 +14,25 @@ from aiohttp import web
 
 from agent.config_models import Config
 from agent.plugin_composition import (
-    AddConnection,
-    AddModel,
-    CapabilitySources,
     CHAT_MODELS,
-    ModelCapabilities,
-    ModelKind,
     ModelRequest,
-    SetDefaultModel,
 )
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bootstrap import tools as bootstrap
 from bootstrap.init_workspace import init_workspace
 from core.net.http import SharedHttpResources
+
+
+async def _model_command(control: RuntimeModelControl, payload: dict[str, object]) -> dict[str, object]:
+    """Configure the installed Models owner through its public RPC boundary."""
+
+    result = await control.invoke_rpc("models/command", payload)
+    assert isinstance(result, dict)
+    assert result.get("status") == 200, result
+    body = result.get("body")
+    assert isinstance(body, dict)
+    return body
 
 
 @pytest.mark.asyncio
@@ -83,22 +88,38 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
         await core.start()
         await core.plugin_manager.start_runtime()
         control = RuntimeModelControl(core.plugin_manager.snapshot_store)
-        await control.apply(
-            AddConnection(
-                0, "local", "Local", "openai-compatible",
-                f"http://127.0.0.1:{port}/v1", "fixture", {"api_key": "fixture"},
-            )
-        )
-        capabilities = ModelCapabilities(
-            context_window=32000,
-            max_output_tokens=1024,
-            supports_tool_calls=True,
-            supported_reasoning_efforts=("low", "high"),
-        )
-        await control.apply(
-            AddModel(1, "first", "local", ModelKind.CHAT, "first", capabilities, CapabilitySources())
-        )
-        await control.apply(SetDefaultModel(2, "default", "first"))
+        await _model_command(control, {
+            "type": "add_connection",
+            "expected_revision": 0,
+            "connection_id": "local",
+            "name": "Local",
+            "driver_id": "openai-compatible",
+            "endpoint": f"http://127.0.0.1:{port}/v1",
+            "auth_identity": "fixture",
+            "credential": {"api_key": "fixture"},
+        })
+        capabilities = {
+            "context_window": 32000,
+            "max_output_tokens": 1024,
+            "supports_tool_calls": True,
+            "supported_reasoning_efforts": ["low", "high"],
+        }
+        await _model_command(control, {
+            "type": "add_model",
+            "expected_revision": 1,
+            "model_id": "first",
+            "connection_id": "local",
+            "kind": "chat",
+            "model": "first",
+            "capabilities": capabilities,
+            "capability_sources": {},
+        })
+        await _model_command(control, {
+            "type": "set_default",
+            "expected_revision": 2,
+            "role": "default",
+            "model_id": "first",
+        })
 
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
             context = snapshot.composition_root.context
@@ -119,10 +140,22 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
                     assert nested is first_execution
                     assert nested.chat("agent").descriptor == first_descriptor
 
-                await control.apply(
-                    AddModel(3, "second", "local", ModelKind.CHAT, "second", capabilities, CapabilitySources())
-                )
-                await control.apply(SetDefaultModel(4, "default", "second"))
+                await _model_command(control, {
+                    "type": "add_model",
+                    "expected_revision": 3,
+                    "model_id": "second",
+                    "connection_id": "local",
+                    "kind": "chat",
+                    "model": "second",
+                    "capabilities": capabilities,
+                    "capability_sources": {},
+                })
+                await _model_command(control, {
+                    "type": "set_default",
+                    "expected_revision": 4,
+                    "role": "default",
+                    "model_id": "second",
+                })
 
                 # 已打开的 execution 固定旧 descriptor；默认切换只影响下一次 execution。
                 async with models_service.execution() as still_first:

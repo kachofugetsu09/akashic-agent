@@ -17,7 +17,7 @@
 CHAT_MODELS       为一个执行冻结整组聊天模型，并按 role 取得绑定模型
 EMBEDDINGS        执行 embedding
 MODEL_CATALOG     只读查看 connection、model、默认值和可用状态
-MODEL_SETTINGS    在用户授权的控制面请求中修改 connection、model 和 workspace 默认值
+MODEL_SETTINGS    Models artifact 内部的写事务 ServiceKey；外部控制面通过 plugin RPC 调用
 MODEL_DRIVERS     Provider 插件注册协议实现
 ```
 
@@ -169,7 +169,7 @@ ModelExecution
 ┌──────────────────────────────────────────────────────────────┐
 │ 一个私有 ModelsState · Connection · Model · Binding · Revision │
 │ CHAT_MODELS · EMBEDDINGS                                     │
-│ MODEL_CATALOG · MODEL_SETTINGS · MODEL_DRIVERS               │
+│ MODEL_CATALOG · local MODEL_SETTINGS · MODEL_DRIVERS         │
 └──────────────▲───────────────────────────────┬───────────────┘
                │ driver registration          │ bound resource
                │                              │
@@ -204,7 +204,7 @@ Core 不再为 plugin snapshot 与 model revision 增加共同 fence 或 ordered
 
 Provider 完整卸载与 settings 竞态最多使 Connection 进入 `driver unavailable`；它保留数据并 fail-loud，不产生错误 transport。真实 probe、OAuth 等待和其他网络 I/O 因此也不进入任何全局发布锁。
 
-用户写操作继续由 authenticated settings/control host 拥有认证、同源/CSRF 和请求生命周期。`MODEL_SETTINGS` 不再接收一个改名后的 grant；同进程 Service facade 是 API/拓扑边界，不伪装成恶意插件 sandbox。未来若隔离不可信插件，应另立通用组合权限设计。Web navigation/data/action contribution 属于独立 UI 规格，不是本切片前置。
+用户写操作继续由 authenticated settings/control host 拥有认证、同源/CSRF 和请求生命周期。它在当前 snapshot lease 内调用 Models 插件注册的 `models/command` RPC；`MODEL_SETTINGS` 只在 Models artifact 内用于绑定真实 settings owner，不是 Core 的业务命令 API。同进程 Service facade 是 API/拓扑边界，不伪装成恶意插件 sandbox。未来若隔离不可信插件，应另立通用组合权限设计。Web navigation/data/action contribution 属于独立 UI 规格，不是本切片前置。
 
 ### 6.2 Core 不提供
 
@@ -220,7 +220,7 @@ Provider 完整卸载与 settings 竞态最多使 Connection 进入 `driver unav
 
 ## 7. `models` 插件的一份状态与五个操作 facade
 
-公共 key 和协议首先放入现有 `agent.plugin_composition` facade；它们是稳定扩展合同，不让 Core 获得模型 owner。外部插件只 import 该 facade，具体实现留在可外置的 `models` artifact 中。五个 ServiceKey 由五个小 facade 对象提供；它们共享一个私有 `ModelsState`，不复制数据库、registry、锁或 lifecycle。未来把协议移到独立 SDK distribution 只是包管理问题，不改变 Service 合同。
+运行时执行、embedding、catalog 和 driver key 仍是稳定的 provider-neutral 扩展合同；写事务的 `MODEL_SETTINGS`、命令 dataclass、`ModelChange` 和 `SettingsReceipt` 由可外置的 `models` artifact 自己拥有，源码位于 `plugins/models/settings.py`。外部控制面通过已注册的 `models/command` RPC 进入该 owner，不 import 这些 Models 私有命令。五个 ServiceKey 由五个小 facade 对象提供；它们共享一个私有 `ModelsState`，不复制数据库、registry、锁或 lifecycle。
 
 ```text
 ModelsState（仅 models artifact 内可见）
@@ -249,7 +249,7 @@ class ChatModels(Protocol):
     ) -> AsyncContextManager[ModelExecution]: ...
 
 class ModelExecution(Protocol):
-    def chat(self, role: ModelRole) -> BoundChatModel: ...
+    def chat(self, role: str) -> BoundChatModel: ...
 
 class BoundChatModel(Protocol):
     @property
@@ -319,13 +319,10 @@ Snapshot 包含 revision、连接、模型、默认 binding、capability source 
 
 ### 7.4 `MODEL_SETTINGS`
 
-职责：执行模型领域写事务。它与 `MODEL_CATALOG` 分离，使只读 UI、Dashboard 和 Onboarding 的正常调用路径只持有查询方法面，不直接耦合模型库写入口。
+职责：执行模型领域写事务。它与 `MODEL_CATALOG` 分离，使只读 UI、Dashboard 和 Onboarding 的正常调用路径只持有查询方法面，不直接耦合模型库写入口。该 key、命令 dataclass、`ModelChange`、`SettingsReceipt` 和 `ModelSettings` 只属于 `plugins/models/settings.py`；Core 不导出它们。Dashboard 和 plugin RPC handler 在当前 Models generation 内解析该 key，外部控制调用 `models/command`。
 
 ```python
-MODEL_SETTINGS = ServiceKey[ModelSettings]("models.settings.v1")
-
-class ModelSettings(Protocol):
-    async def apply(self, command: ModelChange) -> SettingsReceipt: ...
+from plugins.models.settings import MODEL_SETTINGS, ModelChange, ModelSettings, SettingsReceipt
 ```
 
 `ModelChange` 是 `AddConnection | UpdateConnection | DisableConnection | AddModel | CreateConnectionWithModel | SetDefaultModel | SyncModels | StartConnectionAuth | FinishConnectionAuth | CancelConnectionAuth` 的闭合 typed union；持久写命令携带 expected revision。`CreateConnectionWithModel` 只表达“新连接及其首个手工模型”这一项必须共同成功的用户动作：它在 SQLite transaction 外完成 connection probe、driver open 和 model/embedding probe，再用一次 revision CAS 与 transaction 同时写入两者，避免失败留下孤立 credential Connection；它不是通用 batch DSL。`SyncModels` 只给出 Connection ID：`models` 在 SQLite transaction 外调用该 Connection driver 的 `discover`，再在同一个 `BEGIN IMMEDIATE` 中校验 expected revision、比较整批标准化证据并写入。Driver 不选择持久 model ID；`models` 保留已有 ID，并为新证据生成无歧义的稳定 ID。Capability JSON 中的 store-owned `source=discovery` 区分目录拥有的行与手工行：刷新可更新 discovery 行并禁用本轮消失的 discovery 行；旧版本迁入、尚无 ownership payload 且同 wire identity 的行在首次同步时保留 ID 并转为 discovery owner；用户后来明确新增且已有 manual payload 的行不被覆盖或禁用。规范化结果没有变化时不备份、不增加 revision。三种 auth 命令覆盖 Codex/OpenCode 的 begin → poll/complete → credential commit，但不把 Provider wire 字段暴露给调用者：driver definition 提供 handler，settings facade 返回 provider-neutral attempt/challenge/result。短命 auth attempt 可在重启后明确失败，不新增第六个 Service。
@@ -443,7 +440,7 @@ Unknown 保持 unknown。未知不等于零、不支持或 false。Core 不保�
 
 ```python
 from agent.plugin_composition import CHAT_MODELS, EMBEDDINGS
-from agent.plugin_composition import MODEL_CATALOG, MODEL_SETTINGS, MODEL_DRIVERS
+from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS
 ```
 
 禁止：
@@ -456,7 +453,7 @@ from plugins.models import ModelsRuntime
 from plugins.openai_compatible import OpenAIClient
 ```
 
-普通插件可以 import 主机正式发布的公共 plugin API；不能 import 主机或兄弟插件实现。
+普通插件可以 import 主机正式发布的公共 plugin API；不能 import 主机或兄弟插件实现。只有 `models` artifact 自身可以 import `plugins.models.settings`；其他插件和外部控制客户端通过 `models/command` RPC，不依赖 Models 命令类的 Python identity。
 
 ### 10.2 Turn runtime / ReAct
 
@@ -503,7 +500,7 @@ Wake      ─┘
 
 ### 10.5 Onboarding 与模型 UI
 
-Onboarding 注入 `MODEL_CATALOG` 判断是否具备可用默认聊天模型和所需 embedding。用户配置仍通过现有 authenticated settings control host 调用 `MODEL_SETTINGS.apply()`；Onboarding 不获得授权 action 的创建能力。
+Onboarding 注入 `MODEL_CATALOG` 判断是否具备可用默认聊天模型和所需 embedding。用户配置仍通过现有 authenticated settings control host 调用 Models 的 `models/command` RPC；Onboarding 不获得授权 action 的创建能力。
 
 2236 顶部模型页、Provider 面板动态注册和未来 Dashboard 平凡化属于独立通用 Web contribution 规格。本模型切片只保证 catalog/settings 是来源无关 API，因此将来页面无需修改模型运行时；它不把尚不存在的 Web 原语伪装成模型插件前置。
 
@@ -515,7 +512,7 @@ Onboarding 注入 `MODEL_CATALOG` 判断是否具备可用默认聊天模型和�
 |---|---|---|
 | `AgentLoop` / passive Turn / control execution | exact snapshot 的 `CHAT_MODELS.execution()` | Turn admission |
 | `bootstrap/chat_api.py` 模型列表与 Chat picker | exact request snapshot 的 `MODEL_CATALOG`；Session 写仍由 Chat/Session owner | 每次请求 |
-| `bootstrap/settings_api.py` | 现有 authenticated control boundary → `MODEL_SETTINGS.apply()` | 每个用户控制请求 |
+| `bootstrap/settings_api.py` | 现有 authenticated control boundary → 当前 snapshot 的 `models/command` RPC | 每个用户控制请求 |
 | `BackgroundJobActivityAdapter` 和 plugin job | exact job snapshot 的 `CHAT_MODELS` | job 真正开始时，不在 host 构造时 |
 | compaction / Markdown profile projection | exact execution snapshot 的 `CHAT_MODELS`，显式 role | 各自执行单元开始时 |
 | vision/read-image 工具 | exact Turn snapshot 的 `CHAT_MODELS`，显式 vision role | 工具调用开始且继承父 Turn lease |
@@ -525,7 +522,7 @@ Onboarding 注入 `MODEL_CATALOG` 判断是否具备可用默认聊天模型和�
 | `bootstrap/app.py` Mobile binding | 不再接收 registry；Mobile handler 每请求从 exact UI/control Service view 读取 catalog | Mobile command admission |
 | `infra/mobile_realtime/channel.py` model catalog | exact request snapshot 的 `MODEL_CATALOG` | list/refresh command 开始时 |
 | `agent/config.py` | 静态 Config 不读取模型库、不派生 LLM runtime；只保留非模型启动配置 | Config load |
-| `main.py` / `bootstrap/app.py` model reload | `MODEL_SETTINGS` receipt；删除 `reload_model_config()` 直达 registry | 用户设置事务 |
+| `main.py` / `bootstrap/app.py` model reload | Models RPC receipt；删除 `reload_model_config()` 直达 registry | 用户设置事务 |
 
 这些 host 只持有 generic exact snapshot Service view 或公开 Service protocol，不持有 `ModelRegistry`、`LLMProvider`、provider factory 或 plugin ID。
 
@@ -688,7 +685,7 @@ Plugin snapshot 和 model revision 是两个正交变化轴，不强行合成一
 | 如果合并 | 立即增加的无关能力 |
 |---|---|
 | `CHAT_MODELS + EMBEDDINGS` | Akasha 的正常向量调用对象直接暴露无关 chat/tool-call 方法面 |
-| `MODEL_CATALOG + MODEL_SETTINGS` | Onboarding、Dashboard、picker 的正常只读对象直接暴露模型库写方法 |
+| `MODEL_CATALOG + Models RPC` | Onboarding、Dashboard、picker 的正常只读对象直接暴露模型库写方法 |
 | `MODEL_DRIVERS + 任一消费 view` | Provider 的正常注册对象直接暴露执行其他 Provider 或改 workspace default 的方法 |
 
 因此最小实现是“一份私有状态，五个 capability facade”，不是“一个万能 `MODELS` Service”，也不是“五个 manager”。这比 DSH 的单一 `ctx.llm` 多出的分离只来自 Akashic 已存在的 embedding consumer、持久 workspace settings 和非特权插件边界；adapter registry、调用准备和 effect 撤销仍采用 DSH 的同一种组合哲学。
@@ -703,7 +700,7 @@ Plugin snapshot 和 model revision 是两个正交变化轴，不强行合成一
 | Web navigation/data/action 前置 | 独立 UI contribution 规格；模型只暴露 catalog/settings |
 | `ModelExecution.embedding()` 与 `EMBEDDINGS.bind(execution=...)` 双入口 | 所有场景只用 `EMBEDDINGS.bind()`；插件内部复用当前 frozen snapshot |
 | `MODEL_CATALOG.connection()` / `model()` | 一个 immutable catalog snapshot 内 lookup |
-| 五个 settings 方法 | `MODEL_SETTINGS.apply(ModelChange)` |
+| 五个 settings 方法 | `models/command` RPC → Models-local `ModelSettings.apply(ModelChange)` |
 | `driver_owner_generation_ids` | `plugin_snapshot_id` 的 topology 投影 |
 | 新 `ChatRequest`/`ChatResponse` DTO | 迁移并收紧现有 `ModelRequest`/`LLMResponse` 为唯一公共 vocabulary |
 | `ModelExecutionIdentity` | execution object identity + bound model descriptor |
@@ -720,7 +717,7 @@ Plugin snapshot 和 model revision 是两个正交变化轴，不强行合成一
 运行聊天模型          CHAT_MODELS.execution(...) → execution.chat(role).complete(...)
 Turn 外 embedding     EMBEDDINGS.bind(...) → embed(...)
 Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
-修改模型设置          authenticated route → MODEL_SETTINGS.apply(command)
+修改模型设置          authenticated route → current snapshot → models/command RPC
 ```
 
 如果调用者还必须手动刷新 generation、读取 credential、选择 transport、操作数据库或通知 PluginManager，设计失败。

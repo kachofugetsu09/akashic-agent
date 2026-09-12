@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Protocol
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import (
@@ -15,23 +15,20 @@ from pydantic import (
 )
 
 from agent.plugin_composition.model_settings_http import (
-    ModelControl,
+    MODEL_SELECTION,
     ModelControlUnavailable,
 )
 from agent.plugin_composition.models import (
-    AddConnection,
-    AddModel,
+    MODEL_CATALOG,
+    MODEL_CALL_STATS,
     AuthenticationError,
-    CancelConnectionAuth,
+    ChatModelSelection,
     CapabilitySources,
-    CreateConnectionWithModel,
-    DisableConnection,
     DriverUnavailableError,
     DiscoveredModel,
-    FinishConnectionAuth,
+    ModelCallStats,
     ModelCapabilities,
     ModelCatalogSnapshot,
-    ModelChange,
     ModelError,
     ModelKind,
     ModelTimeoutError,
@@ -39,14 +36,71 @@ from agent.plugin_composition.models import (
     QuotaError,
     RateLimitError,
     RevisionConflictError,
+    TransportError,
+)
+from agent.plugin_composition.model import ServiceKey
+from agent.plugin_composition.rpc import RpcMethod
+
+from .settings import (
+    AddConnection,
+    AddModel,
+    CancelConnectionAuth,
+    CreateConnectionWithModel,
+    DisableConnection,
+    FinishConnectionAuth,
+    ModelChange,
+    MODEL_SETTINGS,
     SetDefaultModel,
     SettingsReceipt,
     StartConnectionAuth,
     SyncModels,
-    TransportError,
     UpdateConnection,
 )
-from agent.plugin_composition.rpc import RpcMethod
+
+
+class ModelControl(Protocol):
+    async def call_stats(self, call_id: str) -> ModelCallStats: ...
+
+    async def catalog(self) -> ModelCatalogSnapshot: ...
+
+    async def discover(
+        self, connection: AddConnection
+    ) -> tuple[DiscoveredModel, ...]: ...
+
+    async def apply(self, command: ModelChange) -> SettingsReceipt: ...
+
+    async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection: ...
+
+
+class _ServiceResolver(Protocol):
+    """Expose only the request or runtime scope's declared services."""
+
+    def require(self, key: ServiceKey[Any]) -> Any: ...
+
+
+class BoundModelControl:
+    """Resolve Models services through the caller's current scope."""
+
+    def __init__(self, resolver: _ServiceResolver) -> None:
+        self._resolver = resolver
+
+    async def call_stats(self, call_id: str) -> ModelCallStats:
+        return self._resolver.require(MODEL_CALL_STATS)(call_id)
+
+    async def catalog(self) -> ModelCatalogSnapshot:
+        return self._resolver.require(MODEL_CATALOG).snapshot()
+
+    async def discover(
+        self,
+        connection: AddConnection,
+    ) -> tuple[DiscoveredModel, ...]:
+        return await self._resolver.require(MODEL_SETTINGS).discover(connection)
+
+    async def apply(self, command: ModelChange) -> SettingsReceipt:
+        return await self._resolver.require(MODEL_SETTINGS).apply(command)
+
+    async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection:
+        return self._resolver.require(MODEL_SELECTION).read_saved(metadata)
 
 
 class _Payload(BaseModel):

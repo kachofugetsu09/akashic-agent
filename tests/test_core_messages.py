@@ -21,6 +21,17 @@ from tests.fixtures.formal_plugins import (
 )
 
 
+async def _model_command(control, payload: dict[str, object]) -> dict[str, object]:
+    """Configure the installed Models owner through its public RPC boundary."""
+
+    result = await control.invoke_rpc("models/command", payload)
+    assert isinstance(result, dict)
+    assert result.get("status") == 200, result
+    body = result.get("body")
+    assert isinstance(body, dict)
+    return body
+
+
 @pytest.mark.asyncio
 async def test_core_opens_message_schema_and_real_source_without_legacy_execution(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
@@ -160,7 +171,7 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
 async def test_saved_embedding_enables_same_root_and_space_change_preserves_graph(tmp_path, monkeypatch):
     """真实设置服务保存后启用记忆；换空间时不发请求、不改原图。"""
     from aiohttp import web
-    from agent.plugin_composition import AddConnection, AddModel, SetDefaultModel, UpdateConnection, ModelKind, ModelCapabilities, CapabilitySources, ModelUnavailableError
+    from agent.plugin_composition import ModelUnavailableError
     from agent.plugins.model_control import RuntimeModelControl
     from bootstrap.init_workspace import init_workspace
     from plugins.context.materials import MATERIALS
@@ -207,11 +218,36 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
         await core.plugin_manager.start_runtime()
         root = core.plugin_manager.current_snapshot
         control = RuntimeModelControl(core.plugin_manager.snapshot_store)
-        await control.apply(AddConnection(0, "local", "Local", "openai-compatible",
-            f"http://127.0.0.1:{port}/v1", "fixture", {"api_key": "fixture"}))
-        capabilities = ModelCapabilities(embedding_dimensions=2, embedding_normalization="unit")
-        await control.apply(AddModel(1, "first", "local", ModelKind.EMBEDDING, "first", capabilities, CapabilitySources()))
-        await control.apply(SetDefaultModel(2, None, "first"))
+        await _model_command(control, {
+            "type": "add_connection",
+            "expected_revision": 0,
+            "connection_id": "local",
+            "name": "Local",
+            "driver_id": "openai-compatible",
+            "endpoint": f"http://127.0.0.1:{port}/v1",
+            "auth_identity": "fixture",
+            "credential": {"api_key": "fixture"},
+        })
+        capabilities = {
+            "embedding_dimensions": 2,
+            "embedding_normalization": "unit",
+        }
+        await _model_command(control, {
+            "type": "add_model",
+            "expected_revision": 1,
+            "model_id": "first",
+            "connection_id": "local",
+            "kind": "embedding",
+            "model": "first",
+            "capabilities": capabilities,
+            "capability_sources": {},
+        })
+        await _model_command(control, {
+            "type": "set_default",
+            "expected_revision": 2,
+            "role": None,
+            "model_id": "first",
+        })
         assert core.plugin_manager.current_snapshot is root
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
@@ -268,8 +304,22 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 }
                 async def authorize(binding, arguments):
                     return {"approved": True}
-                await control.apply(AddModel(3, "second", "local", ModelKind.EMBEDDING, "second", capabilities, CapabilitySources()))
-                await control.apply(SetDefaultModel(4, None, "second"))
+                await _model_command(control, {
+                    "type": "add_model",
+                    "expected_revision": 3,
+                    "model_id": "second",
+                    "connection_id": "local",
+                    "kind": "embedding",
+                    "model": "second",
+                    "capabilities": capabilities,
+                    "capability_sources": {},
+                })
+                await _model_command(control, {
+                    "type": "set_default",
+                    "expected_revision": 4,
+                    "role": None,
+                    "model_id": "second",
+                })
                 sent = len(calls)
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
@@ -283,7 +333,12 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 recalled = await tools.execution(authorize).execute("old-model-after-default-switch", binding, {"query": "saved memory"})
                 assert recalled.outcome == "success" and calls[-1]["model"] == "first"
                 assert any(part.kind == "akasha.recall" for part in recalled.parts)
-                await control.apply(SetDefaultModel(5, None, "first"))
+                await _model_command(control, {
+                    "type": "set_default",
+                    "expected_revision": 5,
+                    "role": None,
+                    "model_id": "first",
+                })
                 async with ctx.require(MATERIALS).bind() as materials:
                     result = await materials.prepare(core.message_log.reader("fixture").snapshot(), "conversation")
                 assert not any(part["name"] == "status" for part in result["reminders"])
@@ -291,12 +346,26 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
                 assert logical_state_sha256(graph) == before
                 assert core.plugin_manager.current_snapshot is root
                 # 当前同名连接配置漂移不能重定向已经准备的模型调用。
-                await control.apply(UpdateConnection(6, "local", "Local", "fixture", endpoint=f"http://127.0.0.1:{port}/changed/v1"))
+                await _model_command(control, {
+                    "type": "update_connection",
+                    "expected_revision": 6,
+                    "connection_id": "local",
+                    "name": "Local",
+                    "auth_identity": "fixture",
+                    "endpoint": f"http://127.0.0.1:{port}/changed/v1",
+                })
                 sent = len(calls)
                 with pytest.raises(ModelUnavailableError, match="配置已变化"):
                     await tools.execution(authorize).execute("endpoint-drift", binding, {"query": "saved memory"})
                 assert len(calls) == sent and logical_state_sha256(graph) == before
-                await control.apply(UpdateConnection(7, "local", "Local", "fixture", endpoint=f"http://127.0.0.1:{port}/v1"))
+                await _model_command(control, {
+                    "type": "update_connection",
+                    "expected_revision": 7,
+                    "connection_id": "local",
+                    "name": "Local",
+                    "auth_identity": "fixture",
+                    "endpoint": f"http://127.0.0.1:{port}/v1",
+                })
                 # 同一 auth identity 的 token 刷新是既有凭据 owner 的正常路径。
                 from plugins.models.store import ModelsStore
                 registry = ModelsStore(workspace / "model-registry.sqlite3", backup_dir=workspace / "runtime/model-backups", writable=True)
@@ -339,7 +408,6 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     import socket
     from aiohttp import web
     from akashic_sdk import AsyncAkashic
-    from agent.plugin_composition import AddConnection, AddModel, SetDefaultModel, ModelKind, ModelCapabilities, CapabilitySources
     from agent.plugins.model_control import RuntimeModelControl
     from bootstrap.app import AppRuntime
     from bootstrap.init_workspace import init_workspace
@@ -394,11 +462,36 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
         assert ready.is_set() and readiness.path.exists()
         assert app.core is not None and app.app_server is not None
         control = RuntimeModelControl(app.core.plugin_manager.snapshot_store)
-        await control.apply(AddConnection(0, "local", "Local", "openai-compatible",
-            f"http://127.0.0.1:{port}/v1", "fixture", {"api_key": "fixture"}))
-        await control.apply(AddModel(1, "chat", "local", ModelKind.CHAT, "fixture",
-            ModelCapabilities(context_window=32000, max_output_tokens=1024, supports_tool_calls=True), CapabilitySources()))
-        await control.apply(SetDefaultModel(2, "default", "chat"))
+        await _model_command(control, {
+            "type": "add_connection",
+            "expected_revision": 0,
+            "connection_id": "local",
+            "name": "Local",
+            "driver_id": "openai-compatible",
+            "endpoint": f"http://127.0.0.1:{port}/v1",
+            "auth_identity": "fixture",
+            "credential": {"api_key": "fixture"},
+        })
+        await _model_command(control, {
+            "type": "add_model",
+            "expected_revision": 1,
+            "model_id": "chat",
+            "connection_id": "local",
+            "kind": "chat",
+            "model": "fixture",
+            "capabilities": {
+                "context_window": 32000,
+                "max_output_tokens": 1024,
+                "supports_tool_calls": True,
+            },
+            "capability_sources": {},
+        })
+        await _model_command(control, {
+            "type": "set_default",
+            "expected_revision": 2,
+            "role": "default",
+            "model_id": "chat",
+        })
         async with await AsyncAkashic.connect(str(app.app_server.endpoint)) as client:
             session = (await client.session_create())["session_id"]
             async with await client.session_follow(session) as following:

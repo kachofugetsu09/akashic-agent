@@ -16,18 +16,13 @@ from typing import Any, AsyncGenerator, AsyncIterator, Mapping, Protocol, Sequen
 from agent.plugin_composition.bindings import Bindings
 
 from agent.plugin_composition import (
-    AddConnection,
-    AddModel,
     BoundChatModel,
     BoundEmbeddingModel,
     BoundModelDescriptor,
-    CancelConnectionAuth,
     CHAT_MODELS,
     ChatModelSelection,
     ConnectionDescriptor,
     Context,
-    CreateConnectionWithModel,
-    DisableConnection,
     DriverConnection,
     DriverConnectionDescriptor,
     DriverChatModel,
@@ -38,13 +33,10 @@ from agent.plugin_composition import (
     EMBEDDINGS,
     EmbeddingResult,
     EmbeddingSpaceDescriptor,
-    FinishConnectionAuth,
     LLMResponse,
     MODEL_DRIVERS,
-    MODEL_SETTINGS,
     ModelAvailability,
     ModelCatalogSnapshot,
-    ModelChange,
     ModelDescriptor,
     ModelDriverDefinition,
     ModelExecution,
@@ -53,14 +45,24 @@ from agent.plugin_composition import (
     ModelUnavailableError,
     SavedEmbedding,
     ServiceKey,
+    SnapshotSealing,
+)
+
+from .settings import (
+    AddConnection,
+    AddModel,
+    CancelConnectionAuth,
+    CreateConnectionWithModel,
+    DisableConnection,
+    FinishConnectionAuth,
+    MODEL_SETTINGS,
+    ModelChange,
     SetDefaultModel,
     SettingsReceipt,
-    SnapshotSealing,
     StartConnectionAuth,
     SyncModels,
     UpdateConnection,
 )
-
 from .store import MODEL_ROLES, ModelsStore, StoredConnection, StoredModel, StoredSnapshot
 
 logger = logging.getLogger(__name__)
