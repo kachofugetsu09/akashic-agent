@@ -828,24 +828,27 @@ async def test_qq_stop_failure_and_cancelled_waiter_share_unconfirmed_cleanup(
 
 
 def test_channel_config_migration_resumes_before_removing_old_input(tmp_path, monkeypatch):
-    """第二个目标发布失败时保留原配置；重试使用同一备份和明确 marketplace。"""
+    """任一 channel/sender 目标发布失败时保留原配置，并可按原备份重试。"""
     import tomllib
     from scripts import migrate_legacy_channels as migration
     from agent.plugins.manifest import workspace_plugin_data_dir
 
     config = tmp_path / "config.toml"
-    source = '[channels.telegram]\ntoken="fixture-token"\n[channels.qq]\nbot_uin="9001"\n'
+    source = (
+        '[channels.telegram]\ntoken="fixture-token"\n'
+        '[channels.qq]\nbot_uin="9001"\nsender_endpoint="ws://127.0.0.1:3001/api"\n'
+    )
     config.write_text(source)
     workspace = tmp_path / "workspace"
     qq = workspace_plugin_data_dir(workspace, "qq_channel", "external") / "config.local.toml"
     replace = migration.os.replace
     def fail_second(source_path, destination):
         if destination == qq:
-            raise OSError("fixture second target failure")
+            raise OSError("fixture channel target failure")
         replace(source_path, destination)
     with monkeypatch.context() as patch:
         patch.setattr(migration.os, "replace", fail_second)
-        with pytest.raises(OSError, match="second target failure"):
+        with pytest.raises(OSError, match="channel target failure"):
             migration.migrate_legacy_channels(config, workspace, marketplace="external")
     assert config.read_text() == source
     backup = config.with_name(config.name + ".before-channel-plugin-migration.bak")
@@ -856,5 +859,34 @@ def test_channel_config_migration_resumes_before_removing_old_input(tmp_path, mo
     assert tomllib.loads(qq.read_text())["bot_uin"] == "9001"
     telegram = workspace_plugin_data_dir(workspace, "telegram_channel", "external") / "config.local.toml"
     assert tomllib.loads(telegram.read_text())["token"] == "fixture-token"
+    telegram_sender = workspace_plugin_data_dir(workspace, "telegram_sender", "external") / "config.local.toml"
+    assert tomllib.loads(telegram_sender.read_text()) == {
+        "enabled": True,
+        "channel": "telegram",
+        "token": "fixture-token",
+    }
+    qq_sender = workspace_plugin_data_dir(workspace, "qq_sender", "external") / "config.local.toml"
+    assert tomllib.loads(qq_sender.read_text()) == {
+        "enabled": True,
+        "channel": "qq",
+        "endpoint": "ws://127.0.0.1:3001/api",
+    }
     assert tomllib.loads(config.read_text()) == {}
     assert backup.read_text() == source
+
+
+def test_channel_config_migration_requires_qq_sender_endpoint_before_writing(tmp_path):
+    """QQ receiver identity cannot silently become a sender with a guessed endpoint."""
+    from scripts import migrate_legacy_channels as migration
+
+    config = tmp_path / "config.toml"
+    source = '[channels.qq]\nbot_uin="9001"\n'
+    config.write_text(source)
+    workspace = tmp_path / "workspace"
+
+    with pytest.raises(ValueError, match="sender_endpoint"):
+        migration.migrate_legacy_channels(config, workspace, marketplace="external")
+
+    assert config.read_text() == source
+    assert not workspace.exists()
+    assert not config.with_name(config.name + ".before-channel-plugin-migration.bak").exists()

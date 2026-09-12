@@ -15,6 +15,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 import tomlkit
 
@@ -44,10 +45,23 @@ def migrate_legacy_channels(config_path: Path, workspace: Path, *, marketplace: 
         if value is not None and not isinstance(value, Mapping):
             raise ValueError(f"channels.{name} 必须是 TOML table")
     targets: list[tuple[str, str]] = []
+    migrated_channels: list[str] = []
     if isinstance(telegram, Mapping):
-        targets.append(("telegram_channel", _render_telegram(telegram, workspace)))
+        migrated_channels.append("telegram_channel")
+        targets.extend(
+            (
+                ("telegram_channel", _render_telegram(telegram, workspace)),
+                ("telegram_sender", _render_telegram_sender(telegram, workspace)),
+            )
+        )
     if isinstance(qq, Mapping):
-        targets.append(("qq_channel", _render_qq(qq)))
+        migrated_channels.append("qq_channel")
+        targets.extend(
+            (
+                ("qq_channel", _render_qq(qq)),
+                ("qq_sender", _render_qq_sender(qq, workspace)),
+            )
+        )
     if not targets:
         raise ValueError("legacy channels.telegram/qq 必须是 TOML table")
     for plugin_name, content in targets:
@@ -86,7 +100,7 @@ def migrate_legacy_channels(config_path: Path, workspace: Path, *, marketplace: 
         for temporary, _target in staged:
             temporary.unlink(missing_ok=True)
         raise
-    return tuple(plugin_name for plugin_name, _content in targets)
+    return tuple(migrated_channels)
 
 
 def _render_telegram(table: Mapping[str, Any], workspace: Path) -> str:
@@ -105,6 +119,26 @@ def _render_telegram(table: Mapping[str, Any], workspace: Path) -> str:
         "allow_from": [
             str(item) for item in _string_list(allow_from, "channels.telegram.allow_from")
         ],
+    }
+    if token:
+        values["token"] = token
+    return tomlkit.dumps(values)
+
+
+def _render_telegram_sender(table: Mapping[str, Any], workspace: Path) -> str:
+    """Create the matching delivery sender from the legacy Telegram token."""
+
+    channel_name = str(table.get("channel_name", "telegram")).strip()
+    if channel_name != "telegram":
+        raise ValueError(
+            "自定义 channels.telegram.channel_name 无法直接迁移到静态 telegram sender；"
+            "请为该身份发布独立 sender 插件后再迁移"
+        )
+    enabled = _as_bool(table.get("enabled", True), "channels.telegram.enabled")
+    token = _resolve(str(table.get("token", "")), workspace).strip()
+    values: dict[str, Any] = {
+        "enabled": enabled and bool(token),
+        "channel": "telegram",
     }
     if token:
         values["token"] = token
@@ -158,6 +192,48 @@ def _render_qq(table: Mapping[str, Any]) -> str:
             "websocket_open_timeout_seconds": timeout,
         }
     )
+
+
+def _render_qq_sender(table: Mapping[str, Any], workspace: Path) -> str:
+    """Create a sender only when the old config names a real OneBot endpoint."""
+
+    enabled = _as_bool(table.get("enabled", True), "channels.qq.enabled")
+    bot_uin = str(table.get("bot_uin", "")).strip()
+    active = enabled and bool(bot_uin)
+    raw_endpoint = table.get("sender_endpoint", table.get("endpoint", ""))
+    endpoint = str(raw_endpoint).strip()
+    token = _resolve(
+        str(table.get("sender_token", table.get("token", ""))), workspace
+    ).strip()
+    if active and not endpoint:
+        raise ValueError(
+            "启用 QQ channel 迁移需要 channels.qq.sender_endpoint（OneBot WS API）；"
+            "不能从 bot_uin 猜测 QQ sender 地址"
+        )
+    if endpoint:
+        _validate_qq_sender_endpoint(endpoint)
+    values: dict[str, Any] = {"enabled": active, "channel": "qq"}
+    if endpoint:
+        values["endpoint"] = endpoint
+    if token:
+        values["token"] = token
+    return tomlkit.dumps(values)
+
+
+def _validate_qq_sender_endpoint(endpoint: str) -> None:
+    parsed = urlsplit(endpoint)
+    if (
+        parsed.scheme not in {"ws", "wss"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path.rstrip("/") == "/event"
+    ):
+        raise ValueError(
+            "channels.qq.sender_endpoint 必须是无凭据、无 query/fragment 的 OneBot WS API URL"
+        )
 
 
 def _atomic_write(path: Path, text: str, *, mode: int) -> None:
