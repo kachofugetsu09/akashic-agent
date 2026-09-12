@@ -412,12 +412,14 @@ def validate_bundle_dependencies(
     *,
     core_migration_ids: Sequence[str],
     requirements: Sequence[MigrationRequirement] = (),
+    applied_ids: Sequence[str] = (),
     require_missing_bundles: bool = True,
 ) -> None:
-    """在 Yoyo 执行前拒绝缺失 owner、重复元数据和断裂依赖。"""
+    """在 Yoyo 执行前拒绝待执行迁移的缺失 owner 和断裂依赖。"""
 
     available_ids = set(core_migration_ids)
     available_ids.update(item.migration_id for bundle in bundles for item in bundle.migrations)
+    applied = set(applied_ids)
     bundle_by_id = {bundle.bundle_id: bundle for bundle in bundles}
     for requirement in requirements:
         if (
@@ -426,15 +428,22 @@ def validate_bundle_dependencies(
             and not require_missing_bundles
         ):
             continue
-        missing_requirements = tuple(
-            sorted(dependency for dependency in requirement.depends if dependency not in available_ids)
-        )
-        if missing_requirements:
-            raise MigrationBundleBlocked(
-                bundle_id=requirement.bundle_id or "core",
-                migration_ids=(requirement.migration_id,),
-                missing_dependencies=missing_requirements,
+        # 已落账迁移不再需要历史源码或依赖闭包；artifact 仍在上面完成
+        # 完整性校验，待执行迁移则必须在当前 Core/bundle 源码中找到全部依赖。
+        if requirement.migration_id not in applied:
+            missing_requirements = tuple(
+                sorted(
+                    dependency
+                    for dependency in requirement.depends
+                    if dependency not in available_ids
+                )
             )
+            if missing_requirements:
+                raise MigrationBundleBlocked(
+                    bundle_id=requirement.bundle_id or "core",
+                    migration_ids=(requirement.migration_id,),
+                    missing_dependencies=missing_requirements,
+                )
         if requirement.migration_id not in available_ids:
             continue
         if requirement.bundle_id is None:
@@ -465,6 +474,8 @@ def validate_bundle_dependencies(
     for bundle in bundles:
         missing: set[str] = set()
         for spec in bundle.migrations:
+            if spec.migration_id in applied:
+                continue
             missing.update(dep for dep in spec.depends if dep not in available_ids)
         if missing:
             raise MigrationBundleBlocked(
