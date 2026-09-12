@@ -1,5 +1,5 @@
 """渠道共用 Message 页面协议的同一纯投影。"""
-from agent.plugin_contracts.message_view import (
+from agent.plugin_composition.message_view import (
     MessageDisplayProviders as MessageDisplayProviders,
     MessageDisplayReader as MessageDisplayReader,
     PartDisplayProvider as PartDisplayProvider,
