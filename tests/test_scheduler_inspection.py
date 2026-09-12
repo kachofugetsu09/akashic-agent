@@ -91,7 +91,7 @@ async def test_core_passes_through_scheduler_projection_without_reading_workspac
     root = CompositionRoot("scheduler-inspection")
     provider = _Provider()
     async def apply(ctx):
-        await ctx.provide(ServiceKey("scheduler.inspection.v1"), provider)
+        await ctx.provide(ServiceKey("control.rpc:runtime/inspection"), provider)
     await root.mount(apply, name="external-scheduler")
     store = RuntimeSnapshotStore()
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
@@ -108,6 +108,37 @@ async def test_core_passes_through_scheduler_projection_without_reading_workspac
         assert await service.get_job("external") == {"id": "external", "display": "来自 scheduler"}
         assert snapshot.lease_count == 0
         assert not (tmp_path / "schedules.json").exists()
+    finally:
+        await store.close()
+        await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_core_does_not_swallow_scheduler_provider_failure(tmp_path: Path) -> None:
+    from agent.plugin_composition import CompositionRoot, ServiceKey
+    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
+
+    class BrokenProvider:
+        def list_jobs(self) -> tuple[Mapping[str, object], ...]:
+            raise RuntimeError("scheduler read failed")
+
+        def get_job(self, job_id: str) -> Mapping[str, object] | None:
+            raise RuntimeError("scheduler read failed")
+
+    root = CompositionRoot("scheduler-inspection-failure")
+    await root.mount(
+        lambda ctx: ctx.provide(
+            ServiceKey("control.rpc:runtime/inspection"), BrokenProvider()
+        ),
+        name="external-scheduler",
+    )
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    store.install(snapshot)
+    service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=store)
+    try:
+        with pytest.raises(RuntimeError, match="scheduler read failed"):
+            await service.list_jobs()
     finally:
         await store.close()
         await root.dispose()
@@ -134,9 +165,13 @@ async def test_core_reports_skills_unavailable_without_provider(tmp_path: Path) 
     store.install(snapshot)
     service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=store)
     try:
-        with pytest.raises(RuntimeInspectionError, match="技能检查服务尚未绑定") as error:
-            await service.list_capabilities()
-        assert error.value.code == "skills_unavailable"
+        payload = await service.list_capabilities()
+        assert payload["plugins"] == []
+        assert payload["mcp_servers"] == []
+        assert payload["skills"] == []
+        assert payload["unavailable"] == [
+            {"kind": "skills", "code": "skills_unavailable", "status": "unavailable"}
+        ]
     finally:
         await store.close()
         await root.dispose()
@@ -150,3 +185,7 @@ def test_core_runtime_inspection_has_no_scheduler_implementation_import() -> Non
     assert "plugins.scheduler" not in source
     assert "JobStore" not in source
     assert "ScheduledJob" not in source
+    assert "scheduler.inspection" not in source
+    assert "standard_tools" not in source
+    assert "memory/MEMORY.md" not in source
+    assert "memory/VEDA.md" not in source

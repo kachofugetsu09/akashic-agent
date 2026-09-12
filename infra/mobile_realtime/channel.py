@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import re
@@ -1387,7 +1388,9 @@ class MobileRealtimeChannel:
             _expect_keys(frame.payload, set())
             return CommandReply(
                 type="runtime.document.list.ok",
-                payload=self._require_runtime_inspection().list_documents(),
+                payload=await _await_runtime_result(
+                    self._require_runtime_inspection().list_documents()
+                ),
             )
         if frame.type == "runtime.document.get":
             _expect_keys(frame.payload, {"document_id"})
@@ -1397,7 +1400,9 @@ class MobileRealtimeChannel:
             )
             return CommandReply(
                 type="runtime.document.get.ok",
-                payload=self._require_runtime_inspection().get_document(document_id),
+                payload=await _await_runtime_result(
+                    self._require_runtime_inspection().get_document(document_id)
+                ),
             )
         if frame.type == "scheduler.job.list":
             _expect_keys(frame.payload, set())
@@ -3750,6 +3755,15 @@ def _expect_keys(payload: Mapping[str, object], allowed: set[str]) -> None:
     if unexpected:
         names = ", ".join(sorted(unexpected))
         raise MobileCommandError("invalid_payload", f"payload 包含未知字段: {names}")
+
+
+async def _await_runtime_result(value: object) -> dict[str, object]:
+    """Await generation-bound reads while retaining old sync test doubles."""
+
+    result = await value if inspect.isawaitable(value) else value
+    if not isinstance(result, dict):
+        raise TypeError("运行时检查 provider 必须返回对象")
+    return result
 
 
 def _expect_nonempty_string(value: object, field: str) -> str:

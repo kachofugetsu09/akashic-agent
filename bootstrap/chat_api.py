@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -306,14 +307,18 @@ def create_chat_app(
             raise _plugin_ui_http_error(error) from error
 
     @app.get("/api/chat/runtime/documents")
-    def list_runtime_documents() -> dict[str, object]:
-        return _require_runtime_inspection(runtime_inspection).list_documents()
+    async def list_runtime_documents() -> dict[str, object]:
+        return await _await_runtime_result(
+            _require_runtime_inspection(runtime_inspection).list_documents()
+        )
 
     @app.get("/api/chat/runtime/documents/{document_id}")
-    def read_runtime_document(document_id: str) -> dict[str, object]:
+    async def read_runtime_document(document_id: str) -> dict[str, object]:
         try:
-            return _require_runtime_inspection(runtime_inspection).get_document(
-                document_id
+            return await _await_runtime_result(
+                _require_runtime_inspection(runtime_inspection).get_document(
+                    document_id
+                )
             )
         except RuntimeInspectionError as error:
             raise _runtime_http_error(error) from error
@@ -321,14 +326,18 @@ def create_chat_app(
     @app.get("/api/chat/runtime/jobs")
     async def list_runtime_jobs() -> dict[str, object]:
         try:
-            return await _require_runtime_inspection(runtime_inspection).list_jobs()
+            return await _await_runtime_result(
+                _require_runtime_inspection(runtime_inspection).list_jobs()
+            )
         except RuntimeInspectionError as error:
             raise _runtime_http_error(error) from error
 
     @app.get("/api/chat/runtime/jobs/{job_id}")
     async def read_runtime_job(job_id: str) -> dict[str, object]:
         try:
-            return await _require_runtime_inspection(runtime_inspection).get_job(job_id)
+            return await _await_runtime_result(
+                _require_runtime_inspection(runtime_inspection).get_job(job_id)
+            )
         except RuntimeInspectionError as error:
             raise _runtime_http_error(error) from error
 
@@ -540,6 +549,15 @@ def _require_runtime_inspection(
     if service is None:
         raise HTTPException(status_code=503, detail="运行时检查服务不可用")
     return service
+
+
+async def _await_runtime_result(value: object) -> dict[str, object]:
+    """Await generation-bound reads while retaining old sync test doubles."""
+
+    result = await value if inspect.isawaitable(value) else value
+    if not isinstance(result, dict):
+        raise TypeError("运行时检查 provider 必须返回对象")
+    return result
 
 
 def _require_plugin_ui_provider(
