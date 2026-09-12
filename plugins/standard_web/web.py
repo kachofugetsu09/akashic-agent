@@ -8,7 +8,10 @@ from typing import Any, cast
 import httpx
 
 from agent.plugin_composition import Context
-from agent.tools.base import normalize_tool_parameters
+from agent.plugin_composition.tool_catalog import (
+    normalize_tool_parameters,
+    validate_tool_parameters,
+)
 from .fetch import WebFetchTool
 from .search import WebSearchTool
 from core.net.http import HttpRequester, RequestBudget, RetryPolicy
@@ -25,7 +28,7 @@ class WebTool:
 
     async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
         raw = cast(dict[str, Any], json_value(arguments))
-        errors = self._backend.validate_params(
+        errors = validate_tool_parameters(
             raw, schema=normalize_tool_parameters(self._backend.parameters)
         )
         if errors:

@@ -14,7 +14,7 @@ from agent.control.scoped_turn import TurnAdmissionRetiredError
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.web_ui import WebUiCatalog, freeze_web_ui_catalog
 from agent.tools.registry import ToolRegistry
-from agent.skills import SkillIndex
+from agent.plugin_composition.skills import SkillIndex
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,

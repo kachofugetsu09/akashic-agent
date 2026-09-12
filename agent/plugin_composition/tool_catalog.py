@@ -10,9 +10,17 @@ from typing import Any, Literal, TypeAlias, cast
 
 from agent.plugin_composition.context import Context, FiberHandle, HealthHandle
 from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
+from agent.tool_catalog import (
+    ToolResult,
+    normalize_tool_parameters,
+    normalize_tool_result,
+    validate_tool_parameters,
+)
 
 ToolRisk: TypeAlias = Literal["read-only", "read-write", "external-side-effect"]
 PluginToolHandler: TypeAlias = Callable[[Any, Mapping[str, object]], Awaitable[object]]
+
+
 
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _EXPORT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:]*$")
@@ -571,5 +579,9 @@ __all__ = [
     "PluginToolDescriptor",
     "PluginToolHandler",
     "PluginTools",
+    "ToolResult",
     "ToolRisk",
+    "normalize_tool_parameters",
+    "normalize_tool_result",
+    "validate_tool_parameters",
 ]

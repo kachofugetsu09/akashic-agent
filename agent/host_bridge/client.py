@@ -22,8 +22,8 @@ from agent.host_bridge.protocol import (
     require_positive,
     require_text,
 )
-from agent.tools.base import ToolResult
-from agent.tools.unified_exec import ExecutionCleanupReport, ExecutionResult
+from agent.tool_catalog import ToolResult
+from agent.process_runtime import ExecutionCleanupReport, ExecutionResult
 from core.common.diagnostic_log import current_diagnostic_context
 
 _HEARTBEAT_INTERVAL_S = 2.0

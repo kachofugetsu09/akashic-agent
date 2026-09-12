@@ -49,6 +49,7 @@ from agent.plugin_composition.model import (
 
 if TYPE_CHECKING:
     from agent.plugin_composition.overlay import CompositionSnapshotRoot
+    from agent.plugins.snapshot import RuntimeSnapshotLease
 
 
 T = TypeVar("T")
@@ -60,10 +61,16 @@ FiberObserver = Callable[["Fiber"], object]
 class RuntimeScope:
     """Carry one exact snapshot from a source callback into one async operation."""
 
-    def __init__(self, lease: Any) -> None:
+    def __init__(self, lease: RuntimeSnapshotLease) -> None:
         self._lease = lease
         self._token: object | None = None
         self._closed = False
+
+    @property
+    def snapshot_id(self) -> str:
+        """Expose only the immutable identity carried by this runtime scope."""
+
+        return self._lease.snapshot.snapshot_id
 
     async def __aenter__(self) -> None:
         if self._closed or self._token is not None:

@@ -197,3 +197,7 @@ note = "scheduler 拥有任务字段和展示；宿主只消费插件只读投�
 [capabilities."models.selection.v1"]
 role = "seam"
 note = "模型选择由普通 models owner 解释；Core 只在当前查询租约内调用"
+
+[capabilities."core.skill_catalog.v1"]
+role = "core"
+note = "当前 exact generation 的只读插件技能索引；不授予扫描或写入权限"

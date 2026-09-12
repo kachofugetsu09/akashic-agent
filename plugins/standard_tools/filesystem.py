@@ -3,18 +3,16 @@
 from pathlib import Path
 from typing import Any
 
-from agent.plugin_composition import CHAT_MODELS, ModelRole
-from agent.plugins.snapshot import get_current_runtime_snapshot
-from agent.tools.base import Tool, ToolResult
-from agent.tools.filesystem import (
+from agent.host_bridge.filesystem import (
     EditFileOperation,
     ListDirOperation,
     ReadFileOperation,
     WriteFileOperation,
 )
+from agent.plugin_composition.tool_catalog import ToolResult
 
 
-class ReadFileTool(ReadFileOperation, Tool):
+class ReadFileTool(ReadFileOperation):
     """读取文件内容，支持按行分页，超大文件自动截断。"""
 
     @property
@@ -56,17 +54,11 @@ class ReadFileTool(ReadFileOperation, Tool):
             },
             "required": ["path"],
         }
-
     async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
-        result = await self.read_raw(path, **kwargs)
-        if not isinstance(result, ToolResult) or not result.content_blocks:
-            return result
-        if await _current_agent_accepts_images():
-            return result
-        return _vision_tool_hint(path, Path(path).name, "image")
+        return await self.read_raw(path, **kwargs)
 
 
-class WriteFileTool(WriteFileOperation, Tool):
+class WriteFileTool(WriteFileOperation):
     """将内容写入文件，自动创建所需的父目录。"""
 
     @property
@@ -96,7 +88,7 @@ class WriteFileTool(WriteFileOperation, Tool):
         }
 
 
-class EditFileTool(EditFileOperation, Tool):
+class EditFileTool(EditFileOperation):
     """精确替换文件中的指定文本片段。"""
 
     @property
@@ -137,7 +129,7 @@ class EditFileTool(EditFileOperation, Tool):
         }
 
 
-class ListDirTool(ListDirOperation, Tool):
+class ListDirTool(ListDirOperation):
     """列举目录内容。"""
 
     @property
@@ -157,23 +149,3 @@ class ListDirTool(ListDirOperation, Tool):
             },
             "required": ["path"],
         }
-
-
-async def _current_agent_accepts_images() -> bool:
-    """读取当前 Turn 的实际模型图片能力。"""
-    snapshot = get_current_runtime_snapshot()
-    if snapshot is None or snapshot.composition_root is None:
-        raise RuntimeError("read_file 读图必须在 exact Turn snapshot 内执行")
-    chat_models = snapshot.composition_root.context.require(CHAT_MODELS)
-    async with chat_models.execution() as execution:
-        agent_model = execution.chat(ModelRole.AGENT)
-        return "image" in agent_model.descriptor.capabilities.input_modalities
-
-
-def _vision_tool_hint(path: str, name: str, image_mime: str) -> str:
-    return (
-        f"[检测到图片文件 {name}（{image_mime}）]\n"
-        "当前主模型不支持多模态，无法直接查看图片内容。\n"
-        "请使用 read_image_vision 工具来分析此图片：\n"
-        f"read_image_vision(path='{path}', prompt='描述你想从图片中了解什么')"
-    )

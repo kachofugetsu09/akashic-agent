@@ -8,13 +8,11 @@ from typing import Any, cast
 
 import httpx
 
-from agent.tools.base import Tool
-
 _MCP_URL = "https://mcp.exa.ai/mcp"
 _DEFAULT_NUM_RESULTS = 8
 
 
-class WebSearchTool(Tool):
+class WebSearchTool:
     """用关键词通过 Exa 搜索互联网，返回标题、内容摘要、URL 列表"""
 
     name = "web_search"

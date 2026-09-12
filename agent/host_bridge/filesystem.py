@@ -1,0 +1,498 @@
+"""文件系统工具：读取、写入、编辑文件，以及列举目录。"""
+
+from __future__ import annotations
+
+import asyncio
+import builtins
+import difflib
+import logging
+import os
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, TypeVar
+
+from agent.media import detect_supported_image_mime, encode_image_data_uri
+from agent.tool_catalog import ToolResult
+from infra.persistence.json_store import atomic_write_text
+
+if TYPE_CHECKING:
+    from agent.host_bridge.client import HostBridgeShellProcessManager
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+@dataclass
+class _FileMutationState:
+    lock: asyncio.Lock
+    users: int = 0
+
+
+_FILE_MUTATION_LOCKS: dict[str, _FileMutationState] = {}
+
+
+def _is_inside(path: Path, allowed_dir: Path) -> bool:
+    try:
+        _ = path.relative_to(allowed_dir)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
+    """解析路径（展开 ~ 并取绝对路径），可选限制在允许目录内。
+
+    相对路径规则：
+    - 若提供了 allowed_dir，相对路径基于 allowed_dir 解析（工作目录为 allowed_dir）
+    - 否则相对路径基于进程 cwd 解析
+    """
+    p = Path(path).expanduser()
+    if not p.is_absolute() and allowed_dir is not None:
+        resolved = (allowed_dir / p).resolve()
+    else:
+        resolved = p.resolve()
+    if allowed_dir and not _is_inside(resolved, allowed_dir.resolve()):
+        raise PermissionError(f"路径 {path} 超出允许目录 {allowed_dir}")
+    return resolved
+
+
+def _resolve_read_path(path: str, base_dir: Path | None = None) -> Path:
+    """解析只读路径，并仅把 base_dir 用作相对路径基准。"""
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute() and base_dir is not None:
+        candidate = base_dir / candidate
+    return candidate.resolve()
+
+
+def _strip_utf8_bom(text: str) -> tuple[str, bool]:
+    if text.startswith("\ufeff"):
+        return text[1:], True
+    return text, False
+
+
+def _restore_utf8_bom(text: str, has_bom: bool) -> str:
+    if has_bom:
+        return "\ufeff" + text
+    return text
+
+
+def _supports_crlf_compat(text: str) -> bool:
+    if "\r\n" not in text:
+        return False
+    bare_lf = "\n" in text.replace("\r\n", "")
+    return not bare_lf and "\r" not in text.replace("\r\n", "")
+
+
+def _build_edit_diff(old_text: str, new_text: str, path: str) -> str:
+    lines = list(
+        difflib.unified_diff(
+            old_text.splitlines(),
+            new_text.splitlines(),
+            fromfile=f"{path} (before)",
+            tofile=f"{path} (after)",
+            lineterm="",
+            n=2,
+        )
+    )
+    return "\n".join(lines)
+
+
+def _get_file_mutation_key(file_path: Path) -> str:
+    try:
+        return str(file_path.resolve(strict=True))
+    except FileNotFoundError:
+        return os.path.realpath(str(file_path))
+
+
+async def _run_with_file_mutation_lock(
+    file_path: Path, fn: Callable[[], Awaitable[T]]
+) -> T:
+    """按规范化路径串行执行文件变更，并在异常或取消后回收锁状态。"""
+
+    # 1. 登记当前调用，等待者也必须计入生命周期
+    key = _get_file_mutation_key(file_path)
+    state = _FILE_MUTATION_LOCKS.get(key)
+    if state is None:
+        state = _FileMutationState(lock=asyncio.Lock())
+        _FILE_MUTATION_LOCKS[key] = state
+    state.users += 1
+
+    try:
+        # 2. 同一文件串行执行，取消也由 async with 释放底层锁
+        async with state.lock:
+            return await fn()
+    finally:
+        # 3. 最后一个持有者或等待者退出后再移除路径映射
+        state.users -= 1
+        if state.users == 0 and _FILE_MUTATION_LOCKS.get(key) is state:
+            _ = _FILE_MUTATION_LOCKS.pop(key, None)
+
+
+_READ_MAX_LINES = 400
+_READ_MAX_BYTES = 10_000
+_READ_PROBE_BYTES = 4096
+
+
+def _read_image(file_path: Path) -> ToolResult:
+    data_uri = encode_image_data_uri(file_path)
+    return ToolResult(
+        text=f"[已读取图片文件 {file_path.name}，图片内容已提供给多模态模型]",
+        content_blocks=[
+            {
+                "type": "image_url",
+                "image_url": {"url": data_uri, "detail": "high"},
+            }
+        ],
+    )
+
+
+def _looks_binary(head: bytes) -> bool:
+    if not head:
+        return False
+    if b"\x00" in head:
+        return True
+    allowed = set(b"\t\n\r\f\b")
+    suspicious = 0
+    for byte in head:
+        if byte in allowed:
+            continue
+        if 32 <= byte <= 126:
+            continue
+        if byte >= 128:
+            continue
+        suspicious += 1
+    return suspicious / max(len(head), 1) > 0.3
+
+
+def _decode_line(raw: bytes) -> tuple[str, bool]:
+    try:
+        return raw.decode("utf-8"), False
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace"), True
+
+
+def _scan_text_file(
+    file_path: Path, offset: int, limit: int | None
+) -> tuple[list[str], int, int, bool]:
+    sliced_lines: list[str] = []
+    total_lines = 0
+    total_bytes = 0
+    had_decode_errors = False
+
+    with builtins.open(file_path, "rb") as fh:
+        while True:
+            raw_line = fh.readline()
+            if raw_line == b"":
+                break
+            total_lines += 1
+            total_bytes += len(raw_line)
+            decoded_line, line_had_error = _decode_line(raw_line)
+            had_decode_errors = had_decode_errors or line_had_error
+            line_idx = total_lines - 1
+            if line_idx < offset:
+                continue
+            if limit is not None and len(sliced_lines) >= limit:
+                continue
+            sliced_lines.append(decoded_line)
+
+    return sliced_lines, total_lines, total_bytes, had_decode_errors
+
+
+def _truncate_numbered_lines(
+    raw_lines: list[str],
+    numbered_lines: list[str],
+) -> tuple[str, bool, str | None, bool, int, int]:
+    if not numbered_lines:
+        return "", False, None, False, 0, 0
+
+    first_line_bytes = len(raw_lines[0].encode("utf-8"))
+    if first_line_bytes > _READ_MAX_BYTES:
+        return "", True, "first_line_bytes", True, 0, 0
+
+    parts: list[str] = []
+    used_bytes = 0
+    truncated_by: str | None = None
+    output_lines = 0
+    for idx, line in enumerate(numbered_lines):
+        line_bytes = len(line.encode("utf-8"))
+        if idx >= _READ_MAX_LINES:
+            truncated_by = "lines"
+            break
+        if used_bytes + line_bytes > _READ_MAX_BYTES:
+            truncated_by = "bytes"
+            break
+        parts.append(line)
+        used_bytes += line_bytes
+        output_lines += 1
+
+    return (
+        "".join(parts),
+        truncated_by is not None,
+        truncated_by,
+        False,
+        output_lines,
+        used_bytes,
+    )
+
+
+class _FileOperation:
+    """同一个文件工具 scope 拥有其实际 Bridge 连接与关闭责任。"""
+
+    def __init__(self, allowed_dir: Path | None = None, *, enable_bridge: bool = True):
+        self._allowed_dir = allowed_dir
+        self._enable_bridge = enable_bridge
+        self._bridge: HostBridgeShellProcessManager | None = None
+
+    def _get_bridge(self) -> HostBridgeShellProcessManager | None:
+        if self._bridge is None:
+            self._bridge = _build_file_bridge(self._enable_bridge)
+        return self._bridge
+
+    async def aclose(self) -> None:
+        if self._bridge is not None:
+            from agent.plugin_composition.processes import ProcessCleanupError
+
+            report = await self._bridge.shutdown()
+            if report.failures:
+                raise ProcessCleanupError(report)
+            self._bridge = None
+
+
+class ReadFileOperation(_FileOperation):
+    """读取文件内容，支持按行分页，超大文件自动截断。"""
+
+    async def read_raw(self, path: str, **kwargs: Any) -> str | ToolResult:
+        """读取原始文件结果；实际模型投影由调用者决定。"""
+        bridge = self._get_bridge()
+        if bridge is not None:
+            return await bridge.execute_file_tool(
+                "read_file",
+                allowed_dir=self._allowed_dir,
+                arguments={"path": path, **kwargs},
+            )
+        return self.read_from_disk(path, **kwargs)
+
+    def read_from_disk(self, path: str, **kwargs: Any) -> str | ToolResult:
+        """Read host bytes without applying the current Turn model projection."""
+
+        offset: int = int(kwargs.get("offset", 0))
+        limit: int | None = kwargs.get("limit")
+        if limit is not None:
+            limit = int(limit)
+        try:
+            file_path = _resolve_read_path(path, self._allowed_dir)
+            if not file_path.exists():
+                return ToolResult(text=f"错误：文件不存在：{path}", is_error=True)
+            if not file_path.is_file():
+                return ToolResult(text=f"错误：路径不是文件：{path}", is_error=True)
+
+            with builtins.open(file_path, "rb") as fh:
+                head = fh.read(_READ_PROBE_BYTES)
+            image_mime = detect_supported_image_mime(head)
+            if image_mime:
+                try:
+                    return _read_image(file_path)
+                except ValueError as error:
+                    return ToolResult(text=f"图片处理失败：{error}", is_error=True)
+            if _looks_binary(head):
+                return ToolResult(
+                    text=f"错误：{path} 看起来是二进制文件，read_file 仅适合文本和图片。"
+                    "建议改用 shell 搭配 file/xxd/strings 查看。",
+                    is_error=True,
+                )
+
+            sliced, total_lines, total_bytes, had_decode_errors = _scan_text_file(
+                file_path, offset, limit
+            )
+
+            # 带行号输出（1-based 显示值，从 offset+1 开始）
+            numbered_lines = [
+                f"{i:6}\u2192{line}" for i, line in enumerate(sliced, start=offset + 1)
+            ]
+            (
+                text,
+                truncated,
+                truncated_by,
+                first_line_too_long,
+                output_lines,
+                output_bytes,
+            ) = _truncate_numbered_lines(sliced, numbered_lines)
+
+            suffix_note = ""
+            end_line = offset + len(sliced)
+            if first_line_too_long:
+                suffix_note = (
+                    "\n\n[已截断：首行超过 10KB，直接返回半行价值很低。"
+                    "建议缩小读取范围，或改用 shell 查看局部字节内容。]"
+                )
+            elif truncated:
+                reason = "行数超限" if truncated_by == "lines" else "字节数超限"
+                suffix_note = (
+                    f"\n\n[已截断：文件共 {total_lines} 行 / {total_bytes} 字节，"
+                    f"本次返回 {output_lines} 行 / {output_bytes} 字节，因{reason}只返回前一部分。"
+                    f"建议用 limit=N 分段读取，例如 offset={offset} limit=100。]"
+                )
+            elif offset > 0 or limit is not None:
+                suffix_note = f"\n\n[第 {offset + 1}–{end_line} 行 / 共 {total_lines} 行 / {total_bytes} 字节]"
+            elif total_lines > len(sliced):
+                suffix_note = f"\n\n[共 {total_lines} 行 / {total_bytes} 字节]"
+
+            if had_decode_errors:
+                suffix_note += (
+                    "\n\n[提示：文件不是标准 UTF-8，已用替代字符显示无法解码的字节。]"
+                )
+
+            return text + suffix_note
+        except PermissionError as e:
+            return ToolResult(text=f"错误：{e}", is_error=True)
+        except OSError as e:
+            return ToolResult(text=f"读取文件失败：{e}", is_error=True)
+
+
+class WriteFileOperation(_FileOperation):
+    """将内容写入文件，自动创建所需的父目录。"""
+
+    async def execute(self, path: str, content: str, **kwargs: Any) -> str | ToolResult:
+        bridge = self._get_bridge()
+        if bridge is not None:
+            result = await bridge.execute_file_tool(
+                "write_file",
+                allowed_dir=self._allowed_dir,
+                arguments={"path": path, "content": content, **kwargs},
+            )
+            return result
+        try:
+            file_path = _resolve_path(path, self._allowed_dir)
+
+            async def _write() -> str | ToolResult:
+                if file_path.exists() and file_path.is_dir():
+                    return ToolResult(
+                        text=f"写入文件失败：目标路径是目录：{path}", is_error=True
+                    )
+                atomic_write_text(file_path, content, domain="filesystem")
+                return f"已写入 {len(content)} 字节到 {path}"
+
+            return await _run_with_file_mutation_lock(file_path, _write)
+        except PermissionError as e:
+            return ToolResult(text=f"错误：{e}", is_error=True)
+        except OSError as e:
+            return ToolResult(text=f"写入文件失败：{e}", is_error=True)
+
+
+class EditFileOperation(_FileOperation):
+    """精确替换文件中的指定文本片段。"""
+
+    async def execute(
+        self, path: str, old_text: str, new_text: str, **kwargs: Any
+    ) -> str | ToolResult:
+        replace_all: bool = bool(kwargs.get("replace_all", False))
+        bridge = self._get_bridge()
+        if bridge is not None:
+            result = await bridge.execute_file_tool(
+                "edit_file",
+                allowed_dir=self._allowed_dir,
+                arguments={
+                    "path": path,
+                    "old_text": old_text,
+                    "new_text": new_text,
+                    **kwargs,
+                },
+            )
+            return result
+        try:
+            file_path = _resolve_path(path, self._allowed_dir)
+
+            async def _edit() -> str | ToolResult:
+                if not file_path.exists():
+                    return ToolResult(text=f"错误：文件不存在：{path}", is_error=True)
+                if not file_path.is_file():
+                    return ToolResult(text=f"错误：路径不是文件：{path}", is_error=True)
+
+                raw_content = file_path.read_bytes().decode("utf-8")
+                content, has_bom = _strip_utf8_bom(raw_content)
+                matched_old_text = old_text
+                replacement_text = new_text
+
+                if matched_old_text not in content and _supports_crlf_compat(content):
+                    compat_old_text = old_text.replace("\n", "\r\n")
+                    if compat_old_text in content:
+                        matched_old_text = compat_old_text
+                        replacement_text = new_text.replace("\n", "\r\n")
+
+                if matched_old_text not in content:
+                    return ToolResult(
+                        text="错误：未找到 old_text，请确保与文件内容完全一致。",
+                        is_error=True,
+                    )
+
+                count = content.count(matched_old_text)
+                if count > 1 and not replace_all:
+                    return ToolResult(
+                        text=f"警告：old_text 在文件中出现了 {count} 次。如需全部替换，设 replace_all=true；如需精确定位，请在 old_text 中包含更多上下文。",
+                        is_error=True,
+                    )
+
+                new_content = (
+                    content.replace(matched_old_text, replacement_text)
+                    if replace_all
+                    else content.replace(matched_old_text, replacement_text, 1)
+                )
+                replaced_count = count if replace_all else 1
+                diff_text = _build_edit_diff(content, new_content, path)
+                restored_content = _restore_utf8_bom(new_content, has_bom)
+                atomic_write_text(file_path, restored_content, domain="filesystem")
+                if diff_text:
+                    return (
+                        f"已成功编辑 {path}（替换 {replaced_count} 处）\n\n"
+                        f"```diff\n{diff_text}\n```"
+                    )
+                return f"已成功编辑 {path}（替换 {replaced_count} 处）"
+
+            return await _run_with_file_mutation_lock(file_path, _edit)
+        except PermissionError as e:
+            return ToolResult(text=f"错误：{e}", is_error=True)
+        except (OSError, UnicodeDecodeError) as e:
+            return ToolResult(text=f"编辑文件失败：{e}", is_error=True)
+
+
+class ListDirOperation(_FileOperation):
+    """列举目录内容。"""
+
+    async def execute(self, path: str, **kwargs: Any) -> str | ToolResult:
+        bridge = self._get_bridge()
+        if bridge is not None:
+            result = await bridge.execute_file_tool(
+                "list_dir",
+                allowed_dir=self._allowed_dir,
+                arguments={"path": path, **kwargs},
+            )
+            return result
+        try:
+            dir_path = _resolve_path(path, self._allowed_dir)
+            if not dir_path.exists():
+                return ToolResult(text=f"错误：目录不存在：{path}", is_error=True)
+            if not dir_path.is_dir():
+                return ToolResult(text=f"错误：路径不是目录：{path}", is_error=True)
+
+            items: list[str] = []
+            for item in sorted(dir_path.iterdir()):
+                prefix = "📁 " if item.is_dir() else "📄 "
+                items.append(f"{prefix}{item.name}")
+
+            if not items:
+                return f"目录 {path} 为空"
+
+            return "\n".join(items)
+        except PermissionError as e:
+            return ToolResult(text=f"错误：{e}", is_error=True)
+        except OSError as e:
+            return ToolResult(text=f"列举目录失败：{e}", is_error=True)
+
+
+def _build_file_bridge(enable_bridge: bool) -> HostBridgeShellProcessManager | None:
+    if not enable_bridge:
+        return None
+    from agent.host_bridge.factory import build_file_bridge
+
+    return build_file_bridge()

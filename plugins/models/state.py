@@ -52,6 +52,8 @@ from agent.plugin_composition import (
     ModelRequest,
     ModelRole,
     ModelUnavailableError,
+    SavedEmbedding,
+    ServiceKey,
     SetDefaultModel,
     SettingsReceipt,
     SnapshotSealing,
@@ -59,7 +61,6 @@ from agent.plugin_composition import (
     SyncModels,
     UpdateConnection,
 )
-from agent.plugins.snapshot import lease_current_runtime_snapshot
 
 from .store import ModelsStore, StoredConnection, StoredModel, StoredSnapshot
 
@@ -354,10 +355,12 @@ class ModelsState:
         store: ModelsStore,
         *,
         root_instance_token: object,
+        context: Context | None = None,
         capability_catalog: _CapabilityCatalog | None = None,
     ) -> None:
         self.store = store
         self.root_instance_token = root_instance_token
+        self.context = context
         self.capability_catalog = capability_catalog
         self._driver_registrations: dict[str, ModelDriverDefinition] = {}
         self._driver_contexts: dict[str, Context] = {}
@@ -486,13 +489,9 @@ class ModelsState:
         inherited = _CURRENT_EXECUTION.get()
         if inherited is not None and inherited.owner_task is not asyncio.current_task():
             raise RuntimeError("model execution 不能由子 task 继承")
-        lease = lease_current_runtime_snapshot()
-        if lease is None:
-            raise RuntimeError(
-                "model execution 缺少当前 task 的 runtime snapshot lease"
-            )
-        try:
-            self._check_snapshot_service(lease.snapshot, CHAT_MODELS, self.chat_models)
+        scope = self._capture_runtime_scope("model execution")
+        async with scope:
+            self._check_snapshot_service(CHAT_MODELS, self.chat_models)
             existing = inherited
             if existing is not None:
                 if existing.state is not self:
@@ -513,7 +512,7 @@ class ModelsState:
             snapshot = self._snapshot_required()
             async with _driver_scope() as opened:
                 execution = await self._build_execution(
-                    lease.snapshot.snapshot_id,
+                    scope.snapshot_id,
                     snapshot,
                     selection.model_id,
                     selection.reasoning_effort,
@@ -524,8 +523,6 @@ class ModelsState:
                     yield execution
                 finally:
                     _CURRENT_EXECUTION.reset(token)
-        finally:
-            await lease.release()
 
     @asynccontextmanager
     async def independent_execution(
@@ -553,13 +550,9 @@ class ModelsState:
         inherited = _CURRENT_EXECUTION.get()
         if inherited is not None and inherited.owner_task is not asyncio.current_task():
             raise RuntimeError("model execution 不能由子 task 继承")
-        lease = lease_current_runtime_snapshot()
-        if lease is None:
-            raise RuntimeError(
-                "embedding execution 缺少当前 task 的 runtime snapshot lease"
-            )
-        try:
-            self._check_snapshot_service(lease.snapshot, EMBEDDINGS, self.embeddings)
+        scope = self._capture_runtime_scope("embedding execution")
+        async with scope:
+            self._check_snapshot_service(EMBEDDINGS, self.embeddings)
             async with _driver_scope() as opened:
                 existing = inherited
                 if existing is not None:
@@ -581,14 +574,12 @@ class ModelsState:
                 if selected is None:
                     raise ModelUnavailableError("尚未配置默认 embedding 模型")
                 bound = await self._bind_embedding(
-                    lease.snapshot.snapshot_id,
+                    scope.snapshot_id,
                     snapshot,
                     selected,
                     opened,
                 )
                 yield bound
-        finally:
-            await lease.release()
 
     def chat_contributors(self) -> tuple[Context, ...]:
         """只归档可选聊天模型所需的实际 driver，不夹带独立 embedding 或未配置的 driver。"""
@@ -599,11 +590,7 @@ class ModelsState:
 
     def save_embedding_binding(self, bindings: Bindings, model_id: str | None) -> str:
         """由实际注册表选择 driver owner，调用者不能自己拼归档闭包。"""
-        from agent.plugin_composition.models import SavedEmbedding
-        from agent.plugins.snapshot import get_current_runtime_snapshot
-
-        snapshot = get_current_runtime_snapshot()
-        self._check_snapshot_service(snapshot, EMBEDDINGS, self.embeddings)
+        self._check_snapshot_service(EMBEDDINGS, self.embeddings)
         descriptor = self.describe_embedding(model_id)
         saved = SavedEmbedding(model_id=descriptor.model_id, space_identity=descriptor.identity,
                                dimensions=descriptor.dimensions)
@@ -784,14 +771,10 @@ class ModelsState:
     async def apply_change(self, command: ModelChange) -> SettingsReceipt:
         """Keep the exact driver generation alive across settings network I/O."""
 
-        lease = lease_current_runtime_snapshot()
-        if lease is None:
-            raise RuntimeError("model settings 缺少当前 task 的 runtime snapshot lease")
-        try:
-            self._check_snapshot_service(lease.snapshot, MODEL_SETTINGS, self.settings)
+        scope = self._capture_runtime_scope("model settings")
+        async with scope:
+            self._check_snapshot_service(MODEL_SETTINGS, self.settings)
             return await self._apply_change(command)
-        finally:
-            await lease.release()
 
     async def discover_models(
         self,
@@ -799,31 +782,36 @@ class ModelsState:
     ) -> tuple[DiscoveredModel, ...]:
         """Discover one unsaved connection without publishing durable state."""
 
-        lease = lease_current_runtime_snapshot()
-        if lease is None:
-            raise RuntimeError("model settings 缺少当前 task 的 runtime snapshot lease")
-        try:
-            self._check_snapshot_service(lease.snapshot, MODEL_SETTINGS, self.settings)
+        scope = self._capture_runtime_scope("model settings")
+        async with scope:
+            self._check_snapshot_service(MODEL_SETTINGS, self.settings)
             return await self._discover_new_connection(connection)
-        finally:
-            await lease.release()
 
     def _check_snapshot_service(
         self,
-        snapshot: object,
-        key: object,
+        key: ServiceKey[object],
         expected: object,
     ) -> None:
         """Reject a saved service used through another runtime snapshot."""
 
-        root = getattr(snapshot, "composition_root", None)
-        context = getattr(root, "context", None)
-        if (
-            context is None
-            or context.root_instance_token is not self.root_instance_token
-            or context.get(key) is not expected
-        ):
+        context = self.context
+        if context is None or context.root_instance_token is not self.root_instance_token:
             raise RuntimeError("models Service 不属于当前 runtime snapshot")
+        try:
+            context.require_runtime_owner(key, expected)
+        except (PermissionError, RuntimeError) as error:
+            raise RuntimeError("models Service 不属于当前 runtime snapshot") from error
+
+    def _capture_runtime_scope(self, operation: str):
+        context = self.context
+        if context is None:
+            raise RuntimeError(f"{operation} 缺少当前 task 的 runtime snapshot lease")
+        try:
+            return context.capture_runtime_scope()
+        except RuntimeError as error:
+            raise RuntimeError(
+                f"{operation} 缺少当前 task 的 runtime snapshot lease"
+            ) from error
 
     async def _apply_change(self, command: ModelChange) -> SettingsReceipt:
         if not self.sealed:

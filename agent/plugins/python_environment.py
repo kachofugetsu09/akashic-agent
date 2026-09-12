@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-from agent.plugins.archive import (
+from agent.plugin_composition.archive import (
     PluginArchive,
     encode_tree,
     tree_entries,

@@ -15,7 +15,7 @@ from agent.control.turn_scope import ToolGrant, TurnExecutionScope
 from agent.control.models import TurnItem, TurnItemKind, TurnStatus
 from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.control.timer import TimerHandle, TimerStatus
-from agent.tools.base import ToolExecutionContext
+from agent.tool_context import ToolExecutionContext
 from agent.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition.dashboard import DashboardContext
 from agent.plugin_composition.commands import (

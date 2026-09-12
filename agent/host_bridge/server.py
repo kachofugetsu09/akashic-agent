@@ -35,11 +35,11 @@ from agent.host_bridge.protocol import (
     require_nonnegative,
     require_names,
 )
-from agent.tools.unified_exec import ExecutionCleanupReport
-from agent.tools.unified_exec import ExecutionResult
-from agent.tools.unified_exec import ShellProcessManager
-from agent.tools.base import ToolResult
-from agent.tools.filesystem import (
+from agent.process_runtime import ExecutionCleanupReport
+from agent.process_runtime import ExecutionResult
+from agent.process_runtime import ShellProcessManager
+from agent.tool_catalog import ToolResult
+from agent.host_bridge.filesystem import (
     EditFileOperation,
     ListDirOperation,
     ReadFileOperation,

@@ -8,7 +8,8 @@ import tempfile
 import weakref
 from typing import TYPE_CHECKING
 
-from agent.skills import SkillIndex, SkillRecord, SkillsLoader
+from agent.plugin_composition.skills import SkillIndex, SkillRecord
+from agent.skills import SkillsLoader
 
 if TYPE_CHECKING:
     from agent.plugins.generation import PluginGeneration

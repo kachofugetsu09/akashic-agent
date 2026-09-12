@@ -65,7 +65,7 @@ async def apply(ctx, config):
 async def application(tmp_path):
     sources = tmp_path / "plugins"
     store, log = storage(tmp_path / "workspace")
-    for name in ("context", "tools"):
+    for name in ("content", "context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     prompt_sources(sources)
@@ -108,24 +108,24 @@ async def test_prompt_reads_veda_and_fixed_input_time_without_rewriting_messages
                 first = await view.prepare(original, source)
                 second = await view.prepare(original, source)
                 assert first == second
-                assert "唯一人格甲" in first.system_prompt
-                assert "load_skill" not in first.system_prompt
-                assert ("Telegram 渲染限制" in first.system_prompt) == (channel == "telegram_bot")
-                environment = next(part.text for part in first.reminders if part.name == "environment")
+                assert "唯一人格甲" in first["system_prompt"]
+                assert "load_skill" not in first["system_prompt"]
+                assert ("Telegram 渲染限制" in first["system_prompt"]) == (channel == "telegram_bot")
+                environment = next(part["text"] for part in first["reminders"] if part["name"] == "environment")
                 assert accepted.recorded_at.astimezone().isoformat() in environment
                 assert "input_id: input" in environment
                 assert "time_basis" in environment
                 assert ("channel_origin" in environment) == (channel is not None)
                 assert "Client Surface" not in str(first)
-                assert "example" in first.system_prompt
+                assert "example" in first["system_prompt"]
                 assert "非插件技能" not in str(first)
-                base_directory = next(line.removeprefix("资源目录：") for line in first.system_prompt.splitlines()
+                base_directory = next(line.removeprefix("资源目录：") for line in first["system_prompt"].splitlines()
                                       if line.startswith("资源目录："))
                 assert (Path(base_directory) / "resource.txt").read_text() == "resource-a"
-                assert "读取 resource.txt" in first.system_prompt
+                assert "读取 resource.txt" in first["system_prompt"]
                 (tmp_path / "workspace/memory/VEDA.md").write_text("唯一人格乙")
                 third = await view.prepare(original, source)
-                assert "唯一人格乙" in third.system_prompt and "唯一人格甲" in first.system_prompt
+                assert "唯一人格乙" in third["system_prompt"] and "唯一人格甲" in first["system_prompt"]
                 assert log.reader("s").snapshot() == original
 
 
@@ -253,7 +253,7 @@ async def test_default_reply_uses_prompt_and_real_skill_tool_with_provider_view(
         path.write_text(
             path.read_text().replace(
                 '"write_evidence", {})', '"load_skill", {"skill": "example"})'
-            )
+            ).replace('    await ctx.provide(ServiceKey("tools.cleanup.v1"), shell_cleanup)\n', '')
         )
 
     async with reply_application(tmp_path, replying=True, extra_sources=sources) as (log, host):
