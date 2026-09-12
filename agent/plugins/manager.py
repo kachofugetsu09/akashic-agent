@@ -32,6 +32,7 @@ from session.artifact_store import ArtifactStore
 from agent.plugins.config import read_config_source
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
+from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
 from agent.plugin_composition.messages import (
@@ -5752,6 +5753,22 @@ class PluginManager:
                 return tuple(index.records[key] for key in sorted(index.records))
 
             _ = await root.context.provide(SKILL_CATALOG, read_skill_catalog)
+        if INSTALLED_ASSETS in requested:
+            def read_installed_assets() -> tuple[InstalledAsset, ...]:
+                """读取当前 runtime scope 固定的原始声明资产树。"""
+                snapshot = get_current_runtime_snapshot()
+                current = snapshot.composition_root
+                if current is None or current.context.require(INSTALLED_ASSETS) is not read_installed_assets:
+                    raise RuntimeError("声明资产不属于当前 runtime scope")
+                catalog_id = snapshot.skill_catalog_generation_id
+                if catalog_id is None:
+                    raise RuntimeError("当前 snapshot 没有声明资产目录")
+                catalog = self._skill_host.get(catalog_id)
+                if catalog is None:
+                    raise RuntimeError("当前 snapshot 声明资产目录不可用")
+                return catalog.assets
+
+            _ = await root.context.provide(INSTALLED_ASSETS, read_installed_assets)
         if CREDENTIALS in requested:
             clients = CredentialClients(None if candidate or self._validation_only else {
                 generation.plugin_id: CoreProviderClientFactory(
@@ -6878,6 +6895,14 @@ class PluginManager:
         plugin_id: str,
         plugin_dir: Path,
     ) -> PluginContributions:
+        asset_roots = tuple(
+            (
+                category,
+                _resolve_declared_roots(plugin_dir, declared),
+            )
+            for category, declared in instance.asset_roots
+        )
+        asset_map = dict(asset_roots)
         return PluginContributions(
             manifest={
                 "name": instance.name,
@@ -6885,14 +6910,9 @@ class PluginManager:
                 "desc": instance.desc,
                 "author": instance.author,
             },
-            skill_roots=_resolve_declared_roots(
-                plugin_dir,
-                instance.skill_roots,
-            ),
-            drift_skill_roots=_resolve_declared_roots(
-                plugin_dir,
-                instance.drift_skill_roots,
-            ),
+            asset_roots=asset_roots,
+            skill_roots=asset_map.get("skills", ()),
+            drift_skill_roots=asset_map.get("drift_skills", ()),
             dashboard_module=_resolve_dashboard_module(
                 plugin_dir,
                 instance.dashboard_module,

@@ -10,17 +10,14 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context
+from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugin_composition.archive import PluginArchive
-from agent.plugin_composition.skills import (
-    SKILL_CATALOG,
-    SkillRecord,
-    skill_body,
-)
 from agent.plugin_contracts import ContentPart, Message
 from agent.plugin_contracts import json_value
 
 from ._materials_boundary import MATERIALS
 from ._tool_boundary import CallSource, TOOLS, ToolRef, ToolResultValue
+from .skill_catalog import SkillCatalogParser, SkillRecord, skill_body
 
 class SkillQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -98,9 +95,17 @@ class SkillTool:
 
 
 async def register_skills(ctx: Context) -> ToolRef:
-    """目录和工具共享已发布技能事实；工具绑定独自保存恢复材料。"""
+    """解析当前 generation 的固定资产，并让工具绑定独自保存恢复材料。"""
     archive_path = ctx.data_root / "skill-files"
-    read_catalog = ctx.require(SKILL_CATALOG)
+    read_assets = ctx.require(INSTALLED_ASSETS)
+    parser = SkillCatalogParser()
+    cached_catalog: tuple[SkillRecord, ...] | None = None
+
+    def read_catalog() -> tuple[SkillRecord, ...]:
+        nonlocal cached_catalog
+        if cached_catalog is None:
+            cached_catalog = parser.parse(read_assets())
+        return cached_catalog
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:

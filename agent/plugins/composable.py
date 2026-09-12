@@ -26,6 +26,7 @@ class ComposablePlugin:
     desc: str
     author: str
     inject: tuple[ServiceKey[object], ...]
+    asset_roots: tuple[tuple[str, tuple[str, ...]], ...]
     skill_roots: tuple[str, ...]
     drift_skill_roots: tuple[str, ...]
     workspace_roots: tuple[str, ...]
@@ -84,6 +85,11 @@ class ComposablePlugin:
             raise ValueError("v3 插件 is_active 必须是可调用对象")
         skill_roots = _string_tuple_export(module, "skill_roots")
         drift_skill_roots = _string_tuple_export(module, "drift_skill_roots")
+        asset_roots = _asset_roots_export(
+            module,
+            skill_roots=skill_roots,
+            drift_skill_roots=drift_skill_roots,
+        )
         workspace_roots = _workspace_roots_export(module)
         workspace_files = _workspace_files_export(module)
         dashboard_module = getattr(module, "dashboard_module", None)
@@ -118,6 +124,7 @@ class ComposablePlugin:
             desc=str(getattr(module, "desc", "")),
             author=str(getattr(module, "author", "")),
             inject=inject,
+            asset_roots=asset_roots,
             skill_roots=skill_roots,
             drift_skill_roots=drift_skill_roots,
             workspace_roots=workspace_roots,
@@ -227,6 +234,51 @@ def _string_tuple_export(module: ModuleType, name: str) -> tuple[str, ...]:
     if len(set(typed)) != len(typed):
         raise ValueError(f"v3 插件 {name} 不得重复")
     return typed
+
+
+def _asset_roots_export(
+    module: ModuleType,
+    *,
+    skill_roots: tuple[str, ...],
+    drift_skill_roots: tuple[str, ...],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """读取通用资产声明，并把旧技能字段固定转换成两个类别。"""
+
+    raw = getattr(module, "asset_roots", None)
+    if raw is None:
+        entries: dict[str, tuple[str, ...]] = {}
+        if skill_roots:
+            entries["skills"] = skill_roots
+        if drift_skill_roots:
+            entries["drift_skills"] = drift_skill_roots
+        return tuple(sorted(entries.items()))
+    if skill_roots or drift_skill_roots:
+        raise ValueError("v3 插件不能同时声明 asset_roots 与旧 skill_roots")
+    if not isinstance(raw, Mapping):
+        raise ValueError("v3 插件 asset_roots 必须是类别到路径序列的映射")
+    entries: list[tuple[str, tuple[str, ...]]] = []
+    for raw_category, raw_paths in cast(Mapping[object, object], raw).items():
+        if (
+            not isinstance(raw_category, str)
+            or not raw_category
+            or raw_category.strip() != raw_category
+        ):
+            raise ValueError("v3 插件 asset_roots 类别必须是非空字符串")
+        if not isinstance(raw_paths, (tuple, list)):
+            raise ValueError(f"v3 插件 asset_roots[{raw_category}] 必须是字符串序列")
+        paths = cast(tuple[object, ...] | list[object], raw_paths)
+        if any(
+            not isinstance(path, str) or not path or path.strip() != path
+            for path in paths
+        ):
+            raise ValueError(f"v3 插件 asset_roots[{raw_category}] 包含无效路径")
+        typed_paths = tuple(cast(str, path) for path in paths)
+        if len(set(typed_paths)) != len(typed_paths):
+            raise ValueError(f"v3 插件 asset_roots[{raw_category}] 不得重复路径")
+        entries.append((raw_category, typed_paths))
+    if len({category for category, _ in entries}) != len(entries):
+        raise ValueError("v3 插件 asset_roots 类别不得重复")
+    return tuple(sorted(entries))
 
 
 def _contract_digests_export(module: ModuleType) -> tuple[tuple[str, str], ...]:

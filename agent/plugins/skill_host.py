@@ -8,6 +8,7 @@ import tempfile
 import weakref
 from typing import TYPE_CHECKING
 
+from agent.plugin_composition.assets import InstalledAsset
 from agent.plugin_composition.skills import SkillIndex, SkillRecord
 from agent.skills import SkillsLoader
 
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
 class PreparedSkillCatalog:
     generation_id: str
     snapshot: SkillSnapshot
+    assets: tuple[InstalledAsset, ...]
     normal: SkillIndex
     drift: SkillIndex
     normal_plugins: SkillIndex
@@ -90,6 +92,10 @@ class PluginSkillHost:
                 snapshot_root / "drift",
                 drift_roots,
             )
+            assets = (
+                *self._build_assets(frozen_normal, category="skills"),
+                *self._build_assets(frozen_drift, category="drift_skills"),
+            )
             normal = SkillsLoader(
                 workspace,
                 plugin_roots=frozen_normal,
@@ -123,6 +129,7 @@ class PluginSkillHost:
         catalog = PreparedSkillCatalog(
             generation_id=generation_id,
             snapshot=snapshot,
+            assets=assets,
             normal=normal,
             drift=drift,
             normal_plugins=normal_plugins,
@@ -185,6 +192,20 @@ class PluginSkillHost:
                 copies.append(target)
             frozen[plugin_id] = tuple(copies)
         return frozen
+
+    @staticmethod
+    def _build_assets(
+        frozen_roots: dict[str, tuple[Path, ...]],
+        *,
+        category: str,
+    ) -> tuple[InstalledAsset, ...]:
+        """将已固定的声明目录发布为不解释内容的资产原子。"""
+
+        return tuple(
+            InstalledAsset(owner_id=plugin_id, category=category, root_dir=root)
+            for plugin_id, roots in sorted(frozen_roots.items())
+            for root in roots
+        )
 
     @staticmethod
     def _freeze_index(snapshot_dir: Path, index: SkillIndex) -> SkillIndex:
