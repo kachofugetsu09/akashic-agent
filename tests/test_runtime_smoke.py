@@ -1012,59 +1012,12 @@ def test_init_workspace_leaves_markdown_profiles_to_plugin(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_start_channels_wires_telegram_qq_and_extra_channel(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_start_channels_only_hosts_explicit_core_channels(
     tmp_path: Path,
 ) -> None:
     starts: list[str] = []
     attachment_roots: list[Path] = []
     mobile_catalogs: list[list[tuple[str, str]]] = []
-    fake_telegram = types.ModuleType("infra.channels.telegram_channel")
-    fake_qq = types.ModuleType("infra.channels.qq_channel")
-
-    class _TelegramChannel:
-        def __init__(self, **kwargs: object) -> None:
-            self.kwargs = kwargs
-            self.name = str(kwargs.get("channel_name") or "telegram")
-
-        async def start(self, ctx: Any) -> None:
-            starts.append("telegram")
-
-        async def stop(self) -> None:
-            starts.append("telegram.stop")
-
-        async def send(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_stream(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_file(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_image(self, *args: object, **kwargs: object) -> None:
-            return None
-
-    class _QQChannel:
-        name = "qq"
-
-        def __init__(self, **kwargs: object) -> None:
-            self.kwargs = kwargs
-
-        async def start(self, ctx: Any) -> None:
-            starts.append("qq")
-
-        async def stop(self) -> None:
-            starts.append("qq.stop")
-
-        async def send(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_file(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def send_image(self, *args: object, **kwargs: object) -> None:
-            return None
 
     class _PluginChannel:
         name = "plugin"
@@ -1081,28 +1034,11 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
         async def send(self, *args: object, **kwargs: object) -> None:
             return None
 
-    fake_telegram.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
-    fake_qq.QQChannel = _QQChannel  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram)
-    monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq)
-
-    config = Config(
-        channels=ChannelsConfig(
-            telegram=TelegramChannelConfig(token="tg-token", allow_from=["1"]),
-            qq=QQChannelConfig(
-                bot_uin="10001",
-                allow_from=["2"],
-                groups=[QQGroupConfig(group_id="3")],
-            ),
-        ),
-    )
     resources = SharedHttpResources()
     event_bus = EventBus()
     host = await start_channels(
-        config,
         bus=cast(Any, object()),
         workspace=tmp_path,
-        identities=cast(Any, object()),
         http_resources=resources,
         event_bus=event_bus,
         command_catalog_provider=lambda: (("shared", "统一目录"),),
@@ -1111,14 +1047,8 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
     try:
         await host.start_all()
 
-        telegram, qq, plugin = host.channels
-        assert starts == ["telegram", "qq", "plugin"]
-        assert telegram.kwargs["event_bus"] is event_bus
-        assert "interrupt_controller" not in telegram.kwargs
-        assert telegram.kwargs["command_catalog_provider"]() == (
-            ("shared", "统一目录"),
-        )
-        assert "interrupt_controller" not in qq.kwargs
+        (plugin,) = host.channels
+        assert starts == ["plugin"]
         assert plugin.name == "plugin"
         assert attachment_roots == [tmp_path / "uploads"]
         assert mobile_catalogs == [[("shared", "统一目录")]]
@@ -1129,16 +1059,11 @@ async def test_start_channels_wires_telegram_qq_and_extra_channel(
 
 @pytest.mark.asyncio
 async def test_start_channels_skips_unfilled_optional_channels(tmp_path: Path) -> None:
-    config = Config(
-        channels=ChannelsConfig(telegram=None, qq=None),
-    )
     resources = SharedHttpResources()
     try:
         host = await start_channels(
-            config,
             bus=cast(Any, object()),
             workspace=tmp_path,
-            identities=cast(Any, object()),
             http_resources=resources,
             event_bus=EventBus(),
         )
