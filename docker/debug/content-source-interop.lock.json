@@ -88,10 +88,10 @@
       "id": "github-watch",
       "repository": "https://github.com/kachofugetsu09/github-watch.git",
       "branch": "codex/github-watch-tools-v1-20260912",
-      "resolved_sha": "272909109ed413de1dc9d79e720bac4ad1816158",
+      "resolved_sha": "8cf37b9be111f33a01b6b868914f5a1494494b5f",
       "pull_request": "https://github.com/kachofugetsu09/github-watch/pull/7",
       "role": "programmatic_turn_producer",
-      "atoms": ["TIMERS", "tools.v1", "programmatic.v1", "turn.after_committed"],
+      "atoms": ["TIMERS", "tools.v1", "programmatic.v1"],
       "test_cwd": ".",
       "cases": [
         "tests/test_plugin_runtime.py",
