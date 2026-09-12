@@ -1,3 +1,4 @@
+from plugins.content.plugin import CONTENT
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -61,6 +62,7 @@ from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall
 from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
+from plugins.content.plugin import CONTENT
 from plugins.models.content import MODEL_CONTENT, ContentOwner
 from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.state import _BoundChat
@@ -83,7 +85,7 @@ async def apply(ctx, config):
     control = CONTROLS[CONTROL_PATH]
     async def embed(texts):
         return [[1.0, 0.0] for _ in texts]
-    await ctx.provide(SEMANTIC_INTEREST, SemanticInterest(Learning(ctx.require(TURN_PROJECTION), owner="akasha"),
+    await ctx.provide(SEMANTIC_INTEREST, SemanticInterest(Learning(ctx.require(TURN_PROJECTION), owner="akasha", post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect),
         ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS),
         lambda: (LearningConfig(embedding_model="fixture", dimension=2, sources=("conversation",)), embed)))
     @asynccontextmanager
@@ -434,13 +436,17 @@ async def test_runtime_timer_captures_original_drift_and_records_real_completion
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("can_retry", [False, True])
-async def test_model_failure_keeps_real_control_and_original_retry_classification(tmp_path, can_retry):
+@pytest.mark.parametrize("failure", ["authentication", "rate_limit", "budget"])
+async def test_model_failure_keeps_real_control_and_original_retry_classification(tmp_path, failure):
     from agent.plugin_composition.models import AuthenticationError, RateLimitError
     from plugins.wake.request import retryable
     from session.message import Control
     async with application(tmp_path) as (host, log, ctx, source, control):
-        control["failure"] = (RateLimitError if can_retry else AuthenticationError)("provider refused")
+        can_retry = failure == "rate_limit"
+        if failure == "budget":
+            control["tool"] = "unavailable_tool"
+        else:
+            control["failure"] = (RateLimitError if can_retry else AuthenticationError)("provider refused")
         now = datetime.now(timezone.utc)
         ctx.require(DRIFT_PROPOSALS).propose("duty", "1", {"summary": "try once"}, now, next_due=now + timedelta(minutes=5))
         original = request(ctx, "drift", now, proposals=ctx.require(DRIFT_WAKE).snapshot(now)["proposals"])
@@ -450,7 +456,7 @@ async def test_model_failure_keeps_real_control_and_original_retry_classificatio
         rows = log.reader(original.session_id).snapshot()
         assert isinstance(rows[-1].body, Control) and retryable(rows[-1]) is can_retry
         assert bool(ctx.require(DRIFT_WAKE).snapshot(now)["proposals"]) is can_retry
-        assert not control["sent"] and len(control["calls"]) == 1
+        assert not control["sent"] and len(control["calls"]) == (40 if failure == "budget" else 1)
         assert await source.start(original.flow_id) is None
 
 
@@ -520,7 +526,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
         assert control["models"] == [("chosen-original", "high")]
         phase = log.reader(original.session_id).get(original.phase_id("drift"))
         assert phase is not None
-        cue = Learning(ctx.require(TURN_PROJECTION), owner="akasha").text(phase)
+        cue = Learning(ctx.require(TURN_PROJECTION), owner="akasha", post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect).text(phase)
         assert "my interests" in cue
         assert str(control["calls"][0].messages).count("my interests") == 1
 

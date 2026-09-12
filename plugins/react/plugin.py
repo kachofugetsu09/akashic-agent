@@ -15,6 +15,7 @@ from agent.plugin_composition.models import (
     EmptyResponseError,
     LLMResponse,
     ModelRequest,
+    ModelError,
     StreamCallback,
 )
 from agent.plugin_composition.messages import MessageReader, MessageWriter
@@ -80,7 +81,7 @@ inject = ()
 Preview = Callable[[str], AbstractContextManager[StreamCallback]]
 
 
-class StepLimit(RuntimeError):
+class StepLimit(ModelError):
     """本次程序达到明确的模型请求上限，保留日志供来源继续控制。"""
 
 

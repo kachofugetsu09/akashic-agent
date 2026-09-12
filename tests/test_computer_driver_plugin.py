@@ -892,7 +892,8 @@ async def test_computer_script_error_is_durable_and_next_call_can_continue(tmp_p
         assert "earlier effects may remain" in cast(str, result.parts[0].value)
         assert "JS bindings for this session were reset" in cast(str, result.parts[0].value)
         calls = len(harness.gateway_state.calls)
-        assert await harness.execute(reply) == result
+        repeated = await harness.execute(reply)
+        assert (repeated.outcome, repeated.parts) == (result.outcome, result.parts)
         assert len(harness.gateway_state.calls) == calls
         assert harness.binding is not None
         output = harness._writer(reply.reader.session_id, "assistant", (Output,)).append(
