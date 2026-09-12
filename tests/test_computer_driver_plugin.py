@@ -23,6 +23,7 @@ from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, MessageCatalog, OwnerState
 from agent.plugins.archive import PluginArchive
 from agent.plugin_composition.mcp_slots import PluginMcpServers, _freeze_plugin_mcp_servers
+from plugins.content import plugin as content_plugin
 from plugins.tools import plugin as tools_plugin
 from plugins.tools.api import MessageReply
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
@@ -88,6 +89,14 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
         await root.context.provide(key, value)
     path = Path(plugin.__file__).parent
     try:
+        await root.mount(
+            lambda ctx: content_plugin.apply(ctx, {}),
+            name="content", inject=content_plugin.inject,
+            runtime=PluginRuntime(
+                plugin_id="content", generation_id="content-services", plugin_dir=path.parent / "content",
+                data_dir=tmp_path / "content-data", workspace=tmp_path, config={},
+            ),
+        )
         await root.mount(
             lambda ctx: tools_plugin.apply(ctx, {}),
             name="tools",
@@ -586,7 +595,7 @@ async def _computer_harness(tmp_path: Path, *, log: MessageLog | None = None,
     source_root = tmp_path / "computer-plugins"
     repo_plugins = Path(plugin.__file__).parent.parent
     source_root.mkdir(exist_ok=True)
-    for name in ("tools", "turn_projection", "computer"):
+    for name in ("content", "tools", "turn_projection", "computer"):
         destination = source_root / name
         if not destination.exists():
             shutil.copytree(

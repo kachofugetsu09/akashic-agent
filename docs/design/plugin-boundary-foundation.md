@@ -339,3 +339,19 @@ Core-only 缺少模型能力时返回 unavailable，不能以空目录冒充成�
 
 本层仍是分阶段实施：记忆插件局部边界中的摘要区间与结算前缀重复算法需在下一层归还
 唯一 owner；其余渠道与 Core 迁移导入尚未收口。当前结果不代表完整外部组合验收。
+
+
+### 9.14 来源策略与原效果选择
+
+scheduler、subagent、plugin_update 与 Computer 消费各自实际需要的局部结构，不导入
+Tools、Delivery、Conversation 或 Turn projection 实现。Tools 提供原 binding 的配置派生，
+调度只提交目的地映射；子任务与更新请求保存自己的输入记录，发送时由 Delivery 校验。
+原任务 ID、工具目录、发送 binding、未知回执及内部学习排除语义保持原样。
+
+`delivery.input-origin.v1` 发布原策略的已接纳输入读取；`tools.bind-saved.v1` 发布原归档
+派生操作；工具调用前缀暴露既有 effect key，restart 不自行重造该身份。
+Tools 的 abandon 监听明确声明 Content 依赖，缺少 owner 在装配时失败，不能延迟到停止时。
+
+测试比较跨归档结果的 outcome 与 parts，不要求两次加载拥有同一个 Python class。
+Markdown 只读材料不应强制依赖摘要学习能力；该合法组合的现有回归仍需随下一层记忆
+owner 修复关闭。Core 历史升级与通道入口、Wake 和完整外部分发验收继续实施。

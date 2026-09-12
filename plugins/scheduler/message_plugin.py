@@ -14,10 +14,10 @@ from agent.plugin_composition.timers import TIMERS
 
 
 
-from plugins.delivery.plugin import DELIVERY
+from .inputs import CONTENT, DELIVERY, DELIVERY_SENDERS
 
 
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
+from .inputs import ALL_TOOLS, TOOLS
 
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import Message
@@ -39,6 +39,8 @@ desc = "持久调度，按原触发恢复内部消息与最终通知"
 
 
 inject = (
+    CONTENT,
+    DELIVERY_SENDERS,
     TIMERS,
     TOOLS,
     ALL_TOOLS,
@@ -60,8 +62,8 @@ async def apply(ctx: Context, config: Config) -> None:
     store = JobStore(ctx.workspace_file("schedules.json"))
     _ = await ctx.provide(SCHEDULER_INSPECTION, SchedulerInspectionProvider(store))
     watcher: asyncio.Task[None] | None = None
-    tool_view = ToolView(())
     catalog = ctx.require(TOOLS)
+    tool_view = catalog.view()
     _ = await catalog.declare_group(ctx, description=desc)
 
     for action, schema, description in (

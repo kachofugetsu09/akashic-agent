@@ -18,7 +18,6 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.control.frame_book import CONTROL_FRAMES, FrameBook, FrameClaim, FrameRouteReleased
 from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
-from plugins.tools.api import durable_call_key
 from agent.plugin_contracts import ContentPart, Message
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult as ToolMessageResult, freeze_json
@@ -98,7 +97,7 @@ class RestartTool(BoundTool):
             raise TypeError("agent_restart 参数必须是对象")
         pending = PendingRestart(
             source.call_ref,
-            durable_call_key(source.call_ref),
+            source.effect_key,
             cast(Mapping[str, object], final_arguments),
         )
         current = self._prepared

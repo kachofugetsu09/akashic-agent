@@ -5,16 +5,23 @@ import json
 from collections.abc import Mapping
 from dataclasses import asdict
 
+from typing_extensions import TypedDict
+
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
-from plugins.delivery.api import Sink
-from plugins.delivery_policy.plugin import input_origin
-from plugins.tools.api import CallSource, Result
+from .inputs import INPUT_ORIGIN
+from .inputs import CallSource, Result
 from agent.plugin_contracts import ContentPart
 from agent.plugin_contracts import json_value
+
+
+class SinkInput(TypedDict):
+    name: str
+    binding_id: str
+    address: str
 
 
 class InstallInput(BaseModel):
@@ -32,7 +39,7 @@ class Request(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     install: InstallInput
     session_id: str = Field(min_length=1)
-    sink: Sink | None
+    sink: SinkInput | None
 
 
 def update_id(key: str) -> str:
@@ -63,7 +70,7 @@ class InstallPlugin:
             return '插件更新需要实际发起消息'
         message = source.messages[-1]
         reader = self._ctx.require(MESSAGE_CATALOG).reader(message.session_id)
-        route = input_origin(reader, message.source, through_seq=message.seq)
+        route = self._ctx.require(INPUT_ORIGIN)(reader, message.source, through_seq=message.seq)
         sink = None
         if route is not None:
             name, address = route
@@ -71,7 +78,7 @@ class InstallPlugin:
                 binding = self._senders[name]
             except KeyError as error:
                 return f'发起渠道没有可恢复发送者：{name}'
-            sink = Sink(name=name, binding_id=binding, address=address)
+            sink = SinkInput(name=name, binding_id=binding, address=address)
         return Request(install=install, session_id=message.session_id, sink=sink).model_dump(mode="json")
 
     async def invoke(self, key: str, arguments: Mapping[str, object]) -> Result:

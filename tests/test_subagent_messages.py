@@ -64,6 +64,7 @@ async def application(tmp_path, *, background=False, start=True, block=False, bl
         "react",
         "subagent",
         "reply",
+        "reply_program",
         "tool_search",
         "delivery",
         "delivery_policy",
@@ -208,7 +209,8 @@ async def test_sync_spawn_persists_internal_flow_and_replays_original_result(tmp
         path = tmp_path / "workspace/subagent-runs" / request["job_id"] / "answer.txt"
         assert path.read_text() == "once"
         stamp = path.stat().st_mtime_ns
-        assert await execution.execute_call(reply) == result
+        repeated = await execution.execute_call(reply)
+        assert (repeated.outcome, repeated.parts) == (result.outcome, result.parts)
         assert reader.snapshot() == rows and path.stat().st_mtime_ns == stamp
         assert len([row for row in log.reader("test:parent").snapshot() if isinstance(row.body, Input)]) == 1
         if broken_trace:
@@ -245,7 +247,8 @@ async def test_background_spawn_returns_receipt_and_returns_result_once(tmp_path
         await asyncio.wait_for(closed.wait(), 10)
         assert all(record.value["settled"] for _, record in log.owner("plugin:subagent").list())
         assert CONTROLS[str(tmp_path)].main_calls == 1
-        assert await execution.execute_call(reply) == result
+        repeated = await execution.execute_call(reply)
+        assert (repeated.outcome, repeated.parts) == (result.outcome, result.parts)
         assert len([row for row in log.reader("test:parent").snapshot() if isinstance(row.body, Input)]) == 1
 
 

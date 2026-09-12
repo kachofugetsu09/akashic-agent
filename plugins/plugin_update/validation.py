@@ -11,12 +11,12 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task
-from plugins.content.plugin import check_text
+from .inputs import CONTENT
 
 
 
 
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
+from .inputs import ALL_TOOLS, TOOLS
 
 from agent.plugin_composition.messages import SessionAttributes
 from agent.plugin_contracts import ContentPart, Input, Message, Output
@@ -55,15 +55,13 @@ class Validation:
             author="plugin_update",
             source="plugin_update",
             body_types=(Input,),
-            content={"text": check_text},
+            content={"text": ctx.require(CONTENT).check_text},
         )(session_id)
         available = ctx.require(ALL_TOOLS)()
         view = (
             available
             if request.validation_tools is None
-            else ToolView(
-                tuple(available.select(name) for name in request.validation_tools)
-            )
+            else ctx.require(TOOLS).view(*(available.select(name) for name in request.validation_tools))
         )
         names = frozenset(ref.name for ref in view.refs)
         _ = writer.append(

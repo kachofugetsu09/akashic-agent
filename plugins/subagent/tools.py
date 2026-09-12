@@ -10,13 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
-from plugins.delivery.api import Sink
-from plugins.tools.api import CallSource, Result
-from plugins.tools.plugin import TOOLS, bind_saved_tool
+from .inputs import CallSource, Result, TOOL_BIND_SAVED
 from agent.plugin_contracts import ContentPart, Input
 from agent.plugin_contracts import json_value
 
-from .request import PROFILE_TOOLS, Request, SpawnInput
+from .request import PROFILE_TOOLS, Request, SpawnInput, SinkInput
 from .runtime import SUBAGENT_PROGRAM, SubagentBusy, Subagents, completion
 
 
@@ -67,7 +65,7 @@ class Spawn:
             assert origin is not None
             if origin["channel"] not in self.senders:
                 return '后台子任务的原渠道没有发送能力'
-            sink = Sink(name=origin["channel"], binding_id=self.senders[origin["channel"]], address=origin["chat_id"])
+            sink = SinkInput(name=origin["channel"], binding_id=self.senders[origin["channel"]], address=origin["chat_id"])
         job_id = uuid4().hex
         task_dir = self.ctx.workspace_root("subagent-runs") / job_id
         names = PROFILE_TOOLS[args.profile]
@@ -86,7 +84,7 @@ class Spawn:
             if configuration is None:
                 fixed[name] = self.targets[name]
             else:
-                fixed[name] = await bind_saved_tool(
+                fixed[name] = await self.ctx.require(TOOL_BIND_SAVED)(
                     bindings,
                     self.targets[name],
                     configuration=configuration,

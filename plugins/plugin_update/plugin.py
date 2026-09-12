@@ -13,10 +13,10 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES, UpdateStatus
 from agent.plugin_composition.tasks import TASKS
-from plugins.content.plugin import check_text
-from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
+from .inputs import CONTENT
+from .inputs import DELIVERY, INPUT_ORIGIN
+from .inputs import DELIVERY_SENDERS
+from .inputs import ALL_TOOLS, TOOLS
 from agent.plugin_contracts import ContentPart, Output
 from agent.plugin_contracts import json_value
 
@@ -31,6 +31,8 @@ name = "plugin_update"
 version = "1.0.0"
 desc = "按实际要求验证候选，排空后发布，并用原渠道报告结果"
 inject = (
+    CONTENT,
+    INPUT_ORIGIN,
     REPLY_EXECUTE,
     PLUGIN_UPDATES,
     TOOLS,
@@ -69,7 +71,7 @@ async def apply(ctx: Context, config: Config) -> None:
             raise ValueError("plugin_install 不接收 binding 配置")
         return ctx.require(DELIVERY_SENDERS).bind_all(ctx.require(BINDINGS))
 
-    install_ref = await catalog.register(
+    _ = await catalog.register(
         ctx,
         name="plugin_install",
         description="安装或更新插件，并按 validation_prompt 验证后发布；稍后单独报告结果",
@@ -79,7 +81,6 @@ async def apply(ctx: Context, config: Config) -> None:
         idempotent=False,
         risk="external-side-effect",
     )
-    _ = install_ref
     _ = await ctx.provide(
         PLUGIN_VALIDATION,
         Validation(
@@ -122,7 +123,7 @@ async def apply(ctx: Context, config: Config) -> None:
                     raise ValueError("原插件更新报告不是 Output")
                 body = previous.body
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="plugin_update", source="plugin_update",
-                body_types=(Output,), content={"text": check_text})(request.session_id)
+                body_types=(Output,), content={"text": ctx.require(CONTENT).check_text})(request.session_id)
             try:
                 delivery = ctx.require(DELIVERY).open(ctx)
                 sinks = () if request.sink is None else (request.sink,)

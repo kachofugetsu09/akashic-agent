@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
-from plugins.tools.api import CallSource, Result
+from .inputs import Result
 from agent.plugin_contracts import ContentPart
 
 from .schedule import ScheduledJob, compute_fire_at, is_cron_expr, parse_duration
@@ -87,7 +87,7 @@ class ScheduleTool:
         self._kind = kind
         self._now = now
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
+    async def prepare(self, arguments: Mapping[str, object], source: object | None = None) -> Mapping[str, object] | str:
         """最终 ID、时间与取消集合在 Tool 的 prepared 回执里固定，不在 invoke 重算。"""
         if self._kind == "cancel":
             try:
@@ -157,7 +157,7 @@ class ListSchedules:
     def __init__(self, store: JobStore):
         self._store = store
 
-    async def prepare(self, arguments: Mapping[str, object], source: CallSource | None = None) -> Mapping[str, object] | str:
+    async def prepare(self, arguments: Mapping[str, object], source: object | None = None) -> Mapping[str, object] | str:
         if arguments:
             return 'list_schedules 不接收参数'
         return {}

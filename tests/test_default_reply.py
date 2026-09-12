@@ -31,7 +31,8 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         "conversation",
         "react",
         "turn_projection",
-        *(("reply", "reply_program", "tool_search") if replying else ()),
+        "reply_program",
+        *(("reply", "tool_search") if replying else ()),
     ):
         shutil.copytree(
             Path(__file__).parents[1] / "plugins" / name,

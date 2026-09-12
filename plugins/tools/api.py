@@ -69,6 +69,10 @@ class CallSource:
     call_ref: CallRef
     messages: tuple[Message, ...]
 
+    @property
+    def effect_key(self) -> str:
+        return durable_call_key(self.call_ref)
+
 
 @dataclass(frozen=True, slots=True)
 class MessageReply:
