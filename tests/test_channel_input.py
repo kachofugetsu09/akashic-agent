@@ -78,10 +78,13 @@ class Custody(MessageBus):
 @asynccontextmanager
 async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recover=True, artifacts=None, inbound_store=None, admissions=None, durable_identities=False):
     sources = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).parents[1] / "plugins/conversation", sources / "conversation",
-                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
-    shutil.copytree(Path(__file__).parents[1] / "plugins/sources", sources / "sources",
-                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
+    for name in ("content", "models", "conversation", "sources"):
+        shutil.copytree(
+            Path(__file__).parents[1] / "plugins" / name,
+            sources / name,
+            ignore=shutil.ignore_patterns("__pycache__"),
+            dirs_exist_ok=True,
+        )
     log = MessageLog(tmp_path / "sessions.db")
     identity_store = ChannelIdentities(tmp_path / "sessions.db") if durable_identities else None
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
