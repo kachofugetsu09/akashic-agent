@@ -408,6 +408,7 @@ async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
     assert isinstance(rejected, str) and "只能包含 reason" in rejected
     assert tool._prepared is None
     prepared = await tool.prepare({"reason": " reload "}, source)
+    assert isinstance(prepared, Mapping)
     pending = tool._prepared
     assert pending is not None
     assert prepared == {"reason": "reload"}

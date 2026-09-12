@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -88,12 +89,13 @@ async def test_core_passes_through_scheduler_projection_without_reading_workspac
     from agent.plugin_composition import CompositionRoot
     from agent.plugin_composition.rpc import rpc_method_key
     from plugins.runtime_inspection.rpc import rpc_methods
+    from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
     from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, get_current_runtime_snapshot
 
     root = CompositionRoot("scheduler-inspection")
     provider = _Provider()
     async def apply(ctx):
-        for method, operation in rpc_methods(provider).items():
+        for method, operation in rpc_methods(cast(RuntimeInspectionProvider, provider)).items():
             await ctx.provide(rpc_method_key(method), operation)
     await root.mount(apply, name="external-scheduler")
     store = RuntimeSnapshotStore()
@@ -121,6 +123,7 @@ async def test_core_does_not_swallow_scheduler_provider_failure(tmp_path: Path) 
     from agent.plugin_composition import CompositionRoot
     from agent.plugin_composition.rpc import rpc_method_key
     from plugins.runtime_inspection.rpc import rpc_methods
+    from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
     from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 
     class BrokenProvider:
@@ -132,7 +135,7 @@ async def test_core_does_not_swallow_scheduler_provider_failure(tmp_path: Path) 
 
     root = CompositionRoot("scheduler-inspection-failure")
     async def apply(ctx):
-        for method, operation in rpc_methods(BrokenProvider()).items():
+        for method, operation in rpc_methods(cast(RuntimeInspectionProvider, BrokenProvider())).items():
             await ctx.provide(rpc_method_key(method), operation)
     await root.mount(apply, name="external-scheduler")
     store = RuntimeSnapshotStore()

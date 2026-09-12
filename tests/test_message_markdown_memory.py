@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from typing import Literal, cast
 import shutil
 from pathlib import Path
@@ -17,11 +18,24 @@ from plugins.content.plugin import check_text
 from plugins.context.api import check_summary
 from plugins.context.plugin import ContextBuilder
 from plugins.context.materials import MATERIALS
-from plugins.markdown_memory._boundaries import COMPACTION_READER, CONTENT, CONTEXT
-from plugins.turn_projection.plugin import TURN_PROJECTION
+from plugins.markdown_memory._boundaries import (
+    COMPACTION_READER,
+    CONTENT,
+    CONTEXT,
+    CompactionReader as MarkdownCompactionReader,
+    TURN_PROJECTION,
+)
 from plugins.markdown_memory.store import MarkdownProfileStore
 from session.log import MessageLog, SessionAttributes
 from session.message import ContentPart, Input, Output
+
+
+def _system_prompt(material: Mapping[str, object]) -> str:
+    """读取并窄化 markdown 材料中的系统提示。"""
+    value = material["system_prompt"]
+    if not isinstance(value, str):
+        raise AssertionError("system_prompt 必须是字符串")
+    return value
 
 
 @asynccontextmanager
@@ -321,7 +335,7 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                 prepared = await materials.prepare(log.reader("s").snapshot(), "conversation")
-                assert "fact-two" in prepared["system_prompt"]
+                assert "fact-two" in _system_prompt(prepared)
         await record_use(log, host, used, "duplicate-use", "complete")
     async with application(tmp_path, start=True) as (log, host):
         await wait_applied(tmp_path, host, used.reference)
@@ -545,8 +559,9 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                     prepared = await asyncio.wait_for(materials.prepare((), "conversation"), 1)
-                assert before[1].strip() in prepared["system_prompt"]
-                assert "fact-one" not in prepared["system_prompt"]
+                prompt = _system_prompt(prepared)
+                assert before[1].strip() in prompt
+                assert "fact-one" not in prompt
             assert (store.read_memory(), store.read_self(), store.read_writes(None, 100)) == before
             if cancel_first:
                 first.cancel()
@@ -592,7 +607,7 @@ async def test_an_update_lock_alone_does_not_create_a_partial_profile_state(tmp_
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             async with snapshot.composition_root.context.require(MATERIALS).bind() as materials:
                 prepared = await materials.prepare((), "conversation")
-        assert "# Akashic 的自我认知" in prepared["system_prompt"]
+        assert "# Akashic 的自我认知" in _system_prompt(prepared)
         assert tuple(path.parent.iterdir()) == (path,)
 
 
@@ -821,12 +836,12 @@ async def test_profile_batches_keep_whole_turns_and_write_only_after_all_succeed
             with pytest.raises(TransportError, match="second batch"):
                 await prepare_profile_draft(
                     groups, before[0], before[1], models,
-                    compaction=compaction, is_user_input=is_user_input,
+                    compaction=cast(MarkdownCompactionReader, compaction), is_user_input=is_user_input,
                 )
         else:
             draft = await prepare_profile_draft(
                 groups, before[0], before[1], models,
-                compaction=compaction, is_user_input=is_user_input,
+                compaction=cast(MarkdownCompactionReader, compaction), is_user_input=is_user_input,
             )
             assert draft["memory_before"] == before[0]
             assert isinstance(draft["memory"], str)

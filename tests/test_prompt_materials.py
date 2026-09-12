@@ -26,6 +26,29 @@ from session.artifact_store import ArtifactStore
 from session.message import ContentPart, Input, Output, ToolResult
 
 
+def _system_prompt(material: Mapping[str, object]) -> str:
+    """读取并窄化 prompt 材料中的系统提示。"""
+    value = material["system_prompt"]
+    if not isinstance(value, str):
+        raise AssertionError("system_prompt 必须是字符串")
+    return value
+
+
+def _environment_reminder(material: Mapping[str, object]) -> str:
+    """读取并窄化 prompt 材料中的 environment 提醒。"""
+    reminders = material["reminders"]
+    if not isinstance(reminders, (list, tuple)):
+        raise AssertionError("reminders 必须是列表")
+    for reminder in reminders:
+        if not isinstance(reminder, Mapping) or reminder.get("name") != "environment":
+            continue
+        value = reminder.get("text")
+        if not isinstance(value, str):
+            raise AssertionError("environment reminder 文本必须是字符串")
+        return value
+    raise AssertionError("缺少 environment reminder")
+
+
 def prompt_sources(sources):
     for name in ("prompt", "standard_tools"):
         shutil.copytree(
@@ -109,24 +132,26 @@ async def test_prompt_reads_veda_and_fixed_input_time_without_rewriting_messages
                 first = await view.prepare(original, source)
                 second = await view.prepare(original, source)
                 assert first == second
-                assert "唯一人格甲" in first["system_prompt"]
-                assert "load_skill" not in first["system_prompt"]
-                assert ("Telegram 渲染限制" in first["system_prompt"]) == (channel == "telegram_bot")
-                environment = next(part["text"] for part in first["reminders"] if part["name"] == "environment")
+                first_prompt = _system_prompt(first)
+                assert "唯一人格甲" in first_prompt
+                assert "load_skill" not in first_prompt
+                assert ("Telegram 渲染限制" in first_prompt) == (channel == "telegram_bot")
+                environment = _environment_reminder(first)
                 assert accepted.recorded_at.astimezone().isoformat() in environment
                 assert "input_id: input" in environment
                 assert "time_basis" in environment
                 assert ("channel_origin" in environment) == (channel is not None)
                 assert "Client Surface" not in str(first)
-                assert "example" in first["system_prompt"]
+                assert "example" in first_prompt
                 assert "非插件技能" not in str(first)
-                base_directory = next(line.removeprefix("资源目录：") for line in first["system_prompt"].splitlines()
+                base_directory = next(line.removeprefix("资源目录：") for line in first_prompt.splitlines()
                                       if line.startswith("资源目录："))
                 assert (Path(base_directory) / "resource.txt").read_text() == "resource-a"
-                assert "读取 resource.txt" in first["system_prompt"]
+                assert "读取 resource.txt" in first_prompt
                 (tmp_path / "workspace/memory/VEDA.md").write_text("唯一人格乙")
                 third = await view.prepare(original, source)
-                assert "唯一人格乙" in third["system_prompt"] and "唯一人格甲" in first["system_prompt"]
+                third_prompt = _system_prompt(third)
+                assert "唯一人格乙" in third_prompt and "唯一人格甲" in first_prompt
                 assert log.reader("s").snapshot() == original
 
 
@@ -231,7 +256,9 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
         bindings = Bindings(log, host._archive, host.open_binding)
         async with bindings.open(replacement, TOOLS) as (tools, metadata):
             async with tools.open(metadata) as tool:
-                newer = await tool.invoke("new", await tool.prepare({"skill": "example"}))
+                newer_arguments = await tool.prepare({"skill": "example"})
+                assert isinstance(newer_arguments, Mapping)
+                newer = await tool.invoke("new", newer_arguments)
                 current = cast(Mapping[str, object], json.loads(cast(str, newer.parts[0].value)))
                 assert current["instructions"] == "新版指令"
                 assert (Path(cast(str, current["base_directory"])) / "resource.txt").read_text() == "resource-b"
@@ -239,13 +266,16 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
             assert "fixture_skills" not in get_current_runtime_snapshot().generations
             async with tools.open(metadata) as tool:
                 arguments = await tool.prepare({"skill": "example"})
+                assert isinstance(arguments, Mapping)
                 result = await tool.invoke("original", arguments)
                 assert result.outcome == "success"
                 value = cast(Mapping[str, object], json.loads(cast(str, result.parts[0].value)))
                 root = Path(cast(str, value["base_directory"]))
                 assert (root / "resource.txt").read_text() == "resource-a"
                 assert value["source_id"] == "fixture_skills"
-                assert (await tool.invoke("unknown", await tool.prepare({"skill": "unmanaged"}))).outcome == "error"
+                unmanaged = await tool.prepare({"skill": "unmanaged"})
+                assert isinstance(unmanaged, Mapping)
+                assert (await tool.invoke("unknown", unmanaged)).outcome == "error"
                 # 损坏已发布树必须报错；不能从安装路径补齐或伪造成功。
                 (root / "resource.txt").chmod(0o600)
                 (root / "resource.txt").write_text("tampered")

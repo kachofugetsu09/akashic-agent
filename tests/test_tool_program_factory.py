@@ -1,12 +1,16 @@
 from collections.abc import Callable, Mapping
+from typing import cast
 
 import pytest
 
+from agent.plugin_composition import Context
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.messages import MESSAGE_WRITERS
+from agent.plugin_composition.messages import MESSAGE_WRITERS, MessageReader
+from agent.plugin_composition.tasks import ExternalRootPermit
 from agent.plugin_contracts import CallRef, ContentPart, ContentReferences
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from plugins.tools.menu import ToolMenu
+from plugins.tools.plugin import ToolCatalog
 from plugins.tools.program import ToolProgramFactory
 
 
@@ -79,11 +83,22 @@ def _check_text(part: ContentPart) -> ContentReferences:
     return ContentReferences()
 
 
+def _fake_child_permit() -> ExternalRootPermit:
+    """测试菜单只需验证 permit 被传递到 catalog。"""
+    return cast(ExternalRootPermit, object())
+
+
+async def _reject_authorize(_binding_id: str, _arguments: Mapping[str, object]) -> str:
+    return "rejected"
+
+
 def test_factory_returns_real_menu_and_scoped_reply() -> None:
     writers = _Writers()
     catalog = _Catalog()
-    factory = ToolProgramFactory(_Context(writers, _Bindings()), catalog)
-    reader = _Reader()
+    factory = ToolProgramFactory(
+        cast(Context, _Context(writers, _Bindings())), cast(ToolCatalog, catalog),
+    )
+    reader = cast(MessageReader, _Reader())
     check_start = lambda: None
 
     async def authorize(binding_id: str, arguments: Mapping[str, object]):
@@ -96,7 +111,7 @@ def test_factory_returns_real_menu_and_scoped_reply() -> None:
         check_start=check_start,
         authorize=authorize,
         fixed_bindings={"example": "example"},
-        child_permit=lambda: object(),
+        child_permit=_fake_child_permit,
     )
 
     assert menu.names == frozenset({"example"})
@@ -123,7 +138,9 @@ def test_factory_returns_real_menu_and_scoped_reply() -> None:
 def test_menu_keeps_internal_binding_errors_fail_loud() -> None:
     writers = _Writers()
     catalog = _Catalog()
-    factory = ToolProgramFactory(_Context(writers, _Bindings()), catalog)
+    factory = ToolProgramFactory(
+        cast(Context, _Context(writers, _Bindings())), cast(ToolCatalog, catalog),
+    )
 
     class _BrokenPresentation:
         schemas = ()
@@ -136,11 +153,11 @@ def test_menu_keeps_internal_binding_errors_fail_loud() -> None:
             return None
 
     menu = factory.create_menu(
-        _Reader(),
+        cast(MessageReader, _Reader()),
         "conversation",
         content={},
         check_start=lambda: None,
-        authorize=lambda binding_id, arguments: None,  # type: ignore[arg-type]
+        authorize=lambda binding_id, arguments: _reject_authorize(binding_id, arguments),
         fixed_bindings={"example": "example"},
         presentation=_BrokenPresentation(),
     )
