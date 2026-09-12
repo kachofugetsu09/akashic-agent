@@ -6,8 +6,10 @@ from pathlib import Path
 
 import pytest
 
+import docker.debug.plugin_external_acceptance as external_acceptance
 from agent.plugin_composition import ServiceKey
 from docker.debug.plugin_external_acceptance import (
+    _exercise_core_bootstrap,
     _ensure_empty_directory,
     _invoke_capability,
     _load_distribution,
@@ -105,3 +107,68 @@ def test_distribution_report_requires_external_bundle_files(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="bundle 缺失"):
         _load_distribution(path)
+
+
+def test_core_probe_records_real_start_and_stop_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+
+    class Manager:
+        current_snapshot = object()
+
+    class Core:
+        plugin_manager = Manager()
+
+    class Runtime:
+        _started = True
+        _shutdown = False
+        core = Core()
+        channel_host = object()
+        app_server = object()
+        dashboard_task = None
+        chat_task = None
+        mobile_gateway_task = None
+        plugin_watcher_task = None
+
+        async def shutdown(self) -> None:
+            calls.append("stop")
+            self._shutdown = True
+            self.core.plugin_manager.current_snapshot = None
+
+    async def start(**kwargs):
+        calls.append("start")
+        return (
+            Runtime(),
+            {
+                "checks": {
+                    "bootstrap_start_returned": True,
+                    "runtime_started": True,
+                    "core_runtime_created": True,
+                    "stable_snapshot_published": True,
+                    "channel_host_started": True,
+                    "app_server_started": True,
+                    "checkout_invisible": True,
+                    "core_modules_from_artifact": True,
+                },
+                "status": "passed",
+            },
+            {"AKASHIC_PLUGIN_HOME": None, "AKASHIC_WORKSPACE": None},
+        )
+
+    monkeypatch.setattr(external_acceptance, "_validate_core_root", lambda root, repo: root)
+    monkeypatch.setattr(external_acceptance, "_prepare_runtime", lambda **kwargs: {})
+    monkeypatch.setattr(external_acceptance, "_start_app_runtime", start)
+
+    result = asyncio.run(
+        _exercise_core_bootstrap(
+            repo_root=tmp_path / "repo",
+            core_root=tmp_path / "core",
+            workspace=tmp_path / "workspace",
+            plugins_home=tmp_path / "plugins-home",
+        )
+    )
+
+    assert result["status"] == "passed"
+    assert calls == ["start", "stop"]
+    assert result["bootstrap"]["checks"]["stable_snapshot_drained"] is True

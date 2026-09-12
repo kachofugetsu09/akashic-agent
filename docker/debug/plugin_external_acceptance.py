@@ -45,6 +45,38 @@ _SAFE_CAPABILITY_ENTRYPOINTS = {
     "message.display:model.facts": "plugins.models.projection.display_facts",
 }
 
+# This configuration deliberately enables only the local Web channel and the
+# Unix control socket.  It gives AppRuntime real channel/startup work while
+# keeping the acceptance run free of network credentials and external sends.
+_BOOTSTRAP_CONFIG = """[runtime]
+workspace = {workspace!r}
+
+[channels.chat]
+enabled = true
+
+[mobile_realtime]
+enabled = false
+host = "127.0.0.1"
+port = 6323
+database = "data/mobile_realtime.db"
+lan_hostname = "akashic.local"
+public_url = ""
+max_attachment_mb = 50
+inbox_retention_days = 7
+
+[mobile_realtime.key_encryption]
+provider = "secret_service"
+master_key_namespace = "akasic/mobile-realtime"
+keyset_manifest = "data/mobile/keys/current.json"
+
+[app_server]
+enabled = true
+listen = ""
+max_connections = 32
+ingress_queue_size = 128
+outbound_queue_size = 512
+"""
+
 
 def _under(path: Path, root: Path) -> bool:
     try:
@@ -135,17 +167,35 @@ def _source_checkout(path_or_url: str, repo_root: Path) -> Path | None:
 def _purge_modules(roots: tuple[Path, ...]) -> list[str]:
     removed: list[str] = []
     for module_name, module in tuple(sys.modules.items()):
-        module_file = getattr(module, "__file__", None)
-        if not isinstance(module_file, str):
+        locations = _module_locations(module)
+        if not locations:
             if module_name == "plugins" or module_name.startswith("plugins."):
                 sys.modules.pop(module_name, None)
                 removed.append(module_name)
             continue
-        path = Path(module_file).resolve(strict=False)
-        if any(_under(path, root) for root in roots):
+        if any(_under(path, root) for path in locations for root in roots):
             sys.modules.pop(module_name, None)
             removed.append(module_name)
     return removed
+
+
+def _module_locations(module: Any) -> tuple[Path, ...]:
+    locations: list[Path] = []
+    module_file = getattr(module, "__file__", None)
+    if isinstance(module_file, str):
+        locations.append(Path(module_file).resolve(strict=False))
+    package_path = getattr(module, "__path__", ())
+    if isinstance(package_path, str):
+        package_path = (package_path,)
+    try:
+        locations.extend(
+            Path(item).resolve(strict=False)
+            for item in package_path
+            if isinstance(item, (str, os.PathLike))
+        )
+    except TypeError:
+        pass
+    return tuple(dict.fromkeys(locations))
 
 
 def _hide_checkouts(
@@ -179,17 +229,21 @@ def _hide_checkouts(
     removed_modules = _purge_modules(tuple(roots))
     # An editable SDK can already have loaded modules from a sibling worktree.
     for module_name, module in tuple(sys.modules.items()):
-        module_file = getattr(module, "__file__", None)
-        if not isinstance(module_file, str):
+        locations = _module_locations(module)
+        if not locations:
             continue
-        module_path = Path(module_file).resolve(strict=False)
-        if _is_dependency_path(module_path):
+        if all(_is_dependency_path(module_path) for module_path in locations):
             continue
-        checkout = _checkout_root(module_path)
-        if (
-            checkout is not None
-            and not any(_under(checkout, root) for root in roots)
-        ) or _looks_like_editable_source(module_path, repo_root):
+        should_remove = False
+        for module_path in locations:
+            checkout = _checkout_root(module_path)
+            if (
+                checkout is not None
+                and not any(_under(checkout, root) for root in roots)
+            ) or _looks_like_editable_source(module_path, repo_root):
+                should_remove = True
+                break
+        if should_remove:
             sys.modules.pop(module_name, None)
             removed_modules.append(module_name)
     return {"paths": removed_paths, "modules": sorted(set(removed_modules))}
@@ -203,12 +257,8 @@ def _visible_checkout_modules(
         roots.append(source_checkout)
     evidence: list[dict[str, str]] = []
     for module_name, module in sorted(sys.modules.items()):
-        module_file = getattr(module, "__file__", None)
-        if not isinstance(module_file, str):
-            continue
-        path = Path(module_file).resolve(strict=False)
-        for root in roots:
-            if _under(path, root):
+        for path in _module_locations(module):
+            if any(_under(path, root) for root in roots):
                 evidence.append({"module": module_name, "file": str(path)})
                 break
     return evidence
@@ -220,12 +270,9 @@ def _core_module_violations(core_root: Path) -> list[dict[str, str]]:
         top_level = module_name.split(".", 1)[0]
         if top_level not in _CORE_PACKAGES:
             continue
-        module_file = getattr(module, "__file__", None)
-        if not isinstance(module_file, str):
-            continue
-        path = Path(module_file).resolve(strict=False)
-        if not _under(path, core_root):
-            violations.append({"module": module_name, "file": str(path)})
+        for path in _module_locations(module):
+            if not _under(path, core_root):
+                violations.append({"module": module_name, "file": str(path)})
     return violations
 
 
@@ -281,6 +328,155 @@ def _prepare_runtime(
         "core_root": str(core_root),
         "cwd": str(workspace),
     }
+
+
+def _write_bootstrap_config(workspace: Path) -> Path:
+    """Create the credential-free config used by the real AppRuntime probe."""
+
+    path = workspace / "external-acceptance-config.toml"
+    path.write_text(
+        _BOOTSTRAP_CONFIG.format(workspace=repr(str(workspace))),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _runtime_task_evidence(runtime: Any) -> dict[str, Any]:
+    tasks = {
+        name: getattr(runtime, name)
+        for name in (
+            "dashboard_task",
+            "chat_task",
+            "mobile_gateway_task",
+            "plugin_watcher_task",
+        )
+    }
+    return {
+        "all_background_tasks_done": all(
+            task is None or task.done() for task in tasks.values()
+        ),
+        "tasks": {
+            name: None if task is None else {"done": task.done(), "cancelled": task.cancelled()}
+            for name, task in tasks.items()
+        },
+    }
+
+
+def _restore_runtime_environment(previous: dict[str, str | None]) -> None:
+    for name, value in previous.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+async def _start_app_runtime(
+    *,
+    workspace: Path,
+    plugins_home: Path,
+    repo_root: Path,
+    core_root: Path,
+) -> tuple[Any, dict[str, Any], dict[str, str | None]]:
+    """Start the product AppRuntime and return it with observable startup evidence."""
+
+    previous_environment = {
+        name: os.environ.get(name)
+        for name in ("AKASHIC_PLUGIN_HOME", "AKASHIC_WORKSPACE")
+    }
+    os.environ["AKASHIC_PLUGIN_HOME"] = str(plugins_home)
+    os.environ["AKASHIC_WORKSPACE"] = str(workspace)
+    config_path = _write_bootstrap_config(workspace)
+    evidence: dict[str, Any] = {
+        "config": str(config_path),
+        "checks": {
+            "bootstrap_start_returned": False,
+            "runtime_started": False,
+            "core_runtime_created": False,
+            "stable_snapshot_published": False,
+            "channel_host_started": False,
+            "app_server_started": False,
+            "checkout_invisible": False,
+            "core_modules_from_artifact": False,
+        },
+    }
+    runtime: Any = None
+    try:
+        from agent.config import Config
+        from bootstrap.app import build_app_runtime
+
+        runtime = build_app_runtime(
+            Config.load(config_path, workspace=workspace),
+            workspace,
+        )
+        await runtime.start()
+    except Exception as error:
+        evidence["start_error"] = f"{type(error).__name__}: {error}"
+        evidence["checkout_modules_visible"] = _visible_checkout_modules(repo_root, None)
+        evidence["core_module_violations"] = _core_module_violations(core_root)
+        evidence["status"] = "failed"
+        return runtime, evidence, previous_environment
+
+    manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
+    snapshot = None if manager is None else manager.current_snapshot
+    evidence.update(
+        {
+            "snapshot_id": None if snapshot is None else snapshot.snapshot_id,
+            "generation_count": (
+                0
+                if snapshot is None
+                else len(getattr(snapshot, "generations", {}))
+            ),
+            "checkout_modules_visible": _visible_checkout_modules(repo_root, None),
+            "core_module_violations": _core_module_violations(core_root),
+        }
+    )
+    checks = evidence["checks"]
+    checks.update(
+        {
+            "bootstrap_start_returned": True,
+            "runtime_started": bool(getattr(runtime, "_started", False)),
+            "core_runtime_created": getattr(runtime, "core", None) is not None,
+            "stable_snapshot_published": snapshot is not None,
+            "channel_host_started": getattr(runtime, "channel_host", None) is not None,
+            "app_server_started": getattr(runtime, "app_server", None) is not None,
+            "checkout_invisible": not evidence["checkout_modules_visible"],
+            "core_modules_from_artifact": not evidence["core_module_violations"],
+        }
+    )
+    return runtime, evidence, previous_environment
+
+
+async def _stop_app_runtime(
+    *,
+    runtime: Any,
+    evidence: dict[str, Any],
+    workspace: Path,
+    previous_environment: dict[str, str | None],
+) -> None:
+    """Stop the exact AppRuntime and record resource cleanup before restoring env."""
+
+    try:
+        await runtime.shutdown()
+    except Exception as error:
+        evidence["shutdown_error"] = f"{type(error).__name__}: {error}"
+    manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
+    socket_path = workspace / "akashic.sock"
+    checks = evidence["checks"]
+    checks.update(
+        {
+            "runtime_shutdown": bool(getattr(runtime, "_shutdown", False)),
+            "stable_snapshot_drained": (
+                manager is not None and manager.current_snapshot is None
+            ),
+            "app_server_socket_removed": not socket_path.exists(),
+            "background_tasks_stopped": _runtime_task_evidence(runtime)[
+                "all_background_tasks_done"
+            ],
+        }
+    )
+    evidence["stop"] = _runtime_task_evidence(runtime)
+    _restore_runtime_environment(previous_environment)
+    evidence["status"] = "passed" if all(checks.values()) else "failed"
 
 
 def _plugin_id_from_manifest(artifact: Path, marketplace: str) -> tuple[str, str]:
@@ -490,6 +686,53 @@ def _generation_evidence(
     return evidence
 
 
+async def _exercise_core_bootstrap(
+    *,
+    repo_root: Path,
+    core_root: Path,
+    workspace: Path,
+    plugins_home: Path,
+) -> dict[str, Any]:
+    """Prove Core-only startup through AppRuntime, including its stop path."""
+
+    evidence: dict[str, Any] = {
+        "mode": "core-only",
+        "checks": {"core_artifact_external": False},
+    }
+    try:
+        core_root = _validate_core_root(core_root, repo_root)
+        _ensure_empty_directory(workspace, "workspace")
+        _ensure_empty_directory(plugins_home, "plugins-home")
+        evidence["runtime"] = _prepare_runtime(
+            repo_root=repo_root,
+            source_checkout=None,
+            core_root=core_root,
+            workspace=workspace,
+        )
+        evidence["checks"]["core_artifact_external"] = True
+        runtime, startup, previous_environment = await _start_app_runtime(
+            workspace=workspace,
+            plugins_home=plugins_home,
+            repo_root=repo_root,
+            core_root=core_root,
+        )
+        evidence["bootstrap"] = startup
+        if runtime is not None:
+            await _stop_app_runtime(
+                runtime=runtime,
+                evidence=startup,
+                workspace=workspace,
+                previous_environment=previous_environment,
+            )
+        else:
+            _restore_runtime_environment(previous_environment)
+        evidence["status"] = startup["status"]
+    except Exception as error:
+        evidence["status"] = "failed"
+        evidence["error"] = f"{type(error).__name__}: {error}"
+    return evidence
+
+
 async def _exercise(
     *,
     source: str,
@@ -502,16 +745,21 @@ async def _exercise(
     capability_spec: dict[str, Any] | None = None,
     require_capability: bool = False,
 ) -> dict[str, Any]:
-    """在一次外部临时组合中正式安装并执行一个插件。"""
+    """Install one external artifact, then exercise the real AppRuntime path."""
 
     source_checkout = _source_checkout(source, repo_root)
     evidence: dict[str, Any] = {
         "source": source,
         "source_checkout": None if source_checkout is None else str(source_checkout),
-        "checks": {"source_checkout_is_external": True},
+        "checks": {
+            "source_checkout_is_external": True,
+            "exercise_completed": False,
+        },
     }
+    runtime: Any = None
+    startup: dict[str, Any] | None = None
+    previous_environment: dict[str, str | None] | None = None
     manager: Any = None
-    event_bus: Any = None
     try:
         if core_root is None:
             raise ValueError("外置验收必须提供仓库外的 Core 制品目录")
@@ -526,8 +774,6 @@ async def _exercise(
         )
         evidence["checks"]["core_artifact_external"] = True
         from agent.plugins.install import install_git_plugin
-        from agent.plugins.manager import PluginManager
-        from bus.event_bus import EventBus
 
         result = install_git_plugin(
             workspace=workspace,
@@ -554,20 +800,16 @@ async def _exercise(
                 "installed_source_has_no_sibling_plugins": not (artifact / "plugins").exists(),
             }
         )
-        event_bus = EventBus()
-        manager = PluginManager(
-            [],
-            event_bus=event_bus,
+        runtime, startup, previous_environment = await _start_app_runtime(
             workspace=workspace,
-            installed_cache_root=plugins_home / "cache",
+            plugins_home=plugins_home,
+            repo_root=repo_root,
+            core_root=core_root,
         )
-        load_error: str | None = None
-        try:
-            await manager.load_all()
-        except Exception as error:
-            load_error = f"{type(error).__name__}: {error}"
-        evidence["load_error"] = load_error
-        snapshot = manager.current_snapshot
+        evidence["bootstrap"] = startup
+        manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
+        evidence["load_error"] = startup.get("start_error")
+        snapshot = None if manager is None else manager.current_snapshot
         generation = None if snapshot is None else snapshot.generations.get(plugin_id)
         if generation is not None:
             evidence.update(
@@ -582,7 +824,7 @@ async def _exercise(
             )
         else:
             evidence["checks"]["apply"] = False
-            gate = manager.latest_gate(plugin_id)
+            gate = None if manager is None else manager.latest_gate(plugin_id)
             if gate is not None:
                 evidence["gate"] = {
                     "status": gate.status,
@@ -594,7 +836,7 @@ async def _exercise(
                 }
             evidence["error"] = (
                 (gate.failure_reason if gate is not None else None)
-                or load_error
+                or startup.get("start_error")
                 or "formal install 后未形成 stable generation/module"
             )
         visible = _visible_checkout_modules(repo_root, source_checkout)
@@ -645,19 +887,23 @@ async def _exercise(
                 "error": "缺少精确 capability oracle",
             }
             evidence["checks"]["capability_call"] = False
-        checks = evidence["checks"]
-        evidence["status"] = "passed" if all(checks.values()) else "failed"
+        evidence["checks"]["exercise_completed"] = True
     except Exception as error:
         evidence["status"] = "failed"
         evidence["error"] = f"{type(error).__name__}: {error}"
     finally:
-        if manager is not None:
-            try:
-                await manager.terminate_all()
-            except Exception as error:
-                evidence["terminate_error"] = f"{type(error).__name__}: {error}"
-        if event_bus is not None:
-            await event_bus.aclose()
+        if runtime is not None and startup is not None and previous_environment is not None:
+            await _stop_app_runtime(
+                runtime=runtime,
+                evidence=startup,
+                workspace=workspace,
+                previous_environment=previous_environment,
+            )
+            evidence["checks"]["bootstrap_runtime"] = startup["status"] == "passed"
+        elif previous_environment is not None:
+            _restore_runtime_environment(previous_environment)
+    checks = evidence["checks"]
+    evidence["status"] = "passed" if all(checks.values()) else "failed"
     return evidence
 
 
@@ -703,15 +949,13 @@ async def _exercise_fleet(
             "error": "没有可安装的 external source",
         }
     first_source = valid_jobs[0]["source_checkout"]
-    runtime = _prepare_runtime(
+    runtime_paths = _prepare_runtime(
         repo_root=repo_root,
         source_checkout=first_source if isinstance(first_source, Path) and first_source.is_dir() else None,
         core_root=core_root,
         workspace=workspace,
     )
     from agent.plugins.install import install_git_plugin
-    from agent.plugins.manager import PluginManager
-    from bus.event_bus import EventBus
 
     installed: list[dict[str, Any]] = []
     for job in valid_jobs:
@@ -766,21 +1010,21 @@ async def _exercise_fleet(
             row["error"] = f"{type(error).__name__}: {error}"
             reports.append(row)
     manager: Any = None
-    event_bus: Any = None
+    runtime: Any = None
+    startup: dict[str, Any] | None = None
+    previous_environment: dict[str, str | None] | None = None
     load_error: str | None = None
     try:
-        event_bus = EventBus()
-        manager = PluginManager(
-            [],
-            event_bus=event_bus,
+        runtime, startup, previous_environment = await _start_app_runtime(
             workspace=workspace,
-            installed_cache_root=plugins_home / "cache",
+            plugins_home=plugins_home,
+            repo_root=repo_root,
+            core_root=core_root,
         )
-        try:
-            await manager.load_all()
-        except Exception as error:
-            load_error = f"{type(error).__name__}: {error}"
-        snapshot = manager.current_snapshot
+        manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
+        if startup.get("start_error"):
+            load_error = str(startup["start_error"])
+        snapshot = None if manager is None else manager.current_snapshot
         visible = _visible_checkout_modules(repo_root, None)
         core_violations = _core_module_violations(core_root)
         for row in installed:
@@ -800,7 +1044,7 @@ async def _exercise_fleet(
                 )
             else:
                 row["checks"]["apply"] = False
-                gate = manager.latest_gate(plugin_id)
+                gate = None if manager is None else manager.latest_gate(plugin_id)
                 row["checks"]["apply_attempted"] = gate is not None
                 row["gate"] = (
                     None
@@ -836,7 +1080,7 @@ async def _exercise_fleet(
         ]
         if require_capability:
             calls_to_run = installed
-        if calls_to_run and snapshot is not None:
+        if calls_to_run and snapshot is not None and manager is not None:
             from agent.plugins.snapshot import lease_runtime_snapshot
 
             async with lease_runtime_snapshot(manager.snapshot_store) as leased:
@@ -894,18 +1138,28 @@ async def _exercise_fleet(
             row.pop("source_checkout", None)
             reports.append(row)
     finally:
-        if manager is not None:
-            try:
-                await manager.terminate_all()
-            except Exception as error:
-                load_error = load_error or f"terminate: {type(error).__name__}: {error}"
-        if event_bus is not None:
-            await event_bus.aclose()
+        if runtime is not None and startup is not None and previous_environment is not None:
+            await _stop_app_runtime(
+                runtime=runtime,
+                evidence=startup,
+                workspace=workspace,
+                previous_environment=previous_environment,
+            )
+        elif previous_environment is not None:
+            _restore_runtime_environment(previous_environment)
+        if startup is not None:
+            bootstrap_ok = startup.get("status") == "passed"
+            for row in installed:
+                row["checks"]["bootstrap_runtime"] = bootstrap_ok
+                row["status"] = (
+                    "passed" if all(row["checks"].values()) else "failed"
+                )
     return {
         "mode": "all",
-        "runtime": runtime,
+        "runtime": runtime_paths,
         "distribution_source_commit": None if distribution is None else distribution.get("source_commit"),
         "load_error": load_error,
+        "bootstrap": startup,
         "installed_count": len(installed),
         "applied_count": sum(item.get("checks", {}).get("apply", False) for item in installed),
         "reports": reports,
@@ -960,9 +1214,11 @@ def main(argv: list[str] | None = None) -> int:
         args.all = True
     original_cwd = Path.cwd()
     temp_root: Path | None = None
+    bootstrap_temp_root: Path | None = None
     reports: list[dict[str, Any]] = []
     distribution: dict[str, Any] | None = None
     fleet_result: dict[str, Any] | None = None
+    core_bootstrap: dict[str, Any] | None = None
     try:
         repo_root = args.repo_root.resolve(strict=True)
         capability_calls = _load_capability_calls(args.capability_calls_json)
@@ -987,6 +1243,16 @@ def main(argv: list[str] | None = None) -> int:
             distribution = _load_distribution(args.distribution)
             if args.inventory is not None:
                 inventory = _load_inventory(args.inventory)
+                for entry in inventory["packages"]:
+                    if entry.get("classification") == "manifest-plugin":
+                        continue
+                    label = str(entry.get("package", ""))
+                    reports.append(
+                        _failure_report(
+                            label,
+                            "inventory row is not a manifest plugin; distribution has no formal install artifact",
+                        )
+                    )
                 expected = {
                     str(entry["manifest"]["name"])
                     for entry in inventory["packages"]
@@ -1082,6 +1348,24 @@ def main(argv: list[str] | None = None) -> int:
                 core_tar = Path(distribution["_root"]) / str(distribution["core"]["file"])
             if core_tar is not None:
                 core_root = _extract_core_tar(core_tar, temp_root, repo_root)
+        if core_root is not None:
+            bootstrap_temp_root = Path(
+                tempfile.mkdtemp(prefix="akashic-core-bootstrap-")
+            )
+            core_bootstrap = asyncio.run(
+                _exercise_core_bootstrap(
+                    repo_root=repo_root,
+                    core_root=core_root,
+                    workspace=bootstrap_temp_root / "workspace",
+                    plugins_home=bootstrap_temp_root / "plugins-home",
+                )
+            )
+        else:
+            core_bootstrap = {
+                "mode": "core-only",
+                "status": "failed",
+                "error": "缺少仓库外 Core 制品，不能宣称 bootstrap 启停通过",
+            }
         if not args.all:
             job = jobs[0]
             if core_root is None:
@@ -1140,7 +1424,15 @@ def main(argv: list[str] | None = None) -> int:
             "mode": "all" if args.all else "single",
             "distribution_source_commit": None if distribution is None else distribution.get("source_commit"),
             "reports": reports,
-            "status": "passed" if reports and all(item.get("status") == "passed" for item in reports) else "failed",
+            "core_bootstrap": core_bootstrap,
+            "status": (
+                "passed"
+                if reports
+                and all(item.get("status") == "passed" for item in reports)
+                and core_bootstrap is not None
+                and core_bootstrap.get("status") == "passed"
+                else "failed"
+            ),
         }
         if fleet_result is not None:
             result["fleet"] = fleet_result
@@ -1158,6 +1450,8 @@ def main(argv: list[str] | None = None) -> int:
         os.chdir(original_cwd)
         if temp_root is not None and not args.keep_temporary:
             shutil.rmtree(temp_root, ignore_errors=True)
+        if bootstrap_temp_root is not None and not args.keep_temporary:
+            shutil.rmtree(bootstrap_temp_root, ignore_errors=True)
 
 
 if __name__ == "__main__":
