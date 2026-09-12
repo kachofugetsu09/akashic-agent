@@ -19,7 +19,6 @@
     "serve:mobile-web-lab": "npm run build:mobile-web-lab && node scripts/mobile-web-lab/server.mjs",
     "test:mobile-web-lab": "npm run build:mobile-web-lab && node scripts/mobile-web-lab/verify.mjs",
     "serve:webui-performance:fixture": "node scripts/webui-performance/serve-desktop-fixture.mjs",
-    "serve:webui-performance:runtime": "npm run build:chat && PYTHONPATH=. python plugins/akashic_clients/webui_performance.py",
     "baseline:webui-performance:build": "node scripts/webui-performance/run-build-baseline.mjs --update-baseline",
     "baseline:webui-performance:browser": "node scripts/webui-performance/run-browser-scenarios.mjs --update-baseline",
     "typecheck": "tsc --noEmit"

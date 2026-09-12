@@ -19,8 +19,8 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from plugins.akashic_clients.mobile_webui.manifest import manifest_from_directory
-from plugins.akashic_clients.mobile_webui.store import MobileWebUiStore
+from .manifest import manifest_from_directory
+from .store import MobileWebUiStore
 
 
 def main(argv: Sequence[str] | None = None) -> int:

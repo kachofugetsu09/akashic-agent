@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from plugins.akashic_clients.mobile_realtime.protocol import (
+from .protocol import (
     COMMAND_TYPES,
     CONTROL_TYPES,
     EVENT_TYPES,
@@ -18,8 +18,8 @@ from plugins.akashic_clients.mobile_realtime.protocol import (
     PRE_AUTH_CONTROL_TYPES,
     PROTOCOL_VERSION,
 )
-from plugins.akashic_clients.mobile_realtime.attachments import MAX_ATTACHMENT_CHUNK_BYTES
-from plugins.akashic_clients.mobile_webui.protocol import (
+from .attachments import MAX_ATTACHMENT_CHUNK_BYTES
+from ..mobile_webui.protocol import (
     BuilderIdentityWire,
     DirtyProvenanceWire,
     ErrorReplyWire,
