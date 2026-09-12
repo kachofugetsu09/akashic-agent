@@ -16,8 +16,13 @@ import pytest
 import toml
 
 from agent.migrations.runner import MigrationRunner
-from agent.model_runtime.auth.store import Credential, CredentialStore
-from agent.model_runtime.store import ModelRegistryStore
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.model_auth import (
+    Credential,
+    CredentialStore,
+)
+from plugins.legacy_upgrade.legacy_upgrade_migrations.support.model_store import (
+    ModelRegistryStore,
+)
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.init_workspace import init_workspace
 from session.log import MessageLog, SessionAttributes
