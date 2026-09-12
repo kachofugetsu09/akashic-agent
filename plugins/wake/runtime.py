@@ -28,7 +28,7 @@ from ._boundary import (
     ToolView,
     WAKE_TOOLS_VIEW,
 )
-from .api import Config, DRIFT_WAKE, EVENTMAIL_WAKE
+from .api import Config, DeliveryTarget, DRIFT_WAKE, EVENTMAIL_WAKE
 from .legacy_rules import read_archived_rules
 from .messages import recent_context
 from .request import Request, TOOLS as WAKE_TOOLS, WAKE_PROGRAM
@@ -143,7 +143,7 @@ class Runtime:
     """Timer 与来源变化只提供检查机会；原请求提交后由 Source 恢复真实执行。"""
 
     def __init__(self, ctx: Context, config: Config, *, now: Callable[[], datetime] = lambda: datetime.now(UTC)):
-        self.ctx, self.config, self.now = ctx, config, now
+        self.ctx, self.config, self.now = ctx, self._current_config(config), now
         self.state = WakeState(ctx.data_root / "wake.sqlite3")
         # Runtime owns creation and schema validation. Dashboard readers only
         # open this already-initialized file read-only.
@@ -151,6 +151,14 @@ class Runtime:
         self.source = Source(ctx, self.state, now=now)
         self.duties = Duties(ctx.require(EVENTMAIL_WAKE), ctx.require(DRIFT_WAKE), self.state, ctx.require(SEMANTIC_INTEREST))
         self.changed = asyncio.Event()
+
+    @staticmethod
+    def _current_config(config: Config) -> Config:
+        """把跨 generation 的配置值重建为当前 Wake 模块的类型。"""
+        target = config.delivery
+        if type(config) is Config and (target is None or type(target) is DeliveryTarget):
+            return config
+        return Config.model_validate(config.model_dump(mode="python"))
 
     def dashboard_view(self) -> DashboardView:
         """Build a dashboard view from narrow read-only callbacks."""
