@@ -55,7 +55,6 @@ from agent.plugin_composition import (
     WORKLOADS,
     MCP_SERVERS,
     SESSION_READ,
-    SESSION_COMPACTION_STORAGE,
     DELIVERIES,
     DURABLE_DELIVERIES,
     TIMERS,
@@ -75,7 +74,6 @@ from agent.plugin_composition import (
     PluginTools,
     PluginRuntime,
     SessionReadService,
-    SessionCompactionStorage,
     PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
@@ -5287,8 +5285,8 @@ class PluginManager:
                 for module_path in modules:
                     self._remove_module_tree(module_path)
 
-    def _read_existing_session_compaction(self, session_key: str):
-        """读取同一 Session 的消息与 active compaction 语义。"""
+    def _read_existing_session(self, session_key: str):
+        """读取既有 Session 及其 active compaction 边界。"""
 
         session_manager = self._session_manager
         if session_manager is None:
@@ -5651,25 +5649,11 @@ class PluginManager:
             for item in mount_order
         ):
             session_read = (
-                SessionReadService(self._read_existing_session_compaction)
+                SessionReadService(self._read_existing_session)
                 if not candidate
                 else SessionReadService.candidate_validation()
             )
             _ = await root.context.provide(SESSION_READ, session_read)
-        if self._session_manager is not None and any(
-            SESSION_COMPACTION_STORAGE
-            in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            compaction_storage = (
-                SessionCompactionStorage(self._session_manager)
-                if not candidate
-                else SessionCompactionStorage.candidate_validation()
-            )
-            _ = await root.context.provide(
-                SESSION_COMPACTION_STORAGE,
-                compaction_storage,
-            )
         if any(
             DELIVERIES in cast(ComposablePlugin, item.instance).inject
             for item in mount_order

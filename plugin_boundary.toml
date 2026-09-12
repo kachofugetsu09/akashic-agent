@@ -44,17 +44,9 @@ note = "exact Root 的工具 binding 归档与解析"
 role = "core"
 note = "只读既有 Session 投影"
 
-[capabilities."core.session_compaction_storage"]
-role = "core"
-note = "Session 压缩投影的持久存储"
-
 [capabilities."core.interaction_undo"]
 role = "core"
 note = "显式撤销最近一次 interaction"
-
-[capabilities."core.conversation.semantic_interest"]
-role = "core"
-note = "当前 Core 中的业务评分，目标归属待复核；登记不批准留在 Core"
 
 # ── 外部效果与投递 ───────────────────────────────────────────
 [capabilities."core.deliveries"]
