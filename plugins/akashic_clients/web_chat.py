@@ -1001,16 +1001,24 @@ class WebChatChannel:
                 async for frame in frames:
                     await websocket.send_json({"type": kind, **frame})
 
-        async with self._open_message_catalog() as messages:
-            async with asyncio.TaskGroup() as tasks:
-                _ = tasks.create_task(send("messages.appended", follow_messages(
-                    cast(Any, messages.reader(session_id)), after_seq=after_seq, display_only=True,
-                    reader_display=self.message_display)))
-                if self._reply_status is None:
-                    await websocket.send_json({"type": "reply.status", "version": 2,
-                        "session_id": session_id, "snapshot_id": None, "available": False, "items": []})
-                else:
-                    _ = tasks.create_task(send("reply.status", self._reply_status(session_id)))
+        async def send_messages() -> None:
+            # The message reader and its display projection must enter and
+            # leave the request scope in this follower task.  Passing an
+            # entered scope through TaskGroup task creation leaves a copied
+            # ContextVar pointing at a closed RequestContext on installed
+            # runtimes.
+            async with self._open_message_catalog() as messages:
+                await send("messages.appended", follow_messages(
+                    cast(Any, messages.reader(session_id)), after_seq=after_seq,
+                    display_only=True, reader_display=self.message_display))
+
+        async with asyncio.TaskGroup() as tasks:
+            _ = tasks.create_task(send_messages())
+            if self._reply_status is None:
+                await websocket.send_json({"type": "reply.status", "version": 2,
+                    "session_id": session_id, "snapshot_id": None, "available": False, "items": []})
+            else:
+                _ = tasks.create_task(send("reply.status", self._reply_status(session_id)))
 
     async def _cancel_follow(self, websocket: WebSocket) -> None:
         current = self._followers.get(websocket)
