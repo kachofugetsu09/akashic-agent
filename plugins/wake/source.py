@@ -14,8 +14,8 @@ from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from plugins.content.plugin import check_text
 from plugins.delivery.plugin import DELIVERY
 from plugins.models.selection import check_selection
-from session.log import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from session.message import ContentPart, Input, Message, Output
+from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
+from agent.plugin_contracts import ContentPart, Input, Message, Output
 
 from .api import EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY
 from .content import (_candidate_id, _content_candidates, _datetime, _mapping,

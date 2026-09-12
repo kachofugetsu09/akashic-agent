@@ -6,8 +6,19 @@ from agent.plugin_composition.context import Context
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.model import ServiceKey
 from session.embedding_store import MessageEmbeddings
-from session.log import MessageReader as MessageReader
-from session.log import MessageCatalog, MessageLog, MessageWriter, OwnerStore, SessionAttributes, WriterExpired
+from session.log import (
+    MessageLog as _MessageLog,
+    MessageReader as MessageReader,
+    MessageCatalog as MessageCatalog,
+    MessageWriter as MessageWriter,
+    OwnerStore as OwnerStore,
+    OwnerTransaction as OwnerTransaction,
+    OwnerRecord as OwnerRecord,
+    SessionAttributes as SessionAttributes,
+    WriterExpired as WriterExpired,
+    MessageConflict as MessageConflict,
+    InvalidPage as InvalidPage,
+)
 from session.message import Body, CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 
 
@@ -15,7 +26,7 @@ from session.message import Body, CallRef, ContentPart, ContentReferences, Contr
 class MessageWriters:
     """正式组合固定写入范围，消费者只得到现有的窄 MessageWriter。"""
 
-    def __init__(self, log: MessageLog | None):
+    def __init__(self, log: _MessageLog | None):
         self._log = log
         self._metadata: dict[str, tuple[Context, Callable[[Body], Mapping[str, object | None]]]] = {}
 
@@ -89,7 +100,7 @@ class MessageWriters:
 class OwnerState:
     """按实际插件 owner 分配同库事务空间；没有任意 namespace 或 SQL 参数。"""
 
-    def __init__(self, log: MessageLog | None):
+    def __init__(self, log: _MessageLog | None):
         self._log = log
 
     def open(self, ctx: Context) -> OwnerStore:
@@ -101,7 +112,7 @@ class OwnerState:
 class SessionAdmission:
     """仅授予固定属性的 create-once，不带元数据改写、删除或消息权限。"""
 
-    def __init__(self, log: MessageLog | None):
+    def __init__(self, log: _MessageLog | None):
         self._log = log
 
     def ensure(self, ctx: Context, session_id: str, attributes: SessionAttributes) -> SessionAttributes:

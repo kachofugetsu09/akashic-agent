@@ -20,8 +20,8 @@ from plugins.react.plugin import REACT
 from plugins.tools.api import Denied
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.log import MessageReader, SessionAttributes
-from session.message import CallRef, ContentPart, Input, Message, Output
+from agent.plugin_composition.messages import MessageReader, SessionAttributes
+from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output
 
 from .tool import InstallInput
 

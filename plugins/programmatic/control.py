@@ -10,8 +10,8 @@ from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResol
 from agent.plugin_composition.rpc import RequestTransport, RpcMethod
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
-from session.log import MessageReader, SessionAttributes
-from session.message import ContentPart, Input
+from agent.plugin_composition.messages import MessageReader, SessionAttributes
+from agent.plugin_contracts import ContentPart, Input
 
 from .result import read_result, read_result_snapshot
 

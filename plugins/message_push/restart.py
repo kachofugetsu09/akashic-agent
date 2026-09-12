@@ -22,8 +22,9 @@ from plugins.delivery.api import FINAL_OUTPUT_DELIVERY, FinalOutputWaiter
 from plugins.tools.api import BoundTool, CallSource, ContentPart, Result, durable_call_key
 from plugins.tools.plugin import TOOLS, ToolRef
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
-from session.log import Message, MessageCatalog, MessageReader
-from session.message import CallRef, Input, Output, ToolCall, ToolResult, freeze_json
+from agent.plugin_contracts import Message
+from agent.plugin_composition.messages import MessageCatalog, MessageReader
+from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult, freeze_json
 
 logger = logging.getLogger(__name__)
 

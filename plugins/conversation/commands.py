@@ -13,9 +13,9 @@ from agent.plugin_composition.commands import COMMANDS, CommandExecution, Comman
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import Task
 from plugins.content.plugin import check_text
-from session.log import MessageReader
-from session.message import ContentPart, ContentReferences, Control, Input, Message, Output
-from session.message_codec import json_value
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
+from agent.plugin_contracts import json_value
 
 from .program import check_source
 

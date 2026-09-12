@@ -5,14 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from agent.plugin_composition import Context, ServiceKey
-from session.message import (
-    CallRef,
-    Input,
-    Message,
-    Output,
-    ToolCall,
-    ToolResult,
-)
+from agent.plugin_contracts import CallRef, Input, Message, Output, ToolCall, ToolResult
 
 api_version = 3
 name = "turn_projection"
