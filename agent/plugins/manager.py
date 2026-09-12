@@ -4,7 +4,6 @@ import asyncio
 import copy
 import hashlib
 import importlib.util
-import inspect
 import json
 import logging
 import os
@@ -18,7 +17,7 @@ from dataclasses import dataclass, replace
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from contextvars import Context as TaskContext
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType, ModuleType, UnionType
+from types import ModuleType, UnionType
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Mapping
 from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
 
@@ -54,11 +53,9 @@ from agent.plugin_composition import (
     MANAGED_PROCESSES,
     WORKLOADS,
     MCP_SERVERS,
-    SESSION_READ,
     DELIVERIES,
     DURABLE_DELIVERIES,
     TIMERS,
-    TOOL_CATALOG,
     UI_SLOTS,
     CompositionOverlay,
     CompositionRoot,
@@ -69,11 +66,7 @@ from agent.plugin_composition import (
     PluginUiSlots,
     PluginCommands,
     InteractionUndoService,
-    PluginToolBinding,
-    PluginToolCatalog,
-    PluginTools,
     PluginRuntime,
-    SessionReadService,
     PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
@@ -4889,10 +4882,7 @@ class PluginManager:
             _validate_static_manifest_runtime(snapshot, generations)
             if candidate_owner is not None:
                 self._preflight_durable_delivery_targets(snapshot)
-            snapshot.tool_registry = self._compile_snapshot_tools(
-                generations,
-                snapshot.plugin_tool_catalog,
-            )
+            snapshot.tool_registry = self._compile_snapshot_tools()
             return snapshot
         except Exception as error:
             if created_root and composition_root is not None:
@@ -5289,16 +5279,6 @@ class PluginManager:
                 for module_path in modules:
                     self._remove_module_tree(module_path)
 
-    def _read_existing_session(self, session_key: str):
-        """读取既有 Session 及其 active compaction 边界。"""
-
-        session_manager = self._session_manager
-        if session_manager is None:
-            raise RuntimeError("Session Read Service 缺少 SessionManager")
-        session = session_manager.get_existing(session_key)
-        compaction = session_manager.control_store.get_active_compaction(session_key)
-        return session, compaction
-
     async def _resolve_composition_root(
         self,
         generations: dict[str, PluginGeneration],
@@ -5517,14 +5497,6 @@ class PluginManager:
                 PluginWorkloads(root.instance_token),
             )
         if any(
-            TOOL_CATALOG in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                TOOL_CATALOG,
-                PluginTools(root.instance_token),
-            )
-        if any(
             UI_SLOTS in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
         ):
@@ -5648,16 +5620,6 @@ class PluginManager:
             _ = await root.context.provide(TIMERS, timers)
         if archive:
             return
-        if self._session_manager is not None and any(
-            SESSION_READ in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            session_read = (
-                SessionReadService(self._read_existing_session)
-                if not candidate
-                else SessionReadService.candidate_validation()
-            )
-            _ = await root.context.provide(SESSION_READ, session_read)
         if any(
             DELIVERIES in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
@@ -6272,10 +6234,7 @@ class PluginManager:
                     core_channel_definitions=self._core_channel_definitions,
                     require_composition_ready=True,
                 )
-                replacement.tool_registry = self._compile_snapshot_tools(
-                    {},
-                    replacement.plugin_tool_catalog,
-                )
+                replacement.tool_registry = self._compile_snapshot_tools()
             else:
                 replacement = await self._compile_generation_snapshot(
                     stable,
@@ -6593,10 +6552,7 @@ class PluginManager:
     ) -> None:
         """Rebuild ToolRegistry and attach every exact live v3 MCP facade."""
 
-        snapshot.tool_registry = self._compile_snapshot_tools(
-            dict(snapshot.generations),
-            snapshot.plugin_tool_catalog,
-        )
+        snapshot.tool_registry = self._compile_snapshot_tools()
         for generation in sorted(
             snapshot.generations.values(),
             key=lambda item: item.plugin_id,
@@ -6625,39 +6581,12 @@ class PluginManager:
             for binding in registry.values()
         )
 
-    def _compile_snapshot_tools(
-        self,
-        generations: dict[str, PluginGeneration],
-        plugin_tools: PluginToolCatalog | None = None,
-    ) -> Any:
+    def _compile_snapshot_tools(self) -> Any:
         if self._tool_registry is None:
             return None
-        registry = self._tool_registry.fork(
+        return self._tool_registry.fork(
             excluded_source_types={"plugin", "mcp"},
         )
-        if plugin_tools is not None:
-            for binding in plugin_tools.values():
-                if registry.has_tool(binding.descriptor.name):
-                    raise RuntimeError(f"插件工具名称重复: {binding.descriptor.name}")
-                registry.register(
-                    _build_v3_plugin_tool(
-                        generations,
-                        plugin_tools,
-                        binding,
-                    ),
-                    risk=(
-                        "write"
-                        if binding.descriptor.risk == "read-write"
-                        else binding.descriptor.risk
-                    ),
-                    always_on=binding.descriptor.always_on,
-                    preloadable=binding.descriptor.preloadable,
-                    requires_turn_search=binding.descriptor.requires_turn_search,
-                    search_hint=binding.descriptor.search_hint,
-                    source_type="plugin",
-                    source_name=binding.plugin_id,
-                )
-        return registry
 
     async def _publish_committed_snapshot(
         self,
@@ -7590,8 +7519,6 @@ def _replace_snapshot_payload(
         "workload_registry_identity",
         "tool_registry",
         "command_registry",
-        "plugin_tool_catalog",
-        "plugin_tool_catalog_identity",
         "composition_root",
         "composition_topology",
         "composition_active_plugin_ids",
@@ -7785,106 +7712,6 @@ def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
         _ = path.relative_to(plugin_dir)
     except ValueError as error:
         raise RuntimeError(f"插件 {label} 越界: {path}") from error
-
-
-def _build_v3_plugin_tool(
-    generations: Mapping[str, PluginGeneration],
-    catalog: PluginToolCatalog,
-    binding: PluginToolBinding,
-) -> Any:
-    """Build one Tool adapter fenced to its exact committed snapshot catalog."""
-
-    from agent.plugin_composition.tool_catalog import _thaw_json
-    from agent.tools.base import (
-        Tool as AgentTool,
-        ToolExecutionContext,
-        ToolResult,
-        get_current_tool_context,
-    )
-
-    # 1. Resolve and validate the handler at snapshot compilation time.
-    generation = generations.get(binding.plugin_id)
-    if generation is None or generation.generation_id != binding.generation_id:
-        raise RuntimeError(
-            "plugin Tool handler 不属于 exact generation: "
-            f"{binding.plugin_id}:{binding.generation_id}"
-        )
-    handler: object = binding.handler
-    if handler is None:
-        handler = binding.module
-        for segment in binding.descriptor.handler_export.replace(":", ".").split("."):
-            handler = getattr(handler, segment, None)
-            if handler is None:
-                break
-    if not inspect.iscoroutinefunction(handler):
-        raise RuntimeError(
-            f"plugin Tool handler 必须是 async function: {binding.descriptor.name}"
-        )
-    signature = inspect.signature(handler)
-    parameters = tuple(signature.parameters.values())
-    positional = {
-        inspect.Parameter.POSITIONAL_ONLY,
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-    }
-    if (
-        len(parameters) != 2
-        or tuple(item.name for item in parameters) != ("context", "arguments")
-        or any(item.kind not in positional for item in parameters)
-        or any(item.default is not inspect.Parameter.empty for item in parameters)
-    ):
-        raise RuntimeError(
-            "plugin Tool handler 签名必须是 async (context, arguments): "
-            f"{binding.descriptor.name}"
-        )
-
-    # 2. Execute only through the exact live catalog bound by ToolRegistry.
-    async def execute(self: Any, **kwargs: Any) -> str | ToolResult:
-        from agent.plugin_composition.diagnostics import plugin_entrypoint
-
-        snapshot = get_current_runtime_snapshot()
-        if snapshot is None or snapshot.plugin_tool_catalog is not catalog:
-            raise RuntimeError(
-                f"plugin Tool 缺少 exact RuntimeSnapshot: {binding.descriptor.name}"
-            )
-        current = catalog.get(binding.descriptor.name)
-        if current is not binding or not binding.is_live():
-            raise RuntimeError(f"plugin Tool binding 已失效: {binding.descriptor.name}")
-        context = get_current_tool_context()
-        if not isinstance(context, ToolExecutionContext):
-            raise RuntimeError(
-                f"plugin Tool 缺少 ToolExecutionContext: {binding.descriptor.name}"
-            )
-        with plugin_entrypoint(
-            plugin_id=binding.plugin_id,
-            generation_id=binding.generation_id,
-            fiber=binding.plugin_id,
-            operation="tool.call",
-            entrypoint=binding.descriptor.name,
-        ):
-            result = await handler(
-                context,
-                MappingProxyType(dict(kwargs)),
-            )
-            if not isinstance(result, (str, ToolResult)):
-                raise RuntimeError(
-                    f"plugin Tool handler 返回值无效: {binding.descriptor.name}"
-                )
-        return result
-
-    tool_class = type(
-        f"V3PluginTool_{binding.descriptor.name}",
-        (AgentTool,),
-        {
-            "name": binding.descriptor.name,
-            "description": binding.descriptor.description,
-            "parameters": cast(
-                dict[str, Any],
-                _thaw_json(binding.descriptor.parameters),
-            ),
-            "execute": execute,
-        },
-    )
-    return tool_class()
 
 
 def _source_revision(plugin_dir: Path) -> str:

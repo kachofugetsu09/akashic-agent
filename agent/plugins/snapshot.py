@@ -17,7 +17,6 @@ from agent.tools.registry import ToolRegistry
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,
-    TOOL_CATALOG,
     MANAGED_PROCESSES,
     WORKLOADS,
     MCP_SERVERS,
@@ -51,11 +50,6 @@ from agent.plugin_composition.workload_slots import (
     WorkloadRegistry,
     _freeze_plugin_workloads,
 )
-from agent.plugin_composition.tool_catalog import (
-    PluginToolCatalog,
-    PluginTools,
-    _freeze_plugin_tools,
-)
 
 SnapshotState = Literal[
     "compiled",
@@ -85,9 +79,6 @@ class RuntimeSnapshot:
     managed_process_registry_identity: str | None = None
     workload_registry: WorkloadRegistry | None = None
     workload_registry_identity: str | None = None
-    plugin_tool_catalog: PluginToolCatalog | None = None
-    plugin_tool_catalog_identity: str | None = None
-    plugin_tool_facades: tuple[PluginTools, ...] = field(default=(), repr=False)
     tool_registry: ToolRegistry | None = None
     command_registry: CommandRegistry | None = None
     composition_root: CompositionSnapshotRoot | None = None
@@ -160,8 +151,6 @@ class RuntimeSnapshotCompiler:
         mcp_server_registry: McpServerRegistry | None = None
         managed_process_registry: ManagedProcessRegistry | None = None
         workload_registry: WorkloadRegistry | None = None
-        plugin_tool_catalog: PluginToolCatalog | None = None
-        plugin_tool_facades: tuple[PluginTools, ...] = ()
         web_ui_catalog: WebUiCatalog | None = None
         if base_snapshot is None and replaced_plugin_ids:
             raise ValueError("replaced_plugin_ids 需要 base_snapshot")
@@ -303,22 +292,6 @@ class RuntimeSnapshotCompiler:
                             )
                 mcp_server_registry = frozen_mcp
                 identity += f"|mcp-v3:{frozen_mcp.identity}"
-            plugin_tools = catalog_context.get(TOOL_CATALOG)
-            if plugin_tools is not None:
-                plugin_tool_catalog = _freeze_plugin_tools(
-                    plugin_tools,
-                    catalog_root_token,
-                    {
-                        generation.plugin_id: generation.generation_id
-                        for generation in ordered
-                    },
-                    composition_root.plugin_service_owners(),
-                )
-                self._validate_plugin_tool_catalog(
-                    plugin_tool_catalog,
-                    generations,
-                )
-                identity += f"|plugin-tools-v3:{plugin_tool_catalog.identity}"
             if base_snapshot is not None:
                 mobile_ui_registry = _merge_owner_mapping_registry(
                     base_snapshot.mobile_ui_registry,
@@ -372,22 +345,6 @@ class RuntimeSnapshotCompiler:
                         lambda item: getattr(item, "descriptor").owner,
                     ),
                 )
-                plugin_tool_catalog = cast(
-                    PluginToolCatalog | None,
-                    _merge_root_mapping_registry(
-                        base_snapshot.plugin_tool_catalog,
-                        plugin_tool_catalog,
-                        replaced_plugin_ids,
-                        PluginToolCatalog,
-                        composition_root.instance_token,
-                        lambda item: getattr(item, "plugin_id"),
-                    ),
-                )
-                if plugin_tool_catalog is not None:
-                    self._validate_plugin_tool_catalog(
-                        plugin_tool_catalog,
-                        generations,
-                    )
                 identity += "|overlay-catalogs:" + "|".join(
                     (
                         (
@@ -416,11 +373,6 @@ class RuntimeSnapshotCompiler:
                             if mcp_server_registry is None
                             else mcp_server_registry.identity
                         ),
-                        (
-                            ""
-                            if plugin_tool_catalog is None
-                            else plugin_tool_catalog.identity
-                        ),
                     )
                 )
             assert composition_active_plugin_ids is not None
@@ -428,22 +380,6 @@ class RuntimeSnapshotCompiler:
                 channel_registry,
                 generations,
             )
-            plugin_tools = catalog_context.get(TOOL_CATALOG)
-            if plugin_tool_catalog is not None and isinstance(
-                plugin_tools, PluginTools
-            ):
-                plugin_tools._bind_runtime_catalog(plugin_tool_catalog)
-            if plugin_tool_catalog is not None:
-                facades = (
-                    [plugin_tools] if isinstance(plugin_tools, PluginTools) else []
-                )
-                if base_snapshot is not None:
-                    facades.extend(
-                        facade
-                        for facade in base_snapshot.plugin_tool_facades
-                        if facade not in facades
-                    )
-                plugin_tool_facades = tuple(facades)
         if composition_active_plugin_ids is not None:
             web_ui_catalog = freeze_web_ui_catalog(
                 generations,
@@ -491,8 +427,6 @@ class RuntimeSnapshotCompiler:
                 + ("" if workload_registry is None else workload_registry.identity),
                 "mcp:"
                 + ("" if mcp_server_registry is None else mcp_server_registry.identity),
-                "tools:"
-                + ("" if plugin_tool_catalog is None else plugin_tool_catalog.identity),
                 "channel-catalog:"
                 + ("" if channel_catalog is None else channel_catalog.identity),
             )
@@ -528,11 +462,6 @@ class RuntimeSnapshotCompiler:
             workload_registry_identity=(
                 None if workload_registry is None else workload_registry.identity
             ),
-            plugin_tool_catalog=plugin_tool_catalog,
-            plugin_tool_catalog_identity=(
-                None if plugin_tool_catalog is None else plugin_tool_catalog.identity
-            ),
-            plugin_tool_facades=plugin_tool_facades,
             command_registry=command_registry,
             composition_root=composition_root,
             composition_topology=composition_topology,
@@ -572,22 +501,6 @@ class RuntimeSnapshotCompiler:
                     )
 
         # 静态声明限定凭据上限；配置可不注册渠道，此时不创建 provider 或读取凭据。
-
-    @staticmethod
-    def _validate_plugin_tool_catalog(
-        catalog: PluginToolCatalog,
-        generations: Mapping[str, PluginGeneration],
-    ) -> None:
-        """Validate every Tool binding against its exact generation."""
-
-        for binding in catalog.values():
-            generation = generations.get(binding.plugin_id)
-            if generation is None or generation.generation_id != binding.generation_id:
-                raise RuntimeError(
-                    "RuntimeSnapshot plugin Tool 不属于 exact generation: "
-                    f"{binding.plugin_id}:{binding.generation_id}"
-                )
-
 
 def _merge_command_registries(
     base: CommandRegistry | None,
@@ -993,7 +906,6 @@ class RuntimeSnapshotStore:
         self._current = snapshot
         self._latest = snapshot
         self._snapshots[snapshot.snapshot_id] = snapshot
-        self._activate_plugin_tool_catalog(snapshot)
 
     def begin_publish(
         self,
@@ -1030,7 +942,6 @@ class RuntimeSnapshotStore:
         self._current = transaction.candidate
         self._latest = transaction.candidate
         self._pending = None
-        self._activate_plugin_tool_catalog(transaction.candidate)
         previous = transaction.previous
         if previous is not None:
             previous.state = "retired"
@@ -1127,14 +1038,11 @@ class RuntimeSnapshotStore:
         transaction.candidate.state = "committed"
         previous = transaction.previous
         self._current = transaction.candidate
-        self._activate_plugin_tool_catalog(transaction.candidate)
         try:
             if after_open is not None:
                 after_open()
         except BaseException:
             self._current = previous
-            if previous is not None:
-                self._activate_plugin_tool_catalog(previous)
             raise
 
         # 3. Open the new stable only after all publication work succeeded.
@@ -1203,7 +1111,6 @@ class RuntimeSnapshotStore:
         self._current = candidate
         self._latest = candidate
         candidate.accepting_leases = True
-        self._activate_plugin_tool_catalog(candidate)
 
         # 2. manager owner 切换完成后，旧 stable 才能开始 drain。
         if previous is not None:
@@ -1219,7 +1126,6 @@ class RuntimeSnapshotStore:
             if previous is not None:
                 previous.state = "committed"
                 previous.accepting_leases = True
-                self._activate_plugin_tool_catalog(previous)
             async with self._condition:
                 self._condition.notify_all()
             raise
@@ -1228,16 +1134,6 @@ class RuntimeSnapshotStore:
         async with self._condition:
             self._condition.notify_all()
         return SnapshotTransaction(previous=previous, candidate=candidate)
-
-    @staticmethod
-    def _activate_plugin_tool_catalog(snapshot: RuntimeSnapshot) -> None:
-        """Point every live facade in the selected snapshot at one catalog."""
-
-        catalog = snapshot.plugin_tool_catalog
-        if catalog is None:
-            return
-        for facade in snapshot.plugin_tool_facades:
-            facade._bind_runtime_catalog(catalog)
 
     async def discard_latest(
         self,
@@ -1637,8 +1533,6 @@ class RuntimeSnapshotStore:
                 or snapshot.managed_process_registry_identity is not None
                 or snapshot.workload_registry is not None
                 or snapshot.workload_registry_identity is not None
-                or snapshot.plugin_tool_catalog is not None
-                or snapshot.plugin_tool_catalog_identity is not None
             ):
                 raise RuntimeError(
                     "RuntimeSnapshot composition identity 缺少 Root Context"
@@ -1730,18 +1624,6 @@ class RuntimeSnapshotStore:
             is not root.instance_token
         ):
             raise RuntimeError("RuntimeSnapshot Workload registry 不属于 exact Root")
-        if snapshot.plugin_tool_catalog_identity != (
-            None
-            if snapshot.plugin_tool_catalog is None
-            else snapshot.plugin_tool_catalog.identity
-        ):
-            raise RuntimeError("RuntimeSnapshot plugin Tool catalog 在编译后发生变化")
-        if (
-            snapshot.plugin_tool_catalog is not None
-            and snapshot.plugin_tool_catalog.root_instance_token
-            is not root.instance_token
-        ):
-            raise RuntimeError("RuntimeSnapshot plugin Tool catalog 不属于 exact Root")
         topology = snapshot.composition_topology
         if topology is None:
             raise RuntimeError("RuntimeSnapshot composition Root 缺少 TopologyView")

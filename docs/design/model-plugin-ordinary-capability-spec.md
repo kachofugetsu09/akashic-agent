@@ -206,6 +206,12 @@ Provider 完整卸载与 settings 竞态最多使 Connection 进入 `driver unav
 
 用户写操作继续由 authenticated settings/control host 拥有认证、同源/CSRF 和请求生命周期。它在当前 snapshot lease 内调用 Models 插件注册的 `models/command` RPC；`MODEL_SETTINGS` 只在 Models artifact 内用于绑定真实 settings owner，不是 Core 的业务命令 API。同进程 Service facade 是 API/拓扑边界，不伪装成恶意插件 sandbox。未来若隔离不可信插件，应另立通用组合权限设计。Web navigation/data/action contribution 属于独立 UI 规格，不是本切片前置。
 
+### 6.1.1 Core 的只读模型适配边界
+
+当前实现中的 Core host adapter 是 `agent/plugins/model_control.py:RuntimeModelControl`。它只保留三个只读入口：`call_stats(call_id)`、`read_saved(metadata)` 和 `catalog()`；每次调用先取得一个 `RuntimeSnapshotStore` 的 exact lease，再从该 lease 的 composition Root 读取 Models Service，并在 `finally` 中释放 lease。缺少 Root 或 Service 返回 typed `ModelControlUnavailable`；provider 自身的编程异常继续向调用者传播。`invoke_rpc(method, params)` 只是控制面通用 RPC transport，Core 不解析 Models 的命令 dataclass，也不拥有设置规则。
+
+`agent/plugin_composition/model_settings_http.py` 现在只定义这个 unavailable boundary error，不再导出 `BoundModelControl`、Core `ModelControl`、`ModelSelectionReader` 或 `MODEL_SELECTION`。Web/Mobile 在 `bootstrap/app.py` 绑定 `RuntimeModelControl` 的方法；Models Dashboard 和 RPC handler 使用 Models artifact 自己的 resolver/facade。这样读请求、设置写事务和 provider 业务实现没有第二个 Core owner。
+
 ### 6.2 Core 不提供
 
 1. 不提供 `LLMProvider` 单例或全局 provider locator。
@@ -259,6 +265,8 @@ class BoundChatModel(Protocol):
 ```
 
 `execution()` 在 admission 时租住 exact stable snapshot，并在一个 SQLite read transaction 中复制 revision、default、fast、agent 和 vision 的完整映射。显式 Session 选择只按现行规则覆盖 default/agent，不改变其他 role。`fallback` 继续是 provider/role policy，不在没有独立调用者时升格为第五个公开 role。退出前只持有 plugin snapshot lease；revision 是 binding descriptor 上的值，不计数、不 retire。
+
+`default`、`fast`、`agent`、`vision` 是 Models artifact 解释的四个持久 role 字符串，不是 Core 的 `ModelRole` enum 或角色目录。`plugins/models/store.py:MODEL_ROLES` 保存允许集合，`plugins/models/state.py` 负责按 role 构造完整 execution、default fallback、显式 agent 选择和 vision 能力检查；Core 的 `ModelExecution.chat(role)` 只接受字符串。已有数据库中的 role 字符串不因 owner 迁移而重写；未来增加或放开 role 只改变 Models artifact 的校验和 fallback，不要求 Core 增加业务分支。
 
 同一个 Turn、job 或 scoped work 只能建立一个 `ModelExecution`。compaction、vision、summary 和 ReAct 的所有请求都从它按 role 取得模型；不同 role 合法，不建立嵌套 generation。嵌套执行只有复用同一个 execution object 时允许；尝试在同一执行中重新读取 current 或改变 selection 必须 fail-loud。
 
@@ -316,6 +324,8 @@ class ModelCatalog(Protocol):
 ```
 
 Snapshot 包含 revision、连接、模型、默认 binding、capability source 和 availability，并自行提供同一 revision 内的 lookup。Service 不再提供 `connection(id)`/`model(id)` 便利方法，避免一个请求混读不同 revision。Snapshot 不返回 API Key、access token、refresh token 或 credential payload。Session/Turn owner 使用 `validate_chat_selection()` 做纯校验，随后仍由 Session owner 写 `sessions.metadata`；`models` 不取得 Session write surface。
+
+Session selection 也不由 Core 集中拥有。Models 在 `plugins/models/selection.py` 定义具体的 `models.selection.v1` ServiceKey 和 `SelectionOwner`；Core 读适配器只在 `agent/plugins/model_control.py` 内声明同名的 consumer-local structural Protocol，以便在当前 lease 中调用 `read_saved`。返回的 `ChatModelSelection` 是已有 provider-neutral 值类型，没有复制第二份类型或把 Models selection 实现导出到 Core；其他消费者按自己的窄需求声明同名 key。
 
 ### 7.4 `MODEL_SETTINGS`
 
@@ -442,6 +452,8 @@ Unknown 保持 unknown。未知不等于零、不支持或 false。Core 不保�
 from agent.plugin_composition import CHAT_MODELS, EMBEDDINGS
 from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS
 ```
+
+`MODEL_SETTINGS` 和 `models.selection.v1` 的具体 owner key 不属于上述 Core public import surface：前者只由 Models artifact 内部使用，后者由 Models selection owner 和需要它的消费者各自声明同名窄 key。外部控制面使用 `models/command` RPC，不 import Settings dataclass。
 
 禁止：
 
@@ -759,6 +771,9 @@ Turn 内 embedding     EMBEDDINGS.bind() → embed(...)
 - `models`、三个 Provider 均通过第 14 节外置安装 Gate。
 - Service topology 能显示 provider plugin → `MODEL_DRIVERS`，consumer → 对应窄 Service。
 - 五个 facade 是五个不同 Service value：Embeddings 没有 chat execution，Catalog 没有 apply，Drivers 没有 catalog/settings/execute；它们只共享私有 state。
+- Core 只剩 `RuntimeModelControl` 的三项 leased read adapter 和通用 RPC transport；不存在 Core `BoundModelControl`、`ModelControl`、`ModelSelectionReader` 或 `MODEL_SELECTION` owner。
+- Session selection 由 Models 的 `plugins/models/selection.py` owner 提供；Core/其他消费者不复制 selection 实现或值类型。
+- `default`、`fast`、`agent`、`vision` 的持久字符串、预设校验和 fallback 全由 Models 解释；Core execution port 不包含 `ModelRole` enum 或业务角色分支。
 
 ### 18.2 Chat 验收
 

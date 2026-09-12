@@ -16,7 +16,7 @@ from plugins.drift.plugin import DRIFT_PROPOSALS
 from plugins.akasha.message_plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
-from plugins.wake.api import DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
+from plugins.wake.api import Config, DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
 from plugins.wake.request import (
     Request,
     TOOLS as WAKE_TOOLS,
@@ -408,7 +408,6 @@ async def test_content_screen_and_investigation_keep_original_refs_until_provide
 
 @pytest.mark.asyncio
 async def test_runtime_timer_captures_original_drift_and_records_real_completion(tmp_path, monkeypatch):
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         now = datetime.now(timezone.utc)
@@ -498,7 +497,6 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
     from plugins.content.plugin import check_text
     from plugins.conversation.source import update_selection
     from plugins.models.selection import MODEL_SELECTION, check_selection
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     from plugins.akasha.learning import Learning
     from plugins.turn_projection.plugin import TURN_PROJECTION
@@ -593,7 +591,6 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
 @pytest.mark.asyncio
 @pytest.mark.parametrize("where", ["admission", "source", "maintenance"])
 async def test_runtime_failure_closes_timer_audit_before_stopping_both_loops(tmp_path, monkeypatch, where):
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         now = datetime.now(timezone.utc)
@@ -619,7 +616,6 @@ async def test_runtime_failure_closes_timer_audit_before_stopping_both_loops(tmp
 
 @pytest.mark.asyncio
 async def test_runtime_stop_drains_its_active_source_before_returning(tmp_path, monkeypatch):
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         control["release"].clear()
@@ -678,7 +674,6 @@ async def test_new_drift_wakes_idle_runtime_and_replaces_later_deadline(tmp_path
 
 @pytest.mark.asyncio
 async def test_missing_target_only_maintains_pool_then_reload_can_admit_original_duty(tmp_path, monkeypatch):
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         now = datetime.now(timezone.utc)
@@ -721,7 +716,6 @@ async def test_missing_target_only_maintains_pool_then_reload_can_admit_original
 async def test_cancel_during_timer_cleanup_closes_fired_audit_and_drains_handle(tmp_path, monkeypatch):
     from agent.control.timer import TimerReceipt, TimerStatus
     from agent.plugin_composition.timers import TIMERS
-    from plugins.wake.api import Config
     from plugins.wake.runtime import Runtime
     async with application(tmp_path) as (host, log, ctx, source, control):
         runtime = Runtime(ctx, Config())

@@ -39,9 +39,9 @@
     {
       "id": "emotion",
       "repository": "https://github.com/akashic-plugins/emotion",
-      "requested_ref": "d828fd7ec97e027bc1ee4a39e5501a2cf25296a2",
-      "resolved_sha": "d828fd7ec97e027bc1ee4a39e5501a2cf25296a2",
-      "change_source_pr_head": "d828fd7ec97e027bc1ee4a39e5501a2cf25296a2"
+      "requested_ref": "99e4acc1b656c63c818b741f533dfb4de9299ef6",
+      "resolved_sha": "99e4acc1b656c63c818b741f533dfb4de9299ef6",
+      "change_source_pr_head": "99e4acc1b656c63c818b741f533dfb4de9299ef6"
     },
     {
       "id": "plugin_undo",
@@ -109,9 +109,9 @@
     {
       "id": "proactive_feedback",
       "repository": "https://github.com/akashic-plugins/proactive_feedback",
-      "requested_ref": "e65baddfe793562163d1a6d5844754a4d2ed3e57",
-      "resolved_sha": "e65baddfe793562163d1a6d5844754a4d2ed3e57",
-      "change_source_pr_head": "e65baddfe793562163d1a6d5844754a4d2ed3e57"
+      "requested_ref": "b0dd6dd1a14852e0e5df3c2459f60f1bc80c99f4",
+      "resolved_sha": "b0dd6dd1a14852e0e5df3c2459f60f1bc80c99f4",
+      "change_source_pr_head": "b0dd6dd1a14852e0e5df3c2459f60f1bc80c99f4"
     },
     {
       "id": "huayue-skills",
@@ -123,9 +123,9 @@
     {
       "id": "github_watch",
       "repository": "https://github.com/kachofugetsu09/github-watch.git",
-      "requested_ref": "b9266ab3ca9932c074a6d91cf48ab69691bcf1ce",
-      "resolved_sha": "b9266ab3ca9932c074a6d91cf48ab69691bcf1ce",
-      "change_source_pr_head": "b9266ab3ca9932c074a6d91cf48ab69691bcf1ce"
+      "requested_ref": "8cf37b9be111f33a01b6b868914f5a1494494b5f",
+      "resolved_sha": "8cf37b9be111f33a01b6b868914f5a1494494b5f",
+      "change_source_pr_head": "8cf37b9be111f33a01b6b868914f5a1494494b5f"
     }
   ]
 }

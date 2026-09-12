@@ -692,56 +692,6 @@ def _write_v3_plugin(
         )
 
 
-def _write_tool_skill_plugin(plugin_dir: Path) -> None:
-    """Write one ordinary v3 candidate that contributes both Tool and Skill."""
-
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-    (plugin_dir / "plugin.py").write_text(
-        "from agent.plugin_composition import TOOL_CATALOG, PluginToolDefinition\n\n"
-        "api_version = 3\n"
-        "name = 'candidate'\n"
-        "version = '1.0.0'\n"
-        "inject = (TOOL_CATALOG,)\n"
-        "skill_roots = ('skills',)\n\n"
-        "async def candidate_probe(context, arguments):\n"
-        "    del context, arguments\n"
-        "    return 'candidate-ready'\n\n"
-        "async def apply(ctx, config):\n"
-        "    del config\n"
-        "    await ctx.require(TOOL_CATALOG).register(ctx, PluginToolDefinition(\n"
-        "        name='candidate_probe',\n"
-        "        description='Check the candidate.',\n"
-        "        parameters={\n"
-        "            'type': 'object',\n"
-        "            'properties': {},\n"
-        "            'required': [],\n"
-        "            'additionalProperties': False,\n"
-        "        },\n"
-        "        handler_export='candidate_probe',\n"
-        "        risk='read-only',\n"
-        "    ))\n",
-        encoding="utf-8",
-    )
-    skill = plugin_dir / "skills" / "candidate-check"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text(
-        "---\n"
-        "name: candidate-check\n"
-        "description: Check the installed candidate.\n"
-        "---\n\n"
-        "# Candidate check\n",
-        encoding="utf-8",
-    )
-    (plugin_dir / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        'name = "candidate"\n'
-        'version = "1.0.0"\n'
-        "api_version = 3\n"
-        'entrypoint = "plugin.py"\n',
-        encoding="utf-8",
-    )
-
-
 def _commit_all(repo: Path, message: str) -> None:
     """提交测试插件的完整 source tree，并支持同仓库连续 revision。"""
 

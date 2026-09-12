@@ -64,11 +64,6 @@ from agent.plugin_composition.model import (
     TopologyView,
     WriteObservation,
 )
-from agent.plugin_composition.session_read import (
-    SESSION_READ,
-    SessionReadService,
-    SessionReadSnapshot,
-)
 from agent.plugin_composition.deliveries import DELIVERIES, PluginDeliveries
 from agent.plugin_composition.durable_deliveries import (
     DURABLE_DELIVERIES,
@@ -167,16 +162,6 @@ from agent.plugin_composition.workload_slots import (
     WorkloadHealth,
     WorkloadLimits,
     WorkloadPort,
-)
-from agent.plugin_composition.tool_catalog import (
-    TOOL_CATALOG,
-    PluginToolBinding,
-    PluginToolCatalog,
-    PluginToolDefinition,
-    PluginToolDescriptor,
-    PluginToolHandler,
-    PluginTools,
-    ToolRisk,
 )
 from agent.plugin_composition.channels import (
     CHANNELS,
@@ -355,7 +340,6 @@ __all__ = [
     "WORKLOADS",
     "EMBEDDING_MEMORY_PLUGIN",
     "MCP_SERVERS",
-    "TOOL_CATALOG",
     "EndpointEnv",
     "WorkloadEnv",
     "McpServerDefinition",
@@ -376,12 +360,6 @@ __all__ = [
     "ObserveEventKey",
     "PluginChannels",
     "PluginCommands",
-    "PluginToolBinding",
-    "PluginToolCatalog",
-    "PluginToolDefinition",
-    "PluginToolDescriptor",
-    "PluginToolHandler",
-    "PluginTools",
     "PluginUiSlots",
     "resolve_mobile_ui_asset",
     "PluginRuntime",
@@ -392,14 +370,10 @@ __all__ = [
     "ProviderClientFactory",
     "ProviderDeliveryReceipt",
     "ProviderDeliveryRequest",
-    "ToolRisk",
     "PushToolRequest",
     "ParallelEventKey",
     "QueuedReceipt",
     "RawInbound",
-    "SESSION_READ",
-    "SessionReadService",
-    "SessionReadSnapshot",
     "ServiceKey",
     "ServiceView",
     "DELIVERIES",

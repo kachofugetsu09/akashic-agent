@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.artifacts import AttachmentKind
-from agent.plugin_composition.tool_catalog import (
+from agent.tool_catalog import (
     ToolResult,
     normalize_tool_parameters,
     validate_tool_parameters,

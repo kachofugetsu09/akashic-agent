@@ -6,8 +6,7 @@
 
 按 [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 与
 [阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 完成已授权的 stacked PR 实施。
-剩余集中在：历史 artifact 的私有宿主依赖与纯历史 Core owner、正式安装配置入口、
-分发首次初始化与重启保留用户组合，以及合并后无 checkout 的最终产物验收。
+剩余集中在：外部反馈与工具插件的正式安装互操作，以及无 checkout 的最终分发产物验收。
 实现全部完成后统一处理完整测试、独立概念评审、Gate 和 CI；不等待 CI 阻塞下一实施层。
 验收必须覆盖 Core-only CLI/AppRuntime、独立子集和异名 provider、generation/归档生命周期、
 实际 Message 与持久送达闭环；不能以 import 数量清零代替这些证据。

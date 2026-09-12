@@ -40,10 +40,6 @@ note = "按插件 owner 隔离的同库事务空间"
 role = "core"
 note = "exact Root 的工具 binding 归档与解析"
 
-[capabilities."core.session_read"]
-role = "core"
-note = "只读既有 Session 投影"
-
 [capabilities."core.interaction_undo"]
 role = "core"
 note = "显式撤销最近一次 interaction"
@@ -98,10 +94,6 @@ note = "有界纯同步 worker 池"
 [capabilities."core.commands"]
 role = "core"
 note = "人类命令、alias 与 handler 注册表"
-
-[capabilities."core.tool_catalog"]
-role = "core"
-note = "exact Root 的工具定义与 bound handler"
 
 [capabilities."core.ui_slots"]
 role = "core"
