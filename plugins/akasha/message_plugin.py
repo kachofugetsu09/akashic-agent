@@ -331,6 +331,7 @@ async def apply(ctx: Context, config: Config) -> None:
             capture=capture_recall,
             idempotent=True,
             risk="read-only",
+            parallel=True,
         )
     )
     _ = await ctx.provide(AKASHA_TOOLS, catalog.view(*tool_refs))

@@ -70,6 +70,7 @@
 | [0062](0062-tools-flow-through-provider-views.md) | accepted / implemented | 工具通过 provider view 流向消费者 | CTX-004、CTX-007、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016、PLG-018 |
 
 | [0063](0063-execution-failures-have-terminal-results.md) | accepted | 执行失败明确收尾，恢复依据原回执 | Tools、Delivery、Wake、Mobile、Models |
+| [0064](0064-parallel-tool-calls-commit-in-model-order.md) | accepted | 并行工具调用重叠执行、按模型顺序提交 | PRM-004、SES-003～SES-005、RUN-003 |
 
 ## 新增规则
 

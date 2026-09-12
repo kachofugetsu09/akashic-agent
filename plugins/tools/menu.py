@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol, cast
 
@@ -154,13 +155,24 @@ class ToolMenu:
         )
         return cast(str, description["name"])
 
+    def parallel(self, binding_id: str) -> bool:
+        """只有注册时显式声明 parallel=True 的调用才允许重叠；失效 binding 一律按串行处理。"""
+        try:
+            description = cast(
+                Mapping[str, object],
+                self._bindings.describe(binding_id, TOOLS)["tool"],
+            )
+        except Exception:
+            return False
+        return description.get("parallel") is True
+
     def check_call(self, call: ToolCall) -> None:
         if call.binding_id not in self._bound.values():
             raise PermissionError("工具请求不属于本次获授 view")
 
-    async def execute(self, call: CallRef) -> Result:
+    async def execute(self, call: CallRef, *, commit_after: asyncio.Event | None = None) -> Result:
         reply = self._reply(call)
         try:
-            return await self._execution.execute_call(reply)
+            return await self._execution.execute_call(reply, commit_after=commit_after)
         finally:
             reply.writer.expire()

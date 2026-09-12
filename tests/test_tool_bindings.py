@@ -404,3 +404,17 @@ async def test_binding_authorize_checks_final_arguments_and_old_binding_keeps_ol
     finally:
         await host.terminate_all()
         log.close()
+
+
+def test_archived_tool_description_without_parallel_stays_exclusive():
+    """旧归档描述缺少 parallel 字段时按 exclusive 解释，升级后 binding 不失效。"""
+    from plugins.tools.plugin import _same_description
+
+    current = {"name": "example", "parallel": False, "risk": "read-write"}
+    assert _same_description(current, {"name": "example", "risk": "read-write"})
+    assert _same_description(current, {**current})
+    assert not _same_description(
+        current, {"name": "example", "risk": "read-write", "parallel": True}
+    )
+    assert not _same_description(current, {"name": "example"})
+    assert not _same_description(current, "not-a-mapping")
