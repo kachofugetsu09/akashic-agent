@@ -207,4 +207,4 @@ class ContextMaterials:
                 view.close()
 
 
-MATERIALS = ServiceKey[ContextMaterials]("context.materials.v1")
+MATERIALS = ServiceKey[ContextMaterials]("context.materials.v2")

@@ -6,6 +6,7 @@ from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -16,9 +17,9 @@ from plugins.content.api import Reference
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS
 from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
-from session.message import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
-from session.message_codec import json_value
+from agent.plugin_composition.messages import MessageCatalog
+from agent.plugin_contracts import ContentPart, ContentReferences, Message, Output, ToolCall, ToolResult
+from agent.plugin_contracts import json_value
 
 from .application.consumer import run_memory_job
 from .application.snapshot import read_memory
@@ -172,10 +173,10 @@ class RecallTool:
             material = render_materials(identity, recall, learning, self._catalog, max_chars=request.max_chars)
             recall = recall.model_copy(update={
                 "max_chars": request.max_chars,
-                "presented_message_ids": tuple(dict.fromkeys(ref.ref for ref in material.references)),
+                "presented_message_ids": tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))),
             })
             _ = self._records.save(identity, recall)
-            return self._result(identity, recall, tuple(ContentPart("text", part.text) for part in material.reminders))
+            return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))
 
     async def query(self, key: str) -> Result | None:
         """工具外部结果恢复只读实际查询记录；不读当前图或重跑模型。"""
@@ -185,9 +186,9 @@ class RecallTool:
             return None
         async with self._bindings.open(recall.learning_binding, AKASHA_LEARNING) as (learning, _metadata):
             material = render_materials(identity, recall, learning, self._catalog, max_chars=recall.max_chars)
-        if tuple(dict.fromkeys(ref.ref for ref in material.references)) != recall.presented_message_ids:
+        if tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))) != recall.presented_message_ids:
             raise ValueError("原查询呈现的材料发生变化，不能用当前结果冒充恢复")
-        return self._result(identity, recall, tuple(ContentPart("text", part.text) for part in material.reminders))
+        return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))
 
     @staticmethod
     def _result(identity: str, recall: Recall, parts: tuple[ContentPart, ...]) -> Result:

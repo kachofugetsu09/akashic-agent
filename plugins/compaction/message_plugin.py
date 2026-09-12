@@ -68,7 +68,7 @@ def summary_range(snapshot: tuple[Message, ...], source_message_ids: tuple[str, 
 
 
 CONTEXT = ServiceKey[ContextBuilder]("context.v1")
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v1")
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v2")
 inject = (MATERIALS, CONTEXT, OWNER_STATE, BINDINGS, MESSAGE_CATALOG, CHAT_MODELS, TURN_PROJECTION)
 
 

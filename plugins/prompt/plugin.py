@@ -8,7 +8,7 @@ from typing import Protocol, cast
 from agent.persona import read_veda_file
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_contracts import Input, Message
-from session.message_codec import json_value
+from agent.plugin_contracts import json_value
 
 from .text import build_behavior_rules, build_identity, build_telegram_rendering_prompt
 
@@ -27,7 +27,7 @@ class MaterialRegistry(Protocol):
     ) -> object: ...
 
 
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v1")
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v2")
 inject = (MATERIALS,)
 
 

@@ -271,3 +271,17 @@ lease 内完成；缺 provider 明确返回 scheduler_unavailable，空列表只
 
 消费者可依赖这一组来源中立原子输入，不必为了类型注解导入 session 私有实现。
 这是公开已有 Core 原子合同，不是把业务对象搬入共享目录；业务协作继续使用局部输入。
+
+
+### 9.9 材料贡献使用结构输入
+
+`context.materials.v2` 的贡献者返回 system_prompt、reminders、summary、references
+结构映射；Context 边界校验并转成其内部材料。未知字段、错误类型、未授权 Prompt/摘要、
+重复引用证据冲突和跨 Root 注册均明确失败。没有旧 dataclass provider 的兼容分支；
+旧 key 不与新 ABI 混用。Prompt、Markdown、Akasha 和 compaction 分别声明局部注册输入。
+
+来源事实、召回查询记录、摘要来源范围与权限保持原 owner；召回工具仍从已保存查询
+重建同一呈现出处。本层不减少 Message、不重写旧摘要或学习数据。
+`ContextBuilder.build_attempt` 以容量拒绝结果承接外部消费者，不要求 import 内部异常类。
+材料消费端及 Content 引用解释的剩余实现依赖继续在后续层迁移；本层不宣称 Context
+已可完全脱离 Content 独立运行。

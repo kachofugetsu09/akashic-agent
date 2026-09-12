@@ -65,7 +65,7 @@ class MaterialRegistry(Protocol):
 
 
 CONTENT = ServiceKey[ContentRegistry]("content.v1")
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v1")
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v2")
 inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
           BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, UI_SLOTS, COMMANDS)
 

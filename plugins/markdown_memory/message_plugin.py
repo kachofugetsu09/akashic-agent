@@ -34,7 +34,7 @@ from plugins.compaction.message_summary import source_text, summary_groups, wind
 from plugins.content.api import is_user_input, legacy_post_commit_effect
 from plugins.context.api import check_summary, summary_range
 from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
-from session.log import MessageCatalog
+from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolResult
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ class MaterialRegistry(Protocol):
     ) -> object: ...
 
 
-MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v1")
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v2")
 inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, TURN_PROJECTION)
 
 
