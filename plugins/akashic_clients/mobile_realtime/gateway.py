@@ -728,12 +728,14 @@ class MobileGatewayRuntime:
         ready: asyncio.Future[_MessageFollowReady | None] = (
             asyncio.get_running_loop().create_future()
         )
+        start_follow = asyncio.Event()
         task = tasks.create_task(
             self._follow_message_session_scoped(
                 request,
                 device_id,
                 connection,
                 ready,
+                start_follow,
             )
         )
         self._message_followers[connection.websocket] = task
@@ -755,11 +757,18 @@ class MobileGatewayRuntime:
         if self._stopping or self._connections.get(device_id) is not connection:
             await self._cancel_message_follow(connection.websocket)
             return
-        async with connection.send_lock:
-            await _send_reply(connection.websocket, frame_id=frame.id,
-                connection_epoch=connection.connection_epoch, reply_type="session.follow.ok",
-                payload={"version": 2, "through_seq": result.through_seq},
-                session_id=result.session_id, turn_id=None)
+        try:
+            async with connection.send_lock:
+                await _send_reply(connection.websocket, frame_id=frame.id,
+                    connection_epoch=connection.connection_epoch, reply_type="session.follow.ok",
+                    payload={"version": 2, "through_seq": result.through_seq},
+                    session_id=result.session_id, turn_id=None)
+                # The native command receipt is the ordering barrier: the
+                # child cannot publish session.message before it is on wire.
+                _ = start_follow.set()
+        except BaseException:
+            await self._cancel_message_follow(connection.websocket)
+            raise
 
     async def _follow_message_session_scoped(
         self,
@@ -767,8 +776,9 @@ class MobileGatewayRuntime:
         device_id: str,
         connection: ActiveMobileConnection,
         ready: asyncio.Future[_MessageFollowReady | None],
+        start_follow: asyncio.Event,
     ) -> None:
-        """Create, use, and close the exact message scope in one child task."""
+        """Create, publish, then use the exact message scope in one child task."""
         started = False
         try:
             async with self.channel.open_message_scope():
@@ -785,6 +795,7 @@ class MobileGatewayRuntime:
                             through_seq=reader.head(),
                         )
                     )
+                _ = await start_follow.wait()
                 started = True
                 await self._follow_message_session(
                     reader,

@@ -79,28 +79,19 @@ def connected(gateway):
         yield ws, epoch
 
 
-_PENDING_FRAMES: dict[int, list[dict[str, object]]] = {}
-
-
 def follow(ws, epoch, session, after_seq, **fields):
     identity = '01ARZ3NDEKTSV4RRFFQ69G5FAV'
     ws.send_json({'v': 1, 'kind': 'command', 'type': 'session.follow', 'id': identity,
         'connection_epoch': epoch, 'session_id': session,
         'payload': {'message_log_version': 2, 'after_seq': after_seq, **fields}})
-    pending = _PENDING_FRAMES.setdefault(id(ws), [])
-    while True:
-        reply = ws.receive_json()
-        if reply['type'] == 'session.follow.ok':
-            break
-        assert reply['type'] == 'session.message', reply
-        pending.append(reply)
+    reply = ws.receive_json()
+    assert reply['type'] == 'session.follow.ok', reply
     return identity
 
 
 def receive(ws, kind):
     while True:
-        pending = _PENDING_FRAMES.setdefault(id(ws), [])
-        wire = pending.pop(0) if pending else ws.receive_json()
+        wire = ws.receive_json()
         assert wire['kind'] == 'control' and wire['type'] == 'session.message', wire
         if wire['payload']['type'] == kind:
             return wire['payload']
