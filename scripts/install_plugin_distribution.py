@@ -117,7 +117,6 @@ def verify_distribution(distribution: Path) -> dict[str, Any]:
             raise ValueError(f"plugins[{index}] source_revision 非法")
         if raw.get("source_commit") != commit:
             raise ValueError(f"plugins[{index}] source_commit 与 distribution 不一致")
-        _ = _distribution_file(root, raw.get("file"), f"plugins[{index}] bundle")
         bundle = _distribution_file(root, raw.get("file"), f"plugins[{index}] bundle")
         _check_sha256(bundle, raw.get("sha256"), f"plugins[{index}] bundle")
         names.add(name)
