@@ -33,9 +33,13 @@ inject = ()
 ContentCheck = Callable[[ContentPart], ContentReferences]
 
 
-class ContentCapability(Protocol):
+class ContentViewCapability(Protocol):
     @property
     def checks(self) -> Mapping[str, ContentCheck]: ...
+
+
+class ContentCapability(Protocol):
+    def bind(self) -> AbstractAsyncContextManager[ContentViewCapability]: ...
 
 
 # 与 content owner 共享名字，不共享其实现模块或 Python 类型身份。
@@ -527,22 +531,38 @@ async def apply(ctx: Context, config: object) -> None:
 
     async def start(_event: object) -> None:
         nonlocal watcher
-        async def reply(reader: MessageReader, source: str, ref: CallRef) -> MessageReply:
-            async with ctx.runtime_scope():
-                checks = ctx.require(CONTENT).checks
-                check_text = checks.get("text")
+        async def run_abandon() -> None:
+            content = ctx.get(CONTENT)
+
+            if content is None:
+                async def reply(reader: MessageReader, source: str, ref: CallRef) -> MessageReply:
+                    raise RuntimeError("工具消息回执需要 content capability")
+
+                await follow_abandon(
+                    ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),
+                    ctx.require(TASKS).open(ctx), reply, task_key="effects",
+                    report_incident=ctx.report_incident,
+                )
+                return
+            async with content.bind() as content_view:
+                check_text = content_view.checks.get("text")
                 if check_text is None:
                     raise RuntimeError("content capability 没有 text 检查器")
-                writer = ctx.require(MESSAGE_WRITERS).bind(
-                    ctx, author="tool", source=source, body_types=(ToolResult,), content={"text": check_text},
-                )(reader.session_id, call_ref=ref)
-            return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
 
-        watcher = await ctx.spawn(follow_abandon(
-            ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),
-            ctx.require(TASKS).open(ctx), reply, task_key="effects",
-            report_incident=ctx.report_incident,
-        ), name="tools-abandon")
+                async def bound_reply(reader: MessageReader, source: str, ref: CallRef) -> MessageReply:
+                    async with ctx.runtime_scope():
+                        writer = ctx.require(MESSAGE_WRITERS).bind(
+                            ctx, author="tool", source=source, body_types=(ToolResult,), content={"text": check_text},
+                        )(reader.session_id, call_ref=ref)
+                    return MessageReply(result_message_id(ref), ref, reader, writer, reject_start)
+
+                await follow_abandon(
+                    ctx.require(MESSAGE_CATALOG), ctx.require(OWNER_STATE).open(ctx),
+                    ctx.require(TASKS).open(ctx), bound_reply, task_key="effects",
+                    report_incident=ctx.report_incident,
+                )
+
+        watcher = await ctx.spawn(run_abandon(), name="tools-abandon")
 
     async def stop(_event: object) -> None:
         if watcher is not None:
