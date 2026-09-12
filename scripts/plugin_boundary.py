@@ -54,7 +54,6 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.host_bridge.filesystem",
     "agent.host_bridge.factory",
     "agent.media",
-    "agent.model_runtime.catalog.litellm_registry",
     "agent.plugin_composition",
     "agent.plugin_composition.access",
     "agent.plugin_composition.artifacts",

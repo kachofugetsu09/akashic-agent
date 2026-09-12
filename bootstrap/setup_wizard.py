@@ -1,41 +1,36 @@
 """
-交互式初始化向导
+交互式初始化向导。
 
 python main.py setup
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 import shutil
-import sys
-import select
+import subprocess
 import tempfile
-import threading
-from dataclasses import dataclass, field
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
 import click
+
 from agent.plugins.manifest import (
     ensure_workspace_plugin_data_dir,
+    load_plugin_manifest,
+    plugins_root,
     workspace_plugin_data_dir,
 )
-
-# ---------------------------------------------------------------------------
-# 数据结构
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class WizardAnswers:
-    tg_token: str = ""
-    tg_allow_from: list[str] = field(default_factory=list)
-    qqbot_app_id: str = ""
-    qqbot_client_secret: str = ""
-    qqbot_user_openid: str = ""
+from agent.plugins.python_environment import (
+    PythonEnvironments,
+    read_environment_refs,
+)
+from agent.plugins.source_resolver import resolve_plugin_sources
+from agent.plugins.static_manifest import (
+    StaticPluginManifest,
+    staged_python_interpreter,
+)
 
 
 def _hint(text: str) -> None:
@@ -46,139 +41,20 @@ def _ok(text: str) -> None:
     click.echo(click.style(f"  ✓ {text}", fg="green"))
 
 
-def _warn(text: str) -> None:
-    click.echo(click.style(f"  ! {text}", fg="yellow"))
-
-
 def _err(text: str) -> None:
     click.echo(click.style(f"  ✗ {text}", fg="red"))
-
-
-def _section_header(step: str, title: str) -> None:
-    click.echo(f"\n{click.style(f'[{step}]', bold=True)} {title}\n")
 
 
 def _divider() -> None:
     click.echo(click.style("─" * 40, dim=True))
 
 
-def _read_escape_sequence(fd: int) -> str:
-    ready, _, _ = select.select([fd], [], [], 0.01)
-    if not ready:
-        return ""
-
-    first = sys.stdin.read(1)
-    if first == "[":
-        seq = [first]
-        while len(seq) < 5:
-            ready, _, _ = select.select([fd], [], [], 0.01)
-            if not ready:
-                break
-            ch = sys.stdin.read(1)
-            seq.append(ch)
-            if ch == "~" or ch.isalpha():
-                break
-        return "".join(seq)
-
-    if first == "O":
-        ready, _, _ = select.select([fd], [], [], 0.01)
-        if ready:
-            return first + sys.stdin.read(1)
-    return first
-
-
-def _secret_prompt(
-    text: str,
-    *,
-    default: str | None = None,
-    show_default: bool = True,
-) -> str:
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        if default is None:
-            return _strip_paste_markers(click.prompt(text, hide_input=True))
-        return _strip_paste_markers(
-            click.prompt(
-                text,
-                default=default,
-                hide_input=True,
-                show_default=show_default,
-            )
-        )
-
-    try:
-        import termios
-        import tty
-    except Exception:
-        if default is None:
-            return _strip_paste_markers(click.prompt(text, hide_input=True))
-        return _strip_paste_markers(
-            click.prompt(
-                text,
-                default=default,
-                hide_input=True,
-                show_default=show_default,
-            )
-        )
-
-    suffix = ""
-    if show_default and default not in (None, ""):
-        suffix = f" [{default}]"
-    click.echo(f"{text}{suffix}: ", nl=False)
-
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    chars: list[str] = []
-    try:
-        _ = tty.setraw(fd)
-        while True:
-            ch = sys.stdin.read(1)
-            if ch == "\x1b":
-                seq = _read_escape_sequence(fd)
-                if seq in ("[200~", "[201~"):
-                    continue
-                if seq.startswith("[") or seq.startswith("O"):
-                    continue
-                chars.extend(["\x1b", *seq])
-                click.echo("*" * (len(seq) + 1), nl=False)
-                continue
-            if ch in ("\r", "\n"):
-                click.echo()
-                break
-            if ch == "\x03":
-                raise KeyboardInterrupt()
-            if ch == "\x04":
-                raise EOFError()
-            if ch in ("\x7f", "\b"):
-                if chars:
-                    _ = chars.pop()
-                    click.echo("\b \b", nl=False)
-                continue
-            if ch < " ":
-                continue
-            chars.append(ch)
-            click.echo("*", nl=False)
-    finally:
-        _ = termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-    value = "".join(chars)
-    if value or default is None:
-        return _strip_paste_markers(value)
-    return default
-
-
-def _strip_paste_markers(value: str) -> str:
-    return value.replace("\x1b[200~", "").replace("\x1b[201~", "")
-
-
-# ---------------------------------------------------------------------------
-# 入口
-# ---------------------------------------------------------------------------
-
-
 def run_setup_wizard(config_path: Path, workspace: Path) -> None:
+    """Write the Core config and run setup commands declared by installed plugins."""
+
     click.echo(click.style("\n══ akashic 初始化向导 ══\n", bold=True))
     _hint("全程按回车使用括号内的默认值")
-    _hint("频道 token 输入时会显示为 *，正常输入后回车即可")
+    _hint("已安装插件会在自己的配置命令中询问凭据和其他私有设置")
 
     if config_path.exists():
         click.echo(f"\n已存在配置文件 {config_path}")
@@ -186,295 +62,182 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
             click.echo("已取消。")
             return
 
-    answers = _collect_answers()
-
     _divider()
-    click.echo("\n正在生成配置并初始化工作区...")
+    click.echo("\n正在生成 Core 配置并运行插件配置命令...")
 
-    toml_str = _render_config(answers)
-    _atomic_write_with_backup(config_path, toml_str, mode=0o600)
+    _atomic_write_with_backup(config_path, _render_config(), mode=0o600)
     _ok(f"{config_path} 已生成")
-    telegram_config_path = _telegram_local_config_path(workspace)
-    ensure_workspace_plugin_data_dir(telegram_config_path.parent, workspace)
-    _atomic_write_with_backup(
-        telegram_config_path, _render_telegram_config(answers), mode=0o600
-    )
-    _ok(f"{telegram_config_path} 已生成")
-    qqbot_config_path = _qqbot_local_config_path(workspace)
-    ensure_workspace_plugin_data_dir(qqbot_config_path.parent, workspace)
-    _atomic_write_with_backup(
-        qqbot_config_path, _render_qqbot_config(answers), mode=0o600
-    )
-    _ok(f"{qqbot_config_path} 已生成")
-
     _validate_config(config_path, workspace)
 
     from bootstrap.init_workspace import init_workspace
 
     _ = init_workspace(config_path=config_path, workspace=workspace)
     _ok(f"{workspace} 已初始化")
+    _run_declared_plugin_setups(workspace)
 
-    _print_completion(answers, workspace)
-
-
-# ---------------------------------------------------------------------------
-# 各阶段问答
-# ---------------------------------------------------------------------------
+    _print_completion(workspace)
 
 
-def _collect_answers() -> WizardAnswers:
-    a = WizardAnswers()
-    _phase_telegram(a)
-    _phase_qqbot(a)
-    return a
+def _run_declared_plugin_setups(workspace: Path) -> None:
+    """Run each plugin-owned setup entrypoint from its validated manifest."""
 
-
-def _phase_telegram(a: WizardAnswers) -> None:
-    _section_header("3/5", "Telegram 频道")
-
-    if not click.confirm("配置 Telegram 频道？", default=True):
-        _hint("跳过后仍可使用 Web 或程序化调用（python main.py exec）")
-        return
-
-    # BotFather 引导
-    click.echo()
-    click.echo(click.style("  还没有 Telegram bot？按以下步骤创建：", dim=True))
-    _hint("1. 打开 Telegram，搜索 @BotFather")
-    _hint("2. 发送 /newbot，按提示给 bot 起名")
-    _hint("3. BotFather 会回复一串 token，格式：123456789:AAFxxx...")
-    click.echo()
-
-    while True:
-        token = _secret_prompt("Bot token")
-        err = _validate_tg_token(token)
-        if err is None:
-            a.tg_token = token
-            break
-        _err(f"{err}，请重新输入")
-
-    click.echo()
-    _hint("用户名在哪里看：Telegram → 设置 → 用户名（不带 @）")
-    username = click.prompt("你的 Telegram 用户名")
-    a.tg_allow_from = [username]
-
-
-def _phase_qqbot(a: WizardAnswers) -> None:
-    _section_header("4/5", "官方 QQBot 频道（可跳过）")
-    _hint("使用腾讯开放平台 WebSocket 长连接，无需 NapCat，与 Telegram 并存")
-
-    if not click.confirm("配置官方 QQBot？", default=False):
-        return
-
-    click.echo()
-    click.echo(click.style("  还没有 QQ 开放平台应用？按以下步骤创建：", dim=True))
-    _hint("1. 打开 https://q.qq.com，登录腾讯开放平台")
-    _hint("2. 创建机器人应用，记录 AppID 和 AppSecret")
-    _hint("3. 在「开发设置」中开启「私聊」C2C 消息权限")
-    click.echo()
-
-    a.qqbot_app_id = click.prompt("AppID")
-    a.qqbot_client_secret = _secret_prompt("AppSecret (client_secret)")
-
-    err = _validate_qqbot_credentials(a.qqbot_app_id, a.qqbot_client_secret)
-    if err:
-        _warn(f"凭据验证失败：{err}")
-        _hint("继续配置，启动后检查凭据是否正确")
-
-    click.echo()
-    click.echo(click.style("  需要获取你的 user_openid：", bold=True))
-    _hint("在 QQ 中搜索你的 bot，向它发任意一条消息（比如「你好」）")
-    _hint("发完回来按回车，向导会自动读取")
-    click.echo()
-    click.pause(info="发完消息后按回车继续...")
-
-    openid = _fetch_qqbot_openid_with_spinner(
-        a.qqbot_app_id, a.qqbot_client_secret, timeout_s=90
+    plugin_home = plugins_root()
+    enabled_plugins = load_plugin_manifest(plugin_home)
+    cache_root = (plugin_home / "cache").resolve(strict=False)
+    sources = resolve_plugin_sources(
+        (),
+        installed_cache_root=cache_root,
+        installed_selector="stable",
     )
-    if openid:
-        _ok(f"user_openid 已获取：{openid}")
-        a.qqbot_user_openid = openid
-    else:
-        _warn("未收到消息，allow_from 留空")
-        _hint("启动后可在 QQBot 插件的 config.local.toml 中手动填入 allow_from")
-
-
-# ---------------------------------------------------------------------------
-# 工具函数
-# ---------------------------------------------------------------------------
-
-
-def _validate_tg_token(token: str) -> str | None:
-    try:
-        import httpx
-
-        resp = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=8)
-        data = resp.json()
-        if data.get("ok"):
-            bot_name = data["result"].get("username", "")
-            _ok(f"bot 验证成功：@{bot_name}")
-            return None
-        if resp.status_code == 409:
-            return "bot 已绑定 webhook，请先调用 deleteWebhook 删除"
-        return f"token 无效（{data.get('description', resp.status_code)}）"
-    except Exception as e:
-        return f"网络错误：{e}"
-
-
-def _validate_qqbot_credentials(app_id: str, client_secret: str) -> str | None:
-    try:
-        import httpx
-
-        resp = httpx.post(
-            "https://bots.qq.com/app/getAppAccessToken",
-            json={"appId": app_id, "clientSecret": client_secret},
-            timeout=10,
-        )
-        data = resp.json()
-        if data.get("access_token"):
-            _ok("AppID / AppSecret 验证成功")
-            return None
-        return f"token 获取失败（{data}）"
-    except Exception as e:
-        return f"网络错误：{e}"
-
-
-def _fetch_qqbot_openid_with_spinner(
-    app_id: str, client_secret: str, timeout_s: int = 90
-) -> str | None:
-    result: list[str | None] = [None]
-    done = threading.Event()
-
-    def _run() -> None:
-        try:
-            result[0] = asyncio.run(
-                _async_fetch_qqbot_openid(app_id, client_secret, timeout_s, done)
+    for source in sources:
+        manifest = source.static_manifest
+        if manifest is None or manifest.setup is None:
+            continue
+        if source.source_type != "installed" or not source.marketplace:
+            raise RuntimeError(f"插件 {manifest.name} setup 必须来自正式安装 artifact")
+        if source.plugin_name != manifest.name:
+            raise RuntimeError(
+                f"插件 {manifest.name} installed cache identity 不一致: "
+                f"{source.plugin_name}"
             )
-        except Exception as e:
-            _err(f"获取 user_openid 失败：{e}")
-        done.set()
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-
-    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    i = 0
-    while not done.wait(timeout=0.1):
-        frame = click.style(frames[i % len(frames)], fg="cyan")
-        click.echo(f"\r  {frame} 等待消息中...", nl=False)
-        i += 1
-    click.echo("\r" + " " * 30 + "\r", nl=False)
-
-    thread.join()
-    return result[0]
-
-
-async def _async_fetch_qqbot_openid(
-    app_id: str,
-    client_secret: str,
-    timeout_s: int,
-    stop: threading.Event,
-) -> str | None:
-    import httpx
-    import websockets
-
-    # 1. 获取 access token
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            "https://bots.qq.com/app/getAppAccessToken",
-            json={"appId": app_id, "clientSecret": client_secret},
+        plugin_id = f"{manifest.name}@{source.marketplace}"
+        if enabled_plugins.get(plugin_id, True) is False:
+            _hint(f"跳过已禁用插件配置：{plugin_id}")
+            continue
+        plugin_root = source.plugin_root.resolve(strict=True)
+        if not plugin_root.is_relative_to(cache_root):
+            raise RuntimeError(
+                f"插件 {manifest.name} setup 根不在 installed cache 内: {plugin_root}"
+            )
+        marketplace = source.marketplace
+        data_dir = workspace_plugin_data_dir(workspace, manifest.name, marketplace)
+        ensure_workspace_plugin_data_dir(data_dir, workspace)
+        setup_path = (plugin_root / manifest.setup.entrypoint).resolve(strict=True)
+        if not setup_path.is_relative_to(plugin_root) or not setup_path.is_file():
+            raise RuntimeError(
+                f"插件 {manifest.name} setup.entrypoint 不在 artifact 内: {setup_path}"
+            )
+        interpreter, code_root = _setup_runtime(
+            workspace,
+            plugin_root,
+            manifest,
+            setup_path,
         )
-        token_data = resp.json()
-        token = str(token_data.get("access_token") or "")
-        if not token:
-            return None
-
-    # 2. 获取 gateway URL
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            "https://api.sgroup.qq.com/gateway",
-            headers={"Authorization": f"QQBot {token}"},
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "AKASHIC_PLUGIN_ROOT": str(code_root),
+                "AKASHIC_PLUGIN_ID": f"{manifest.name}@{marketplace}",
+                "AKASHIC_PLUGIN_DATA_DIR": str(data_dir),
+                "AKASHIC_SETUP_CONFIG_PATH": str(data_dir / "config.local.toml"),
+            }
         )
-        gateway_url = str(resp.json().get("url") or "")
-        if not gateway_url:
-            return None
-
-    # 3. 连接 WS，监听第一条 C2C 私聊消息
-    try:
-        async with asyncio.timeout(timeout_s):
-            async with websockets.connect(gateway_url) as ws:
-                async for raw in ws:
-                    if stop.is_set():
-                        return None
-                    payload = json.loads(raw)
-                    op = payload.get("op")
-                    if op == 10:
-                        # Hello：发送鉴权 Identify
-                        await ws.send(
-                            json.dumps(
-                                {
-                                    "op": 2,
-                                    "d": {
-                                        "token": f"QQBot {token}",
-                                        "intents": 1 << 25,
-                                        "shard": [0, 1],
-                                    },
-                                }
-                            )
-                        )
-                    elif op == 0 and payload.get("t") == "C2C_MESSAGE_CREATE":
-                        raw_d = payload.get("d")
-                        d = (
-                            cast(dict[str, object], raw_d)
-                            if isinstance(raw_d, dict)
-                            else {}
-                        )
-                        raw_author = d.get("author")
-                        author = (
-                            cast(dict[str, object], raw_author)
-                            if isinstance(raw_author, dict)
-                            else {}
-                        )
-                        openid = str(
-                            author.get("user_openid") or d.get("user_openid") or ""
-                        )
-                        if openid:
-                            return openid
-    except TimeoutError:
-        return None
-    return None
+        _ok(f"运行插件配置：{manifest.name}")
+        try:
+            result = subprocess.run(
+                [
+                    str(interpreter),
+                    "-E",
+                    "-s",
+                    "-B",
+                    str(code_root / manifest.setup.entrypoint),
+                ],
+                cwd=code_root,
+                env=environment,
+                check=False,
+            )
+        except OSError as error:
+            raise RuntimeError(
+                f"插件 {manifest.name} 配置命令无法启动: {error}"
+            ) from error
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"插件 {manifest.name} 配置命令失败: exit={result.returncode}"
+            )
 
 
-# ---------------------------------------------------------------------------
-# Config 验证
-# ---------------------------------------------------------------------------
+def _setup_runtime(
+    workspace: Path,
+    plugin_root: Path,
+    manifest: StaticPluginManifest,
+    setup_path: Path,
+) -> tuple[Path, Path]:
+    """Open the immutable installed code and its staged setup interpreter."""
+
+    declaration = manifest.setup
+    if declaration is None:
+        raise RuntimeError(f"插件 {manifest.name} 缺少 setup declaration")
+    runtime = next(
+        (
+            item
+            for item in manifest.python
+            if item.runtime_root == declaration.python_runtime
+        ),
+        None,
+    )
+    if runtime is None:
+        raise RuntimeError(
+            f"插件 {manifest.name} setup.python_runtime 未找到: "
+            f"{declaration.python_runtime}"
+        )
+    environment_refs = read_environment_refs(plugin_root, manifest)
+    environment_ref = environment_refs.get(runtime.runtime_root)
+    if environment_ref is None:
+        raise RuntimeError(
+            f"插件 {manifest.name} 缺少 setup Python environment reference"
+        )
+
+    environments = PythonEnvironments(workspace)
+    record = environments.archive.read_descriptor(environment_ref)
+    raw_input = record.get("input")
+    if not isinstance(raw_input, Mapping):
+        raise RuntimeError(f"插件 {manifest.name} Python environment input 无效")
+    input_data = cast(Mapping[str, object], raw_input)
+    code_ref = input_data.get("code")
+    if not isinstance(code_ref, str):
+        raise RuntimeError(f"插件 {manifest.name} Python environment code ref 无效")
+    code_root = environments.archive.open(code_ref)
+    archived_setup = code_root / declaration.entrypoint
+    if (
+        not archived_setup.is_file()
+        or archived_setup.read_bytes() != setup_path.read_bytes()
+    ):
+        raise RuntimeError(f"插件 {manifest.name} setup.entrypoint 与已安装归档不一致")
+    environment_root = environments.open(environment_ref, code_root, runtime)
+    return staged_python_interpreter(environment_root, runtime), code_root
 
 
 def _validate_config(config_path: Path, workspace: Path) -> None:
+    """Validate the generated Core configuration before workspace initialization."""
+
     try:
         from agent.config import Config
 
         _ = Config.load(config_path, workspace=workspace)
         _ok("配置验证通过")
-    except KeyError as e:
-        _err(f"配置缺少必填字段：{e}")
-        raise SystemExit(1)
-    except Exception as e:
-        _err(f"配置加载失败：{e}")
-        raise SystemExit(1)
+    except KeyError as error:
+        _err(f"配置缺少必填字段：{error}")
+        raise SystemExit(1) from error
+    except Exception as error:
+        _err(f"配置加载失败：{error}")
+        raise SystemExit(1) from error
 
 
-# ---------------------------------------------------------------------------
-# TOML 渲染
-# ---------------------------------------------------------------------------
+def _render_config() -> str:
+    return _render_channels()
 
 
-def _render_config(a: WizardAnswers) -> str:
-    return "\n".join(part for part in (_render_agent(a), _render_channels(a)) if part)
-
-
-def _render_agent(a: WizardAnswers) -> str:
-    _ = a
-    return ""
+def _render_channels() -> str:
+    return "\n".join(
+        [
+            "# Web Chat 由 Supervisor 在唯一入口 2236 提供。",
+            "[channels.chat]",
+            "enabled = true",
+            "",
+            "# 外部 channel 插件的配置由各自的 setup 声明写入 workspace/plugin-data。",
+            "",
+        ]
+    )
 
 
 def _atomic_write_with_backup(
@@ -485,6 +248,7 @@ def _atomic_write_with_backup(
     backup_name: str | None = None,
 ) -> None:
     """备份旧文件后 fsync 并原子替换目标配置。"""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         backup = path.with_name(backup_name or f"{path.name}.before-setup.bak")
@@ -502,63 +266,9 @@ def _atomic_write_with_backup(
             os.unlink(temp_name)
 
 
-def _render_channels(a: WizardAnswers) -> str:
-    return "\n".join(
-        [
-        "# Web Chat 由 Supervisor 在唯一入口 2236 提供。",
-        "[channels.chat]",
-        "enabled = true",
-        "",
-        "# Telegram 与 NapCat QQ 由普通 channel 插件拥有。",
-        "# 配置文件位于 workspace/plugin-data/telegram_channel-builtin/",
-        "# 与 workspace/plugin-data/qq_channel-builtin/，不再写入主配置。",
-        "",
-        ]
-    )
-
-
-def _render_telegram_config(a: WizardAnswers) -> str:
-    """Render the Telegram plugin config without an empty credential field."""
-
-    allow = json.dumps(a.tg_allow_from, ensure_ascii=False)
-    lines = [f"enabled = {str(bool(a.tg_token)).lower()}"]
-    if a.tg_token:
-        lines.append(f"token = {json.dumps(a.tg_token, ensure_ascii=False)}")
-    lines.append(f"allow_from = {allow}")
-    return "\n".join(lines) + "\n"
-
-
-def _render_qqbot_config(a: WizardAnswers) -> str:
-    allow = ", ".join(
-        f'"{user}"' for user in ([a.qqbot_user_openid] if a.qqbot_user_openid else [])
-    )
-    return "\n".join(
-        [
-            f'app_id = "{a.qqbot_app_id}"',
-            f'client_secret = "{a.qqbot_client_secret}"',
-            f"allow_from = [{allow}]",
-            "",
-        ]
-    )
-
-
-def _qqbot_local_config_path(workspace: Path) -> Path:
-    return workspace_plugin_data_dir(workspace, "qqbot", "github") / "config.local.toml"
-
-
-def _telegram_local_config_path(workspace: Path) -> Path:
-    return workspace_plugin_data_dir(workspace, "telegram_channel", "builtin") / "config.local.toml"
-
-
-def _print_completion(a: WizardAnswers, workspace: Path) -> None:
+def _print_completion(workspace: Path) -> None:
     click.echo(click.style("\n══ 配置完成 ══\n", bold=True))
     click.echo("启动 agent：")
     click.echo(click.style("  uv run python main.py", bold=True))
     _hint("启动后打开 2236 的“模型”页添加连接并选择默认模型")
-
-    if a.qqbot_app_id and not a.qqbot_user_openid:
-        click.echo()
-        _warn("QQBot allow_from 为空，启动后所有私聊请求会被拒绝")
-        _hint("向 bot 发一条消息，日志里找到 user_openid，填入 config.toml：")
-        _hint(str(_qqbot_local_config_path(workspace)))
-        _hint('allow_from = ["<user_openid>"]')
+    _hint(f"插件私有配置位于 {workspace / 'plugin-data'}")
