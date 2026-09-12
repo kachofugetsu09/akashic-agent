@@ -8,7 +8,10 @@ import html
 import logging
 import re
 import threading
+import tempfile
+import shutil
 from types import FunctionType, MethodType
+from agent.plugin_composition.process_runtime import ProcessResourceClaim
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,12 +41,10 @@ logger = logging.getLogger(__name__)
 
 _CHANNEL = "qq"
 _GROUP_PREFIX = "gqq:"
-_NCATBOT_DIR = Path.home() / ".akashic" / "ncatbot"
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024
 _MAX_IMAGE_COUNT = 10
 _CQ_IMAGE_RE = re.compile(r"\[CQ:image[^\]]*?(?:,|\b)url=([^,\]]+)[^\]]*\]")
-_NCATBOT_RUNTIME_LOCK = threading.Lock()
 
 
 def build_qq_channel(context: ChannelFactoryContext) -> ChannelAdapter:
@@ -87,10 +88,10 @@ class QQChannelAdapter:
         self._backend_task: asyncio.Task[Any] | None = None
         self._connection_task: asyncio.Task[Any] | None = None
         self._backend_thread: threading.Thread | None = None
+        self._ncatbot_dir: Path | None = None
         self._ncatbot_config: Any | None = None
         self._ncatbot_config_snapshot: dict[str, object] | None = None
-        self._ncatbot_lock_owned = False
-        self._start_failures: tuple[ChannelCleanupFailure, ...] = ()
+        self._ncatbot_claim: ProcessResourceClaim | None = None
         self._inbound_futures: set[Any] = set()
         self._http: httpx.AsyncClient | None = None
         self._group_filter = DefaultGroupFilter(self._config.bot_uin)
@@ -127,18 +128,17 @@ class QQChannelAdapter:
             from ncatbot.core import BotClient
             from ncatbot.utils import ncatbot_config
 
-            if not _NCATBOT_RUNTIME_LOCK.acquire(blocking=False):
-                raise RuntimeError("QQ channel 已有另一代 NcatBot 正在使用进程级配置")
-            self._ncatbot_lock_owned = True
+            self._ncatbot_claim = ProcessResourceClaim("ncatbot.process-config")
             self._ncatbot_config = ncatbot_config
             try:
                 self._ncatbot_config_snapshot = _snapshot_ncatbot_config(ncatbot_config)
             except BaseException:
                 self._ncatbot_config = None
-                self._ncatbot_lock_owned = False
-                _NCATBOT_RUNTIME_LOCK.release()
+                self._ncatbot_claim.release()
+                self._ncatbot_claim = None
                 raise
-            _configure_ncatbot(ncatbot_config, self._config)
+            self._ncatbot_dir = Path(tempfile.mkdtemp(prefix="akashic-qq-ncatbot-"))
+            _configure_ncatbot(ncatbot_config, self._config, self._ncatbot_dir)
             self._bot = BotClient()
             self._bind_backend_lifetime()
             self._register_callbacks()
@@ -156,8 +156,7 @@ class QQChannelAdapter:
                 subscriptions=("qq.ncatbot",),
                 admission_open=False,
             )
-        except BaseException as error:
-            self._start_failures = (self._cleanup_failure("startup", error),)
+        except BaseException:
             _ = await self.stop()
             raise
 
@@ -415,15 +414,14 @@ class QQChannelAdapter:
     async def _stop(self) -> StopReceipt:
         self._stopping = True
         self._admission_open = False
-        failures: list[ChannelCleanupFailure] = list(self._start_failures)
+        failures: list[ChannelCleanupFailure] = []
         # 1. 不取消 to_thread 的等待者来冒充 provider 已经退出。
         starting = self._backend_task
         if starting is not None:
             try:
                 await asyncio.shield(starting)
             except BaseException as error:
-                # 启动错误由 start 原样传播；此处继续清理，但不能报告成功。
-                failures.append(self._cleanup_failure("startup", error))
+                # 原启动错误仍由 start 传播；stop 只报告实际资源是否已关闭。
                 logger.exception("QQ backend 启动失败，继续清理")
         loop = self._bot_loop
         connection = self._connection_task
@@ -431,15 +429,13 @@ class QQChannelAdapter:
         if loop is not None and connection is not None and not connection.done():
             async def close_connection() -> None:
                 # 2. 在 provider 自己的 loop 卸载插件，再取消长连接以执行其 finally。
+                assert bot is not None
+                await bot.plugin_loader.unload_all()
+                connection.cancel()
                 try:
-                    assert bot is not None
-                    await bot.plugin_loader.unload_all()
-                finally:
-                    connection.cancel()
-                    try:
-                        await connection
-                    except BaseException:
-                        pass
+                    await connection
+                except asyncio.CancelledError:
+                    pass
 
             try:
                 await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(close_connection(), loop))
@@ -474,7 +470,7 @@ class QQChannelAdapter:
         except BaseException as error:
             failures.append(self._cleanup_failure("http", error))
         self._started = False
-        if thread is None or not thread.is_alive():
+        if not failures and (thread is None or not thread.is_alive()):
             try:
                 self._restore_ncatbot_config()
             except BaseException as error:
@@ -486,15 +482,6 @@ class QQChannelAdapter:
             # 失败后允许 Host 的下一次 stop 重试仍未确认的 owner 资源。
             self._stop_task = None
             return StopReceipt(self._binding_token, resources_closed=False, failures=tuple(failures))
-        try:
-            self._restore_ncatbot_config()
-        except BaseException as error:
-            self._stop_task = None
-            return StopReceipt(
-                self._binding_token,
-                resources_closed=False,
-                failures=(*failures, self._cleanup_failure("ncatbot_config", error)),
-            )
         self._bot = None
         self._api = None
         return StopReceipt(self._binding_token, resources_closed=True)
@@ -506,7 +493,8 @@ class QQChannelAdapter:
             self._http = None
 
     def _restore_ncatbot_config(self) -> None:
-        if not self._ncatbot_lock_owned:
+        claim = self._ncatbot_claim
+        if claim is None:
             return
         config = self._ncatbot_config
         snapshot = self._ncatbot_config_snapshot
@@ -517,10 +505,13 @@ class QQChannelAdapter:
             raise RuntimeError("NcatBot 配置对象不支持 generation 恢复")
         values.clear()
         values.update(copy.deepcopy(snapshot))
-        self._ncatbot_lock_owned = False
+        if self._ncatbot_dir is not None:
+            shutil.rmtree(self._ncatbot_dir)
+            self._ncatbot_dir = None
+        claim.release()
+        self._ncatbot_claim = None
         self._ncatbot_config = None
         self._ncatbot_config_snapshot = None
-        _NCATBOT_RUNTIME_LOCK.release()
 
     def _cleanup_failure(self, resource: str, error: BaseException) -> ChannelCleanupFailure:
         return ChannelCleanupFailure(
@@ -562,7 +553,7 @@ class QQChannelAdapter:
         return result
 
 
-def _configure_ncatbot(config: Any, values: QQChannelConfig) -> None:
+def _configure_ncatbot(config: Any, values: QQChannelConfig, runtime_dir: Path) -> None:
     """Apply only provider-owned NapCat settings before the backend starts."""
 
     config.bt_uin = values.bot_uin
@@ -573,9 +564,8 @@ def _configure_ncatbot(config: Any, values: QQChannelConfig) -> None:
     config.napcat.enable_webui = False
     config.enable_webui_interaction = False
     config.websocket_timeout = max(1, int(values.websocket_open_timeout_seconds + 0.999999))
-    _NCATBOT_DIR.mkdir(parents=True, exist_ok=True)
-    (_NCATBOT_DIR / "plugins").mkdir(exist_ok=True)
-    config.plugin.plugins_dir = str(_NCATBOT_DIR / "plugins")
+    (runtime_dir / "plugins").mkdir()
+    config.plugin.plugins_dir = str(runtime_dir / "plugins")
 
 
 def _snapshot_ncatbot_config(config: Any) -> dict[str, object]:
@@ -592,11 +582,10 @@ def _bind_websocket_timeout(connect: Any, timeout: float) -> Any:
 
     function = getattr(connect, "__func__", None)
     if not isinstance(function, FunctionType):
-        return connect
+        raise RuntimeError("NcatBot connect_websocket 不是支持的实例方法")
     websocket_module = function.__globals__.get("websockets")
     if websocket_module is None or not callable(getattr(websocket_module, "connect", None)):
-        # 外部测试 provider may expose the same lifecycle shape without SDK globals.
-        return connect
+        raise RuntimeError("NcatBot websocket 入口已变化，无法保证连接超时")
 
     class _WebsocketsProxy:
         def connect(self, *args: Any, **kwargs: Any) -> Any:

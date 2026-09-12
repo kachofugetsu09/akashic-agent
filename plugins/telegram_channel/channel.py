@@ -120,7 +120,6 @@ class TelegramChannelAdapter:
         self._started = False
         self._stopping = False
         self._stop_task: asyncio.Task[StopReceipt] | None = None
-        self._start_failures: tuple[ChannelCleanupFailure, ...] = ()
 
     def attach_runtime(self, ports: ChannelRuntimePorts) -> None:
         """Bind the exact generation's ingress before the provider starts."""
@@ -201,14 +200,10 @@ class TelegramChannelAdapter:
                 subscriptions=("telegram.polling",),
                 admission_open=False,
             )
-        except BaseException as error:
-            self._start_failures = (
-                self._cleanup_failure("startup", error),
-            )
-            try:
-                await self._close_provider_after_failed_start()
-            except BaseException as cleanup_error:
-                self._start_failures += (self._cleanup_failure("startup_cleanup", cleanup_error),)
+        except BaseException:
+            receipt = await self.stop()
+            if not receipt.resources_closed:
+                logger.error("Telegram 启动后清理未完成: %s", receipt.failures)
             raise
 
     async def deliver(self, request: ProviderDeliveryRequest) -> ProviderDeliveryReceipt:
@@ -290,7 +285,7 @@ class TelegramChannelAdapter:
     async def _stop(self) -> StopReceipt:
         self._stopping = True
         self._admission_open = False
-        failures = list(self._start_failures)
+        failures: list[ChannelCleanupFailure] = []
         tasks = tuple(self._inbound_tasks)
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -331,37 +326,6 @@ class TelegramChannelAdapter:
             self._stop_task = None
             return StopReceipt(self._binding_token, resources_closed=False, failures=tuple(failures))
         return StopReceipt(self._binding_token, resources_closed=True)
-
-    async def _close_provider_after_failed_start(self) -> None:
-        app = self._app
-        if app is not None:
-            app_failures: list[ChannelCleanupFailure] = []
-            try:
-                updater = app.updater
-                if updater is not None and updater.running:
-                    await updater.stop()
-            except BaseException as error:
-                app_failures.append(self._cleanup_failure("updater", error))
-            try:
-                if app.running:
-                    await app.stop()
-            except BaseException as error:
-                app_failures.append(self._cleanup_failure("application", error))
-            try:
-                await app.shutdown()
-            except BaseException as error:
-                app_failures.append(self._cleanup_failure("shutdown", error))
-            if not app_failures:
-                self._app = None
-            self._start_failures += tuple(app_failures)
-        provider = self._provider_client
-        if provider is not None:
-            try:
-                await provider.aclose()
-            except BaseException as error:
-                self._start_failures += (self._cleanup_failure("provider", error),)
-            else:
-                self._provider_client = None
 
     def _cleanup_failure(self, resource: str, error: BaseException) -> ChannelCleanupFailure:
         return ChannelCleanupFailure(

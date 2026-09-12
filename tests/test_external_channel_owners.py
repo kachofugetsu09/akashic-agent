@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import websockets
+
 import asyncio
 import hashlib
 import sys
@@ -314,7 +316,7 @@ async def test_telegram_external_owner_handles_inbound_delivery_and_stop(
 
 
 @pytest.mark.asyncio
-async def test_telegram_start_failure_and_stop_failure_never_report_closed(
+async def test_telegram_start_failure_preserves_error_and_cleanup_can_finish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(telegram_channel, "Application", _TelegramApplicationFactory)
@@ -341,8 +343,7 @@ async def test_telegram_start_failure_and_stop_failure_never_report_closed(
     with pytest.raises(RuntimeError, match="fixture initialize failure"):
         await adapter.start()
     failed = await adapter.stop()
-    assert not failed.resources_closed
-    assert any(item.resource == "startup" for item in failed.failures)
+    assert failed.resources_closed
     assert provider.client.closed
 
     monkeypatch.undo()
@@ -367,12 +368,15 @@ async def test_telegram_start_failure_and_stop_failure_never_report_closed(
     async def fail_updater_stop() -> None:
         raise RuntimeError("fixture updater stop failure")
 
+    original_stop = adapter._app.updater.stop
     adapter._app.updater.stop = fail_updater_stop
     failed = await adapter.stop()
     assert not failed.resources_closed
     assert any(item.resource == "updater" for item in failed.failures)
     assert adapter._app is not None
     assert provider.client.closed
+    adapter._app.updater.stop = original_stop
+    assert (await adapter.stop()).resources_closed
 
 
 @pytest.mark.asyncio
@@ -517,7 +521,6 @@ def _install_qq_fixture(
     monkeypatch.setitem(sys.modules, "ncatbot", ncatbot)
     monkeypatch.setitem(sys.modules, "ncatbot.core", ncatbot_core)
     monkeypatch.setitem(sys.modules, "ncatbot.utils", ncatbot_utils)
-    monkeypatch.setattr(qq_channel, "_NCATBOT_DIR", tmp_path / "ncatbot")
     return config
 
 
@@ -544,7 +547,6 @@ async def test_qq_external_owner_handles_inbound_delivery_and_stop(
     monkeypatch.setitem(sys.modules, "ncatbot", ncatbot)
     monkeypatch.setitem(sys.modules, "ncatbot.core", ncatbot_core)
     monkeypatch.setitem(sys.modules, "ncatbot.utils", ncatbot_utils)
-    monkeypatch.setattr(qq_channel, "_NCATBOT_DIR", tmp_path / "ncatbot")
 
     context, ingress, _provider = _context(
         config={"bot_uin": "9001", "allow_from": ["42"], "groups": []}
@@ -618,7 +620,7 @@ def test_qq_sdk_timeout_is_bound_per_adapter_without_global_patch(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_qq_start_failure_and_cancellation_never_report_closed(
+async def test_qq_start_failure_and_cancellation_close_actual_resources(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -639,8 +641,7 @@ async def test_qq_start_failure_and_cancellation_never_report_closed(
     with pytest.raises(RuntimeError, match="fixture startup failure"):
         await adapter.start()
     failed_receipt = await adapter.stop()
-    assert not failed_receipt.resources_closed
-    assert any(item.resource == "startup" for item in failed_receipt.failures)
+    assert failed_receipt.resources_closed
     assert config.bt_uin == "original"
     assert config.plugin.plugins_dir == "original-plugins"
 
@@ -665,16 +666,41 @@ async def test_qq_start_failure_and_cancellation_never_report_closed(
     with pytest.raises(asyncio.CancelledError):
         await starting
     cancelled_receipt = await adapter.stop()
-    assert not cancelled_receipt.resources_closed
-    assert any(item.error_type == "CancelledError" for item in cancelled_receipt.failures)
+    assert cancelled_receipt.resources_closed
     assert cancelled_bot.thread is not None and not cancelled_bot.thread.is_alive()
     assert config.bt_uin == "original"
+
+
+@pytest.fixture
+def separate_qq_generation():
+    """用正式 fresh importer 创建另一份插件模块，不能共享业务模块里的锁。"""
+    import importlib.util
+    from pathlib import Path
+    from agent.plugins.importer import FreshPluginImporter
+
+    name = "fixture_qq_external_generation"
+    source = Path(__file__).parents[1] / "plugins" / "qq_channel"
+    importer = FreshPluginImporter()
+    importer.register(name, source)
+    spec = importer.root_spec(name, source / "plugin.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+        yield sys.modules[name + ".channel"]
+    finally:
+        importer.unregister(name)
+        for key in tuple(sys.modules):
+            if key == name or key.startswith(name + "."):
+                del sys.modules[key]
 
 
 @pytest.mark.asyncio
 async def test_qq_ncatbot_config_is_exclusive_and_restored_between_generations(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    separate_qq_generation,
 ) -> None:
     first_bot = _QQBot(_QQApi())
     config = _install_qq_fixture(monkeypatch, tmp_path, first_bot)
@@ -692,11 +718,14 @@ async def test_qq_ncatbot_config_is_exclusive_and_restored_between_generations(
     )
     await first.start()
     assert config.bt_uin == "7001"
+    first_runtime = first._ncatbot_dir
+    assert first_runtime is not None and first_runtime.is_dir()
 
     second_bot = _QQBot(_QQApi())
     sys.modules["ncatbot.core"].BotClient = lambda: second_bot  # type: ignore[attr-defined]
     context, _, _ = _context(config={"bot_uin": "7002"})
-    second = qq_channel.build_qq_channel(context)
+    second = separate_qq_generation.build_qq_channel(context)
+    assert type(first) is not type(second)
     second.attach_runtime(
         ChannelRuntimePorts(
             snapshot_id=context.snapshot_id,
@@ -707,14 +736,15 @@ async def test_qq_ncatbot_config_is_exclusive_and_restored_between_generations(
             attachment_import=context.attachment_import,
         )
     )
-    with pytest.raises(RuntimeError, match="另一代"):
+    with pytest.raises(RuntimeError, match="另一 owner"):
         await second.start()
     assert config.bt_uin == "7001"
     assert (await first.stop()).resources_closed
+    assert not first_runtime.exists()
     assert config.bt_uin == "original"
 
     context, _, _ = _context(config={"bot_uin": "7002"})
-    third = qq_channel.build_qq_channel(context)
+    third = separate_qq_generation.build_qq_channel(context)
     third.attach_runtime(
         ChannelRuntimePorts(
             snapshot_id=context.snapshot_id,
@@ -755,6 +785,10 @@ async def test_qq_stop_failure_and_cancelled_waiter_share_unconfirmed_cleanup(
     assert first is second
     assert not first.resources_closed
     assert any(item.resource == "connection" for item in first.failures)
+    assert bot.thread is not None and bot.thread.is_alive()
+    bot.unload_error = None
+    assert (await adapter.stop()).resources_closed
+    assert bot.unloaded and not bot.thread.is_alive()
 
     bot = _QQBot(_QQApi())
     _install_qq_fixture(monkeypatch, tmp_path, bot)
