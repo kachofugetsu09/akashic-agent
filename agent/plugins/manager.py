@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from types import ModuleType, UnionType
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Mapping
 from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
+from uuid import uuid4
 
 from pydantic import AliasChoices, AliasPath, BaseModel, ValidationError
 
@@ -372,6 +373,9 @@ class PluginManager:
             if workload_socket:
                 workload_controller = UnixWorkloadController(Path(workload_socket))
         self._workload_controller = workload_controller
+        # PluginManager 也可以由嵌入式/测试 host 直接构造；该 host 仍需一
+        # 次性的 boot identity，不能退回固定的 unmanaged marker。
+        self._host_boot_id = restart_gate.boot_id if restart_gate is not None else uuid4().hex
         self._restart_gate = restart_gate
         self._owns_control_frames = control_frames is None
         self._control_frames = FrameBook() if control_frames is None else control_frames
@@ -405,6 +409,7 @@ class PluginManager:
             on_before_start=self._reserve_channel_binding,
             config_revision_checker=self._check_channel_config_revision,
             on_failure=self._on_channel_cleanup_failure,
+            boot_id=self._host_boot_id,
             snapshot_lease_acquirer=self._snapshot_store.lease,
             identity_resolver=self._resolve_channel_identity,
             identity_rememberer=self._remember_channel_identity,
@@ -2558,7 +2563,19 @@ class PluginManager:
                 provisional,
                 before_open=before_open,
                 after_open=open_participants,
+                schedule_previous_drain=False,
             )
+            if (
+                channel_state is not None
+                and channel_state.old_runtime is not None
+                and channel_state.new_runtime is not None
+            ):
+                # A stopped binding has already handed reserve-only rows back
+                # to the Bus.  Recover them only after the new exact catalog
+                # is public and its admissions are open.
+                await self._channel_generation_host.recover_durable_inbounds()
+            if provisional.previous is not None:
+                self._snapshot_store.schedule_retired_drain(provisional.previous)
         except BaseException as publication_error:
             rollback_errors: list[BaseException] = []
             channel_cleanup_failed = False
@@ -2596,19 +2613,36 @@ class PluginManager:
                 except BaseException as caught:
                     rollback_errors.append(caught)
                     endpoint_restore_failed = True
+            published_rollback = self._snapshot_store.current is provisional.candidate
+            if published_rollback:
+                # finalize_provisional has already retired the old snapshot;
+                # restore its committed state before start_formal validates the
+                # old channel catalog.
+                await self._snapshot_store.rollback_published(
+                    provisional,
+                    keep_candidate_latest=promote_latest,
+                    reopen_previous=(reopen_previous_on_failure and not rollback_errors),
+                )
             if channel_state is not None and not channel_cleanup_failed:
                 try:
                     await self._restore_old_channel_publication(channel_state)
                 except BaseException as caught:
                     rollback_errors.append(caught)
                     channel_cleanup_failed = True
-            await self._snapshot_store.rollback_provisional(
-                provisional,
-                keep_candidate_latest=promote_latest,
-                reopen_previous=(reopen_previous_on_failure and not rollback_errors),
-            )
+            if not published_rollback:
+                await self._snapshot_store.rollback_provisional(
+                    provisional,
+                    keep_candidate_latest=promote_latest,
+                    reopen_previous=(reopen_previous_on_failure and not rollback_errors),
+                )
             if not rollback_errors and channel_state is not None:
                 self._reopen_restored_channel_publication(channel_state)
+                if channel_state.old_runtime is not None:
+                    try:
+                        await self._channel_generation_host.recover_durable_inbounds()
+                    except BaseException as caught:
+                        rollback_errors.append(caught)
+                        channel_cleanup_failed = True
             self._abort_channel_boot_transactions(
                 provisional.candidate,
                 publication_error,
@@ -3223,6 +3257,7 @@ class PluginManager:
                 self._active_channel_generation = restored_channel_runtime
                 self._active_channel_catalog_identity = current_channel_identity
                 restored_channel_runtime.open_admission()
+                await self._channel_generation_host.recover_durable_inbounds()
                 receipts.append("stable-channel-runtime-restored")
             receipt = ";".join(receipts) or "runtime-owner-already-clean"
             _, resume_cancelled = await _complete_critical(
@@ -5549,7 +5584,7 @@ class PluginManager:
             elif gate is None:
                 # 直接使用 PluginManager 的测试/嵌入式运行没有 Supervisor；仍提供
                 # 一个允许正常 work 的 unmanaged gate，不伪造可提交的重启通道。
-                gate = RestartGate(boot_id="unmanaged", supervised=False)
+                gate = RestartGate(boot_id=self._host_boot_id, supervised=False)
                 self._restart_gate = gate
             _ = await root.context.provide(RESTART_GATE, gate)
         if CONTROL_FRAMES in requested:
@@ -6549,12 +6584,30 @@ class PluginManager:
         snapshot: RuntimeSnapshot,
     ) -> None:
         transaction = self._snapshot_store.begin_publish(snapshot)
-        _ = await self._commit_snapshot_with_publication_participants(
-            transaction,
-            old_commands=(),
-            new_commands=(),
-            promote_latest=False,
+        has_channel_participant = self._channel_binding_changed(
+            transaction.previous,
+            transaction.candidate,
         )
+        try:
+            _ = await self._commit_snapshot_with_publication_participants(
+                transaction,
+                old_commands=(),
+                new_commands=(),
+                promote_latest=False,
+            )
+        except BaseException:
+            # A post-open participant failure may have restored the old stable
+            # pointer while retaining this transaction for retry.  Startup has
+            # no retry owner for a channel publication, so close that exact
+            # transaction before bubbling the original failure.  A plain
+            # composition prepare failure deliberately keeps its pending
+            # transaction for the existing recovery path.
+            if (
+                has_channel_participant
+                and self._snapshot_store.pending_transaction is transaction
+            ):
+                await self._snapshot_store.abort(transaction)
+            raise
 
     def _collect_candidate_contributions(
         self,

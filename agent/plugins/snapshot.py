@@ -1033,6 +1033,7 @@ class RuntimeSnapshotStore:
         *,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
+        schedule_previous_drain: bool = True,
     ) -> None:
         """Open a provisional stable and retire its rollback snapshot."""
 
@@ -1059,10 +1060,17 @@ class RuntimeSnapshotStore:
             previous.state = "retired"
             previous.accepting_leases = False
         self._provisional = None
-        if previous is not None:
+        if previous is not None and schedule_previous_drain:
             self._schedule_drain(previous)
         async with self._condition:
             self._condition.notify_all()
+
+    def schedule_retired_drain(self, snapshot: RuntimeSnapshot) -> None:
+        """Schedule a retired snapshot only after post-publication work succeeds."""
+
+        if self._current is snapshot or snapshot.state != "retired":
+            raise RuntimeError("只能排空已退役且不再为 stable 的 RuntimeSnapshot")
+        self._schedule_drain(snapshot)
 
     async def rollback_provisional(
         self,
@@ -1085,6 +1093,42 @@ class RuntimeSnapshotStore:
         self._provisional = None
 
         # 2. Either retain latest for normal discard or restore the pending transaction.
+        candidate.accepting_leases = False
+        if keep_candidate_latest:
+            candidate.state = "committed"
+            self._latest = candidate
+        else:
+            candidate.state = "validating"
+            self._latest = previous
+            self._pending = transaction
+        async with self._condition:
+            self._condition.notify_all()
+
+    async def rollback_published(
+        self,
+        transaction: SnapshotTransaction,
+        *,
+        keep_candidate_latest: bool,
+        reopen_previous: bool,
+    ) -> None:
+        """Rollback a publication whose post-open participant failed.
+
+        ``finalize_provisional`` clears the provisional marker before returning;
+        a participant that runs immediately after it therefore needs the same
+        pointer restoration without pretending the transaction is still
+        provisional.
+        """
+
+        if self._provisional is not None:
+            raise RuntimeError("RuntimeSnapshot 已仍处于 provisional 发布阶段")
+        if self._current is not transaction.candidate:
+            raise RuntimeError("RuntimeSnapshot 已不是待回滚的 published candidate")
+        previous = transaction.previous
+        self._current = previous
+        if previous is not None:
+            previous.state = "committed"
+            previous.accepting_leases = reopen_previous
+        candidate = transaction.candidate
         candidate.accepting_leases = False
         if keep_candidate_latest:
             candidate.state = "committed"

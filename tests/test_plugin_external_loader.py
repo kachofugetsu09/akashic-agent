@@ -51,6 +51,8 @@ async def test_core_starts_with_no_checkout_plugins_and_keeps_manager_usable(
     try:
         assert core.plugin_manager.discover() == []
         assert core.plugin_manager._dirs == []
+        assert core.restart_gate.boot_id != "unmanaged"
+        assert core.plugin_manager.channel_generation_host.boot_id == core.restart_gate.boot_id
         await core.start()
         assert core.plugin_manager.discover() == []
         snapshot = core.plugin_manager.current_snapshot
@@ -62,6 +64,35 @@ async def test_core_starts_with_no_checkout_plugins_and_keeps_manager_usable(
         await core.stop()
         await core.bus.aclose()
         await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_core_runtime_gets_a_new_boot_id_per_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """两个无 supervisor 的真实 Core host 不能共享 transport boot identity。"""
+
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
+    first_workspace = tmp_path / "first-workspace"
+    second_workspace = tmp_path / "second-workspace"
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    first_http = SharedHttpResources()
+    second_http = SharedHttpResources()
+    first = bootstrap.build_core_runtime(Config(), first_workspace, first_http)
+    second = bootstrap.build_core_runtime(Config(), second_workspace, second_http)
+    try:
+        assert first.restart_gate.boot_id != second.restart_gate.boot_id
+        assert first.plugin_manager.channel_generation_host.boot_id == first.restart_gate.boot_id
+        assert second.plugin_manager.channel_generation_host.boot_id == second.restart_gate.boot_id
+    finally:
+        await first.stop()
+        await first.bus.aclose()
+        await first_http.aclose()
+        await second.stop()
+        await second.bus.aclose()
+        await second_http.aclose()
 
 
 @pytest.mark.asyncio

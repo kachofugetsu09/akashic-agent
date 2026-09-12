@@ -113,6 +113,7 @@ def _context(
     context = ChannelFactoryContext(
         snapshot_id="snapshot-1",
         generation_id="generation-1",
+        boot_id="test-boot",
         binding_token="binding-1",
         config=config,
         credentials=credentials or {},

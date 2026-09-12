@@ -133,8 +133,8 @@ async def test_persistent_cleanup_failure_is_bounded_and_shutdown_cancels_retry(
         "persistent",
         "hello",
         metadata={
-            "client_message_id": "client-persistent",
-            "mobile_v3_handoff": True,
+            "provider_message_id": "client-persistent",
+            "durable_inbound": True,
         },
     )
     await bus.publish_inbound(item)
@@ -179,8 +179,8 @@ async def test_cleanup_finalize_failure_is_fatal_and_observable(
         "fatal",
         "hello",
         metadata={
-            "client_message_id": "client-fatal",
-            "mobile_v3_handoff": True,
+            "provider_message_id": "client-fatal",
+            "durable_inbound": True,
         },
     )
     await bus.publish_inbound(item)
@@ -559,15 +559,15 @@ async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
     manager.save(manager.get_or_create(session_key))
     bus = MessageBus()
     bus.bind_durable_inbound_store(manager.inbound_store)
-    bus.bind_mobile_session_admission_owner(manager.admissions)
+    bus.bind_session_admission_owner(manager.admissions)
     envelope, _ = _v3_inbound(
         channel="akashic",
         message_id="client-delete-before-reserve",
         metadata={
             "session_key_override": session_key,
-            "client_message_id": "client-delete-before-reserve",
-            "mobile_v3_handoff": True,
-            "mobile_handoff_id": "handoff-delete-before-reserve",
+            "provider_message_id": "client-delete-before-reserve",
+            "durable_inbound": True,
+            "durable_handoff_id": "handoff-delete-before-reserve",
         },
     )
     raw = RawInbound(
@@ -577,7 +577,7 @@ async def test_v3_mobile_reserve_loses_session_before_lock_without_orphan_row(
         message=envelope.message,
     )
     await bus._durable_handoff_lock.acquire()
-    reserving = asyncio.create_task(bus.reserve_mobile_channel_handoff(raw))
+    reserving = asyncio.create_task(bus.reserve_durable_inbound(raw))
     await asyncio.sleep(0)
     assert not reserving.done()
     assert manager.delete_session(session_key) is True
@@ -607,15 +607,15 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
     store = manager.inbound_store
     bus = MessageBus()
     bus.bind_durable_inbound_store(store)
-    bus.bind_mobile_session_admission_owner(manager.admissions)
+    bus.bind_session_admission_owner(manager.admissions)
     envelope, _ = _v3_inbound(
         channel="akashic",
         message_id="client-close-before-reserve-lock",
         metadata={
             "session_key_override": session_key,
-            "client_message_id": "client-close-before-reserve-lock",
-            "mobile_v3_handoff": True,
-            "mobile_handoff_id": "handoff-close-before-reserve-lock",
+            "provider_message_id": "client-close-before-reserve-lock",
+            "durable_inbound": True,
+            "durable_handoff_id": "handoff-close-before-reserve-lock",
         },
     )
     raw = RawInbound(
@@ -625,7 +625,7 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
         message=envelope.message,
     )
     await bus._durable_handoff_lock.acquire()
-    reserving = asyncio.create_task(bus.reserve_mobile_channel_handoff(raw))
+    reserving = asyncio.create_task(bus.reserve_durable_inbound(raw))
     await asyncio.sleep(0)
     closing = asyncio.create_task(bus.aclose())
     await asyncio.sleep(0)
@@ -638,7 +638,7 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
         await reserving
     await closing
     assert store.list_inbound_handoffs() == []
-    assert bus._mobile_v3_admissions == {}
+    assert bus._durable_admissions == {}
     assert (
         manager.admissions._conn.execute(
             "SELECT 1 FROM session_admissions WHERE session_key = ?",
@@ -653,8 +653,8 @@ async def test_v3_mobile_reserve_waiting_on_lock_is_rejected_by_bus_close(
 @pytest.mark.parametrize('plugin,channel,metadata', [
     ('ordinary', 'feishu', {'session_key_override': 'other-session'}),
     ('core', 'akashic', {'session_key_override': 'other-session'}),
-    ('ordinary', 'feishu', {'session_key_override': 'other-session', 'mobile_v3_handoff': True}),
-    ('core', 'akashic', {'session_key_override': '', 'mobile_v3_handoff': True}),
+    ('ordinary', 'feishu', {'session_key_override': 'other-session', 'durable_inbound': True}),
+    ('core', 'akashic', {'session_key_override': '', 'durable_inbound': True}),
 ])
 async def test_channel_authority_rejects_untrusted_session_override_before_enqueue(plugin, channel, metadata):
     from types import SimpleNamespace
@@ -676,14 +676,269 @@ async def test_channel_authority_rejects_untrusted_session_override_before_enque
         await host._admit_inbound(('snapshot', channel), raw)
 
 
+def test_channel_host_boot_id_is_stable_and_host_scoped():
+    from agent.plugins.channel_generation_host import ChannelGenerationHost
+
+    async def unused(*args):
+        return None
+
+    first = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+        boot_id="app-host-1",
+    )
+    second = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+        boot_id="app-host-2",
+    )
+    generated_a = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+    )
+    generated_b = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+    )
+
+    assert first.boot_id == "app-host-1"
+    assert first.boot_id == first.boot_id
+    assert second.boot_id == "app-host-2"
+    assert first.boot_id != second.boot_id
+    assert generated_a.boot_id and generated_a.boot_id != generated_b.boot_id
+
+
+def test_plugin_manager_passes_supervisor_boot_id_to_channel_host(tmp_path: Path) -> None:
+    from agent.restart import RestartGate
+    from agent.plugins.manager import PluginManager
+    from bus.event_bus import EventBus
+
+    gate = RestartGate(boot_id="supervisor-boot", supervised=False)
+    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path, restart_gate=gate)
+    assert manager.channel_generation_host.boot_id == gate.boot_id
+
+
+def test_plugin_manager_without_gate_gets_one_fresh_host_boot_id(tmp_path: Path) -> None:
+    from agent.plugins.manager import PluginManager
+    from bus.event_bus import EventBus
+
+    first = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "first")
+    second = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "second")
+
+    assert first.channel_generation_host.boot_id
+    assert first.channel_generation_host.boot_id != second.channel_generation_host.boot_id
+    assert first._host_boot_id == first.channel_generation_host.boot_id
+
+
+@pytest.mark.asyncio
+async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> None:
+    from agent.plugin_composition.channels import ChannelCapability, InboundIdentity
+    from agent.plugins.channel_generation_host import ChannelGenerationHost
+
+    async def unused(*args):
+        return None
+
+    host = ChannelGenerationHost(
+        on_before_start=unused,
+        config_revision_checker=unused,
+        on_failure=unused,
+        boot_id="boot-router",
+    )
+    states = {}
+    for channel in ("alpha", "beta"):
+        states[("snapshot", channel)] = SimpleNamespace(
+            channel_name=channel,
+            capabilities=(ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND),
+            inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
+            admission_open=True,
+            stopping=False,
+            stopped=False,
+        )
+    host._bindings = states
+    seen = []
+
+    async def recover(key, raw):
+        seen.append((key, raw.message.channel))
+        return True
+
+    host._recover_inbound = recover
+    raw = RawInbound(
+        message_id="beta-1",
+        provider_identity="provider",
+        recipient="room",
+        message=ChannelInboundMessage(
+            channel="beta",
+            sender="provider",
+            chat_id="room",
+            content="hello",
+            timestamp=datetime.now(timezone.utc),
+            metadata={
+                "durable_inbound": True,
+                "durable_handoff_id": "handoff-beta-1",
+                "provider_message_id": "beta-1",
+                "session_key_override": "shared-session",
+            },
+        ),
+    )
+    assert await host._recover_current_durable_inbound(raw) is True
+    assert seen == [(("snapshot", "beta"), "beta")]
+
+    states[("other", "beta")] = SimpleNamespace(
+        channel_name="beta",
+        capabilities=(ChannelCapability.INBOUND, ChannelCapability.DURABLE_INBOUND),
+        inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,
+        admission_open=True,
+        stopping=False,
+        stopped=False,
+    )
+    with pytest.raises(RuntimeError, match="不唯一"):
+        await host._recover_current_durable_inbound(raw)
+
+
+@pytest.mark.asyncio
+async def test_recovery_skips_channel_without_current_owner_and_continues(
+    tmp_path: Path,
+) -> None:
+    """One missing channel owner must not block another row in the page."""
+
+    import json
+
+    store = InboundHandoffStore(tmp_path / "sessions.db")
+    bus = MessageBus()
+    bus.bind_durable_inbound_store(store)
+    for channel in ("missing", "ready"):
+        handoff_id = f"handoff-{channel}"
+        provider_message_id = f"message-{channel}"
+        store.reserve_inbound_handoff(
+            handoff_id=handoff_id,
+            dedupe_key=f"{channel}:shared:{provider_message_id}",
+            channel=channel,
+            sender="provider",
+            chat_id="room",
+            session_key="shared",
+            content=channel,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            media_json="[]",
+            metadata_json=json.dumps(
+                {
+                    "durable_inbound": True,
+                    "durable_handoff_id": handoff_id,
+                    "provider_message_id": provider_message_id,
+                    "session_key_override": "shared",
+                }
+            ),
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+    seen: list[str] = []
+
+    async def recover(raw: RawInbound) -> bool:
+        seen.append(raw.message.channel)
+        return raw.message.channel == "ready"
+
+    bus.bind_durable_inbound_recoverer(recover)
+    try:
+        await bus.recover_durable_inbounds()
+        assert seen == ["missing", "ready"]
+        assert bus._recovery_claimed == set()
+        assert len(store.list_inbound_handoffs()) == 2
+    finally:
+        await bus.aclose()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_identity_is_namespaced_by_channel(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "shared-session"
+    manager.save(manager.get_or_create(session_key))
+    store = manager.inbound_store
+    bus = MessageBus()
+    bus.bind_durable_inbound_store(store)
+    bus.bind_session_admission_owner(manager.admissions)
+
+    def raw(channel: str, handoff_id: str) -> RawInbound:
+        return RawInbound(
+            message_id="same-provider-id",
+            provider_identity="provider",
+            recipient="room",
+            message=ChannelInboundMessage(
+                channel=channel,
+                sender="provider",
+                chat_id="room",
+                content=channel,
+                timestamp=datetime.now(timezone.utc),
+                metadata={
+                    "durable_inbound": True,
+                    "durable_handoff_id": handoff_id,
+                    "provider_message_id": "same-provider-id",
+                    "session_key_override": session_key,
+                },
+            ),
+        )
+
+    try:
+        assert await bus.reserve_durable_inbound(raw("alpha", "handoff-alpha"))
+        assert await bus.reserve_durable_inbound(raw("beta", "handoff-beta"))
+        assert store.has_inbound_handoff(
+            channel="alpha", session_key=session_key, provider_message_id="same-provider-id"
+        )
+        assert store.has_inbound_handoff(
+            channel="beta", session_key=session_key, provider_message_id="same-provider-id"
+        )
+        assert not store.has_inbound_handoff(
+            channel="gamma", session_key=session_key, provider_message_id="same-provider-id"
+        )
+        assert len(store.list_inbound_handoffs()) == 2
+    finally:
+        await bus.aclose()
+        manager.close()
+
+
+@pytest.mark.asyncio
+async def test_live_durable_raw_cannot_use_legacy_provider_key(tmp_path: Path) -> None:
+    manager = SessionManager(tmp_path / "workspace")
+    session_key = "legacy-key-session"
+    manager.save(manager.get_or_create(session_key))
+    bus = MessageBus()
+    bus.bind_durable_inbound_store(manager.inbound_store)
+    bus.bind_session_admission_owner(manager.admissions)
+    raw = RawInbound(
+        message_id="legacy-id",
+        message=ChannelInboundMessage(
+            channel="alpha",
+            sender="provider",
+            chat_id="room",
+            content="hello",
+            timestamp=datetime.now(timezone.utc),
+            metadata={
+                "durable_inbound": True,
+                "durable_handoff_id": "handoff-legacy",
+                "client_message_id": "legacy-id",
+                "session_key_override": session_key,
+            },
+        ),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="durable inbound 缺少 durable handoff identity"):
+            await bus.reserve_durable_inbound(raw)
+        assert manager.inbound_store.list_inbound_handoffs() == []
+    finally:
+        await bus.aclose()
+        manager.close()
+
+
 @pytest.mark.asyncio
 async def test_mobile_envelope_session_must_match_durable_handoff_before_reserve():
     envelope, lease = _v3_inbound(
         channel="akashic",
         metadata={
-            "mobile_v3_handoff": True,
-            "mobile_v3_handoff_id": "handoff-1",
-            "client_message_id": "message-1",
+            "durable_inbound": True,
+            "durable_handoff_id": "handoff-1",
+            "provider_message_id": "message-1",
             "session_key_override": "akashic:authorized",
         },
     )
