@@ -661,6 +661,14 @@ def _merge_channel_registries(
         factories=factories,
         identity=_registry_identity(descriptors, factories),
         root_instance_token=root_token,
+        _contexts={
+            item.name: registry._contexts[item.name]
+            for registry in (base, delta)
+            if registry is not None
+            for item in registry.descriptors
+            if (registry is delta or item.owner not in replaced)
+            and item.name in registry._contexts
+        },
     )
 
 

@@ -650,3 +650,23 @@ HTTP 调用、发送请求和重开的持久回执。该层整合后的 Core Mes
 分发入口显式传递 runtime tree 身份。Git bundle 预检使用一次性空 bare repository，
 因此不要求 Core 制品所在目录是 Git checkout。相关分发测试 7 项通过。先前镜像的
 安装器覆盖挂载演练仅用于定位问题；最终无覆盖挂载镜像与整栈验收仍须单独完成。
+
+
+### 9.36 普通渠道的请求与监听任务边界
+
+`ChannelFactoryContext.open_scope()` 为每个 HTTP 请求或 WebSocket 帧取得一个
+精确请求租约。它返回通用 `RequestContext`，只允许注册该 ChannelDefinition 的
+Fiber 所声明的能力；同一 snapshot 的另一份租约也不能借用这个请求上下文。
+Dashboard 使用同一个合同，保留既有公开名称，不增加业务接口目录。
+
+普通 `Context.get()` 的既有动态服务查询语义保持；不能把 `inject` 当成它的权限过滤。
+请求边界单独检查声明集合、当前 task 的精确 lease 和 activation。关闭 admission
+后拒绝新请求，已有请求参与 ChannelHost 排空；取消也必须归还其 binding。
+
+`spawn_owned()` 只允许 adapter.start 的当前 task 注册所属 Fiber 的后台任务，
+start 返回后即撤销这个入口。插件负责实际 listener 的 ready、意外退出、连接清理和
+stop 回执；Core 复用既有 channel lifecycle，不增加第二套 listener owner。
+无需配置凭据的普通渠道可以声明空 credential_paths，不能要求它伪造 token。
+
+这层只提供客户端迁出所需的中立能力。Mobile/WebChat 的实现、配置和 durable
+handoff 仍需后续迁入普通插件；不能据此宣称 Core 业务归属已经全部收束。

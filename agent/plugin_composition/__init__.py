@@ -18,6 +18,7 @@ from agent.control.timer import TimerHandle, TimerStatus
 from agent.tool_context import ToolExecutionContext
 from agent.plugin_contracts.turn_effects import PostCommitEffect, TurnStorage
 from agent.plugin_composition.dashboard import DashboardContext
+from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.commands import (
     COMMANDS,
     CommandDefinition,
@@ -288,6 +289,7 @@ __all__ = [
     "CommandRegistry",
     "CommandResult",
     "DashboardContext",
+    "RequestContext",
     "Bail",
     "CHANNELS",
     "ChannelAdapter",

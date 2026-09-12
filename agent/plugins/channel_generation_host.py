@@ -12,14 +12,16 @@ import inspect
 import json
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from contextlib import nullcontext
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, ContextManager, Literal, Protocol, cast
 
-from agent.plugin_composition.context import RuntimeScope
+from agent.plugin_composition.context import Context, RuntimeScope
+from agent.plugin_composition.model import CompositionError, FiberState, ServiceKey
+from agent.plugin_composition.requests import RequestContext
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.channels import (
     CHANNEL_INPUT,
@@ -195,6 +197,9 @@ class _ChannelBindingState:
     target: str
     boot_owner: str
     start_attempt: int
+    plugin_context: Context | None = None
+    activation_token: object | None = None
+    start_task: asyncio.Task[object] | None = None
     start_attempted: bool = False
     started: bool = False
     admission_open: bool = False
@@ -1347,6 +1352,79 @@ class ChannelGenerationHost:
             raise contract_errors[0]
         return tuple(receipts)
 
+    async def _spawn_owned[T](
+        self, key: tuple[str, str], coroutine: Coroutine[Any, Any, T], *, name: str,
+    ) -> asyncio.Task[T]:
+        """启动期登记监听任务；请求或遗留 factory 引用不能再创建任务。"""
+
+        state = self._bindings.get(key)
+        if state is None or state.plugin_context is None or state.start_task is not asyncio.current_task():
+            coroutine.close()
+            raise RuntimeError("channel spawn_owned 只允许 adapter.start 当前任务调用")
+        return await state.plugin_context.spawn(coroutine, name=name)
+
+    @asynccontextmanager
+    async def _open_request_scope(self, key: tuple[str, str]) -> AsyncIterator[RequestContext]:
+        """让外部请求占有精确 binding，关闭接纳后排空再释放插件。"""
+
+        # 1. 首个 await 前占位，防止关闭接纳与取得 snapshot 之间漏过排空。
+        state = self._binding(key)
+        context = state.plugin_context
+        if context is None:
+            raise RuntimeError("channel 没有插件声明 Context")
+        self._begin_presentation_operation(key)
+        binding: ChannelBindingLease | None = None
+        try:
+            binding = await self._acquire_control_binding(key)
+            root = binding.snapshot_lease.snapshot.composition_root
+            if (
+                root is None
+                or root.context_owner(context) != state.plugin_id
+                or context.fiber.state is not FiberState.ACTIVE
+                or context.fiber.activation_token is not state.activation_token
+            ):
+                raise RuntimeError("channel 请求 Context 不属于当前 activation")
+            # 2. 原 Context 的 get 允许 Root 查询；请求只解析声明 Fiber 的依赖。
+            allowed = frozenset(context._declared_dependencies())
+            runtime = context.runtime
+            active = True
+
+            def resolve(key: ServiceKey[object]) -> object:
+                from agent.plugins.snapshot import get_current_runtime_lease
+
+                current = get_current_runtime_lease()
+                if not active or current is not scope_lease:
+                    raise CompositionError("REQUEST_SCOPE_MISSING", "插件请求作用域已关闭")
+                if context.fiber.activation_token is not state.activation_token:
+                    raise CompositionError("REQUEST_SCOPE_MISSING", "请求声明 activation 已失效")
+                if key not in allowed:
+                    raise CompositionError("SERVICE_UNDECLARED", f"请求未声明能力: {key.name}")
+                return root.context.require(key)
+
+            request = RequestContext(
+                plugin_id=runtime.plugin_id,
+                plugin_dir=runtime.plugin_dir,
+                data_root=runtime.data_dir,
+                validation=False,
+                _workspace_roots=tuple((name, runtime.workspace_root(name)) for name in runtime.workspace_roots),
+                _workspace_files=tuple((name, runtime.workspace_file(name)) for name in runtime.workspace_files),
+                _resolve=resolve,
+            )
+            scope_lease = binding.snapshot_lease.fork()
+            try:
+                async with RuntimeScope(scope_lease):
+                    yield request
+            finally:
+                active = False
+        finally:
+            # 3. 取消也必须等 lease 清理完成，才能解除 Host 的排空占位。
+            try:
+                if binding is not None:
+                    cleanup = asyncio.create_task(binding.aclose(), name="channel-request-release")
+                    await _await_task_after_cancellation(cleanup)
+            finally:
+                self._release_presentation_operation(key)
+
     async def _acquire_control_binding(
         self,
         key: tuple[str, str],
@@ -1775,6 +1853,8 @@ class ChannelGenerationHost:
     ) -> _ChannelBindingState:
         catalog = getattr(snapshot, "channel_catalog", None)
         core_definition: CoreChannelDefinition | None = None
+        plugin_context: Context | None = None
+        activation_token: object | None = None
         if descriptor.owner == "core":
             if not isinstance(catalog, CommittedChannelCatalog):
                 raise RuntimeError("Core channel 缺少 committed catalog")
@@ -1797,6 +1877,14 @@ class ChannelGenerationHost:
                 raise RuntimeError(f"channel owner generation 缺失: {descriptor.owner}")
             if not isinstance(generation.instance, ComposablePlugin):
                 raise RuntimeError(f"channel owner 不是 ComposablePlugin: {descriptor.owner}")
+            plugin_context, activation_token = registry._contexts[descriptor.name]
+            if (
+                snapshot.composition_root.context_owner(plugin_context) != descriptor.owner
+                or plugin_context.runtime.generation_id != generation.generation_id
+                or plugin_context.fiber.state is not FiberState.ACTIVE
+                or plugin_context.fiber.activation_token is not activation_token
+            ):
+                raise RuntimeError("channel 声明 Context 不属于当前 activation")
             plugin = generation.instance
             module = plugin.module
             if not isinstance(module, ModuleType):
@@ -1854,6 +1942,8 @@ class ChannelGenerationHost:
             target="formal",
             boot_owner=boot_owner,
             start_attempt=1,
+            plugin_context=plugin_context,
+            activation_token=activation_token,
         )
 
     async def _start_binding(self, key: tuple[str, str]) -> None:
@@ -1929,6 +2019,9 @@ class ChannelGenerationHost:
             ),
             control=state.control_port,
             turn_stream=state.turn_stream_port,
+            data_root=None if state.plugin_context is None else state.plugin_context.data_root,
+            open_scope=None if state.plugin_context is None else lambda: self._open_request_scope(key),
+            spawn_owned=None if state.plugin_context is None else lambda coroutine, *, name: self._spawn_owned(key, coroutine, name=name),
         )
         try:
             with _channel_entrypoint(state, "channel.factory"):
@@ -2000,6 +2093,7 @@ class ChannelGenerationHost:
                     raise TypeError(
                         "channel adapter.attach_presentation 必须同步返回"
                     )
+        state.start_task = asyncio.current_task()
         try:
             with _channel_entrypoint(state, "channel.start"):
                 result = await _invoke_async(
@@ -2021,6 +2115,8 @@ class ChannelGenerationHost:
         except asyncio.CancelledError:
             state.internal_cancellation = "adapter-start"
             raise
+        finally:
+            state.start_task = None
         state.ready = result
         state.started = True
 
