@@ -113,11 +113,11 @@
     {
       "id": "emotion",
       "repository": "https://github.com/akashic-plugins/emotion",
-      "branch": "codex/content-context-drift-20260823",
-      "resolved_sha": "2bb332b7f51526763b444871510cb4cba866a45c",
-      "pull_request": "https://github.com/akashic-plugins/emotion/pull/6",
+      "branch": "codex/emotion-core-boundary-20260912",
+      "resolved_sha": "99e4acc1b656c63c818b741f533dfb4de9299ef6",
+      "pull_request": "https://github.com/akashic-plugins/emotion/pull/11",
       "role": "current_context_drift_proposal_and_feedback_history_consumer",
-      "atoms": ["TIMERS", "TOOL_CATALOG", "drift.proposals.v1", "drift.wake.v1", "proactive-feedback.history.v1", "turn.context_prepared"],
+      "atoms": ["TIMERS", "tools.v1", "UI_SLOTS", "core.message_catalog", "turn.projection.v1", "context.materials.v3", "drift.proposals.v1", "drift.wake.v1", "proactive-feedback.history.v1"],
       "test_cwd": ".",
       "cases": ["tests/test_plugin.py"]
     },

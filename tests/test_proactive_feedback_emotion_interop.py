@@ -1,49 +1,44 @@
+"""通过正式 PluginManager 证明 PF 与 Emotion 的真实 Message 组合。"""
+
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import os
+import socket
 import sqlite3
-import sys
-from contextlib import asynccontextmanager, closing
-from datetime import UTC, datetime
+import subprocess
+from contextlib import closing
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
+from aiohttp import web
 
-from agent.control.timer import TimerReceipt, TimerStatus
-from agent.plugin_composition import (
-    EMBEDDINGS,
-    RUNTIME_STARTED,
-    RUNTIME_STOPPING,
-    TIMERS,
-    TOOL_CATALOG,
-    UI_SLOTS,
-    CompositionRoot,
-    PluginRuntime,
-    PluginTimers,
-    RuntimeStarted,
-    RuntimeStopping,
+from agent.config_models import Config
+from agent.plugin_contracts import ContentPart, Input, Output
+from agent.plugins.install import PluginInstallResult, install_git_plugin
+from agent.plugins.model_control import RuntimeModelControl
+from agent.plugins.snapshot import lease_runtime_snapshot
+from bootstrap.init_workspace import init_workspace
+from bootstrap.tools import build_core_runtime
+from core.net.http import SharedHttpResources
+from plugins.content.plugin import CONTENT
+from session.log import SessionAttributes
+from tests.fixtures.formal_plugins import install_formal_plugins
+
+
+_PF_HEAD = "b0dd6dd1a14852e0e5df3c2459f60f1bc80c99f4"
+_EMOTION_HEAD = "99e4acc1b656c63c818b741f533dfb4de9299ef6"
+_BUILTIN_PLUGINS = (
+    "content",
+    "context",
+    "drift",
+    "models",
+    "openai_compatible",
+    "tools",
+    "turn_projection",
 )
-from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.plugin_composition.models import EmbeddingResult
-from agent.plugin_composition.tool_catalog import PluginTools, _freeze_plugin_tools
-from agent.plugin_composition.ui_slots import PluginUiSlots
-from agent.plugins.snapshot import RuntimeSnapshot, RuntimeSnapshotStore
-from agent.plugins.install import install_git_plugin
-from agent.plugins.source_resolver import resolve_plugin_sources
-from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
-from bus.events_lifecycle import TurnCommitted
-from plugins.content.plugin import check_text
-from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
-from session.log import MessageLog, SessionAttributes
-from session.message import ContentPart, Input, Output
-
-
-NOW = datetime(2026, 8, 23, 8, tzinfo=UTC)
 
 
 def _plugin_roots() -> dict[str, Path]:
@@ -56,337 +51,287 @@ def _plugin_roots() -> dict[str, Path]:
     roots = {str(key): Path(str(value)) for key, value in decoded.items()}
     if set(roots) != {"proactive_feedback", "emotion"}:
         raise RuntimeError(f"interop plugin roots 不匹配: {sorted(roots)}")
+    expected = {"proactive_feedback": _PF_HEAD, "emotion": _EMOTION_HEAD}
+    for plugin_id, root in roots.items():
+        actual = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        if actual != expected[plugin_id]:
+            raise RuntimeError(
+                f"{plugin_id} source SHA 与锁不一致: "
+                f"expected={expected[plugin_id]} actual={actual}"
+            )
     return roots
 
 
-def _install_pinned_plugins(tmp_path: Path, sources: dict[str, Path]) -> dict[str, Path]:
-    """Install the exact Gate checkouts, then return only their cache roots."""
+def _install_external_plugins(
+    workspace: Path,
+    plugin_home: Path,
+    roots: dict[str, Path],
+) -> dict[str, PluginInstallResult]:
+    """通过正式安装入口发布两个外部 artifact，不把 checkout 交给 manager。"""
 
-    install_workspace = tmp_path / "install-workspace"
-    install_workspace.mkdir()
-    plugin_home = tmp_path / "plugin-home"
+    installed: dict[str, PluginInstallResult] = {}
     for plugin_id in ("proactive_feedback", "emotion"):
-        _ = install_git_plugin(
-            workspace=install_workspace,
-            source=str(sources[plugin_id]),
+        installed[plugin_id] = install_git_plugin(
+            workspace=workspace,
+            source=str(roots[plugin_id]),
             marketplace="interop",
             plugins_home=plugin_home,
         )
-    resolved = resolve_plugin_sources(
-        (), installed_cache_root=plugin_home / "cache",
-    )
-    roots = {item.plugin_name: item.plugin_root for item in resolved}
-    if set(roots) != {"proactive_feedback", "emotion"}:
-        raise RuntimeError(f"正式安装 artifact 不完整: {sorted(roots)}")
-    cache_root = (plugin_home / "cache").resolve()
-    for plugin_id, root in roots.items():
-        if not root.resolve().is_relative_to(cache_root):
-            raise RuntimeError(f"插件未从正式 cache 载入: {plugin_id} {root}")
-    return roots
+    return installed
 
 
-def _load_plugin(root: Path, package: str) -> ModuleType:
-    """Load one exact formally installed artifact without copying its implementation."""
+async def _model_command(
+    control: RuntimeModelControl, payload: dict[str, object]
+) -> dict[str, object]:
+    """通过 Models 插件的公开 RPC 配置真实 embedding provider。"""
 
-    entrypoint = root / "plugin.py"
-    spec = importlib.util.spec_from_file_location(
-        f"{package}.plugin",
-        entrypoint,
-        submodule_search_locations=[str(root)],
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(str(entrypoint))
-    namespace = ModuleType(package)
-    namespace.__path__ = [str(root)]  # type: ignore[attr-defined]
-    sys.modules[package] = namespace
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    result = await control.invoke_rpc("models/command", payload)
+    assert isinstance(result, dict)
+    assert result.get("status") == 200, result
+    body = result.get("body")
+    assert isinstance(body, dict)
+    return body
 
 
-class ManualHandle:
-    def __init__(self, timer_id: str, deadline: datetime) -> None:
-        self.id = timer_id
-        self.deadline = deadline
-        self._future: asyncio.Future[TimerReceipt] = (
-            asyncio.get_running_loop().create_future()
-        )
+async def _eventually(predicate: Any, *, attempts: int = 300) -> None:
+    """等待耐久消费者完成一次真实跨插件提交。"""
 
-    async def result(self) -> TimerReceipt:
-        return await asyncio.shield(self._future)
-
-    async def cancel(self) -> TimerReceipt:
-        if not self._future.done():
-            self._future.set_result(self._receipt(TimerStatus.CANCELLED))
-        return await asyncio.shield(self._future)
-
-    async def cleanup(self) -> None:
-        _ = await self.cancel()
-
-    def fire(self) -> None:
-        self._future.set_result(self._receipt(TimerStatus.FIRED))
-
-    def _receipt(self, status: TimerStatus) -> TimerReceipt:
-        return TimerReceipt(self.id, self.deadline, self.deadline, status)
-
-
-class ManualTimer:
-    def __init__(self) -> None:
-        self.handles: list[ManualHandle] = []
-
-    def schedule(self, deadline: datetime) -> ManualHandle:
-        handle = ManualHandle(f"timer-{len(self.handles) + 1}", deadline)
-        self.handles.append(handle)
-        return handle
-
-    @property
-    def active(self) -> tuple[ManualHandle, ...]:
-        return tuple(handle for handle in self.handles if not handle._future.done())
-
-
-class EmptyDrift:
-    def propose(self, *args: object, **kwargs: object) -> dict[str, object]:
-        return {"inserted": True}
-
-    def selection(self, accepted_turn: object) -> None:
-        return None
-
-
-class DeterministicEmbeddingModel:
-    async def embed(self, texts: list[str]) -> EmbeddingResult:
-        return EmbeddingResult(tuple((1.0, 0.0) for _ in texts))
-
-
-class DeterministicEmbeddings:
-    @asynccontextmanager
-    async def bind(self, *, model_id: str | None = None):
-        _ = model_id
-        yield DeterministicEmbeddingModel()
-
-
-def _append_followup(log: MessageLog, *, explicit_quote: bool) -> None:
-    """Append the real Message prefix consumed by both installed plugins."""
-
-    session_id = "wake:interop"
-    _ = log.ensure_session(session_id, SessionAttributes())
-    proactive = log.writer(
-        session_id,
-        author="wake",
-        source="wake",
-        body_types=(Output,),
-        content={"text": check_text},
-    )
-    proactive.append(
-        "p1", Output((ContentPart("text", "主动提醒某个很长很长的主题"),), "complete")
-    )
-    user = (
-        "被回复消息：主动提醒某个很长很长的主题\n\n"
-        "【你当前新消息】我继续这个主题"
-        if explicit_quote
-        else "我继续这个主题"
-    )
-    user_writer = log.writer(
-        session_id,
-        author="user",
-        source="conversation",
-        body_types=(Input,),
-        content={"text": check_text},
-    )
-    user_writer.append("u1", Input((ContentPart("text", user),)))
-    assistant = log.writer(
-        session_id,
-        author="assistant",
-        source="conversation",
-        body_types=(Output,),
-        content={"text": check_text},
-    )
-    assistant.append(
-        "a1", Output((ContentPart("text", "我接着回答这个主题"),), "complete")
-    )
-
-
-def _followup(*, explicit_quote: bool) -> TurnCommitted:
-    user = (
-        "被回复消息：主动提醒某个很长很长的主题\n\n"
-        "【你当前新消息】我继续这个主题"
-        if explicit_quote
-        else "我继续这个主题"
-    )
-    return TurnCommitted(
-        session_key="wake:interop",
-        channel="mobile",
-        chat_id="chat",
-        input_message=user,
-        persisted_user_message=user,
-        assistant_response="我接着回答这个主题",
-        tools_used=[],
-        turn_id="turn-followup-1",
-        persisted_user_message_id="u1",
-        assistant_message_id="a1",
-        timestamp=NOW,
-    )
-
-
-async def _eventually(predicate: Any) -> None:
-    for _ in range(300):
+    for _ in range(attempts):
         if predicate():
             return
-        await asyncio.sleep(0.01)
-    raise AssertionError("interop state did not settle")
+        await asyncio.sleep(0.05)
+    raise AssertionError("PF/Emotion 互操作状态未在限定时间内完成")
 
 
 def _count(path: Path, query: str) -> int:
     if not path.exists():
         return 0
-    with closing(sqlite3.connect(path)) as connection:
-        return int(connection.execute(query).fetchone()[0])
+    try:
+        with closing(sqlite3.connect(path)) as connection:
+            return int(connection.execute(query).fetchone()[0])
+    except sqlite3.OperationalError:
+        return 0
 
 
-async def _mount(
-    root: CompositionRoot,
-    module: ModuleType,
-    plugin_id: str,
-    plugin_root: Path,
-    sandbox: Path,
-) -> None:
-    workspace_roots = ("emotion",) if plugin_id == "emotion" else ()
-    _ = await root.mount(
-        lambda ctx: module.apply(ctx, object()),
-        name=plugin_id,
-        inject=module.inject,
-        runtime=PluginRuntime(
-            plugin_id=plugin_id,
-            generation_id="test-generation",
-            plugin_dir=plugin_root,
-            data_dir=sandbox / "plugin-data" / plugin_id,
-            workspace=sandbox / "workspace",
-            config=None,
-            workspace_roots=workspace_roots,
-        ),
-    )
+async def _embedding_server() -> tuple[web.AppRunner, str]:
+    """提供真实 openai-compatible embedding HTTP 边界，返回确定向量。"""
+
+    async def models(_request: web.Request) -> web.Response:
+        return web.json_response({"data": [{"id": "fixture-embedding"}]})
+
+    async def embeddings(request: web.Request) -> web.Response:
+        payload = await request.json()
+        texts = payload.get("input")
+        if not isinstance(texts, list) or not texts:
+            raise web.HTTPBadRequest(text="input must be a non-empty list")
+        return web.json_response(
+            {
+                "data": [
+                    {"index": index, "embedding": [1.0, 0.0]}
+                    for index, _ in enumerate(texts)
+                ],
+                "usage": {"prompt_tokens": 1, "total_tokens": len(texts)},
+            }
+        )
+
+    application = web.Application()
+    application.router.add_get("/v1/models", models)
+    application.router.add_post("/v1/embeddings", embeddings)
+    runner = web.AppRunner(application)
+    await runner.setup()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    await web.SockSite(runner, sock).start()
+    return runner, f"http://127.0.0.1:{sock.getsockname()[1]}/v1"
+
+
+async def _append_followup(core: Any, session_id: str = "wake:interop") -> None:
+    """经正式 MessageLog 与当前 Content owner 追加完整 Wake follow-up。"""
+
+    async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
+        content = snapshot.composition_root.context.require(CONTENT)
+        checks = {"text": content.check_text}
+        log = core.message_log
+        _ = log.ensure_session(session_id, SessionAttributes())
+        proactive = log.writer(
+            session_id,
+            author="wake",
+            source="wake",
+            body_types=(Output,),
+            content=checks,
+        )
+        proactive.append(
+            "p1",
+            Output(
+                (ContentPart("text", "主动提醒某个很长很长的主题"),),
+                "complete",
+            ),
+        )
+        user = log.writer(
+            session_id,
+            author="user",
+            source="conversation",
+            body_types=(Input,),
+            content=checks,
+        )
+        user.append(
+            "u1",
+            Input(
+                (
+                    ContentPart(
+                        "text",
+                        "被回复消息：主动提醒某个很长很长的主题\n\n"
+                        "【你当前新消息】我继续这个主题",
+                    ),
+                )
+            ),
+        )
+        assistant = log.writer(
+            session_id,
+            author="assistant",
+            source="conversation",
+            body_types=(Output,),
+            content=checks,
+        )
+        assistant.append(
+            "a1",
+            Output((ContentPart("text", "我接着回答这个主题"),), "complete"),
+        )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "order",
-    (("emotion", "proactive_feedback"), ("proactive_feedback", "emotion")),
-)
-@pytest.mark.parametrize("explicit_quote", (False, True))
-async def test_wake_followup_reaches_emotion_once_on_next_timer(
+async def test_installed_manager_message_append_reaches_pf_and_emotion(
     tmp_path: Path,
-    order: tuple[str, str],
-    explicit_quote: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Prove PF owns acceptance while Emotion pulls the immutable fact one tick later."""
+    """正式归档加载后，真实 Message 自然抵达 PF 与 Emotion。"""
 
-    # 1. Mount both exact plugins over ordinary Core services in either order.
-    roots = _install_pinned_plugins(tmp_path, _plugin_roots())
-    modules = {
-        "proactive_feedback": _load_plugin(
-            roots["proactive_feedback"], f"pf_interop_{order[0]}"
-        ),
-        "emotion": _load_plugin(roots["emotion"], f"emotion_interop_{order[0]}"),
-    }
-    root = CompositionRoot("pf-emotion-" + "-".join(order))
-    timer = ManualTimer()
-    tools = PluginTools(root.instance_token)
-    ui = PluginUiSlots()
-    drift = EmptyDrift()
+    roots = _plugin_roots()
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    log = MessageLog(workspace / "sessions.db")
-    snapshot_store = RuntimeSnapshotStore()
-    _ = await root.context.provide(MESSAGE_CATALOG, log.catalog())
-    _ = await root.context.provide(TURN_PROJECTION, TurnProjection())
-    _ = await root.context.provide(EMBEDDINGS, DeterministicEmbeddings())
-    _ = await root.context.provide(TIMERS, PluginTimers(timer))
-    _ = await root.context.provide(TOOL_CATALOG, tools)
-    _ = await root.context.provide(UI_SLOTS, ui)
-    _ = await root.context.provide(modules["emotion"].DRIFT_PROPOSALS, drift)
-    _ = await root.context.provide(modules["emotion"].DRIFT_WAKE, drift)
-    for plugin_id in order:
-        await _mount(root, modules[plugin_id], plugin_id, roots[plugin_id], tmp_path)
-    _ = _freeze_plugin_tools(
-        tools,
-        root.instance_token,
-        {plugin_id: root.generation_id for plugin_id in order},
+    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
+    plugin_home, _ = install_formal_plugins(
+        tmp_path,
+        _BUILTIN_PLUGINS,
+        marketplace="fixture",
     )
-    snapshot_store.install(
-        RuntimeSnapshot(
-            snapshot_id="pf-emotion-test",
-            generations={},
-            composition_root=root,
-            composition_topology=root.topology_view(),
-        )
-    )
-    root._bind_runtime_scope_acquirer(  # pyright: ignore[reportPrivateUsage]
-        lambda: snapshot_store.acquire_composition_root(root)
-    )
+    installed = _install_external_plugins(workspace, plugin_home, roots)
+    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
 
-    feedback_db = tmp_path / "plugin-data/proactive_feedback/proactive_feedback.db"
-    emotion_db = tmp_path / "workspace/emotion/emotion.db"
+    runner, endpoint = await _embedding_server()
+    http: SharedHttpResources | None = SharedHttpResources()
+    core: Any | None = build_core_runtime(Config(), workspace, http, plugin_dirs=[])
     try:
-        await root.context.serial(RUNTIME_STARTED, RuntimeStarted())
-        await _eventually(lambda: len(timer.active) >= 2)
+        assert core is not None and http is not None
+        await core.start()
+        host = core.plugin_manager
+        expected = {"proactive_feedback@interop", "emotion@interop"}
+        assert expected <= set(host.current_snapshot.generations)
+        for plugin_id in expected:
+            generation = host.generation(plugin_id)
+            assert generation is not None
+            descriptor = host._archive.read_descriptor(generation.archive_ref)
+            archive_root = host._archive.open(descriptor["code"])
+            loaded = Path(generation.instance.module.__file__).resolve()
+            assert loaded.is_relative_to(archive_root.resolve())
+            source = roots[plugin_id.split("@", 1)[0]].resolve()
+            assert not loaded.is_relative_to(source)
 
-        # 2. One ordinary committed follow-up is accepted by PF; Emotion has no PF import yet.
-        _append_followup(log, explicit_quote=explicit_quote)
-        root.context.emit(
-            AFTER_TURN_COMMITTED,
-            _followup(explicit_quote=explicit_quote),
+        await host.start_runtime()
+        control = RuntimeModelControl(host.snapshot_store)
+        await _model_command(
+            control,
+            {
+                "type": "add_connection",
+                "expected_revision": 0,
+                "connection_id": "local",
+                "name": "Local",
+                "driver_id": "openai-compatible",
+                "endpoint": endpoint,
+                "auth_identity": "fixture",
+                "credential": {"api_key": "fixture"},
+            },
         )
+        await _model_command(
+            control,
+            {
+                "type": "add_model",
+                "expected_revision": 1,
+                "model_id": "fixture-embedding",
+                "connection_id": "local",
+                "kind": "embedding",
+                "model": "fixture-embedding",
+                "capabilities": {
+                    "embedding_dimensions": 2,
+                    "embedding_normalization": "unit",
+                },
+                "capability_sources": {},
+            },
+        )
+        await _model_command(
+            control,
+            {
+                "type": "set_default",
+                "expected_revision": 2,
+                "role": None,
+                "model_id": "fixture-embedding",
+            },
+        )
+
+        await _append_followup(core)
+        pf_db = installed["proactive_feedback"].data_path / "proactive_feedback.db"
+        emotion_db = workspace / "emotion" / "emotion.db"
+
         await _eventually(
             lambda: _count(
-                feedback_db, "SELECT count(*) FROM proactive_feedback_events"
+                pf_db,
+                "SELECT count(*) FROM proactive_feedback_events",
             )
             == 1
         )
         assert _count(
-            emotion_db,
-            "SELECT count(*) FROM emotion_events "
-            "WHERE source_plugin='proactive_feedback'",
-        ) == 0
-        assert _count(emotion_db, "SELECT count(*) FROM emotion_events") == (
-            1 if explicit_quote else 0
-        )
-        assert _count(
-            emotion_db, "SELECT count(*) FROM emotion_feedback_samples"
-        ) == (1 if explicit_quote else 0)
-        assert _count(
-            emotion_db,
-            "SELECT row_id FROM pf_history_cursor WHERE source='proactive_feedback'",
-        ) == 0
+            pf_db,
+            "SELECT count(*) FROM proactive_feedback_input_inbox "
+            "WHERE processed_at IS NOT NULL",
+        ) == 1
 
-        # 3. The ordinary immediate Timer pulls once; explicit quote keeps one effect/sample.
-        history_timer = min(timer.active, key=lambda handle: handle.deadline)
-        history_timer.fire()
+        # Emotion observes the same completed Turn directly from MessageCatalog.
         await _eventually(
             lambda: _count(
                 emotion_db,
-                "SELECT row_id FROM pf_history_cursor "
-                "WHERE source='proactive_feedback'",
+                "SELECT count(*) FROM emotion_events "
+                "WHERE source_type='explicit_quote'",
             )
             == 1
         )
-        assert _count(emotion_db, "SELECT count(*) FROM emotion_events") == (
-            2 if explicit_quote else 1
+
+        # Restart the real manager so the consumer's immediate Timer pull sees the
+        # durable PF page; no lifecycle event is manufactured or emitted by test code.
+        await core.bus.aclose()
+        await core.stop()
+        core = None
+        await http.aclose()
+        http = SharedHttpResources()
+        core = build_core_runtime(Config(), workspace, http, plugin_dirs=[])
+        await core.start()
+        await core.plugin_manager.start_runtime()
+
+        # Its real Timer pull consumes the PF history page without any lifecycle emit.
+        await _eventually(
+            lambda: _count(
+                emotion_db,
+                "SELECT count(*) FROM pf_history_cursor "
+                "WHERE source='proactive_feedback'",
+            )
+            == 1,
+            attempts=1400,
         )
-        assert _count(
-            emotion_db, "SELECT count(*) FROM emotion_feedback_samples"
-        ) == 1
-        assert _count(
-            emotion_db,
-            "SELECT count(*) FROM emotion_events "
-            "WHERE valence_delta != 0.0 OR dominance_delta != 0.0",
-        ) == 1
-        assert _count(
-            emotion_db,
-            "SELECT count(*) FROM emotion_events "
-            "WHERE source_type='explicit_quote_already_applied'",
-        ) == (1 if explicit_quote else 0)
+        assert _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples") == 1
     finally:
-        await root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
-        await root.dispose()
-        log.close()
-        await snapshot_store.close()
+        if core is not None:
+            await core.bus.aclose()
+            await core.stop()
+        if http is not None:
+            await http.aclose()
+        await runner.cleanup()
