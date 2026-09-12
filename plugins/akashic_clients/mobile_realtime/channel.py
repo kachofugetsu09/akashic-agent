@@ -1216,6 +1216,7 @@ class MobileRealtimeChannel:
         ports, task = self._v3_inbound_runtime.capture()
         try:
             try:
+                self._client_sessions[raw.message_id] = session_id
                 accepted = await self._v3_inbound_runtime.recover(raw, ports=ports)
                 if accepted:
                     self._runtime.storage.claim_session(
@@ -1225,6 +1226,8 @@ class MobileRealtimeChannel:
                         session_id=session_id, client_message_id=raw.message_id,
                         message_id=raw.message_id,
                     )
+                else:
+                    _ = self._client_sessions.pop(raw.message_id, None)
                 return accepted
             except MessageConflict as error:
                 self._runtime.storage.complete_command(
