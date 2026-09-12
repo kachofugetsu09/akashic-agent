@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sys
+import threading
 from datetime import datetime, timezone
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -10,6 +12,7 @@ import pytest
 
 from agent.plugin_composition import (
     ChannelFactoryContext,
+    AttachmentRef,
     CredentialRef,
     DeliveryStatus,
     ProviderDeliveryRequest,
@@ -34,8 +37,9 @@ class _Identity:
 
 
 class _AttachmentImport:
-    async def import_bytes(self, data: bytes, **_: object) -> Any:
-        return data
+    async def import_bytes(self, data: bytes, *, kind, filename, media_type) -> AttachmentRef:
+        return AttachmentRef("fixture-attachment", kind, filename, media_type,
+                             len(data), hashlib.sha256(data).hexdigest())
 
 
 class _ProviderClient:
@@ -221,9 +225,22 @@ async def test_telegram_external_owner_handles_inbound_delivery_and_stop(
     assert receipt.status is DeliveryStatus.DELIVERED
     assert adapter._app.bot.sent == [("text", 1001, "reply")]
 
+    async def get_file(_file_id):
+        async def download():
+            return b"reply-image"
+        return SimpleNamespace(download_as_bytearray=download)
+    adapter._app.bot.get_file = get_file
+    update.effective_message.message_id = 8
+    update.effective_message.text = "line one\nline two"
+    update.effective_message.reply_to_message = SimpleNamespace(
+        photo=[SimpleNamespace(file_id="image")], document=None, text=None, caption=None,
+    )
+    await adapter._on_update(update, SimpleNamespace(bot=adapter._app.bot))
+    assert ingress.messages[-1].message.content == "line one\u2028line two"
+    assert ingress.messages[-1].message.attachments[0].sha256 == hashlib.sha256(b"reply-image").hexdigest()
     adapter.close_admission()
-    stopped = await adapter.stop()
-    assert stopped.resources_closed
+    first, second = await asyncio.gather(adapter.stop(), adapter.stop())
+    assert first is second and first.resources_closed
     assert provider.client.closed
     assert adapter._app is None
 
@@ -238,6 +255,14 @@ class _QQBot:
         self.api = api
         self.callbacks: dict[str, Any] = {}
         self.exited = False
+        self.ready = threading.Event()
+        self.unloaded = False
+        self.plugin_loader = SimpleNamespace(unload_all=self.unload_all)
+        self.thread: threading.Thread | None = None
+        self.adapter = SimpleNamespace(connect_websocket=self.connect_websocket)
+
+    async def unload_all(self) -> None:
+        self.unloaded = True
 
     def _decorator(self, name: str):
         def register(callback: Any) -> Any:
@@ -255,11 +280,26 @@ class _QQBot:
     def on_group_message(self) -> Any:
         return self._decorator("group")
 
-    def run_backend(self) -> None:
-        return None
+    async def connect_websocket(self) -> None:
+        try:
+            self.ready.set()
+            await asyncio.Future()
+        finally:
+            self.exited = True
 
-    def exit(self) -> None:
-        self.exited = True
+    def start(self) -> None:
+        try:
+            asyncio.run(self.adapter.connect_websocket())
+        except asyncio.CancelledError:
+            pass
+
+    def run_backend(self) -> _QQApi:
+        """模拟 SDK：连接在独立线程运行，startup 后才返回 API。"""
+        self.thread = threading.Thread(target=self.start)
+        self.thread.start()
+        if not self.ready.wait(5):
+            raise RuntimeError("fixture startup 未就绪")
+        return self.api
 
 
 @pytest.mark.asyncio
@@ -303,13 +343,19 @@ async def test_qq_external_owner_handles_inbound_delivery_and_stop(
     )
     ready = await adapter.start()
     assert not ready.admission_open
-    adapter._api = api
+    assert adapter._api is api
     adapter.open_admission()
 
     event = SimpleNamespace(user_id=42, raw_message="hello", message_id=17)
-    await bot.callbacks["private"](event)
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    admitted = asyncio.Event()
+    original_admit = ingress.admit
+    async def admit(raw):
+        result = await original_admit(raw)
+        admitted.set()
+        return result
+    ingress.admit = admit
+    await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(bot.callbacks["private"](event), adapter._bot_loop))
+    await asyncio.wait_for(admitted.wait(), 2)
     assert len(ingress.messages) == 1
     assert ingress.messages[0].message.content == "hello"
     assert ingress.messages[0].recipient == "42"
@@ -329,3 +375,38 @@ async def test_qq_external_owner_handles_inbound_delivery_and_stop(
     stopped = await adapter.stop()
     assert stopped.resources_closed
     assert bot.exited
+    assert bot.unloaded
+    assert bot.thread is not None and not bot.thread.is_alive()
+
+
+def test_channel_config_migration_resumes_before_removing_old_input(tmp_path, monkeypatch):
+    """第二个目标发布失败时保留原配置；重试使用同一备份和明确 marketplace。"""
+    import tomllib
+    from scripts import migrate_legacy_channels as migration
+    from agent.plugins.manifest import workspace_plugin_data_dir
+
+    config = tmp_path / "config.toml"
+    source = '[channels.telegram]\ntoken="fixture-token"\n[channels.qq]\nbot_uin="9001"\n'
+    config.write_text(source)
+    workspace = tmp_path / "workspace"
+    qq = workspace_plugin_data_dir(workspace, "qq_channel", "external") / "config.local.toml"
+    replace = migration.os.replace
+    def fail_second(source_path, destination):
+        if destination == qq:
+            raise OSError("fixture second target failure")
+        replace(source_path, destination)
+    with monkeypatch.context() as patch:
+        patch.setattr(migration.os, "replace", fail_second)
+        with pytest.raises(OSError, match="second target failure"):
+            migration.migrate_legacy_channels(config, workspace, marketplace="external")
+    assert config.read_text() == source
+    backup = config.with_name(config.name + ".before-channel-plugin-migration.bak")
+    assert backup.read_text() == source
+    assert migration.migrate_legacy_channels(config, workspace, marketplace="external") == (
+        "telegram_channel", "qq_channel",
+    )
+    assert tomllib.loads(qq.read_text())["bot_uin"] == "9001"
+    telegram = workspace_plugin_data_dir(workspace, "telegram_channel", "external") / "config.local.toml"
+    assert tomllib.loads(telegram.read_text())["token"] == "fixture-token"
+    assert tomllib.loads(config.read_text()) == {}
+    assert backup.read_text() == source

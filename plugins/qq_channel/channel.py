@@ -6,6 +6,7 @@ import hashlib
 import html
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -73,12 +74,15 @@ class QQChannelAdapter:
         self._runtime: ChannelRuntimePorts | None = None
         self._admission_open = False
         self._stopping = False
+        self._stop_task: asyncio.Task[StopReceipt] | None = None
         self._started = False
         self._main_loop: asyncio.AbstractEventLoop | None = None
         self._bot_loop: asyncio.AbstractEventLoop | None = None
         self._bot: Any | None = None
         self._api: Any | None = None
         self._backend_task: asyncio.Task[Any] | None = None
+        self._connection_task: asyncio.Task[Any] | None = None
+        self._backend_thread: threading.Thread | None = None
         self._inbound_futures: set[Any] = set()
         self._http: httpx.AsyncClient | None = None
         self._group_filter = DefaultGroupFilter(self._config.bot_uin)
@@ -117,11 +121,16 @@ class QQChannelAdapter:
 
             _configure_ncatbot(ncatbot_config, self._config)
             self._bot = BotClient()
+            self._bind_backend_lifetime()
             self._register_callbacks()
             self._backend_task = asyncio.create_task(
                 self._run_backend(),
                 name="qq-channel-backend",
             )
+            # run_backend 只有收到 provider startup 后才返回 API。
+            self._api = await asyncio.shield(self._backend_task)
+            if self._api is None or self._connection_task is None or self._backend_thread is None:
+                raise RuntimeError("QQ backend 没有发布实际连接与 API")
             self._started = True
             return ChannelReady(
                 binding_token=self._binding_token,
@@ -129,31 +138,38 @@ class QQChannelAdapter:
                 admission_open=False,
             )
         except BaseException:
-            await self._close_http()
+            await self.stop()
             raise
 
-    async def _run_backend(self) -> None:
+    async def _run_backend(self) -> object:
         bot = self._bot
         if bot is None:
             raise RuntimeError("QQ BotClient 未创建")
-        try:
-            result = await asyncio.to_thread(bot.run_backend)
-            if result is not None:
-                self._api = result
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("[qq] NcatBot backend 退出")
+        return await asyncio.to_thread(bot.run_backend)
+
+    def _bind_backend_lifetime(self) -> None:
+        """记录 SDK 真正的连接任务和线程；事件回调本身是短命子任务。"""
+        bot = self._bot
+        assert bot is not None
+        start = bot.start
+        connect = bot.adapter.connect_websocket
+
+        def start_owned() -> object:
+            self._backend_thread = threading.current_thread()
+            return start()
+
+        async def connect_owned() -> object:
+            self._bot_loop = asyncio.get_running_loop()
+            self._connection_task = asyncio.current_task()
+            return await connect()
+
+        bot.start = start_owned
+        bot.adapter.connect_websocket = connect_owned
 
     def _register_callbacks(self) -> None:
         bot = self._bot
         if bot is None:
             raise RuntimeError("QQ BotClient 未创建")
-
-        @cast(Any, bot.on_startup())
-        async def _startup(_event: object) -> None:
-            self._bot_loop = asyncio.get_running_loop()
-            self._api = getattr(bot, "api", None) or getattr(bot, "_api", None)
 
         @cast(Any, bot.on_private_message())
         async def _private(event: object) -> None:
@@ -239,7 +255,7 @@ class QQChannelAdapter:
                 channel=_CHANNEL,
                 sender=sender,
                 chat_id=chat_id,
-                content=content or "[图片]",
+                content="".join("\u2028" if ord(char) in {10, 13} else " " if ord(char) < 32 else char for char in (content or "[图片]")),
                 timestamp=_event_timestamp(event),
                 metadata={"provider_message_id": message_id},
                 attachments=attachments,
@@ -366,24 +382,39 @@ class QQChannelAdapter:
         return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coroutine, loop))
 
     async def stop(self) -> StopReceipt:
-        """Close admission, stop NcatBot, drain callbacks, and close HTTP."""
-
-        if self._stopping:
-            return StopReceipt(self._binding_token, resources_closed=True)
+        """关闭共用一次真实清理；取消等待者不能伪造资源已释放。"""
         self._stopping = True
         self._admission_open = False
-        bot = self._bot
-        if bot is not None:
-            exit_method = getattr(bot, "exit", None)
-            if callable(exit_method):
-                await asyncio.to_thread(exit_method)
-        task = self._backend_task
-        if task is not None:
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop(), name=self.name + "-channel-stop")
+        return await asyncio.shield(self._stop_task)
+
+    async def _stop(self) -> StopReceipt:
+        self._stopping = True
+        self._admission_open = False
+        # 1. 不取消 to_thread 的等待者来冒充 provider 已经退出。
+        starting = self._backend_task
+        if starting is not None:
             try:
-                await asyncio.wait_for(task, timeout=10.0)
-            except TimeoutError:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+                await asyncio.shield(starting)
+            except Exception:
+                # 启动错误由 start 原样传播；此处继续清理已取得的资源。
+                logger.exception("QQ backend 启动失败，继续清理")
+        loop = self._bot_loop
+        connection = self._connection_task
+        bot = self._bot
+        if loop is not None and connection is not None and not connection.done():
+            async def close_connection() -> None:
+                # 2. 在 provider 自己的 loop 卸载插件，再取消长连接以执行其 finally。
+                try:
+                    assert bot is not None
+                    await bot.plugin_loader.unload_all()
+                finally:
+                    connection.cancel()
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(close_connection(), loop))
+        thread = self._backend_thread
+        if thread is not None:
+            await asyncio.to_thread(thread.join)
         futures = tuple(self._inbound_futures)
         if futures:
             await asyncio.gather(

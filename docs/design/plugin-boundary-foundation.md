@@ -408,3 +408,23 @@ Akasha、Wake 与工作台使用这一入口；真实 HTTP、持久事实和编�
 这些系统都需要协作合同。这里去中心化的是业务语义的所有权与发布路径，而不是消除
 可检验的协作语义。允许依赖公开能力，不允许通过 Python class 身份、兄弟源码或
 宿主私有对象偷渡实现依赖。真正的成功还必须由独立提供者替换和 checkout 缺席验收证明。
+
+
+### 9.20 普通渠道 owner 与可恢复配置迁移
+
+Telegram 与 QQ 入站适配器、协议过滤和发送实现移到各自可安装包；Core bootstrap
+只启动已声明的渠道。静态 channel_credentials 是凭据权限上限，配置可以不注册渠道；
+未注册时没有 provider client，通用凭据读取不会因此获权。实际注册仍须精确匹配声明。
+
+QQ 必须等 SDK 真实 startup 和 API 后才报告 ready；SDK 把事件回调放进短命任务，
+因此插件在真实 connect_websocket 与 start 入口记录连接任务和线程。停止在 provider
+loop 卸载资源、取消长连接并 join 实际线程，不能取消 to_thread 等待者就声称退出。
+重复停止共享实际清理结果。Telegram 保留多行转换、被回复附件和带 bot 名的 stop 命令。
+
+配置迁移显式指定 marketplace，先保存原配置，再发布全部目标，最后去掉旧表；
+故障后同内容允许续做，异内容拒绝覆盖。测试注入第二目标发布失败，确认原配置与
+备份完整，并能续做至外部实例数据目录。脚本没有在正式 workspace 执行。
+
+本层不把安装默认禁用渠道等同于真实联网验收。QQ 的 provider 超时配置和完整外部
+入站→Message→回复→回执组合继续核对；原 Telegram/QQ 旧 bus live handlers 在当前
+源码没有事件生产者，不据此声明恢复了 live preview。

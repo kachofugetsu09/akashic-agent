@@ -218,12 +218,11 @@ class AppRuntime:
             if claim is not None and self.readiness is not None:
                 self.readiness.mark_stage("host_bridge.owner")
             configure_default_shared_http_resources(self.http_resources)
-            core_kwargs = {"restart_gate": self.restart_gate} if self.restart_gate is not None else {}
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
                 self.http_resources,
-                **core_kwargs,
+                restart_gate=self.restart_gate,
                 clear_stale_session_admissions=True,
             )
             self.bus = self.core.bus

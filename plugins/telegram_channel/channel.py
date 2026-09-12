@@ -118,6 +118,7 @@ class TelegramChannelAdapter:
         self._admission_open = False
         self._started = False
         self._stopping = False
+        self._stop_task: asyncio.Task[StopReceipt] | None = None
 
     def attach_runtime(self, ports: ChannelRuntimePorts) -> None:
         """Bind the exact generation's ingress before the provider starts."""
@@ -271,10 +272,14 @@ class TelegramChannelAdapter:
         )
 
     async def stop(self) -> StopReceipt:
-        """Close admission, drain callbacks, and close provider resources."""
+        """关闭共用一次真实清理；取消等待者不能伪造资源已释放。"""
+        self._stopping = True
+        self._admission_open = False
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop(), name=self.name + "-channel-stop")
+        return await asyncio.shield(self._stop_task)
 
-        if self._stopping:
-            return StopReceipt(self._binding_token, resources_closed=True)
+    async def _stop(self) -> StopReceipt:
         self._stopping = True
         self._admission_open = False
         tasks = tuple(self._inbound_tasks)
@@ -377,6 +382,19 @@ class TelegramChannelAdapter:
         reply = getattr(message, "reply_to_message", None)
         metadata: dict[str, object] = {"username": user.username or ""}
         if reply is not None:
+            photos = getattr(reply, "photo", ())
+            if photos:
+                attachments.append(await self._download_attachment(
+                    context, str(photos[-1].file_id), kind=AttachmentKind.IMAGE,
+                    filename="reply-image.jpg", media_type="image/jpeg",
+                ))
+            document = getattr(reply, "document", None)
+            if document is not None:
+                attachments.append(await self._download_attachment(
+                    context, str(document.file_id), kind=AttachmentKind.FILE,
+                    filename=document.file_name or "attachment",
+                    media_type=document.mime_type or "application/octet-stream",
+                ))
             reply_text = str(getattr(reply, "text", None) or getattr(reply, "caption", None) or "")
             if reply_text:
                 content = build_reply_inbound_text(content, reply_text)
@@ -400,13 +418,14 @@ class TelegramChannelAdapter:
                 channel=_CHANNEL,
                 sender=sender,
                 chat_id=chat_id,
-                content=content,
+                content="".join("\u2028" if ord(char) in {10, 13} else " " if ord(char) < 32 else char for char in content),
                 timestamp=timestamp,
                 metadata=cast(dict[str, Any], metadata),
                 attachments=tuple(attachments),
             ),
         )
-        if content.strip() == "/stop" and self._presentation is not None:
+        command = content.strip().split(maxsplit=1)[0].split("@", 1)[0] if content.strip() else ""
+        if command == "/stop" and self._presentation is not None:
             control = self._presentation.control
             if control is None:
                 raise RuntimeError("Telegram control port 未绑定")
@@ -497,11 +516,8 @@ class TelegramChannelAdapter:
 
     async def _send_markdown(self, chat_id: int, text: str) -> list[str]:
         assert self._app is not None
-        try:
-            rendered, entities, _ = convert_with_segments(text)
-            chunks = split_entities(rendered, entities, _MAX_MESSAGE_UTF16)
-        except Exception:
-            chunks = [(part, []) for part in _split_text(text, _MAX_MESSAGE_UTF16)]
+        rendered, entities, _ = convert_with_segments(text)
+        chunks = split_entities(rendered, entities, _MAX_MESSAGE_UTF16)
         provider_ids: list[str] = []
         for chunk, chunk_entities in chunks:
             chunk, chunk_entities = strip_chunk(chunk, chunk_entities)
@@ -525,39 +541,6 @@ class TelegramChannelAdapter:
     def _on_polling_error(self, error: TelegramError) -> None:
         logger.warning("[telegram] polling 异常，provider 将继续重试: %s", type(error).__name__)
 
-
-def _split_text(text: str, limit: int) -> list[str]:
-    """Split plain text by UTF-16 units before the provider limit."""
-
-    result: list[str] = []
-    current = ""
-    for line in text.splitlines(keepends=True) or [text]:
-        while line:
-            room = limit - len(current.encode("utf-16-le")) // 2
-            if room <= 0:
-                result.append(current)
-                current = ""
-                continue
-            prefix = ""
-            used = 0
-            for index, char in enumerate(line):
-                width = len(char.encode("utf-16-le")) // 2
-                if used + width > room:
-                    break
-                prefix = line[: index + 1]
-                used += width
-            if not prefix:
-                result.append(current)
-                current = ""
-                continue
-            current += prefix
-            line = line[len(prefix) :]
-            if len(current.encode("utf-16-le")) // 2 >= limit:
-                result.append(current)
-                current = ""
-    if current:
-        result.append(current)
-    return result
 
 
 __all__ = ["TelegramChannelAdapter", "build_telegram_channel"]

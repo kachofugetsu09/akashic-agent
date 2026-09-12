@@ -25,7 +25,7 @@ class MigrationConflict(RuntimeError):
     """Refuse to overwrite an existing plugin config or recovery point."""
 
 
-def migrate_legacy_channels(config_path: Path, workspace: Path) -> tuple[str, ...]:
+def migrate_legacy_channels(config_path: Path, workspace: Path, *, marketplace: str) -> tuple[str, ...]:
     """Move legacy channel tables into plugin data and return migrated channels."""
 
     if not config_path.exists():
@@ -40,6 +40,9 @@ def migrate_legacy_channels(config_path: Path, workspace: Path) -> tuple[str, ..
     if telegram is None and qq is None:
         return ()
 
+    for name, value in (("telegram", telegram), ("qq", qq)):
+        if value is not None and not isinstance(value, Mapping):
+            raise ValueError(f"channels.{name} 必须是 TOML table")
     targets: list[tuple[str, str]] = []
     if isinstance(telegram, Mapping):
         targets.append(("telegram_channel", _render_telegram(telegram, workspace)))
@@ -47,19 +50,19 @@ def migrate_legacy_channels(config_path: Path, workspace: Path) -> tuple[str, ..
         targets.append(("qq_channel", _render_qq(qq)))
     if not targets:
         raise ValueError("legacy channels.telegram/qq 必须是 TOML table")
-    for plugin_name, _content in targets:
-        target = workspace_plugin_data_dir(workspace, plugin_name, "builtin") / "config.local.toml"
-        if target.exists():
+    for plugin_name, content in targets:
+        target = workspace_plugin_data_dir(workspace, plugin_name, marketplace) / "config.local.toml"
+        if target.exists() and target.read_text(encoding="utf-8") != content:
             raise MigrationConflict(f"插件配置已存在，拒绝覆盖: {target}")
     backup = config_path.with_name(config_path.name + ".before-channel-plugin-migration.bak")
-    if backup.exists():
-        raise MigrationConflict(f"配置恢复点已存在，拒绝覆盖: {backup}")
+    if backup.exists() and backup.read_text(encoding="utf-8") != source:
+        raise MigrationConflict(f"配置恢复点与本次输入不同，拒绝覆盖: {backup}")
 
     # 1. Validate and stage all plugin outputs before changing the source config.
     staged: list[tuple[Path, Path]] = []
     try:
         for plugin_name, content in targets:
-            directory = workspace_plugin_data_dir(workspace, plugin_name, "builtin")
+            directory = workspace_plugin_data_dir(workspace, plugin_name, marketplace)
             ensure_workspace_plugin_data_dir(directory, workspace)
             fd, temporary = tempfile.mkstemp(prefix=".channel-migration.", dir=directory)
             temp_path = Path(temporary)
@@ -71,12 +74,14 @@ def migrate_legacy_channels(config_path: Path, workspace: Path) -> tuple[str, ..
             staged.append((temp_path, directory / "config.local.toml"))
 
         # 2. Keep a named source recovery point before removing legacy owner data.
-        shutil.copy2(config_path, backup)
+        if not backup.exists():
+            shutil.copy2(config_path, backup)
+        # 先发布全部目标，最后移除旧入口；中断后同内容目标允许安全续做。
+        for temporary, target in staged:
+            os.replace(temporary, target)
         channels.pop("telegram", None)
         channels.pop("qq", None)
         _atomic_write(config_path, tomlkit.dumps(document), mode=config_path.stat().st_mode & 0o777)
-        for temporary, target in staged:
-            os.replace(temporary, target)
     except BaseException:
         for temporary, _target in staged:
             temporary.unlink(missing_ok=True)
@@ -197,8 +202,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
     parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument("--marketplace", required=True, help="目标插件的安装 marketplace")
     args = parser.parse_args()
-    migrated = migrate_legacy_channels(args.config, args.workspace)
+    migrated = migrate_legacy_channels(args.config, args.workspace, marketplace=args.marketplace)
     if migrated:
         print("已迁移: " + ", ".join(migrated))
     else:
