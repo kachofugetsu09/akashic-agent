@@ -22,8 +22,8 @@ from plugins.models.model_settings_http import (
     create_model_settings_router,
     rpc_methods,
 )
-from bootstrap.chat_api import _model_rpc_response, create_chat_app
-from infra.channels.web_chat_channel import WebChatChannel
+from plugins.akashic_clients.chat_api import _model_rpc_response, create_chat_app
+from plugins.akashic_clients.web_chat import WebChatChannel
 from tests.test_model_call_records import descriptor, store, dump
 from tests.test_mobile_message_log import mobile
 from tests.mobile_realtime.test_channel import _generic_frame

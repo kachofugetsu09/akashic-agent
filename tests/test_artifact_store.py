@@ -3,15 +3,16 @@ from pathlib import Path
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from bootstrap.chat_api import create_chat_app
+from plugins.akashic_clients.chat_api import create_chat_app
+from plugins.akashic_clients.services import ArtifactStorePort
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from infra.channels.web_chat_channel import WebChatChannel
+from plugins.akashic_clients.web_chat import WebChatChannel
 from session.artifact_store import ARTIFACT_SCHEMA, ArtifactStore
 from session.artifacts import AttachmentKind
 from session.log import MessageLog
@@ -147,22 +148,11 @@ async def test_message_binding_audit_detects_structural_damage_without_changing_
             assert connection.execute("SELECT * FROM messages").fetchall() == before
 
 
-def test_web_fallback_lifespan_owns_only_its_new_metadata_connection(tmp_path):
-    channel = WebChatChannel()
-    channel._ctx = SimpleNamespace()  # 只表示已绑定的 Channel，不提供 legacy SessionStore。
-    app = create_chat_app(workspace=tmp_path, channel=channel)
-    physical = channel.artifact_store
-    assert physical is not None
-    metadata = physical._metadata_store
-    with TestClient(app):
-        assert metadata.list_attachments() == ()
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        metadata.list_attachments()
-
-    # 注入的 Core 连接不归 Web app 关闭。
+def test_web_app_does_not_close_injected_metadata_connection(tmp_path):
+    # 外部插件只使用宿主显式提供的 artifact owner；应用生命周期不接管其连接。
     with closing(ArtifactStore(tmp_path / "sessions.db")) as shared:
         channel = WebChatChannel()
-        channel.bind_artifact_store(ChannelAttachmentArtifactStore(workspace=tmp_path, metadata_store=shared))
+        channel.bind_artifact_store(cast(ArtifactStorePort, ChannelAttachmentArtifactStore(workspace=tmp_path, metadata_store=shared)))
         with TestClient(create_chat_app(workspace=tmp_path, channel=channel)):
             assert shared.list_attachments() == ()
         assert shared.list_attachments() == ()
