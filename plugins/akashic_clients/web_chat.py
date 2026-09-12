@@ -19,14 +19,24 @@ from agent.plugin_composition.channels import (
     ChannelAttachmentReadPort,
     ChannelCommitRole,
     ChannelFactoryContext,
+    ChannelPresentationPorts,
     ChannelRuntimePorts,
     ChannelReady,
     DeliveryStatus as V3DeliveryStatus,
     InboundIdentity,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
+    PresentationReceipt,
+    StreamSubscription,
     RawInbound,
+    StreamDeltaPresentation,
     StopReceipt,
+    ToolPresentation,
+    TurnOutputCompletedPresentation,
+    TurnStartedPresentation,
+    TurnStreamEvent,
+    TurnStreamEventKind,
+    DeliveryStatus as PresentationDeliveryStatus,
 )
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
@@ -212,6 +222,10 @@ class WebChatChannel:
         self._message_display: MessageDisplayReader | None = None
         self._followers: dict[WebSocket, tuple[str, asyncio.Task[None]]] = {}
         self._stopping = False
+        self._presentation_subscription: StreamSubscription | None = None
+        self._client_sessions: dict[str, str] = {}
+        self._turn_sessions: dict[str, str] = {}
+        self._turn_contents: dict[str, str] = {}
 
     def bind_message_readers(
         self, messages: MessageCatalog,
@@ -241,22 +255,17 @@ class WebChatChannel:
     def _connection_count(self, session_key: str) -> int:
         return len(self._connections.get(session_key, set()))
 
-    async def start(self, ctx: ChannelContext) -> None:
-        self._ctx = ctx
-        self._attachments = ctx.attachment_store
-        if not self._events_bound:
-            events = ctx.lifecycle_events
-            callback = cast(Callable[[object], Awaitable[None]], self._on_turn_started)
-            ctx.event_bus.on(events.turn_started, callback)
-            callback = cast(Callable[[object], Awaitable[None]], self._on_stream_delta)
-            ctx.event_bus.on(events.stream_delta_ready, callback)
-            callback = cast(Callable[[object], Awaitable[None]], self._on_tool_call_started)
-            ctx.event_bus.on(events.tool_call_started, callback)
-            callback = cast(Callable[[object], Awaitable[None]], self._on_tool_call_completed)
-            ctx.event_bus.on(events.tool_call_completed, callback)
-            callback = cast(Callable[[object], Awaitable[None]], self._on_output_completed)
-            ctx.event_bus.on(events.turn_output_completed, callback)
-            self._events_bound = True
+    async def start(self, ctx: ChannelContext | None = None) -> None:
+        """Start Web transport state without subscribing to a global event bus.
+
+        Live turn presentation will be attached through the formal channel
+        presentation port once its routing payload includes the session
+        identity.  Keeping this owner free of the legacy event bus prevents a
+        Core event type from becoming a hidden client dependency.
+        """
+        if ctx is not None:
+            self._ctx = ctx
+            self._attachments = ctx.attachment_store
 
     def bind_attachment_store(self, store: AttachmentStore) -> None:
         """在 channel 启动前为独立 Chat API 绑定显式附件目录。"""
@@ -285,6 +294,116 @@ class WebChatChannel:
         if not isinstance(context, ChannelFactoryContext):
             raise TypeError("Web native adapter context 类型无效")
         return WebNativeChannelAdapter(self, context)
+
+    def attach_presentation(self, ports: ChannelPresentationPorts) -> None:
+        """Subscribe to the formal turn stream and route by captured inbound IDs."""
+
+        if ports.turn_stream is None:
+            raise RuntimeError("Web presentation 缺少 turn stream")
+        if self._presentation_subscription is not None:
+            raise RuntimeError("Web presentation 已绑定")
+        self._presentation_subscription = ports.turn_stream.subscribe(
+            self._on_presentation
+        )
+
+    async def _on_presentation(self, event: TurnStreamEvent) -> PresentationReceipt:
+        """Project typed presentation events without Core lifecycle identities."""
+
+        payload = event.payload
+        if event.kind is TurnStreamEventKind.TURN_STARTED:
+            assert isinstance(payload, TurnStartedPresentation)
+            session_key = self._client_sessions.get(payload.client_message_id)
+            if session_key is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Web presentation 缺少 inbound session 映射",
+                )
+            self._turn_sessions[payload.turn_id] = session_key
+            delivered = await self._broadcast(
+                session_key,
+                {
+                    "type": "turn.started",
+                    "session_id": session_key,
+                    "turn_id": payload.turn_id,
+                    "client_message_id": payload.client_message_id,
+                    "content": self._turn_contents.get(payload.turn_id, ""),
+                },
+            )
+        else:
+            session_key = self._turn_sessions.get(payload.turn_id)
+            if session_key is None:
+                return PresentationReceipt(
+                    event.presentation_id,
+                    PresentationDeliveryStatus.FAILED,
+                    error="Web presentation 缺少 turn session 映射",
+                )
+            if event.kind is TurnStreamEventKind.STREAM_DELTA:
+                assert isinstance(payload, StreamDeltaPresentation)
+                delivered = 0
+                if payload.reasoning_delta:
+                    delivered += await self._broadcast(
+                        session_key,
+                        {
+                            "type": "react.thinking.delta",
+                            "session_id": session_key,
+                            "turn_id": payload.turn_id,
+                            "delta": payload.reasoning_delta,
+                        },
+                    )
+                if payload.text_delta:
+                    delivered += await self._broadcast(
+                        session_key,
+                        {
+                            "type": "answer.delta",
+                            "session_id": session_key,
+                            "turn_id": payload.turn_id,
+                            "delta": payload.text_delta,
+                        },
+                    )
+            elif event.kind is TurnStreamEventKind.TOOL_STARTED:
+                assert isinstance(payload, ToolPresentation)
+                delivered = await self._broadcast(
+                    session_key,
+                    {
+                        "type": "react.tool.started",
+                        "session_id": session_key,
+                        "turn_id": payload.turn_id,
+                        "call_id": payload.tool_call_id,
+                        "tool_name": payload.tool_name,
+                        "arguments": {},
+                    },
+                )
+            elif event.kind is TurnStreamEventKind.TOOL_COMPLETED:
+                assert isinstance(payload, ToolPresentation)
+                delivered = await self._broadcast(
+                    session_key,
+                    {
+                        "type": "react.tool.completed",
+                        "session_id": session_key,
+                        "turn_id": payload.turn_id,
+                        "call_id": payload.tool_call_id,
+                        "tool_name": payload.tool_name,
+                        "status": "completed",
+                        "result_preview": "",
+                    },
+                )
+            else:
+                assert isinstance(payload, TurnOutputCompletedPresentation)
+                delivered = await self._broadcast(
+                    session_key,
+                    {
+                        "type": "turn.output.completed",
+                        "session_id": session_key,
+                        "turn_id": payload.turn_id,
+                    },
+                )
+                _ = self._turn_sessions.pop(payload.turn_id, None)
+        return PresentationReceipt(
+            event.presentation_id,
+            PresentationDeliveryStatus.DELIVERED,
+            provider_ids=("web",) if delivered else (),
+        )
 
     def _register_v3_adapter(self, adapter: WebNativeChannelAdapter) -> None:
         current = self._v3_adapters.get(adapter.binding_token)
@@ -320,6 +439,12 @@ class WebChatChannel:
 
     async def stop(self) -> None:
         self._stopping = True
+        subscription = self._presentation_subscription
+        if subscription is not None:
+            subscription.close_admission()
+            await subscription.await_quiescence()
+            await subscription.close()
+            self._presentation_subscription = None
         async with self._connection_lock:
             sockets = [
                 socket
@@ -1000,9 +1125,23 @@ class WebChatChannel:
                 attachments=attachments,
             ),
         )
+        client_message_id = request_id or raw.message_id
+        previous_session = self._client_sessions.get(client_message_id)
+        if previous_session is not None and previous_session != session_key:
+            await self._send_error(
+                websocket,
+                request_id,
+                f"Web client message id 已绑定到另一个 session: {client_message_id}",
+            )
+            return session_key
+        self._client_sessions[client_message_id] = session_key
         try:
             adapter, runtime = self._begin_v3_inbound()
         except RuntimeError as error:
+            if previous_session is None:
+                self._client_sessions.pop(client_message_id, None)
+            else:
+                self._client_sessions[client_message_id] = previous_session
             logger.info("[web_chat] rejected inbound message: %s", error)
             await self._send_error(websocket, request_id, str(error))
             return session_key
@@ -1011,6 +1150,10 @@ class WebChatChannel:
             connection_added = await self._add_connection(session_key, websocket)
             await adapter.admit_captured(runtime, raw)
         except BaseException as error:
+            if previous_session is None:
+                self._client_sessions.pop(client_message_id, None)
+            else:
+                self._client_sessions[client_message_id] = previous_session
             if connection_added:
                 cleanup_task = asyncio.create_task(
                     self._remove_connection_attempt(session_key, websocket),

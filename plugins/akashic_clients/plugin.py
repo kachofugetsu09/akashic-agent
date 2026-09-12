@@ -8,29 +8,30 @@ from agent.plugin_composition import (
     InboundIdentity,
 )
 
+from .capabilities import CLIENT_CAPABILITIES
 from .channel import build_akashic_channel, register_generation, unregister_generation
 from .config import AkashicClientsConfig
-from .services import CLIENT_SERVICES
 
 api_version = 3
 name = "akashic_clients"
 version = "1.0.0"
 desc = "Web and Mobile Akashic client channel"
 author = "Akashic"
-inject = (CHANNELS, CLIENT_SERVICES)
+# Every dependency is a separate composition capability.  In particular,
+# there is no client-wide service bus for Core to assemble.
+inject = (CHANNELS, *CLIENT_CAPABILITIES)
 Config = AkashicClientsConfig
 
 
 async def apply(ctx: Context, config: AkashicClientsConfig) -> None:
-    """Register one ordinary channel over the host-provided client services."""
+    """Register one ordinary channel over independent host capabilities."""
 
     if not isinstance(config, AkashicClientsConfig):
         raise TypeError("akashic_clients config 必须通过 Config 校验")
     if not config.enabled:
         return
 
-    services = ctx.require(CLIENT_SERVICES)
-    register_generation(ctx.generation_id, config, services)
+    register_generation(ctx.generation_id, config, ctx.runtime.workspace)
 
     async def cleanup() -> None:
         unregister_generation(ctx.generation_id)
@@ -41,7 +42,11 @@ async def apply(ctx: Context, config: AkashicClientsConfig) -> None:
         ChannelDefinition(
             name="akashic",
             capabilities=frozenset(
-                {ChannelCapability.INBOUND, ChannelCapability.OUTBOUND}
+                {
+                    ChannelCapability.INBOUND,
+                    ChannelCapability.OUTBOUND,
+                    ChannelCapability.TURN_STREAM,
+                }
             ),
             factory_export="build_akashic_channel",
             inbound_identity=InboundIdentity.PROVIDER_MESSAGE_ID,

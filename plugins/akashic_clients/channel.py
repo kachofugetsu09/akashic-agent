@@ -7,27 +7,45 @@ from typing import Any
 
 import uvicorn
 
+from agent.plugin_composition import MODEL_CALL_STATS, MODEL_CATALOG
 from agent.plugin_composition.channels import (
     ChannelFactoryContext,
+    ChannelPresentationPorts,
     ChannelReady,
     ChannelRuntimePorts,
     DeliveryStatus,
-    InboundIdentity,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
     StopReceipt,
 )
-from .services import ClientChannel, ClientChannelContext as ChannelContext
+from agent.plugin_composition.messages import MESSAGE_CATALOG
+
+from .capabilities import (
+    INSPECTION_DOCUMENTS_GET,
+    INSPECTION_DOCUMENTS_LIST,
+    INSPECTION_JOBS_GET,
+    INSPECTION_JOBS_LIST,
+    INSPECTION_SKILLS_LIST,
+    MODEL_CALL,
+    MODEL_CATALOG_RPC,
+    MODEL_COMMAND,
+    MODEL_DISCOVER,
+    MODEL_SELECTION,
+    REPLY_STATUS,
+)
 from .config import AkashicClientsConfig
 from .web_chat import WebChatChannel
 from .mobile_realtime.channel import MobileRealtimeChannel
-from .mobile_realtime.gateway import (
-    MobileGatewayRuntime,
-    build_mobile_gateway_runtime,
-    build_mobile_gateway_server,
-)
+from .mobile_realtime.gateway import MobileGatewayRuntime
 from .chat_api import build_chat_server
-from .services import AkashicClientServices
+from .runtime_inspection import ScopedRpcRuntimeInspection
+from .services import (
+    MessageCatalogPort,
+    ModelCatalogReader,
+    ModelSelectionReader,
+    ModelStatsReader,
+    ReplyStatusPort,
+)
 
 
 _SERVER_START_TIMEOUT_SECONDS = 10.0
@@ -72,180 +90,12 @@ def _close_children(
         raise primary
 
 
-class AkashicNativeAdapter:
-    """Expose Web and Mobile through one exact Core channel binding."""
-
-    def __init__(
-        self,
-        children: Sequence[Any],
-        context: ChannelFactoryContext,
-    ) -> None:
-        self._binding_token = context.binding_token
-        self._children: tuple[Any, ...] = tuple(
-            child.build_v3_adapter(context) for child in children
-        )
-
-    async def start(self) -> ChannelReady:
-        started: list[Any] = []
-        try:
-            for child in self._children:
-                _ = await child.start()
-                started.append(child)
-        except BaseException as error:
-            await _stop_started_children(
-                started,
-                primary=error,
-                message="Akashic adapter start rollback 失败",
-            )
-        return ChannelReady(self._binding_token)
-
-    def attach_runtime(self, ports: ChannelRuntimePorts) -> None:
-        for child in self._children:
-            child.attach_runtime(ports)
-
-    def open_admission(self) -> None:
-        opened: list[Any] = []
-        try:
-            for child in self._children:
-                child.open_admission()
-                opened.append(child)
-        except BaseException as error:
-            _close_children(
-                opened,
-                primary=error,
-                message="Akashic adapter admission rollback 失败",
-            )
-
-    def close_admission(self) -> None:
-        _close_children(
-            self._children,
-            message="Akashic adapter admission close 失败",
-        )
-
-    async def deliver(
-        self,
-        request: ProviderDeliveryRequest,
-    ) -> ProviderDeliveryReceipt:
-        """Project one logical delivery to both clients and settle it once."""
-
-        results = await asyncio.gather(
-            *(child.deliver(request) for child in self._children),
-            return_exceptions=True,
-        )
-        receipts = tuple(
-            result for result in results if isinstance(result, ProviderDeliveryReceipt)
-        )
-        provider_ids = tuple(
-            dict.fromkeys(
-                provider_id
-                for receipt in receipts
-                for provider_id in receipt.provider_ids
-            )
-        )
-        errors = [
-            str(result) if isinstance(result, BaseException) else result.error
-            for result in results
-            if isinstance(result, BaseException) or result.error is not None
-        ]
-        if any(
-            isinstance(result, BaseException) or result.status is DeliveryStatus.FAILED
-            for result in results
-        ):
-            return ProviderDeliveryReceipt(
-                request.delivery_id,
-                DeliveryStatus.FAILED,
-                provider_ids=provider_ids,
-                error="; ".join(errors) or "Akashic adapter 投递结果未知",
-            )
-        status = (
-            DeliveryStatus.DELIVERED
-            if any(receipt.status is DeliveryStatus.DELIVERED for receipt in receipts)
-            else DeliveryStatus.REJECTED
-        )
-        return ProviderDeliveryReceipt(
-            request.delivery_id,
-            status,
-            provider_ids=provider_ids,
-            error=(
-                None
-                if status is DeliveryStatus.DELIVERED
-                else "; ".join(errors) or "Akashic 没有可用客户端"
-            ),
-        )
-
-    async def stop(self) -> StopReceipt:
-        results = await asyncio.gather(
-            *(child.stop() for child in reversed(self._children)),
-            return_exceptions=True,
-        )
-        errors = tuple(
-            result for result in results if isinstance(result, BaseException)
-        )
-        if errors:
-            raise BaseExceptionGroup("Akashic adapter stop 失败", errors)
-        receipts = tuple(
-            result for result in results if isinstance(result, StopReceipt)
-        )
-        return StopReceipt(
-            self._binding_token,
-            resources_closed=all(receipt.resources_closed for receipt in receipts),
-            failures=tuple(
-                failure for receipt in receipts for failure in receipt.failures
-            ),
-        )
-
-
-class AkashicChannel:
-    """Own one Core channel while Web and Mobile keep their transport state."""
-
-    name = "akashic"
-    v3_inbound_identity = InboundIdentity.PROVIDER_MESSAGE_ID
-
-    def __init__(
-        self,
-        web: ClientChannel | None = None,
-        mobile: ClientChannel | None = None,
-    ) -> None:
-        self.web = web
-        self.mobile = mobile
-        self._children = tuple(child for child in (web, mobile) if child is not None)
-        if not self._children:
-            raise ValueError("Akashic channel 至少需要一个 client adapter")
-
-    async def start(self, ctx: ChannelContext) -> None:
-        started: list[ClientChannel] = []
-        try:
-            for child in self._children:
-                await child.start(ctx)
-                started.append(child)
-        except BaseException as error:
-            await _stop_started_children(
-                started,
-                primary=error,
-                message="Akashic channel start rollback 失败",
-            )
-
-    async def stop(self) -> None:
-        results = await asyncio.gather(
-            *(child.stop() for child in reversed(self._children)),
-            return_exceptions=True,
-        )
-        errors = tuple(
-            result for result in results if isinstance(result, BaseException)
-        )
-        if errors:
-            raise BaseExceptionGroup("Akashic channel stop 失败", errors)
-
-    def build_v3_adapter(self, context: ChannelFactoryContext) -> AkashicNativeAdapter:
-        return AkashicNativeAdapter(self._children, context)
-
-
 @dataclass(slots=True)
 class _ClientGeneration:
-    """Hold one generation's client owners until its channel factory is called."""
+    """Hold only immutable plugin config until the exact channel is started."""
 
     config: AkashicClientsConfig
-    services: AkashicClientServices
+    workspace: Any
     adapter: "_GenerationAkashicAdapter | None" = None
 
 
@@ -255,13 +105,13 @@ _GENERATIONS: dict[str, _ClientGeneration] = {}
 def register_generation(
     generation_id: str,
     config: AkashicClientsConfig,
-    services: AkashicClientServices,
+    workspace: Any,
 ) -> None:
-    """Register immutable generation inputs for the synchronous channel factory."""
+    """Register config only; service values are resolved in an exact request scope."""
 
     if generation_id in _GENERATIONS:
         raise RuntimeError(f"akashic clients generation 已注册: {generation_id}")
-    _GENERATIONS[generation_id] = _ClientGeneration(config, services)
+    _GENERATIONS[generation_id] = _ClientGeneration(config, workspace)
 
 
 def unregister_generation(generation_id: str) -> None:
@@ -301,8 +151,14 @@ class _GenerationAkashicAdapter:
         self._state = state
         self._context = context
         self._binding_token = context.binding_token
-        self._services = state.services
         self._config = state.config
+        self._workspace = state.workspace
+        self._messages: MessageCatalogPort | None = None
+        self._reply_status: ReplyStatusPort | None = None
+        self._model_catalog_reader: ModelCatalogReader | None = None
+        self._model_selection_reader: ModelSelectionReader | None = None
+        self._model_stats_reader: ModelStatsReader | None = None
+        self._runtime_inspection: ScopedRpcRuntimeInspection | None = None
         self._web = WebChatChannel("akashic") if state.config.web.enabled else None
         self._mobile: MobileRealtimeChannel | None = None
         self._mobile_runtime: MobileGatewayRuntime | None = None
@@ -312,52 +168,84 @@ class _GenerationAkashicAdapter:
         self._mobile_adapter: Any | None = None
         self._runtime_ports: ChannelRuntimePorts | None = None
         self._servers: list[tuple[uvicorn.Server, asyncio.Task[None]]] = []
-        self._started_children: list[ClientChannel] = []
+        self._started_children: list[Any] = []
         self._started = False
         self._stopped = False
 
         if self._web is None and not state.config.mobile_realtime.enabled:
             raise ValueError("akashic channel 至少需要启用 Web 或 Mobile")
-        self._bind_web_services()
 
     @property
     def started(self) -> bool:
         return self._started and not self._stopped
 
-    def _bind_web_services(self) -> None:
-        web = self._web
-        if web is None:
-            return
-        services = self._services
-        if services.message_catalog is None:
-            raise RuntimeError("akashic Web 缺少 MessageCatalog service")
-        web.bind_message_readers(services.message_catalog, services.reply_status)
-        if services.message_display is not None:
-            web.bind_message_display(services.message_display)
-        web.bind_attachment_store(services.attachment_store)
-        if services.artifact_store is not None:
-            web.bind_artifact_store(services.artifact_store)
+    async def _resolve_capabilities(self) -> None:
+        """Check independent providers inside one exact startup scope."""
 
-    def _bind_mobile_services(self, mobile: MobileRealtimeChannel) -> None:
-        services = self._services
-        if services.message_catalog is None:
-            raise RuntimeError("akashic Mobile 缺少 MessageCatalog service")
-        if services.artifact_store is None:
-            raise RuntimeError("akashic Mobile 缺少 ArtifactStore service")
-        mobile.bind_messages(services.message_catalog, services.reply_status)
-        mobile.bind_channel_attachment_store(services.artifact_store)
-        if services.message_display is not None:
-            mobile.bind_message_display(services.message_display)
-        if services.mobile_ui_provider is not None:
-            mobile.bind_mobile_ui_provider(services.mobile_ui_provider)
-        if services.runtime_inspection is not None:
-            mobile.bind_runtime_inspection(services.runtime_inspection)
-        if services.model_catalog_reader is not None:
-            mobile.bind_model_catalog(services.model_catalog_reader)
-        if services.model_selection_reader is not None:
-            mobile.bind_model_selection(services.model_selection_reader)
-        if services.model_stats_reader is not None:
-            mobile.bind_model_stats(services.model_stats_reader)
+        open_scope = self._context.open_scope
+        if open_scope is None:
+            raise RuntimeError("akashic channel 缺少 host request scope")
+        async with open_scope() as scope:
+            # Resolve message catalog at generation start because its sync page
+            # API cannot carry an async scope.  The async capabilities below
+            # open a fresh exact scope for every HTTP/WS query.
+            self._messages = scope.require(MESSAGE_CATALOG)
+            _ = scope.require(REPLY_STATUS)
+            _ = scope.require(MODEL_CATALOG)
+            _ = scope.require(MODEL_SELECTION)
+            _ = scope.require(MODEL_CALL_STATS)
+            rpc_keys = (
+                INSPECTION_DOCUMENTS_LIST,
+                INSPECTION_DOCUMENTS_GET,
+                INSPECTION_JOBS_LIST,
+                INSPECTION_JOBS_GET,
+                INSPECTION_SKILLS_LIST,
+                MODEL_CALL,
+                MODEL_CATALOG_RPC,
+                MODEL_COMMAND,
+                MODEL_DISCOVER,
+            )
+            for key in rpc_keys:
+                _ = scope.require(key)
+        self._reply_status = self._follow_reply_status
+        self._model_catalog_reader = self._read_model_catalog
+        self._model_selection_reader = self._read_model_selection
+        self._model_stats_reader = self._read_model_stats
+        self._runtime_inspection = ScopedRpcRuntimeInspection(open_scope)
+        if self._web is not None and self._messages is not None:
+            self._web.bind_message_readers(self._messages, self._reply_status)
+
+    async def _follow_reply_status(self, session_id: str):
+        """Keep the reply status read inside this subscription's exact scope."""
+
+        open_scope = self._context.open_scope
+        if open_scope is None:
+            raise RuntimeError("akashic reply status 缺少 host request scope")
+        async with open_scope() as scope:
+            reader = scope.require(REPLY_STATUS)
+            async for frame in reader.follow(session_id):
+                yield frame
+
+    async def _read_model_catalog(self) -> Any:
+        open_scope = self._context.open_scope
+        if open_scope is None:
+            raise RuntimeError("akashic model catalog 缺少 host request scope")
+        async with open_scope() as scope:
+            return scope.require(MODEL_CATALOG).snapshot()
+
+    async def _read_model_selection(self, metadata: dict[str, object]) -> Any:
+        open_scope = self._context.open_scope
+        if open_scope is None:
+            raise RuntimeError("akashic model selection 缺少 host request scope")
+        async with open_scope() as scope:
+            return scope.require(MODEL_SELECTION).read_saved(metadata)
+
+    async def _read_model_stats(self, call_id: str) -> Any:
+        open_scope = self._context.open_scope
+        if open_scope is None:
+            raise RuntimeError("akashic model stats 缺少 host request scope")
+        async with open_scope() as scope:
+            return scope.require(MODEL_CALL_STATS)(call_id)
 
     def attach_runtime(self, ports: ChannelRuntimePorts) -> None:
         if self._stopped:
@@ -367,6 +255,17 @@ class _GenerationAkashicAdapter:
         self._runtime_ports = ports
         if self._web_adapter is not None:
             self._web_adapter.attach_runtime(ports)
+
+    def attach_presentation(self, ports: ChannelPresentationPorts) -> None:
+        """Bind the exact turn stream to the enabled transport owner."""
+
+        if ports.turn_stream is None:
+            raise RuntimeError("akashic channel 缺少 turn stream port")
+        if self._web is None:
+            raise RuntimeError(
+                "akashic Mobile presentation host port 尚未接入，不能启用无 Web channel"
+            )
+        self._web.attach_presentation(ports)
 
     async def _start_server(self, server: uvicorn.Server, *, name: str) -> None:
         spawn_owned = self._context.spawn_owned
@@ -401,27 +300,22 @@ class _GenerationAkashicAdapter:
     async def _start_web(self) -> None:
         if self._web is None or self._web_adapter is None:
             return
-        await self._web.start(self._services.channel_context)
+        if self._messages is None or self._reply_status is None:
+            raise RuntimeError("akashic Web capabilities 尚未解析")
+        await self._web.start()
         self._started_children.append(self._web)
         _ = await self._web_adapter.start()
-        socket_path = self._config.web.socket_path or self._services.chat_socket_path
-        if not socket_path:
-            raise RuntimeError("akashic Web 缺少 Unix socket path")
+        socket_path = self._config.web.socket_path or str(
+            self._workspace / "runtime" / "chat.sock"
+        )
         server = build_chat_server(
-            workspace=self._services.workspace,
+            workspace=self._workspace,
             channel=self._web,
-            mobile_pairing_admin=self._services.mobile_pairing_admin,
-            runtime_inspection=self._services.runtime_inspection,
-            message_display=self._services.message_display,
-            plugin_ui_provider=self._services.mobile_ui_provider,
-            web_ui_provider=self._services.web_ui_provider,
-            model_catalog_reader=self._services.model_catalog_reader,
-            model_selection_reader=self._services.model_selection_reader,
-            model_control=self._services.model_control,
-            messages=self._services.message_catalog,
-            reply_status=self._services.reply_status,
-            attachment_store=self._services.attachment_store,
-            artifact_store=self._services.artifact_store,
+            runtime_inspection=self._runtime_inspection,
+            model_catalog_reader=self._model_catalog_reader,
+            model_selection_reader=self._model_selection_reader,
+            messages=self._messages,
+            reply_status=self._reply_status,
             uds=socket_path,
         )
         await self._start_server(server, name="akashic-web")
@@ -430,24 +324,11 @@ class _GenerationAkashicAdapter:
         config = self._config.mobile_realtime
         if not config.enabled:
             return
-        runtime, keyset = build_mobile_gateway_runtime(
-            config,
-            self._services.workspace,
-            webui_source_repository=self._services.webui_source_repository,
-        )
-        mobile = runtime.channel
-        self._bind_mobile_services(mobile)
-        self._mobile_runtime = runtime
-        self._mobile = mobile
-        self._mobile_adapter = mobile.build_v3_adapter(self._context)
-        if self._runtime_ports is None:
-            raise RuntimeError("akashic Mobile channel 缺少 Core runtime ports")
-        self._mobile_adapter.attach_runtime(self._runtime_ports)
-        await mobile.start(self._services.channel_context)
-        self._started_children.append(mobile)
-        _ = await self._mobile_adapter.start()
-        server = build_mobile_gateway_server(runtime, keyset)
-        await self._start_server(server, name="akashic-mobile")
+        # The Mobile continuity owner still needs the host's boot identity and
+        # durable inbound port.  The formal channel host will supply those in
+        # the next host-port revision; do not initialize its database before
+        # that contract is present.
+        raise RuntimeError("akashic Mobile continuity host port 尚未接入")
 
     async def start(self) -> ChannelReady:
         if self._started:
@@ -455,6 +336,7 @@ class _GenerationAkashicAdapter:
         if self._stopped:
             raise RuntimeError("akashic channel 已停止")
         try:
+            await self._resolve_capabilities()
             await self._start_web()
             await self._start_mobile()
         except BaseException as error:
@@ -481,6 +363,11 @@ class _GenerationAkashicAdapter:
             return_exceptions=True,
         )
         failures.extend(item for item in results if isinstance(item, BaseException))
+        if self._web is not None and self._web not in self._started_children:
+            try:
+                await self._web.stop()
+            except BaseException as error:
+                failures.append(error)
         self._started_children.clear()
         if self._mobile_runtime is not None:
             try:
@@ -565,6 +452,11 @@ class _GenerationAkashicAdapter:
             else:
                 if isinstance(result, StopReceipt):
                     receipts.append(result)
+        if self._web is not None and self._web not in self._started_children:
+            try:
+                await self._web.stop()
+            except BaseException as error:
+                errors.append(error)
         self._started_children.clear()
         if self._mobile_runtime is not None:
             try:
@@ -581,8 +473,6 @@ class _GenerationAkashicAdapter:
 
 
 __all__ = [
-    "AkashicChannel",
-    "AkashicNativeAdapter",
     "build_akashic_channel",
     "register_generation",
     "unregister_generation",

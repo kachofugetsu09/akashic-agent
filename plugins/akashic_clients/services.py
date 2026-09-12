@@ -14,7 +14,6 @@ from typing import Protocol, runtime_checkable
 
 from agent.plugin_composition.channels import AttachmentRef
 from agent.plugin_composition.messages import InvalidPage, MessageConflict
-from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.models import ChatModelSelection, ModelCatalogSnapshot, ModelCallStats
 from agent.plugin_composition.message_view import MessageDisplayReader
 from agent.plugin_contracts.message import Message
@@ -245,32 +244,6 @@ class ClientChannel(Protocol):
     async def stop(self) -> None: ...
 
 
-class AkashicClientServices(Protocol):
-    """宿主给一个 generation 的客户端 owner 的全部窄输入。"""
-
-    channel_context: ClientChannelContext
-    host_boot_id: str
-    workspace: Path
-    attachment_store: AttachmentStorePort
-    message_catalog: MessageCatalogPort | None
-    reply_status: ReplyStatusPort | None
-    message_display: MessageDisplayReader | None
-    artifact_store: ArtifactStorePort | None
-    mobile_ui_provider: MobileUiProvider | None
-    runtime_inspection: RuntimeInspectionService | None
-    model_catalog_reader: ModelCatalogReader | None
-    model_selection_reader: ModelSelectionReader | None
-    model_stats_reader: ModelStatsReader | None
-    model_control: ModelRpcInvoker | None
-    web_ui_provider: WebUiProvider | None
-    mobile_pairing_admin: MobilePairingAdminPort | None
-    chat_socket_path: str | None
-    webui_source_repository: Path | None
-
-
-CLIENT_SERVICES = ServiceKey[AkashicClientServices]("akashic.clients.services.v1")
-
-
 def turn_milestone(logger: logging.Logger, event: str, **fields: object) -> None:
     """记录不含正文的客户端时序观察；权威状态仍由宿主 owner 保存。"""
     logger.info(event, extra={"event": event, **fields})
@@ -318,8 +291,8 @@ def project_chat_runtimes(snapshot: ModelCatalogSnapshot) -> list[dict[str, obje
 
 
 __all__ = [
-    "AkashicClientServices", "ArtifactReadLeasePort", "ArtifactStorePort", "AttachmentStorePort",
-    "CLIENT_SERVICES", "ClientChannel", "ClientChannelContext", "EventBusPort", "InvalidPage",
+    "ArtifactReadLeasePort", "ArtifactStorePort", "AttachmentStorePort",
+    "ClientChannel", "ClientChannelContext", "EventBusPort", "InvalidPage",
     "LifecycleEventTypes", "MessageBusPort", "MessageCatalogPort", "MessageConflict", "MessageDisplayReader",
     "MessagePagePort", "MessageReaderPort", "SessionEntryPort", "SessionPagePort", "Message",
     "StreamDeltaReadyEvent", "ToolCallCompletedEvent", "ToolCallStartedEvent", "TurnOutputCompletedEvent",
