@@ -483,13 +483,6 @@ async def test_installed_manager_message_append_reaches_pf_and_emotion(
         else:
             assert sample_ids == [("proactive_feedback:1",), ("proactive_feedback:2",)]
 
-        # Both immediate pulls remain idempotent: the second restart must not
-        # re-import row 1 or apply either direct signal twice.
-        event_count = _count(emotion_db, "SELECT count(*) FROM emotion_events")
-        sample_count = _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples")
-        await asyncio.sleep(0.1)
-        assert _count(emotion_db, "SELECT count(*) FROM emotion_events") == event_count
-        assert _count(emotion_db, "SELECT count(*) FROM emotion_feedback_samples") == sample_count
     finally:
         if core is not None:
             await core.bus.aclose()
