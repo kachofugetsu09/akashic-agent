@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
-from agent.plugin_composition import TopologyFiberView
+from agent.plugin_composition import ServiceKey, TopologyFiberView
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotLease,
     RuntimeSnapshotStore,
+    lease_runtime_snapshot,
 )
-from plugins.scheduler.store import JobStore
-from plugins.scheduler.schedule import ScheduledJob
 from agent.skills import SkillRecord, SkillsLoader
 
 _MAX_DOCUMENT_BYTES = 192 * 1024
@@ -63,6 +64,23 @@ class RuntimeInspectionError(ValueError):
         self.code = code
 
 
+class _SchedulerInspection(Protocol):
+    """Core 运行时检查消费的 scheduler 只读投影。"""
+
+    def list_jobs(self) -> tuple[Mapping[str, object], ...]:
+        ...
+
+    def get_job(self, job_id: str) -> Mapping[str, object] | None:
+        ...
+
+
+# 只保留值级 seam，Core 不导入 scheduler 实现或数据模型。ServiceKey 按名称相等，
+# scheduler 插件从自己的 inspection 模块注册同名 key。
+_SCHEDULER_INSPECTION = ServiceKey[_SchedulerInspection](
+    "scheduler.inspection.v1"
+)
+
+
 class RuntimeInspectionService:
     """从运行时 owner 投影移动端可读的文档、任务与能力。"""
 
@@ -73,7 +91,6 @@ class RuntimeInspectionService:
         snapshot_store: RuntimeSnapshotStore | None,
     ) -> None:
         self._workspace = workspace.expanduser().resolve()
-        self._job_store = JobStore(self._workspace / "schedules.json")
         self._snapshot_store = snapshot_store
 
     def list_documents(self) -> dict[str, object]:
@@ -108,24 +125,31 @@ class RuntimeInspectionService:
             ) from exc
         return {**self._document_summary(document), "markdown": content}
 
-    def list_jobs(self) -> dict[str, object]:
-        jobs = sorted(
-            self._active_jobs(),
-            key=lambda job: (job.fire_at, job.id),
-        )
-        return {"items": [self._job_summary(job) for job in jobs]}
+    async def list_jobs(self) -> dict[str, object]:
+        """返回一个 generation 的 scheduler 投影并释放读取 lease。"""
+        async with self._scheduler_inspection() as service:
+            return {"items": [dict(item) for item in service.list_jobs()]}
 
-    def get_job(self, job_id: str) -> dict[str, object]:
-        job = next(
-            (candidate for candidate in self._active_jobs() if candidate.id == job_id),
-            None,
-        )
-        if job is None:
-            raise RuntimeInspectionError("job_not_found", f"定时任务不存在: {job_id}")
-        return {**self._job_summary(job), "markdown": _job_markdown(job)}
+    async def get_job(self, job_id: str) -> dict[str, object]:
+        """返回一个 scheduler 投影，不解释其中的业务字段。"""
+        async with self._scheduler_inspection() as service:
+            item = service.get_job(job_id)
+            if item is None:
+                raise RuntimeInspectionError("job_not_found", f"定时任务不存在: {job_id}")
+            return dict(item)
 
-    def _active_jobs(self) -> list[ScheduledJob]:
-        return [job for job in self._job_store.load() if job.enabled]
+    @asynccontextmanager
+    async def _scheduler_inspection(self) -> AsyncIterator[_SchedulerInspection]:
+        """解析与调用持有同一代 lease，客户端不保留 provider。"""
+        store = self._snapshot_store
+        if store is None or store.current is None:
+            raise RuntimeInspectionError("scheduler_unavailable", "调度检查服务尚未绑定")
+        async with lease_runtime_snapshot(store) as snapshot:
+            root = snapshot.composition_root
+            service = None if root is None else root.context.get(_SCHEDULER_INSPECTION)
+            if service is None:
+                raise RuntimeInspectionError("scheduler_unavailable", "调度检查服务尚未绑定")
+            yield service
 
     async def list_capabilities(self) -> dict[str, object]:
         async with await self._acquire_snapshot() as snapshot:
@@ -170,19 +194,6 @@ class RuntimeInspectionService:
             "group": document.group,
             "description": document.description,
             "available": path.is_file(),
-        }
-
-    @staticmethod
-    def _job_summary(job: ScheduledJob) -> dict[str, object]:
-        return {
-            "id": job.id,
-            "name": job.name,
-            "trigger": job.trigger,
-            "tier": job.tier,
-            "fire_at": job.fire_at.isoformat(),
-            "timezone": job.timezone,
-            "enabled": job.enabled,
-            "run_count": job.run_count,
         }
 
 
@@ -428,30 +439,6 @@ def _find_mcp_item(
             if item["owner_id"] == owner_id and item["name"] == server_name
         ),
         None,
-    )
-
-
-def _job_markdown(job: ScheduledJob) -> str:
-    content = job.message if job.tier == "instant" else job.prompt
-    schedule = job.cron_expr or (
-        f"每 {job.interval_seconds} 秒"
-        if job.interval_seconds is not None
-        else job.fire_at.isoformat()
-    )
-    return "\n".join(
-        (
-            f"# {job.name or '未命名定时任务'}",
-            "",
-            f"- **状态：** {'启用' if job.enabled else '停用'}",
-            f"- **触发：** `{job.trigger}` / `{job.tier}`",
-            f"- **计划：** {schedule}",
-            f"- **时区：** `{job.timezone}`",
-            f"- **运行次数：** {job.run_count}",
-            "",
-            "## 内容",
-            "",
-            content or "",
-        )
     )
 
 

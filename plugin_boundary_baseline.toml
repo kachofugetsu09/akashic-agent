@@ -24,8 +24,6 @@ R1 = [
     "agent/tools/filesystem.py|plugins.standard_tools",
     "agent/tools/filesystem.py|plugins.standard_tools.filesystem",
     "bootstrap/app.py|plugins.delivery.senders",
-    "infra/mobile_realtime/runtime_inspection.py|plugins.scheduler.schedule",
-    "infra/mobile_realtime/runtime_inspection.py|plugins.scheduler.store",
     "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.application.rebuild",
     "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.config",
     "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.infrastructure.loader",

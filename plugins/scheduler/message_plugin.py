@@ -26,6 +26,7 @@ from session.message import CallRef, Message
 
 from .runtime import SchedulerRuntime
 from .store import JobStore
+from .inspection import SCHEDULER_INSPECTION, SchedulerInspectionProvider
 from .tools import CancelInput, ListSchedules, ScheduleInput, ScheduleTool
 
 api_version = 3
@@ -79,6 +80,7 @@ class Config(BaseModel):
 async def apply(ctx: Context, config: Config) -> None:
     """注册工具不启动调度；旧 binding 直接重读同一文件，不依赖当前 runtime 指针。"""
     store = JobStore(ctx.workspace_file("schedules.json"))
+    _ = await ctx.provide(SCHEDULER_INSPECTION, SchedulerInspectionProvider(store))
     watcher: asyncio.Task[None] | None = None
     tool_view = ToolView(())
     catalog = ctx.require(TOOLS)

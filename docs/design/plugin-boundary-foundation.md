@@ -247,3 +247,12 @@ provider IDs 的持久语义不变，未知效果不变成可重试的成功。�
 最终 Output 的等待只读取来源与结束消息 ID，不依赖 turn_projection 类身份。
 注册表、发送记录、原 binding、lease 与恢复仍归原 owner；本层没有迁移正式数据。
 公开 Message 输入沿用已有 Core 值合同，不新建业务 schema 中心。
+
+
+### 9.7 调度检查由 scheduler 拥有
+
+调度列表、排序、启用过滤和详情文档由 `scheduler.inspection.v1` 的普通插件 provider
+生成。Core 不打开 schedules.json，不 import JobStore 或 ScheduledJob。真实 store
+与调度执行共用原 owner 的实例，不增加并行存储。每次 Web/Mobile 查询在一个 snapshot
+lease 内完成；缺 provider 明确返回 scheduler_unavailable，空列表只表示查询成功且无任务。
+本层只读取调度事实，不创建、改写、失效或减少计划。
