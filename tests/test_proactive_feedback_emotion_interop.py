@@ -6,32 +6,41 @@ import json
 import os
 import sqlite3
 import sys
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
-from typing import Any, cast
+from types import ModuleType
+from typing import Any
 
 import pytest
 
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition import (
+    EMBEDDINGS,
     RUNTIME_STARTED,
     RUNTIME_STOPPING,
-    SESSION_READ,
     TIMERS,
+    TOOL_CATALOG,
     UI_SLOTS,
     CompositionRoot,
     PluginRuntime,
     PluginTimers,
     RuntimeStarted,
     RuntimeStopping,
-    SessionReadService,
 )
-from plugins.tools.plugin import TOOLS, ToolCatalog
+from agent.plugin_composition.messages import MESSAGE_CATALOG
+from agent.plugin_composition.models import EmbeddingResult
+from agent.plugin_composition.tool_catalog import PluginTools, _freeze_plugin_tools
 from agent.plugin_composition.ui_slots import PluginUiSlots
+from agent.plugins.snapshot import RuntimeSnapshot, RuntimeSnapshotStore
+from agent.plugins.install import install_git_plugin
+from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.turn_events.after_turn import AFTER_TURN_COMMITTED
 from bus.events_lifecycle import TurnCommitted
+from plugins.content.plugin import check_text
+from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
+from session.log import MessageLog, SessionAttributes
+from session.message import ContentPart, Input, Output
 
 
 NOW = datetime(2026, 8, 23, 8, tzinfo=UTC)
@@ -50,8 +59,34 @@ def _plugin_roots() -> dict[str, Path]:
     return roots
 
 
+def _install_pinned_plugins(tmp_path: Path, sources: dict[str, Path]) -> dict[str, Path]:
+    """Install the exact Gate checkouts, then return only their cache roots."""
+
+    install_workspace = tmp_path / "install-workspace"
+    install_workspace.mkdir()
+    plugin_home = tmp_path / "plugin-home"
+    for plugin_id in ("proactive_feedback", "emotion"):
+        _ = install_git_plugin(
+            workspace=install_workspace,
+            source=str(sources[plugin_id]),
+            marketplace="interop",
+            plugins_home=plugin_home,
+        )
+    resolved = resolve_plugin_sources(
+        (), installed_cache_root=plugin_home / "cache",
+    )
+    roots = {item.plugin_name: item.plugin_root for item in resolved}
+    if set(roots) != {"proactive_feedback", "emotion"}:
+        raise RuntimeError(f"正式安装 artifact 不完整: {sorted(roots)}")
+    cache_root = (plugin_home / "cache").resolve()
+    for plugin_id, root in roots.items():
+        if not root.resolve().is_relative_to(cache_root):
+            raise RuntimeError(f"插件未从正式 cache 载入: {plugin_id} {root}")
+    return roots
+
+
 def _load_plugin(root: Path, package: str) -> ModuleType:
-    """Load one exact external checkout without copying its domain implementation."""
+    """Load one exact formally installed artifact without copying its implementation."""
 
     entrypoint = root / "plugin.py"
     spec = importlib.util.spec_from_file_location(
@@ -118,46 +153,56 @@ class EmptyDrift:
         return None
 
 
-class DeterministicEmbedder:
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        return [[1.0, 0.0] for _ in texts]
+class DeterministicEmbeddingModel:
+    async def embed(self, texts: list[str]) -> EmbeddingResult:
+        return EmbeddingResult(tuple((1.0, 0.0) for _ in texts))
 
 
-def _session_state(*, explicit_quote: bool) -> SimpleNamespace:
+class DeterministicEmbeddings:
+    @asynccontextmanager
+    async def bind(self, *, model_id: str | None = None):
+        _ = model_id
+        yield DeterministicEmbeddingModel()
+
+
+def _append_followup(log: MessageLog, *, explicit_quote: bool) -> None:
+    """Append the real Message prefix consumed by both installed plugins."""
+
+    session_id = "wake:interop"
+    _ = log.ensure_session(session_id, SessionAttributes())
+    proactive = log.writer(
+        session_id,
+        author="wake",
+        source="wake",
+        body_types=(Output,),
+        content={"text": check_text},
+    )
+    proactive.append(
+        "p1", Output((ContentPart("text", "主动提醒某个很长很长的主题"),), "complete")
+    )
     user = (
         "被回复消息：主动提醒某个很长很长的主题\n\n"
         "【你当前新消息】我继续这个主题"
         if explicit_quote
         else "我继续这个主题"
     )
-    return SimpleNamespace(
-        messages=[
-            {
-                "id": "p1",
-                "seq": 1,
-                "role": "assistant",
-                "content": "主动提醒某个很长很长的主题",
-                "extra": '{"proactive": true}',
-                "ts": "2026-08-23T07:59:00+00:00",
-            },
-            {
-                "id": "u1",
-                "seq": 2,
-                "role": "user",
-                "content": user,
-                "extra": None,
-                "ts": "2026-08-23T08:00:00+00:00",
-            },
-            {
-                "id": "a1",
-                "seq": 3,
-                "role": "assistant",
-                "content": "我接着回答这个主题",
-                "extra": None,
-                "ts": "2026-08-23T08:00:01+00:00",
-            },
-        ],
-        last_consolidated=0,
+    user_writer = log.writer(
+        session_id,
+        author="user",
+        source="conversation",
+        body_types=(Input,),
+        content={"text": check_text},
+    )
+    user_writer.append("u1", Input((ContentPart("text", user),)))
+    assistant = log.writer(
+        session_id,
+        author="assistant",
+        source="conversation",
+        body_types=(Output,),
+        content={"text": check_text},
+    )
+    assistant.append(
+        "a1", Output((ContentPart("text", "我接着回答这个主题"),), "complete")
     )
 
 
@@ -187,7 +232,7 @@ async def _eventually(predicate: Any) -> None:
     for _ in range(300):
         if predicate():
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
     raise AssertionError("interop state did not settle")
 
 
@@ -232,39 +277,53 @@ async def test_wake_followup_reaches_emotion_once_on_next_timer(
     tmp_path: Path,
     order: tuple[str, str],
     explicit_quote: bool,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Prove PF owns acceptance while Emotion pulls the immutable fact one tick later."""
 
     # 1. Mount both exact plugins over ordinary Core services in either order.
-    roots = _plugin_roots()
+    roots = _install_pinned_plugins(tmp_path, _plugin_roots())
     modules = {
         "proactive_feedback": _load_plugin(
             roots["proactive_feedback"], f"pf_interop_{order[0]}"
         ),
         "emotion": _load_plugin(roots["emotion"], f"emotion_interop_{order[0]}"),
     }
-    monkeypatch.setattr(
-        modules["proactive_feedback"],
-        "_build_embedder",
-        lambda _workspace: DeterministicEmbedder(),
-    )
     root = CompositionRoot("pf-emotion-" + "-".join(order))
     timer = ManualTimer()
-    tools = ToolCatalog(root.context)
+    tools = PluginTools(root.instance_token)
     ui = PluginUiSlots()
     drift = EmptyDrift()
-    session_read = SessionReadService(
-        cast(Any, lambda _key: (_session_state(explicit_quote=explicit_quote), None))
-    )
-    _ = await root.context.provide(SESSION_READ, session_read)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    log = MessageLog(workspace / "sessions.db")
+    snapshot_store = RuntimeSnapshotStore()
+    _ = await root.context.provide(MESSAGE_CATALOG, log.catalog())
+    _ = await root.context.provide(TURN_PROJECTION, TurnProjection())
+    _ = await root.context.provide(EMBEDDINGS, DeterministicEmbeddings())
     _ = await root.context.provide(TIMERS, PluginTimers(timer))
-    _ = await root.context.provide(TOOLS, tools)
+    _ = await root.context.provide(TOOL_CATALOG, tools)
     _ = await root.context.provide(UI_SLOTS, ui)
     _ = await root.context.provide(modules["emotion"].DRIFT_PROPOSALS, drift)
     _ = await root.context.provide(modules["emotion"].DRIFT_WAKE, drift)
     for plugin_id in order:
         await _mount(root, modules[plugin_id], plugin_id, roots[plugin_id], tmp_path)
+    _ = _freeze_plugin_tools(
+        tools,
+        root.instance_token,
+        {plugin_id: root.generation_id for plugin_id in order},
+    )
+    snapshot_store.install(
+        RuntimeSnapshot(
+            snapshot_id="pf-emotion-test",
+            generations={},
+            composition_root=root,
+            composition_topology=root.topology_view(),
+        )
+    )
+    root._bind_runtime_scope_acquirer(  # pyright: ignore[reportPrivateUsage]
+        lambda: snapshot_store.acquire_composition_root(root)
+    )
+
     feedback_db = tmp_path / "plugin-data/proactive_feedback/proactive_feedback.db"
     emotion_db = tmp_path / "workspace/emotion/emotion.db"
     try:
@@ -272,6 +331,7 @@ async def test_wake_followup_reaches_emotion_once_on_next_timer(
         await _eventually(lambda: len(timer.active) >= 2)
 
         # 2. One ordinary committed follow-up is accepted by PF; Emotion has no PF import yet.
+        _append_followup(log, explicit_quote=explicit_quote)
         root.context.emit(
             AFTER_TURN_COMMITTED,
             _followup(explicit_quote=explicit_quote),
@@ -328,3 +388,5 @@ async def test_wake_followup_reaches_emotion_once_on_next_timer(
     finally:
         await root.context.serial(RUNTIME_STOPPING, RuntimeStopping())
         await root.dispose()
+        log.close()
+        await snapshot_store.close()

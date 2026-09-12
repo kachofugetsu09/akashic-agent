@@ -53,7 +53,6 @@ from agent.plugin_composition import (
     MANAGED_PROCESSES,
     WORKLOADS,
     MCP_SERVERS,
-    SESSION_READ,
     DELIVERIES,
     DURABLE_DELIVERIES,
     TIMERS,
@@ -68,7 +67,6 @@ from agent.plugin_composition import (
     PluginCommands,
     InteractionUndoService,
     PluginRuntime,
-    SessionReadService,
     PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
@@ -5281,16 +5279,6 @@ class PluginManager:
                 for module_path in modules:
                     self._remove_module_tree(module_path)
 
-    def _read_existing_session(self, session_key: str):
-        """读取既有 Session 及其 active compaction 边界。"""
-
-        session_manager = self._session_manager
-        if session_manager is None:
-            raise RuntimeError("Session Read Service 缺少 SessionManager")
-        session = session_manager.get_existing(session_key)
-        compaction = session_manager.control_store.get_active_compaction(session_key)
-        return session, compaction
-
     async def _resolve_composition_root(
         self,
         generations: dict[str, PluginGeneration],
@@ -5632,16 +5620,6 @@ class PluginManager:
             _ = await root.context.provide(TIMERS, timers)
         if archive:
             return
-        if self._session_manager is not None and any(
-            SESSION_READ in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            session_read = (
-                SessionReadService(self._read_existing_session)
-                if not candidate
-                else SessionReadService.candidate_validation()
-            )
-            _ = await root.context.provide(SESSION_READ, session_read)
         if any(
             DELIVERIES in cast(ComposablePlugin, item.instance).inject
             for item in mount_order

@@ -40,10 +40,6 @@ note = "按插件 owner 隔离的同库事务空间"
 role = "core"
 note = "exact Root 的工具 binding 归档与解析"
 
-[capabilities."core.session_read"]
-role = "core"
-note = "只读既有 Session 投影"
-
 [capabilities."core.interaction_undo"]
 role = "core"
 note = "显式撤销最近一次 interaction"

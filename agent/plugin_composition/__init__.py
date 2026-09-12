@@ -64,11 +64,6 @@ from agent.plugin_composition.model import (
     TopologyView,
     WriteObservation,
 )
-from agent.plugin_composition.session_read import (
-    SESSION_READ,
-    SessionReadService,
-    SessionReadSnapshot,
-)
 from agent.plugin_composition.deliveries import DELIVERIES, PluginDeliveries
 from agent.plugin_composition.durable_deliveries import (
     DURABLE_DELIVERIES,
@@ -379,9 +374,6 @@ __all__ = [
     "ParallelEventKey",
     "QueuedReceipt",
     "RawInbound",
-    "SESSION_READ",
-    "SessionReadService",
-    "SessionReadSnapshot",
     "ServiceKey",
     "ServiceView",
     "DELIVERIES",

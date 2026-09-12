@@ -109,9 +109,9 @@
     {
       "id": "proactive_feedback",
       "repository": "https://github.com/akashic-plugins/proactive_feedback",
-      "requested_ref": "e65baddfe793562163d1a6d5844754a4d2ed3e57",
-      "resolved_sha": "e65baddfe793562163d1a6d5844754a4d2ed3e57",
-      "change_source_pr_head": "e65baddfe793562163d1a6d5844754a4d2ed3e57"
+      "requested_ref": "b0dd6dd1a14852e0e5df3c2459f60f1bc80c99f4",
+      "resolved_sha": "b0dd6dd1a14852e0e5df3c2459f60f1bc80c99f4",
+      "change_source_pr_head": "b0dd6dd1a14852e0e5df3c2459f60f1bc80c99f4"
     },
     {
       "id": "huayue-skills",
