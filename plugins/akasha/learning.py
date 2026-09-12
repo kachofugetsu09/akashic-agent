@@ -13,8 +13,8 @@ from plugins.content.api import legacy_post_commit_effect
 from plugins.tools.plugin import TOOLS
 from plugins.turn_projection.plugin import TurnProjection
 from session.embedding_store import MessageEmbeddings
-from session.log import MessageCatalog
-from session.message import ContentPart, Input, Message, Output, ToolCall, ToolResult
+from agent.plugin_composition.messages import MessageCatalog
+from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall, ToolResult
 from .domain.model import Turn, TurnFeedback
 from .infrastructure.consumption import Applied, Consumption, message_nodes
 from .projection import Sample, dialogue_turn, project_samples, restore_sample

@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agent.plugin_composition.bindings import Bindings
 from plugins.tools.api import CallSource, InvalidArguments, Result
 from plugins.tools.plugin import TOOLS
-from session.message import ContentPart, ContentReferences, Input, Output, ToolCall
-from session.message_codec import json_value
+from agent.plugin_contracts import ContentPart, ContentReferences, Input, Output, ToolCall
+from agent.plugin_contracts import json_value
 from .learning import Feedback, Learning, resolve_feedback
 from .projection import Sample
 

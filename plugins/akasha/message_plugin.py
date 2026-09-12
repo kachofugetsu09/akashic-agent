@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Literal, Self
+from typing import Literal, Protocol, Self
 from functools import partial
 from collections.abc import Mapping
 
@@ -15,12 +15,9 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.commands import COMMANDS, CommandDefinition, CommandInvocation, CommandResult
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE
 from plugins.content.api import ContentSchema
-from plugins.content.plugin import CONTENT
-from plugins.context.api import Materials, Reminder
-from plugins.context.materials import MATERIALS
 from plugins.tools.plugin import TOOLS, ToolRef, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.message import Message
+from agent.plugin_contracts import Message
 from agent.plugin_composition.models import DriverUnavailableError, ModelUnavailableError
 from .domain.model import EmbeddingSpaceMismatchError
 
@@ -48,9 +45,29 @@ web_provides = ()
 web_contract_digests = {
     "workbench.panels.v2": "fb6417c9bf532c1fdb344767d06065d5d3293da85deb64eff1e8088889a33bcb",
 }
+workspace_roots = ("memory",)
+
+MaterialData = Mapping[str, object]
+
+
+class ContentRegistry(Protocol):
+    async def register(
+        self, ctx: Context, definition: ContentSchema, *, prepare: Callable[[], object] | None = None,
+    ) -> object: ...
+
+
+class MaterialRegistry(Protocol):
+    async def register(
+        self, ctx: Context, *, name: str,
+        prepare: Callable[[tuple[Message, ...], str], Awaitable[MaterialData]],
+        priority: int = 0, prompt: bool = False, reduce: object | None = None,
+    ) -> object: ...
+
+
+CONTENT = ServiceKey[ContentRegistry]("content.v1")
+MATERIALS = ServiceKey[MaterialRegistry]("context.materials.v2")
 inject = (TURN_PROJECTION, CONTENT, MATERIALS, TOOLS, EMBEDDINGS,
           BINDINGS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, OWNER_STATE, UI_SLOTS, COMMANDS)
-workspace_roots = ("memory",)
 
 
 class Config(BaseModel):
@@ -224,10 +241,16 @@ async def apply(ctx: Context, config: Config) -> None:
         learning, ctx.require(MESSAGE_CATALOG), ctx.require(MESSAGE_EMBEDDINGS), select_interest,
     ))
 
-    def unavailable() -> Materials:
-        return Materials("", reminders=(Reminder("status", f"## Akasha 状态\n召回不可用：{health.reason}", 300),))
+    def unavailable() -> MaterialData:
+        reminder: Mapping[str, object] = {
+            "name": "status", "text": f"## Akasha 状态\n召回不可用：{health.reason}",
+            "priority": 300,
+        }
+        return {
+            "reminders": (reminder,),
+        }
 
-    async def prepare(snapshot: tuple[Message, ...], source: str) -> Materials:
+    async def prepare(snapshot: tuple[Message, ...], source: str) -> MaterialData:
         if running:
             if not await start_if_available():
                 return unavailable()

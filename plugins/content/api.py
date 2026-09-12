@@ -10,7 +10,7 @@ from typing import cast
 
 from agent.turn_effects import PostCommitEffect, post_commit_effect
 from session.artifacts import check_artifact_id
-from session.message import ContentPart, ContentReferences, Control, Input, Message
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
 
 
 def _history_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -118,6 +118,39 @@ class Reference:
             for value in (self.resolved_ref, self.retrieval_ref)
         ):
             raise ValueError("引用的解析目标与查询凭据必须是非空字符串或 None")
+
+
+def decode_reference(value: object) -> Reference:
+    """在内容边界把 provider 的普通引用映射转换为已校验的 Reference。"""
+    if not isinstance(value, Mapping):
+        raise TypeError("reference 必须是字符串键对象")
+    data = cast(Mapping[str, object], value)
+    if any(not isinstance(key, str) for key in data):
+        raise TypeError("reference 必须是字符串键对象")
+    if set(data) - {"ref", "resolved_ref", "retrieval_ref"} or "ref" not in data:
+        raise ValueError("reference 字段无效")
+    ref, resolved_value, retrieval_value = (
+        data["ref"], data.get("resolved_ref"), data.get("retrieval_ref")
+    )
+    if not isinstance(ref, str) or any(
+        item is not None and not isinstance(item, str)
+        for item in (resolved_value, retrieval_value)
+    ):
+        raise TypeError("reference 的字段类型无效")
+    resolved = cast(str | None, resolved_value)
+    retrieval = cast(str | None, retrieval_value)
+    return Reference(ref, resolved_ref=resolved, retrieval_ref=retrieval)
+
+
+def reference_data(reference: Reference) -> Mapping[str, object]:
+    """把已校验的 Reference 投影为 provider 可交换的普通映射。"""
+    if not isinstance(reference, Reference):
+        raise TypeError("reference 必须是已校验的 Reference")
+    return {
+        "ref": reference.ref,
+        "resolved_ref": reference.resolved_ref,
+        "retrieval_ref": reference.retrieval_ref,
+    }
 
 
 @dataclass(frozen=True, slots=True)
