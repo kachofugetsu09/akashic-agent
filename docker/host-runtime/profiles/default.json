@@ -9,11 +9,11 @@
         "owner": "context",
         "config": {
           "prompt_sources": {
-            "default_prompt": "prompt",
-            "markdown_memory": "markdown_memory",
-            "skills": "standard_tools"
+            "default_prompt": "prompt@release",
+            "markdown_memory": "markdown_memory@release",
+            "skills": "standard_tools@release"
           },
-          "summary_source": ["compaction", "compaction"]
+          "summary_source": ["compaction", "compaction@release"]
         }
       }
     ]
