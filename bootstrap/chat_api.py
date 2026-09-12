@@ -21,6 +21,7 @@ from agent.plugins.mobile_ui import (
     MobileUiRpcInvalidRequest,
     MobileUiStaleRevision,
 )
+from agent.plugin_composition.model_settings_http import ModelControlUnavailable
 from session.log import InvalidPage, MessageCatalog
 from agent.plugin_composition import ChatModelSelection, ModelCatalogSnapshot
 from agent.plugins.model_catalog import (
@@ -88,7 +89,9 @@ def create_chat_app(
     plugin_ui_provider: MobileUiProvider | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
-    model_selection_reader: Callable[[Mapping[str, object]], ChatModelSelection] | None = None,
+    model_selection_reader: Callable[
+        [Mapping[str, object]], Awaitable[ChatModelSelection]
+    ] | None = None,
     model_control: ModelControl | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,
@@ -216,7 +219,15 @@ def create_chat_app(
             if model_selection_reader is None:
                 raise HTTPException(status_code=503, detail="模型选择服务不可用")
             metadata = messages.reader(session_key).metadata()
-            selection = model_selection_reader(metadata if metadata is not None else {})
+            try:
+                selection = await model_selection_reader(
+                    metadata if metadata is not None else {}
+                )
+            except ModelControlUnavailable as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail="模型选择服务不可用",
+                ) from error
             session_override = selection.model_id or ""
             session_effort = selection.reasoning_effort or ""
         try:
@@ -493,7 +504,9 @@ def build_chat_server(
     plugin_ui_provider: MobileUiProvider | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
-    model_selection_reader: Callable[[Mapping[str, object]], ChatModelSelection] | None = None,
+    model_selection_reader: Callable[
+        [Mapping[str, object]], Awaitable[ChatModelSelection]
+    ] | None = None,
     model_control: ModelControl | None = None,
     messages: MessageCatalog | None = None,
     reply_status: Callable[[str], AsyncGenerator[dict[str, object], None]] | None = None,

@@ -5,13 +5,55 @@ import pytest
 from fastapi import FastAPI
 
 from agent.plugin_composition import CompositionRoot
-from agent.plugin_composition.models import MODEL_CALL_STATS, ModelRequest
-from agent.plugin_composition.model_settings_http import create_model_settings_router
+from agent.plugin_composition.models import (
+    MODEL_CALL_STATS,
+    ChatModelSelection,
+    ModelRequest,
+)
+from agent.plugin_composition.model_settings_http import (
+    ModelControlUnavailable,
+    create_model_settings_router,
+)
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from tests.test_model_call_records import descriptor, store, dump
 from tests.test_mobile_message_log import mobile
 from tests.mobile_realtime.test_channel import _generic_frame
+
+
+@pytest.mark.asyncio
+async def test_model_selection_reader_uses_current_snapshot_and_reports_missing_owner():
+    root = CompositionRoot("selection")
+
+    async def plugin(ctx):
+        await ctx.provide(MODEL_SELECTION, SelectionOwner())
+
+    await root.mount(plugin, name="models")
+    snapshot = RuntimeSnapshotCompiler().compile(
+        {}, composition_root=root, snapshot_revision="selection"
+    )
+    snapshots = RuntimeSnapshotStore()
+    snapshots.install(snapshot)
+    control = RuntimeModelControl(snapshots)
+    try:
+        assert await control.read_saved({"model_runtime_override": "model-a"}) == (
+            ChatModelSelection("model-a", None)
+        )
+        assert snapshot.lease_count == 0
+
+        absent_root = CompositionRoot("absent")
+        absent = RuntimeSnapshotCompiler().compile(
+            {}, composition_root=absent_root, snapshot_revision="absent"
+        )
+        await snapshots.commit(snapshots.begin_publish(absent))
+        with pytest.raises(ModelControlUnavailable):
+            await control.read_saved({"model_runtime_override": "model-a"})
+        assert absent.lease_count == 0
+        await absent_root.dispose()
+    finally:
+        await snapshots.close()
+        await root.dispose()
 
 
 @pytest.mark.asyncio

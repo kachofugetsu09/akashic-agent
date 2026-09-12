@@ -455,7 +455,10 @@ class MobileRealtimeChannel:
             Callable[[], Awaitable[ModelCatalogSnapshot]] | None
         ) = None
         self._model_selection_reader: (
-            Callable[[Mapping[str, object]], ChatModelSelection] | None
+            Callable[
+                [Mapping[str, object]], Awaitable[ChatModelSelection]
+            ]
+            | None
         ) = None
         self._model_stats_reader: Callable[[str], Awaitable[ModelCallStats]] | None = None
         self._channel_attachment_store: ChannelAttachmentArtifactStore | None = None
@@ -506,7 +509,7 @@ class MobileRealtimeChannel:
 
     def bind_model_selection(
         self,
-        reader: Callable[[Mapping[str, object]], ChatModelSelection],
+        reader: Callable[[Mapping[str, object]], Awaitable[ChatModelSelection]],
     ) -> None:
         """绑定模型 owner 的持久选择读取能力。"""
         if self._model_selection_reader is not None:
@@ -1537,7 +1540,15 @@ class MobileRealtimeChannel:
         if self._model_selection_reader is None:
             raise MobileCommandError("model_selection_unavailable", "模型选择服务不可用")
         metadata = self._messages.reader(session_id).metadata()
-        selection = self._model_selection_reader(metadata if metadata is not None else {})
+        try:
+            selection = await self._model_selection_reader(
+                metadata if metadata is not None else {}
+            )
+        except ModelControlUnavailable as error:
+            raise MobileCommandError(
+                "model_selection_unavailable",
+                "模型选择服务不可用",
+            ) from error
         return CommandReply(
             type="model.catalog.get.ok",
             session_id=session_id,

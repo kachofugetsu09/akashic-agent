@@ -14,6 +14,7 @@ from pydantic import (
     ValidationError,
 )
 
+from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.models import (
     AddConnection,
     AddModel,
@@ -27,6 +28,7 @@ from agent.plugin_composition.models import (
     FinishConnectionAuth,
     MODEL_CATALOG,
     MODEL_CALL_STATS,
+    ChatModelSelection,
     ModelCallStats,
     MODEL_SETTINGS,
     ModelCapabilities,
@@ -53,6 +55,13 @@ class ModelControlUnavailable(RuntimeError):
     """The bound plugin snapshot does not provide model control services."""
 
 
+class ModelSelectionReader(Protocol):
+    def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection: ...
+
+
+MODEL_SELECTION = ServiceKey[ModelSelectionReader]("models.selection.v1")
+
+
 class ModelControl(Protocol):
     async def call_stats(self, call_id: str) -> ModelCallStats: ...
 
@@ -63,6 +72,8 @@ class ModelControl(Protocol):
     ) -> tuple[DiscoveredModel, ...]: ...
 
     async def apply(self, command: ModelChange) -> SettingsReceipt: ...
+
+    async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection: ...
 
 
 class BoundModelControl:
@@ -97,6 +108,13 @@ class BoundModelControl:
         if settings is None:
             raise ModelControlUnavailable("models 插件未提供模型设置")
         return await settings.discover(connection)
+
+    async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection:
+        """在当前已绑定 Root 内即时解析模型选择 owner。"""
+        reader = _bound_root().context.get(MODEL_SELECTION)
+        if reader is None:
+            raise ModelControlUnavailable("models 插件未提供模型选择")
+        return reader.read_saved(metadata)
 
 
 def _bound_root():

@@ -434,11 +434,14 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
         async def read_catalog() -> ModelCatalogSnapshot:
             return catalog
 
+        async def read_selection(metadata: Mapping[str, object]):
+            return read_saved(metadata)
+
         app = create_chat_app(
             workspace=tmp_path,
             channel=channel,
             model_catalog_reader=read_catalog,
-            model_selection_reader=read_saved,
+            model_selection_reader=read_selection,
             messages=log.catalog(),
         )
 
