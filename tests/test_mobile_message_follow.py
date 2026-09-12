@@ -29,7 +29,7 @@ from session.log import MessageLog
 from session.message import ContentPart, Input, Output, Control
 from tests.test_message_follow import status_root
 from tests.test_mobile_message_log import append
-from tests.test_message_log_migration import snapshot
+from tests.sqlite_helpers import snapshot
 
 
 @pytest.fixture

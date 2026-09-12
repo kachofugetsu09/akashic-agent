@@ -142,8 +142,11 @@ DELIVERY = ServiceKey[DeliveryAdmission]("delivery.v1")
 
 
 class DeliveryHistoryEntry(Protocol):
-    message: Message
-    confirmed_at: datetime
+    @property
+    def message(self) -> Message: ...
+
+    @property
+    def confirmed_at(self) -> datetime: ...
 
 
 class DeliveryHistory(Protocol):

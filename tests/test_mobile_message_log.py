@@ -25,7 +25,7 @@ from plugins.models.projection import check_facts, display_facts
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 from tests.mobile_realtime.test_channel import _Runtime, _generic_frame, _register_device
-from tests.test_message_log_migration import snapshot
+from tests.sqlite_helpers import snapshot
 
 
 @pytest.fixture

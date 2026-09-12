@@ -1,5 +1,10 @@
 # Akashic Agent 持久化状态地图
 
+> 当前历史迁移范围由 [0066](../decisions/0066-yoyo-current-baseline.md) 调整：旧迁移脚本只作为
+> Git 历史证据，不再执行。下文记录的旧迁移变换不授权当前启动清理或重写任何旧数据；
+> Yoyo 及未来 owner 迁移能力保留，现有 ledger、消息、备份和配置文件保留。
+
+
 - 状态：accepted target / implementation
 - 核对基线：`origin/main@31b976d82cbd5766e6450d7e287ceda71d9b7573`
 - 核对日期：2026-08-07

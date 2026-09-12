@@ -24,7 +24,7 @@ MINIMAL_MESSAGE_PLUGINS = ("sources", "content", "models", "conversation")
 FULL_RUNTIME_PLUGINS = (
     "akasha", "akashic_sender", "codex", "compaction", "content", "context",
     "conversation", "conversation_ui", "delivery", "delivery_policy", "drift",
-    "eventmail", "legacy_upgrade", "markdown_memory", "message_push", "models",
+    "eventmail", "markdown_memory", "message_push", "models",
     "openai_compatible", "opencode_go", "plugin_update", "programmatic", "prompt",
     "qq_sender", "react", "reply", "reply_program", "runtime_inspection", "runtime_ui",
     "scheduler", "shell_ui", "sources", "standard_tools", "standard_web", "subagent",

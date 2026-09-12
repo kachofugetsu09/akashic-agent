@@ -5,6 +5,8 @@
 - 取代：[0005 · Git cursor 驱动一次性兼容迁移](0005-git-cursor-drives-one-shot-migrations.md)
 - 关联条款：MIG-001、MIG-002、WSP-003、BAK-001、TST-002、TST-005
 
+> 当前历史脚本保留范围由 [0066](0066-yoyo-current-baseline.md) 调整；Yoyo 与未来兼容机制继续有效。
+
 ## 背景
 
 多个开发者从同一 HEAD 并行开发时，各自提交迁移后会形成合法的 sibling 分支。用单个 Git commit cursor 表示数据库状态，会把源码祖先关系误当成迁移依赖关系：先部署任一分支后，另一分支即使只新增独立脚本，也会因 cursor 不是新 HEAD 的祖先而拒绝启动。浅克隆、rebase、merge 和无 `.git` 发布包还会增加与业务 schema 无关的失败。

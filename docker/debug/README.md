@@ -27,7 +27,7 @@ python docker/debug/gate.py audit
 python docker/debug/gate.py plan --base origin/main
 ```
 
-如果同一 diff 同时包含生产 source set 与 protected contract/policy paths，`plan` 和 `run` 会扩大为完整公开场景，同时仍分别列出两组路径。未知可执行改动和触及 baseline gap 仍以非零退出。`migrations/**` 本身不在该 protected 集合内；已注册的 `migrations/yoyo/*.py` 由精简的 append-only 检查保护。
+如果同一 diff 同时包含生产 source set 与 protected contract/policy paths，`plan` 和 `run` 会扩大为完整公开场景，同时仍分别列出两组路径。未知可执行改动和触及 baseline gap 仍以非零退出。`migrations/**` 本身不在该 protected 集合内；已注册的 Core 和插件 bundle 迁移由 append-only 检查保护；0066 的历史删除按精确内容身份单独审计。
 
 `init` 只用于仓库第一次建立 coverage baseline。baseline 已存在时再次执行会失败，不能覆盖人工合同。新增未映射可执行文件会先运行全量公开语义场景，最终仍以 `unmapped_change` 失败。报告位于 `docker/debug/reports/change-gate/<run-id>/`。
 

@@ -1,18 +1,14 @@
-"""消息附加信息的提交、恢复、同步与迁移合同。"""
+"""消息附加信息的提交、恢复与同步合同。"""
 import sqlite3
 from contextlib import aclosing, closing
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from yoyo import get_backend
 
-from agent.migrations.context import bind_migration_context
 from infra.channels.message_view import follow_messages, message_rows
 from session.log import MessageConflict, MessageLog
 from session.message import ContentPart, MAX_METADATA_BYTES, Output
 from plugins.content.plugin import check_text
-from tests.legacy_migration_loader import load_bundle_migrations, load_migration_module
 
 
 def writer(log, namespaces=frozenset({"citation", "meme"})):
@@ -85,65 +81,6 @@ async def test_unknown_metadata_survives_restart_history_and_follow_without_plug
             assert (await anext(follower))["items"] == [row]
 
 
-def migration_source():
-    return Path(__file__).parents[1] / "plugins/legacy_upgrade/legacy_upgrade_migrations/20260907_03_message_metadata.py"
-
-
-def load_migration():
-    from types import SimpleNamespace
-    return SimpleNamespace(**load_migration_module(migration_source().stem))
-
-
-def test_yoyo_adds_only_metadata_and_replay_keeps_new_extensions(tmp_path):
-    migration = load_migration()
-    path = tmp_path / "sessions.db"
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute(migration._OLD_SCHEMA)
-    # 已发布中间迁移仍能通过原日志接纳无扩展消息，不能提前写入未迁移的字段。
-    with closing(MessageLog(path)) as log:
-        saved = writer(log).append("old", Output((ContentPart("text", "original"),), "complete"))
-        with pytest.raises(RuntimeError, match="yoyo"):
-            writer(log).append("too-early", saved.body, metadata={"citation": {}})
-        with closing(sqlite3.connect(path)) as connection:
-            before = connection.execute("SELECT rowid,* FROM messages ORDER BY rowid").fetchall()
-    directory = tmp_path / "migrations"
-    directory.mkdir()
-    (directory / "20260907_02_retire_legacy_agent_config.py").write_text('from yoyo import step\nsteps = [step("SELECT 1")]\n')
-    (directory / migration_source().name).write_bytes(migration_source().read_bytes())
-    backend = get_backend(f"sqlite:///{tmp_path / 'ledger.db'}")
-    migrations = load_bundle_migrations(directory)
-    with backend, bind_migration_context(workspace=tmp_path, config_path=tmp_path / "config.toml"):
-        backend.apply_migrations(backend.to_apply(migrations))
-    with closing(sqlite3.connect(path)) as connection:
-        after = connection.execute("SELECT rowid,* FROM messages ORDER BY rowid").fetchall()
-        assert [row[:-1] for row in after] == before
-        assert [row[-1] for row in after] == ["{}"]
-        assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
-    backups = list((tmp_path / "backups/message-metadata").rglob("*.db"))
-    assert len(backups) == 1
-    with closing(sqlite3.connect(backups[0])) as backup:
-        assert backup.execute("SELECT rowid,* FROM messages ORDER BY rowid").fetchall() == before
-    with closing(MessageLog(path)) as log:
-        new = writer(log).append("new", saved.body, metadata={"meme": {"category": "happy"}})
-        assert log.reader("s").get("old") == saved
-    migration.migrate(path, tmp_path / "unused-backup")
-    with closing(MessageLog(path)) as log:
-        assert log.reader("s").get("new") == new
-    assert not (tmp_path / "unused-backup").exists()
-
-
-def test_metadata_migration_rejects_unknown_schema_without_writes(tmp_path):
-    migration = load_migration()
-    path = tmp_path / "sessions.db"
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute(migration._OLD_SCHEMA.replace("body TEXT NOT NULL", "body TEXT"))
-    before = path.read_bytes()
-    with pytest.raises(ValueError, match="未知 schema"):
-        migration.migrate(path, tmp_path / "backup")
-    assert path.read_bytes() == before
-    assert not (tmp_path / "backup").exists()
-
-
 @pytest.mark.parametrize("raw", ['{"": {}}', '{"citation": NaN}', '{"citation": 1, "citation": 2}'])
 def test_corrupt_metadata_names_the_persisted_message(tmp_path, raw):
     path = tmp_path / "sessions.db"
@@ -155,6 +92,3 @@ def test_corrupt_metadata_names_the_persisted_message(tmp_path, raw):
             log.reader("s").get("broken")
         with pytest.raises(ValueError, match="Session s Message broken metadata"):
             log.catalog().sessions()
-        with pytest.raises(ValueError, match="Session s Message broken metadata"):
-            load_migration().migrate(path, tmp_path / "backup")
-        assert not (tmp_path / "backup").exists()
