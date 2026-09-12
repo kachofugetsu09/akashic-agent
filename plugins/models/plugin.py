@@ -13,7 +13,7 @@ from agent.plugin_composition import (
 from .litellm_catalog import LiteLlmCapabilityCatalog
 from .state import ModelsState
 from .store import ModelsStore
-from .projection import MODEL_CALLS, MODEL_CALL_HISTORY, MODEL_DISPLAY, display_part
+from .projection import MODEL_CALLS, MODEL_CALL_HISTORY, MODEL_DISPLAY, display_facts
 from agent.plugin_composition.models import MODEL_CALL_STATS
 
 api_version = 3
@@ -65,5 +65,5 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(MODEL_CALLS, store.read_call)
     _ = await ctx.provide(MODEL_CALL_HISTORY, store.read_calls)
     _ = await ctx.provide(MODEL_CALL_STATS, store.read_call_stats)
-    _ = await ctx.provide(MODEL_DISPLAY, display_part)
+    _ = await ctx.provide(MODEL_DISPLAY, display_facts)
     _ = await ctx.on(SNAPSHOT_SEALING, state.seal)

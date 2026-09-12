@@ -23,12 +23,15 @@ async def test_only_message_read_uses_explicit_page_sender() -> None:
         "next_after_seq": -1,
         "has_more": False,
     }
+    async def read_messages(*_args):
+        return page
+
     # Router only consumes this narrow service surface in the page-routing fixture.
     service = cast(ControlService, SimpleNamespace(
         methods={},
         initialize=lambda _params: {"ok": True},
         status=lambda: {"ready": True},
-        read_messages=lambda *_args: page,
+        read_messages=read_messages,
     ))
 
     async def send(frame: dict[str, object]) -> None:

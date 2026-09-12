@@ -29,7 +29,7 @@ from agent.plugins.model_catalog import (
     default_chat_model_id,
     project_chat_runtimes,
 )
-from infra.channels.message_view import MessageDisplayProviders, message_rows, session_row
+from infra.channels.message_view import MessageDisplayReader, read_message_rows, session_row
 from infra.channels.base import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from infra.channels.web_chat_channel import (
@@ -85,7 +85,7 @@ def create_chat_app(
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
-    message_display: MessageDisplayProviders | None = None,
+    message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
@@ -339,7 +339,7 @@ def create_chat_app(
             raise _runtime_http_error(error) from error
 
     @app.get("/api/chat/sessions/{session_key:path}/messages")
-    def list_messages(
+    async def list_messages(
         session_key: str,
         page_size: int = Query(50, ge=1, le=200),
         before_seq: int | None = Query(default=None, ge=0),
@@ -354,10 +354,10 @@ def create_chat_app(
             raise HTTPException(status_code=404, detail="会话不存在") from error
         except InvalidPage as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        items = message_rows(
+        items = await read_message_rows(
             page,
             display_only=True,
-            providers=channel.message_display,
+            reader=channel.message_display,
         )
         return {"version": 2, "items": items, "through_seq": page.through_seq,
                 "has_more": page.has_more,
@@ -484,7 +484,7 @@ def build_chat_server(
     channel: WebChatChannel,
     mobile_pairing_admin: MobilePairingAdmin | None = None,
     runtime_inspection: RuntimeInspectionService | None = None,
-    message_display: MessageDisplayProviders | None = None,
+    message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,

@@ -77,7 +77,7 @@ from infra.mobile_realtime.runtime_inspection import (
     RuntimeInspectionService,
 )
 from infra.channels.contract import ChannelContext
-from infra.channels.message_view import MessageDisplayProviders, message_rows, session_row
+from infra.channels.message_view import MessageDisplayReader, read_message_rows, session_row
 from infra.mobile_realtime.message_view import message_chunks, message_json as _message_json
 from infra.mobile_realtime.attachments import (
     AttachmentChunk,
@@ -451,7 +451,7 @@ class MobileRealtimeChannel:
         self._mobile_ui_catalog_identity = ""
         self._mobile_ui_hot_connections: dict[str, int] = {}
         self._runtime_inspection: RuntimeInspectionService | None = None
-        self._message_display: MessageDisplayProviders | None = None
+        self._message_display: MessageDisplayReader | None = None
         self._model_catalog_reader: (
             Callable[[], Awaitable[ModelCatalogSnapshot]] | None
         ) = None
@@ -476,18 +476,16 @@ class MobileRealtimeChannel:
             raise RuntimeError("Runtime inspection service 已绑定")
         self._runtime_inspection = service
 
-    def bind_message_display(self, providers: MessageDisplayProviders) -> None:
-        """绑定一个 exact generation 的只读消息展示回调快照。"""
-        if not isinstance(providers, MessageDisplayProviders):
-            raise TypeError("消息展示 provider 类型无效")
+    def bind_message_display(self, providers: MessageDisplayReader) -> None:
+        """绑定逐页取得插件 lease 的只读投影入口。"""
         if self._message_display is not None and self._message_display != providers:
             raise RuntimeError("Mobile 消息展示 provider 已绑定")
         self._message_display = providers
 
     @property
-    def message_display(self) -> MessageDisplayProviders:
+    def message_display(self) -> MessageDisplayReader | None:
         """返回当前展示请求使用的 provider；未绑定时显式显示 unavailable。"""
-        return self._message_display or MessageDisplayProviders()
+        return self._message_display
 
     def bind_model_stats(self, reader: Callable[[str], Awaitable[ModelCallStats]]) -> None:
         if self._model_stats_reader is not None:
@@ -797,7 +795,7 @@ class MobileRealtimeChannel:
             raise MobileCommandError("plugin_overloaded", str(error)) from error
         raise MobileCommandError("unsupported_command", f"尚不支持命令: {frame.type}")
 
-    def prepare_message_content(self, frame: GenericCommand) -> dict[str, object]:
+    async def prepare_message_content(self, frame: GenericCommand) -> dict[str, object]:
         """校验 v2 完整 Message 下载请求及其不可变表示摘要。"""
         _expect_message_log_version(frame.payload)
         _expect_keys(frame.payload, {"message_log_version", "message_id", "byte_length", "sha256"})
@@ -805,14 +803,14 @@ class MobileRealtimeChannel:
         message_id = _expect_nonempty_string(frame.payload.get("message_id"), "message_id")
         byte_length = _expect_nonnegative_int(frame.payload.get("byte_length"), "byte_length")
         sha256 = _expect_sha256(frame.payload.get("sha256"), "sha256")
-        content = self.read_message_content(
+        content = await self.read_message_content(
             session_id=session_id, message_id=message_id,
             byte_length=byte_length, sha256=sha256,
         )
         return {"version": 2, "message_id": message_id, "byte_length": len(content),
                 "sha256": sha256, "encoding": "utf-8", "media_type": "application/json"}
 
-    def read_message_content(
+    async def read_message_content(
         self, *, session_id: str, message_id: str, byte_length: int, sha256: str,
     ) -> bytes:
         """读取与分页相同的完整展示 JSON；不暴露私有 binding 或模型续传数据。"""
@@ -823,10 +821,10 @@ class MobileRealtimeChannel:
         page = reader.read_page(after_seq=message.seq - 1, through_seq=message.seq, limit=1)
         # 摘要明确选择表示；新展示清单和升级前的未完成下载都可重开。
         for display_only in (True, False):
-            rows = message_rows(
+            rows = await read_message_rows(
                 page,
                 display_only=display_only,
-                providers=self.message_display,
+                reader=self.message_display,
             )
             if not rows:
                 raise MobileCommandError("message_not_found", "消息不存在")
@@ -1970,10 +1968,10 @@ class MobileRealtimeChannel:
         except InvalidPage as error:
             raise MobileCommandError("invalid_pagination", str(error)) from error
         try:
-            page_payload: dict[str, object] = {"version": 2, "items": message_rows(
+            page_payload: dict[str, object] = {"version": 2, "items": await read_message_rows(
                 page,
                 display_only=display_only,
-                providers=self.message_display,
+                reader=self.message_display,
             ),
                 "after_seq": after_seq, "through_seq": page.through_seq, "has_more": page.has_more,
                 "next_after_seq": page.messages[-1].seq if page.messages else after_seq}

@@ -4,37 +4,41 @@ from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import aclosing
 from dataclasses import asdict, dataclass, field
 from typing import Protocol, cast
+from types import MappingProxyType
 
 from session.log import MessagePage, MessageReader, SessionEntry
 from session.message import ContentPart, Control, Input, Message, Output, ToolCall
 from session.message_codec import json_value
 
 
-class PartDisplayProvider(Protocol):
-    """尝试投影一个插件拥有的内容块；不属于该插件时返回 None。"""
-
-    def __call__(self, part: ContentPart) -> Mapping[str, object] | None: ...
+PartDisplayProvider = Callable[[ContentPart], Mapping[str, object]]
 
 
 @dataclass(frozen=True, slots=True)
 class MessageDisplayProviders:
-    """绑定同一展示请求的插件只读投影回调。
-
-    回调由调用者从 exact generation 取得；Core 只保存本次请求的不可变快照。
-    缺少 provider 时仍返回消息类型与 ``unavailable``，不会猜测业务字段。
-    """
+    """一次页面投影使用的只读回调；调用者负责同代 lease。"""
 
     tool_name: Callable[[str], str] | None = None
-    part_display: tuple[PartDisplayProvider, ...] = field(default_factory=tuple)
-
+    part_display: Mapping[str, PartDisplayProvider] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.tool_name is not None and not callable(self.tool_name):
-            raise TypeError("tool_name provider 必须可调用")
-        providers = tuple(self.part_display)
-        if any(not callable(provider) for provider in providers):
-            raise TypeError("part_display provider 必须可调用")
-        object.__setattr__(self, "part_display", providers)
+        object.__setattr__(self, "part_display", MappingProxyType(dict(self.part_display)))
+
+
+class MessageDisplayReader(Protocol):
+    """在自己的资源作用域内投影一页，不让客户端持有插件回调。"""
+
+    async def __call__(self, page: MessagePage, *, display_only: bool) -> list[dict[str, object]]: ...
+
+
+async def read_message_rows(
+    page: MessagePage, *, display_only: bool = False,
+    reader: MessageDisplayReader | None = None,
+) -> list[dict[str, object]]:
+    """展示缺少业务 provider 时保留明确的 unavailable 状态。"""
+    if reader is None:
+        return message_rows(page, display_only=display_only)
+    return await reader(page, display_only=display_only)
 
 
 def session_row(entry: SessionEntry) -> dict[str, object]:
@@ -73,10 +77,9 @@ async def follow_messages(
     *,
     after_seq: int,
     display_only: bool = False,
-    providers: MessageDisplayProviders | None = None,
+    reader_display: MessageDisplayReader | None = None,
 ) -> AsyncGenerator[dict[str, object], None]:
     """从 seq 续读完整展示页；唤醒通知不携带第二份消息正文。"""
-    display = MessageDisplayProviders() if providers is None else providers
     # 1. 先注册日志通知，再按页补齐附件和 binding 展示字段。
     async with aclosing(reader.follow(after_seq=after_seq)) as follower:
         async for message in follower:
@@ -86,7 +89,7 @@ async def follow_messages(
             while page.messages:
                 next_seq = page.messages[-1].seq
                 yield {"version": 2, "session_id": reader.session_id,
-                       "items": message_rows(page, display_only=display_only, providers=display), "after_seq": after_seq,
+                       "items": await read_message_rows(page, display_only=display_only, reader=reader_display), "after_seq": after_seq,
                        "through_seq": page.through_seq, "next_after_seq": next_seq,
                        "has_more": page.has_more}
                 after_seq = next_seq
@@ -161,10 +164,9 @@ def _part(
 ) -> dict[str, object]:
     """只公开展示合同允许的字段，未知内容保留类型与不可展示的明确状态。"""
     # 1. 业务字段由插件 callback 选择；Core 不识别模型或工具的字段名。
-    for provider in providers.part_display:
-        rendered = provider(part)
-        if rendered is not None:
-            return {"kind": part.kind, "value": json_value(rendered)}
+    provider = providers.part_display.get(part.kind)
+    if provider is not None:
+        return {"kind": part.kind, "value": json_value(provider(part))}
     # 2. 展示端保留原 part 下标；不可展示的归档只传类型，权威正文不变。
     if display_only and part.kind in {"history.provenance", "history.record", "history.turn_input"}:
         return {"kind": part.kind, "display": "unavailable"}

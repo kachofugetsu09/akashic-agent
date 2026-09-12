@@ -15,7 +15,7 @@ from agent.control.protocol.errors import JsonRpcError, UNAUTHORIZED
 from agent.control.protocol.models import InitializeParams, MessageSendParams
 from agent.control.protocol.method import RpcMethod
 from agent.plugin_composition.channels import ChannelInboundMessage
-from infra.channels.message_view import follow_messages, message_rows, session_row
+from infra.channels.message_view import MessageDisplayReader, follow_messages, read_message_rows, session_row
 from session.artifacts import AttachmentRef
 from session.log import MessageCatalog
 from session.message import Message
@@ -44,10 +44,12 @@ class ControlService:
         plugin_uninstall: PluginAction | None = None,
         workspace_token: str | None = None, boot_id: str | None = None,
         ready: Callable[[], bool] | None = None,
+        message_display: MessageDisplayReader | None = None,
         methods: Mapping[str, RpcMethod] | None = None,
         resolve_method: Callable[[str], AbstractAsyncContextManager[RpcMethod | None]] | None = None,
         control_frames: FrameBook | None = None,
     ) -> None:
+        self._message_display = message_display
         self.messages = messages
         self.workspace = workspace.resolve()
         self._accept = accept
@@ -95,12 +97,12 @@ class ControlService:
         return {"version": 2, "items": [session_row(entry) for entry in page.items],
                 "total": page.total, "next_cursor": page.next_cursor}
 
-    def read_messages(self, session_id: str, after_seq: int, through_seq: int | None,
+    async def read_messages(self, session_id: str, after_seq: int, through_seq: int | None,
                       limit: int) -> dict[str, object]:
         page = self.messages.reader(session_id).read_page(
             after_seq=after_seq, through_seq=through_seq, limit=limit,
         )
-        return {"version": 2, "session_id": session_id, "items": message_rows(page),
+        return {"version": 2, "session_id": session_id, "items": await read_message_rows(page, reader=self._message_display),
                 "after_seq": after_seq, "through_seq": page.through_seq,
                 "next_after_seq": page.messages[-1].seq if page.messages else after_seq,
                 "has_more": page.has_more}
@@ -144,7 +146,7 @@ class ControlService:
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(1)
 
         async def messages() -> None:
-            async with aclosing(follow_messages(self.messages.reader(session_id), after_seq=after_seq)) as feed:
+            async with aclosing(follow_messages(self.messages.reader(session_id), after_seq=after_seq, reader_display=self._message_display)) as feed:
                 async for page in feed:
                     await queue.put({"type": "messages.appended", **page})
 

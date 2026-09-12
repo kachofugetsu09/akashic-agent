@@ -21,7 +21,7 @@ from infra.mobile_realtime.inbox import DurableInboxManager
 from infra.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
 from infra.mobile_realtime.pairing import PairingService
 from infra.mobile_realtime.storage import MobileRealtimeStorage
-from plugins.models.projection import check_facts, display_part
+from plugins.models.projection import check_facts, display_facts
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
 from tests.mobile_realtime.test_channel import _Runtime, _generic_frame, _register_device
@@ -36,12 +36,12 @@ def mobile(tmp_path):
         runtime = _Runtime(storage)
         channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
         channel.bind_messages(log.catalog())
-        channel.bind_message_display(
-            MessageDisplayProviders(
+        async def display(page, *, display_only):
+            return message_rows(page, display_only=display_only, providers=MessageDisplayProviders(
                 tool_name=lambda binding_id: binding_id,
-                part_display=(display_part,),
-            )
-        )
+                part_display={"model.facts": display_facts},
+            ))
+        channel.bind_message_display(display)
         yield log, runtime, channel, device
 
 
@@ -79,9 +79,9 @@ async def test_mobile_history_reads_full_message_prefix_and_directory_without_ol
     assert all(item['title'] == '新对话' for page in (first, second) for item in page['items'])
     await channel._get_history(device, command('history.get', session, page_size=2))
     page = runtime.events[-1]['payload']
-    assert page['items'] == message_rows(
+    assert page['items'] == await channel.message_display(
         log.reader(session).read_page(limit=2),
-        providers=channel.message_display,
+        display_only=False,
     )
     assert page['through_seq'] == 2 and page['next_after_seq'] == 1 and page['has_more']
     assert snapshot(tmp_path / 'sessions.db') == before
@@ -151,14 +151,14 @@ async def test_display_pages_omit_hidden_archives_and_keep_legacy_downloads(mobi
         {'kind': 'text', 'value': '当前正文'},
     ]
     assert len(json.dumps(compact).encode()) < 1024
-    legacy = channel.read_message_content(session_id=session, message_id='archive', byte_length=old['byte_length'], sha256=old['sha256'])
+    legacy = await channel.read_message_content(session_id=session, message_id='archive', byte_length=old['byte_length'], sha256=old['sha256'])
     assert len(legacy) > 400000 and json.loads(legacy)['body']['parts'][0]['archive']['private_archive']
     assert snapshot(tmp_path / 'sessions.db') == before
     append(log, session, 'large-visible', Input((ContentPart('text', 'x' * 80000),)))
     await channel._get_history(device, command('history.get', session, direction='backward', display_only=True, page_size=1))
     reference = runtime.events[-1]['payload']['items'][0]['message_ref']
     assert reference['display_only'] is True
-    visible = channel.read_message_content(session_id=session, message_id='large-visible', byte_length=reference['byte_length'], sha256=reference['sha256'])
+    visible = await channel.read_message_content(session_id=session, message_id='large-visible', byte_length=reference['byte_length'], sha256=reference['sha256'])
     assert json.loads(visible)['body']['parts'][0]['value'] == 'x' * 80000
     # 第一条权威记录保持原始归档，没有被展示适配器压缩。
     assert log.reader(session).get('archive').body.parts[0].value['private_archive'] == 'x' * 400000
@@ -223,24 +223,24 @@ async def test_mobile_large_messages_download_whole_json_and_page_budget_never_t
     assert len(json.dumps(page, ensure_ascii=False).encode()) < 240 * 1024
     expected = {
         row['id']: row
-        for row in message_rows(
+        for row in await channel.message_display(
             log.reader(session).read_page(limit=200),
-            providers=channel.message_display,
+            display_only=False,
         )
     }
     for row in page['items'][:4]:
         assert set(row) == {'id', 'session_id', 'seq', 'message_ref'}
         ref = row['message_ref']
         frame = command('message.content.prepare', session, message_id=row['id'], byte_length=ref['byte_length'], sha256=ref['sha256'])
-        descriptor = channel.prepare_message_content(frame)
+        descriptor = await channel.prepare_message_content(frame)
         assert descriptor['media_type'] == 'application/json' and descriptor['version'] == 2
-        content = channel.read_message_content(session_id=session, message_id=row['id'], byte_length=ref['byte_length'], sha256=ref['sha256'])
+        content = await channel.read_message_content(session_id=session, message_id=row['id'], byte_length=ref['byte_length'], sha256=ref['sha256'])
         assert json.loads(content) == expected[row['id']]
         assert 'secret' not in content.decode()
         with pytest.raises(MobileCommandError, match='manifest'):
-            channel.read_message_content(session_id=session, message_id=row['id'], byte_length=ref['byte_length'] + 1, sha256=ref['sha256'])
+            await channel.read_message_content(session_id=session, message_id=row['id'], byte_length=ref['byte_length'] + 1, sha256=ref['sha256'])
         with pytest.raises(MobileCommandError, match='不存在'):
-            channel.read_message_content(session_id=f'akashic:{uuid4()}', message_id=row['id'], byte_length=ref['byte_length'], sha256=ref['sha256'])
+            await channel.read_message_content(session_id=f'akashic:{uuid4()}', message_id=row['id'], byte_length=ref['byte_length'], sha256=ref['sha256'])
     seen = page['items'][:]
     while page['has_more']:
         await channel._get_history(device, command('history.get', session, page_size=200, after_seq=page['next_after_seq'], through_seq=page['through_seq']))
