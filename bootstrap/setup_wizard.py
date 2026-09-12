@@ -276,5 +276,5 @@ def _print_completion(workspace: Path) -> None:
     click.echo(click.style("\n══ 配置完成 ══\n", bold=True))
     click.echo("启动 agent：")
     click.echo(click.style("  uv run python main.py", bold=True))
-    _hint("启动后打开 2236 的“模型”页添加连接并选择默认模型")
+    _hint("启动后使用已安装插件提供的控制面完成配置")
     _hint(f"插件私有配置位于 {workspace / 'plugin-data'}")

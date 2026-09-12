@@ -2,9 +2,6 @@
 # 未传 --workspace 且未设置 AKASHIC_WORKSPACE 时使用；~ 会在启动时展开。
 workspace = "~/.akashic/workspace"
 
-# 模型连接、凭据、能力与角色默认值由普通 models 插件保存。
-# 首次启动后打开 http://127.0.0.1:2236 的“模型”页完成配置。
-
 # 本地程序化控制面；listen 留空时按 workspace 派生 Unix socket。
 [app_server]
 enabled = true
@@ -14,23 +11,3 @@ ingress_queue_size = 128
 outbound_queue_size = 512
 
 # 插件配置位于 <workspace>/plugin-data/<插件名>-<市场>/config.local.toml。
-
-# Telegram channel 的正式配置位于
-# <workspace>/plugin-data/telegram_channel-builtin/config.local.toml：
-# enabled = true
-# token = "BotFather token"
-# allow_from = ["your_username"]
-# 该插件同时拥有 polling 收件和 channel 出站；token 由正式 credential lease 读取。
-#
-# NapCat QQ channel 的正式配置位于
-# <workspace>/plugin-data/qq_channel-builtin/config.local.toml：
-# enabled = true
-# bot_uin = "123456"
-# allow_from = ["123456"]
-# [[groups]]
-# group_id = "654321"
-# allow_from = ["123456"]
-# require_at = true
-#
-# 历史 [channels.telegram]/[channels.qq] 配置请先运行
-# scripts/migrate_legacy_channels.py；运行时不会隐式读取旧表。

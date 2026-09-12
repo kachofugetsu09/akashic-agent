@@ -880,7 +880,10 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     config_text = config_path.read_text(encoding="utf-8")
     assert "[llm]" not in config_text
     assert "[memory]" not in config_text
-    assert "2236 的“模型”页" in config_text
+    assert "模型" not in config_text
+    assert "Telegram" not in config_text
+    assert "QQ" not in config_text
+    assert "plugin-data" in config_text
     assert "[channels.chat]" not in config_text
     assert "[mobile_realtime]" not in config_text
     assert "6322" not in config_text
