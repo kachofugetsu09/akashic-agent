@@ -4,17 +4,64 @@ import base64
 import json
 import secrets
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from agent.plugin_composition.artifacts import ArtifactRead
-from plugins.delivery.api import Receipt
-from plugins.delivery.content import AttachmentReadError, read_content
-from session.artifacts import AttachmentKind
+from session.artifacts import AttachmentKind, AttachmentRef
 from session.log import MessageCatalog
-from session.message import Message
+from session.message import ContentPart, Control, Message
+
+
+Status = Literal["delivered", "rejected", "failed"]
+
+
+@dataclass(frozen=True, slots=True)
+class SendResult:
+    """OneBot provider 的本地结果；Delivery 在注册边界重新校验它。"""
+
+    status: Status
+    provider_ids: tuple[str, ...] = ()
+    error: str | None = None
+
+
+class AttachmentReadError(ValueError):
+    """已验证引用的字节当前不可读取；修复后可重新准备发送。"""
+
+
+@dataclass(frozen=True, slots=True)
+class File:
+    ref: AttachmentRef
+    data: bytes
+
+
+async def read_content(message: Message, catalog: MessageCatalog, artifacts: ArtifactRead) -> tuple[str | File, ...]:
+    """先读完全部附件，避免发送正文后才发现文件损坏。"""
+    if isinstance(message.body, Control):
+        return ()
+    refs = {ref.artifact_id: ref for ref in catalog.reader(message.session_id).attachments(message.message_id)}
+    parts: list[str | File] = []
+    for part in message.body.parts:
+        if not isinstance(part, ContentPart):
+            continue
+        if part.kind == "text":
+            text = cast(str, part.value)
+            if text.strip():
+                parts.append(text)
+        elif part.kind == "artifact_ref":
+            ref = refs[cast(str, part.value)]
+            try:
+                lease = await artifacts.acquire(ref)
+                try:
+                    data = await lease.read_bytes(max_bytes=ref.size_bytes)
+                finally:
+                    await lease.aclose()
+            except (ValueError, OSError) as error:
+                raise AttachmentReadError(f"{type(error).__name__}: {error}") from error
+            parts.append(File(ref, data))
+    return tuple(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,22 +80,22 @@ class QQSender:
         self._catalog = catalog
         self._artifacts = artifacts
 
-    async def query(self, key: str, address: str) -> Receipt | None:
+    async def query(self, key: str, address: str) -> SendResult | None:
         return None
 
-    async def send(self, key: str, address: str, message: Message) -> Receipt:
+    async def send(self, key: str, address: str, message: Message) -> SendResult:
         """按正文顺序提交 OneBot 消息和文件，保留部分成功证据。"""
         # 1. 准备全部字节，不把群号、私聊号或文件路径留给 provider 猜测。
         group = address.startswith("gqq:")
         number = address[4:] if group else address
         if not number.isascii() or not number.isdecimal() or int(number) <= 0:
-            return Receipt(status="rejected", error="QQ 地址必须是正整数私聊号或 gqq:群号")
+            return SendResult(status="rejected", error="QQ 地址必须是正整数私聊号或 gqq:群号")
         target = {"group_id" if group else "user_id": int(number)}
         kind = "group" if group else "private"
         try:
             parts = await read_content(message, self._catalog, self._artifacts)
         except AttachmentReadError as error:
-            return Receipt(status="rejected", error=f"QQ 本地材料读取失败：{error}")
+            return SendResult(status="rejected", error=f"QQ 本地材料读取失败：{error}")
         requests: list[Request] = []
         for part in parts:
             if isinstance(part, str):
@@ -61,7 +108,7 @@ class QQSender:
                     requests.append(Request(f"upload_{kind}_file", {**target, "file": encoded,
                                                                   "name": part.ref.filename or part.ref.artifact_id}, True))
         if not requests:
-            return Receipt(status="rejected", error="消息没有可发送正文或附件")
+            return SendResult(status="rejected", error="消息没有可发送正文或附件")
 
         # 2. 文件成功可没有消息 ID；独立计数防止把已成功前缀误报为拒绝。
         provider_ids: list[str] = []
@@ -73,30 +120,30 @@ class QQSender:
                     await self._connection.send(json.dumps({"action": request.action, "params": request.params, "echo": echo}))
                     result = await self._read_response(echo)
             except (ConnectionClosed, TimeoutError, OSError):
-                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 连接或回执未确认")
+                return SendResult(status="failed", provider_ids=tuple(provider_ids), error="QQ 连接或回执未确认")
             except (json.JSONDecodeError, ValueError):
-                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执结构或 echo 无效")
+                return SendResult(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执结构或 echo 无效")
             if result.get("status") == "failed" and type(result.get("retcode")) is int and result["retcode"] != 0:
-                return Receipt(status="failed" if completed else "rejected", provider_ids=tuple(provider_ids), error="QQ 拒绝请求")
+                return SendResult(status="failed" if completed else "rejected", provider_ids=tuple(provider_ids), error="QQ 拒绝请求")
             if result.get("status") != "ok" or type(result.get("retcode")) is not int or result["retcode"] != 0:
-                return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执未确认成功")
+                return SendResult(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执未确认成功")
             raw_data = result.get("data")
             data = cast(dict[str, object], raw_data) if isinstance(raw_data, dict) else raw_data
             if request.upload:
                 if data is not None and not isinstance(data, dict):
-                    return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 文件回执无效")
+                    return SendResult(status="failed", provider_ids=tuple(provider_ids), error="QQ 文件回执无效")
                 if isinstance(data, dict) and cast(dict[str, object], data).get("file_id") is not None:
                     file_id = cast(dict[str, object], data)["file_id"]
                     if type(file_id) not in (str, int) or str(file_id) == "":
-                        return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 文件 ID 无效")
+                        return SendResult(status="failed", provider_ids=tuple(provider_ids), error="QQ 文件 ID 无效")
                     provider_ids.append("file:" + str(file_id))
             else:
                 message_id = cast(dict[str, object], data).get("message_id") if isinstance(data, dict) else None
                 if type(message_id) not in (str, int) or str(message_id) == "":
-                    return Receipt(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执缺少消息 ID")
+                    return SendResult(status="failed", provider_ids=tuple(provider_ids), error="QQ 回执缺少消息 ID")
                 provider_ids.append(str(message_id))
             completed += 1
-        return Receipt(status="delivered", provider_ids=tuple(provider_ids))
+        return SendResult(status="delivered", provider_ids=tuple(provider_ids))
 
     async def _read_response(self, echo: str) -> dict[str, object]:
         """兼容同连接的事件帧；只有 exact echo 的响应能确认当前请求。"""

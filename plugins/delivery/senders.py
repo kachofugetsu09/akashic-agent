@@ -11,7 +11,7 @@ from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.bindings import Bindings
 from session.message import Message
 
-from .api import Receipt, Sender, Text
+from .api import Receipt, Sender, SenderResult, Text
 
 Open = Callable[[], AbstractAsyncContextManager[Sender]]
 
@@ -48,14 +48,24 @@ class _SenderView:
 
     async def send(self, key: str, address: str, message: Message) -> Receipt:
         self._check()
-        return await self._target.send(key, address, message)
+        return _receipt(await self._target.send(key, address, message))
 
     async def query(self, key: str, address: str) -> Receipt | None:
         self._check()
-        return await self._target.query(key, address)
+        result = await self._target.query(key, address)
+        return None if result is None else _receipt(result)
 
     def close(self) -> None:
         self._active = False
+
+
+def _receipt(result: SenderResult) -> Receipt:
+    """在 sender 与 Delivery 的边界校验并归一化 provider 结果。"""
+    return Receipt.model_validate({
+        "status": result.status,
+        "provider_ids": result.provider_ids,
+        "error": result.error,
+    })
 
 
 class Senders:

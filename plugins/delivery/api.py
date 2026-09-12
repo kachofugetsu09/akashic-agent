@@ -31,13 +31,21 @@ class Receipt(BaseModel):
     error: Text | None = None
 
 
+class SenderResult(Protocol):
+    """发送插件返回的窄结果；Delivery 在边界重新校验为自身 Receipt。"""
+
+    status: Status
+    provider_ids: tuple[str, ...]
+    error: str | None
+
+
 class Sender(Protocol):
     @property
     def idempotent(self) -> bool: ...
 
-    async def send(self, key: str, address: str, message: Message) -> Receipt: ...
+    async def send(self, key: str, address: str, message: Message) -> SenderResult: ...
 
-    async def query(self, key: str, address: str) -> Receipt | None:
+    async def query(self, key: str, address: str) -> SenderResult | None:
         """只查询原效果；None 表示缺少可确认回执，不证明没有发送。"""
         ...
 
