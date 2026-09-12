@@ -1389,14 +1389,14 @@ class MobileRealtimeChannel:
             _expect_keys(frame.payload, set())
             return CommandReply(
                 type="scheduler.job.list.ok",
-                payload=self._require_runtime_inspection().list_jobs(),
+                payload=await self._require_runtime_inspection().list_jobs(),
             )
         if frame.type == "scheduler.job.get":
             _expect_keys(frame.payload, {"job_id"})
             job_id = _expect_nonempty_string(frame.payload["job_id"], "job_id")
             return CommandReply(
                 type="scheduler.job.get.ok",
-                payload=self._require_runtime_inspection().get_job(job_id),
+                payload=await self._require_runtime_inspection().get_job(job_id),
             )
         if frame.type == "runtime.capability.list":
             _expect_keys(frame.payload, set())

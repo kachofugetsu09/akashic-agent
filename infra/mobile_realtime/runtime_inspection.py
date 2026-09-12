@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
@@ -14,6 +15,7 @@ from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotLease,
     RuntimeSnapshotStore,
+    lease_runtime_snapshot,
 )
 from agent.skills import SkillRecord, SkillsLoader
 
@@ -123,37 +125,31 @@ class RuntimeInspectionService:
             ) from exc
         return {**self._document_summary(document), "markdown": content}
 
-    def list_jobs(self) -> dict[str, object]:
-        """返回当前 generation 的 scheduler 投影。"""
-        service = self._scheduler_inspection()
-        if service is None:
-            raise RuntimeInspectionError(
-                "scheduler_unavailable",
-                "调度检查服务尚未绑定",
-            )
-        return {"items": [dict(item) for item in service.list_jobs()]}
+    async def list_jobs(self) -> dict[str, object]:
+        """返回一个 generation 的 scheduler 投影并释放读取 lease。"""
+        async with self._scheduler_inspection() as service:
+            return {"items": [dict(item) for item in service.list_jobs()]}
 
-    def get_job(self, job_id: str) -> dict[str, object]:
+    async def get_job(self, job_id: str) -> dict[str, object]:
         """返回一个 scheduler 投影，不解释其中的业务字段。"""
-        service = self._scheduler_inspection()
-        if service is None:
-            raise RuntimeInspectionError(
-                "scheduler_unavailable",
-                "调度检查服务尚未绑定",
-            )
-        item = service.get_job(job_id)
-        if item is None:
-            raise RuntimeInspectionError("job_not_found", f"定时任务不存在: {job_id}")
-        return dict(item)
+        async with self._scheduler_inspection() as service:
+            item = service.get_job(job_id)
+            if item is None:
+                raise RuntimeInspectionError("job_not_found", f"定时任务不存在: {job_id}")
+            return dict(item)
 
-    def _scheduler_inspection(self) -> _SchedulerInspection | None:
-        """从当前 stable generation 的 Root 读取 provider。"""
+    @asynccontextmanager
+    async def _scheduler_inspection(self) -> AsyncIterator[_SchedulerInspection]:
+        """解析与调用持有同一代 lease，客户端不保留 provider。"""
         store = self._snapshot_store
-        snapshot = None if store is None else store.current
-        root = None if snapshot is None else snapshot.composition_root
-        if root is None:
-            return None
-        return root.context.get(_SCHEDULER_INSPECTION)
+        if store is None or store.current is None:
+            raise RuntimeInspectionError("scheduler_unavailable", "调度检查服务尚未绑定")
+        async with lease_runtime_snapshot(store) as snapshot:
+            root = snapshot.composition_root
+            service = None if root is None else root.context.get(_SCHEDULER_INSPECTION)
+            if service is None:
+                raise RuntimeInspectionError("scheduler_unavailable", "调度检查服务尚未绑定")
+            yield service
 
     async def list_capabilities(self) -> dict[str, object]:
         async with await self._acquire_snapshot() as snapshot:

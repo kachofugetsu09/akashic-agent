@@ -350,8 +350,11 @@ async def test_sender_failure_closes_fire_in_same_runtime(tmp_path, raises):
     """已落盘的发送失败立即结束调度，不等待服务重启。"""
     install(tmp_path)
     sender = tmp_path / "plugins/test_sender/plugin.py"
-    failure = 'raise TimeoutError("sender connection lost")' if raises else 'return Receipt(status="failed", error="sender connection lost")'
-    sender.write_text(sender.read_text().replace('return Receipt(status="delivered", provider_ids=("original-A",))', failure))
+    failure = 'raise TimeoutError("sender connection lost")' if raises else 'return SendResult(status="failed", error="sender connection lost")'
+    original = 'return SendResult(status="delivered", provider_ids=("original-A",))'
+    source = sender.read_text()
+    assert original in source, "fixture sender 的故障注入入口必须存在"
+    sender.write_text(source.replace(original, failure))
     async with application(tmp_path, replying=False, start=False) as (log, host):
         store = JobStore(tmp_path / "workspace/schedules.json")
         job = ScheduledJob(trigger="after", tier="instant", fire_at=datetime.now(UTC) - timedelta(seconds=1),

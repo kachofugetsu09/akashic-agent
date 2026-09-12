@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -84,38 +83,42 @@ class _Provider:
         return {"id": job_id, "display": "来自 scheduler"}
 
 
-def test_core_passes_through_scheduler_projection_without_reading_workspace(
-    tmp_path: Path,
-) -> None:
+@pytest.mark.asyncio
+async def test_core_passes_through_scheduler_projection_without_reading_workspace(tmp_path: Path) -> None:
+    from agent.plugin_composition import CompositionRoot, ServiceKey
+    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, get_current_runtime_snapshot
+
+    root = CompositionRoot("scheduler-inspection")
     provider = _Provider()
-    context = SimpleNamespace(
-        get=lambda key: provider
-        if key.name == "scheduler.inspection.v1"
-        else None
-    )
-    snapshot_store = SimpleNamespace(
-        current=SimpleNamespace(composition_root=SimpleNamespace(context=context))
-    )
-    service = RuntimeInspectionService(
-        workspace=tmp_path,
-        snapshot_store=snapshot_store,
-    )
+    async def apply(ctx):
+        await ctx.provide(ServiceKey("scheduler.inspection.v1"), provider)
+    await root.mount(apply, name="external-scheduler")
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    store.install(snapshot)
+    service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=store)
+    original = provider.list_jobs
+    def list_jobs():
+        assert get_current_runtime_snapshot() is snapshot
+        assert snapshot.lease_count == 1
+        return original()
+    provider.list_jobs = list_jobs
+    try:
+        assert await service.list_jobs() == {"items": [{"id": "external", "display": "来自 scheduler"}]}
+        assert await service.get_job("external") == {"id": "external", "display": "来自 scheduler"}
+        assert snapshot.lease_count == 0
+        assert not (tmp_path / "schedules.json").exists()
+    finally:
+        await store.close()
+        await root.dispose()
 
-    assert service.list_jobs() == {
-        "items": [{"id": "external", "display": "来自 scheduler"}]
-    }
-    assert service.get_job("external") == {
-        "id": "external",
-        "display": "来自 scheduler",
-    }
-    assert not (tmp_path / "schedules.json").exists()
 
-
-def test_core_reports_scheduler_unavailable_without_provider(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_core_reports_scheduler_unavailable_without_provider(tmp_path: Path) -> None:
     service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=None)
 
     with pytest.raises(RuntimeInspectionError, match="调度检查服务尚未绑定") as error:
-        service.list_jobs()
+        await service.list_jobs()
 
     assert error.value.code == "scheduler_unavailable"
 

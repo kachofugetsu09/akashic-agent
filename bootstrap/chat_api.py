@@ -306,13 +306,16 @@ def create_chat_app(
             raise _runtime_http_error(error) from error
 
     @app.get("/api/chat/runtime/jobs")
-    def list_runtime_jobs() -> dict[str, object]:
-        return _require_runtime_inspection(runtime_inspection).list_jobs()
+    async def list_runtime_jobs() -> dict[str, object]:
+        try:
+            return await _require_runtime_inspection(runtime_inspection).list_jobs()
+        except RuntimeInspectionError as error:
+            raise _runtime_http_error(error) from error
 
     @app.get("/api/chat/runtime/jobs/{job_id}")
-    def read_runtime_job(job_id: str) -> dict[str, object]:
+    async def read_runtime_job(job_id: str) -> dict[str, object]:
         try:
-            return _require_runtime_inspection(runtime_inspection).get_job(job_id)
+            return await _require_runtime_inspection(runtime_inspection).get_job(job_id)
         except RuntimeInspectionError as error:
             raise _runtime_http_error(error) from error
 
