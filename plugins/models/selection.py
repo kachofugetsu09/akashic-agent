@@ -1,6 +1,7 @@
 from collections.abc import Mapping, Sequence
 from typing import cast
 
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.models import ChatModelSelection
 from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message
 
@@ -28,3 +29,11 @@ def selection(messages: Sequence[Message]) -> ChatModelSelection | None:
                     value = cast(Mapping[str, str | None], part.value)
                     return ChatModelSelection(value["model_id"], value["reasoning_effort"])
     return None
+
+
+class SelectionOwner:
+    check = staticmethod(check_selection)
+    read = staticmethod(selection)
+
+
+MODEL_SELECTION = ServiceKey[SelectionOwner]("models.selection.v1")

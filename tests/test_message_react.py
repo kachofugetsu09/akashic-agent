@@ -1,3 +1,4 @@
+from plugins.context.api import check_summary as _model_summary_check
 import asyncio
 from collections.abc import Mapping
 from contextlib import asynccontextmanager, nullcontext
@@ -120,7 +121,7 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         checks = {}
         async def decode(self, text, references=()):
             return await _decode_text(text, (), references)
-    projection = MessageProjection(model, source="conversation",
+    projection = MessageProjection(model, check_summary=_model_summary_check, source="conversation",
                                    render_content=lambda p: render_content(p, artifacts={}),
                                    tool_name=lambda binding: "example", read_call=store.read_call)
     async def materials(snapshot):
@@ -135,9 +136,14 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
                                max_output_tokens=100, max_steps=max_steps, reduce=reducer, preview=preview, terminal_tools=terminal_tools)
     conversation = Conversation(reader=log.reader("s"), inputs=writer(Input), controls=writer(Control),
                                 tasks=tasks)
+    @asynccontextmanager
     async def interrupted_reply(reader, source, ref):
-        return MessageReply("result:" + ref.message_id + ":" + str(ref.part_index), ref,
-                            reader, writer(ToolResult, ref), reject_start)
+        reply = MessageReply("result:" + ref.message_id + ":" + str(ref.part_index), ref,
+                             reader, writer(ToolResult, ref), reject_start)
+        try:
+            yield reply
+        finally:
+            reply.writer.expire()
     watcher = asyncio.create_task(follow_abandon(
         log.catalog(), log.owner("tools"), tasks, interrupted_reply, task_key="tools",
         report_incident=lambda kind, message: None,

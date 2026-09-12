@@ -1,3 +1,4 @@
+from plugins.context.api import check_summary as _model_summary_check
 from datetime import UTC, datetime
 
 import pytest
@@ -95,7 +96,7 @@ def test_abandon_closes_summary_prefix_without_inventing_a_tool_result(tmp_path,
           if late_result else ()),
     )
     assert closed_groups(rows, TurnProjection())[0] == rows[:3]
-    projection = MessageProjection(provider, source="conversation", read_call=store.read_call,
+    projection = MessageProjection(provider, check_summary=_model_summary_check, source="conversation", read_call=store.read_call,
         render_content=lambda part: render_content(part, artifacts={}), tool_name=lambda binding: "old-tool",
         keep_input_ids=("3",))
     request = ContextBuilder().build(rows, materials=Materials("", summary=Summary("saved", ("0", "1", "2"), "abandoned work")),

@@ -62,7 +62,9 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS
 from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall
-from plugins.models.projection import MODEL_CALLS
+from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
+from plugins.models.content import MODEL_CONTENT, ContentOwner
+from plugins.models.selection import MODEL_SELECTION, SelectionOwner
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 from plugins.delivery.senders import DELIVERY_SENDERS
@@ -134,6 +136,10 @@ async def apply(ctx, config):
             yield SimpleNamespace(chat=lambda role: model)
     await ctx.provide(CHAT_MODELS, Models())
     await ctx.provide(MODEL_CALLS, store.read_call)
+    await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    await ctx.provide(MODEL_CONTENT, ContentOwner())
+    await ctx.provide(MODEL_SELECTION, SelectionOwner())
     class Sender:
         idempotent = True
         async def send(self, key, address, message):

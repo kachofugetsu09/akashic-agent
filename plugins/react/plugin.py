@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 from uuid import uuid4
 
 from agent.plugin_composition import Context, RuntimeScope, ServiceKey
@@ -14,6 +14,7 @@ from agent.plugin_composition.models import (
     ContextLengthError,
     EmptyResponseError,
     LLMResponse,
+    ModelRequest,
     StreamCallback,
 )
 from plugins.context.api import ContextOverflow, Materials, SummaryReducer
@@ -24,8 +25,20 @@ from agent.plugin_contracts import CallRef, Control, Message, Output, Part, Cont
 if TYPE_CHECKING:
     from plugins.content.plugin import ContentView
     from plugins.context.plugin import ContextBuilder
-    from plugins.models.projection import MessageProjection
     from plugins.tools.menu import ToolMenu
+
+class MessageProjection(Protocol):
+    @property
+    def context_window(self) -> int | None: ...
+    @property
+    def max_tool_schemas(self) -> int | None: ...
+    def estimate(self, request: ModelRequest) -> int: ...
+    def render(self, messages: tuple[Message, ...], *, after_seq: int,
+               summary_reference: str | None = None, fresh: bool = False) -> ModelRequest: ...
+    def facts(self, response: LLMResponse, call_indices: Sequence[int], *,
+              reminder: str | None = None,
+              actual_calls: Sequence[ToolCall | ContentPart] | None = None) -> ContentPart: ...
+
 
 api_version = 3
 name = "react"

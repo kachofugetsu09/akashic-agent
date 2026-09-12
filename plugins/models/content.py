@@ -12,6 +12,7 @@ from agent.media import (
     encode_image_bytes,
     validate_image_attachment_budget,
 )
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.channels import (
     AttachmentKind,
     AttachmentRef,
@@ -92,3 +93,13 @@ def render_content(
             ),
         },
     )
+
+
+class ContentOwner:
+    """模型正文与附件解释使用原函数，权限由传入的只读端口限定。"""
+
+    load_artifacts = staticmethod(load_artifacts)
+    render = staticmethod(render_content)
+
+
+MODEL_CONTENT = ServiceKey[ContentOwner]("models.content.v1")

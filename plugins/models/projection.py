@@ -14,11 +14,11 @@ from agent.plugin_composition.models import (
 )
 from agent.plugin_contracts import ContentReferences, CallRef, ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import json_value
-from plugins.context.api import check_summary
 from .store import ModelCallReader
 
 ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
 CallReader = Callable[[str], Mapping[str, Any]]
+ContentCheck = Callable[[ContentPart], ContentReferences]
 DisplayRenderer = Callable[[ContentPart], Mapping[str, object]]
 MODEL_CALLS = ServiceKey[CallReader]("models.calls.v1")
 MODEL_CALL_HISTORY = ServiceKey[Callable[[str, int], tuple[Mapping[str, Any], ...]]](
@@ -157,6 +157,7 @@ class MessageProjection:
         render_content: ContentRenderer,
         tool_name: Callable[[str], str],
         read_call: CallReader,
+        check_summary: ContentCheck,
         keep_input_ids: tuple[str, ...] = (),
     ):
         self._model = model
@@ -164,6 +165,7 @@ class MessageProjection:
         self._render_content = render_content
         self._tool_name = tool_name
         self._read_call = read_call
+        self._check_summary = check_summary
         self._keep_input_ids = keep_input_ids
         self._last_rows: tuple[Mapping[str, Any], ...] = ()
 
@@ -323,7 +325,7 @@ class MessageProjection:
                 if len(summaries) > 1:
                     raise ValueError("同一模型 Output 只能使用一份摘要")
                 continuation_summary = (
-                    check_summary(summaries[0]).binding_ids[0] if summaries else None
+                    self._check_summary(summaries[0]).binding_ids[0] if summaries else None
                 )
             facts[message.message_id] = value
         # 摘要明确开启新请求；原 opaque 保存在日志，只续接同一摘要后的响应。
@@ -472,3 +474,18 @@ def _same_json(value: Any, saved: Any) -> bool:
         return len(items) == len(old_items) and all(
             _same_json(item, old) for item, old in zip(items, old_items))
     return type(value) is type(saved) and value == saved
+
+
+class ProjectionOwner:
+    """直接签发模型 owner 的投影，不建立第二份请求状态。"""
+
+    create = staticmethod(MessageProjection)
+
+
+class MessageChecksOwner:
+    check_facts = staticmethod(check_facts)
+    check_tool_rejection = staticmethod(check_tool_rejection)
+
+
+MODEL_PROJECTION = ServiceKey[ProjectionOwner]("models.projection.v1")
+MODEL_MESSAGE_CHECKS = ServiceKey[MessageChecksOwner]("models.message-checks.v1")

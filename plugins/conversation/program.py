@@ -7,22 +7,20 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 from collections.abc import Mapping
 
-from agent.plugin_composition import Context
+from agent.plugin_composition import Context, ServiceKey
 from agent.model_runtime.session_selection import read_session_model_selection
 from agent.plugin_composition.artifacts import ARTIFACT_READ
+from agent.plugin_composition.channels import AttachmentRef, ChannelAttachmentReadPort
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import BoundChatModel, ChatModels, ChatModelSelection, ModelRequest, ModelRole
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.tasks import Task
 from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary, summary_range
-from plugins.models.selection import selection
-from plugins.models.content import load_artifacts, render_content as render_model_content
-from plugins.models.projection import CallReader, ContentRenderer, MessageProjection, check_facts, check_tool_rejection
 from plugins.tools.api import Authorize, MessageReply, result_message_id
 from plugins.tools.menu import ToolMenu, ToolPresentation
 from plugins.tools.plugin import ToolView
 from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import CallRef, ContentPart, Input, Message, Output, ToolResult
+from agent.plugin_contracts import CallRef, ContentPart, ContentReferences, Input, Message, Output, ToolResult
 
 if TYPE_CHECKING:
     from plugins.content.plugin import Content
@@ -31,6 +29,44 @@ if TYPE_CHECKING:
     from plugins.tools.plugin import ToolCatalog
     from plugins.turn_projection.plugin import TurnProjection
     from plugins.react.plugin import Preview
+
+
+ContentRenderer = Callable[[ContentPart], Sequence[Mapping[str, Any]]]
+CallReader = Callable[[str], Mapping[str, Any]]
+
+
+class ModelSelection(Protocol):
+    def read(self, messages: Sequence[Message]) -> ChatModelSelection | None: ...
+
+
+class ModelContent(Protocol):
+    def render(
+        self, part: ContentPart, *, artifacts: Mapping[str, tuple[Mapping[str, Any], ...]],
+        read_message: Callable[[str], Message | None] | None = None,
+    ) -> tuple[Mapping[str, Any], ...]: ...
+
+    async def load_artifacts(
+        self, reader: ChannelAttachmentReadPort, refs: Sequence[AttachmentRef], *, accepts_images: bool,
+    ) -> Mapping[str, tuple[Mapping[str, Any], ...]]: ...
+
+
+class ModelChecks(Protocol):
+    def check_facts(self, part: ContentPart) -> ContentReferences: ...
+    def check_tool_rejection(self, part: ContentPart) -> ContentReferences: ...
+
+
+class ModelProjections(Protocol):
+    def create(
+        self, model: BoundChatModel, *, source: str, render_content: ContentRenderer,
+        tool_name: Callable[[str], str], read_call: CallReader,
+        check_summary: Callable[[ContentPart], ContentReferences], keep_input_ids: tuple[str, ...] = (),
+    ) -> ContextModel: ...
+
+
+MODEL_SELECTION = ServiceKey[ModelSelection]("models.selection.v1")
+MODEL_CONTENT = ServiceKey[ModelContent]("models.content.v1")
+MODEL_CHECKS = ServiceKey[ModelChecks]("models.message-checks.v1")
+MODEL_PROJECTION = ServiceKey[ModelProjections]("models.projection.v1")
 
 
 class ToolCleanup(Protocol):
@@ -96,7 +132,7 @@ async def run_reply(
     snapshot = reader.snapshot()
     turns = turn_projection.project(snapshot, source)
     open_ids: set[str] = set(turns[-1].message_ids) if turns and turns[-1].status == "open" else set()
-    chosen = selection(tuple(message for message in snapshot if message.message_id in open_ids))
+    chosen = ctx.require(MODEL_SELECTION).read(tuple(message for message in snapshot if message.message_id in open_ids))
     if chosen is None:
         metadata = reader.metadata()
         saved = read_session_model_selection(metadata if metadata is not None else {})
@@ -135,15 +171,15 @@ async def run_reply(
         output = writers.bind(
             ctx, author="assistant", source=source, body_types=(Output,),
             check_metadata=view.check_metadata,
-            content={**view.checks, "model.facts": check_facts, "model.tool_rejection": check_tool_rejection, "context.summary": check_summary}, check_call=menu.check_call,
+            content={**view.checks, "model.facts": ctx.require(MODEL_CHECKS).check_facts, "model.tool_rejection": ctx.require(MODEL_CHECKS).check_tool_rejection, "context.summary": check_summary}, check_call=menu.check_call,
         )(reader.session_id)
         task.on_close(output.expire)
         artifacts: Mapping[str, tuple[Mapping[str, Any], ...]] = {}
         def render(part: ContentPart):
-            return render_model_content(part, artifacts=artifacts, read_message=reader.get)
-        projection = MessageProjection(
+            return ctx.require(MODEL_CONTENT).render(part, artifacts=artifacts, read_message=reader.get)
+        projection = ctx.require(MODEL_PROJECTION).create(
             model, source=source, render_content=render if render_content is None else render_content,
-            tool_name=menu.name, read_call=read_call, keep_input_ids=keep_input_ids,
+            tool_name=menu.name, read_call=read_call, check_summary=check_summary, keep_input_ids=keep_input_ids,
         )
 
         # 2. 内容协议提示与解码来自同一 view；Context 仍只接收已取得的材料。
@@ -159,7 +195,7 @@ async def run_reply(
                     if index >= start or message.message_id in keep_input_ids
                 ))
                 if refs:
-                    artifacts = await load_artifacts(
+                    artifacts = await ctx.require(MODEL_CONTENT).load_artifacts(
                         ctx.require(ARTIFACT_READ), refs,
                         accepts_images="image" in model.descriptor.capabilities.input_modalities,
                     )

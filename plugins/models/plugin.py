@@ -13,7 +13,18 @@ from agent.plugin_composition import (
 from .litellm_catalog import LiteLlmCapabilityCatalog
 from .state import ModelsState
 from .store import ModelsStore
-from .projection import MODEL_CALLS, MODEL_CALL_HISTORY, MODEL_DISPLAY, display_facts
+from .content import MODEL_CONTENT, ContentOwner
+from .projection import (
+    MODEL_CALLS,
+    MODEL_CALL_HISTORY,
+    MODEL_DISPLAY,
+    MODEL_MESSAGE_CHECKS,
+    MODEL_PROJECTION,
+    MessageChecksOwner,
+    ProjectionOwner,
+    display_facts,
+)
+from .selection import MODEL_SELECTION, SelectionOwner
 from agent.plugin_composition.models import MODEL_CALL_STATS
 
 api_version = 3
@@ -66,4 +77,8 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.provide(MODEL_CALL_HISTORY, store.read_calls)
     _ = await ctx.provide(MODEL_CALL_STATS, store.read_call_stats)
     _ = await ctx.provide(MODEL_DISPLAY, display_facts)
+    _ = await ctx.provide(MODEL_PROJECTION, ProjectionOwner())
+    _ = await ctx.provide(MODEL_MESSAGE_CHECKS, MessageChecksOwner())
+    _ = await ctx.provide(MODEL_CONTENT, ContentOwner())
+    _ = await ctx.provide(MODEL_SELECTION, SelectionOwner())
     _ = await ctx.on(SNAPSHOT_SEALING, state.seal)

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import json
 from datetime import datetime, timedelta
 from typing import cast
 from zoneinfo import ZoneInfo
 
 from plugins.delivery.history import DeliveryHistory
-from plugins.models.content import render_content
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import ContentPart, Control, Input, Message, Output, ToolCall, ToolResult
 from agent.plugin_contracts import json_value
@@ -61,7 +60,7 @@ def _preview(rows: Sequence[Mapping[str, object]], budget: int) -> list[dict[str
     return selected
 
 
-def render(part: ContentPart) -> tuple[Mapping[str, object], ...]:
+def render(part: ContentPart, *, fallback: Callable[[ContentPart], tuple[Mapping[str, object], ...]]) -> tuple[Mapping[str, object], ...]:
     """给模型展示业务材料，固定 binding 和内部恢复身份不进入任务正文。"""
     if part.kind == "wake.request":
         request = Request.model_validate_json(json.dumps(json_value(part.value)))
@@ -70,7 +69,7 @@ def render(part: ContentPart) -> tuple[Mapping[str, object], ...]:
         return ({"type": "text", "text": json.dumps(value, ensure_ascii=False)},)
     if part.kind == "wake.phase":
         return ()
-    return render_content(part, artifacts={})
+    return fallback(part)
 
 
 HINTS = {
