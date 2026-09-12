@@ -1,8 +1,6 @@
 """Expose the exact models generation to its ordinary Web module."""
 
-from agent.plugin_composition.model_settings_http import BoundModelControl
-
-from .model_settings_http import create_model_settings_router
+from .model_settings_http import BoundModelControl, create_model_settings_router
 
 
 def register(app, context):

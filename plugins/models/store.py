@@ -15,20 +15,22 @@ from typing import Any, Literal, cast
 from urllib.parse import quote
 
 from agent.plugin_composition import (
-    AddConnection,
-    AddModel,
     CapabilitySources,
-    CreateConnectionWithModel,
-    DisableConnection,
     DiscoveredModel,
     ModelCapabilities,
     ModelKind,
     RevisionConflictError,
-    SetDefaultModel,
-    UpdateConnection,
 )
 
 from .credentials import StoredCredentialHandle, encode_credential
+from .settings import (
+    AddConnection,
+    AddModel,
+    CreateConnectionWithModel,
+    DisableConnection,
+    SetDefaultModel,
+    UpdateConnection,
+)
 from agent.plugin_composition.models import (
     BoundModelDescriptor,
     ModelCallStats,

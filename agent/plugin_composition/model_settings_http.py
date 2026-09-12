@@ -12,16 +12,11 @@ from typing import Protocol
 
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.models import (
-    AddConnection,
-    DiscoveredModel,
     MODEL_CATALOG,
     MODEL_CALL_STATS,
     ChatModelSelection,
     ModelCallStats,
-    MODEL_SETTINGS,
     ModelCatalogSnapshot,
-    ModelChange,
-    SettingsReceipt,
 )
 
 
@@ -41,12 +36,6 @@ class ModelControl(Protocol):
 
     async def catalog(self) -> ModelCatalogSnapshot: ...
 
-    async def discover(
-        self, connection: AddConnection
-    ) -> tuple[DiscoveredModel, ...]: ...
-
-    async def apply(self, command: ModelChange) -> SettingsReceipt: ...
-
     async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection: ...
 
 
@@ -65,23 +54,6 @@ class BoundModelControl:
         if catalog is None:
             raise ModelControlUnavailable("models 插件未提供模型目录")
         return catalog.snapshot()
-
-    async def apply(self, command: ModelChange) -> SettingsReceipt:
-        root = _bound_root()
-        settings = root.context.get(MODEL_SETTINGS)
-        if settings is None:
-            raise ModelControlUnavailable("models 插件未提供模型设置")
-        return await settings.apply(command)
-
-    async def discover(
-        self,
-        connection: AddConnection,
-    ) -> tuple[DiscoveredModel, ...]:
-        root = _bound_root()
-        settings = root.context.get(MODEL_SETTINGS)
-        if settings is None:
-            raise ModelControlUnavailable("models 插件未提供模型设置")
-        return await settings.discover(connection)
 
     async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection:
         """在当前已绑定 Root 内即时解析模型选择 owner。"""

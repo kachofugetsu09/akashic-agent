@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import (
@@ -15,23 +15,20 @@ from pydantic import (
 )
 
 from agent.plugin_composition.model_settings_http import (
-    ModelControl,
+    MODEL_SELECTION,
     ModelControlUnavailable,
 )
 from agent.plugin_composition.models import (
-    AddConnection,
-    AddModel,
+    MODEL_CATALOG,
+    MODEL_CALL_STATS,
     AuthenticationError,
-    CancelConnectionAuth,
+    ChatModelSelection,
     CapabilitySources,
-    CreateConnectionWithModel,
-    DisableConnection,
     DriverUnavailableError,
     DiscoveredModel,
-    FinishConnectionAuth,
+    ModelCallStats,
     ModelCapabilities,
     ModelCatalogSnapshot,
-    ModelChange,
     ModelError,
     ModelKind,
     ModelTimeoutError,
@@ -39,14 +36,88 @@ from agent.plugin_composition.models import (
     QuotaError,
     RateLimitError,
     RevisionConflictError,
+    TransportError,
+)
+from agent.plugin_composition.rpc import RpcMethod
+from agent.plugins.snapshot import get_current_runtime_snapshot
+
+from .settings import (
+    AddConnection,
+    AddModel,
+    CancelConnectionAuth,
+    CreateConnectionWithModel,
+    DisableConnection,
+    FinishConnectionAuth,
+    ModelChange,
+    MODEL_SETTINGS,
     SetDefaultModel,
     SettingsReceipt,
     StartConnectionAuth,
     SyncModels,
-    TransportError,
     UpdateConnection,
 )
-from agent.plugin_composition.rpc import RpcMethod
+
+
+class ModelControl(Protocol):
+    async def call_stats(self, call_id: str) -> ModelCallStats: ...
+
+    async def catalog(self) -> ModelCatalogSnapshot: ...
+
+    async def discover(
+        self, connection: AddConnection
+    ) -> tuple[DiscoveredModel, ...]: ...
+
+    async def apply(self, command: ModelChange) -> SettingsReceipt: ...
+
+    async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection: ...
+
+
+class BoundModelControl:
+    """Resolve the Models owner from the exact runtime snapshot."""
+
+    async def call_stats(self, call_id: str) -> ModelCallStats:
+        root = _bound_root()
+        reader = root.context.get(MODEL_CALL_STATS)
+        if reader is None:
+            raise ModelControlUnavailable("models 插件未提供调用统计")
+        return reader(call_id)
+
+    async def catalog(self) -> ModelCatalogSnapshot:
+        root = _bound_root()
+        catalog = root.context.get(MODEL_CATALOG)
+        if catalog is None:
+            raise ModelControlUnavailable("models 插件未提供模型目录")
+        return catalog.snapshot()
+
+    async def discover(
+        self,
+        connection: AddConnection,
+    ) -> tuple[DiscoveredModel, ...]:
+        root = _bound_root()
+        settings = root.context.get(MODEL_SETTINGS)
+        if settings is None:
+            raise ModelControlUnavailable("models 插件未提供模型设置")
+        return await settings.discover(connection)
+
+    async def apply(self, command: ModelChange) -> SettingsReceipt:
+        root = _bound_root()
+        settings = root.context.get(MODEL_SETTINGS)
+        if settings is None:
+            raise ModelControlUnavailable("models 插件未提供模型设置")
+        return await settings.apply(command)
+
+    async def read_saved(self, metadata: Mapping[str, object]) -> ChatModelSelection:
+        reader = _bound_root().context.get(MODEL_SELECTION)
+        if reader is None:
+            raise ModelControlUnavailable("models 插件未提供模型选择")
+        return reader.read_saved(metadata)
+
+
+def _bound_root():
+    snapshot = get_current_runtime_snapshot()
+    if snapshot is None or snapshot.composition_root is None:
+        raise ModelControlUnavailable("请求未绑定插件组合 Root")
+    return snapshot.composition_root
 
 
 class _Payload(BaseModel):

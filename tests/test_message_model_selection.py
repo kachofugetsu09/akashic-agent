@@ -9,7 +9,8 @@ import pytest
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugin_composition.models import DisableConnection, MODEL_SETTINGS, ModelUnavailableError
+from agent.plugin_composition.models import ModelUnavailableError
+from plugins.models.settings import DisableConnection, MODEL_SETTINGS
 from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugins.manager import PluginManager
@@ -38,8 +39,14 @@ async def apply(ctx, config):
 ''')
     path = sources / "test_provider/plugin.py"
     text = path.read_text()
-    text = text.replace("    class Driver:", '''    from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS, MODEL_SETTINGS, SNAPSHOT_SEALING
-    from agent.plugin_composition.models import AddConnection, AddModel, ModelKind, ChatModelSelection
+    text = text.replace("    class Driver:", '''    from agent.plugin_composition import MODEL_CATALOG, MODEL_DRIVERS, SNAPSHOT_SEALING
+    from agent.plugin_composition.models import (
+        CapabilitySources,
+        ChatModelSelection,
+        ModelCapabilities,
+        ModelKind,
+    )
+    from plugins.models.settings import AddConnection, AddModel, MODEL_SETTINGS
     from plugins.models.state import ModelsState
     if store.read_snapshot().revision == 0:
         store.add_connection(AddConnection(0, "connection", "test", "openai-compatible", "https://example.test/v1", "fixture", {"api_key": "fixture"}))

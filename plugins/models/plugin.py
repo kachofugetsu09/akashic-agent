@@ -5,7 +5,6 @@ from agent.plugin_composition import (
     EMBEDDINGS,
     MODEL_CATALOG,
     MODEL_DRIVERS,
-    MODEL_SETTINGS,
     SNAPSHOT_SEALING,
     Context,
 )
@@ -25,11 +24,11 @@ from .projection import (
     display_facts,
 )
 from .selection import MODEL_SELECTION, SelectionOwner
+from .settings import MODEL_SETTINGS
 from agent.plugin_composition.models import MODEL_CALL_STATS
-from agent.plugin_composition.model_settings_http import BoundModelControl
 from agent.plugin_composition.rpc import rpc_method_key
 
-from .model_settings_http import rpc_methods
+from .model_settings_http import BoundModelControl, rpc_methods
 
 api_version = 3
 name = "models"

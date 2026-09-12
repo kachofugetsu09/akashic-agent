@@ -25,14 +25,8 @@ import agent.plugins.manager as plugin_manager_module
 import plugins.wake.message_plugin as wake_plugin_module
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition import (
-    AddConnection,
-    AddModel,
     CHAT_MODELS,
-    CapabilitySources,
     LLMResponse,
-    ModelCapabilities,
-    ModelKind,
-    SetDefaultModel,
     ToolCall,
 )
 from agent.plugins.manager import PluginManager
@@ -871,42 +865,52 @@ async def _configure_selected_model(manager: PluginManager) -> None:
     """Configure the real endpoint through the ordinary models service."""
 
     control = RuntimeModelControl(manager.snapshot_store)
-    receipt = await control.apply(
-        AddConnection(
-            expected_revision=0,
-            connection_id="wake-e2e",
-            name="Wake E2E",
-            driver_id="openai-compatible",
-            endpoint=os.environ["PR_G_DEEPSEEK_BASE_URL"].strip(),
-            auth_identity="wake-e2e",
-            credential={
-                "driver": "api_key",
-                "access_token": os.environ["PR_G_DEEPSEEK_API_KEY"],
-            },
-            driver_config={"format_version": 1, "max_retries": 3},
-        )
-    )
-    receipt = await control.apply(
-        AddModel(
-            expected_revision=receipt.revision,
-            model_id="wake-e2e-model",
-            connection_id="wake-e2e",
-            kind=ModelKind.CHAT,
-            model=MODEL,
-            default_reasoning_effort=_SELECTED_REASONING_EFFORT,
-            capabilities=ModelCapabilities(
-                context_window=_SELECTED_CONTEXT_WINDOW,
-                input_modalities=("text",),
-                supports_tool_calls=True,
-                supported_reasoning_efforts=(_SELECTED_REASONING_EFFORT,),
-            ),
-            capability_sources=CapabilitySources(context_window="e2e-profile"),
-        )
-    )
+    async def command(payload: dict[str, object]) -> dict[str, object]:
+        result = await control.invoke_rpc("models/command", payload)
+        if not isinstance(result, dict) or result.get("status") != 200:
+            raise RuntimeError(f"models command failed: {result!r}")
+        body = result.get("body")
+        if not isinstance(body, dict):
+            raise RuntimeError(f"models command returned invalid body: {result!r}")
+        return body
+
+    receipt = await command({
+        "type": "add_connection",
+        "expected_revision": 0,
+        "connection_id": "wake-e2e",
+        "name": "Wake E2E",
+        "driver_id": "openai-compatible",
+        "endpoint": os.environ["PR_G_DEEPSEEK_BASE_URL"].strip(),
+        "auth_identity": "wake-e2e",
+        "credential": {
+            "driver": "api_key",
+            "access_token": os.environ["PR_G_DEEPSEEK_API_KEY"],
+        },
+        "driver_config": {"format_version": 1, "max_retries": 3},
+    })
+    receipt = await command({
+        "type": "add_model",
+        "expected_revision": receipt["revision"],
+        "model_id": "wake-e2e-model",
+        "connection_id": "wake-e2e",
+        "kind": "chat",
+        "model": MODEL,
+        "default_reasoning_effort": _SELECTED_REASONING_EFFORT,
+        "capabilities": {
+            "context_window": _SELECTED_CONTEXT_WINDOW,
+            "input_modalities": ["text"],
+            "supports_tool_calls": True,
+            "supported_reasoning_efforts": [_SELECTED_REASONING_EFFORT],
+        },
+        "capability_sources": {"context_window": "e2e-profile"},
+    })
     for role in ("default", "fast", "agent"):
-        receipt = await control.apply(
-            SetDefaultModel(receipt.revision, role, "wake-e2e-model")
-        )
+        receipt = await command({
+            "type": "set_default",
+            "expected_revision": receipt["revision"],
+            "role": role,
+            "model_id": "wake-e2e-model",
+        })
 
 
 def _write_plugin_configs(workspace: Path, receipt_db: Path) -> None:
