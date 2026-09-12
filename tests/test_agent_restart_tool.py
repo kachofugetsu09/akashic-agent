@@ -323,6 +323,7 @@ async def _restart_application(
         "react",
         "turn_projection",
         "reply",
+        "reply_program",
         "tool_search",
         "delivery",
         "message_push",
@@ -400,8 +401,9 @@ async def test_restart_tool_binds_invoke_to_prepared_durable_call() -> None:
         RestartGate(boot_id="fixture-boot", supervised=True, commit=lambda _: None), FrameBook(),
     )
     source = _source()
-    with pytest.raises(ValueError, match="只能包含 reason"):
-        await tool.prepare({"reason": "reload", "extra": True}, source)
+    rejected = await tool.prepare({"reason": "reload", "extra": True}, source)
+    assert isinstance(rejected, str) and "只能包含 reason" in rejected
+    assert tool._prepared is None
     prepared = await tool.prepare({"reason": " reload "}, source)
     pending = tool._prepared
     assert pending is not None
@@ -720,6 +722,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             "react",
             "turn_projection",
             "reply",
+            "reply_program",
             "tool_search",
             "delivery",
             "programmatic",

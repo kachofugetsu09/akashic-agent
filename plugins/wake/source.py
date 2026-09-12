@@ -12,11 +12,10 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
-from plugins.content.plugin import check_text
-from plugins.delivery.plugin import DELIVERY
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
 from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message, Output
 
+from ._boundary import CONTENT, DELIVERY
 from .api import EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY
 from .content import (_candidate_id, _content_candidates, _datetime, _mapping,
                       _message_with_source_links, _selected_content_refs, _string)
@@ -107,7 +106,7 @@ class Source:
             # 原发送已失败便关闭来源领取；程序异常仍由 Task 报告。
             delivery = self.ctx.require(DELIVERY).open(self.ctx)
             if delivery.selection(request.notification_id) is not None:
-                receipt = delivery.receipt(request.notification_id, request.sink.name)
+                receipt = delivery.receipt(request.notification_id, request.sink["name"])
                 if receipt is not None and receipt.status == "failed":
                     self._fail_notification(request, reader)
             raise
@@ -141,11 +140,12 @@ class Source:
         if terminal is not None:
             return terminal
         ctx = self.ctx
-        await ctx.require(DELIVERY).open(ctx).wait_idle(request.sink.name, request.sink.address)
+        await ctx.require(DELIVERY).open(ctx).wait_idle(request.sink["name"], request.sink["address"])
         if not task.active:
             raise asyncio.CancelledError
         writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Input,),
-            content={"wake.phase": check_phase, "model.selection": ctx.require(MODEL_SELECTION).check, "text": check_text})(request.session_id)
+            content={"wake.phase": check_phase, "model.selection": ctx.require(MODEL_SELECTION).check,
+                     "text": ctx.require(CONTENT).check_text})(request.session_id)
         try:
             phase = Phase(input_id=request.input_id, stage=stage)
             _ = writer.append(request.phase_id(stage), Input((ContentPart("wake.phase", phase.model_dump(mode="json")),
@@ -331,15 +331,15 @@ class Source:
             if not task.active:
                 raise asyncio.CancelledError
             writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Output,),
-                content={"text": check_text})(target.session_id)
+                content={"text": ctx.require(CONTENT).check_text})(target.session_id)
             try:
                 message, _ = delivery.publish(writer, request.notification_id, Output((ContentPart("text", text),), "complete"), (sink,))
             finally:
                 writer.expire()
         selected = delivery.prepare(reader, message, (sink,))
-        if selected.sinks != (sink.name,):
+        if selected.sinks != (sink["name"],):
             raise ValueError("Wake 原通知目的地不一致")
-        receipt = await delivery.send(message.message_id, sink.name, before_start=before_start)
+        receipt = await delivery.send(message.message_id, sink["name"], before_start=before_start)
         return receipt.status == "delivered"
 
     async def _alert(self, task: Task, request: Request, reader: MessageReader) -> str:
@@ -383,7 +383,7 @@ class Source:
             return None
 
         if not await self._notify(task, request, value.message, before_start=before_start):
-            receipt = delivery.receipt(request.notification_id, request.sink.name)
+            receipt = delivery.receipt(request.notification_id, request.sink["name"])
             if receipt is not None and receipt.status == "rejected":
                 if domain.change_alert(ref, request.accepted, "expire", self.now()):
                     self._settled(request, reader)

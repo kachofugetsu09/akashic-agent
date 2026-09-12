@@ -6,9 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from plugins.akasha.interest import SemanticInterest
-
 from .api import ContentWakeServices, DriftWakeServices
+from ._boundary import SemanticInterest
 from .content import (_content_text, _datetime, _integer, _mapping, _pool_detail,
                       _preprocess_interest, _semantic_score, _sequence, _string)
 from .pool import build_initial_score

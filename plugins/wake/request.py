@@ -9,14 +9,11 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.messages import MessageReader
 
-from plugins.delivery.api import Sink
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message
 from agent.plugin_contracts import json_value
 
 from .api import DeliveryTarget
-from plugins.tools.plugin import ToolView
-
-WAKE_TOOLS_VIEW = ServiceKey[ToolView]("wake.tools.v1")
+from ._boundary import SinkValue, WAKE_TOOLS_VIEW
 
 Owner = Literal["content", "drift", "alert"]
 Stage = Literal["screen", "investigate", "drift", "alert"]
@@ -42,7 +39,7 @@ class Request(BaseModel):
     now: AwareDatetime
     timezone: str
     target: DeliveryTarget
-    sink: Sink
+    sink: SinkValue
     program_binding: str = Field(min_length=1)
     tools: dict[str, str]
     snapshot_seq: int = Field(ge=0)
@@ -60,7 +57,7 @@ class Request(BaseModel):
         if set(self.tools) != set(TOOLS[self.owner]) or any(not value for value in self.tools.values()):
             raise ValueError("Wake 原工具集合与职责不一致")
         if (
-            self.target.channel != self.sink.name or self.target.recipient != self.sink.address
+            self.target.channel != self.sink["name"] or self.target.recipient != self.sink["address"]
         ):
             raise ValueError("Wake 原目标与 Sink 不一致")
         if self.owner == "alert":
@@ -123,7 +120,7 @@ def retryable(message: Message | None) -> bool | None:
 def check_request(part: ContentPart) -> ContentReferences:
     request = Request.model_validate_json(json.dumps(json_value(part.value)))
     return ContentReferences(binding_ids=(request.program_binding, *request.tools.values(),
-        request.sink.binding_id))
+        request.sink["binding_id"]))
 
 
 def check_phase(part: ContentPart) -> ContentReferences:

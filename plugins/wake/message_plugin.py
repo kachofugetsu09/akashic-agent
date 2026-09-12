@@ -11,18 +11,20 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS
 from agent.plugin_composition.timers import TIMERS
-from plugins.akasha.interest import SEMANTIC_INTEREST
-from plugins.akasha.message_plugin import AKASHA_TOOLS
-from plugins.delivery.history import DELIVERY_READ
-from plugins.drift.plugin import DRIFT_CHANGED
-from plugins.content.plugin import CONTENT
-from plugins.delivery.plugin import DELIVERY
-from plugins.delivery.senders import DELIVERY_SENDERS
-from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
-from plugins.tools.plugin import TOOLS, ToolView
-
+from ._boundary import (
+    AKASHA_TOOLS,
+    CONTENT,
+    DELIVERY,
+    DELIVERY_READ,
+    DELIVERY_SENDERS,
+    DRIFT_CHANGED,
+    SEMANTIC_INTEREST,
+    STANDARD_WEB_TOOLS,
+    TOOLS,
+    ToolRef,
+)
 from .api import Config, EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_CHANGED
-from .program import run
+from .program import REPLY_EXECUTE, run
 from .runtime import Runtime
 from .runtime import DashboardView
 from .request import WAKE_PROGRAM, WAKE_TOOLS_VIEW, check_phase, check_request
@@ -81,7 +83,7 @@ async def apply(ctx: Context, config: Config) -> None:
     )
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)
-    refs = []
+    refs: list[ToolRef] = []
     descriptions = {
         "screen_content": "初筛本轮 Content 候选并写兴趣理由与调查问题",
         "share_content": "提交本轮分享正文与采用的 Content 候选 ID；Drift 使用空 items",
