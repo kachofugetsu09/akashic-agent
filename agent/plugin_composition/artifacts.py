@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from agent.plugin_composition.model import ServiceKey
-from session.artifacts import AttachmentKind, AttachmentReadLease, AttachmentRef
+from session.artifacts import (
+    AttachmentKind as AttachmentKind, AttachmentReadLease, AttachmentRef as AttachmentRef,
+    check_artifact_id as check_artifact_id,
+)
 
 
 class _ReadLease:

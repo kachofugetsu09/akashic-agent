@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.plugin_composition import ServiceKey, Context, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from agent.restart import ExternalRootPermit, RestartRejectedError
+from agent.plugin_composition.tasks import ExternalRootPermit, RestartRejectedError
 from agent.plugin_composition.messages import MessageReader
 from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
 

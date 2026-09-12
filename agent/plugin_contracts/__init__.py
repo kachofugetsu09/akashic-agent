@@ -22,6 +22,8 @@ from agent.plugin_contracts.message import (
     freeze_metadata,
     json_value,
     body_to_dict,
+    encode_body,
+    decode_body,
 )
 
 __all__ = [
@@ -41,4 +43,6 @@ __all__ = [
     "freeze_metadata",
     "json_value",
     "body_to_dict",
+    "encode_body",
+    "decode_body",
 ]

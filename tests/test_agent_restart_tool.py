@@ -13,7 +13,7 @@ from typing import cast
 
 import pytest
 
-from agent.plugin_composition import CompositionOverlay, Context
+from agent.plugin_composition import CompositionOverlay, Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
@@ -32,7 +32,6 @@ from plugins.message_push.restart import PendingRestart, RestartTool
 from plugins.tools.api import (
     CallSource,
     ContentPart,
-    Denied,
     MessageReply,
     durable_call_key,
 )
@@ -317,6 +316,7 @@ async def _restart_application(
     names = (
         "sources",
         "content",
+        "standard_tools",
         "context",
         "tools",
         "conversation",
@@ -344,6 +344,9 @@ async def _restart_application(
     owns_log = message_log is None
     log = MessageLog(tmp_path / "sessions.db") if message_log is None else message_log
     artifact_store = ArtifactStore(tmp_path / "sessions.db")
+    context_config = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+    context_config.parent.mkdir(parents=True, exist_ok=True)
+    context_config.write_text('prompt_sources = {skills = "standard_tools"}\n')
     host = PluginManager(
         [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home/cache", message_log=log,
@@ -518,12 +521,11 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
             cleanup_blocked.set()
             await cleanup_release.wait()
 
-    import plugins.conversation.program as conversation_program
-
-    monkeypatch.setattr(conversation_program, "shell_cleanup", controlled_cleanup)
     async with _restart_application(tmp_path, gate, channel=True) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             context = snapshot.composition_root.context
+            execute = context.require(ServiceKey("reply.execute.v1"))
+            monkeypatch.setitem(execute.keywords, "cleanup", controlled_cleanup)
             accept = context.require(CHANNEL_INPUT)
             await accept(
                 "test:room", "input-1",
@@ -716,6 +718,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         (
             "sources",
             "content",
+            "standard_tools",
             "context",
             "tools",
             "conversation",
@@ -767,6 +770,9 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     )
     log = MessageLog(tmp_path / "sessions.db")
     artifact_store = ArtifactStore(tmp_path / "sessions.db")
+    context_config = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+    context_config.parent.mkdir(parents=True, exist_ok=True)
+    context_config.write_text('prompt_sources = {skills = "standard_tools"}\n')
     host = PluginManager(
         [sources],
         event_bus=EventBus(),
@@ -906,10 +912,10 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             )
             entered_authorize = asyncio.Event()
 
-            async def authorize(_binding_id: str, _arguments: Mapping[str, object]) -> Mapping[str, object]:
+            async def authorize(_binding_id: str, _arguments: Mapping[str, object]) -> Mapping[str, object] | str:
                 entered_authorize.set()
                 await release_authorize.wait()
-                raise Denied("old runtime drained before promotion")
+                return "old runtime drained before promotion"
 
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 context = snapshot.composition_root.context

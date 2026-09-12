@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence, Mapping
 from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
+from functools import partial
 from dataclasses import replace
 from typing import Protocol, Any, cast
 from uuid import uuid4
 
 from agent.plugin_composition import Context, RuntimeScope, ServiceKey
-from agent.plugins.snapshot import get_current_runtime_lease
 from agent.plugin_composition.models import (
     BoundChatModel,
     ContextLengthError,
@@ -156,10 +156,9 @@ def _terminal_result(messages: Sequence[Message], source: str, tools: ToolMenu,
     return any(seq > boundary and ref in succeeded for ref, seq in calls.items())
 
 
-async def _settle(tools: ToolMenu, call: CallRef) -> None:
+async def _settle(tools: ToolMenu, call: CallRef, capture_scope: Callable[[], RuntimeScope] | None = None) -> None:
     """普通取消等待原调用；明确放弃由 Tools 提交终态并释放等待者。"""
-    lease = get_current_runtime_lease()
-    scope = None if lease is None else RuntimeScope(lease.fork())
+    scope = None if capture_scope is None else capture_scope()
 
     async def execute():
         if scope is None:
@@ -260,6 +259,7 @@ async def react(
     reduce: SummaryReducer | None = None,
     preview: Preview | None = None,
     terminal_tools: frozenset[str] = frozenset(),
+    capture_scope: Callable[[], RuntimeScope] | None = None,
 ) -> Message:
     """先结算已提交调用，再读日志推理并逐条提交；没有 Turn、Attempt 或历史副本。"""
     if type(max_steps) is not int or max_steps < 0:
@@ -269,7 +269,7 @@ async def react(
     while True:
         # 1. 串行策略停止补发并排空已开始调用；换算法无需改 Tool effect owner。
         for call in _pending_calls(reader.snapshot(), writer.source):
-            await _settle(tools, call)
+            await _settle(tools, call, capture_scope)
         snapshot = reader.snapshot()
         if terminal_tools and _terminal_result(snapshot, writer.source, tools, terminal_tools):
             return writer.append(uuid4().hex, Output((), "quiet"),
@@ -321,4 +321,4 @@ REACT = ServiceKey[Callable[..., Awaitable[Message]]]("react.v2")
 
 
 async def apply(ctx: Context, config: object) -> None:
-    _ = await ctx.provide(REACT, react)
+    _ = await ctx.provide(REACT, partial(react, capture_scope=ctx.capture_runtime_scope))
