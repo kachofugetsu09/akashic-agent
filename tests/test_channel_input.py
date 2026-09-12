@@ -126,7 +126,6 @@ async def runtime(tmp_path, *, channel_name="probe", session_manager=None, recov
         ),))
         if inbound_store is not None:
             assert adapters[-1].ports.durable_inbound is not None
-            custody.bind_durable_inbound_recoverer(adapters[-1].ports.durable_inbound.recover)
             if recover:
                 await custody.recover_durable_inbounds()
         yield log, host, custody, identities, rollbacks, adapters[-1]
@@ -146,6 +145,62 @@ def raw():
         channel="probe", chat_id="room", sender="user", content="hello",
         timestamp=datetime(2026, 9, 5, tzinfo=UTC), metadata={"session_key": "not-authority"},
     ), provider_identity="provider-user", recipient="room")
+
+
+@pytest.mark.asyncio
+async def test_durable_port_rejects_cross_channel_reservation(tmp_path):
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("probe:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="probe",
+            session_manager=manager,
+        ) as (_, _, _, _, _, adapter):
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            forged = RawInbound(
+                "foreign-1",
+                ChannelInboundMessage(
+                    channel="other",
+                    chat_id="room",
+                    sender="foreign",
+                    content="hello",
+                    timestamp=datetime(2026, 9, 5, tzinfo=UTC),
+                    metadata={
+                        "session_key_override": "probe:room",
+                        "provider_message_id": "foreign-1",
+                        "durable_inbound": True,
+                        "durable_handoff_id": "foreign-handoff",
+                    },
+                ),
+            )
+            with pytest.raises(RuntimeError, match="channel 与 exact binding"):
+                await durable.reserve(forged)
+            assert manager.inbound_store.list_inbound_handoffs() == []
+    finally:
+        manager.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_prepare_requires_prior_port_reservation(tmp_path):
+    from session.manager import SessionManager
+
+    manager = SessionManager(tmp_path / "transport")
+    manager.save(manager.get_or_create("akashic:room"))
+    try:
+        async with runtime(
+            tmp_path,
+            channel_name="akashic",
+            session_manager=manager,
+        ) as (_, _, _, _, _, adapter):
+            with pytest.raises(RuntimeError, match="reservation 未绑定"):
+                await adapter.context.ingress.admit(mobile_raw())
+            assert manager.inbound_store.list_inbound_handoffs() == []
+    finally:
+        manager.close()
 
 
 @pytest.mark.asyncio
@@ -231,12 +286,14 @@ async def test_mobile_delete_retry_does_not_turn_committed_input_into_failed_acc
                     "durable_inbound": True, "durable_handoff_id": "handoff-1",
                 },
             ), provider_identity="room", recipient="room")
-            assert await custody.reserve_durable_inbound(message)
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            assert await durable.reserve(message)
             assert await adapter.context.ingress.admit(message) is True
             await asyncio.wait_for(retry_started.wait(), 2)
             assert len(log.reader("akashic:room").snapshot()) == 1
             assert custody.durable_inbound_cleanup_pending(custody.envelopes[0])
-            assert store.has_inbound_handoff(session_key="akashic:room", provider_message_id="mobile-1")
+            assert store.has_inbound_handoff(channel="akashic", session_key="akashic:room", provider_message_id="mobile-1")
             with pytest.raises(SessionAdmissionConflictError):
                 manager.delete_session_with_audit("akashic:room")
             jobs = tuple(custody._inbound_cleanup_tasks.values())
@@ -451,7 +508,9 @@ async def test_mobile_precommit_cancel_or_shutdown_keeps_exact_attachment_handof
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             custody.reserve_gate.clear()
             message = mobile_raw(attachments=(ref,))
-            assert await custody.reserve_durable_inbound(message)
+            durable = adapter.ports.durable_inbound
+            assert durable is not None
+            assert await durable.reserve(message)
             submit = asyncio.create_task(adapter.context.ingress.admit(message))
             await asyncio.wait_for(custody.reserved.wait(), 2)
             if close_bus:
@@ -463,12 +522,18 @@ async def test_mobile_precommit_cancel_or_shutdown_keeps_exact_attachment_handof
             if close_bus:
                 await custody.aclose()
             assert not log.reader("akashic:room").snapshot()
-            assert custody.pending_durable_attachment_refs(session_key="akashic:room", provider_message_id="mobile-1") == (ref,)
+            assert durable.pending_attachment_refs(session_key="akashic:room", provider_message_id="mobile-1") == (ref,)
             assert not custody.envelopes[0].lease.active
             if close_bus:
                 assert custody._durable_admissions == {}
             else:
                 assert custody._durable_admissions["handoff-1"].recoverable
+                await durable.defer("handoff-1")
+                assert manager.inbound_store.has_inbound_handoff(
+                    channel="akashic",
+                    session_key="akashic:room",
+                    provider_message_id="mobile-1",
+                )
     finally:
         manager.close()
 

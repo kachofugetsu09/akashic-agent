@@ -405,6 +405,7 @@ class PluginManager:
             on_before_start=self._reserve_channel_binding,
             config_revision_checker=self._check_channel_config_revision,
             on_failure=self._on_channel_cleanup_failure,
+            boot_id=(restart_gate.boot_id if restart_gate is not None else "unmanaged"),
             snapshot_lease_acquirer=self._snapshot_store.lease,
             identity_resolver=self._resolve_channel_identity,
             identity_rememberer=self._remember_channel_identity,

@@ -78,6 +78,7 @@ class DurableInboundStore(Protocol):
     def has_inbound_handoff(
         self,
         *,
+        channel: str,
         session_key: str,
         provider_message_id: str,
     ) -> bool: ...
@@ -85,6 +86,7 @@ class DurableInboundStore(Protocol):
     def read_inbound_handoff(
         self,
         *,
+        channel: str,
         session_key: str,
         provider_message_id: str,
     ) -> dict[str, str | None] | None: ...
@@ -103,6 +105,7 @@ class SessionAdmissionOwner(Protocol):
 @dataclass(slots=True)
 class _DurableAdmission:
     admission_id: str
+    channel: str | None = None
     envelope: InboundEnvelope | None = None
     cleanup_pending: bool = False
     recoverable: bool = False
@@ -112,17 +115,13 @@ def _durable_dedupe_key(message: InboundMessage) -> str | None:
     provider_message_id = _provider_message_id(message.metadata)
     if provider_message_id is None:
         return None
-    return f"{message.session_key}:{provider_message_id}"
+    return f"{message.channel}:{message.session_key}:{provider_message_id}"
 
 
 def _provider_message_id(metadata: Mapping[str, object]) -> str | None:
     """Read the provider identity at the durable boundary."""
 
     value = metadata.get(DURABLE_PROVIDER_MESSAGE_ID)
-    if value is None:
-        # Rows written before the neutral metadata projection are normalized by
-        # InboundHandoffStore; this branch also keeps an in-flight retry safe.
-        value = metadata.get("client_message_id")
     if not isinstance(value, str) or not value:
         return None
     return value
@@ -610,6 +609,7 @@ class MessageBus:
             _, acquired = self._ensure_durable_admission(
                 handoff_id,
                 session_key,
+                channel=raw.message.channel,
                 require_existing=cast(bool, raw.message.metadata.get("require_existing_session", True)),
             )
             try:
@@ -649,6 +649,7 @@ class MessageBus:
     async def settle_rejected_inbound(
         self,
         *,
+        channel: str,
         session_key: str,
         provider_message_id: str,
     ) -> None:
@@ -658,6 +659,7 @@ class MessageBus:
             if store is None:
                 raise RuntimeError("durable inbound durable handoff store 未绑定")
             row = store.read_inbound_handoff(
+                channel=channel,
                 session_key=session_key,
                 provider_message_id=provider_message_id,
             )
@@ -678,6 +680,7 @@ class MessageBus:
     def has_pending_durable_inbound(
         self,
         *,
+        channel: str,
         session_key: str,
         provider_message_id: str,
     ) -> bool:
@@ -687,6 +690,7 @@ class MessageBus:
         return bool(
             store is not None
             and store.has_inbound_handoff(
+                channel=channel,
                 session_key=session_key,
                 provider_message_id=provider_message_id,
             )
@@ -695,6 +699,7 @@ class MessageBus:
     def pending_durable_attachment_refs(
         self,
         *,
+        channel: str,
         session_key: str,
         provider_message_id: str,
     ) -> tuple[AttachmentRef, ...] | None:
@@ -704,6 +709,7 @@ class MessageBus:
         if store is None:
             return None
         row = store.read_inbound_handoff(
+            channel=channel,
             session_key=session_key,
             provider_message_id=provider_message_id,
         )
@@ -763,7 +769,11 @@ class MessageBus:
         self,
         envelope: InboundEnvelope,
     ) -> None:
-        """在 Input 提交前固定耐久 handoff 的唯一 exact envelope。"""
+        """接管一个已经由 durable ingress reserve 的 exact envelope。
+
+        prepare 只消费既有 reservation；它不能因为调用者漏掉 reserve
+        就悄悄创建新的持久 handoff。
+        """
 
         metadata = dict(envelope.metadata)
         handoff_id = metadata.get(DURABLE_HANDOFF_ID)
@@ -781,40 +791,37 @@ class MessageBus:
             if self._outbound_closed:
                 await envelope.close(InboundOwner.INGRESS)
                 raise RuntimeError("message bus 已关闭")
-            _, acquired = self._ensure_durable_admission(
-                handoff_id,
-                envelope.session_key,
-                require_existing=cast(bool, metadata.get("require_existing_session", True)),
-            )
-            try:
-                persisted_id, created = self._reserve_durable_handoff(
-                    envelope.message_id,
-                    envelope.message,
+            store = self._durable_inbound_store
+            if store is None:
+                await envelope.close(InboundOwner.INGRESS)
+                raise RuntimeError("durable inbound durable handoff store 未绑定")
+            admission = self._durable_admissions.get(handoff_id)
+            if admission is None:
+                if handoff_id not in self._recovery_claimed:
+                    await envelope.close(InboundOwner.INGRESS)
+                    raise RuntimeError("durable inbound reservation 未绑定")
+                admission, _ = self._ensure_durable_admission(
+                    handoff_id,
+                    envelope.session_key,
+                    channel=envelope.message.channel,
+                    require_existing=cast(
+                        bool, metadata.get("require_existing_session", True)
+                    ),
                 )
-            except BaseException:
-                if acquired:
-                    self._release_new_durable_admission(handoff_id)
+            elif admission.channel != envelope.message.channel:
                 await envelope.close(InboundOwner.INGRESS)
-                raise
-            is_recovery = handoff_id in self._recovery_claimed
-            is_prepared = (
-                persisted_id == handoff_id
-                and handoff_id in self._durable_admissions
-                and self._durable_admissions[handoff_id].envelope is None
+                raise RuntimeError("durable inbound channel ownership 不一致")
+            if admission.envelope is not None:
+                await envelope.close(InboundOwner.INGRESS)
+                raise RuntimeError("durable inbound reservation 已有执行 owner")
+            row = store.read_inbound_handoff(
+                channel=envelope.message.channel,
+                session_key=envelope.session_key,
+                provider_message_id=envelope.message_id,
             )
-            if not created and not (
-                (is_recovery or is_prepared) and persisted_id == handoff_id
-            ):
-                if acquired:
-                    self._release_new_durable_admission(handoff_id)
+            if row is None or row.get("handoff_id") != handoff_id:
                 await envelope.close(InboundOwner.INGRESS)
-                return
-            if persisted_id != handoff_id:
-                if acquired:
-                    self._release_new_durable_admission(handoff_id)
-                await envelope.close(InboundOwner.INGRESS)
-                raise RuntimeError("durable inbound handoff identity 漂移")
-            admission = self._durable_admissions[handoff_id]
+                raise RuntimeError("durable inbound reservation identity 不匹配")
             admission.envelope = envelope
             admission.recoverable = False
             self._durable_handoffs[id(envelope)] = handoff_id
@@ -857,7 +864,7 @@ class MessageBus:
         ]
         return store.reserve_inbound_handoff(
             handoff_id=handoff_id,
-            dedupe_key=f"{session_key.strip()}:{provider_message_id}",
+            dedupe_key=f"{message.channel}:{session_key.strip()}:{provider_message_id}",
             channel=message.channel,
             sender=message.sender,
             chat_id=message.chat_id,
@@ -898,18 +905,22 @@ class MessageBus:
         self,
         handoff_id: str,
         session_key: str,
-        *, require_existing: bool,
+        *,
+        channel: str,
+        require_existing: bool,
     ) -> tuple[_DurableAdmission, bool]:
         """Acquire or reuse the Session admission owned by a durable handoff."""
 
         existing = self._durable_admissions.get(handoff_id)
         if existing is not None:
+            if existing.channel != channel:
+                raise RuntimeError("durable inbound channel ownership 不一致")
             return existing, False
         owner = self._session_admission_owner
         if owner is None:
             raise RuntimeError("durable session admission owner 未绑定")
         admission_id = owner.acquire(session_key, require_existing=require_existing)
-        admission = _DurableAdmission(admission_id=admission_id)
+        admission = _DurableAdmission(admission_id=admission_id, channel=channel)
         self._durable_admissions[handoff_id] = admission
         return admission, True
 

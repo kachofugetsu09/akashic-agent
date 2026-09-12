@@ -52,6 +52,14 @@ class ChannelDurableInboundPort(Protocol):
 `has_pending_durable_inbound`、`pending_durable_attachment_refs` 和
 `bind_durable_inbound_recoverer`。
 
+`bind_durable_inbound_recoverer` 只由 `ChannelGenerationHost` 绑定一次。它按持久行的
+`RawInbound.message.channel` 选择当前唯一打开的 durable binding，再调用该 binding 的
+内部恢复路径；adapter 不得把自己的 `recover` 抢占 Bus 的全局恢复槽。
+
+Bus 的 `settle_rejected_inbound`、`has_pending_durable_inbound` 和
+`pending_durable_attachment_refs` 均必须接收 `channel=`；它们不接受只由
+`session_key/provider_message_id` 组成的全局查询。
+
 ## 3. Host identity
 
 `ChannelFactoryContext.boot_id` 是真实 host identity，不是 generation 或 Gateway identity。
@@ -62,12 +70,16 @@ owner 追加既有 `sync.reset_required`，保留未 ACK inbox/receipt；本合�
 
 ## 4. 持久化与恢复不变量
 
-1. provider message identity 先经过 `RawInbound.message_id` 校验，reserve 在附件发布和 Input
-   可见之前完成。
-2. Input 追加成功后才允许 complete；删除 handoff 行失败时保留行、lease 和 retry owner。
-3. cancel、prepare 失败、进程停止和旧 generation drain 都只能 retain 供重试/恢复，不能把内存
+1. provider message identity 先经过 `RawInbound.message_id` 校验，且必须有中立
+   `provider_message_id`；reserve 在附件发布和 Input 可见之前完成。`prepare_channel_input`
+   只接管已有 reservation，不能隐式补写 handoff。
+2. reservation 绑定 channel、session 和 provider identity。持久 dedupe key 使用
+   `channel:session_key:provider_message_id`；旧行的历史 key 只在同 channel 的只读投影查找，
+   不原位改写。
+3. Input 追加成功后才允许 complete；删除 handoff 行失败时保留行、lease 和 retry owner。
+4. cancel、prepare 失败、进程停止和旧 generation drain 都只能 retain 供重试/恢复，不能把内存
    callback 当成完成证据。
-4. `InboundHandoffStore` 对旧 pending 行只在读出时把
+5. `InboundHandoffStore` 对旧 pending 行只在读出时把
    `mobile_v3_handoff/mobile_handoff_id/client_message_id/mobile_v3_attachment_refs` 投影为
    中立字段；不更新既有 SQLite 行、不修改 Message。新记录只写中立字段。
 
@@ -79,7 +91,7 @@ owner 追加既有 `sync.reset_required`，保留未 ACK inbox/receipt；本合�
 |---|---|---|
 | `bootstrap/tools.py:443` | `bind_mobile_session_admission_owner` | `bind_session_admission_owner` |
 | `infra/mobile_realtime/channel.py:270` | `ports.recovery_ingress` | `ports.durable_inbound` |
-| `infra/mobile_realtime/channel.py:575` | `bind_mobile_channel_inbound_recoverer` | `bind_durable_inbound_recoverer` |
+| `infra/mobile_realtime/channel.py:575` | `bind_mobile_channel_inbound_recoverer` | 删除：Host 已绑定唯一全局 recoverer |
 | `infra/mobile_realtime/channel.py:746` | `settle_rejected_mobile_input` | `settle_rejected_inbound(provider_message_id=...)` |
 | `infra/mobile_realtime/channel.py:882` | `has_pending_mobile_handoff` | `has_pending_durable_inbound(provider_message_id=...)` |
 | `infra/mobile_realtime/channel.py:2142` | `reserve_mobile_channel_handoff` | `reserve_durable_inbound` |

@@ -277,7 +277,7 @@ async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(
         sender="device:1",
         chat_id="session",
         content="你好",
-        metadata={"client_message_id": "client:1"},
+        metadata={"provider_message_id": "client:1"},
         handoff_id="handoff-client-1",
     )
 
@@ -298,7 +298,7 @@ async def test_mobile_inbound_handoff_survives_queue_restart_and_deduplicates(
         chat_id="session",
         content="你好",
         timestamp=message.timestamp,
-        metadata={"client_message_id": "client:1"},
+        metadata={"provider_message_id": "client:1"},
         handoff_id="handoff-client-1",
     )
     await bus.publish_inbound(duplicate)
@@ -325,7 +325,7 @@ async def test_mobile_handoff_recovery_pages_durable_rows_and_completes_them(
                 sender="device:1",
                 chat_id=f"session-{index}",
                 content=f"message-{index}",
-                metadata={"client_message_id": f"client:{index}"},
+                metadata={"provider_message_id": f"client:{index}"},
                 handoff_id=f"handoff-client-{index}",
             )
         )
@@ -390,7 +390,7 @@ def test_mobile_handoff_conflicting_reuse_fails_loud(tmp_path) -> None:
         "content": "hello",
         "timestamp": NOW.isoformat(),
         "media_json": "[]",
-        "metadata_json": '{"client_message_id":"client-1"}',
+        "metadata_json": '{"provider_message_id":"client-1"}',
         "created_at": NOW.isoformat(),
     }
     assert store.reserve_inbound_handoff(**base) == ("handoff-1", True)
@@ -424,7 +424,7 @@ async def test_mobile_handoff_delete_failure_retains_owner_until_retry(
         sender="device:1",
         chat_id="session",
         content="hello",
-        metadata={"client_message_id": "client:delete-retry"},
+        metadata={"provider_message_id": "client:delete-retry"},
         handoff_id="handoff-client-delete-retry",
     )
     await bus.publish_inbound(message)

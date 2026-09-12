@@ -54,7 +54,9 @@ from agent.plugin_composition.channels import (
     ProviderDeliveryRequest,
     PresentationReceipt,
     RawInbound,
+    DURABLE_HANDOFF_ID,
     DURABLE_INBOUND_MARKER,
+    DURABLE_PROVIDER_MESSAGE_ID,
     StreamSubscription,
     StopReceipt,
     TurnStreamCallback,
@@ -82,11 +84,17 @@ class InputCustody(Protocol):
 
     async def reserve_durable_inbound(self, raw: RawInbound) -> bool: ...
 
+    def bind_durable_inbound_recoverer(
+        self,
+        recoverer: Callable[[RawInbound], Awaitable[bool]],
+    ) -> None: ...
+
     async def defer_durable_inbound(self, handoff_id: str) -> None: ...
 
     async def settle_rejected_inbound(
         self,
         *,
+        channel: str,
         session_key: str,
         provider_message_id: str,
     ) -> None: ...
@@ -94,6 +102,7 @@ class InputCustody(Protocol):
     def has_pending_durable_inbound(
         self,
         *,
+        channel: str,
         session_key: str,
         provider_message_id: str,
     ) -> bool: ...
@@ -101,6 +110,7 @@ class InputCustody(Protocol):
     def pending_durable_attachment_refs(
         self,
         *,
+        channel: str,
         session_key: str,
         provider_message_id: str,
     ) -> tuple[AttachmentRef, ...] | None: ...
@@ -243,6 +253,7 @@ class _ChannelBindingState:
     factory_close_succeeded: bool = False
     inbound_message_ids: deque[tuple[str, str]] = field(default_factory=deque)
     inbound_message_id_set: set[tuple[str, str]] = field(default_factory=set)
+    durable_reservations: dict[str, "_DurableReservation"] = field(default_factory=dict)
     control_port: _ChannelControl | None = None
     turn_stream_port: _ChannelTurnStream | None = None
     subscriptions: dict[int, _ChannelStreamSubscription] = field(default_factory=dict)
@@ -255,6 +266,16 @@ class _ChannelBindingState:
 
     def __post_init__(self) -> None:
         self.drain_event.set()
+
+
+@dataclass(frozen=True, slots=True)
+class _DurableReservation:
+    """Keep the exact channel-owned authority for one durable handoff."""
+
+    handoff_id: str
+    channel: str
+    session_key: str
+    provider_message_id: str
 
 
 def _channel_entrypoint(
@@ -540,22 +561,85 @@ class _ChannelDurableInbound:
         self._host = host
         self._key = key
 
-    def _custody(self) -> InputCustody:
+    def _state(self, *, allow_closed: bool = False) -> _ChannelBindingState:
         state = self._host._binding(self._key)
-        if ChannelCapability.DURABLE_INBOUND not in state.capabilities:
+        if (
+            ChannelCapability.DURABLE_INBOUND not in state.capabilities
+            or ChannelCapability.INBOUND not in state.capabilities
+            or state.inbound_identity is not InboundIdentity.PROVIDER_MESSAGE_ID
+        ):
             raise RuntimeError("channel 未声明 durable inbound capability")
-        if state.stopped or state.stopping or not state.admission_open:
+        if state.stopped or (not allow_closed and (state.stopping or not state.admission_open)):
             raise RuntimeError("channel durable inbound admission 已关闭")
+        return state
+
+    def _custody(self, *, allow_closed: bool = False) -> InputCustody:
+        self._state(allow_closed=allow_closed)
         custody = self._host._input_custody
         if custody is None:
             raise RuntimeError("Channel input custody runtime port 未绑定")
         return custody
 
+    @staticmethod
+    def _reservation_metadata(raw: RawInbound) -> _DurableReservation:
+        metadata = raw.message.metadata
+        handoff_id = metadata.get(DURABLE_HANDOFF_ID)
+        provider_message_id = metadata.get(DURABLE_PROVIDER_MESSAGE_ID)
+        session_key = metadata.get("session_key_override")
+        if (
+            metadata.get(DURABLE_INBOUND_MARKER) is not True
+            or not isinstance(handoff_id, str)
+            or not handoff_id
+            or provider_message_id != raw.message_id
+            or not isinstance(session_key, str)
+            or not session_key.strip()
+        ):
+            raise RuntimeError("durable inbound reservation identity 无效")
+        return _DurableReservation(
+            handoff_id=handoff_id,
+            channel=raw.message.channel,
+            session_key=session_key.strip(),
+            provider_message_id=raw.message_id,
+        )
+
+    def _remembered_reservation(
+        self,
+        state: _ChannelBindingState,
+        *,
+        handoff_id: str | None = None,
+        session_key: str | None = None,
+        provider_message_id: str | None = None,
+    ) -> _DurableReservation | None:
+        if handoff_id is not None:
+            reservation = state.durable_reservations.get(handoff_id)
+            if reservation is None:
+                return None
+            return reservation
+        for reservation in state.durable_reservations.values():
+            if (
+                reservation.session_key == session_key
+                and reservation.provider_message_id == provider_message_id
+            ):
+                return reservation
+        return None
+
     async def reserve(self, raw: RawInbound) -> bool:
-        return await self._custody().reserve_durable_inbound(raw)
+        state = self._state()
+        reservation = self._reservation_metadata(raw)
+        if reservation.channel != state.channel_name:
+            raise RuntimeError("RawInbound channel 与 exact binding 不一致")
+        accepted = await self._custody().reserve_durable_inbound(raw)
+        if accepted:
+            state.durable_reservations[reservation.handoff_id] = reservation
+        return accepted
 
     async def defer(self, handoff_id: str) -> None:
-        await self._custody().defer_durable_inbound(handoff_id)
+        state = self._state(allow_closed=True)
+        reservation = self._remembered_reservation(state, handoff_id=handoff_id)
+        if reservation is None:
+            raise RuntimeError("durable inbound defer 不属于 exact binding reservation")
+        await self._custody(allow_closed=True).defer_durable_inbound(handoff_id)
+        state.durable_reservations.pop(handoff_id, None)
 
     async def settle_rejected(
         self,
@@ -563,10 +647,20 @@ class _ChannelDurableInbound:
         session_key: str,
         provider_message_id: str,
     ) -> None:
-        await self._custody().settle_rejected_inbound(
+        state = self._state(allow_closed=True)
+        reservation = self._remembered_reservation(
+            state,
             session_key=session_key,
             provider_message_id=provider_message_id,
         )
+        if reservation is None:
+            raise RuntimeError("durable inbound settle 不属于 exact binding reservation")
+        await self._custody(allow_closed=True).settle_rejected_inbound(
+            channel=state.channel_name,
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
+        state.durable_reservations.pop(reservation.handoff_id, None)
 
     def has_pending(
         self,
@@ -574,7 +668,15 @@ class _ChannelDurableInbound:
         session_key: str,
         provider_message_id: str,
     ) -> bool:
-        return self._custody().has_pending_durable_inbound(
+        state = self._host._binding(self._key)
+        reservation = self._remembered_reservation(
+            state,
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
+        self._state(allow_closed=reservation is not None)
+        return self._custody(allow_closed=reservation is not None).has_pending_durable_inbound(
+            channel=state.channel_name,
             session_key=session_key,
             provider_message_id=provider_message_id,
         )
@@ -585,12 +687,24 @@ class _ChannelDurableInbound:
         session_key: str,
         provider_message_id: str,
     ) -> tuple[AttachmentRef, ...] | None:
-        return self._custody().pending_durable_attachment_refs(
+        state = self._host._binding(self._key)
+        reservation = self._remembered_reservation(
+            state,
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
+        self._state(allow_closed=reservation is not None)
+        return self._custody(allow_closed=reservation is not None).pending_durable_attachment_refs(
+            channel=state.channel_name,
             session_key=session_key,
             provider_message_id=provider_message_id,
         )
 
     async def recover(self, raw: RawInbound) -> bool:
+        state = self._state()
+        if raw.message.channel != state.channel_name:
+            raise RuntimeError("RawInbound channel 与 exact binding 不一致")
+        _ = self._reservation_metadata(raw)
         return await self._host._recover_inbound(self._key, raw)
 
 
@@ -1089,7 +1203,7 @@ class ChannelGenerationHost:
         return self._boot_id
 
     def bind_input_custody(self, custody: InputCustody) -> None:
-        """绑定传输接纳的唯一恢复 owner；来源由 exact Root 另行提供。"""
+        """绑定传输接纳 owner，并让 Host 独占 durable recovery 路由。"""
         if self._input_custody is not None:
             raise RuntimeError("Channel input custody 已绑定")
         for method in (
@@ -1101,9 +1215,11 @@ class ChannelGenerationHost:
             "settle_rejected_inbound",
             "has_pending_durable_inbound",
             "pending_durable_attachment_refs",
+            "bind_durable_inbound_recoverer",
         ):
             if not callable(getattr(custody, method, None)):
                 raise TypeError(f"Channel input custody 缺少 {method}(...)")
+        custody.bind_durable_inbound_recoverer(self._recover_current_durable_inbound)
         self._input_custody = custody
 
     def bind_control_interrupter(self, interrupter: ControlInterrupter) -> None:
@@ -1710,6 +1826,34 @@ class ChannelGenerationHost:
     def _release_presentation_operation(self, key: tuple[str, str]) -> None:
         self._release_in_flight(key)
 
+    async def _recover_current_durable_inbound(self, raw: RawInbound) -> bool:
+        """Route a persisted handoff to the one current exact channel binding."""
+
+        if not isinstance(raw, RawInbound):
+            raise TypeError("durable recovery 只接受 RawInbound")
+        candidates = tuple(
+            key
+            for key, state in self._bindings.items()
+            if (
+                state.channel_name == raw.message.channel
+                and ChannelCapability.INBOUND in state.capabilities
+                and ChannelCapability.DURABLE_INBOUND in state.capabilities
+                and state.inbound_identity is InboundIdentity.PROVIDER_MESSAGE_ID
+                and state.admission_open
+                and not state.stopping
+                and not state.stopped
+            )
+        )
+        if not candidates:
+            raise RuntimeError(
+                f"durable inbound 当前 channel binding 不可用: {raw.message.channel}"
+            )
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f"durable inbound channel binding 不唯一: {raw.message.channel}"
+            )
+        return await self._recover_inbound(candidates[0], raw)
+
     async def _recover_inbound(
         self,
         key: tuple[str, str],
@@ -1728,6 +1872,7 @@ class ChannelGenerationHost:
             raise RuntimeError("channel 未声明 durable inbound capability")
         if raw.message.channel != state.channel_name:
             raise RuntimeError("RawInbound channel 与 exact binding 不一致")
+        _ = _ChannelDurableInbound._reservation_metadata(raw)
         if not state.admission_open or state.stopping or state.stopped:
             raise RuntimeError("channel admission 已关闭")
 
@@ -1867,6 +2012,9 @@ class ChannelGenerationHost:
                     accepted = True
                     # 此后失败只能保留 cleanup/recovery，不能回滚身份或去重记录。
                     await custody.complete_channel_input(envelope)
+                    handoff_id = raw.message.metadata.get(DURABLE_HANDOFF_ID)
+                    if isinstance(handoff_id, str):
+                        state.durable_reservations.pop(handoff_id, None)
 
             commit = asyncio.create_task(commit_input(), name=f"channel-input:{raw.message_id}")
             await _await_task_after_cancellation(commit)
