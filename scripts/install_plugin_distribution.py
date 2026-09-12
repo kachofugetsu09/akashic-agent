@@ -615,16 +615,10 @@ def _validate_current_plugins(
     *,
     workspace: Path,
     plugins_home: Path,
-    marketplace: str,
-    entries: list[dict[str, Any]],
 ) -> None:
     """Validate current manifest/artifacts independently of historical receipt rows."""
 
     manifest = load_plugin_manifest(plugins_home)
-    expected_ids = {f"{entry['name']}@{marketplace}" for entry in entries}
-    missing = sorted(expected_ids - set(manifest))
-    if missing:
-        raise ValueError(f"当前 profile 插件未安装: {missing}")
     for plugin_id, enabled in manifest.items():
         name, separator, item_marketplace = plugin_id.rpartition("@")
         if (
@@ -672,17 +666,10 @@ def ensure_profile(
         if not receipt_path.is_file():
             raise ValueError(f"distribution receipt 不是普通文件: {receipt_path}")
         distribution_root = distribution.expanduser().resolve(strict=True)
-        report = verify_distribution(distribution_root)
-        profile_path = profile.expanduser().resolve(strict=True)
-        profile_rows = report.get("profiles", [])
-        if not any(
-            isinstance(item, dict)
-            and _distribution_file(distribution_root, item.get("path"), "profile")
-            == profile_path
-            for item in profile_rows
-        ):
-            raise ValueError("profile 不属于已验证的 distribution artifact")
-        _, marketplace, entries, _ = _load_profile(profile_path)
+        verify_distribution(distribution_root)
+        # A profile is only the first-install recipe.  Receipt-present
+        # startup must follow the current manifest, even after operator
+        # replacement or removal of an originally selected provider.
         receipt = _read_json(receipt_path)
         _validate_receipt_state(
             receipt,
@@ -692,8 +679,6 @@ def ensure_profile(
         _validate_current_plugins(
             workspace=workspace.expanduser().resolve(strict=False),
             plugins_home=plugins_home.expanduser().resolve(strict=False),
-            marketplace=marketplace,
-            entries=entries,
         )
         return {**receipt, "status": "existing"}
 

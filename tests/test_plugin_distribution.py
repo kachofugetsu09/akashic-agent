@@ -208,15 +208,6 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
         'version = "1"\nentrypoint = "plugin.py"\n'
     )
     (source / "main.py").write_text('print("core-v2")\n')
-    (profile / "default.json").write_text(json.dumps({
-        "schema_version": 1,
-        "name": "fixture-v2",
-        "marketplace": "distribution",
-        "initialization": {"plugin_configs": []},
-        "plugins": [
-            {"name": "replacement", "depends_on": [], "reason": "new provider"}
-        ],
-    }) + "\n")
     subprocess.run(["git", "-C", str(source), "add", "."], check=True, capture_output=True)
     subprocess.run([
         "git", "-C", str(source), "-c", "user.name=Test", "-c",
