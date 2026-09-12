@@ -37,6 +37,7 @@ def _write_bundle(
     artifact = parent / bundle_id
     steps = artifact / "migration_steps"
     steps.mkdir(parents=True)
+    (steps / "__init__.py").write_text("\n", encoding="utf-8")
     (artifact / "plugin.py").write_text(
         f"name = {bundle_id!r}\nversion = '1.0.0'\napi_version = 3\n",
         encoding="utf-8",
@@ -61,11 +62,19 @@ def _write_bundle(
         encoding="utf-8",
     )
     source_hash = hashlib.sha256(step_path.read_bytes()).hexdigest()
+    init_hash = hashlib.sha256((steps / "__init__.py").read_bytes()).hexdigest()
     catalog = (
         "schema_version = 1\n"
         f"bundle_id = {bundle_id!r}\n"
         "version = '1.0.0'\n"
-        "migration_root = 'migration_steps'\n\n"
+        "migration_root = 'migration_steps'\n"
+        "package_name = 'migration_steps'\n\n"
+        "[[files]]\n"
+        "path = '__init__.py'\n"
+        f"sha256 = {init_hash!r}\n\n"
+        "[[files]]\n"
+        f"path = {step_path.name!r}\n"
+        f"sha256 = {source_hash!r}\n\n"
         "[[migrations]]\n"
         f"id = {migration_id!r}\n"
         f"path = {step_path.name!r}\n"

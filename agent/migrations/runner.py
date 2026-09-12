@@ -9,6 +9,7 @@ from typing import Iterator, Literal, Sequence
 from urllib.parse import quote
 
 from yoyo import get_backend, read_migrations
+from yoyo.migrations import MigrationList
 
 from agent.migrations.context import bind_migration_context
 from agent.migrations.bundles import (
@@ -50,10 +51,10 @@ class MigrationRunner:
         self.repo_root = repo_root.resolve()
         self.config_path = config_path.expanduser().resolve()
         self.workspace = workspace.expanduser().resolve()
-        core_root = self.repo_root / "migrations" / "core"
-        self.migrations_root = (
-            core_root if core_root.is_dir() else self.repo_root / "migrations" / "yoyo"
-        )
+        # The Core source is intentionally a separate, implementation-free root;
+        # silently falling back to a checkout's retired business migrations would
+        # defeat the external bundle boundary.
+        self.migrations_root = self.repo_root / "migrations" / "core"
         self.ledger_path = self.workspace / "migrations.sqlite3"
         # 保留路径上的 symlink 形状，让 source resolver 能够拒绝它，而不是
         # 先 resolve 后把越界路径伪装成普通 cache 根。
@@ -85,7 +86,7 @@ class MigrationRunner:
         # 1. 初始化由 workspace 持有的迁移账本
         try:
             self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
-            core_migrations = read_migrations(str(self.migrations_root))
+            core_migrations = _read_migrations(str(self.migrations_root))
             bundles = discover_migration_bundles(
                 plugin_dirs=self.plugin_dirs,
                 installed_cache_root=self.installed_cache_root,
@@ -108,10 +109,6 @@ class MigrationRunner:
                 applied_ids=_read_applied_ids(self.ledger_path),
                 bundles=bundles,
             )
-            migrations = read_migrations(
-                str(self.migrations_root),
-                *(str(bundle.migration_root) for bundle in bundles),
-            )
             backend = get_backend(self._ledger_uri())
             os.chmod(self.ledger_path, 0o600)
 
@@ -125,6 +122,10 @@ class MigrationRunner:
                 ),
                 migration_import_paths(bundles),
             ):
+                migrations = _read_migrations(
+                    str(self.migrations_root),
+                    *(str(bundle.migration_root) for bundle in bundles),
+                )
                 pending = backend.to_apply(migrations)
                 migration_ids = tuple(migration.id for migration in pending)
                 backend.apply_migrations(pending)
@@ -185,3 +186,12 @@ def _read_applied_ids(path: Path) -> tuple[str, ...]:
     finally:
         connection.close()
     return tuple(str(row[0]) for row in rows)
+
+
+def _read_migrations(*sources: str) -> MigrationList:
+    """Load Yoyo files while excluding the package marker from execution."""
+
+    migrations = read_migrations(*sources)
+    return MigrationList(
+        migration for migration in migrations if migration.id != "__init__"
+    )

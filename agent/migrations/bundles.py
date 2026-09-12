@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import re
 import sys
 import tomllib
@@ -24,8 +25,10 @@ from agent.plugins.static_manifest import (
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_CATALOG_KEYS = {"schema_version", "bundle_id", "version", "migration_root", "migrations"}
+_CATALOG_KEYS = {"schema_version", "bundle_id", "version", "migration_root", "package_name", "files", "migrations"}
+_FILE_KEYS = {"path", "sha256"}
 _MIGRATION_KEYS = {"id", "path", "depends", "transactional", "sha256"}
+_PACKAGE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,63}$")
 _REJECTED_IMPORT_PREFIXES = (
     "plugins",
     "agent.model_runtime",
@@ -94,6 +97,8 @@ class MigrationBundle:
     catalog_sha256: str
     bundle_sha256: str
     migrations: tuple[MigrationSpec, ...]
+    package_name: str
+    package_files: tuple[tuple[str, str], ...]
 
     @property
     def migration_ids(self) -> tuple[str, ...]:
@@ -124,6 +129,7 @@ def discover_migration_bundles(
     )
     bundles: list[MigrationBundle] = []
     seen_bundles: set[str] = set()
+    seen_packages: set[str] = set()
     seen_migrations: set[str] = set()
     for source in sources:
         declaration = source.static_manifest.migration if source.static_manifest else None
@@ -132,12 +138,17 @@ def discover_migration_bundles(
         bundle = load_migration_bundle(source, declaration)
         if bundle.bundle_id in seen_bundles:
             raise MigrationBundleError(f"重复 migration bundle: {bundle.bundle_id}")
+        if bundle.package_name in seen_packages:
+            raise MigrationBundleError(
+                f"重复 migration package_name: {bundle.package_name}"
+            )
         overlap = seen_migrations.intersection(bundle.migration_ids)
         if overlap:
             raise MigrationBundleError(
                 "重复 migration ID: " + ", ".join(sorted(overlap))
             )
         seen_bundles.add(bundle.bundle_id)
+        seen_packages.add(bundle.package_name)
         seen_migrations.update(bundle.migration_ids)
         bundles.append(bundle)
     return tuple(sorted(bundles, key=lambda item: item.bundle_id))
@@ -170,6 +181,9 @@ def load_migration_bundle(
         raise MigrationBundleError("migration catalog schema_version 必须为 1")
     bundle_id = _id(raw.get("bundle_id"), "bundle_id")
     version = _version(raw.get("version"), "version")
+    package_name = raw.get("package_name")
+    if not isinstance(package_name, str) or _PACKAGE_NAME.fullmatch(package_name) is None:
+        raise MigrationBundleError("package_name 必须是安全 Python 包名")
     migration_root_value = raw.get("migration_root")
     if not isinstance(migration_root_value, str):
         raise MigrationBundleError("migration_root 必须是字符串路径")
@@ -178,6 +192,49 @@ def load_migration_bundle(
         root / _relative_path(migration_root_value, "migration_root"),
         "migration_root",
     )
+    if package_name != migration_root.name:
+        raise MigrationBundleError("package_name 必须等于 migration_root 目录名")
+    package_init = migration_root / "__init__.py"
+    if not package_init.is_file() or package_init.is_symlink():
+        raise MigrationBundleError("migration_root 必须包含普通 __init__.py")
+    raw_files = raw.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise MigrationBundleError("migration catalog.files 必须是非空数组")
+    package_files: list[tuple[str, str]] = []
+    seen_files: set[str] = set()
+    for index, item in enumerate(raw_files):
+        if not isinstance(item, dict) or set(item) != _FILE_KEYS:
+            raise MigrationBundleError(f"files[{index}] 字段必须是 {sorted(_FILE_KEYS)}")
+        path_value = item.get("path")
+        if not isinstance(path_value, str):
+            raise MigrationBundleError(f"files[{index}].path 必须是字符串")
+        relative = _relative_path(path_value, f"files[{index}].path")
+        if "__pycache__" in Path(relative).parts or relative.endswith(".pyc"):
+            raise MigrationBundleError(
+                f"files[{index}].path 不能声明 Python 运行时缓存"
+            )
+        path = _inside_file(migration_root, migration_root / relative, f"files[{index}].path")
+        digest = item.get("sha256")
+        if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+            raise MigrationBundleError(f"files[{index}].sha256 无效")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise MigrationBundleError(f"bundle helper source digest 漂移: {relative}")
+        if relative in seen_files:
+            raise MigrationBundleError(f"bundle 文件重复: {relative}")
+        seen_files.add(relative)
+        package_files.append((relative, digest))
+    actual_files = {
+        path.relative_to(migration_root).as_posix()
+        for path in migration_root.rglob("*")
+        if (path.is_file() or path.is_symlink())
+        and "__pycache__" not in path.relative_to(migration_root).parts
+        and path.suffix != ".pyc"
+    }
+    if actual_files != seen_files:
+        raise MigrationBundleError(
+            "migration_root 文件集合与 catalog.files 不一致: "
+            f"missing={sorted(seen_files - actual_files)}, extra={sorted(actual_files - seen_files)}"
+        )
     raw_migrations = raw.get("migrations")
     if not isinstance(raw_migrations, list) or not raw_migrations:
         raise MigrationBundleError("migration catalog.migrations 必须是非空数组")
@@ -224,7 +281,7 @@ def load_migration_bundle(
             raise MigrationBundleError(
                 f"migration source digest 漂移: id={migration_id}"
             )
-        _validate_source_imports(path)
+        _validate_source_imports(path, migration_root=migration_root)
         ids.add(migration_id)
         specs.append(
             MigrationSpec(
@@ -241,7 +298,7 @@ def load_migration_bundle(
     actual_paths = {
         path.relative_to(migration_root).as_posix()
         for path in migration_root.glob("*.py")
-        if path.is_file() or path.is_symlink()
+        if path.name != "__init__.py" and (path.is_file() or path.is_symlink())
     }
     if actual_paths != declared_paths:
         raise MigrationBundleError(
@@ -249,8 +306,10 @@ def load_migration_bundle(
             f"missing={sorted(declared_paths - actual_paths)}, "
             f"extra={sorted(actual_paths - declared_paths)}"
         )
+    for relative, _digest in package_files:
+        _validate_source_imports(migration_root / relative, migration_root=migration_root)
     _validate_local_dependency_graph(specs, bundle_id)
-    bundle_sha256 = _bundle_digest(catalog_bytes, specs, migration_root)
+    bundle_sha256 = _bundle_digest(catalog_bytes, migration_root, package_files)
     return MigrationBundle(
         bundle_id=bundle_id,
         version=version,
@@ -260,6 +319,8 @@ def load_migration_bundle(
         catalog_sha256=actual_catalog_sha256,
         bundle_sha256=bundle_sha256,
         migrations=tuple(specs),
+        package_name=package_name,
+        package_files=tuple(package_files),
     )
 
 
@@ -418,17 +479,47 @@ def validate_pending_requirements(
 
 @contextmanager
 def migration_import_paths(bundles: Sequence[MigrationBundle]) -> Iterator[None]:
-    """只在离线 Yoyo load/apply 窗口暴露 bundle 根，不污染 runtime import path。"""
+    """在 Yoyo load/apply 窗口暴露 bundle 包，并让相对 helper 真正可导入。"""
 
     paths = [str(bundle.artifact_root) for bundle in bundles]
-    original = list(sys.path)
+    original_path = list(sys.path)
+    original_spec_loader = importlib.util.spec_from_file_location
+    original_modules = set(sys.modules)
+    bundle_by_file = {
+        path.resolve(strict=False): bundle
+        for bundle in bundles
+        for path, _digest in (
+            (bundle.migration_root / relative, digest)
+            for relative, digest in bundle.package_files
+        )
+    }
+
+    def package_spec(name: str, location: str | Path, *args: object, **kwargs: object):
+        candidate = Path(location).resolve(strict=False)
+        bundle = bundle_by_file.get(candidate)
+        if bundle is None or candidate.parent != bundle.migration_root:
+            return original_spec_loader(name, location, *args, **kwargs)
+        module_name = f"{bundle.package_name}.{candidate.stem}"
+        return original_spec_loader(module_name, location, *args, **kwargs)
+
     try:
         for path in reversed(paths):
             if path not in sys.path:
                 sys.path.insert(0, path)
+        importlib.util.spec_from_file_location = package_spec  # type: ignore[assignment]
         yield
     finally:
-        sys.path[:] = original
+        importlib.util.spec_from_file_location = original_spec_loader  # type: ignore[assignment]
+        sys.path[:] = original_path
+        package_names = tuple(bundle.package_name for bundle in bundles)
+        for module_name in tuple(sys.modules):
+            if module_name in original_modules or not any(
+                module_name == package_name
+                or module_name.startswith(package_name + ".")
+                for package_name in package_names
+            ):
+                continue
+            sys.modules.pop(module_name, None)
 
 
 def _validate_local_dependency_graph(
@@ -457,7 +548,7 @@ def _validate_local_dependency_graph(
         visit(node)
 
 
-def _validate_source_imports(path: Path) -> None:
+def _validate_source_imports(path: Path, *, migration_root: Path) -> None:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (OSError, SyntaxError, UnicodeDecodeError) as error:
@@ -481,7 +572,8 @@ def _validate_source_imports(path: Path) -> None:
             levels = [0] * len(modules)
         elif isinstance(node, ast.ImportFrom):
             if node.level:
-                raise MigrationBundleError(f"migration 不允许 relative import: {path}")
+                _validate_relative_import(path, migration_root, node)
+                continue
             modules = [node.module or ""]
             levels = [node.level]
         else:
@@ -505,17 +597,37 @@ def _validate_source_imports(path: Path) -> None:
                 )
 
 
+def _validate_relative_import(path: Path, migration_root: Path, node: ast.ImportFrom) -> None:
+    """Allow only relative imports whose target stays inside this bundle package."""
+    current_package = path.parent
+    target = current_package
+    for _ in range(node.level - 1):
+        target = target.parent
+    if node.module:
+        target = target.joinpath(*node.module.split("."))
+    target = target.resolve(strict=False)
+    if not target.is_relative_to(migration_root):
+        raise MigrationBundleError(f"migration relative import 越过 bundle: {path}")
+    if target.exists() and not target.is_dir() and target.suffix != ".py":
+        raise MigrationBundleError(f"migration relative import 目标无效: {path}")
+    candidates = (target, target.with_suffix(".py"), target / "__init__.py")
+    if not any(candidate.is_file() for candidate in candidates):
+        raise MigrationBundleError(f"migration relative import 缺少 bundle helper: {path}:{node.module or ''}")
+
+
 def _bundle_digest(
     catalog_bytes: bytes,
-    specs: Sequence[MigrationSpec],
     migration_root: Path,
+    package_files: Sequence[tuple[str, str]],
 ) -> str:
     digest = hashlib.sha256()
     digest.update(catalog_bytes)
-    for spec in sorted(specs, key=lambda item: item.migration_id):
-        digest.update(spec.migration_id.encode("utf-8"))
+    for relative, expected in sorted(package_files):
+        digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update((migration_root / spec.path).read_bytes())
+        digest.update(expected.encode("ascii"))
+        digest.update(b"\0")
+        digest.update((migration_root / relative).read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
 
