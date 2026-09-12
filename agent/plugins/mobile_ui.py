@@ -18,7 +18,11 @@ from agent.plugin_composition import (
 from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugins.generation import MobileUiAsset, PluginGeneration
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import RuntimeSnapshot
+from agent.plugins.snapshot import (
+    RuntimeSnapshot,
+    get_current_runtime_snapshot,
+    lease_runtime_snapshot,
+)
 from core.error_context import current_session_key
 
 MOBILE_UI_QUERY_TIMEOUT_SECONDS = 20.0
@@ -63,11 +67,19 @@ class PluginMobileUiProvider:
         self._admission_lock = asyncio.Lock()
         self._admitted_queries = 0
 
+    async def aclose(self) -> None:
+        """Wait for bounded UI workers before this snapshot provider is retired."""
+
+        await asyncio.to_thread(
+            self._executor.shutdown,
+            wait=True,
+            cancel_futures=True,
+        )
+
     def catalog(self) -> dict[str, object]:
         """返回当前 generation 的轻量目录与内容摘要。"""
 
-        snapshot = self._manager.current_snapshot
-        items = [] if snapshot is None else self._catalog_items(snapshot)
+        items = self._catalog_items(self._require_snapshot())
         encoded = json.dumps(
             items,
             ensure_ascii=False,
@@ -174,7 +186,7 @@ class PluginMobileUiProvider:
     ) -> dict[str, object]:
         """让一次线程查询完整占有对应插件 generation。"""
 
-        async with await self._manager.snapshot_store.acquire() as snapshot:
+        async with lease_runtime_snapshot(self._manager.snapshot_store) as snapshot:
             generation = self._active_generation(snapshot, plugin_id)
             if generation.source_revision != plugin_revision:
                 raise MobileUiStaleRevision(plugin_id)
@@ -230,9 +242,11 @@ class PluginMobileUiProvider:
         self._draining_queries.add(task)
 
     def _require_snapshot(self) -> RuntimeSnapshot:
-        snapshot = self._manager.current_snapshot
+        snapshot = get_current_runtime_snapshot()
         if snapshot is None:
-            raise MobileUiPluginUnavailable("runtime snapshot unavailable")
+            raise MobileUiPluginUnavailable(
+                "mobile UI provider 必须在当前 request scope 内读取"
+            )
         return snapshot
 
     @staticmethod

@@ -801,7 +801,7 @@ async def lease_runtime_snapshot(
 
 async def project_message_rows(
     store: "RuntimeSnapshotStore",
-    page: "MessagePage",
+    page: object,
     *,
     display_only: bool,
 ) -> list[dict[str, object]]:
@@ -813,6 +813,10 @@ async def project_message_rows(
         message_rows,
     )
     from agent.plugin_composition.model import ServiceKey
+    from session.log import MessagePage
+
+    if not isinstance(page, MessagePage):
+        raise TypeError("消息展示需要 MessagePage")
     async with lease_runtime_snapshot(store) as snapshot:
         root = snapshot.composition_root
         if root is None:

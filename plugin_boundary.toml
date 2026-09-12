@@ -91,6 +91,18 @@ note = "人类命令、alias 与 handler 注册表"
 role = "core"
 note = "Mobile 页面、查询与导航注册表"
 
+[capabilities."core.message_display.v1"]
+role = "core"
+note = "按当前 snapshot 组合 message.display:* 的只读页面投影"
+
+[capabilities."core.mobile_ui.v1"]
+role = "core"
+note = "按当前 snapshot 提供中立 Mobile UI registry 投影"
+
+[capabilities."core.web_ui.v1"]
+role = "core"
+note = "按当前 snapshot 提供中立 Web UI catalog 投影"
+
 [capabilities."core.channels"]
 role = "seam"
 note = "inbound/outbound Channel 适配注册表；多实现可替换"

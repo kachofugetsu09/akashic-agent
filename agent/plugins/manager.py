@@ -5649,6 +5649,56 @@ class PluginManager:
                 if not candidate else PluginTimers.candidate_validation()
             )
             _ = await root.context.provide(TIMERS, timers)
+
+        # Client UI and message display are neutral snapshot projections.  The
+        # host publishes them under stable names; each client request resolves
+        # the provider again inside its exact RuntimeSnapshot scope.
+        host_ui_requested = {
+            key.name
+            for key in requested
+            if key.name in {
+                "core.message_display.v1",
+                "core.mobile_ui.v1",
+                "core.web_ui.v1",
+            }
+        }
+        if "core.message_display.v1" in host_ui_requested:
+            from agent.plugins.snapshot import project_message_rows
+
+            async def display_message_page(
+                page: object,
+                *,
+                display_only: bool,
+            ) -> list[dict[str, object]]:
+                return await project_message_rows(
+                    self._snapshot_store,
+                    page,
+                    display_only=display_only,
+                )
+
+            _ = await root.context.provide(
+                ServiceKey[object]("core.message_display.v1"),
+                display_message_page,
+            )
+        if "core.mobile_ui.v1" in host_ui_requested:
+            from agent.plugins.mobile_ui import PluginMobileUiProvider
+
+            mobile_ui = PluginMobileUiProvider(self)
+            _ = await root.context.provide(
+                ServiceKey[object]("core.mobile_ui.v1"),
+                mobile_ui,
+            )
+            root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
+                "mobile_ui_provider.close",
+                mobile_ui.aclose,
+            )
+        if "core.web_ui.v1" in host_ui_requested:
+            from agent.plugins.web_ui import PluginWebUiProvider
+
+            _ = await root.context.provide(
+                ServiceKey[object]("core.web_ui.v1"),
+                PluginWebUiProvider(self._snapshot_store),
+            )
         if archive:
             return
         if any(
