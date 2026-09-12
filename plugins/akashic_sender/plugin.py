@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from agent.plugin_composition import Context, Effect, ServiceKey
-from session.message import Message
+from agent.plugin_contracts import Message
 
 api_version = 3
 name = "akashic_sender"

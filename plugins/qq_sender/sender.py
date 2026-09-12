@@ -12,7 +12,7 @@ from websockets.exceptions import ConnectionClosed
 from agent.plugin_composition.artifacts import ArtifactRead
 from session.artifacts import AttachmentKind, AttachmentRef
 from session.log import MessageCatalog
-from session.message import ContentPart, Control, Message
+from agent.plugin_contracts import ContentPart, Control, Message
 
 
 Status = Literal["delivered", "rejected", "failed"]

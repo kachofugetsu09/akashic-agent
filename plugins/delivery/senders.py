@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 
 from agent.plugin_composition import Context, Effect, ServiceKey
 from agent.plugin_composition.bindings import Bindings
-from session.message import Message
+from agent.plugin_contracts import Message
 
 from .api import Receipt, Sender, SenderResult, Text
 

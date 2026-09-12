@@ -19,8 +19,8 @@ from plugins.delivery.api import Sink
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.reply.completion import REPLY_COMPLETION
-from session.log import MessageReader
-from session.message import ContentPart, Input, Message, Output, ToolCall
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import ContentPart, Input, Message, Output, ToolCall
 
 from .follow import follow
 

@@ -7,8 +7,8 @@ from typing import Annotated, Literal, Protocol
 from agent.plugin_composition import ServiceKey
 from pydantic import BaseModel, ConfigDict, Field
 
-from session.log import MessageReader
-from session.message import Message
+from agent.plugin_composition.messages import MessageReader
+from agent.plugin_contracts import Message
 
 Text = Annotated[str, Field(min_length=1)]
 Status = Literal["delivered", "rejected", "failed"]
