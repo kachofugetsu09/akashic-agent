@@ -89,7 +89,7 @@
       "repository": "https://github.com/kachofugetsu09/github-watch.git",
       "branch": "codex/github-watch-tools-v1-20260912",
       "resolved_sha": "272909109ed413de1dc9d79e720bac4ad1816158",
-      "pull_request": null,
+      "pull_request": "https://github.com/kachofugetsu09/github-watch/pull/7",
       "role": "programmatic_turn_producer",
       "atoms": ["TIMERS", "tools.v1", "programmatic.v1", "turn.after_committed"],
       "test_cwd": ".",
