@@ -1,33 +1,64 @@
 import asyncio
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import aclosing
-from typing import cast
+from typing import Protocol, cast
 
-from agent.plugin_composition import Context, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition import Context, Effect, ServiceKey, RUNTIME_STARTED, RUNTIME_STOPPING
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION
-from agent.plugin_composition.tasks import TASKS
-from agent.restart import RESTART_GATE
+from agent.plugin_composition.tasks import TASKS, Task, TaskAdmission, RestartGate, RESTART_GATE
 from agent.control.frame_book import CONTROL_FRAMES
 from agent.plugin_composition.rpc import rpc_method_key
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
-from plugins.conversation.source import Conversation
-from plugins.sources.plugin import SOURCES, SOURCE_CHANGED, Source
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from agent.plugin_composition.messages import MessageReader
-from agent.plugin_contracts import Control, Input
+from agent.plugin_composition.channels import ChannelInboundMessage
+from agent.plugin_composition.messages import MessageReader, MessageWriter
+from agent.plugin_contracts import Control, Input, Message
 
 from .control import PROGRAMMATIC, Programmatic, check_session, rpc_methods
+
+
+
+class SourceSession(Protocol):
+    async def accept(self, message_id: str, body: Input) -> Message: ...
+    async def pause(self, message_id: str) -> Message: ...
+    async def resume(self, message_id: str, input_id: str) -> Message: ...
+    async def start(self, program: Callable[[Task, MessageReader, str], Awaitable[object]]) -> Task | None: ...
+
+
+class SessionFactory(Protocol):
+    def __call__(
+        self, *, reader: MessageReader, inputs: MessageWriter, controls: MessageWriter,
+        tasks: TaskAdmission, changed: Callable[[MessageReader, str], None] | None = None,
+        restart_gate: RestartGate | None = None,
+    ) -> SourceSession: ...
+
+    def needs_reply(self, reader: MessageReader, source: str) -> bool: ...
+
+
+class SourceRegistry(Protocol):
+    async def register(
+        self, ctx: Context, *, name: str, open: Callable[[str], SourceSession],
+        needs_reply: Callable[[MessageReader], bool],
+        accept: Callable[[str, str, ChannelInboundMessage], Awaitable[Message]] | None = None,
+        channels: tuple[str, ...] | None = (),
+    ) -> Effect: ...
+
+
+SOURCES = ServiceKey[SourceRegistry]("sources.v2")
+SOURCE_SESSION = ServiceKey[SessionFactory]("source.session.v1")
+SOURCE_CHANGED = ServiceKey[Callable[[MessageReader, str], None]]("source.changed.v1")
+
 
 api_version = 3
 name = "programmatic"
 version = "1.0.0"
 desc = "程序调用的输入、停止、恢复与结果；默认保存原文但排除学习"
-inject = (SOURCES, MESSAGE_WRITERS, SESSION_ADMISSION, TURN_PROJECTION, RESTART_GATE, CONTROL_FRAMES)
+inject = (SOURCES, SOURCE_SESSION, MESSAGE_WRITERS, SESSION_ADMISSION, TURN_PROJECTION, RESTART_GATE, CONTROL_FRAMES)
 
 
-def open_source(ctx: Context, session_id: str) -> Conversation:
+def open_source(ctx: Context, session_id: str) -> SourceSession:
     """打开已明确创建的内部 Session，固定程序来源的写入身份。"""
     check_session(session_id)
     reader = ctx.require(MESSAGE_CATALOG).reader(session_id)
@@ -43,7 +74,7 @@ def open_source(ctx: Context, session_id: str) -> Conversation:
             programmatic.settle_changed(reader, source)
 
     writers = ctx.require(MESSAGE_WRITERS)
-    return Conversation(reader=reader,
+    return ctx.require(SOURCE_SESSION)(reader=reader,
         inputs=writers.bind(ctx, author="user", source="programmatic", body_types=(Input,),
             content={"text": check_text, "channel.origin": check_origin})(session_id),
         controls=writers.bind(ctx, author="app", source="programmatic", body_types=(Control,),
@@ -52,7 +83,8 @@ def open_source(ctx: Context, session_id: str) -> Conversation:
         restart_gate=ctx.require(RESTART_GATE))
 
 async def apply(ctx: Context, config: object) -> None:
-    _ = await ctx.require(SOURCES).register(ctx, Source("programmatic", lambda session: open_source(ctx, session)))
+    _ = await ctx.require(SOURCES).register(ctx, name="programmatic", open=lambda session: open_source(ctx, session),
+        needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "programmatic"))
     programmatic = Programmatic(ctx)
     _ = await ctx.provide(PROGRAMMATIC, programmatic)
     for method, operation in rpc_methods(programmatic).items():

@@ -158,7 +158,7 @@ async def test_new_input_cancels_command_and_recovery_cannot_close_newer_input(t
             assert rows[-1].body.finish == "continue"
             assert isinstance(rows[-1].body.parts[0].value, Mapping)
             assert rows[-1].body.parts[0].value["input_id"] == "first"
-            from plugins.conversation.source import needs_reply
+            from plugins.sources.session import needs_reply
             assert needs_reply(rows, "conversation")
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 assert len(snapshot.composition_root.context.require(ServiceKey("fixture.command_calls"))) == 1

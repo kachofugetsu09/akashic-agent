@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Protocol, cast
 
 from pydantic import Field
 
@@ -9,11 +9,18 @@ from agent.plugin_composition import Context, ServiceKey
 from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResolver
 from agent.plugin_composition.rpc import RequestTransport, RpcMethod
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
-from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
+from plugins.turn_projection.plugin import TURN_PROJECTION, TurnProjection
 from agent.plugin_composition.messages import MessageReader, SessionAttributes
 from agent.plugin_contracts import ContentPart, Input
 
 from .result import read_result, read_result_snapshot
+
+
+class FinalOutputTurn(Protocol):
+    @property
+    def ending_message_id(self) -> str | None: ...
+    @property
+    def message_ids(self) -> tuple[str, ...]: ...
 
 
 class AdmitParams(SessionIdParams):
@@ -125,7 +132,7 @@ class Programmatic:
             self._resolver(session_id, input_id),
         )
 
-    async def wait(self, reader: MessageReader, turn: Turn) -> None:
+    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
         """等待同连接完整最终 Output frame 的 writer flush。"""
         ending = turn.ending_message_id
         if ending is None:

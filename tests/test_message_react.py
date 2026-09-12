@@ -16,7 +16,7 @@ from agent.plugin_composition.tasks import Task, Tasks
 from plugins.content.plugin import _decode_text, check_text
 from plugins.context.api import ContextModel, Materials, Reminder, Summary, check_summary
 from plugins.context.plugin import ContextBuilder
-from plugins.conversation.source import Conversation, needs_reply
+from plugins.sources.session import SourceSession as Conversation, needs_reply
 from plugins.models.content import render_content
 from plugins.models.projection import MessageProjection, check_facts, check_tool_rejection
 from plugins.models.state import _BoundChat

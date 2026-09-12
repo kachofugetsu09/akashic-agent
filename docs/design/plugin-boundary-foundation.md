@@ -285,3 +285,15 @@ lease 内完成；缺 provider 明确返回 scheduler_unavailable，空列表只
 `ContextBuilder.build_attempt` 以容量拒绝结果承接外部消费者，不要求 import 内部异常类。
 材料消费端及 Content 引用解释的剩余实现依赖继续在后续层迁移；本层不宣称 Context
 已可完全脱离 Content 独立运行。
+
+
+### 9.10 来源接纳与控制
+
+`sources.v2` 接受来源局部声明的 open、needs_reply、accept 和 channels，注册随
+同一 effect 生灭。回复跟随器消费来源自己的待回复判断，不 import conversation。
+普通会话与 programmatic 通过 `source.session.v1` 取得来源控制实例；来源插件拥有
+接纳、暂停、恢复与 Task 准入算法，conversation 只保留普通会话的输入和模型选择。
+
+Message 追加、幂等接纳、撤权与物理排空保持原顺序；没有第二份任务或会话状态。
+Core tasks 公开已有重启准入原子，不拥有业务回复策略。最终输出等待的局部输入
+包含消息前缀 ID，保证 programmatic 仍能等待原连接的真实 writer flush。
