@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import hashlib
 import importlib
+import importlib.util
 import inspect
 import json
 import os
@@ -50,8 +51,12 @@ def _source_checkout(path_or_url: str, repo_root: Path) -> Path | None:
         raise ValueError(
             "source checkout 在本仓库内；外置验收拒绝把 builtin checkout 当 external artifact"
         )
+    if path.is_file():
+        import subprocess
+        subprocess.run(["git", "bundle", "list-heads", str(path)], check=True, capture_output=True)
+        return path
     if not path.is_dir():
-        raise ValueError(f"external source 不是目录: {path}")
+        raise ValueError(f"external source 不是 Git 目录或 bundle: {path}")
     try:
         import subprocess
 
@@ -85,6 +90,9 @@ def _hide_checkouts(repo_root: Path, source_checkout: Path | None) -> None:
         filtered.append(raw)
     sys.path[:] = filtered
     for module_name, module in tuple(sys.modules.items()):
+        if module_name == "plugins" or module_name.startswith("plugins."):
+            sys.modules.pop(module_name, None)
+            continue
         module_file = getattr(module, "__file__", None)
         if not isinstance(module_file, str):
             continue
@@ -129,6 +137,7 @@ async def _exercise(
     workspace: Path,
     plugins_home: Path,
     capability_service: str | None,
+    core_root: Path | None = None,
 ) -> dict[str, Any]:
     """Install one real checkout and execute its V3 apply path."""
 
@@ -140,6 +149,17 @@ async def _exercise(
     }
     evidence["checks"]["source_checkout_is_external"] = True
     try:
+        if core_root is None or _under(core_root, repo_root) or (core_root / "plugins").exists():
+            raise ValueError("外置验收必须提供仓库之外、不含 plugins 的 Core 制品目录")
+        _hide_checkouts(repo_root, source_checkout)
+        sys.path.insert(0, str(core_root))
+        if importlib.util.find_spec("plugins") is not None:
+            raise ValueError("运行环境仍能解析 checkout 的 plugins 命名空间")
+        for name, module in tuple(sys.modules.items()):
+            if name.split(".")[0] in {"agent", "bootstrap", "bus", "core", "infra", "session", "utils"}:
+                location = getattr(module, "__file__", None)
+                if location is not None and not _under(Path(location), core_root):
+                    raise ValueError(f"Core 模块预先从制品之外加载: {name}: {location}")
         from agent.plugins.install import install_git_plugin
         from agent.plugins.manager import PluginManager
         from agent.plugins.static_manifest import load_static_plugin_manifest
@@ -168,9 +188,6 @@ async def _exercise(
             load_static_plugin_manifest(artifact).name == plugin_id.split("@", 1)[0]
         )
 
-        # Core modules are imported before hiding the checkout.  A plugin's
-        # implementation still must not resolve through either checkout.
-        _hide_checkouts(repo_root, source_checkout)
         event_bus = EventBus()
         manager = PluginManager(
             [],
@@ -223,31 +240,38 @@ async def _exercise(
             evidence["checkout_modules_visible"] = visible
             evidence["checks"]["checkout_invisible"] = not visible
 
-            # This is a real public composition read against the plugin-owned
-            # generation.  Optional --capability-service invokes a named
-            # service only when the external plugin publishes that contract.
-            context = snapshot.composition_root.context
-            services = context.provided_services(plugin_ids=frozenset({plugin_id}))
-            capability = {
-                "operation": "CompositionSnapshotRoot.context.provided_services",
-                "service_keys": sorted(key.name for key in services),
-                "service_count": len(services),
-            }
-            if capability_service:
-                from agent.plugin_composition import ServiceKey
+            # 服务目录只证明注册；指定可调用能力的真实执行单独记录。
+            from agent.plugins.snapshot import lease_runtime_snapshot
 
-                value = context.require(ServiceKey(capability_service))
-                capability["requested_service"] = capability_service
-                capability["requested_type"] = type(value).__name__
-                if callable(value):
-                    called = value()
-                    if inspect.isawaitable(called):
-                        called = await called
-                    capability["call_result_type"] = type(called).__name__
+            async with lease_runtime_snapshot(manager.snapshot_store) as leased:
+                context = leased.composition_root.context
+                services = context.provided_services(plugin_ids=frozenset({plugin_id}))
+                capability = {
+                    "operation": "CompositionSnapshotRoot.context.provided_services",
+                    "service_keys": sorted(key.name for key in services),
+                    "service_count": len(services),
+                }
+                evidence["checks"]["capability_call"] = False
+                if capability_service:
+                    from agent.plugin_composition import ServiceKey
+
+                    key = ServiceKey(capability_service)
+                    if key not in services:
+                        raise ValueError("选定能力不是目标插件提供的服务")
+                    value = context.require(key)
+                    capability["requested_service"] = capability_service
+                    capability["requested_type"] = type(value).__name__
+                    if callable(value):
+                        called = value()
+                        if inspect.isawaitable(called):
+                            called = await called
+                        capability["call_result_type"] = type(called).__name__
+                        evidence["checks"]["capability_call"] = True
+                    else:
+                        raise TypeError("选定能力不可调用；读取对象不能充当行为验收")
                 else:
-                    capability["call_result_type"] = type(value).__name__
-            evidence["capability_call"] = capability
-            evidence["checks"]["capability_call"] = True
+                    capability["status"] = "unverified: 必须提供真实能力调用，服务枚举不是调用"
+                evidence["capability_call"] = capability
         finally:
             try:
                 await manager.terminate_all()
@@ -255,7 +279,7 @@ async def _exercise(
                 await event_bus.aclose()
         checks = evidence["checks"]
         evidence["status"] = "passed" if all(checks.values()) else "failed"
-    except BaseException as error:
+    except Exception as error:
         evidence["status"] = "failed"
         evidence["error"] = f"{type(error).__name__}: {error}"
     return evidence
@@ -314,6 +338,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace", type=Path)
     parser.add_argument("--plugins-home", type=Path)
     parser.add_argument("--capability-service")
+    parser.add_argument("--core-root", type=Path, help="已解包、位于 checkout 外且不含业务源码的 Core 制品")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--keep-temporary", action="store_true")
     return parser
@@ -338,11 +363,6 @@ def main(argv: list[str] | None = None) -> int:
     workspace.mkdir(parents=True, exist_ok=True)
     plugins_home.mkdir(parents=True, exist_ok=True)
     repo_root = args.repo_root.resolve(strict=True)
-    # The helper lives under docker/debug; make the selected checkout the
-    # temporary Core import root.  _hide_checkouts removes it immediately
-    # before the external plugin is loaded.
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
 
     reports: list[dict[str, Any]] = []
     try:
@@ -356,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
                         workspace=workspace,
                         plugins_home=plugins_home,
                         capability_service=args.capability_service,
+                        core_root=args.core_root,
                     )
                 )
             )
@@ -403,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                             workspace=workspace / str(entry["package"]),
                             plugins_home=plugins_home / str(entry["package"]),
                             capability_service=args.capability_service,
+                        core_root=args.core_root,
                         )
                     )
                 )
@@ -414,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     finally:
         if temp_root is not None and not args.keep_temporary:
-            shutil.rmtree(temp_root, ignore_errors=True)
+            shutil.rmtree(temp_root)
 
     result = {
         "schema_version": 1,

@@ -52,3 +52,15 @@ def test_all_inventory_requires_a_real_source_mapping(tmp_path: Path, capsys) ->
         str(item.get("error", "")) for item in report["reports"]
     )
     assert not capsys.readouterr().out
+
+
+def test_source_check_cannot_substitute_for_packaged_core(tmp_path):
+    import asyncio
+    from docker.debug.plugin_external_acceptance import _exercise
+
+    evidence = asyncio.run(_exercise(source="https://example.invalid/plugin.git",
+        repo_root=Path(__file__).parents[1], marketplace="test", workspace=tmp_path / "workspace",
+        plugins_home=tmp_path / "home", capability_service=None))
+    assert evidence["status"] == "failed"
+    assert "Core 制品" in evidence["error"]
+    assert not evidence["checks"].get("capability_call", False)

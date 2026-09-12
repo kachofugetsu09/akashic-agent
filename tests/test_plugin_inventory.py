@@ -1,42 +1,24 @@
-from __future__ import annotations
-
-from pathlib import Path
+"""清单不能通过独立的一套宽泛公开目录规则隐藏实现依赖。"""
+import subprocess
 
 from scripts.plugin_inventory import build_inventory
 
 
-def test_inventory_covers_manifest_plugins_and_support_packages() -> None:
-    report = build_inventory(Path(__file__).parents[1])
-    packages = {entry["package"]: entry for entry in report["packages"]}
-
-    assert report["schema_version"] == 1
-    assert report["summary"]["package_count"] == len(packages)
-    assert report["summary"]["manifest_plugin_count"] >= 1
-    assert report["summary"]["support_package_count"] >= 1
-    assert packages["akasha"]["classification"] == "manifest-plugin"
-    assert packages["content"]["classification"] == "support-package"
-    assert all(entry["source_digest"] for entry in packages.values())
-    assert all("static_imports" in entry for entry in packages.values())
-
-
-def test_inventory_keeps_current_boundary_debt_as_failure_evidence() -> None:
-    report = build_inventory(Path(__file__).parents[1])
-    violations = report["static_boundary_violations"]
-    kinds = {item["kind"] for item in violations}
-
-    # This is intentionally a red baseline on the pre-migration tree.  The
-    # inventory must expose debt instead of granting a blanket historical
-    # allowlist or claiming one external example proves the fleet.
-    assert violations
-    assert "not_installable_artifact" in kinds
-    assert "sibling_plugin_import" in kinds
-    assert "private_core_import" in kinds
-
-
-def test_inventory_records_core_side_plugin_consumers() -> None:
-    report = build_inventory(Path(__file__).parents[1])
-    consumers = report["core_consumer_imports"]
-
-    assert consumers
-    assert all({"file", "line", "target"} <= set(item) for item in consumers)
-    assert any(item["target"].startswith("plugins.") for item in consumers)
+def test_inventory_includes_support_packages_and_uses_frozen_boundary_rules(tmp_path):
+    files = {
+        "plugins/one/plugin.py": "from agent.plugin_composition.future_private import Hidden\nfrom plugins.two.impl import run\n",
+        "plugins/two/impl.py": "def run(): pass\n",
+        "bootstrap/app.py": "from plugins.two.impl import run\n",
+    }
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True, capture_output=True)
+    report = build_inventory(tmp_path)
+    assert {item["package"] for item in report["packages"]} == {"one", "two"}
+    assert report["summary"]["support_package_count"] == 2
+    assert {item["kind"] for item in report["static_boundary_violations"]} == {
+        "R1", "R2", "R3", "not_installable_artifact"}
+    assert report["core_consumer_imports"] == [{"file": "bootstrap/app.py", "target": "plugins.two.impl"}]
