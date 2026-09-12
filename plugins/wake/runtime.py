@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
-from agent.control.timer import TimerReceipt, TimerStatus
+from agent.plugin_composition.timers import TimerReceipt, TimerStatus
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG

@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from agent.plugin_composition import Context
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.messages import MESSAGE_WRITERS
-from session.artifacts import AttachmentKind
+from agent.plugin_composition.artifacts import AttachmentKind
 from agent.plugin_contracts import ContentPart, Output
-from session.message_codec import decode_body, encode_body
+from agent.plugin_contracts import decode_body, encode_body
 from agent.plugin_contracts import json_value
 
 from .boundary import CONTENT, DELIVERY, CallSource, ReceiptView, ToolResult

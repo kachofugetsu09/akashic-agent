@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from agent.control.timer import OneShotTimer, TimerHandle
+from agent.control.timer import (
+    OneShotTimer, TimerHandle, TimerReceipt as TimerReceipt, TimerStatus as TimerStatus,
+)
 from agent.plugin_composition.model import ServiceKey
 
 

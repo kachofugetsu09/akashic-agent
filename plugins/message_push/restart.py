@@ -17,7 +17,7 @@ from agent.plugin_composition import (
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.control.frame_book import CONTROL_FRAMES, FrameBook, FrameClaim, FrameRouteReleased
-from agent.restart import RESTART_GATE, RestartGate, RestartRejectedError
+from agent.plugin_composition.tasks import RESTART_GATE, RestartGate, RestartRejectedError
 from agent.plugin_contracts import ContentPart, Message
 from agent.plugin_composition.messages import MessageCatalog, MessageReader
 from agent.plugin_contracts import CallRef, Input, Output, ToolCall, ToolResult as ToolMessageResult, freeze_json

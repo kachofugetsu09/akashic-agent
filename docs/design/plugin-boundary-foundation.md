@@ -364,3 +364,15 @@ Wake 只提交目的地记录、固定工具引用和已校验内容，兴趣、
 模型请求预算耗尽属于不可重试的 ModelError；react 保留自身 StepLimit 类和原错误说明，
 Wake 使用同一失败通道保存 Control 并结算原职责。完整请求预算测试确认无发送、不自动
 重试且原职责只关闭一次。删除只比较字面字段或重复静态扫描的临时测试，保留真实链路断言。
+
+
+### 9.16 公开原子与执行租约
+
+Message 编解码实现归入现有公开 Message 值模块；Core 旧路径仅保留兼容引用，
+编码字节、旧 unknown 重放和新消息拒绝规则不变。附件值、timer 回执和 restart
+拒绝是已有 Core 原子的公开输入输出，不增加业务模型或另一份状态。
+
+react 通过 Context 的公开 capture_runtime_scope 取得真实调用租约，不再读取宿主
+snapshot 私有全局。已提交调用的取消、排空和 generation 归属保留原路径。
+restart 回归组合安装真正的 standard_tools 清理 owner，并明确授予其 skills 材料权；
+测试在 reply.execute 的注入点协调清理与发送，验证关闭完成前不能提交 restart。

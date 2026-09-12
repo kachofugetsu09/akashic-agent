@@ -11,7 +11,10 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager, asyn
 from dataclasses import dataclass, field
 from typing import TypeVar, Protocol
 
-from agent.restart import ExternalRootPermit as ExternalRootPermit, RestartGate as RestartGate, RESTART_GATE as RESTART_GATE
+from agent.restart import (
+    ExternalRootPermit as ExternalRootPermit, RestartGate as RestartGate,
+    RESTART_GATE as RESTART_GATE, RestartRejectedError as RestartRejectedError,
+)
 
 from agent.plugin_composition.context import Context, RuntimeScope
 from uuid import uuid4

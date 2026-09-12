@@ -7,7 +7,7 @@ from agent.plugin_composition.artifacts import ARTIFACT_IMPORT
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS
 from agent.control.frame_book import CONTROL_FRAMES
-from agent.restart import RESTART_GATE
+from agent.plugin_composition.tasks import RESTART_GATE
 
 from .boundary import (
     CONTENT,
