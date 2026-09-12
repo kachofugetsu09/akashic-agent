@@ -18,6 +18,16 @@ from session.message import ContentPart, Input
 from session.store import SessionStore
 
 
+def _copy_checkout_plugins(tmp_path: Path) -> Path:
+    source = tmp_path / "plugins"
+    shutil.copytree(
+        Path(__file__).parents[1] / "plugins",
+        source,
+        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
+    )
+    return source
+
+
 @pytest.mark.asyncio
 async def test_core_opens_message_schema_and_real_source_without_legacy_execution(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
@@ -131,6 +141,7 @@ async def test_default_runtime_starts_settings_without_embedding(tmp_path, monke
     workspace = tmp_path / "workspace"
     _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
+    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [_copy_checkout_plugins(tmp_path)])
     http = SharedHttpResources()
     core = bootstrap.build_core_runtime(Config(), workspace, http)
     try:
@@ -314,6 +325,7 @@ async def test_app_checks_sender_before_starting_native_receiver(tmp_path, monke
     workspace = tmp_path / "workspace"
     _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
+    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [_copy_checkout_plugins(tmp_path)])
     started = []
     async def start(self, context):
         started.append(self.name)
@@ -381,6 +393,7 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     workspace = tmp_path / "workspace"
     _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
+    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [_copy_checkout_plugins(tmp_path)])
     ready = asyncio.Event()
     class Readiness(RuntimeReadiness):
         def mark_ready(self):

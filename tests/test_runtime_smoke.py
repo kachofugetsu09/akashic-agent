@@ -231,23 +231,28 @@ disabled_builtin = ["subagent", "scheduler"]
     assert cfg.disabled_builtin_plugins == frozenset({"subagent", "scheduler"})
 
 
-def test_runtime_accepts_all_real_builtin_entrypoints_and_rejects_unknown(
-    monkeypatch,
-) -> None:
+def test_runtime_validates_disabled_plugin_ids_only_for_explicit_roots(monkeypatch) -> None:
     from agent.config_models import Config
     from bootstrap.tools import _disabled_builtin_plugins_for_runtime
 
     monkeypatch.setenv("AKASHIC_WORKLOAD_SOCKET", "/tmp/fixture.sock")
+    repo_plugins = Path(__file__).parents[1] / "plugins"
     existing = frozenset(
         {"akasha", "scheduler", "wake", "compaction", "markdown_memory"}
     )
     assert (
-        _disabled_builtin_plugins_for_runtime(Config(disabled_builtin_plugins=existing))
+        _disabled_builtin_plugins_for_runtime(
+            Config(disabled_builtin_plugins=existing), [repo_plugins]
+        )
         == existing
     )
+    assert _disabled_builtin_plugins_for_runtime(
+        Config(disabled_builtin_plugins=frozenset({"future-plugin"}))
+    ) == frozenset({"future-plugin"})
     with pytest.raises(ValueError, match="未知内置插件: agent_restart, skills"):
         _disabled_builtin_plugins_for_runtime(
-            Config(disabled_builtin_plugins=frozenset({"skills", "agent_restart"}))
+            Config(disabled_builtin_plugins=frozenset({"skills", "agent_restart"})),
+            [repo_plugins],
         )
 
 
