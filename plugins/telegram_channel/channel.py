@@ -24,6 +24,7 @@ from agent.plugin_composition import (
     AttachmentKind,
     AttachmentRef,
     ChannelAdapter,
+    ChannelCleanupFailure,
     ChannelFactoryContext,
     ChannelInboundMessage,
     ChannelReady,
@@ -200,7 +201,9 @@ class TelegramChannelAdapter:
                 admission_open=False,
             )
         except BaseException:
-            await self._close_provider_after_failed_start()
+            receipt = await self.stop()
+            if not receipt.resources_closed:
+                logger.error("Telegram 启动后清理未完成: %s", receipt.failures)
             raise
 
     async def deliver(self, request: ProviderDeliveryRequest) -> ProviderDeliveryReceipt:
@@ -282,42 +285,59 @@ class TelegramChannelAdapter:
     async def _stop(self) -> StopReceipt:
         self._stopping = True
         self._admission_open = False
+        failures: list[ChannelCleanupFailure] = []
         tasks = tuple(self._inbound_tasks)
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            failures.extend(
+                self._cleanup_failure("inbound", result)
+                for result in results
+                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
+            )
         app = self._app
         if app is not None:
             updater = app.updater
             if updater is not None and updater.running:
-                await updater.stop()
+                try:
+                    await updater.stop()
+                except BaseException as error:
+                    failures.append(self._cleanup_failure("updater", error))
             if app.running:
-                await app.stop()
-            await app.shutdown()
+                try:
+                    await app.stop()
+                except BaseException as error:
+                    failures.append(self._cleanup_failure("application", error))
+            try:
+                await app.shutdown()
+            except BaseException as error:
+                failures.append(self._cleanup_failure("shutdown", error))
+            if not any(item.resource in {"updater", "application", "shutdown"} for item in failures):
+                self._app = None
         provider = self._provider_client
         if provider is not None:
-            await provider.aclose()
-        self._provider_client = None
-        self._app = None
+            try:
+                await provider.aclose()
+            except BaseException as error:
+                failures.append(self._cleanup_failure("provider", error))
+            else:
+                self._provider_client = None
         self._started = False
+        if failures or self._app is not None or self._provider_client is not None:
+            self._stop_task = None
+            return StopReceipt(self._binding_token, resources_closed=False, failures=tuple(failures))
         return StopReceipt(self._binding_token, resources_closed=True)
 
-    async def _close_provider_after_failed_start(self) -> None:
-        app = self._app
-        if app is not None:
-            try:
-                updater = app.updater
-                if updater is not None and updater.running:
-                    await updater.stop()
-                if app.running:
-                    await app.stop()
-                await app.shutdown()
-            except Exception:
-                logger.exception("Telegram start 清理失败")
-        provider = self._provider_client
-        self._app = None
-        self._provider_client = None
-        if provider is not None:
-            await provider.aclose()
+    def _cleanup_failure(self, resource: str, error: BaseException) -> ChannelCleanupFailure:
+        return ChannelCleanupFailure(
+            stage="adapter",
+            plugin_id="telegram_channel",
+            generation_id=self._context.generation_id,
+            binding_token=self._binding_token,
+            resource=resource,
+            error_type=type(error).__name__,
+            message=str(error) or type(error).__name__,
+            retry_action="再次调用 Telegram channel.stop()",
+        )
 
     async def _on_update(
         self,
@@ -540,7 +560,6 @@ class TelegramChannelAdapter:
 
     def _on_polling_error(self, error: TelegramError) -> None:
         logger.warning("[telegram] polling 异常，provider 将继续重试: %s", type(error).__name__)
-
 
 
 __all__ = ["TelegramChannelAdapter", "build_telegram_channel"]

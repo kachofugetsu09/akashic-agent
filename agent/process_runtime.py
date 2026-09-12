@@ -9,12 +9,39 @@ import signal
 import subprocess
 import tempfile
 import time
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 
 from utils.process_group import process_group_exists
+
+
+_PROCESS_RESOURCES: dict[str, object] = {}
+_PROCESS_RESOURCES_LOCK = threading.Lock()
+
+
+class ProcessResourceClaim:
+    """占有进程共享资源，只有显式确认释放后才能交给另一代。"""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._token = object()
+        self._released = False
+        with _PROCESS_RESOURCES_LOCK:
+            if name in _PROCESS_RESOURCES:
+                raise RuntimeError(f"进程资源仍由另一 owner 占用: {name}")
+            _PROCESS_RESOURCES[name] = self._token
+
+    def release(self) -> None:
+        if self._released:
+            return
+        with _PROCESS_RESOURCES_LOCK:
+            if _PROCESS_RESOURCES[self._name] is not self._token:
+                raise RuntimeError("进程资源 owner 已变化")
+            del _PROCESS_RESOURCES[self._name]
+            self._released = True
 
 
 class ShellProcessManagerProtocol(Protocol):
