@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.rpc import rpc_method_key
+
 
 _MAX_DOCUMENT_BYTES = 192 * 1024
 
@@ -27,9 +27,6 @@ class SkillReader(Protocol):
     def list_skills(self) -> tuple[Mapping[str, object], ...]: ...
 
 
-RUNTIME_INSPECTION = cast(
-    ServiceKey["RuntimeInspectionProvider"], rpc_method_key("runtime/inspection")
-)
 SCHEDULER_INSPECTION = ServiceKey[SchedulerReader]("scheduler.inspection.v1")
 SKILL_INSPECTION = ServiceKey[SkillReader]("standard_tools.skill_inspection.v1")
 
@@ -186,7 +183,6 @@ class RuntimeInspectionProvider:
 
 
 __all__ = [
-    "RUNTIME_INSPECTION",
     "RuntimeInspectionProvider",
     "SCHEDULER_INSPECTION",
     "SKILL_INSPECTION",

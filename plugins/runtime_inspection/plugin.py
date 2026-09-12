@@ -5,9 +5,10 @@ from typing import TypeVar
 
 from agent.plugin_composition import Context
 from agent.plugin_composition.model import ServiceKey
+from agent.plugin_composition.rpc import rpc_method_key
+from .rpc import rpc_methods
 
 from .inspection import (
-    RUNTIME_INSPECTION,
     SCHEDULER_INSPECTION,
     SKILL_INSPECTION,
     RuntimeInspectionProvider,
@@ -59,7 +60,8 @@ async def apply(ctx: Context, config: object) -> None:
             "veda": ctx.workspace_file("memory/VEDA.md"),
         }
     )
-    _ = await ctx.provide(RUNTIME_INSPECTION, provider)
+    for name, operation in rpc_methods(provider).items():
+        _ = await ctx.provide(rpc_method_key(name), operation)
     await _bind_optional(
         ctx,
         provider,

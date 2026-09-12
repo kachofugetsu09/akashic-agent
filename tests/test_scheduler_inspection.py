@@ -85,13 +85,16 @@ class _Provider:
 
 @pytest.mark.asyncio
 async def test_core_passes_through_scheduler_projection_without_reading_workspace(tmp_path: Path) -> None:
-    from agent.plugin_composition import CompositionRoot, ServiceKey
+    from agent.plugin_composition import CompositionRoot
+    from agent.plugin_composition.rpc import rpc_method_key
+    from plugins.runtime_inspection.rpc import rpc_methods
     from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore, get_current_runtime_snapshot
 
     root = CompositionRoot("scheduler-inspection")
     provider = _Provider()
     async def apply(ctx):
-        await ctx.provide(ServiceKey("control.rpc:runtime/inspection"), provider)
+        for method, operation in rpc_methods(provider).items():
+            await ctx.provide(rpc_method_key(method), operation)
     await root.mount(apply, name="external-scheduler")
     store = RuntimeSnapshotStore()
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
@@ -115,7 +118,9 @@ async def test_core_passes_through_scheduler_projection_without_reading_workspac
 
 @pytest.mark.asyncio
 async def test_core_does_not_swallow_scheduler_provider_failure(tmp_path: Path) -> None:
-    from agent.plugin_composition import CompositionRoot, ServiceKey
+    from agent.plugin_composition import CompositionRoot
+    from agent.plugin_composition.rpc import rpc_method_key
+    from plugins.runtime_inspection.rpc import rpc_methods
     from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 
     class BrokenProvider:
@@ -126,12 +131,10 @@ async def test_core_does_not_swallow_scheduler_provider_failure(tmp_path: Path) 
             raise RuntimeError("scheduler read failed")
 
     root = CompositionRoot("scheduler-inspection-failure")
-    await root.mount(
-        lambda ctx: ctx.provide(
-            ServiceKey("control.rpc:runtime/inspection"), BrokenProvider()
-        ),
-        name="external-scheduler",
-    )
+    async def apply(ctx):
+        for method, operation in rpc_methods(BrokenProvider()).items():
+            await ctx.provide(rpc_method_key(method), operation)
+    await root.mount(apply, name="external-scheduler")
     store = RuntimeSnapshotStore()
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
     store.install(snapshot)
