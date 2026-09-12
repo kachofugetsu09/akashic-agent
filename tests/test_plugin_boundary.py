@@ -48,6 +48,7 @@ def test_plugin_sanctioned_surface_passes() -> None:
         _import("plugins/reply/plugin.py", "agent.plugin_composition.timers"),
         _import("plugins/reply/plugin.py", "agent.plugin_contracts"),
         _import("plugins/reply/plugin.py", "agent.plugin_contracts.message"),
+        _import("plugins/reply/plugin.py", "agent.tool_catalog"),
         _import("plugins/reply/plugin.py", "asyncio"),
     ])
     assert violations == []

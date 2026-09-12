@@ -95,6 +95,7 @@ PLUGIN_ALLOWED_MODULES = frozenset({
     "agent.plugin_composition.tasks",
     "agent.plugin_composition.timers",
     "agent.plugin_composition.tool_catalog",
+    "agent.tool_catalog",
     "agent.plugin_composition.ui_slots",
     "agent.plugin_composition.workload_slots",
     "agent.plugin_contracts",

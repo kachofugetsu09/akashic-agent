@@ -21,7 +21,7 @@ from agent.plugin_composition.process_runtime import (
     format_execution_result,
 )
 from agent.plugin_composition.shell_runtime import resolve_shell
-from agent.plugin_composition.tool_catalog import (
+from agent.tool_catalog import (
     normalize_tool_parameters,
     validate_tool_parameters,
 )

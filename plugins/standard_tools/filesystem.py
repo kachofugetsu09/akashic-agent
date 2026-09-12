@@ -9,7 +9,7 @@ from agent.host_bridge.filesystem import (
     ReadFileOperation,
     WriteFileOperation,
 )
-from agent.plugin_composition.tool_catalog import ToolResult
+from agent.tool_catalog import ToolResult
 
 
 class ReadFileTool(ReadFileOperation):
