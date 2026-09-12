@@ -13,6 +13,17 @@
       "owner": "prompt",
       "contract": "prompt.materials.v1",
       "reason": "Prompt 插件拥有首次人格初始化与 Prompt 材料贡献。"
+    },
+    "context_materials": {
+      "owner": "context",
+      "contract": "context.materials.v3",
+      "reason": "正式资产声明授予 Prompt、Skills 与摘要材料的实际插件 owner。",
+      "prompt_sources": {
+        "default_prompt": "prompt",
+        "markdown_memory": "markdown_memory",
+        "skills": "standard_tools"
+      },
+      "summary_source": ["compaction", "compaction"]
     }
   },
   "plugins": [

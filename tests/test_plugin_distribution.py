@@ -33,6 +33,11 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
         "initialization": {
             "authorization": {"owner": "one"},
             "prompt": {"owner": "two"},
+            "context_materials": {
+                "owner": "one",
+                "prompt_sources": {"fixture": "one"},
+                "summary_source": ["summary", "one"],
+            },
         },
         "plugins": [
             {"name": "one", "depends_on": [], "reason": "fixture capability"},
@@ -64,6 +69,11 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(tmp_pa
         plugins_home=tmp_path / "profile-home",
     )
     assert [item["name"] for item in profile_receipt["installed"]] == ["one", "two"]
+    context_config = tmp_path / "profile-workspace/plugin-data/context-distribution/config.local.toml"
+    assert context_config.read_text() == (
+        'prompt_sources = {fixture = "one@distribution"}\n'
+        'summary_source = ["summary", "one@distribution"]\n'
+    )
     assert not (tmp_path / "profile-home" / "cache" / "distribution" / "unused").exists()
     for row in report["plugins"]:
         installed = install_git_plugin(workspace=tmp_path / "workspace", plugins_home=tmp_path / "home",

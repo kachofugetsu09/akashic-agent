@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
 import tarfile
+import tempfile
 from typing import Any
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -230,7 +232,92 @@ def _load_profile(path: Path) -> tuple[str, str, list[dict[str, Any]], dict[str,
             raise ValueError(
                 f"profile initialization.{key}.owner 不在已选插件中: {owner['owner']}"
             )
+    materials = initialization.get("context_materials")
+    if materials is not None:
+        if not isinstance(materials, dict):
+            raise ValueError("profile initialization.context_materials 必须是 object")
+        if not isinstance(materials.get("owner"), str) or materials["owner"] not in selected:
+            raise ValueError(
+                "profile initialization.context_materials.owner 不在已选插件中"
+            )
+        prompt_sources = materials.get("prompt_sources")
+        if (
+            not isinstance(prompt_sources, dict)
+            or not prompt_sources
+            or any(
+                not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(owner, str)
+                or not owner.strip()
+                or owner not in selected
+                for name, owner in prompt_sources.items()
+            )
+        ):
+            raise ValueError(
+                "profile initialization.context_materials.prompt_sources 必须引用已选插件"
+            )
+        summary_source = materials.get("summary_source")
+        if (
+            not isinstance(summary_source, list)
+            or len(summary_source) != 2
+            or any(not isinstance(item, str) or not item.strip() for item in summary_source)
+            or summary_source[1] not in selected
+        ):
+            raise ValueError(
+                "profile initialization.context_materials.summary_source 必须引用已选插件"
+            )
     return profile_name, marketplace, normalized, initialization
+
+
+def _write_context_materials(
+    workspace: Path,
+    *,
+    marketplace: str,
+    declaration: dict[str, Any],
+) -> dict[str, str]:
+    """原子创建 profile 声明的 Context 材料授权，绝不覆盖既有工作区配置。"""
+
+    config_dir = workspace / "plugin-data" / f"context-{marketplace}"
+    config_path = config_dir / "config.local.toml"
+    if config_path.exists() or config_path.is_symlink():
+        if config_path.is_symlink() or not config_path.is_file():
+            raise ValueError(f"Context 材料配置不是普通文件: {config_path}")
+        return {"path": str(config_path), "status": "existing"}
+
+    prompt_sources = declaration["prompt_sources"]
+    summary_source = declaration["summary_source"]
+    prompt_entries = ", ".join(
+        f'{name} = "{owner}@{marketplace}"'
+        for name, owner in sorted(prompt_sources.items())
+    )
+    content = (
+        f"prompt_sources = {{{prompt_entries}}}\n"
+        f'summary_source = ["{summary_source[0]}", "{summary_source[1]}@{marketplace}"]\n'
+    )
+    config_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".config.local.", suffix=".tmp", dir=config_dir
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, config_path)
+        except FileExistsError:
+            if config_path.is_symlink() or not config_path.is_file():
+                raise ValueError(f"Context 材料配置不是普通文件: {config_path}")
+            return {"path": str(config_path), "status": "existing"}
+        directory_fd = os.open(config_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {"path": str(config_path), "status": "created"}
 
 
 def install_profile(
@@ -300,6 +387,15 @@ def install_profile(
                 "data_path": str(result.data_path),
             }
         )
+    context_materials = initialization.get("context_materials")
+    context_config = None
+    if context_materials is not None:
+        assert isinstance(context_materials, dict)
+        context_config = _write_context_materials(
+            workspace,
+            marketplace=marketplace,
+            declaration=context_materials,
+        )
     return {
         "schema_version": 1,
         "distribution_source_commit": report["source_commit"],
@@ -307,6 +403,7 @@ def install_profile(
         "profile": profile_name,
         "marketplace": marketplace,
         "initialization_owners": initialization,
+        "context_materials_config": context_config,
         "formal_installer": "agent.plugins.install.install_git_plugin",
         "installed": installed,
     }
