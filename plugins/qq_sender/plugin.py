@@ -12,9 +12,8 @@ from websockets.exceptions import InvalidHandshake
 from agent.plugin_composition import CREDENTIALS, Context, CredentialRef, Effect, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from session.message import Message
 
-from .sender import QQSender, SendResult
+from .sender import QQSender
 
 api_version = 3
 name = "qq_sender"
@@ -24,10 +23,6 @@ desc = "通过固定 OneBot 连接发送 QQ 正文和附件"
 
 class SenderTarget(Protocol):
     idempotent: bool
-
-    async def send(self, key: str, address: str, message: Message) -> SendResult: ...
-
-    async def query(self, key: str, address: str) -> SendResult | None: ...
 
 
 class SenderRegistry(Protocol):

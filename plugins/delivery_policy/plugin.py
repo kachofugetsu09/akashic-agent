@@ -5,7 +5,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from functools import partial
-from typing import cast
+from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,7 +21,6 @@ from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.reply.completion import REPLY_COMPLETION
 from session.log import MessageReader
 from session.message import ContentPart, Input, Message, Output, ToolCall
-from plugins.turn_projection.plugin import Turn
 
 from .follow import follow
 
@@ -37,6 +36,13 @@ inject = (DELIVERY, DELIVERY_SENDERS, BINDINGS, MESSAGE_CATALOG, FINAL_OUTPUT_DE
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sources: tuple[str, ...] = Field(default=("conversation",), min_length=1)
+
+
+class FinalOutputTurn(Protocol):
+    """策略只读取最终消息标识，不依赖 turn_projection 的实现类型。"""
+
+    source: str
+    ending_message_id: str | None
 
 
 def origin(reader: MessageReader, message: Message, sources: tuple[str, ...]) -> tuple[str, str] | None:
@@ -78,7 +84,7 @@ class DeliveryFinalOutput:
         self._ctx = ctx
         self._timeout_s = timeout_s
 
-    async def wait(self, reader: MessageReader, turn: Turn) -> None:
+    async def wait(self, reader: MessageReader, turn: FinalOutputTurn) -> None:
         ending = turn.ending_message_id
         if ending is None:
             raise RestartRejectedError("最终 Turn 没有 Output")

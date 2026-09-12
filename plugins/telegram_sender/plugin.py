@@ -10,9 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from agent.plugin_composition import CREDENTIALS, Context, CredentialRef, Effect, ServiceKey
 from agent.plugin_composition.artifacts import ARTIFACT_READ
 from agent.plugin_composition.messages import MESSAGE_CATALOG
-from session.message import Message
 
-from .sender import SendResult, TelegramSender
+from .sender import TelegramSender
 
 api_version = 3
 name = "telegram_sender"
@@ -22,10 +21,6 @@ desc = "用固定凭据发送 Telegram 正文和附件"
 
 class SenderTarget(Protocol):
     idempotent: bool
-
-    async def send(self, key: str, address: str, message: Message) -> SendResult: ...
-
-    async def query(self, key: str, address: str) -> SendResult | None: ...
 
 
 class SenderRegistry(Protocol):
