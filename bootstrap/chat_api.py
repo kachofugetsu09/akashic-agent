@@ -107,11 +107,6 @@ async def _model_rpc_response(
             status_code=422,
             detail=_model_rpc_validation_detail(error),
         ) from error
-    except ValueError as error:
-        raise HTTPException(
-            status_code=422,
-            detail=_model_rpc_validation_detail(error),
-        ) from error
     if not isinstance(result, Mapping):
         raise RuntimeError(f"{method} RPC response 必须是对象")
     response = cast(Mapping[str, object], result)

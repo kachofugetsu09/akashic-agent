@@ -19,7 +19,7 @@ from plugins.models.model_settings_http import (
     create_model_settings_router,
     rpc_methods,
 )
-from bootstrap.chat_api import create_chat_app
+from bootstrap.chat_api import _model_rpc_response, create_chat_app
 from infra.channels.web_chat_channel import WebChatChannel
 from tests.test_model_call_records import descriptor, store, dump
 from tests.test_mobile_message_log import mobile
@@ -163,3 +163,18 @@ async def test_chat_model_route_dispatches_plugin_rpc_under_one_snapshot_lease(
     finally:
         await snapshots.close()
         await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_chat_model_route_does_not_hide_provider_programming_errors():
+    """Only plugin-owned validation errors become HTTP 422 responses."""
+
+    class BrokenControl:
+        async def invoke_rpc(
+            self, method: str, params: dict[str, object]
+        ) -> object:
+            del method, params
+            raise ValueError("provider invariant broken")
+
+    with pytest.raises(ValueError, match="provider invariant broken"):
+        await _model_rpc_response(BrokenControl(), "models/catalog", {})
