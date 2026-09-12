@@ -105,15 +105,19 @@ async def register_skills(ctx: Context) -> ToolRef:
     archive_path = ctx.data_root / "skill-files"
     read_assets = ctx.require(INSTALLED_ASSETS)
     parser = SkillCatalogParser()
+    cached_assets: tuple[InstalledAsset, ...] | None = None
     cached_catalog: tuple[SkillRecord, ...] | None = None
 
     def read_catalog() -> tuple[SkillRecord, ...]:
-        nonlocal cached_catalog
-        if cached_catalog is None:
-            cached_catalog = parser.parse(read_assets())
+        """每次先取得当前租约的资产；缓存不能绕过作用域或保留旧目录。"""
+        nonlocal cached_assets, cached_catalog
+        assets = read_assets()
+        if cached_catalog is None or assets != cached_assets:
+            cached_catalog = parser.parse(assets)
+            cached_assets = assets
         return cached_catalog
 
-    await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_catalog))
+    _ = await ctx.provide(SKILL_INSPECTION, SkillInspectionProvider(read_catalog))
 
     def capture(configuration: Mapping[str, object]) -> Mapping[str, object]:
         if configuration:

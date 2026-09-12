@@ -4462,11 +4462,6 @@ class PluginManager:
                     "prepared_generation": None,
                     "gate_status": "active",
                     "candidate_revision": source_revision,
-                    "skills": [],
-                    "skill_descriptions": {},
-                    "drift_skill_descriptions": {},
-                    "skill_body_hashes": {},
-                    "drift_skill_body_hashes": {},
                     "mcp_tools": _mcp_tool_names(active),
                     "snapshot_id": (
                         self.current_snapshot.snapshot_id
@@ -4498,11 +4493,6 @@ class PluginManager:
                 "candidate_revision": (
                     gate.candidate_revision if gate is not None else ""
                 ),
-                "skills": [],
-                "skill_descriptions": {},
-                "drift_skill_descriptions": {},
-                "skill_body_hashes": {},
-                "drift_skill_body_hashes": {},
                 "mcp_tools": _mcp_tool_names(prepared) if prepared is not None else [],
                 "snapshot_id": (
                     self.current_snapshot.snapshot_id
@@ -5691,6 +5681,8 @@ class PluginManager:
             def read_installed_assets() -> tuple[InstalledAsset, ...]:
                 """读取当前 runtime scope 固定的原始声明资产树。"""
                 snapshot = get_current_runtime_snapshot()
+                if snapshot is None:
+                    raise RuntimeError("读取声明资产需要当前任务的 runtime scope")
                 current = snapshot.composition_root
                 if current is None or current.context.require(INSTALLED_ASSETS) is not read_installed_assets:
                     raise RuntimeError("声明资产不属于当前 runtime scope")
@@ -8142,14 +8134,12 @@ def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
 def _log_candidate_status(result: dict[str, object]) -> None:
     logger.info(
         "plugin_candidate_status plugin=%s gate=%s active=%s prepared=%s "
-        "revision=%s counts=skills:%d,drift_skills:%d,mcp:%d",
+        "revision=%s mcp_tools=%d",
         result["plugin_id"],
         result["gate_status"],
         result["active_generation"],
         result["prepared_generation"] or "-",
         str(result["candidate_revision"])[:12],
-        len(cast(list[object], result["skills"])),
-        len(cast(dict[object, object], result["drift_skill_descriptions"])),
         len(cast(list[object], result["mcp_tools"])),
     )
     logger.debug(

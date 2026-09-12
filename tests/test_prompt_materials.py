@@ -24,7 +24,6 @@ from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from session.log import MessageLog
 from session.artifact_store import ArtifactStore
 from session.message import ContentPart, Input, Output, ToolResult
-from tests.test_message_push_plugin import storage
 
 
 def prompt_sources(sources):
@@ -63,7 +62,10 @@ async def apply(ctx, config):
 @asynccontextmanager
 async def application(tmp_path):
     sources = tmp_path / "plugins"
-    store, log = storage(tmp_path / "workspace")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    log = MessageLog(workspace / "sessions.db")
+    store = ArtifactStore(workspace / "sessions.db")
     for name in ("content", "context", "tools"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
@@ -143,6 +145,24 @@ async def test_prompt_fails_on_missing_or_corrupt_veda_without_reset(tmp_path, p
                     await view.prepare((), "conversation")
         assert not veda.exists() if payload is None else veda.read_bytes() == payload
         assert not (tmp_path / "workspace/memory/veda-backups").exists()
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_cache_still_requires_the_calling_task_lease(tmp_path):
+    async with application(tmp_path) as (_, host):
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            service = snapshot.composition_root.context.require(
+                ServiceKey("standard_tools.skill_inspection.v1")
+            )
+            assert [item["name"] for item in service.list_skills()] == ["example"]
+
+            async def inherited_task():
+                return service.list_skills()
+
+            with pytest.raises(RuntimeError, match="当前任务的 runtime scope"):
+                await asyncio.create_task(inherited_task())
+        with pytest.raises(RuntimeError, match="当前任务的 runtime scope"):
+            service.list_skills()
 
 
 @pytest.mark.asyncio
