@@ -49,6 +49,7 @@ def release_environment(
     """Build runtime.env by replacing only release-owned generation fields."""
 
     commit = str(manifest["sourceCommit"])
+    tree = str(manifest["sourceTree"])
     host_identity = manifest["hostToolchainIdentity"]
     if not isinstance(host_identity, Mapping):
         raise RuntimeError("release manifest 缺少 host toolchain identity")
@@ -60,6 +61,7 @@ def release_environment(
             "AKASHIC_MISE": str(mise),
             "AKASHIC_RUNTIME_CHECKOUT": str(paths.source(commit)),
             "AKASHIC_RUNTIME_COMMIT": commit,
+            "AKASHIC_RUNTIME_TREE": tree,
             "AKASHIC_HOST_TOOLCHAIN_DIGEST": str(host_identity["toolchainDigest"]),
             "AKASHIC_RELEASE_MANIFEST": str(paths.release(commit)),
             "AKASHIC_IMAGE": str(manifest["imageId"]),
