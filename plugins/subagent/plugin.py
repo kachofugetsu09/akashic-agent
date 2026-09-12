@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
-from typing import cast
+from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING
+from agent.plugin_composition import CHAT_MODELS, Context, RUNTIME_STARTED, RUNTIME_STOPPING, ServiceKey
 from plugins.content.plugin import CONTENT
 from plugins.context.plugin import CONTEXT
 from plugins.context.materials import MATERIALS
@@ -26,7 +26,7 @@ from agent.plugin_composition.tasks import TASKS, Task
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageReader
-from session.message import Message
+from session.message import CallRef, Message
 
 from .prompts import build_spawn_subagent_prompt
 from .request import PROFILE_TOOLS, Request, SpawnInput
@@ -37,6 +37,26 @@ api_version = 3
 name = "subagent"
 version = "4.0.0"
 desc = "独立内部消息任务，固定工具权限并向父会话回传"
+
+
+class ToolCleanup(Protocol):
+    """Subagent 只接收工具 owner 的窄收尾边界。"""
+
+    def __call__(
+        self,
+        ctx: Context,
+        reader: MessageReader,
+        source: str,
+        from_seq: int,
+        *,
+        task: Task,
+        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]],
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
+TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
+
+
 inject = (
     BINDINGS,
     TASKS,
@@ -57,6 +77,7 @@ inject = (
     DELIVERY,
     DELIVERY_SENDERS,
     REPLY_PROGRAM,
+    TOOL_CLEANUP,
 )
 workspace_roots = ("subagent-runs",)
 workspace_files = ("memory/SELF.md", "memory/spawn_trace.jsonl")
@@ -143,6 +164,7 @@ async def apply(ctx: Context, config: Config) -> None:
             content=ctx.require(CONTENT),
             context=ctx.require(CONTEXT),
             tools=ctx.require(TOOLS),
+            cleanup=ctx.require(TOOL_CLEANUP),
             react=ctx.require(REACT),
             materials=ctx.require(MATERIALS),
             turn_projection=ctx.require(TURN_PROJECTION),

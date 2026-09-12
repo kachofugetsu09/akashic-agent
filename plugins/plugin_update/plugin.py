@@ -26,7 +26,7 @@ from session.message import ContentPart, Output
 from session.message_codec import json_value
 
 from .tool import InstallPlugin, InstallInput, Request
-from .validation import PLUGIN_VALIDATION, Validation
+from .validation import PLUGIN_VALIDATION, TOOL_CLEANUP, Validation
 
 logger = logging.getLogger(__name__)
 api_version = 3
@@ -52,6 +52,7 @@ inject = (
     MODEL_CALLS,
     REACT,
     TURN_PROJECTION,
+    TOOL_CLEANUP,
 )
 
 

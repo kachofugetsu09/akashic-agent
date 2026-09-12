@@ -3,13 +3,13 @@ from __future__ import annotations
 from plugins.context.api import Reminder
 
 import asyncio
-from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
-from typing import cast
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, nullcontext
+from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING, Context
+from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTING, RUNTIME_STARTED, RUNTIME_STOPPING, Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.tasks import Task
@@ -28,12 +28,30 @@ from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.tool_search.plugin import TOOL_SEARCH_PRESENTATION, TOOL_SEARCH_TOOLS
 from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
-from session.message import Message
+from session.message import CallRef, Message
 
 from .api import REPLY_PROGRAM
 from .follow import follow
 from .completion import REPLY_COMPLETION
 from .status import REPLY_STATUS, ReplyState
+
+
+class ToolCleanup(Protocol):
+    """默认回复只接收工具 owner 的窄收尾边界。"""
+
+    def __call__(
+        self,
+        ctx: Context,
+        reader: MessageReader,
+        source: str,
+        from_seq: int,
+        *,
+        task: Task,
+        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]],
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
+TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
 
 api_version = 3
 name = "reply"
@@ -53,6 +71,7 @@ inject = (
     REACT,
     MODEL_CALLS,
     TURN_PROJECTION,
+    TOOL_CLEANUP,
     RESTART_GATE,
 )
 
@@ -133,6 +152,7 @@ async def apply(ctx: Context, config: Config) -> None:
         return await run_reply(
             ctx, task, reader, source, models=ctx.require(CHAT_MODELS),
             content=ctx.require(CONTENT), context=ctx.require(CONTEXT), tools=tools,
+            cleanup=ctx.require(TOOL_CLEANUP),
             react=ctx.require(REACT), materials=ctx.require(MATERIALS),
             turn_projection=ctx.require(TURN_PROJECTION),
             read_call=ctx.require(MODEL_CALLS), authorize=authorize,

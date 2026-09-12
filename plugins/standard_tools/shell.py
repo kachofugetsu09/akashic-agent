@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -131,6 +131,24 @@ class ShellOwners:
 SHELL_OWNERS = ServiceKey[ShellOwners]("shell.owners.v1")
 
 
+class ShellCleanup(Protocol):
+    """标准 Shell 提供给程序组合的真实收尾边界。"""
+
+    def __call__(
+        self,
+        ctx: Context,
+        reader: MessageReader,
+        source: str,
+        from_seq: int,
+        *,
+        task: Task | None = None,
+        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]] | None = None,
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
+TOOL_CLEANUP = ServiceKey[ShellCleanup]("tools.cleanup.v1")
+
+
 class ShellTool:
     idempotent = False
 
@@ -235,6 +253,7 @@ class ShellTool:
 async def register_shell(ctx: Context) -> tuple[ToolRef, ...]:
     """配置由 Shell owner 校验，所有操作与作业释放共用此插件身份。"""
     _ = await ctx.provide(SHELL_OWNERS, ShellOwners(ctx))
+    _ = await ctx.provide(TOOL_CLEANUP, shell_cleanup)
     definitions: tuple[tuple[Literal["shell", "write_stdin", "task_stop"], type[BaseModel], str], ...] = (
         ("shell", Command, "执行 shell 命令；返回终态或可供 write_stdin/task_stop 使用的 execution_id。"),
         ("write_stdin", Stdin, "续接命令，等待新增输出或输入 PTY 字符；仅返回上次读取后的新增内容。"),

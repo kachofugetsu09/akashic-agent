@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from typing import cast
+from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager
+from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,8 +20,8 @@ from plugins.react.plugin import REACT
 from plugins.tools.api import Denied
 from plugins.tools.plugin import ALL_TOOLS, TOOLS, ToolView
 from plugins.turn_projection.plugin import TURN_PROJECTION
-from session.log import SessionAttributes
-from session.message import ContentPart, Input, Message, Output
+from session.log import MessageReader, SessionAttributes
+from session.message import CallRef, ContentPart, Input, Message, Output
 
 from .tool import InstallInput
 
@@ -29,6 +30,24 @@ class Verdict(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     passed: bool
     reason: str = Field(min_length=1)
+
+
+class ToolCleanup(Protocol):
+    """候选验证只接收工具 owner 的窄收尾边界。"""
+
+    def __call__(
+        self,
+        ctx: Context,
+        reader: MessageReader,
+        source: str,
+        from_seq: int,
+        *,
+        task: Task,
+        drain: Callable[[tuple[CallRef, ...]], Awaitable[None]],
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
+TOOL_CLEANUP = ServiceKey[ToolCleanup]("tools.cleanup.v1")
 
 
 class Validation:
@@ -84,6 +103,7 @@ class Validation:
                 content=ctx.require(CONTENT),
                 context=ctx.require(CONTEXT),
                 tools=ctx.require(TOOLS),
+                cleanup=ctx.require(TOOL_CLEANUP),
                 react=ctx.require(REACT),
                 materials=ctx.require(MATERIALS),
                 turn_projection=ctx.require(TURN_PROJECTION),

@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 import shutil
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 
 import pytest
@@ -168,6 +168,7 @@ async def apply(ctx, config):
                 return await run_reply(
                     ctx, task, reader, source, models=Models(), content=root.require(CONTENT),
                     context=root.require(CONTEXT), tools=root.require(TOOLS), react=react,
+                    cleanup=lambda *_args, **_kwargs: nullcontext(),
                     materials=root.require(MATERIALS), render_content=lambda part: render_content(part, artifacts={}),
                     turn_projection=root.require(TURN_PROJECTION),
                     read_call=store.read_call,
