@@ -903,7 +903,7 @@ class QQChannel:
         self._trace_actor_name_cache = _TRACE_DEFAULT_ACTOR
         return _TRACE_DEFAULT_ACTOR
 
-    # ── 主动推送（供 MessagePushTool 使用）────────────────────────────
+    # ── 主动推送 ────────────────────────────────────────────────────
 
     async def send(self, chat_id: str, message: str) -> None:
         """发送文本消息，自动区分私聊/群聊"""

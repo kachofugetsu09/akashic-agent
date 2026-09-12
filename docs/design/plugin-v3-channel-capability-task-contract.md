@@ -651,7 +651,7 @@ provider network。promotion 本身只切 endpoint/registration，不发送业�
    路径必须一并迁移。正文成功但附件/后续 part 失败的 `PARTIAL` 一律映射 `UNKNOWN`。非用户关键 telemetry 若保留
    fire-and-forget，只能返回独立 `QueuedReceipt(delivery_id, queued=True)`；后台最终 receipt 由 Bus 写结构化
    delivery journal/Incident，不参与发起 Turn 的成功判定。
-   `MessagePushTool` 的 settled tool result 使用稳定 JSON 对象
+   `message_push` 工具的 settled tool result 使用稳定 JSON 对象
    `{delivery_id, status, retryable: false, provider_ids, error}`，不得把 `UNKNOWN` 压成“消息已发送”或无身份的
    “发送失败”；上层据此不得对同一 logical delivery 自动再次调用工具。
 10. inbound message id 是 1～256 字符的 provider boundary 必填字段，空白/缺失 fail-loud。Feishu 与 QQBot 在
@@ -861,7 +861,7 @@ inbound 丢失 exact lease、`UNKNOWN` 被盲重试、rollback 只改 pointer、
    fixed contribution 与 live snapshot path。
 
 Core 真实入口包括 `agent/plugins/manager.py`、`agent/plugins/snapshot.py`、`bootstrap/app.py`、
-`bootstrap/channel_host.py`、`bootstrap/channels.py`、`agent/tools/message_push.py`、`bus/queue.py`、`bus/events.py`、
+`bootstrap/channel_host.py`、`bootstrap/channels.py`、`plugins/message_push/`、`bus/queue.py`、`bus/events.py`、
 `infra/channels/contract.py`、`infra/channels/delivery.py`、`agent/looping/core.py`、`agent/turns/outbound.py` 与
 `bootstrap/passive_worker.py`；还必须迁移 `agent/core/passive_turn.py`、`agent/lifecycle/phases/after_turn.py`、
 `agent/turns/orchestrator.py` 的 normal/error/cancel/proactive outbound，以及

@@ -201,7 +201,7 @@ canonical logical state：
 3. 通过正式 session API 持久化 user/assistant。
 4. 发出 `TurnCommitted`，确认状态版本增加。
 5. 产生第二个 context pending。
-6. 通过真实 `RecallMemoryTool` 调用 read-only recall，确认 sidecar logical hash 和
+6. 通过 `plugins/akasha/recall_tool.py::RecallTool` 调用 read-only recall，确认 sidecar logical hash 和
    pending 对象不变。
 7. 提交第二轮。
 8. 从同一 `sessions.db` 的干净索引全量 replay。

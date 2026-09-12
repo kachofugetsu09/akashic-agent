@@ -689,7 +689,7 @@ class TelegramChannel:
         return resolved
 
     async def send(self, chat_id: str, message: str) -> None:
-        """发送文本消息（供 MessagePushTool 调用）"""
+        """通过 Telegram 发送文本消息。"""
         await send_markdown(
             self._app.bot,
             self._resolve_chat_id(chat_id),

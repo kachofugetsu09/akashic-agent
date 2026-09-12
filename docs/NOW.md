@@ -5,8 +5,7 @@
 ## P0 · 插件边界后续设计
 
 按 [0065](decisions/0065-plugin-boundary-checks-do-not-grant-core-ownership.md) 与
-[阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 推进：第 2 步仅处理已举证的
-遗留工具模块；后续先验证一个完整切片的外置安装、独立替换、缺依赖与 generation 行为。
+[阶段验收](design/plugin-boundary-foundation.md#7-验收标准) 推进：后续先验证一个完整切片的外置安装、独立替换、缺依赖与 generation 行为。
 不沿 #595 的机械迁移路线继续，不把全部业务合同搬入 Core。
 Core 中的业务装配、宽泛 snapshot 访问和公开模块中的实现泄漏仍需逐项决定 owner。
 
