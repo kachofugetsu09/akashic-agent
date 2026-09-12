@@ -4,8 +4,12 @@ version = "3.0.0"
 api_version = 3
 entrypoint = "plugin.py"
 
+[[python]]
+requirements = "setup/requirements.txt"
+
 [channel_credentials]
 telegram = ["token"]
 
 [setup]
 entrypoint = "setup.py"
+python_runtime = "setup"

@@ -9,9 +9,10 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import click
 
@@ -20,7 +21,15 @@ from agent.plugins.manifest import (
     plugins_root,
     workspace_plugin_data_dir,
 )
+from agent.plugins.python_environment import (
+    PythonEnvironments,
+    read_environment_refs,
+)
 from agent.plugins.source_resolver import resolve_plugin_sources
+from agent.plugins.static_manifest import (
+    StaticPluginManifest,
+    staged_python_interpreter,
+)
 
 
 def _hint(text: str) -> None:
@@ -57,14 +66,13 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
 
     _atomic_write_with_backup(config_path, _render_config(), mode=0o600)
     _ok(f"{config_path} 已生成")
-    _run_declared_plugin_setups(workspace)
-
     _validate_config(config_path, workspace)
 
     from bootstrap.init_workspace import init_workspace
 
     _ = init_workspace(config_path=config_path, workspace=workspace)
     _ok(f"{workspace} 已初始化")
+    _run_declared_plugin_setups(workspace)
 
     _print_completion(workspace)
 
@@ -72,47 +80,62 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
 def _run_declared_plugin_setups(workspace: Path) -> None:
     """Run each plugin-owned setup entrypoint from its validated manifest."""
 
-    builtin_root = Path(__file__).resolve().parents[1] / "plugins"
+    cache_root = (plugins_root() / "cache").resolve(strict=False)
     sources = resolve_plugin_sources(
-        (builtin_root,),
-        installed_cache_root=plugins_root() / "cache",
+        (),
+        installed_cache_root=cache_root,
         installed_selector="stable",
     )
     for source in sources:
         manifest = source.static_manifest
         if manifest is None or manifest.setup is None:
             continue
-        marketplace = source.marketplace or "builtin"
+        if source.source_type != "installed" or not source.marketplace:
+            raise RuntimeError(f"插件 {manifest.name} setup 必须来自正式安装 artifact")
+        if source.plugin_name != manifest.name:
+            raise RuntimeError(
+                f"插件 {manifest.name} installed cache identity 不一致: "
+                f"{source.plugin_name}"
+            )
+        plugin_root = source.plugin_root.resolve(strict=True)
+        if not plugin_root.is_relative_to(cache_root):
+            raise RuntimeError(
+                f"插件 {manifest.name} setup 根不在 installed cache 内: {plugin_root}"
+            )
+        marketplace = source.marketplace
         data_dir = workspace_plugin_data_dir(workspace, manifest.name, marketplace)
         ensure_workspace_plugin_data_dir(data_dir, workspace)
-        plugin_root = source.plugin_root.resolve(strict=True)
         setup_path = (plugin_root / manifest.setup.entrypoint).resolve(strict=True)
         if not setup_path.is_relative_to(plugin_root) or not setup_path.is_file():
             raise RuntimeError(
                 f"插件 {manifest.name} setup.entrypoint 不在 artifact 内: {setup_path}"
             )
+        interpreter, code_root = _setup_runtime(
+            workspace,
+            plugin_root,
+            manifest,
+            setup_path,
+        )
         environment = os.environ.copy()
         environment.update(
             {
-                "AKASHIC_PLUGIN_ROOT": str(plugin_root),
-                "AKASHIC_PLUGIN_ID": (
-                    f"{manifest.name}@{marketplace}"
-                    if source.marketplace
-                    else manifest.name
-                ),
+                "AKASHIC_PLUGIN_ROOT": str(code_root),
+                "AKASHIC_PLUGIN_ID": f"{manifest.name}@{marketplace}",
                 "AKASHIC_PLUGIN_DATA_DIR": str(data_dir),
                 "AKASHIC_SETUP_CONFIG_PATH": str(data_dir / "config.local.toml"),
             }
         )
-        pythonpath = environment.get("PYTHONPATH", "")
-        environment["PYTHONPATH"] = os.pathsep.join(
-            item for item in (str(plugin_root), pythonpath) if item
-        )
         _ok(f"运行插件配置：{manifest.name}")
         try:
             result = subprocess.run(
-                [sys.executable, str(setup_path)],
-                cwd=plugin_root,
+                [
+                    str(interpreter),
+                    "-E",
+                    "-s",
+                    "-B",
+                    str(code_root / manifest.setup.entrypoint),
+                ],
+                cwd=code_root,
                 env=environment,
                 check=False,
             )
@@ -124,6 +147,57 @@ def _run_declared_plugin_setups(workspace: Path) -> None:
             raise RuntimeError(
                 f"插件 {manifest.name} 配置命令失败: exit={result.returncode}"
             )
+
+
+def _setup_runtime(
+    workspace: Path,
+    plugin_root: Path,
+    manifest: StaticPluginManifest,
+    setup_path: Path,
+) -> tuple[Path, Path]:
+    """Open the immutable installed code and its staged setup interpreter."""
+
+    declaration = manifest.setup
+    if declaration is None:
+        raise RuntimeError(f"插件 {manifest.name} 缺少 setup declaration")
+    runtime = next(
+        (
+            item
+            for item in manifest.python
+            if item.runtime_root == declaration.python_runtime
+        ),
+        None,
+    )
+    if runtime is None:
+        raise RuntimeError(
+            f"插件 {manifest.name} setup.python_runtime 未找到: "
+            f"{declaration.python_runtime}"
+        )
+    environment_refs = read_environment_refs(plugin_root, manifest)
+    environment_ref = environment_refs.get(runtime.runtime_root)
+    if environment_ref is None:
+        raise RuntimeError(
+            f"插件 {manifest.name} 缺少 setup Python environment reference"
+        )
+
+    environments = PythonEnvironments(workspace)
+    record = environments.archive.read_descriptor(environment_ref)
+    raw_input = record.get("input")
+    if not isinstance(raw_input, Mapping):
+        raise RuntimeError(f"插件 {manifest.name} Python environment input 无效")
+    input_data = cast(Mapping[str, object], raw_input)
+    code_ref = input_data.get("code")
+    if not isinstance(code_ref, str):
+        raise RuntimeError(f"插件 {manifest.name} Python environment code ref 无效")
+    code_root = environments.archive.open(code_ref)
+    archived_setup = code_root / declaration.entrypoint
+    if (
+        not archived_setup.is_file()
+        or archived_setup.read_bytes() != setup_path.read_bytes()
+    ):
+        raise RuntimeError(f"插件 {manifest.name} setup.entrypoint 与已安装归档不一致")
+    environment_root = environments.open(environment_ref, code_root, runtime)
+    return staged_python_interpreter(environment_root, runtime), code_root
 
 
 def _validate_config(config_path: Path, workspace: Path) -> None:

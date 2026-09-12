@@ -116,6 +116,7 @@ class StaticSetupDeclaration:
     """Import-free declaration for an optional plugin setup command."""
 
     entrypoint: str
+    python_runtime: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,7 +292,7 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     channel_credentials = _channel_credentials(raw.get("channel_credentials", {}))
     credential_paths = _credential_paths(raw.get("credential_paths", []), "credential_paths")
     migration = _migration_declaration(root, raw.get("migration", {}))
-    setup = _setup_declaration(root, raw.get("setup", {}))
+    setup = _setup_declaration(root, raw.get("setup", {}), python)
     _check_credential_overlap(set(credential_paths) | {
         path for _channel, paths in channel_credentials for path in paths
     }, "credential_paths/channel_credentials")
@@ -328,7 +329,10 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
             "catalog_sha256": migration.catalog_sha256,
         }
     if setup is not None:
-        identity["setup"] = {"entrypoint": setup.entrypoint}
+        identity["setup"] = {
+            "entrypoint": setup.entrypoint,
+            "python_runtime": setup.python_runtime,
+        }
     identity_digest = hashlib.sha256(
         json.dumps(
             identity,
@@ -391,13 +395,14 @@ def _migration_declaration(
 def _setup_declaration(
     root: Path,
     raw: object,
+    python: tuple[StaticPythonRuntime, ...],
 ) -> StaticSetupDeclaration | None:
-    """Validate one optional plugin-owned interactive setup entrypoint."""
+    """Validate a setup entrypoint and its staged Python runtime binding."""
 
     if raw == {}:
         return None
     table = _table(raw, "setup")
-    _exact_keys(table, {"entrypoint"}, "setup")
+    _exact_keys(table, {"entrypoint", "python_runtime"}, "setup")
     entrypoint = _relative_artifact_path(
         root,
         table.get("entrypoint"),
@@ -407,7 +412,18 @@ def _setup_declaration(
     )
     if not entrypoint.endswith(".py"):
         raise ValueError("setup.entrypoint 必须指向 Python 文件")
-    return StaticSetupDeclaration(entrypoint=entrypoint)
+    python_runtime = table.get("python_runtime")
+    if not isinstance(python_runtime, str) or not python_runtime:
+        raise ValueError("setup.python_runtime 必须是已声明的 runtime root")
+    if python_runtime not in {item.runtime_root for item in python}:
+        raise ValueError(
+            "setup.python_runtime 必须引用同一 manifest 的 python runtime: "
+            f"{python_runtime}"
+        )
+    return StaticSetupDeclaration(
+        entrypoint=entrypoint,
+        python_runtime=python_runtime,
+    )
 
 
 def _channel_credentials(
