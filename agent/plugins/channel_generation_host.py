@@ -1715,7 +1715,7 @@ class ChannelGenerationHost:
         key: tuple[str, str],
         raw: RawInbound,
     ) -> bool:
-        """Replace only a prior accepted claim for Core-owned durable recovery."""
+        """Replace only a prior accepted claim for one durable recovery."""
 
         if not isinstance(raw, RawInbound):
             raise TypeError("Channel recovery 只接受 RawInbound")
