@@ -71,7 +71,6 @@ RuntimeSelector = Literal["stable", "latest"]
 class RuntimeSnapshot:
     snapshot_id: str
     generations: Mapping[str, PluginGeneration]
-    asset_catalog_generation_id: str | None
     dashboard_bindings: tuple[object, ...] = ()
     web_ui_catalog: WebUiCatalog | None = None
     web_ui_catalog_identity: str | None = None
@@ -502,7 +501,6 @@ class RuntimeSnapshotCompiler:
         return RuntimeSnapshot(
             snapshot_id=snapshot_id,
             generations=MappingProxyType(dict(generations)),
-            asset_catalog_generation_id=None,
             web_ui_catalog=web_ui_catalog,
             web_ui_catalog_identity=(
                 None if web_ui_catalog is None else web_ui_catalog.identity

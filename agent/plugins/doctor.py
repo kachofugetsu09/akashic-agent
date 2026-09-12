@@ -6,11 +6,9 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
-from agent.plugin_composition.archive import PluginArchive, tree_entries
 from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
-from agent.plugins.source_resolver import resolve_plugin_sources
 from agent.plugins.static_manifest import (
     StaticPluginManifest,
     load_static_plugin_manifest,
@@ -69,14 +67,13 @@ def _inspect_plugin(
     ]
     resolution_error: str | None = None
     try:
-        stable_root, latest_root, projection_root = _find_plugin_roots(
+        stable_root, latest_root = _find_plugin_roots(
             plugin_id,
             plugins_home,
         )
     except (RuntimeError, ValueError) as error:
-        stable_root, latest_root, projection_root = None, None, None
+        stable_root, latest_root = None, None
         resolution_error = str(error)
-    links_required = enabled
     if resolution_error is not None:
         checks.append(_check("install", "error", resolution_error))
     elif stable_root is not None:
@@ -96,9 +93,6 @@ def _inspect_plugin(
                 _check_capabilities(
                     declaration,
                     stable_root,
-                    workspace,
-                    projection_root=projection_root,
-                    links_required=links_required,
                 )
             )
         except Exception as e:
@@ -119,13 +113,6 @@ def _inspect_plugin(
                 require_static="@" in plugin_id,
             )
             checks.extend(_check_candidate_declaration(declaration, latest_root))
-            checks.extend(
-                _check_empty_projection(
-                    workspace,
-                    projection_root=projection_root,
-                    links_required=links_required,
-                )
-            )
         except Exception as e:
             checks.append(_check("declaration", "error", str(e)))
     if (
@@ -137,7 +124,7 @@ def _inspect_plugin(
             _check(
                 "candidate",
                 "deferred",
-                "latest 候选尚未 promote；workspace skill 投影继续以 stable 为准"
+                "latest 候选尚未 promote；运行时继续以 stable 为准"
                 f" (stable={stable_root}, latest={latest_root})",
             )
         )
@@ -151,41 +138,23 @@ def _inspect_plugin(
 def _find_plugin_roots(
     plugin_id: str,
     plugins_home: Path | None,
-) -> tuple[Path | None, Path | None, Path | None]:
-    """Resolve stable/latest artifacts and their shared projection owner."""
+) -> tuple[Path | None, Path | None]:
+    """只读取正式安装的 stable/latest，不从 checkout 补齐缺少的插件。"""
 
-    # 1. Builtin 插件仍由仓库固定目录拥有。
     name, separator, marketplace = plugin_id.partition("@")
     if not separator:
-        resolved = _find_builtin_plugin_root(name)
-        return resolved, resolved, resolved
+        return None, None
 
-    # 2. 新安装布局以原子 pointer 为准；投影只能跟随 stable。
     base = plugins_root(plugins_home) / "cache" / marketplace / name
     pointers = read_pointers(base)
     if pointers is not None:
         return (
             resolve_pointer(base, pointers.stable),
             resolve_pointer(base, pointers.latest),
-            base,
         )
 
     # 3. 外部插件只认原子 pointer，不扫描旧版可见目录。
-    return None, None, base
-
-
-def _find_builtin_plugin_root(plugin_id: str) -> Path | None:
-    """Find a builtin by its declared name, independent of folder spelling."""
-
-    root = Path(__file__).resolve().parents[2] / "plugins"
-    matches = [
-        source.plugin_root
-        for source in resolve_plugin_sources([root])
-        if (source.plugin_name or source.plugin_root.name) == plugin_id
-    ]
-    if len(matches) > 1:
-        raise RuntimeError(f"多个内置插件声明了相同 name: {plugin_id}")
-    return matches[0] if matches else None
+    return None, None
 
 
 def _entrypoint_label(root: Path) -> str:
@@ -249,56 +218,21 @@ def _load_optional_static_manifest(
 def _check_capabilities(
     declaration: ComposablePlugin,
     plugin_root: Path,
-    workspace: Path,
     *,
-    projection_root: Path | None,
-    links_required: bool,
+    prefix: str = "",
 ) -> list[dict[str, str]]:
+    """检查声明目录存在且位于插件内，不解释任何资产类别的业务格式。"""
     checks: list[dict[str, str]] = []
-    for label, roots, target, subpath in (
-        (
-            "skills",
-            _declared_skill_roots(declaration, drift=False),
-            workspace / "skills",
-            ("skills",),
-        ),
-        (
-            "drift_skills",
-            _declared_skill_roots(declaration, drift=True),
-            workspace / "drift" / "skills",
-            ("drift", "skills"),
-        ),
-    ):
-        missing = [raw for raw in roots if not (plugin_root / raw).is_dir()]
-        expected = _expected_skill_links(plugin_root, roots)
-        unlinked: list[str] = []
-        misdirected: list[str] = []
-        stale: list[str] = []
-        if links_required:
-            unlinked, misdirected = _check_expected_links(target, expected, workspace / "runtime" / "plugin-archives")
-            stale = _stale_link_names(target, expected, projection_root, subpath)
-        status = (
-            "error"
-            if missing
-            else "warn" if (unlinked or misdirected or stale) else "ok"
-        )
-        checks.append(
-            _check(
-                label,
-                status,
-                "roots="
-                f"{len(roots)} missing={missing} unlinked={unlinked} "
-                f"misdirected={misdirected} stale={stale}",
-            )
-        )
+    root = plugin_root.resolve()
+    for category, paths in declaration.asset_roots:
+        invalid = [raw for raw in paths if not (root / raw).resolve().is_relative_to(root)
+                   or not (root / raw).is_dir()]
+        checks.append(_check(
+            f"{prefix}assets:{category}", "error" if invalid else "ok",
+            f"roots={len(paths)} invalid={invalid}",
+        ))
     servers = _declared_mcp_servers(plugin_root)
-    checks.append(
-        _check(
-            "mcp",
-            "ok",
-            f"declared_servers={len(servers)} names={list(servers)}",
-        )
-    )
+    checks.append(_check(f"{prefix}mcp", "ok", f"declared_servers={len(servers)} names={list(servers)}"))
     return checks
 
 
@@ -306,36 +240,7 @@ def _check_candidate_declaration(
     declaration: ComposablePlugin,
     plugin_root: Path,
 ) -> list[dict[str, str]]:
-    checks: list[dict[str, str]] = []
-    for label, roots in (
-        ("candidate_skills", _declared_skill_roots(declaration, drift=False)),
-        ("candidate_drift_skills", _declared_skill_roots(declaration, drift=True)),
-    ):
-        missing = [raw for raw in roots if not (plugin_root / raw).is_dir()]
-        checks.append(
-            _check(
-                label,
-                "error" if missing else "ok",
-                f"roots={len(roots)} missing={missing}",
-            )
-        )
-    servers = _declared_mcp_servers(plugin_root)
-    checks.append(
-        _check(
-            "candidate_mcp",
-            "ok",
-            f"declared_servers={len(servers)} names={list(servers)}",
-        )
-    )
-    return checks
-
-
-def _declared_skill_roots(
-    declaration: ComposablePlugin,
-    *,
-    drift: bool,
-) -> tuple[str, ...]:
-    return declaration.drift_skill_roots if drift else declaration.skill_roots
+    return _check_capabilities(declaration, plugin_root, prefix="candidate_")
 
 
 def _declared_mcp_servers(
@@ -347,121 +252,6 @@ def _declared_mcp_servers(
     if manifest is None:
         return ()
     return tuple(server.name for server in manifest.mcp_servers)
-
-
-def _check_empty_projection(
-    workspace: Path,
-    *,
-    projection_root: Path | None,
-    links_required: bool,
-) -> list[dict[str, str]]:
-    if not links_required:
-        return []
-    return [
-        _check(
-            label,
-            "warn" if stale else "ok",
-            f"roots=0 missing=[] unlinked=[] misdirected=[] stale={stale}",
-        )
-        for label, target, subpath in (
-            ("skills", workspace / "skills", ("skills",)),
-            (
-                "drift_skills",
-                workspace / "drift" / "skills",
-                ("drift", "skills"),
-            ),
-        )
-        for stale in [_stale_link_names(target, {}, projection_root, subpath)]
-    ]
-
-
-def _expected_skill_links(
-    plugin_root: Path,
-    roots: tuple[str, ...],
-) -> dict[str, Path]:
-    expected: dict[str, Path] = {}
-    for raw in roots:
-        skills_dir = plugin_root / raw
-        if not skills_dir.is_dir():
-            continue
-        for child in sorted(skills_dir.iterdir(), key=lambda item: item.name):
-            if child.is_dir() and (child / "SKILL.md").exists():
-                if child.name not in expected:
-                    expected[child.name] = child.resolve(strict=False)
-    return expected
-
-
-def _check_expected_links(
-    target: Path,
-    expected: dict[str, Path],
-    archive_root: Path,
-) -> tuple[list[str], list[str]]:
-    unlinked: list[str] = []
-    misdirected: list[str] = []
-    for name, expected_target in expected.items():
-        link = target / name
-        if not link.is_symlink():
-            unlinked.append(name)
-        else:
-            actual = _link_target(link)
-            if actual == expected_target:
-                continue
-            if not actual.is_relative_to(archive_root.resolve()):
-                misdirected.append(name)
-                continue
-            relative = actual.relative_to(archive_root.resolve())
-            if len(relative.parts) < 3 or relative.parts[1] != "tree":
-                misdirected.append(name)
-                continue
-            # 归档 owner 验证完整对象；doctor 再核对声明的技能内容。
-            archive = PluginArchive(archive_root, create=False)
-            archive.open(relative.parts[0])
-            if tree_entries(actual) != tree_entries(expected_target):
-                misdirected.append(name)
-    return unlinked, misdirected
-
-
-def _stale_link_names(
-    target: Path,
-    expected: dict[str, Path],
-    projection_root: Path | None,
-    subpath: tuple[str, ...],
-) -> list[str]:
-    if projection_root is None or not target.is_dir():
-        return []
-    stale: list[str] = []
-    for link in target.iterdir():
-        if link.name in expected or not link.is_symlink():
-            continue
-        if _is_managed_projection_target(
-            _link_target(link),
-            projection_root,
-            subpath,
-        ):
-            stale.append(link.name)
-    return stale
-
-
-def _link_target(link: Path) -> Path:
-    raw = link.readlink()
-    if raw.is_absolute():
-        return raw.resolve(strict=False)
-    return (link.parent / raw).resolve(strict=False)
-
-
-def _is_managed_projection_target(
-    target: Path,
-    projection_root: Path,
-    subpath: tuple[str, ...],
-) -> bool:
-    try:
-        relative = target.resolve(strict=False).relative_to(
-            projection_root.resolve(strict=False)
-        )
-    except ValueError:
-        return False
-    parts = relative.parts
-    return len(parts) >= len(subpath) + 1 and parts[-(len(subpath) + 1) : -1] == subpath
 
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:

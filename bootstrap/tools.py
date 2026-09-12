@@ -362,18 +362,9 @@ class CoreRuntime:
             self._plugin_publication_locked = True
 
     async def start(self) -> None:
-        """取得插件目录独占权，再发布插件及其 Skill 投影。"""
-        from agent.plugins.skill_links import PluginSkillLinker
-
-        # 1. 正式插件加载只建立 Root；后台消费者由 runtime lifecycle 启动。
+        """取得插件目录独占权，再发布插件；业务资源由插件生命周期拥有。"""
         self._lock_plugin_publication()
         await self.plugin_manager.load_all()
-        # 2. 既有安装 owner 同步投影，不由消息消费者管理文件。
-        result = PluginSkillLinker(
-            workspace=self.workspace,
-            plugin_roots=self.plugin_manager.skill_projection_roots,
-        ).sync(self.plugin_manager.active_plugins())
-        logger.info("插件 skill 同步完成: %s", result)
         self.plugin_manager.sync_manifest()
 
     async def inspect_modules(self) -> str:

@@ -242,17 +242,18 @@ async def _complete_critical(awaitable: Awaitable[U]) -> tuple[U, bool]:
     return result, cancelled
 
 
-def _reject_retired_activity_recovery(action: ReloadRecoveryAction) -> None:
-    """拒绝依赖已删除 Activity owner 的旧恢复记录。"""
+def _reject_retired_owner_recovery(action: ReloadRecoveryAction) -> None:
+    """拒绝仍依赖已删除 owner 的旧恢复记录，不伪造恢复完成。"""
 
     resource = action.failure_resource or ""
-    if "activity-publication" not in {
+    retired = {"activity-publication", "plugin-skill-projection"}.intersection({
         item.strip() for item in resource.split(",") if item.strip()
-    }:
+    })
+    if not retired:
         return
     raise RuntimeError(
         "runtime recovery blocked: durable action retains retired "
-        "activity-publication owner; migrate or resolve it manually before "
+        f"{sorted(retired)} owner; migrate or resolve it manually before "
         f"recovery (tx={action.tx_id}, plugin={action.plugin_id}, "
         f"resource={resource!r}); journal remains pending"
     )
@@ -264,8 +265,6 @@ class ActivePluginInfo:
     plugin_dir: Path
     manifest: dict[str, object]
     module_path: str
-    skill_roots: tuple[Path, ...] = ()
-    drift_skill_roots: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -406,7 +405,6 @@ class PluginManager:
         self._runtime_starting_roots: set[object] = set()
         self._runtime_lifecycle_lock = asyncio.Lock()
         self._runtime_services_enabled = False
-        self._snapshot_asset_catalogs: dict[str, str] = {}
         self._reload_journal = ReloadJournal(workspace)
         self._channel_provider_factory_resolver: (
             Callable[
@@ -560,55 +558,6 @@ class PluginManager:
         self._runtime_starting_roots.discard(root.instance_token)
         if cancelled:
             raise asyncio.CancelledError
-
-    @property
-    def skill_projection_roots(self) -> list[Path]:
-        roots = list(self._dirs)
-        if self._installed_cache_root is not None:
-            roots.append(self._installed_cache_root)
-        return roots
-
-    def _sync_skill_links(self):
-        """Rebuild workspace links from the active v3 generations."""
-
-        from agent.plugins.skill_links import PluginSkillLinker
-
-        return PluginSkillLinker(
-            workspace=self._workspace,
-            plugin_roots=self.skill_projection_roots,
-        ).sync(self.active_plugins())
-
-    def _prepare_skill_links_for_promotion(
-        self,
-        generation: PluginGeneration,
-        candidate_snapshot: RuntimeSnapshot,
-    ) -> tuple[Any, list[ActivePluginInfo], list[ActivePluginInfo]]:
-        """Build and validate both sides of the stable skill projection switch."""
-
-        from agent.plugins.skill_links import PluginSkillLinker
-
-        contributions = generation.production_contributions or generation.contributions
-        plugin_dir = generation.plugin_dir.resolve(strict=False)
-        target = ActivePluginInfo(
-            plugin_id=generation.plugin_id,
-            plugin_dir=plugin_dir,
-            manifest=contributions.manifest,
-            module_path=generation.module_path,
-            skill_roots=contributions.skill_roots,
-            drift_skill_roots=contributions.drift_skill_roots,
-        )
-        stable = self.active_plugins()
-        post_promotion = [
-            plugin for plugin in stable if plugin.plugin_id != generation.plugin_id
-        ]
-        if any(item is generation for item in candidate_snapshot.active_generations()):
-            post_promotion.append(target)
-        linker = PluginSkillLinker(
-            workspace=self._workspace,
-            plugin_roots=self.skill_projection_roots,
-        )
-        linker.validate(post_promotion)
-        return linker, stable, post_promotion
 
     def active_plugins(self) -> list[ActivePluginInfo]:
         return [
@@ -1179,7 +1128,7 @@ class PluginManager:
         self._core_channel_definitions = normalized
         snapshot: RuntimeSnapshot | None = None
         try:
-            snapshot, _ = await self._compile_topology_snapshot(
+            snapshot = await self._compile_topology_snapshot(
                 dict(self._active_generations)
             )
             await self._publish_committed_snapshot(snapshot)
@@ -1312,7 +1261,7 @@ class PluginManager:
         if not actions:
             return {}
         for action in actions:
-            _reject_retired_activity_recovery(action)
+            _reject_retired_owner_recovery(action)
         current_boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
         if os.environ.get("AKASHIC_SUPERVISED") != "1" or not current_boot_id:
             raise RuntimeError("v3 runtime recovery 需要 supervised boot identity")
@@ -1408,7 +1357,7 @@ class PluginManager:
         """Seal boot reconciliation only after the authoritative stable Root is live."""
 
         for action in actions:
-            _reject_retired_activity_recovery(action)
+            _reject_retired_owner_recovery(action)
         snapshot = self.current_snapshot
         for action in actions:
             generation = self._active_generations.get(action.plugin_id)
@@ -1505,14 +1454,13 @@ class PluginManager:
 
         staged: list[PluginGeneration] = []
         snapshot: RuntimeSnapshot | None = None
-        catalog_id: str | None = None
         try:
             # 1. 只导入、校验并准备声明，不开放任何 stable snapshot。
             for mod in mods:
                 generation = await self._load_one(mod, stage_stable=True)
                 if generation is not None:
                     staged.append(generation)
-            snapshot, catalog_id = await self._compile_stable_batch_snapshot(staged)
+            snapshot = await self._compile_stable_batch_snapshot(staged)
             for generation in staged:
                 generation.runtime_snapshot = snapshot
 
@@ -1528,15 +1476,13 @@ class PluginManager:
             await self._activate_stable_batch(staged)
 
             # 4. 全部准备成功后才登记 stable owner，并一次安装快照。
-            assert catalog_id is not None
-            await self._publish_stable_batch(staged, snapshot, catalog_id)
+            await self._publish_stable_batch(staged, snapshot)
         except BaseException as error:
             # 5. 未发布事务失败时恢复所有进程内 owner，并反向释放资源。
             _, cleanup_cancelled = await _complete_critical(
                 self._discard_stable_batch(
                     staged,
                     snapshot=snapshot,
-                    catalog_id=catalog_id,
                 )
             )
             if cleanup_cancelled:
@@ -1549,7 +1495,7 @@ class PluginManager:
     async def _compile_stable_batch_snapshot(
         self,
         staged: list[PluginGeneration],
-    ) -> tuple[RuntimeSnapshot, str]:
+    ) -> RuntimeSnapshot:
         """为 stable 启动批次编译一个完整的未发布快照。"""
 
         try:
@@ -1580,7 +1526,6 @@ class PluginManager:
         self,
         staged: list[PluginGeneration],
         snapshot: RuntimeSnapshot,
-        catalog_id: str,
     ) -> None:
         """登记全部 stable owner 并一次安装批次快照。"""
 
@@ -1594,7 +1539,6 @@ class PluginManager:
                 self._activate_published_generation(generation, None)
             except Exception as error:
                 raise _StablePluginFailed(generation, "publish", error) from error
-        self._snapshot_asset_catalogs[snapshot.snapshot_id] = catalog_id
         await self._publish_committed_snapshot(snapshot)
         for generation in staged:
             generation.boot_created_data_dir = False
@@ -1605,7 +1549,6 @@ class PluginManager:
         staged: list[PluginGeneration],
         *,
         snapshot: RuntimeSnapshot | None,
-        catalog_id: str | None,
     ) -> None:
         """释放只归属于未发布启动批次的全部资源。"""
 
@@ -1615,8 +1558,6 @@ class PluginManager:
             and pending is not None
             and pending.candidate is snapshot
         )
-        if snapshot is not None and not store_owned_pending:
-            _ = self._snapshot_asset_catalogs.pop(snapshot.snapshot_id, None)
         for generation in reversed(staged):
             _ = self._active_generations.pop(generation.plugin_id, None)
             if not store_owned_pending:
@@ -1641,8 +1582,6 @@ class PluginManager:
             and snapshot.composition_root is not None
         ):
             await snapshot.composition_root.dispose()
-        if catalog_id is not None and not store_owned_pending:
-            self._asset_host.close(catalog_id)
 
     async def _retry_stable_batch_without_failed(
         self,
@@ -2078,9 +2017,6 @@ class PluginManager:
             if self._dashboard_validation_releaser is not None:
                 await self._dashboard_validation_releaser(snapshot)
             await composition_root.dispose()
-        catalog_id = self._snapshot_asset_catalogs.pop(snapshot.snapshot_id, None)
-        if catalog_id is not None:
-            self._asset_host.close(catalog_id)
         state = "aborted" if snapshot.state == "aborted" else "retired"
         current = self._snapshot_store.current
         for generation in unreferenced_generations:
@@ -2103,7 +2039,6 @@ class PluginManager:
     async def reconcile_changed(self) -> list[dict[str, object]]:
         async with self._candidate_prepare_lock:
             results = await self._reconcile_changed_locked()
-            _ = self._sync_skill_links()
             return results
 
     async def install_candidate(
@@ -2360,7 +2295,6 @@ class PluginManager:
                 if not generation.scope.closed:
                     raise RuntimeError(f"插件旧代资源尚未关闭: {plugin_id}")
             _ = self._draining_generations.pop(plugin_id, None)
-            _ = self._sync_skill_links()
 
     async def _deactivate_plugin(self, plugin_id: str) -> dict[str, object]:
         active = self._active_generations[plugin_id]
@@ -2369,12 +2303,11 @@ class PluginManager:
             for key, generation in self._active_generations.items()
             if key != plugin_id
         }
-        snapshot, catalog_id = await self._compile_topology_snapshot(generations)
+        snapshot = await self._compile_topology_snapshot(generations)
         try:
             if self._dashboard_preparer is not None:
                 self._dashboard_preparer(snapshot)
         except BaseException:
-            self._asset_host.close(catalog_id)
             await self._dispose_unreferenced_composition_root(snapshot)
             raise
 
@@ -2399,7 +2332,6 @@ class PluginManager:
         if (
             exclusive_endpoint_changed or v3_channel_catalog_changed
         ) and get_current_runtime_lease() is not None:
-            self._asset_host.close(catalog_id)
             await self._dispose_unreferenced_composition_root(snapshot)
             raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换独占端点")
         quiesced = self._snapshot_store.pause_admission() if publication_gated else None
@@ -2410,7 +2342,6 @@ class PluginManager:
                     await self._endpoint_quiescer()
                 if exclusive_endpoint_changed or v3_channel_catalog_changed:
                     await self._snapshot_store.wait_for_no_leases(quiesced)
-            self._snapshot_asset_catalogs[snapshot.snapshot_id] = catalog_id
             transaction = self._snapshot_store.begin_publish(snapshot)
             await self._post_snapshot_invariants(snapshot)
         except BaseException:
@@ -2418,8 +2349,6 @@ class PluginManager:
                 await self._snapshot_store.abort(transaction)
             else:
                 await self._snapshot_store.resume(quiesced)
-                _ = self._snapshot_asset_catalogs.pop(snapshot.snapshot_id, None)
-                self._asset_host.close(catalog_id)
                 await self._dispose_unreferenced_composition_root(snapshot)
             if self._endpoint_resumer is not None and exclusive_endpoint_changed:
                 await self._endpoint_resumer()
@@ -2736,31 +2665,23 @@ class PluginManager:
     async def _compile_topology_snapshot(
         self,
         generations: dict[str, PluginGeneration],
-    ) -> tuple[RuntimeSnapshot, str]:
+    ) -> RuntimeSnapshot:
         self._generation_sequence += 1
-        catalog_id = f"topology:{self._generation_sequence}:{secrets.token_hex(4)}"
-        ordered = list(generations.values())
-        active_ordered = self._static_active_generations(ordered)
-        catalog = self._asset_host.prepare(
-            catalog_id,
-            asset_roots=PluginAssetHost.roots_for(active_ordered),
-        )
+        revision = f"topology:{self._generation_sequence}:{secrets.token_hex(4)}"
         composition_root, created_root = await self._resolve_composition_root(
             generations
         )
         try:
             snapshot = self._snapshot_compiler.compile(
                 generations,
-                snapshot_revision=catalog_id,
+                snapshot_revision=revision,
                 composition_root=composition_root,
                 core_channel_definitions=self._core_channel_definitions,
             )
             _validate_static_manifest_runtime(snapshot, generations)
-            snapshot.asset_catalog_generation_id = catalog_id
             self._refresh_composition_runtime_tools(snapshot)
-            return snapshot, catalog_id
+            return snapshot
         except BaseException:
-            self._asset_host.close(catalog_id)
             if created_root and composition_root is not None:
                 await composition_root.dispose()
             raise
@@ -2823,10 +2744,6 @@ class PluginManager:
                 raise RuntimeError(
                     "持有 RuntimeSnapshot lease 时不能切换 Channel runtime"
                 )
-
-            skill_linker, stable_skill_plugins, target_skill_plugins = (
-                self._prepare_skill_links_for_promotion(generation, ready.snapshot)
-            )
 
             # 1. Seal both stable and validation leases before touching ownership.
             candidate_snapshot = self._snapshot_store.pause_candidate_admission(
@@ -2966,18 +2883,8 @@ class PluginManager:
                         ) from formalization_runtime_error
                     raise
 
-            # 2. 先切可回滚的 Skill 投影，再提交持久 pointer；整个回调不跨 await。
-            skill_links_switched = False
-            link_result = None
-
+            # 2. 发布前提交持久 pointer；整个回调不跨 await。
             def before_open() -> None:
-                nonlocal link_result, skill_links_switched
-                try:
-                    link_result = skill_linker.sync(target_skill_plugins)
-                except BaseException:
-                    skill_linker.sync(stable_skill_plugins)
-                    raise
-                skill_links_switched = True
                 phase = self._reload_journal.get(tx_id).phase
                 if phase != "latest_ready":
                     raise RuntimeError(
@@ -3021,7 +2928,6 @@ class PluginManager:
                 )
                 cancelled = provisional_cancelled or final_cancelled
             except BaseException as publication_error:
-                skill_error: BaseException | None = None
                 pointer_error: BaseException | None = None
                 runtime_error: BaseException | None = None
                 participant_restore_error = (
@@ -3038,11 +2944,6 @@ class PluginManager:
                         _preserve_ready_pointer(ready, artifact_base)
                     except BaseException as error:
                         pointer_error = error
-                if skill_links_switched:
-                    try:
-                        skill_linker.sync(stable_skill_plugins)
-                    except BaseException as error:
-                        skill_error = error
                 if stable_root_stopped:
                     assert quiesced_snapshot is not None
                     try:
@@ -3067,7 +2968,6 @@ class PluginManager:
                     )
                 if (
                     runtime_error is None
-                    and skill_error is None
                     and pointer_error is None
                     and participant_restore_error is None
                 ):
@@ -3075,7 +2975,6 @@ class PluginManager:
                     await self.start_runtime()
                 if (
                     runtime_error is None
-                    and skill_error is None
                     and pointer_error is None
                     and participant_restore_error is None
                     and self._endpoint_resumer is not None
@@ -3085,7 +2984,6 @@ class PluginManager:
                 recovery_error = (
                     runtime_error
                     or participant_restore_error
-                    or skill_error
                     or pointer_error
                 )
                 if self._ready_candidate is ready and recovery_error is None:
@@ -3107,9 +3005,6 @@ class PluginManager:
                             recovery_effects.append("endpoint_restore_uncertain")
                         if "channel-publication" in participant_restore_error.resources:
                             recovery_effects.append("stable_channel_restore_uncertain")
-                    if skill_error is not None:
-                        recovery_resources.append("plugin-skill-projection")
-                        recovery_effects.append("stable_skill_restore_uncertain")
                     if pointer_error is not None:
                         recovery_resources.append("plugin-artifact-pointer")
                         recovery_effects.append("stable_pointer_restore_uncertain")
@@ -3133,15 +3028,6 @@ class PluginManager:
             self._track_reload_drain(generation, transaction.previous)
             if self._endpoint_resumer is not None and exclusive_endpoint_changed:
                 await self._endpoint_resumer()
-            assert link_result is not None
-            logger.info(
-                "插件 stable skill 投影同步完成: expected=%d created=%d repaired=%d removed=%d skipped=%d",
-                link_result.expected,
-                link_result.created,
-                link_result.repaired,
-                link_result.removed,
-                link_result.skipped,
-            )
             result = self._publication_status(
                 plugin_id,
                 active=ready.previous,
@@ -3212,7 +3098,7 @@ class PluginManager:
             if len(actions) != 1:
                 raise RuntimeError("插件没有待执行的 runtime recovery")
             action = actions[0]
-            _reject_retired_activity_recovery(action)
+            _reject_retired_owner_recovery(action)
             ready = self._ready_candidate
             if ready is not None and (
                 ready.plugin_id != plugin_id
@@ -3299,18 +3185,6 @@ class PluginManager:
                     raise RuntimeError("runtime recovery 缺少 stable snapshot")
                 await self._recover_stable_root(ready.candidate, current)
                 receipts.append("stable-composition-runtime-restored")
-            if "plugin-skill-projection" in resource:
-                if ready is None:
-                    raise RuntimeError("runtime recovery 缺少 skill candidate owner")
-                linker, stable_plugins, _target_plugins = (
-                    self._prepare_skill_links_for_promotion(
-                        ready.candidate,
-                        ready.snapshot,
-                    )
-                )
-                _ = linker.sync(stable_plugins)
-                receipts.append("stable-skill-projection-restored")
-
             # 4. Normalize the exact durable target before acquiring new resources.
             if (
                 action.base_artifact_pointer is not None
@@ -4183,8 +4057,6 @@ class PluginManager:
             plugin_dir=plugin_dir,
             manifest=generation.contributions.manifest,
             module_path=generation.module_path,
-            skill_roots=generation.contributions.skill_roots,
-            drift_skill_roots=generation.contributions.drift_skill_roots,
         )
 
     async def _prepare_generation(
@@ -4219,9 +4091,6 @@ class PluginManager:
             or self._snapshot_store.pending_candidate is not snapshot
         ):
             raise RuntimeError("RuntimeSnapshot 候选事务不一致")
-        catalog_id = snapshot.asset_catalog_generation_id
-        if catalog_id is not None and self._asset_host.get(catalog_id) is None:
-            raise RuntimeError("RuntimeSnapshot asset catalog 不可用")
         for item in snapshot.generations.values():
             if item.scope.closed:
                 raise RuntimeError("RuntimeSnapshot 插件作用域已关闭")
@@ -4847,17 +4716,10 @@ class PluginManager:
             if stage_stable:
                 generation.boot_created_data_dir = not data_dir.exists()
                 ensure_workspace_plugin_data_dir(data_dir, self._workspace)
-            catalog_generations = [
-                active_generation
-                for active_generation in self._active_generations.values()
-                if active_generation.plugin_id != plugin_id
-            ]
-            catalog_generations.append(generation)
-            catalog_generations = self._static_active_generations(catalog_generations)
             try:
                 asset_catalog = self._asset_host.prepare(
                     generation_id,
-                    asset_roots=PluginAssetHost.roots_for(catalog_generations),
+                    asset_roots=PluginAssetHost.roots_for([generation]),
                 )
             except Exception as error:
                 gate_result = _with_gate_check(
@@ -4978,8 +4840,6 @@ class PluginManager:
             plugin_dir=plugin_dir,
             manifest=contributions.manifest,
             module_path=mp,
-            skill_roots=contributions.skill_roots,
-            drift_skill_roots=contributions.drift_skill_roots,
         )
         generation.state = "active"
         self._active_generations[plugin_id] = generation
@@ -5357,6 +5217,7 @@ class PluginManager:
         """验证并导入固定组件；调用者先关闭 Root 和资源，再释放模块。"""
         modules: list[str] = []
         generations: dict[str, PluginGeneration] = {}
+        asset_scopes = ExitStack()
         try:
             for index, ref in enumerate(components):
                 record = self._archive.read_descriptor(ref)
@@ -5412,11 +5273,19 @@ class PluginManager:
                     source_type=cast(Literal["builtin", "installed"], record["source_type"]),
                     archive_ref=ref,
                 )
+                generation = generations[plugin_id]
+                generation.asset_catalog = self._asset_host.prepare(
+                    generation_id, asset_roots=PluginAssetHost.roots_for([generation]),
+                )
+                asset_scopes.callback(self._asset_host.close, generation_id)
 
             yield generations
         finally:
-            for module_path in modules:
-                self._remove_module_tree(module_path)
+            try:
+                asset_scopes.close()
+            finally:
+                for module_path in modules:
+                    self._remove_module_tree(module_path)
 
     def _read_existing_session_compaction(self, session_key: str):
         """读取同一 Session 的消息与 active compaction 语义。"""
@@ -5686,13 +5555,13 @@ class PluginManager:
                 current = snapshot.composition_root
                 if current is None or current.context.require(INSTALLED_ASSETS) is not read_installed_assets:
                     raise RuntimeError("声明资产不属于当前 runtime scope")
-                catalog_id = snapshot.asset_catalog_generation_id
-                if catalog_id is None:
-                    raise RuntimeError("当前 snapshot 没有声明资产目录")
-                catalog = self._asset_host.get(catalog_id)
-                if catalog is None:
-                    raise RuntimeError("当前 snapshot 声明资产目录不可用")
-                return catalog.assets
+                assets: list[InstalledAsset] = []
+                for generation in self._static_active_generations(list(snapshot.generations.values())):
+                    catalog = generation.asset_catalog
+                    if catalog is None:
+                        raise RuntimeError(f"generation 声明资产尚未准备: {generation.plugin_id}")
+                    assets.extend(catalog.assets)
+                return tuple(assets)
 
             _ = await root.context.provide(INSTALLED_ASSETS, read_installed_assets)
         if CREDENTIALS in requested:
@@ -6828,7 +6697,6 @@ class PluginManager:
             )
             for category, declared in instance.asset_roots
         )
-        asset_map = dict(asset_roots)
         return PluginContributions(
             manifest={
                 "name": instance.name,
@@ -6837,8 +6705,6 @@ class PluginManager:
                 "author": instance.author,
             },
             asset_roots=asset_roots,
-            skill_roots=asset_map.get("skills", ()),
-            drift_skill_roots=asset_map.get("drift_skills", ()),
             dashboard_module=_resolve_dashboard_module(
                 plugin_dir,
                 instance.dashboard_module,
@@ -7720,7 +7586,6 @@ def _replace_snapshot_payload(
         raise RuntimeError("只能刷新无 lease 的 candidate snapshot")
     for name in (
         "generations",
-        "asset_catalog_generation_id",
         "dashboard_bindings",
         "web_ui_catalog",
         "web_ui_catalog_identity",

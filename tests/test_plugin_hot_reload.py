@@ -29,7 +29,6 @@ from agent.plugins.dashboard_host import (
 from agent.plugins.manager import PluginManager, _source_revision
 from agent.plugins.manifest import write_plugin_manifest
 from agent.plugins.skill_host import AssetSnapshot
-from agent.plugins.skill_links import PluginSkillLinker
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
     RuntimeSnapshotCompiler,
@@ -544,6 +543,11 @@ async def test_skill_catalog_cleanup_failure_is_reported(
         and failure.error == "snapshot cleanup failed"
         for failure in manager.cleanup_failures
     )
+    assert manager._asset_host.get(generation.generation_id) is generation.asset_catalog
+    monkeypatch.setattr(shutil, "rmtree", real_rmtree)
+    manager._asset_host.close(generation.generation_id)
+    assert manager._asset_host.get(generation.generation_id) is None
+    assert not snapshot_root.exists()
 
 
 def _installed_snapshot_source(
@@ -628,63 +632,57 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
 
 
 @pytest.mark.asyncio
-async def test_installed_candidate_promotion_syncs_stable_skill_projection(
-    tmp_path: Path,
-) -> None:
+async def test_installed_promotion_uses_fixed_assets_without_touching_workspace_skills(tmp_path: Path) -> None:
     plugin_base, stable_root = _write_installed_artifact(
         tmp_path, "1.0.0-aaaa", _installed_snapshot_source("release-a", skills=True)
     )
     _, candidate_root = _write_installed_artifact(
         tmp_path, "2.0.0-bbbb", _installed_snapshot_source("release-b", skills=True)
     )
-    _write_installed_skill(stable_root, "stable-skill", "stable body\n")
-    _write_installed_skill(candidate_root, "candidate-skill", "candidate body\n")
+    _write_installed_skill(stable_root, "shared", "stable body\n")
+    _write_installed_skill(candidate_root, "shared", "candidate body\n")
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
     candidate_pointer = ArtifactPointer(".artifacts/2.0.0-bbbb")
     write_pointers(plugin_base, stable=stable_pointer, latest=stable_pointer)
     workspace = tmp_path / "workspace"
-    manager = PluginManager(
-        plugin_dirs=[],
-        event_bus=EventBus(),
-        workspace=workspace,
-        installed_cache_root=tmp_path / "home" / "cache",
-    )
-    await manager.load_all()
-    PluginSkillLinker(
-        workspace=workspace,
-        plugin_roots=manager.skill_projection_roots,
-    ).sync(manager.active_plugins())
-    stable_link = workspace / "skills" / "stable-skill"
-    assert stable_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "stable-skill"
-    assert (stable_link / "SKILL.md").read_text(encoding="utf-8") == "stable body\n"
+    personal = workspace / "skills" / "shared"
+    personal.mkdir(parents=True)
+    (personal / "SKILL.md").write_bytes(b"user-owned bytes")
+    legacy = workspace / "skills" / "old-link"
+    legacy.symlink_to(stable_root / "skills" / "shared")
+    manager = PluginManager([], event_bus=EventBus(), workspace=workspace,
+                            installed_cache_root=tmp_path / "home" / "cache")
 
-    write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
-    assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-    assert stable_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "stable-skill"
-    assert not (workspace / "skills" / "candidate-skill").exists()
-    await manager.drop_candidate("installed_snapshot@lab")
+    def content():
+        snapshot = manager.current_snapshot
+        assert snapshot is not None
+        generation = snapshot.generations["installed_snapshot@lab"]
+        catalog = generation.asset_catalog
+        assert catalog is not None
+        asset = next(item for item in catalog.assets if item.category == "skills")
+        return (asset.root_dir / "shared" / "SKILL.md").read_text()
 
-    write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
-    promoted = (
-        await manager.switch_ready("installed_snapshot@lab")
-        if manager.ready_candidate
-        else None
-    )
-    if promoted is None:
-        assert (await manager.reconcile_changed())[0][
-            "publication_state"
-        ] == "latest_ready"
-        promoted = await manager.switch_ready("installed_snapshot@lab")
-    candidate_link = workspace / "skills" / "candidate-skill"
-    assert promoted["publication_state"] == "promoted"
-    assert not stable_link.exists()
-    assert candidate_link.resolve() == manager.generation("installed_snapshot@lab").code_dir / "skills" / "candidate-skill"
-    assert (candidate_link / "SKILL.md").read_text(encoding="utf-8") == "candidate body\n"
-    await manager.terminate_all()
+    try:
+        await manager.load_all()
+        assert content() == "stable body\n"
+        write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
+        assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+        assert content() == "stable body\n"
+        await manager.drop_candidate("installed_snapshot@lab")
+        assert content() == "stable body\n"
+        write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
+        assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
+        assert (await manager.switch_ready("installed_snapshot@lab"))["publication_state"] == "promoted"
+        assert content() == "candidate body\n"
+    finally:
+        await manager.terminate_all()
+    assert (personal / "SKILL.md").read_bytes() == b"user-owned bytes"
+    assert legacy.readlink() == stable_root / "skills" / "shared"
+    assert not (workspace / "runtime" / "plugin-skill-links.json").exists()
 
 
 @pytest.mark.asyncio
-async def test_skill_projection_conflict_fails_before_stable_promotion(
+async def test_workspace_skill_name_does_not_block_plugin_promotion(
     tmp_path: Path,
 ) -> None:
     plugin_base, _ = _write_installed_artifact(
@@ -712,14 +710,12 @@ async def test_skill_projection_conflict_fails_before_stable_promotion(
     stable_snapshot = manager.current_snapshot
     write_pointers(plugin_base, stable=stable_pointer, latest=candidate_pointer)
     assert (await manager.reconcile_changed())[0]["publication_state"] == "latest_ready"
-    with pytest.raises(RuntimeError, match="用户文件或目录冲突"):
-        await manager.switch_ready("installed_snapshot@lab")
-    assert manager.current_snapshot is stable_snapshot
-    assert manager.generation("installed_snapshot@lab") is stable_generation
-    assert read_pointer(plugin_base, "stable") == stable_pointer
+    await manager.switch_ready("installed_snapshot@lab")
+    assert manager.current_snapshot is not stable_snapshot
+    assert manager.generation("installed_snapshot@lab") is not stable_generation
+    assert read_pointer(plugin_base, "stable") == candidate_pointer
     assert personal.is_dir() and not personal.is_symlink()
     assert (personal / "SKILL.md").read_text(encoding="utf-8") == "user body\n"
-    await manager.drop_candidate("installed_snapshot@lab")
     await manager.terminate_all()
 
 
@@ -1182,55 +1178,28 @@ async def test_plugin_watcher_reloads_v3_source_without_signal(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_plugin_watcher_updates_skill_links_when_plugin_is_toggled(
-    tmp_path: Path,
-) -> None:
-    plugin_dir = _write_plugin(
-        tmp_path / "plugins",
-        "computer",
-        _v3_source(
-            "computer",
-            exports="skill_roots = ('skills',)\n",
-        ),
-    )
+async def test_plugin_toggle_changes_assets_without_creating_workspace_projections(tmp_path: Path) -> None:
+    plugin_dir = _write_plugin(tmp_path / "plugins", "computer", _v3_source(
+        "computer", exports="asset_roots = {'skills': ('skills',)}\n",
+    ))
     skill_dir = plugin_dir / "skills" / "opencli"
     skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# OpenCLI\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("# OpenCLI\n")
     write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
     manager = _manager(tmp_path)
-    await manager.load_all()
-    PluginSkillLinker(
-        workspace=tmp_path / "workspace",
-        plugin_roots=manager.skill_projection_roots,
-    ).sync(manager.active_plugins())
-    link = tmp_path / "workspace" / "skills" / "opencli"
-    assert link.resolve() == manager.generation("computer").code_dir / "skills" / "opencli"
-
-    watcher = PluginWatcher(
-        manager,
-        baseline_revision=manager.watch_revision(),
-        interval_seconds=0.01,
-    )
-    task = asyncio.create_task(watcher.run())
-    write_plugin_manifest({"computer": False}, plugins_home=tmp_path / "home")
-    for _ in range(100):
-        if manager.generation("computer") is None and not link.is_symlink():
-            break
-        await asyncio.sleep(0.01)
-    assert manager.generation("computer") is None
-    assert not link.is_symlink()
-
-    write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
-    for _ in range(100):
-        if manager.generation("computer") is not None and link.is_symlink():
-            break
-        await asyncio.sleep(0.01)
-    assert manager.generation("computer") is not None
-    assert link.resolve() == manager.generation("computer").code_dir / "skills" / "opencli"
-
-    watcher.stop()
-    await task
-    await manager.terminate_all()
+    try:
+        await manager.load_all()
+        assert manager.generation("computer") is not None
+        write_plugin_manifest({"computer": False}, plugins_home=tmp_path / "home")
+        await manager.reconcile_changed()
+        assert manager.generation("computer") is None
+        write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
+        await manager.reconcile_changed()
+        assert manager.generation("computer") is not None
+        assert not (tmp_path / "workspace" / "skills").exists()
+        assert not (tmp_path / "workspace" / "drift" / "skills").exists()
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio

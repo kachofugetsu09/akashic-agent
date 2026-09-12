@@ -87,9 +87,10 @@ class PluginAssetHost:
         return self._catalogs.get(generation_id)
 
     def close(self, generation_id: str) -> None:
-        catalog = self._catalogs.pop(generation_id, None)
+        catalog = self._catalogs.get(generation_id)
         if catalog is not None:
             catalog.snapshot.cleanup()
+            del self._catalogs[generation_id]
 
     @staticmethod
     def roots_for(

@@ -176,9 +176,7 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
             metadata = ctx.require(BINDINGS).describe(reference, TOOLS)
             state = cast(Mapping[str, object], metadata["state"])
             assert set(cast(tuple[str, ...], state["skills"])) == {"example"}
-            catalog_id = snapshot.asset_catalog_generation_id
-            assert catalog_id is not None
-            catalog = host._asset_host.get(catalog_id)
+            catalog = snapshot.generations["fixture_skills"].asset_catalog
             assert catalog is not None
             asset = next(
                 item
