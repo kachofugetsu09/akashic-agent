@@ -45,14 +45,6 @@ role = "core"
 note = "显式撤销最近一次 interaction"
 
 # ── 外部效果与投递 ───────────────────────────────────────────
-[capabilities."core.deliveries"]
-role = "core"
-note = "一条完整逻辑消息的发送边界与 receipt"
-
-[capabilities."core.durable_deliveries"]
-role = "core"
-note = "跨崩溃恢复的投递尝试与结算"
-
 [capabilities."core.artifact_read"]
 role = "core"
 note = "有界字节读取租约"

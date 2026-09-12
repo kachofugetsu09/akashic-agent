@@ -9,7 +9,6 @@ from typing import Literal, cast
 from agent.control.scoped_turn import TurnAcceptedReceipt
 from agent.plugin_composition.channels import ChannelDeliveryReceipt, DeliveryStatus
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from agent.plugin_composition.model import ServiceKey
 from session.store import validate_message_delivery_id
 
 
@@ -366,9 +365,6 @@ def _state(value: object) -> Literal[
         ],
         value,
     )
-
-
-DURABLE_DELIVERIES = ServiceKey[PluginDurableDeliveries]("core.durable_deliveries")
 
 
 async def _complete_critical(

@@ -53,8 +53,6 @@ from agent.plugin_composition import (
     MANAGED_PROCESSES,
     WORKLOADS,
     MCP_SERVERS,
-    DELIVERIES,
-    DURABLE_DELIVERIES,
     TIMERS,
     UI_SLOTS,
     CompositionOverlay,
@@ -67,7 +65,6 @@ from agent.plugin_composition import (
     PluginCommands,
     InteractionUndoService,
     PluginRuntime,
-    PluginDeliveries,
     PluginDurableDeliveries,
     PluginTimers,
     ServiceView,
@@ -104,8 +101,6 @@ from agent.plugin_composition.durable_deliveries import (
     DurableSender,
 )
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
-from bus.events import ChannelMessage
-from agent.plugin_composition.channels import ChannelDeliveryReceipt
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.interaction_undo import InteractionUndoCoordinator
 from agent.plugins.composition_generation_host import (
@@ -424,25 +419,12 @@ class PluginManager:
         self._drain_transactions: dict[str, str] = {}
         self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
-        self._delivery_sender: (
-            Callable[[ChannelMessage], Awaitable[ChannelDeliveryReceipt]] | None
-        ) = None
         self._durable_delivery_sender: DurableSender | None = None
         self._durable_delivery_recovered = False
 
     @property
     def loaded_count(self) -> int:
         return len(self._loaded)
-
-    def bind_delivery_sender(
-        self,
-        sender: Callable[[ChannelMessage], Awaitable[ChannelDeliveryReceipt]],
-    ) -> None:
-        """Bind the narrow committed Channel sender before loading plugins."""
-
-        if self._delivery_sender is not None:
-            raise RuntimeError("PluginManager delivery sender 已绑定")
-        self._delivery_sender = sender
 
     def bind_durable_delivery_sender(self, sender: DurableSender) -> None:
         """Bind the two-stage provider boundary before loading durable consumers."""
@@ -5621,26 +5603,6 @@ class PluginManager:
         if archive:
             return
         if any(
-            DELIVERIES in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            deliveries = (
-                PluginDeliveries(self._delivery_sender)
-                if not candidate
-                else PluginDeliveries.candidate_validation()
-            )
-            _ = await root.context.provide(DELIVERIES, deliveries)
-        if any(
-            DURABLE_DELIVERIES in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            durable_deliveries = (
-                self._formal_durable_deliveries()
-                if not candidate
-                else PluginDurableDeliveries.candidate_validation()
-            )
-            _ = await root.context.provide(DURABLE_DELIVERIES, durable_deliveries)
-        if any(
             INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
         ):
@@ -5810,12 +5772,6 @@ class PluginManager:
 
         values: dict[Any, object] = {}
         values[TIMERS] = PluginTimers(AsyncioOneShotTimer())
-        values[DELIVERIES] = (
-            PluginDeliveries(self._delivery_sender)
-            if self._delivery_sender is not None
-            else PluginDeliveries.candidate_validation()
-        )
-        values[DURABLE_DELIVERIES] = PluginDurableDeliveries.candidate_validation()
         return ServiceView.freeze(values)
 
     @staticmethod

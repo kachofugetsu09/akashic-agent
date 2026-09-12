@@ -311,17 +311,33 @@ async def test_archive_apply_cannot_resolve_formal_delivery_port(tmp_path, monke
     path.write_text(
         path.read_text().replace(
             "async def apply(ctx, config):",
-            "from agent.plugin_composition import DELIVERIES\n"
-            "inject = (DELIVERIES,)\n"
+            "from agent.plugin_composition import ServiceKey\n"
+            "LEGACY_DELIVERY = ServiceKey('archive.fixture.delivery')\n"
+            "inject = (LEGACY_DELIVERY,)\n"
             "async def apply(ctx, config):",
         )
+    )
+    consumer = plugins / "consumer" / "plugin.py"
+    consumer.write_text(
+        """
+from agent.plugin_composition import ServiceKey
+api_version = 3
+name = "consumer"
+version = "1.0.0"
+async def apply(ctx, config):
+    await ctx.provide(ServiceKey("archive.fixture.delivery"), {})
+"""
     )
     host = manager(tmp_path, [plugins])
     try:
         await host.load_all()
         current = host.current_snapshot
         assert current is not None
-        raw_refs = tuple(g.archive_ref for g in current.generations.values())
+        raw_refs = tuple(
+            generation.archive_ref
+            for plugin_id, generation in current.generations.items()
+            if plugin_id == "provider"
+        )
         assert all(ref is not None for ref in raw_refs)
         refs = tuple(cast(str, ref) for ref in raw_refs)
         with pytest.raises(RuntimeError, match="闭包不完整"):
@@ -344,6 +360,7 @@ api_version = 3
 name = "consumer"
 version = "1.0.0"
 async def apply(ctx, config):
+    await ctx.provide(ServiceKey("archive.fixture.delivery"), {})
     async def child(child_ctx):
         await child_ctx.provide(ServiceKey("archive.test.result"), child_ctx.require(ServiceKey("archive.test.value")))
     await ctx.mount(child, name="child-provider", inject=(ServiceKey("archive.test.value"),))
@@ -351,11 +368,12 @@ async def apply(ctx, config):
     unrelated = plugins / "unrelated"
     unrelated.mkdir()
     (unrelated / "plugin.py").write_text("""
-from agent.plugin_composition import DELIVERIES
+from agent.plugin_composition import ServiceKey
 api_version = 3
 name = "unrelated"
 version = "1.0.0"
-inject = (DELIVERIES,)
+LEGACY_DELIVERY = ServiceKey("archive.fixture.delivery")
+inject = (LEGACY_DELIVERY,)
 async def apply(ctx, config):
     pass
 """)
