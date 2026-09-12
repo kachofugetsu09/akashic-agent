@@ -14,7 +14,7 @@ import pytest
 from agent.config_models import Config
 from agent.plugin_composition import (
     AddConnection, AddModel, CapabilitySources, ModelCapabilities, ModelKind,
-    ModelRole, ServiceKey, SetDefaultModel,
+    ServiceKey, SetDefaultModel,
 )
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_contracts import Input, Output
@@ -129,7 +129,7 @@ async def test_installed_reply_reaches_sender_and_durable_receipt(tmp_path, monk
             ModelCapabilities(context_window=32000, max_output_tokens=8192, supports_tool_calls=True),
             CapabilitySources(),
         ))
-        await control.apply(SetDefaultModel(2, ModelRole.DEFAULT, "fixture"))
+        await control.apply(SetDefaultModel(2, "default", "fixture"))
         await host.start_runtime()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             accepted = await snapshot.composition_root.context.require(CHANNEL_INPUT)(

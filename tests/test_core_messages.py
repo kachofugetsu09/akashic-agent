@@ -339,7 +339,7 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
     import socket
     from aiohttp import web
     from akashic_sdk import AsyncAkashic
-    from agent.plugin_composition import AddConnection, AddModel, SetDefaultModel, ModelKind, ModelRole, ModelCapabilities, CapabilitySources
+    from agent.plugin_composition import AddConnection, AddModel, SetDefaultModel, ModelKind, ModelCapabilities, CapabilitySources
     from agent.plugins.model_control import RuntimeModelControl
     from bootstrap.app import AppRuntime
     from bootstrap.init_workspace import init_workspace
@@ -398,7 +398,7 @@ async def test_app_real_socket_default_reply_and_shutdown(tmp_path, monkeypatch)
             f"http://127.0.0.1:{port}/v1", "fixture", {"api_key": "fixture"}))
         await control.apply(AddModel(1, "chat", "local", ModelKind.CHAT, "fixture",
             ModelCapabilities(context_window=32000, max_output_tokens=1024, supports_tool_calls=True), CapabilitySources()))
-        await control.apply(SetDefaultModel(2, ModelRole.DEFAULT, "chat"))
+        await control.apply(SetDefaultModel(2, "default", "chat"))
         async with await AsyncAkashic.connect(str(app.app_server.endpoint)) as client:
             session = (await client.session_create())["session_id"]
             async with await client.session_follow(session) as following:

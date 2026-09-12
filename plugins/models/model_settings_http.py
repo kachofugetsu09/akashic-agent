@@ -35,7 +35,6 @@ from agent.plugin_composition.models import (
     ModelError,
     ModelKind,
     ModelTimeoutError,
-    ModelRole,
     ModelUnavailableError,
     QuotaError,
     RateLimitError,
@@ -421,7 +420,7 @@ def _command(payload: CommandPayload) -> ModelChange:
     if isinstance(payload, SetDefaultPayload):
         return SetDefaultModel(
             payload.expected_revision,
-            None if payload.role is None else ModelRole(payload.role),
+            payload.role,
             payload.model_id,
         )
     if isinstance(payload, SyncModelsPayload):
@@ -534,7 +533,7 @@ def _catalog_payload(snapshot: ModelCatalogSnapshot) -> dict[str, object]:
             for item in snapshot.models
         ],
         "roleBindings": {
-            role.value: model_id for role, model_id in snapshot.role_bindings.items()
+            role: model_id for role, model_id in snapshot.role_bindings.items()
         },
         "defaultEmbeddingModelId": snapshot.default_embedding_model_id,
     }

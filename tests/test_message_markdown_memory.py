@@ -46,7 +46,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities
 from plugins.models.state import _BoundChat
 from plugins.models.store import ModelsStore
 api_version = 3
@@ -88,7 +88,7 @@ async def apply(ctx, config):
     descriptor = BoundModelDescriptor(
         binding_id="fixture", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture", driver_contract_version="1",
-        auth_identity="fixture", model="fixture", role=ModelRole.DEFAULT, reasoning_effort=None,
+        auth_identity="fixture", model="fixture", role="default", reasoning_effort=None,
         capabilities=ModelCapabilities(context_window=32000), capability_sources=CapabilitySources(), capability_digest="fixture")
     model = _BoundChat(descriptor, Driver(), store)
     class Models:

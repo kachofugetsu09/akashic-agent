@@ -7,7 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import CHAT_MODELS, RUNTIME_STARTED, RUNTIME_STOPPING, Context
-from agent.plugin_composition.models import BoundChatModel, ModelRequest, ModelRole
+from agent.plugin_composition.models import BoundChatModel, ModelRequest
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE
 from agent.plugin_contracts import Message
@@ -159,7 +159,7 @@ async def apply(ctx: Context, config: Config) -> None:
         # 2. 嵌套 execution 复用调用者已经固定的角色，不重读模型配置。
         async with ctx.require(CHAT_MODELS).execution() as execution:
             text, calls = await summarize(inputs, previous="" if parent is None else parent.content,
-                                          model=model, fallback=execution.chat(ModelRole.DEFAULT))
+                                          model=model, fallback=execution.chat("default"))
         count = start + sum(len(group) for group in selected)
         record = SummaryRecord(
             reference=uuid4().hex, session_id=snapshot[0].session_id,

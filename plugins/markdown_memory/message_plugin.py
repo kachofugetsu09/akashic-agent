@@ -20,7 +20,6 @@ from agent.plugin_composition import (
     RUNTIME_STOPPING,
     Context,
     ModelRequest,
-    ModelRole,
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG
@@ -156,7 +155,7 @@ async def prepare_profile_draft(
     evidence: dict[str, dict[str, list[str]]] = {"memory": {}, "self": {}}
     offset = 0
     async with chat_models.independent_execution() as execution:
-        provider = execution.chat(ModelRole.DEFAULT)
+        provider = execution.chat("default")
         while offset < len(groups):
             size = _profile_batch_size(rows[offset:], memory, self_profile, provider)
             source = "[" + ",".join(row for group in rows[offset:offset + size] for row in group) + "]"

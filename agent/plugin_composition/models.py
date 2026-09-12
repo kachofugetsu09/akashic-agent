@@ -18,13 +18,6 @@ if TYPE_CHECKING:
     from agent.plugin_composition.bindings import Bindings
 
 
-class ModelRole(StrEnum):
-    DEFAULT = "default"
-    FAST = "fast"
-    AGENT = "agent"
-    VISION = "vision"
-
-
 class ModelKind(StrEnum):
     CHAT = "chat"
     EMBEDDING = "embedding"
@@ -162,7 +155,7 @@ class BoundModelDescriptor:
     driver_contract_version: str
     auth_identity: str
     model: str
-    role: ModelRole
+    role: str
     reasoning_effort: str | None
     capabilities: ModelCapabilities
     capability_sources: CapabilitySources
@@ -263,7 +256,7 @@ class DriverEmbeddingModel(Protocol):
 
 
 class ModelExecution(Protocol):
-    def chat(self, role: ModelRole) -> BoundChatModel: ...
+    def chat(self, role: str) -> BoundChatModel: ...
 
 
 class ChatModels(Protocol):
@@ -382,7 +375,7 @@ class ModelCatalogSnapshot:
     revision: int
     connections: tuple[ConnectionDescriptor, ...]
     models: tuple[ModelDescriptor, ...]
-    role_bindings: Mapping[ModelRole, str]
+    role_bindings: Mapping[str, str]
     default_embedding_model_id: str | None
 
     def __post_init__(self) -> None:
@@ -463,7 +456,7 @@ class AddModel:
 @dataclass(frozen=True, slots=True)
 class SetDefaultModel:
     expected_revision: int
-    role: ModelRole | None
+    role: str | None
     model_id: str
 
 
@@ -793,7 +786,6 @@ __all__ = [
     "ModelExecution",
     "ModelKind",
     "ModelRequest",
-    "ModelRole",
     "ModelSettings",
     "ModelTimeoutError",
     "ModelUnavailableError",

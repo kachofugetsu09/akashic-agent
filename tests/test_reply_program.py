@@ -11,7 +11,7 @@ from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.messages import MESSAGE_WRITERS
 from agent.plugin_composition.models import (
     BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities,
-    ModelExecution, ModelRole, ToolCall as ModelToolCall,
+    ModelExecution, ToolCall as ModelToolCall,
 )
 from agent.plugin_composition.tasks import TASKS
 from agent.plugins.manager import PluginManager
@@ -112,14 +112,14 @@ async def apply(ctx, config):
     descriptor = BoundModelDescriptor(
         binding_id="model", plugin_snapshot_id="snapshot", model_revision=0,
         model_id="model", connection_id="connection", driver_id="driver",
-        driver_contract_version="1", auth_identity="test", model="test", role=ModelRole.AGENT,
+        driver_contract_version="1", auth_identity="test", model="test", role="agent",
         reasoning_effort=None, capabilities=ModelCapabilities(context_window=10000),
         capability_sources=CapabilitySources(), capability_digest="test",
     )
     model = _BoundChat(descriptor, Driver(), store)
     class Execution:
-        def chat(self, role: ModelRole) -> _BoundChat:
-            assert role in ModelRole
+        def chat(self, role: str) -> _BoundChat:
+            assert role in {"default", "fast", "agent", "vision"}
             return model
 
     class Models:

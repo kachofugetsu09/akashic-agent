@@ -20,7 +20,6 @@ from agent.plugin_composition import (
     CHAT_MODELS,
     ModelCapabilities,
     ModelKind,
-    ModelRole,
     ModelRequest,
     SetDefaultModel,
 )
@@ -99,15 +98,15 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
         await control.apply(
             AddModel(1, "first", "local", ModelKind.CHAT, "first", capabilities, CapabilitySources())
         )
-        await control.apply(SetDefaultModel(2, ModelRole.DEFAULT, "first"))
+        await control.apply(SetDefaultModel(2, "default", "first"))
 
         async with lease_runtime_snapshot(core.plugin_manager.snapshot_store) as snapshot:
             context = snapshot.composition_root.context
             models_service = context.require(CHAT_MODELS)
             async with models_service.execution() as first_execution:
-                first_descriptor = first_execution.chat(ModelRole.AGENT).descriptor
+                first_descriptor = first_execution.chat("agent").descriptor
                 assert first_descriptor.model_id == "first"
-                response = await first_execution.chat(ModelRole.AGENT).complete(
+                response = await first_execution.chat("agent").complete(
                     ModelRequest(
                         messages=({"role": "user", "content": "first"},),
                         on_delta=lambda _delta: _noop_delta(),
@@ -118,25 +117,25 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
 
                 async with models_service.execution() as nested:
                     assert nested is first_execution
-                    assert nested.chat(ModelRole.AGENT).descriptor == first_descriptor
+                    assert nested.chat("agent").descriptor == first_descriptor
 
                 await control.apply(
                     AddModel(3, "second", "local", ModelKind.CHAT, "second", capabilities, CapabilitySources())
                 )
-                await control.apply(SetDefaultModel(4, ModelRole.DEFAULT, "second"))
+                await control.apply(SetDefaultModel(4, "default", "second"))
 
                 # 已打开的 execution 固定旧 descriptor；默认切换只影响下一次 execution。
                 async with models_service.execution() as still_first:
                     assert still_first is first_execution
-                    assert still_first.chat(ModelRole.AGENT).descriptor == first_descriptor
-                await first_execution.chat(ModelRole.AGENT).complete(
+                    assert still_first.chat("agent").descriptor == first_descriptor
+                await first_execution.chat("agent").complete(
                     ModelRequest(
                         messages=({"role": "user", "content": "retry"},),
                         on_delta=lambda _delta: _noop_delta(),
                     )
                 )
                 assert calls[-1]["model"] == "first"
-                assert first_execution.chat(ModelRole.AGENT).descriptor == first_descriptor
+                assert first_execution.chat("agent").descriptor == first_descriptor
 
                 lease_count = snapshot.lease_count
 
@@ -151,15 +150,15 @@ async def test_model_execution_pins_binding_and_rejects_child_task_inheritance(
                 assert transports[0] is transports[1]
 
             with pytest.raises(RuntimeError, match="连接已关闭"):
-                await first_execution.chat(ModelRole.AGENT).complete(
+                await first_execution.chat("agent").complete(
                     ModelRequest(messages=({"role": "user", "content": "closed"},))
                 )
 
             async with models_service.execution() as second_execution:
-                second_descriptor = second_execution.chat(ModelRole.AGENT).descriptor
+                second_descriptor = second_execution.chat("agent").descriptor
                 assert second_descriptor.model_id == "second"
                 assert second_descriptor.binding_id != first_descriptor.binding_id
-                await second_execution.chat(ModelRole.AGENT).complete(
+                await second_execution.chat("agent").complete(
                     ModelRequest(
                         messages=({"role": "user", "content": "second"},),
                         on_delta=lambda _delta: _noop_delta(),

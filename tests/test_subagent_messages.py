@@ -80,7 +80,7 @@ from agent.plugin_composition import CHAT_MODELS
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 import json
-from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ModelRole, ToolCall
+from agent.plugin_composition.models import BoundModelDescriptor, CapabilitySources, LLMResponse, ModelCapabilities, ToolCall
 from plugins.models.projection import MODEL_CALLS, MODEL_PROJECTION, ProjectionOwner, MODEL_MESSAGE_CHECKS, MessageChecksOwner
 from plugins.models.content import MODEL_CONTENT, ContentOwner
 from plugins.models.selection import MODEL_SELECTION, SelectionOwner
@@ -104,7 +104,7 @@ async def apply(ctx, config):
     descriptor = BoundModelDescriptor(
         binding_id="fixture-model", plugin_snapshot_id="fixture", model_revision=0,
         model_id="fixture", connection_id="fixture", driver_id="fixture", driver_contract_version="1",
-        auth_identity="fixture", model="fixture", role=ModelRole.AGENT, reasoning_effort=None,
+        auth_identity="fixture", model="fixture", role="agent", reasoning_effort=None,
         capabilities=ModelCapabilities(context_window=10000), capability_sources=CapabilitySources(), capability_digest="fixture")
     model = _BoundChat(descriptor, Driver(), store)
     class Models:

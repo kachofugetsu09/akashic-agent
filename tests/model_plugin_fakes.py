@@ -18,7 +18,6 @@ from agent.plugin_composition import (
     ModelContinuation,
     ModelExecution,
     ModelRequest,
-    ModelRole,
     ModelUnavailableError,
     ModelUsage,
     ServiceKey,
@@ -46,7 +45,7 @@ class BoundChatModelFake:
         *,
         model_id: str | None = None,
         model: str | None = None,
-        role: ModelRole = ModelRole.AGENT,
+        role: str = "agent",
     ) -> None:
         self.provider = provider
         wire_model = model or str(getattr(provider, "model", "test-model"))
@@ -175,10 +174,11 @@ class _TestModelCatalog:
 class _TestModelExecution:
     def __init__(self, provider: object) -> None:
         self._chat = {
-            role: BoundChatModelFake(provider, role=role) for role in ModelRole
+            role: BoundChatModelFake(provider, role=role)
+            for role in ("default", "fast", "agent", "vision")
         }
 
-    def chat(self, role: ModelRole) -> BoundChatModel:
+    def chat(self, role: str) -> BoundChatModel:
         return self._chat[role]
 
 

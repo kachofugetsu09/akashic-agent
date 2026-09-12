@@ -23,7 +23,6 @@ from agent.plugin_composition import (
     ModelCatalogSnapshot,
     ModelDescriptor,
     ModelKind,
-    ModelRole,
 )
 from agent.plugin_composition.channels import (
     AttachmentKind as V3AttachmentKind,
@@ -427,7 +426,7 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
                     availability=ModelAvailability.AVAILABLE,
                 ),
             ),
-            role_bindings={ModelRole.DEFAULT: "runtime-a"},
+            role_bindings={"default": "runtime-a"},
             default_embedding_model_id=None,
         )
 
