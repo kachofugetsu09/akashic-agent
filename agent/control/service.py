@@ -4,7 +4,7 @@ import asyncio
 import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
-from contextlib import aclosing
+from contextlib import AbstractAsyncContextManager, aclosing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -45,6 +45,7 @@ class ControlService:
         workspace_token: str | None = None, boot_id: str | None = None,
         ready: Callable[[], bool] | None = None,
         methods: Mapping[str, RpcMethod] | None = None,
+        resolve_method: Callable[[str], AbstractAsyncContextManager[RpcMethod | None]] | None = None,
         control_frames: FrameBook | None = None,
     ) -> None:
         self.messages = messages
@@ -67,6 +68,7 @@ class ControlService:
         self._owns_control_frames = control_frames is None
         self.control_frames = FrameBook() if control_frames is None else control_frames
         self.methods = MappingProxyType(dict(methods or {}))
+        self.resolve_method = resolve_method
 
     def initialize(self, params: InitializeParams) -> dict[str, object]:
         if self._workspace_token is not None and not secrets.compare_digest(

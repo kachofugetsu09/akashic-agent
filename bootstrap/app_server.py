@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
 from agent.config_models import Config
 from agent.control.service import ControlService
-from agent.control.protocol.method import RequestTransport, RpcMethod
-from agent.control.protocol.models import StrictModel
-from agent.control.protocol.errors import JsonRpcError, METHOD_NOT_FOUND
+from agent.plugin_composition.rpc import RpcMethod, rpc_method_key
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bootstrap.cleanup import run_cleanup_steps
@@ -20,7 +19,6 @@ from core.net.http import SharedHttpResources
 from infra.control.stdio import StdioAppServer
 from session.log import MessageCatalog
 from session.message import Message
-from plugins.programmatic.control import PARAMS as PROGRAMMATIC_PARAMS, PROGRAMMATIC
 
 
 def build_control_service(
@@ -37,19 +35,13 @@ def build_control_service(
             assert root is not None
             return await root.context.require(CHANNEL_INPUT)(session_id, message_id, incoming)
 
-    def programmatic_method(name: str, params_type: type[StrictModel]) -> RpcMethod:
-        async def call(params: StrictModel, transport: RequestTransport) -> object:
-            # 同一 snapshot 只覆盖这次 source lookup；work permit 由 Conversation.Task 持有。
-            async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
-                root = snapshot.composition_root
-                assert root is not None
-                source = root.context.get(PROGRAMMATIC)
-                if source is None:
-                    raise JsonRpcError(METHOD_NOT_FOUND, "程序调用来源未启用")
-                return await source.call(name, params, transport)
-        async def unavailable(_params: StrictModel) -> object:
-            raise RuntimeError("程序 RPC 缺少 RequestTransport")
-        return RpcMethod(params_type, unavailable, call_with_transport=call)
+    @asynccontextmanager
+    async def resolve_method(name: str) -> AsyncIterator[RpcMethod | None]:
+        """宿主只解析扩展入口；旧请求保留旧代参数与处理函数。"""
+        async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
+            root = snapshot.composition_root
+            assert root is not None
+            yield root.context.get(rpc_method_key(name))
 
     async def install(source: str, marketplace: str, ref: str, sparse: list[str],
                       update_id: str) -> dict[str, object]:
@@ -92,7 +84,7 @@ def build_control_service(
         plugin_uninstall=uninstall, workspace_token=workspace_token,
         boot_id=boot_id, ready=ready,
         control_frames=core.control_frames,
-        methods={name: programmatic_method(name, params) for name, params in PROGRAMMATIC_PARAMS.items()},
+        resolve_method=resolve_method,
     )
 
 

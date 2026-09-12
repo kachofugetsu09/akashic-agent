@@ -7,7 +7,7 @@ from pydantic import Field
 from agent.control.protocol.models import StrictModel, SessionIdParams
 from agent.plugin_composition import Context, ServiceKey
 from agent.control.frame_book import CONTROL_FRAMES, FrameRouteStage, FrameResolver
-from agent.control.protocol.method import RequestTransport
+from agent.plugin_composition.rpc import RequestTransport, RpcMethod
 from agent.plugin_composition.messages import MESSAGE_CATALOG, SESSION_ADMISSION
 from plugins.turn_projection.plugin import TURN_PROJECTION, Turn, TurnProjection
 from session.log import MessageReader, SessionAttributes
@@ -206,3 +206,17 @@ class Programmatic:
 
 
 PROGRAMMATIC = ServiceKey[Programmatic]("programmatic.v1")
+
+
+def rpc_methods(programmatic: Programmatic) -> dict[str, RpcMethod]:
+    """来源自己声明协议参数；Core 不持有程序调用方法目录。"""
+    def build(name: str, params: type[StrictModel]) -> RpcMethod:
+        async def call(value: StrictModel) -> object:
+            return await programmatic.call(name, value)
+
+        async def call_with_transport(value: StrictModel, transport: RequestTransport) -> object:
+            return await programmatic.call(name, value, transport)
+
+        return RpcMethod(params, call, call_with_transport)
+
+    return {name: build(name, params) for name, params in PARAMS.items()}

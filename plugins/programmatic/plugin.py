@@ -8,6 +8,7 @@ from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, 
 from agent.plugin_composition.tasks import TASKS
 from agent.restart import RESTART_GATE
 from agent.control.frame_book import CONTROL_FRAMES
+from agent.plugin_composition.rpc import rpc_method_key
 from plugins.delivery.api import FINAL_OUTPUT_DELIVERY
 from plugins.content.plugin import check_text
 from plugins.conversation.plugin import check_origin
@@ -17,7 +18,7 @@ from plugins.turn_projection.plugin import TURN_PROJECTION
 from session.log import MessageReader
 from session.message import Control, Input
 
-from .control import PROGRAMMATIC, Programmatic, check_session
+from .control import PROGRAMMATIC, Programmatic, check_session, rpc_methods
 
 api_version = 3
 name = "programmatic"
@@ -54,6 +55,8 @@ async def apply(ctx: Context, config: object) -> None:
     _ = await ctx.require(SOURCES).register(ctx, Source("programmatic", lambda session: open_source(ctx, session)))
     programmatic = Programmatic(ctx)
     _ = await ctx.provide(PROGRAMMATIC, programmatic)
+    for method, operation in rpc_methods(programmatic).items():
+        _ = await ctx.provide(rpc_method_key(method), operation)
     catalog = ctx.require(MESSAGE_CATALOG)
     watcher: asyncio.Task[None] | None = None
 

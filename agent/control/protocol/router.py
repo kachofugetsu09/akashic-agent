@@ -189,7 +189,7 @@ class ConnectionRouter:
         method = cast(str, request["method"])
         model_type = self._method_params.get(method)
         if model_type is None:
-            raise JsonRpcError(METHOD_NOT_FOUND, f"Method not found: {method}")
+            return await self._call_plugin_method(method, request.get("params", {}))
 
         # 2. 在协议边界一次性建立 typed params。
         raw_params = request.get("params", {})
@@ -224,6 +224,25 @@ class ConnectionRouter:
             )
 
         return await self._call_method(method, params)
+
+    async def _call_plugin_method(self, method: str, raw_params: object) -> object:
+        """参数校验和执行持有同一代方法；连接不缓存插件参数表。"""
+        resolve = self._service.resolve_method
+        if resolve is None:
+            raise JsonRpcError(METHOD_NOT_FOUND, f"Method not found: {method}")
+        if self._state != "ready":
+            raise JsonRpcError(NOT_INITIALIZED, "Client must complete initialize/initialized")
+        if not isinstance(raw_params, dict):
+            raise JsonRpcError(INVALID_PARAMS, "params must be an object")
+        async with resolve(method) as operation:
+            if operation is None:
+                raise JsonRpcError(METHOD_NOT_FOUND, f"Method not found: {method}")
+            try:
+                params = operation.params.model_validate(raw_params)
+            except ValidationError as exc:
+                raise JsonRpcError(INVALID_PARAMS, "Invalid params",
+                                   {"issues": exc.errors(include_url=False)}) from exc
+            return await operation.invoke(params, self._transport)
 
     async def _call_method(self, method: str, params: StrictModel) -> object:
         operation = self._service.methods.get(method)
