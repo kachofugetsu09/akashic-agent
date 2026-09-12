@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -58,6 +59,21 @@ class _TurnStream:
     def subscribe(self, callback: Any) -> _Subscription:
         self.subscription.callback = callback
         return self.subscription
+
+
+class _MessageScope:
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        self.entered = 0
+        self.exited = 0
+
+    @asynccontextmanager
+    async def __call__(self):
+        self.entered += 1
+        try:
+            yield self.value
+        finally:
+            self.exited += 1
 
 
 def test_client_plugin_declares_independent_capabilities() -> None:
@@ -189,3 +205,19 @@ async def test_web_rejects_formal_turn_without_known_inbound_mapping() -> None:
 
     assert receipt.status is DeliveryStatus.FAILED
     assert "session 映射" in (receipt.error or "")
+
+
+@pytest.mark.asyncio
+async def test_web_message_catalog_is_held_only_inside_request_scope() -> None:
+    channel = WebChatChannel()
+    catalog = object()
+    scope = _MessageScope(catalog)
+    channel.bind_message_scope(scope)
+
+    async with channel._open_message_catalog() as resolved:
+        assert resolved is catalog
+        assert scope.entered == 1
+        assert scope.exited == 0
+
+    assert scope.entered == 1
+    assert scope.exited == 1

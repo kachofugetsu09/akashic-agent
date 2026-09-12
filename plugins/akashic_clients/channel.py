@@ -22,15 +22,6 @@ from agent.plugin_composition.channels import (
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 
 from .capabilities import (
-    INSPECTION_DOCUMENTS_GET,
-    INSPECTION_DOCUMENTS_LIST,
-    INSPECTION_JOBS_GET,
-    INSPECTION_JOBS_LIST,
-    INSPECTION_SKILLS_LIST,
-    MODEL_CALL,
-    MODEL_CATALOG_RPC,
-    MODEL_COMMAND,
-    MODEL_DISCOVER,
     MODEL_SELECTION,
     REPLY_STATUS,
 )
