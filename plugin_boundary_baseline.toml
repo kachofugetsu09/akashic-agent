@@ -23,7 +23,6 @@ R1 = [
     "agent/migrations/turn_messages.py|plugins.conversation.plugin",
     "agent/tools/filesystem.py|plugins.standard_tools",
     "agent/tools/filesystem.py|plugins.standard_tools.filesystem",
-    "bootstrap/app.py|plugins.delivery.senders",
     "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.application.rebuild",
     "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.config",
     "migrations/akasha_sparse_index_v8/migration.py|plugins.akasha.infrastructure.loader",
@@ -59,7 +58,6 @@ R2 = [
     "plugins/prompt/plugin.py|agent.persona",
     "plugins/prompt/text.py|agent.persona",
     "plugins/prompt/text.py|prompts.completion",
-    "plugins/qq_sender/sender.py|session.artifacts",
     "plugins/scheduler/migration.py|infra.persistence.json_store",
     "plugins/scheduler/store.py|core.common.timekit",
     "plugins/scheduler/store.py|infra.persistence.json_store",
@@ -87,8 +85,6 @@ R2 = [
     "plugins/standard_web/search.py|agent.tools.base",
     "plugins/standard_web/web.py|agent.tools.base",
     "plugins/standard_web/web.py|core.net.http",
-    "plugins/telegram_sender/sender.py|infra.channels.telegram_utils",
-    "plugins/telegram_sender/sender.py|session.artifacts",
     "plugins/workbench_ui/dashboard.py|infra.channels.message_view",
 ]
 R3 = [

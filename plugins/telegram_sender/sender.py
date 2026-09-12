@@ -6,11 +6,9 @@ from typing import Literal, cast
 
 import aiohttp
 from telegramify_markdown.converter import convert_with_segments
-from telegramify_markdown.entity import split_entities
-
-from infra.channels.telegram_utils import strip_chunk
+from telegramify_markdown.entity import MessageEntity, split_entities
 from agent.plugin_composition.artifacts import ArtifactRead
-from session.artifacts import AttachmentKind, AttachmentRef
+from agent.plugin_composition.channels import AttachmentKind, AttachmentRef
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Control, Message
 
@@ -35,6 +33,43 @@ class AttachmentReadError(ValueError):
 class File:
     ref: AttachmentRef
     data: bytes
+
+
+def _strip_chunk(
+    text: str,
+    entities: list[MessageEntity],
+) -> tuple[str, list[MessageEntity]]:
+    """Trim chunk newlines while keeping Telegram UTF-16 entity offsets valid."""
+
+    leading = len(text) - len(text.lstrip("\n"))
+    trailing = len(text) - len(text.rstrip("\n"))
+    if leading == 0 and trailing == 0:
+        return text, entities
+    end = len(text) - trailing if trailing else len(text)
+    stripped = text[leading:end]
+    if not stripped:
+        return "", []
+    limit = len(stripped.encode("utf-16-le")) // 2
+    adjusted: list[MessageEntity] = []
+    for entity in entities:
+        offset = entity.offset - leading
+        end_offset = offset + entity.length
+        if end_offset <= 0 or offset >= limit:
+            continue
+        offset = max(0, offset)
+        end_offset = min(limit, end_offset)
+        if end_offset > offset:
+            adjusted.append(
+                MessageEntity(
+                    type=entity.type,
+                    offset=offset,
+                    length=end_offset - offset,
+                    url=entity.url,
+                    language=entity.language,
+                    custom_emoji_id=entity.custom_emoji_id,
+                )
+            )
+    return stripped, adjusted
 
 
 async def read_content(message: Message, catalog: MessageCatalog, artifacts: ArtifactRead) -> tuple[str | File, ...]:
@@ -104,7 +139,7 @@ class TelegramSender:
                 except ValueError:
                     return SendResult(status="rejected", error="Telegram 正文格式无法转换")
                 for text, entities in chunks:
-                    text, entities = strip_chunk(text, entities)
+                    text, entities = _strip_chunk(text, entities)
                     if text:
                         requests.append(Request("sendMessage", {"chat_id": chat_id, "text": text,
                                                                "entities": [item.to_dict() for item in entities]}))

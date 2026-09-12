@@ -10,7 +10,7 @@ from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from agent.plugin_composition.artifacts import ArtifactRead
-from session.artifacts import AttachmentKind, AttachmentRef
+from agent.plugin_composition.artifacts import AttachmentKind, AttachmentRef
 from agent.plugin_composition.messages import MessageCatalog
 from agent.plugin_contracts import ContentPart, Control, Message
 

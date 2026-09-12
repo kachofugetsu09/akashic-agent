@@ -26,32 +26,6 @@ provider = "secret_service"
 master_key_namespace = "akasic/mobile-realtime"
 keyset_manifest = "data/mobile/keys/current.json"
 
-# =============================================================================
-# 可选原生收件；默认 Web 已可使用。
-# token / bot_uin 为空时跳过；启用后须配置下面的同名 Sender。
-# =============================================================================
-
-[channels.telegram]
-# BotFather 给的 bot token，格式：123456789:AAF...
-token = ""
-# 你的 Telegram 用户名（不带 @），只有白名单用户才能使用 bot。
-allow_from = ["your_username"]
-# channel 标识符，决定 session key 前缀（如 telegram:12345）。
-# 多个 bot 想要隔离记忆时，改成不同的名字（如 "telegram_work"）。
-# channel_name = "telegram"
-
-[channels.qq]
-# 填 QQ 号启用 QQ 频道，留空跳过。
-bot_uin = ""
-allow_from = ["your_qq_number"]
-websocket_open_timeout_seconds = 5.0
-
-# 可选：允许在群组中使用（@bot 触发）
-# [[channels.qq.groups]]
-# group_id = "123456789"
-# allow_from = ["your_qq_number"]
-# require_at = true
-
 # 本地程序化控制面；listen 留空时按 workspace 派生 Unix socket。
 [app_server]
 enabled = true
@@ -62,14 +36,22 @@ outbound_queue_size = 512
 
 # 插件配置位于 <workspace>/plugin-data/<插件名>-<市场>/config.local.toml。
 
-# Telegram 出站另在 <workspace>/plugin-data/telegram_sender-builtin/config.local.toml 配置：
+# Telegram channel 的正式配置位于
+# <workspace>/plugin-data/telegram_channel-builtin/config.local.toml：
 # enabled = true
-# channel = "telegram"  # 必须与上面的 channel_name 一致
 # token = "BotFather token"
-# token 由凭据 owner 读取，代码归档只保存引用；修改后旧待发记录不会借用新凭据。
+# allow_from = ["your_username"]
+# 该插件同时拥有 polling 收件和 channel 出站；token 由正式 credential lease 读取。
 #
-# QQ 出站另在 <workspace>/plugin-data/qq_sender-builtin/config.local.toml 配置：
+# NapCat QQ channel 的正式配置位于
+# <workspace>/plugin-data/qq_channel-builtin/config.local.toml：
 # enabled = true
-# channel = "qq"
-# endpoint = "ws://127.0.0.1:3001/api"  # OneBot 实际 API 地址
-# token = "OneBot access token"  # 无认证时省略
+# bot_uin = "123456"
+# allow_from = ["123456"]
+# [[groups]]
+# group_id = "654321"
+# allow_from = ["123456"]
+# require_at = true
+#
+# 历史 [channels.telegram]/[channels.qq] 配置请先运行
+# scripts/migrate_legacy_channels.py；运行时不会隐式读取旧表。

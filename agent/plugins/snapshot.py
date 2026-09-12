@@ -448,7 +448,6 @@ class RuntimeSnapshotCompiler:
             self._validate_channel_registry(
                 channel_registry,
                 generations,
-                composition_active_plugin_ids,
             )
             plugin_tools = catalog_context.get(TOOL_CATALOG)
             if plugin_tool_catalog is not None and isinstance(
@@ -582,11 +581,9 @@ class RuntimeSnapshotCompiler:
     def _validate_channel_registry(
         registry: ChannelRegistrySnapshot | None,
         generations: Mapping[str, PluginGeneration],
-        active_plugin_ids: frozenset[str],
     ) -> None:
-        """Validate the final merged channel catalog against active manifests."""
+        """Validate each active channel against its static credential limit."""
 
-        frozen_channels: set[tuple[str, str]] = set()
         for descriptor in () if registry is None else registry.descriptors:
             generation = generations.get(descriptor.owner)
             if generation is None:
@@ -611,18 +608,8 @@ class RuntimeSnapshotCompiler:
                         "RuntimeSnapshot channel credential 声明与静态 manifest 不一致: "
                         f"{descriptor.owner}:{descriptor.name}"
                     )
-            frozen_channels.add((descriptor.owner, descriptor.name))
 
-        for generation in generations.values():
-            manifest = generation.static_manifest
-            if manifest is None or generation.plugin_id not in active_plugin_ids:
-                continue
-            for channel_name, _paths in manifest.channel_credentials:
-                if (generation.plugin_id, channel_name) not in frozen_channels:
-                    raise RuntimeError(
-                        "RuntimeSnapshot 静态 channel credential 没有对应 Root 声明: "
-                        f"{generation.plugin_id}:{channel_name}"
-                    )
+        # 静态声明限定凭据上限；配置可不注册渠道，此时不创建 provider 或读取凭据。
 
     @staticmethod
     def _validate_plugin_tool_catalog(

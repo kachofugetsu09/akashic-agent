@@ -313,44 +313,21 @@ async def test_saved_embedding_enables_same_root_and_space_change_preserves_grap
         await runner.cleanup()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("sender_enabled", [False, True])
-async def test_app_checks_sender_before_starting_native_receiver(tmp_path, monkeypatch, sender_enabled):
-    """实际 App 装配拒绝缺失 Sender，收件渠道没有提前联网。"""
-    from agent.config_models import TelegramChannelConfig
-    from bootstrap.app import AppRuntime
-    from bootstrap.init_workspace import init_workspace
-    from infra.channels.telegram_channel import TelegramChannel
+def test_telegram_channel_is_the_formal_owner_and_factory_is_closed(tmp_path):
+    """Telegram ownership is a normal plugin binding, without Core construction."""
 
-    workspace = tmp_path / "workspace"
-    _ = init_workspace(config_path=tmp_path / "config.toml", workspace=workspace)
-    monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(tmp_path / "plugin-home"))
-    monkeypatch.setattr(bootstrap, "_resolve_plugin_dirs", lambda _: [_copy_checkout_plugins(tmp_path)])
-    started = []
-    async def start(self, context):
-        started.append(self.name)
-        if not sender_enabled:
-            raise AssertionError("receiver must not start")
-    monkeypatch.setattr(TelegramChannel, "start", start)
-    config = Config()
-    config.channels.chat.enabled = False
-    config.channels.telegram = TelegramChannelConfig(token="fixture:token", channel_name="private_bot")
-    if sender_enabled:
-        sender = workspace / "plugin-data/telegram_sender-builtin/config.local.toml"
-        sender.parent.mkdir(parents=True, exist_ok=True)
-        sender.write_text('enabled = true\nchannel = "private_bot"\ntoken = "fixture:token"\n')
-    app = AppRuntime(config, workspace)
-    try:
-        if sender_enabled:
-            await app.start()
-            assert started == ["private_bot"]
-        else:
-            with pytest.raises(RuntimeError, match="private_bot"):
-                await app.start()
-            assert not started
-        assert app.app_server is not None
-    finally:
-        await app.shutdown()
+    from agent.plugin_composition import CredentialRef
+    from plugins.telegram_channel.config import TelegramChannelConfig
+    from plugins.telegram_channel.plugin import Config, name
+
+    config = Config(
+        enabled=True,
+        token=CredentialRef(("token",)),
+        allow_from=("alice",),
+    )
+    assert isinstance(config, TelegramChannelConfig)
+    assert name == "telegram_channel"
+    assert config.token == CredentialRef(("token",))
 
 
 @pytest.mark.asyncio

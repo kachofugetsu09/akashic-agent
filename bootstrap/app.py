@@ -218,12 +218,11 @@ class AppRuntime:
             if claim is not None and self.readiness is not None:
                 self.readiness.mark_stage("host_bridge.owner")
             configure_default_shared_http_resources(self.http_resources)
-            core_kwargs = {"restart_gate": self.restart_gate} if self.restart_gate is not None else {}
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
                 self.http_resources,
-                **core_kwargs,
+                restart_gate=self.restart_gate,
                 clear_stale_session_admissions=True,
             )
             self.bus = self.core.bus
@@ -361,10 +360,8 @@ class AppRuntime:
                 command_catalog_provider = current_command_catalog
 
             self.channel_host = await start_channels(
-                self.config,
                 bus=self.bus,
                 workspace=self.workspace,
-                identities=self.core.identities,
                 http_resources=self.http_resources,
                 event_bus=event_bus,
                 command_catalog_provider=command_catalog_provider,
@@ -379,16 +376,6 @@ class AppRuntime:
                         for channel in self.channel_host.channels
                     )
                 )
-            # 对账只读取 exact 注册名；缺少出站时不能先启动外部收件。
-            if self.channel_host.required_delivery_senders:
-                from agent.plugins.snapshot import lease_runtime_snapshot
-                from plugins.delivery.senders import DELIVERY_SENDERS
-
-                async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
-                    available = snapshot.composition_root.context.require(DELIVERY_SENDERS).registered_names()
-                    missing = set(self.channel_host.required_delivery_senders) - set(available)
-                if missing:
-                    raise RuntimeError("收件渠道缺少已启用的同名 Sender：" + ", ".join(sorted(missing)))
             await self.channel_host.start_all()
             # 渠道已打开 exact ingress 后恢复 Input；不依赖回复 worker。
             await self.bus.recover_durable_inbounds()

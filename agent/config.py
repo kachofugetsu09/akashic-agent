@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-import re
 import tomllib
 import zlib
 from pathlib import Path
@@ -18,9 +17,6 @@ from agent.config_models import (
     Config,
     MobileKeyEncryptionConfig,
     MobileRealtimeConfig,
-    QQChannelConfig,
-    QQGroupConfig,
-    TelegramChannelConfig,
     WebChatConfig,
 )
 
@@ -111,57 +107,13 @@ def load_config(
 
 def _load_channels_config(data: dict, workspace: Path) -> ChannelsConfig:
     channels_data = _as_dict(data.get("channels"), field="channels")
-
-    telegram = None
-    tg = _as_dict(channels_data.get("telegram"), field="channels.telegram")
-    if tg:
-        token = _normalize_optional_config_text(
-            _resolve(str(tg.get("token", "")), workspace)
+    legacy_channels = sorted({"telegram", "qq"}.intersection(channels_data))
+    if legacy_channels:
+        names = ", ".join(f"[channels.{name}]" for name in legacy_channels)
+        raise ValueError(
+            f"{names} 已迁移为普通 channel 插件；请先运行 "
+            "scripts/migrate_legacy_channels.py"
         )
-        if (
-            _as_bool(tg.get("enabled", True), field="channels.telegram.enabled")
-            and token
-        ):
-            telegram = TelegramChannelConfig(
-                token=token,
-                allow_from=[
-                    str(u) for u in tg.get("allow_from", tg.get("allowFrom", []))
-                ],
-                channel_name=str(tg.get("channel_name", "telegram")),
-            )
-
-    qq = None
-    qq_data = _as_dict(channels_data.get("qq"), field="channels.qq")
-    if qq_data:
-        bot_uin = _normalize_optional_config_text(str(qq_data.get("bot_uin", "")))
-        if (
-            _as_bool(qq_data.get("enabled", True), field="channels.qq.enabled")
-            and bot_uin
-        ):
-            groups = [
-                QQGroupConfig(
-                    group_id=str(g["group_id"] if "group_id" in g else g["groupId"]),
-                    allow_from=[
-                        str(u) for u in g.get("allow_from", g.get("allowFrom", []))
-                    ],
-                    require_at=_as_bool(
-                        g.get("require_at", g.get("requireAt", True)),
-                        field="channels.qq.groups[].require_at",
-                    ),
-                )
-                for g in qq_data.get("groups", [])
-            ]
-            qq = QQChannelConfig(
-                bot_uin=bot_uin,
-                allow_from=[
-                    str(u)
-                    for u in qq_data.get("allow_from", qq_data.get("allowFrom", []))
-                ],
-                groups=groups,
-                websocket_open_timeout_seconds=float(
-                    qq_data.get("websocket_open_timeout_seconds", 5.0)
-                ),
-            )
 
     if "socket" in channels_data or "cli" in channels_data:
         raise ValueError(
@@ -173,11 +125,7 @@ def _load_channels_config(data: dict, workspace: Path) -> ChannelsConfig:
     chat = WebChatConfig(
         enabled=_as_bool(chat_data.get("enabled", True), field="channels.chat.enabled"),
     )
-    channels = ChannelsConfig(
-        telegram=telegram,
-        qq=qq,
-        chat=chat,
-    )
+    channels = ChannelsConfig(chat=chat)
     return channels
 
 
@@ -422,19 +370,6 @@ def _as_dict(value: object, *, field: str) -> dict:
     return value
 
 
-def _resolve(value: str, workspace: Path) -> str:
-    resolved = re.sub(
-        r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value
-    )
-    # 若仍是未展开的占位符，尝试从 workspace/memory/<VAR_NAME> 文件读取
-    m = re.fullmatch(r"\$\{(\w+)\}", resolved)
-    if m:
-        key_file = workspace / "memory" / m.group(1)
-        if key_file.exists():
-            resolved = key_file.read_text(encoding="utf-8").strip()
-    return resolved
-
-
 def _as_bool(value: object, *, field: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{field} 必须是布尔值")
@@ -459,15 +394,6 @@ def _disabled_builtin_plugins(
         )
 
     return frozenset(disabled)
-
-
-def _normalize_optional_config_text(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if re.fullmatch(r"\$\{(\w+)\}", text):
-        return ""
-    return text
 
 
 def _load_config_data(path: str | Path) -> dict:
@@ -499,8 +425,5 @@ __all__ = [
     "Config",
     "DEFAULT_SOCKET",
     "resolve_app_server_endpoint",
-    "QQChannelConfig",
-    "QQGroupConfig",
-    "TelegramChannelConfig",
     "load_config",
 ]

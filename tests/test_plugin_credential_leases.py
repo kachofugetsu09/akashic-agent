@@ -121,7 +121,8 @@ async def test_candidate_registers_credential_consumer_but_cannot_read_secret(tm
 
 
 @pytest.mark.asyncio
-async def test_channel_credential_grant_does_not_grant_generic_plugin_access(tmp_path):
+@pytest.mark.parametrize("registered", [True, False])
+async def test_channel_credential_grant_does_not_grant_generic_plugin_access(tmp_path, registered):
     source, _, log, host = environment(tmp_path)
     (source / "akashic.plugin.toml").write_text((source / "akashic.plugin.toml").read_text().replace(
         'credential_paths=["token"]', '[channel_credentials]\ntest=["token"]'))
@@ -141,12 +142,20 @@ async def apply(ctx, config):
     await ctx.require(CHANNELS).register(ctx, ChannelDefinition(
         name="test", capabilities=frozenset({ChannelCapability.OUTBOUND}),
         factory_export="build_channel", inbound_identity=None, credential_paths=("token",)))'''))
+    if not registered:
+        text = (source / "plugin.py").read_text()
+        text = text.replace('    await ctx.require(CHANNELS).register', '    if False: await ctx.require(CHANNELS).register')
+        (source / "plugin.py").write_text(text)
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             with pytest.raises(PermissionError, match="没有声明"):
                 await snapshot.composition_root.context.require(PROBE).read()
-            factory = host._default_channel_provider_factories(snapshot)["test"]
+            factories = host._default_channel_provider_factories(snapshot)
+            if not registered:
+                assert not factories
+                return
+            factory = factories["test"]
             try:
                 ref = CredentialRef(("token",))
                 client = await factory.create({"token": ref})
