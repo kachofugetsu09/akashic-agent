@@ -115,10 +115,15 @@ Runtime Service 通过 `inject` 和 `ctx.require(KEY)` 连接；插件能力由�
 | `CHANNELS` / `CHANNEL_INPUT` | 注册 blueprint，按绑定调用入站入口 | inbound/outbound Channel 适配 |
 | `DELIVERY` / `DELIVERY_READ` | 打开发送 admission 或只读历史 | Delivery 发送、恢复和查询 |
 
-`TOOL_CATALOG`、`DELIVERIES` 和 `DURABLE_DELIVERIES` 是旧 Core 组合图中的保留导出，不是当前插件
-消费者应采用的能力入口。工具消费者通过声明的 ServiceKey 和本地结构接口协作，
+旧 Core `TOOL_CATALOG` 及其注册、冻结和快照装配已删除。`DELIVERIES` 和
+`DURABLE_DELIVERIES` 仍承担旧持久状态的边界，不是新插件应采用的发送入口。
+工具消费者通过 `tools.v1` ServiceKey 和本地结构接口协作，
 不能 import `plugins.tools.api` 或其他兄弟插件实现。工具结果提供 `outcome` 与 `parts`；
 Tools owner 在入口校验。ToolResult Message 是对话调用的持久结果正文。
+
+需要共用参数 schema 校验或旧工具值表示的 adapter 可以使用公开的
+`agent.tool_catalog`。该模块是纯结果值与 schema 函数的实际 owner，没有插件注册器、
+快照或执行生命周期；它与普通 Tools 插件的 `outcome/parts` 结果合同是不同的协议边界。
 
 ### 4.2 Message、Session 与上下文
 
@@ -135,9 +140,9 @@ Tools owner 在入口校验。ToolResult Message 是对话调用的持久结果�
 | `COMPACTION_SUMMARIES` | `plugins.compaction` | 读取已发布摘要记录和父链 |
 | `TURN_PROJECTION` | `plugins.turn_projection` | 从 Message 日志读取无状态 Turn 投影 |
 
-`SESSION_COMPACTION_STORAGE` 和旧语义兴趣评分已退役；当前 Context/Compaction
-直接消费 Message 与普通材料能力。`SESSION_READ` 仅供尚未更新的旧外部锁接口，
-正式 Message runtime 不提供旧 SessionManager；该外部消费者必须迁到 MESSAGE_CATALOG。
+`SESSION_COMPACTION_STORAGE`、旧语义兴趣评分和 `SESSION_READ` 已退役；当前
+Context/Compaction 直接消费 Message 与普通材料能力。外部反馈插件使用
+`MESSAGE_CATALOG.follow()` 与 Turn projection，不依赖旧 SessionManager。
 
 Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影，不是 Core Service 中的可变执行对象。
 消费者自行保存 cursor 和学习状态；投影不能授权消息写入、工具执行或外部发送。
@@ -161,13 +166,17 @@ Fiber-owned registration；candidate readiness 会逐字段核对，不一致时
 
 | Key | 主要方法 | 用途 |
 |---|---|---|
-| `CHAT_MODELS` | `execution()`、`independent_execution()`、`describe()`、`bind()` | 按冻结 revision 取得 chat model |
-| `EMBEDDINGS` | `embed(texts)` | 统一 embedding space |
+| `CHAT_MODELS` | `execution()`、`independent_execution()` | 在执行作用域内通过 `chat(role)` 取得模型 |
+| `EMBEDDINGS` | `describe()`、`bind()`、`save_binding()` | 固定向量空间，在绑定作用域内调用 `embed(texts)` |
 | `MODEL_CATALOG` | `snapshot()`、`validate_chat_selection()` | 模型和 connection 目录 |
-| `MODEL_SETTINGS` | `discover()`、`apply(ModelChange)` | 原子修改模型设置 |
+| Models 内部 `MODEL_SETTINGS` | `discover()`、`apply(ModelChange)` | Models 自己的设置事务，外部控制调用 `models/command` RPC |
 | `MODEL_DRIVERS` | `register(ctx, ModelDriverDefinition(...))` | Provider 注册模型 driver |
 
 Provider 返回结构化 `ModelUsage` 和公开错误类型；未知能力保持 unknown，不用默认值伪装。
+
+设置命令与 `MODEL_SETTINGS` 不由 Core 导出；消费者不能 import Models 的命令类型。
+模型选择能力 `models.selection.v1` 由 owner 和消费者分别声明本地窄 key。角色是字符串，
+当前 Models 的四个预设及 fallback 由插件解释，Core 不维护角色枚举。
 
 `DriverConnection` 可提供异步 `close`。Models 在 chat/embedding scope 结束、取消或部分绑定失败时调用 `aclose()`；嵌套的同一次 chat execution 共用连接，设置探测使用的临时连接在检查后关闭。Bound model 只能在取得它的 scope 内使用。没有资源的旧 driver 可省略 `close`。内置 HTTP driver 延迟创建客户端，在同一连接内复用 socket，每次请求仍读取凭据并独立生成请求头。
 
