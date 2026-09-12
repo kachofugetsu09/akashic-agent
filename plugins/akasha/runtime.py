@@ -154,9 +154,8 @@ async def prepare_materials(
             )
     references = {cast(str, ref["ref"]): ref for ref in _reference_rows(material)}
     # 同一消息有多次真实查询时，当前工具结果的精确出处供后续 Citation 使用。
-    references.update((ref.ref, {
-        "ref": ref.ref, "resolved_ref": ref.resolved_ref, "retrieval_ref": ref.retrieval_ref,
-    }) for ref in tool_references(snapshot, source, learning, bindings, records))
+    references.update((cast(str, ref["ref"]), ref)
+                      for ref in tool_references(snapshot, source, learning, bindings, records))
     result = dict(material)
     result["references"] = tuple(references.values())
     return result

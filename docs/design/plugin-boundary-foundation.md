@@ -376,3 +376,14 @@ react 通过 Context 的公开 capture_runtime_scope 取得真实调用租约，
 snapshot 私有全局。已提交调用的取消、排空和 generation 归属保留原路径。
 restart 回归组合安装真正的 standard_tools 清理 owner，并明确授予其 skills 材料权；
 测试在 reply.execute 的注入点协调清理与发送，验证关闭完成前不能提交 restart。
+
+
+### 9.17 摘要范围的唯一 owner
+
+Context 提供已有摘要校验、连续来源范围和已结算前缀算法；Compaction 与 Markdown
+通过回调消费，删除局部边界中复制的算法。SummaryRecords 仍在原事务中校验来源，
+只追加摘要并推进原指针；权威消息正文没有写入或减少。
+
+Markdown 只读材料组合不要求安装 Compaction；真正遇到需要学习的摘要时必须取得
+原摘要读取能力，缺失明确失败，不跳过或伪造来源。Akasha 使用公开只读 embedding
+接口与实际 Message 编码，重建写入器的权限归属继续单独处理。

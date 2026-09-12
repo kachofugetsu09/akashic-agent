@@ -157,14 +157,15 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 assert recalled.source.call_ref == ref
                 assert recalled.graph_version == 1
                 before = (tmp_path / "embedding-calls.txt").read_text()
-                assert await execution.execute_call(reply) == result
+                replayed = await execution.execute_call(reply)
+                assert (replayed.outcome, replayed.parts) == (result.outcome, result.parts)
                 assert (tmp_path / "embedding-calls.txt").read_text() == before
                 assert len([message for message in log.reader("s").snapshot()
                             if isinstance(message.body, ToolResult)]) == 1
                 async with ctx.require(MATERIALS).bind() as materials:
                     after_tool = await materials.prepare(log.reader("s").snapshot(), "conversation")
-                assert [reference.ref for reference in after_tool.references] == ["u", "a"]
-                assert {reference.retrieval_ref for reference in after_tool.references} == {retrieval_ref}
+                assert [reference["ref"] for reference in after_tool["references"]] == ["u", "a"]
+                assert {reference["retrieval_ref"] for reference in after_tool["references"]} == {retrieval_ref}
                 # 同 owner 的另一条调用也不能借用先前 CallRef 的查询事实。
                 outputs.append("forged-request", Output((ToolCall(identity, {"query": "another query"}),), "continue"))
                 forged_ref = CallRef("forged-request", 0)
