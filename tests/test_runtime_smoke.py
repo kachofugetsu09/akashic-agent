@@ -15,12 +15,8 @@ from bootstrap import app as bootstrap_app
 from bootstrap import init_workspace as workspace_init
 from bootstrap.channels import start_channels
 from agent.config import (
-    ChannelsConfig,
     Config,
     DEFAULT_SOCKET,
-    QQChannelConfig,
-    QQGroupConfig,
-    TelegramChannelConfig,
     load_config,
     resolve_app_server_endpoint,
 )
@@ -294,34 +290,20 @@ def test_load_config_rejects_retired_proactive_before_workspace_access(
     assert not workspace.exists()
 
 
-def test_config_load_resolves_channel_secret_from_explicit_workspace(
+def test_config_load_rejects_legacy_channel_owner_after_migration(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    first_workspace = tmp_path / "first"
-    second_workspace = tmp_path / "second"
-    for workspace, token in (
-        (first_workspace, "first-token"),
-        (second_workspace, "second-token"),
-    ):
-        memory = workspace / "memory"
-        memory.mkdir(parents=True)
-        (memory / "TG_TOKEN").write_text(token, encoding="utf-8")
     config_path.write_text(
         """
 [channels.telegram]
-token = "${TG_TOKEN}"
+token = "legacy-token"
 """.strip() + "\n",
         encoding="utf-8",
     )
 
-    first = load_config(config_path, workspace=first_workspace)
-    second = Config.load(config_path, workspace=second_workspace)
-
-    assert first.channels.telegram is not None
-    assert first.channels.telegram.token == "first-token"
-    assert second.channels.telegram is not None
-    assert second.channels.telegram.token == "second-token"
+    with pytest.raises(ValueError, match="migrate_legacy_channels.py"):
+        load_config(config_path, workspace=tmp_path / "workspace")
 
 
 def test_default_socket_is_derived_from_workspace(tmp_path: Path) -> None:

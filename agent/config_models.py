@@ -6,36 +6,12 @@ from pathlib import Path
 
 
 @dataclass
-class TelegramChannelConfig:
-    token: str
-    allow_from: list[str] = field(default_factory=list)
-    channel_name: str = "telegram"
-
-
-@dataclass
-class QQGroupConfig:
-    group_id: str
-    allow_from: list[str] = field(default_factory=list)
-    require_at: bool = True
-
-
-@dataclass
-class QQChannelConfig:
-    bot_uin: str
-    allow_from: list[str] = field(default_factory=list)
-    groups: list[QQGroupConfig] = field(default_factory=list)
-    websocket_open_timeout_seconds: float = 5.0
-
-
-@dataclass
 class WebChatConfig:
     enabled: bool = True
 
 
 @dataclass
 class ChannelsConfig:
-    telegram: TelegramChannelConfig | None = None
-    qq: QQChannelConfig | None = None
     chat: WebChatConfig = field(default_factory=WebChatConfig)
 
 
@@ -103,8 +79,5 @@ __all__ = [
     "Config",
     "MobileKeyEncryptionConfig",
     "MobileRealtimeConfig",
-    "QQChannelConfig",
-    "QQGroupConfig",
-    "TelegramChannelConfig",
     "WebChatConfig",
 ]

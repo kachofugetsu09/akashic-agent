@@ -194,6 +194,12 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
     toml_str = _render_config(answers)
     _atomic_write_with_backup(config_path, toml_str, mode=0o600)
     _ok(f"{config_path} 已生成")
+    telegram_config_path = _telegram_local_config_path(workspace)
+    ensure_workspace_plugin_data_dir(telegram_config_path.parent, workspace)
+    _atomic_write_with_backup(
+        telegram_config_path, _render_telegram_config(answers), mode=0o600
+    )
+    _ok(f"{telegram_config_path} 已生成")
     qqbot_config_path = _qqbot_local_config_path(workspace)
     ensure_workspace_plugin_data_dir(qqbot_config_path.parent, workspace)
     _atomic_write_with_backup(
@@ -497,45 +503,29 @@ def _atomic_write_with_backup(
 
 
 def _render_channels(a: WizardAnswers) -> str:
-    lines: list[str] = []
-
-    lines += [
+    return "\n".join(
+        [
         "# Web Chat 由 Supervisor 在唯一入口 2236 提供。",
         "[channels.chat]",
         "enabled = true",
         "",
-    ]
+        "# Telegram 与 NapCat QQ 由普通 channel 插件拥有。",
+        "# 配置文件位于 workspace/plugin-data/telegram_channel-builtin/",
+        "# 与 workspace/plugin-data/qq_channel-builtin/，不再写入主配置。",
+        "",
+        ]
+    )
 
+
+def _render_telegram_config(a: WizardAnswers) -> str:
+    """Render the Telegram plugin config without an empty credential field."""
+
+    allow = json.dumps(a.tg_allow_from, ensure_ascii=False)
+    lines = [f"enabled = {str(bool(a.tg_token)).lower()}"]
     if a.tg_token:
-        allow = ", ".join(f'"{u}"' for u in a.tg_allow_from)
-        lines += [
-            "[channels.telegram]",
-            f'token = "{a.tg_token}"',
-            f"allow_from = [{allow}]",
-            "",
-        ]
-    else:
-        lines += [
-            "# [channels.telegram]",
-            '# token = ""',
-            '# allow_from = ["your_username"]',
-            "",
-        ]
-
-    lines += [
-        "# QQ 频道（NapCat，如需启用，填写后取消注释）",
-        "# [channels.qq]",
-        '# bot_uin = ""',
-        '# allow_from = ["your_qq_number"]',
-        "",
-        "# [[channels.qq.groups]]",
-        '# group_id = ""',
-        '# allow_from = ["your_qq_number"]',
-        "# require_at = true",
-        "",
-    ]
-
-    return "\n".join(lines)
+        lines.append(f"token = {json.dumps(a.tg_token, ensure_ascii=False)}")
+    lines.append(f"allow_from = {allow}")
+    return "\n".join(lines) + "\n"
 
 
 def _render_qqbot_config(a: WizardAnswers) -> str:
@@ -554,6 +544,10 @@ def _render_qqbot_config(a: WizardAnswers) -> str:
 
 def _qqbot_local_config_path(workspace: Path) -> Path:
     return workspace_plugin_data_dir(workspace, "qqbot", "github") / "config.local.toml"
+
+
+def _telegram_local_config_path(workspace: Path) -> Path:
+    return workspace_plugin_data_dir(workspace, "telegram_channel", "builtin") / "config.local.toml"
 
 
 def _print_completion(a: WizardAnswers, workspace: Path) -> None:
