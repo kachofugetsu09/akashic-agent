@@ -1,15 +1,26 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Iterator, Literal, Sequence
 from urllib.parse import quote
 
 from yoyo import get_backend, read_migrations
 
 from agent.migrations.context import bind_migration_context
+from agent.migrations.bundles import (
+    MigrationBundleBlocked,
+    MigrationBundleError,
+    discover_migration_bundles,
+    load_migration_requirements,
+    migration_import_paths,
+    validate_bundle_dependencies,
+    validate_pending_requirements,
+)
+from agent.plugins.manifest import plugins_root
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 
 
@@ -32,12 +43,30 @@ class MigrationRunner:
         repo_root: Path,
         config_path: Path,
         workspace: Path,
+        plugin_dirs: Sequence[Path] = (),
+        installed_cache_root: Path | None = None,
+        migration_catalog: Path | None = None,
     ) -> None:
         self.repo_root = repo_root.resolve()
         self.config_path = config_path.expanduser().resolve()
         self.workspace = workspace.expanduser().resolve()
-        self.migrations_root = self.repo_root / "migrations" / "yoyo"
+        core_root = self.repo_root / "migrations" / "core"
+        self.migrations_root = (
+            core_root if core_root.is_dir() else self.repo_root / "migrations" / "yoyo"
+        )
         self.ledger_path = self.workspace / "migrations.sqlite3"
+        # 保留路径上的 symlink 形状，让 source resolver 能够拒绝它，而不是
+        # 先 resolve 后把越界路径伪装成普通 cache 根。
+        self.plugin_dirs = tuple(path.expanduser() for path in plugin_dirs)
+        self.installed_cache_root = (
+            (installed_cache_root or (plugins_root() / "cache"))
+            .expanduser()
+        )
+        self.migration_catalog = (
+            migration_catalog
+            if migration_catalog is not None
+            else self.repo_root / "migrations" / "catalog.toml"
+        ).expanduser()
 
     def run(self) -> MigrationOutcome:
         """执行当前目录并返回本次落账的迁移 ID。"""
@@ -56,7 +85,33 @@ class MigrationRunner:
         # 1. 初始化由 workspace 持有的迁移账本
         try:
             self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
-            migrations = read_migrations(str(self.migrations_root))
+            core_migrations = read_migrations(str(self.migrations_root))
+            bundles = discover_migration_bundles(
+                plugin_dirs=self.plugin_dirs,
+                installed_cache_root=self.installed_cache_root,
+            )
+            requirements = load_migration_requirements(self.migration_catalog)
+            core_ids = tuple(migration.id for migration in core_migrations)
+            bundle_ids = tuple(
+                migration_id
+                for bundle in bundles
+                for migration_id in bundle.migration_ids
+            )
+            validate_bundle_dependencies(
+                bundles,
+                core_migration_ids=core_ids,
+                requirements=requirements,
+            )
+            validate_pending_requirements(
+                requirements,
+                loaded_ids=core_ids + bundle_ids,
+                applied_ids=_read_applied_ids(self.ledger_path),
+                bundles=bundles,
+            )
+            migrations = read_migrations(
+                str(self.migrations_root),
+                *(str(bundle.migration_root) for bundle in bundles),
+            )
             backend = get_backend(self._ledger_uri())
             os.chmod(self.ledger_path, 0o600)
 
@@ -68,10 +123,13 @@ class MigrationRunner:
                     config_path=self.config_path,
                     workspace=self.workspace,
                 ),
+                migration_import_paths(bundles),
             ):
                 pending = backend.to_apply(migrations)
                 migration_ids = tuple(migration.id for migration in pending)
                 backend.apply_migrations(pending)
+        except (MigrationBundleBlocked, MigrationBundleError):
+            raise
         except Exception as exc:
             raise RuntimeError(
                 f"Yoyo 迁移失败: ledger={self.ledger_path} detail={exc}"
@@ -107,3 +165,23 @@ def migrate_installation(config_path: Path, workspace: Path) -> MigrationOutcome
         config_path=config_path,
         workspace=workspace,
     ).run()
+
+
+def _read_applied_ids(path: Path) -> tuple[str, ...]:
+    """只读 ledger 已成功 ID，缺表视为空账本。"""
+
+    if not path.exists():
+        return ()
+    connection = sqlite3.connect(path)
+    try:
+        try:
+            rows = connection.execute(
+                "SELECT migration_id FROM _yoyo_migration"
+            ).fetchall()
+        except sqlite3.OperationalError as error:
+            if "no such table" not in str(error).lower():
+                raise
+            return ()
+    finally:
+        connection.close()
+    return tuple(str(row[0]) for row in rows)
