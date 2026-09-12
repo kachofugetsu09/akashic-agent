@@ -62,30 +62,21 @@ def install_formal_plugins(
         for name in names
     }
     manifest = load_plugin_manifest(plugin_home)
-    try:
-        resolved = resolve_plugin_sources(
-            (), installed_cache_root=plugin_home / "cache",
-        )
-    except (FileNotFoundError, ValueError):
-        resolved = []
+    resolved = resolve_plugin_sources(
+        (), installed_cache_root=plugin_home / "cache",
+    )
     existing_ids = {
         f"{item.plugin_name}@{item.marketplace}" for item in resolved
     }
     if expected_ids and expected_ids <= existing_ids and all(
-        manifest.get(plugin_id, True) is True for plugin_id in expected_ids
+        manifest.get(plugin_id) is True for plugin_id in expected_ids
     ):
-        if configure_materials:
-            _write_material_config(workspace, marketplace)
-        if initialize_persona:
-            _initialize_persona(workspace, plugin_home, marketplace)
         return plugin_home, {}
     if plugin_home.exists():
-        shutil.rmtree(plugin_home)
+        raise RuntimeError("已存在的 fixture 安装不完整或已禁用，禁止重装掩盖恢复失败")
 
     source_root = root / "formal-plugin-sources"
-    if source_root.exists():
-        shutil.rmtree(source_root)
-    source_root.mkdir(parents=True, exist_ok=True)
+    source_root.mkdir(parents=True)
     installed: dict[str, PluginInstallResult] = {}
     for name in names:
         source = source_root / name

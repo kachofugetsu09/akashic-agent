@@ -11,7 +11,7 @@ import sys
 
 import httpx
 
-from tests.fixtures.formal_plugins import FULL_RUNTIME_PLUGINS, install_formal_plugins
+from tests.fixtures.formal_plugins import FULL_RUNTIME_PLUGINS, MARKETPLACE, install_formal_plugins
 
 ROOT = Path(__file__).parents[2]
 
@@ -66,10 +66,16 @@ async def runtime(root: Path, model_endpoint: str, *, settings: dict | None = No
     root.mkdir(parents=True, exist_ok=True)
     if settings is not None:
         (root / "fixture-config.json").write_text(json.dumps(settings), encoding="utf-8")
+    first_install = not (root / "config.toml").exists()
     plugin_home, _ = install_formal_plugins(
         root, FULL_RUNTIME_PLUGINS, configure_materials=True,
         initialize_persona=True,
     )
+    if first_install:
+        for plugin, config in (settings or {}).get("plugins", {}).items():
+            destination = root / "workspace" / "plugin-data" / f"{plugin}-{MARKETPLACE}" / "config.local.toml"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(config, encoding="utf-8")
     launch = json.loads(os.environ.get("AKASHIC_FIXTURE_COMMAND", "null"))
     command = ([sys.executable, "-m", "tests.fixtures.builtin_process", str(root), model_endpoint]
                if launch is None else [arg.replace("{root}", str(root)).replace("{model_endpoint}", model_endpoint)

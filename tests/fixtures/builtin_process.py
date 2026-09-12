@@ -12,7 +12,6 @@ import sys
 
 from agent.config_models import Config
 from bootstrap.app import AppRuntime
-from bootstrap.init_workspace import init_workspace
 from bootstrap.runtime_readiness import RuntimeReadiness
 
 
@@ -90,16 +89,8 @@ async def serve(root: Path, endpoint: str) -> None:
     workspace = root / "workspace"
     settings_path = root / "fixture-config.json"
     settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
-    if not (root / "config.toml").exists():
-        init_workspace(config_path=root / "config.toml", workspace=workspace)
-        plugins = settings.get("plugins", {})
-        marketplace = settings.get("marketplace", "fixture")
-        if not isinstance(marketplace, str) or not marketplace.strip():
-            raise ValueError("fixture marketplace 必须是非空字符串")
-        for plugin, config in plugins.items():
-            destination = workspace / f"plugin-data/{plugin}-{marketplace}/config.local.toml"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(config, encoding="utf-8")
+    if not (root / "config.toml").is_file():
+        raise RuntimeError("fixture parent 必须先完成正式安装与配置")
 
     if settings.get("crash_phase"):
         install_crash(root, settings["crash_phase"])
