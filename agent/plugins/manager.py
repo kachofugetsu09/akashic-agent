@@ -780,6 +780,8 @@ class PluginManager:
     async def _start_channel_publication(
         self,
         state: _ChannelPublicationState,
+        *,
+        startup_snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> None:
         """Start the new exact runtime with admission still closed."""
 
@@ -789,6 +791,7 @@ class PluginManager:
             state.new_runtime = await self._channel_generation_host.start_formal(
                 state.candidate,
                 state.new_factories,
+                startup_snapshot_lease=startup_snapshot_lease,
             )
 
     def _open_channel_publication(self, state: _ChannelPublicationState) -> None:
@@ -2486,6 +2489,7 @@ class PluginManager:
                 provisional_started=provisional_started,
                 reopen_previous_on_failure=reopen_previous_on_failure,
                 before_open=prepare, after_open=after_open,
+                startup_snapshot_lease=lease,
             )
         except BaseException as error:
             if prepared_here:
@@ -2509,6 +2513,7 @@ class PluginManager:
         reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
+        startup_snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> SnapshotTransaction:
         """Publish one snapshot around a single closed external-participant step."""
 
@@ -2566,7 +2571,10 @@ class PluginManager:
                 except BaseException as error:
                     forward_error = error
                     raise
-            await self._start_channel_publication(channel_state)
+            await self._start_channel_publication(
+                channel_state,
+                startup_snapshot_lease=startup_snapshot_lease,
+            )
             def open_participants() -> None:
                 if after_open is not None:
                     after_open()

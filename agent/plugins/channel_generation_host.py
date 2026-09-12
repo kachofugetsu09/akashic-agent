@@ -1022,6 +1022,21 @@ class _ChannelAttachmentRead:
         self._key = key
         self._port = port
 
+    def resolve_refs(self, artifact_ids: tuple[str, ...]) -> tuple[AttachmentRef, ...]:
+        """Resolve opaque artifact ids through the exact read owner."""
+
+        resolver = getattr(self._port, "resolve_refs", None)
+        if not callable(resolver):
+            raise TypeError("attachment read owner 缺少 resolve_refs(ids)")
+        result = resolver(artifact_ids)
+        if not isinstance(result, tuple) or any(
+            not isinstance(ref, AttachmentRef) for ref in result
+        ):
+            raise TypeError("attachment resolver 必须返回 AttachmentRef tuple")
+        if tuple(ref.artifact_id for ref in result) != artifact_ids:
+            raise RuntimeError("attachment resolver 未保留请求顺序")
+        return result
+
     async def acquire(self, ref: AttachmentRef) -> AttachmentReadLease:
         """Acquire a binding-owned read lease or release the claim on failure."""
 
@@ -1229,6 +1244,7 @@ class ChannelGenerationHost:
         self._tombstones: dict[tuple[str, str], ChannelCleanupTombstone] = {}
         self._start_counts: dict[tuple[str, str], int] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._startup_snapshot_leases: dict[str, RuntimeSnapshotLease] = {}
 
     @property
     def boot_id(self) -> str:
@@ -1292,6 +1308,7 @@ class ChannelGenerationHost:
         provider_client_factories: Mapping[str, ProviderClientFactory],
         *,
         boot_owner: str = "plugin-manager",
+        startup_snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> ChannelGeneration:
         """Start one exact committed snapshot using only the formal target."""
 
@@ -1322,8 +1339,15 @@ class ChannelGenerationHost:
             provider_client_factories
         ):
             raise RuntimeError("一个 provider client factory 不能被多个 channel 共享")
+        if startup_snapshot_lease is not None:
+            if not startup_snapshot_lease.active:
+                raise RuntimeError("channel startup snapshot lease 已关闭")
+            if startup_snapshot_lease.snapshot.snapshot_id != snapshot_id:
+                raise RuntimeError("channel startup snapshot lease 与 snapshot 不一致")
         lock = asyncio.Lock()
         self._locks[snapshot_id] = lock
+        if startup_snapshot_lease is not None:
+            self._startup_snapshot_leases[snapshot_id] = startup_snapshot_lease
         started_keys: list[tuple[str, str]] = []
         try:
             for descriptor in descriptors:
@@ -1367,6 +1391,7 @@ class ChannelGenerationHost:
                 self._remove_generation(snapshot_id)
             raise error
         finally:
+            self._startup_snapshot_leases.pop(snapshot_id, None)
             if snapshot_id not in self._bindings and not any(
                 key[0] == snapshot_id for key in self._tombstones
             ):
@@ -1632,7 +1657,18 @@ class ChannelGenerationHost:
         context = state.plugin_context
         if context is None:
             raise RuntimeError("channel 没有插件声明 Context")
-        self._begin_presentation_operation(key)
+        # ``channel.start`` runs before public admission opens.  A channel
+        # may still need one exact scope during startup to validate and bind
+        # its declared providers.  Only the task currently starting this
+        # binding receives that closed-admission exception; later requests
+        # continue to require an open binding.
+        state = self._binding(key)
+        allow_start_scope = (
+            state.start_task is asyncio.current_task()
+            and not state.started
+            and not state.stopping
+        )
+        self._begin_presentation_operation(key, allow_closed=allow_start_scope)
         binding: ChannelBindingLease | None = None
         try:
             binding = await self._acquire_control_binding(key)
@@ -1691,11 +1727,15 @@ class ChannelGenerationHost:
     ) -> ChannelBindingLease:
         """Fork an exact snapshot lease for one control effect."""
 
-        acquirer = self._snapshot_lease_acquirer
-        if acquirer is None:
-            raise RuntimeError("Channel control exact snapshot lease owner 未绑定")
         state = self._binding(key)
-        source = acquirer(state.snapshot_id)
+        startup_lease = self._startup_snapshot_leases.get(state.snapshot_id)
+        if startup_lease is not None and state.start_task is asyncio.current_task():
+            source = startup_lease.fork()
+        else:
+            acquirer = self._snapshot_lease_acquirer
+            if acquirer is None:
+                raise RuntimeError("Channel control exact snapshot lease owner 未绑定")
+            source = acquirer(state.snapshot_id)
         binding: ChannelBindingLease | None = None
         try:
             try:
