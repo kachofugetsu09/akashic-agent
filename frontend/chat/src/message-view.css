@@ -214,24 +214,94 @@
   white-space: nowrap;
 }
 
+/* 过程流：独立行按序排列，容器不着色——末条正文保持墨色。 */
 .process-trace {
-  margin: 2px 0 18px;
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 10px;
+}
+
+.flow-item {
+  min-width: 0;
+}
+
+/* Reasoning 根节点自带 mb-4；逐行排列不需要段距。 */
+.thinking-row {
+  margin: 0;
+}
+
+.process-status-line {
+  min-height: 24px;
   color: var(--ak-color-text-secondary);
-  font-size: 0.875rem;
-  line-height: 1.55;
+  font-size: 0.75rem;
+  line-height: 24px;
 }
 
 .process-trigger {
-  width: auto;
-  min-height: 40px;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-body-medium-size);
-  font-weight: 650;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.process-trigger-icon {
+  flex: none;
+  width: 13px;
+  color: color-mix(in oklch, var(--ak-color-text-secondary) 80%, transparent);
+}
+
+.process-trigger-label {
+  flex: none;
+  white-space: nowrap;
+}
+
+.process-trigger-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in oklch, var(--ak-color-text-secondary) 72%, transparent);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 流式时焦点落在当前活动：标签加深、摘要行轻微呼吸。 */
+.process-trigger.is-streaming {
+  color: color-mix(in oklch, var(--ak-color-text-primary) 80%, transparent);
+}
+
+.process-trigger.is-streaming .process-trigger-icon {
+  color: var(--ak-color-status-trace);
+}
+
+.process-trigger.is-streaming .process-trigger-summary {
+  animation: process-trace-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes process-trace-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* 展开时长内容滚动期间 trigger 吸附在视口顶，随时可收起；纸面上只留底色与一根发丝线。
+   button 上 sticky 在部分内核不生效，吸附放在外包 div。 */
+.thinking-row[data-state="open"] .process-trigger-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ak-color-bg-canvas);
+  box-shadow: inset 0 -1px 0 color-mix(in oklch, var(--ak-color-text-primary) 7%, transparent);
 }
 
 .process-trigger:hover,
 .process-trigger:active {
   color: var(--ak-color-status-trace);
+}
+
+.process-trigger .process-chevron {
+  margin-inline-start: auto;
+  flex: none;
 }
 
 .process-chevron {
@@ -242,170 +312,38 @@
   transform: rotate(180deg);
 }
 
+/* 展开的思考正文缩进到行标签之下，字色保持第三级。 */
 .process-content {
+  padding-left: 19px;
   color: var(--ak-color-text-secondary);
   outline: none;
 }
 
-/* Soft region: wash + whisper inset edge — not a hard card. */
-.process-panel {
-  --process-rail-width: 18px;
-  --process-node-center: 12px;
-  --process-panel-pad: 10px;
-  --process-panel-radius: var(--md-sys-shape-corner-small);
-  display: flex;
-  flex-direction: column;
-  margin-top: 6px;
-  border-radius: var(--process-panel-radius);
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 2.8%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--md-sys-color-on-surface) 6%, transparent);
+/* 同轮中途回复：正常流出但字色更淡，最终回复保持墨色。 */
+.timeline-narration {
+  max-width: 72ch;
+  margin: 0 0 6px;
+  color: var(--ak-color-text-secondary);
+  font-size: 0.78125rem;
+  line-height: 1.55;
 }
 
-.process-panel-body {
-  position: relative;
-  padding: var(--process-panel-pad) 12px 6px 10px;
-}
-
-.process-collapse {
-  display: flex;
-  width: 100%;
-  min-height: 36px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin: 0;
-  border: 0;
-  border-top: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 7%, transparent);
-  border-radius: 0 0 calc(var(--process-panel-radius) - 1px) calc(var(--process-panel-radius) - 1px);
-  padding: 0 12px;
-  color: var(--md-sys-color-on-surface-variant);
-  background: transparent;
-  font: inherit;
-  font-size: var(--md-sys-typescale-label-medium-size);
-  cursor: pointer;
-  transition-property: color, background-color, scale;
-  transition-duration: 120ms;
-  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
-}
-
-.process-collapse:hover {
-  color: var(--md-sys-color-on-surface);
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 3.5%, transparent);
-}
-
-.process-collapse:active {
-  scale: 0.96;
-}
-
-.process-collapse:focus-visible {
-  outline: 2px solid var(--md-sys-color-primary);
-  outline-offset: -2px;
-}
-
-.process-line {
-  position: absolute;
-  top: var(--process-node-center);
-  bottom: 0;
-  left: 0;
-  width: var(--process-rail-width);
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.process-line::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc((var(--process-rail-width) - 1px) / 2);
-  width: 1px;
-  background: color-mix(in oklch, var(--ak-color-text-primary) 12%, transparent);
-  content: "";
-}
-
-.process-flow {
-  position: absolute;
-  left: 0;
-  width: var(--process-rail-width);
-  bottom: 0;
-  overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease-out;
-}
-
-.process-flow[data-active="true"] {
-  opacity: 1;
-}
-
-/* Active span: stronger hairline only — no traveling pulse/glow. */
-.process-flow::after {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc((var(--process-rail-width) - 1px) / 2);
-  width: 1px;
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 28%, transparent);
-  content: "";
-}
-
-.process-items {
-  position: relative;
-  display: grid;
-  gap: 8px;
-}
-
-.process-item {
-  position: relative;
-  display: grid;
-  grid-template-columns: var(--process-rail-width) minmax(0, 1fr);
-  min-height: 22px;
-  align-items: start;
-  column-gap: 10px;
-}
-
-.process-node {
-  position: relative;
-  z-index: 1;
-  justify-self: center;
-  margin-top: 7px;
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 28%, transparent);
-  box-shadow: 0 0 0 3px var(--md-sys-color-background);
-  transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1);
-}
-
-.process-node.circle {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.process-node.diamond {
-  width: 6px;
-  height: 6px;
-  transform: rotate(45deg);
-  border-radius: 1px;
-}
-
-.process-item.active .process-node {
-  background: color-mix(in oklch, var(--md-sys-color-on-surface) 55%, transparent);
-  box-shadow: 0 0 0 3px var(--md-sys-color-background);
-}
-
-.process-item.active .process-node.diamond {
-  transform: rotate(45deg);
-}
-
-.process-item.error .process-node {
-  background: var(--ak-color-status-error);
+.timeline-narration :where(p, ul, ol, blockquote, pre, table) {
+  margin-block-end: 0.5em;
 }
 
 .process-text {
   max-width: 72ch;
-  color: color-mix(in oklch, var(--ak-color-text-primary) 48%, transparent);
-  font-size: 0.8125rem;
-  line-height: 1.45;
+  color: color-mix(in oklch, var(--ak-color-text-primary) 46%, transparent);
+  font-size: 0.75rem;
+  line-height: 1.55;
   white-space: pre-wrap;
   user-select: text;
+}
+
+/* 正在流式输出的思考正文略深，完成后沉入背景。 */
+.thinking-row:has(.process-trigger.is-streaming) .process-text {
+  color: color-mix(in oklch, var(--ak-color-text-primary) 62%, transparent);
 }
 
 .process-markdown {
@@ -427,6 +365,10 @@
   margin-block-end: 0.65em;
 }
 
+.tool-step {
+  min-width: 0;
+}
+
 .tool-step-body {
   min-width: 0;
 }
@@ -434,21 +376,27 @@
 .tool-step-title {
   display: flex;
   align-items: center;
-  gap: 7px;
-  color: color-mix(in oklch, var(--ak-color-text-primary) 55%, transparent);
+  gap: 6px;
+  color: color-mix(in oklch, var(--ak-color-text-primary) 60%, transparent);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.8125rem;
-  font-weight: 550;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.tool-step-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-step-summary {
   display: block;
   width: 100%;
   min-width: 0;
-  min-height: 28px;
+  min-height: 24px;
   border: 0;
-  border-radius: 6px;
-  padding: 2px 4px 2px 0;
+  border-radius: 4px;
+  padding: 2px 0;
   color: inherit;
   background: transparent;
   text-align: left;
@@ -461,19 +409,24 @@
 
 button.tool-step-summary:hover {
   color: color-mix(in oklch, var(--ak-color-text-primary) 72%, transparent);
-  background: color-mix(in oklch, var(--ak-color-text-primary) 4%, transparent);
+  background: color-mix(in oklch, var(--ak-color-text-primary) 3.5%, transparent);
 }
 
 button.tool-step-summary:active {
-  scale: 0.96;
+  scale: 0.98;
 }
 
 .tool-step-heading {
   display: grid;
-  grid-template-columns: minmax(0, auto) 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   min-height: 22px;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+}
+
+.tool-step-icon {
+  flex: none;
+  width: 13px;
 }
 
 .tool-step-icon,
@@ -484,14 +437,17 @@ button.tool-step-summary:active {
 }
 
 .tool-step-description {
-  margin-top: 3px;
-  font-size: 0.8125rem;
-  line-height: 1.48;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.71875rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   user-select: text;
 }
 
 .tool-step-state {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   line-height: 1.3;
   white-space: nowrap;
@@ -530,19 +486,19 @@ button.tool-step-summary:active {
 
 .tool-detail-surface {
   display: grid;
-  gap: 10px;
-  margin-top: 4px;
+  gap: 8px;
+  margin-top: 2px;
   border-left: 0;
-  padding: 2px 0 4px;
+  padding: 0 0 6px 19px;
   background: transparent;
 }
 
 .tool-detail-heading {
   display: flex;
-  min-height: 40px;
+  min-height: 26px;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   margin: -6px 0 1px;
 }
 
@@ -556,7 +512,7 @@ button.tool-step-summary:active {
 .tool-detail-copy {
   display: inline-flex;
   min-width: 60px;
-  min-height: 36px;
+  min-height: 26px;
   align-items: center;
   justify-content: center;
   gap: 6px;
@@ -869,11 +825,10 @@ button.tool-step-summary:active {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .process-flow {
-    transition-duration: 0ms;
+  .process-trigger.is-streaming .process-trigger-summary {
+    animation: none;
   }
 
-  .process-collapse,
   .process-chevron,
   .process-trigger,
   .tool-step-summary,
@@ -884,10 +839,6 @@ button.tool-step-summary:active {
   .composer-reply > button,
   .shared-message-actions button {
     transition-duration: 0ms;
-  }
-
-  .process-collapse:active {
-    scale: none;
   }
 }
 
@@ -917,8 +868,7 @@ button.tool-step-summary:active {
 .mobile-plugin-slot[data-slot="turn.before_tool"] {
   display: grid;
   min-width: 0;
-  gap: 12px;
-  margin-inline-start: 30px;
+  gap: 2px;
 }
 
 .mobile-plugin-slot[data-slot="turn.after_answer"] {

@@ -27,24 +27,22 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Check, ChevronDown, ChevronUp, Copy, ImageIcon, Wrench } from "lucide-react";
+import { Brain, Check, ChevronDown, Copy, ImageIcon, Wrench } from "lucide-react";
 import {
   Fragment,
   lazy,
   memo,
   Suspense,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useEffect,
-  useLayoutEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import type {
   AgentBlock,
   ChatMessage,
   MessageAttachment,
-  ThinkingBlock,
   ToolBlock,
 } from "./chat-message";
 import type { ReplyActivity, TimelineAttachment, TimelineMessage, TimelinePart } from "./message-timeline";
@@ -102,15 +100,14 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
   const preview = activity.preview ?? (activity.active ? lastPreview : null);
   const draft = preview && !committed.has(preview.message_id) ? preview : null;
   if (preview && !draft && !processMessages.length) return null;
-  const process = timelineProcessBlocks(processMessages, toolResults);
-  const latest = processMessages.at(-1);
-  const text = draft?.text || (latest ? timelineText(latest) : "");
+  const flow = timelineFlow(processMessages, undefined, toolResults);
+  const text = draft?.text ?? "";
   const beforeReasoning = (message: TimelineMessage, prefetch = false) => <MobilePluginSlot name="turn.before_reasoning"
     sessionId={message.session_id} messageId={message.id} prefetch={prefetch} />;
   return <div className="message-row agent-row reply-activity" data-reply-handle={activity.handle}
     data-preview-message-id={draft?.message_id} aria-busy={activity.active}>
     <div className="agent-content">
-      <TimelineProcess process={process} draftThinking={draft?.thinking} streaming={activity.active}
+      <TimelineProcess flow={flow} draftThinking={draft?.thinking} streaming={activity.active}
         beforeReasoning={beforeReasoning}
         prefetchReasoning={(message) => beforeReasoning(message, true)}
         draftSlot={draft ? <MobilePluginSlot name="turn.before_reasoning" sessionId={activity.session_id}
@@ -118,7 +115,7 @@ export function ReplyActivityView({ activity, committed, onError, processMessage
         beforePart={(part, index, message) => part.kind === "tool_call" && !("display" in part) ? <MobilePluginSlot
           name="turn.before_tool" sessionId={message.session_id} messageId={message.id}
           block={{ ...part, message_id: message.id, part_index: index }} /> : null} />
-      {!draft && !text && !process.length ? <ThinkingPlaceholder /> : null}
+      {!draft && !text && !flow.length ? <ThinkingPlaceholder /> : null}
       {text ? <MessageBody content={text} streaming={Boolean(draft?.text) && activity.active} deferRichContent onError={onError} /> : null}
     </div>
   </div>;
@@ -202,57 +199,108 @@ export function ChatMessageView({
   );
 }
 
-interface TimelineProcessBlock {
-  origin: TimelineMessage;
-  part: TimelinePart;
-  index: number;
-  block: AgentBlock;
-}
+type FlowItem =
+  | { kind: "thinking"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; content: string }
+  | { kind: "tool"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; block: ToolBlock }
+  | { kind: "narration"; key: string; origin: TimelineMessage; index: number; part: TimelinePart; text: string }
+  | { kind: "part"; key: string; origin: TimelineMessage; index: number; part: TimelinePart };
 
-/** 每条消息内先展示思考，再按原消息顺序连接全部过程。 */
-function timelineProcessBlocks(messages: TimelineMessage[], toolResults: ReadonlyMap<string, TimelineMessage>): TimelineProcessBlock[] {
-  return messages.flatMap((origin) => origin.body.kind !== "output" ? [] : origin.body.parts.map((part, index) => ({ part, index }))
+/** 组内全部成员按 part 顺序展开成独立流项：思考、工具、中途正文、末条正文各归原位。 */
+function timelineFlow(messages: TimelineMessage[], finalId: string | undefined, toolResults: ReadonlyMap<string, TimelineMessage>): FlowItem[] {
+  return messages.flatMap((origin) => origin.body.kind !== "output" ? [] :
+    origin.body.parts.map((part, index) => ({ part, index }))
     .sort((left, right) => Number(right.part.kind === "model.facts") - Number(left.part.kind === "model.facts"))
-    .flatMap(({ part, index }): TimelineProcessBlock[] => {
-    if ("display" in part) return [];
-    if (part.kind === "model.facts" && part.value.thinking) return [{ index, origin, part, block: { kind: "thinking", content: part.value.thinking } }];
-    if ("archive" in part && part.kind === "history.transcript") {
-      return historyBlocks(part.archive).map((block) => ({ index, origin, part, block }));
-    }
-    if (part.kind !== "tool_call") return [];
-    const result = toolResults.get(`${origin.id}:${index}`);
-    const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
-    return [{ index, origin, part, block: { kind: "tool", callId: `${origin.id}:${index}`, name: part.name,
-      input: part.arguments, output: result ? timelineText(result) : undefined,
-      status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
-      errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
-  }));
+    .flatMap(({ part, index }): FlowItem[] => {
+      if ("display" in part) return [];
+      const key = `${origin.id}:${index}`;
+      if (part.kind === "model.facts") {
+        return part.value.thinking
+          ? [{ kind: "thinking", key, origin, index, part, content: part.value.thinking }] : [];
+      }
+      if ("archive" in part) {
+        return part.kind === "history.transcript"
+          ? historyBlocks(part.archive).flatMap((block, blockIndex): FlowItem[] => block.kind === "thinking"
+            ? [{ kind: "thinking", key: `${key}:h${blockIndex}`, origin, index, part, content: block.content }]
+            : [{ kind: "tool", key: `${key}:h${blockIndex}`, origin, index, part, block }])
+          : [];
+      }
+      if (part.kind === "tool_call") {
+        const result = toolResults.get(key);
+        const outcome = result?.body.kind === "tool_result" ? result.body.outcome : null;
+        return [{ kind: "tool", key, origin, index, part, block: {
+          kind: "tool", callId: key, name: part.name, input: part.arguments,
+          output: result ? timelineText(result) : undefined,
+          status: outcome === null ? "input-available" : outcome === "success" ? "output-available" : "output-error",
+          errorText: outcome && outcome !== "success" ? outcomeLabels[outcome] : undefined } }];
+      }
+      if (origin.id === finalId) {
+        return isTimelinePartVisible(part) ? [{ kind: "part", key, origin, index, part }] : [];
+      }
+      if (part.kind === "text" && isTimelinePartVisible(part)) {
+        return [{ kind: "narration", key, origin, index, part, text: part.value }];
+      }
+      return [];
+    }));
 }
 
-/** 历史与实时回复共用一条轨迹，节点继续引用原消息和 part。 */
-function TimelineProcess({ process, streaming = false, draftThinking = "", draftSlot, beforeReasoning, prefetchReasoning, beforePart }: {
-  process: TimelineProcessBlock[];
+interface FlowPartViewProps {
+  attachment: (id: string) => ReactNode;
+  lookupMessage: (id: string) => TimelineMessage | undefined;
+  onNavigate: (id: string, partIndex?: number) => void;
+  onError?: (error: unknown) => void;
+  canLoadReferences: boolean;
+}
+
+function FlowItemView({ item, beforePart, onCopyToolDetail, partView }: {
+  item: FlowItem;
+  beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
+  onCopyToolDetail?: (text: string) => void;
+  partView?: FlowPartViewProps;
+}) {
+  const content = item.kind === "thinking" ? <ThinkingRow content={item.content} streaming={false} />
+    : item.kind === "tool" ? <ToolStep block={item.block} active={item.block.status === "input-available"} onCopyDetail={onCopyToolDetail} />
+    : item.kind === "narration" ? <div className="timeline-narration">
+      <MessageBody content={item.text} streaming={false} deferRichContent onError={partView?.onError} />
+    </div>
+    : partView ? <TimelinePartView part={item.part} {...partView} /> : null;
+  return (
+    <div className={`flow-item flow-${item.kind}`} data-process-message-id={item.origin.id}
+      data-part-index={item.index} tabIndex={-1}>
+      {beforePart?.(item.part, item.index, item.origin)}
+      {content}
+    </div>
+  );
+}
+
+/** 历史与实时回复共用一条流，过程项继续引用原消息和 part。 */
+function TimelineProcess({ flow, streaming = false, draftThinking = "", draftSlot, beforeReasoning, prefetchReasoning, beforePart, onCopyToolDetail, partView }: {
+  flow: FlowItem[];
   streaming?: boolean;
   draftThinking?: string;
   draftSlot?: ReactNode;
   beforeReasoning?: (message: TimelineMessage) => ReactNode;
   prefetchReasoning?: (message: TimelineMessage) => ReactNode;
   beforePart?: (part: TimelinePart, index: number, message: TimelineMessage) => ReactNode;
+  onCopyToolDetail?: (text: string) => void;
+  partView?: FlowPartViewProps;
 }) {
-  const blocks: AgentBlock[] = process.map((item) => item.block);
-  if (draftThinking) blocks.push({ kind: "thinking", content: draftThinking });
-  if (!blocks.length && !draftSlot) return null;
+  // 槽位锚在首个过程项之前；纯文本输出没有过程项时退到流开头，仍由提交消息提供上下文。
+  const slotIndex = flow.findIndex((item) => item.kind === "thinking" || item.kind === "tool");
+  const slotAt = slotIndex >= 0 ? slotIndex : (flow.length ? 0 : -1);
+  const slotOrigin = slotAt >= 0 ? flow[slotAt]?.origin : undefined;
+  if (!flow.length && !draftThinking && !draftSlot) return null;
   return <>
-    {!streaming && process.length ? prefetchReasoning?.(process[0].origin) : null}
-    <ProcessTrace blocks={blocks} streaming={streaming} interrupted={false}
-    startContent={process.length ? beforeReasoning?.(process[0].origin) : draftSlot}
-    beforeBlock={(_block, index) => {
-      const item = process[index];
-      if (!item) return null;
-      return <div data-process-message-id={item.origin.id} data-part-index={item.index} tabIndex={-1}>
-        {beforePart?.(item.part, item.index, item.origin)}
-      </div>;
-    }} />
+    {!streaming && slotOrigin ? prefetchReasoning?.(slotOrigin) : null}
+    <div className="process-trace">
+      {flow.map((item, index) => (
+        <Fragment key={item.key}>
+          {index === slotAt ? beforeReasoning?.(item.origin) : null}
+          <FlowItemView item={item} beforePart={beforePart} onCopyToolDetail={onCopyToolDetail} partView={partView} />
+        </Fragment>
+      ))}
+      {slotAt < 0 ? draftSlot : null}
+      {draftThinking ? <ThinkingRow content={draftThinking} streaming /> : null}
+    </div>
   </>;
 }
 
@@ -274,8 +322,9 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   onError?: (error: unknown) => void;
 }) {
   const body = message.body;
-  const process = hideProcess ? [] : timelineProcessBlocks(processMessages, toolResults);
-  const leadingContent = hideProcess ? null : beforeReasoning?.(process[0]?.origin ?? message);
+  const flow = hideProcess ? [] : timelineFlow(processMessages, message.id, toolResults);
+  const hasFlow = body.kind === "output" && flow.length > 0;
+  const leadingContent = hideProcess || hasFlow ? null : beforeReasoning?.(message);
   const referencedArtifacts = new Set(body.kind === "control" ? [] : body.parts.flatMap((part) =>
     !("display" in part) && part.kind === "artifact_ref" ? [part.value] : []));
   const attachment = (id: string) => {
@@ -287,13 +336,14 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
   };
   return <div className={`message-row timeline-message timeline-${body.kind}`}>
     <div className={body.kind === "input" ? "user-bubble" : "agent-content"}>
-      {process.length === 0 ? leadingContent : null}
-      {body.kind === "output" && process.length ? <TimelineProcess process={process}
-        beforeReasoning={beforeReasoning} prefetchReasoning={prefetchReasoning} beforePart={beforePart} /> : null}
+      {leadingContent}
+      {hasFlow ? <TimelineProcess flow={flow}
+        beforeReasoning={beforeReasoning} prefetchReasoning={prefetchReasoning} beforePart={beforePart}
+        partView={{ attachment, lookupMessage, onNavigate, onError, canLoadReferences }} /> : null}
       {body.kind === "control" ? <div className="timeline-control-summary">
         <strong>{controlLabels[body.action]}</strong>
         {body.reason !== null ? <p className="plain-message-response">{body.reason}</p> : null}
-      </div> : <>
+      </div> : hasFlow ? null : <>
         {body.kind === "tool_result" ? <div className="timeline-result-heading">
           <strong>工具结果 · {outcomeLabels[body.outcome]}</strong>
           <button type="button" onClick={() => onNavigate(body.call_ref.message_id, body.call_ref.part_index)}
@@ -304,7 +354,7 @@ export function TimelineMessageView({ message, lookupMessage, toolResults, onNav
         {body.parts.map((part, index) => ({ part, index })).sort((left, right) =>
           Number(right.part.kind === "model.facts" || right.part.kind === "history.transcript")
           - Number(left.part.kind === "model.facts" || left.part.kind === "history.transcript"))
-          .map(({ part, index }) => isTimelinePartVisible(part) && !(hideBody && part.kind === "text") && !((hideProcess && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) || process.some((item) => item.origin.id === message.id && item.index === index)) ? <div key={index} data-part-index={index} tabIndex={-1}>
+          .map(({ part, index }) => isTimelinePartVisible(part) && !(hideBody && part.kind === "text") && !(hideProcess && (part.kind === "model.facts" || part.kind === "tool_call" || part.kind === "history.transcript")) ? <div key={index} data-part-index={index} tabIndex={-1}>
           {beforePart?.(part, index, message)}
           <TimelinePartView part={part} attachment={attachment} lookupMessage={lookupMessage} canLoadReferences={canLoadReferences}
             onNavigate={onNavigate} onError={onError} processStartContent={leadingContent} />
@@ -465,6 +515,7 @@ function AttachmentHover({ attachment }: { attachment: MessageAttachment }) {
   );
 }
 
+/** 每个过程项独立成行：思考、工具各自折叠，不共用外框。 */
 const ProcessTrace = memo(function ProcessTrace({
   blocks,
   streaming,
@@ -482,156 +533,89 @@ const ProcessTrace = memo(function ProcessTrace({
   beforeBlock?: (block: AgentBlock, index: number) => ReactNode;
   onCopyToolDetail?: (text: string) => void;
 }) {
-  const processItemsRef = useRef<HTMLDivElement>(null);
-  const processLineRef = useRef<HTMLDivElement>(null);
-  const processFlowRef = useRef<HTMLDivElement>(null);
-  let activeBlockIndex = streaming ? blocks.length - 1 : -1;
-  blocks.forEach((block, index) => {
-    if (block.kind === "tool" && block.status === "input-available") activeBlockIndex = index;
-  });
-
-  useLayoutEffect(() => {
-    const items = processItemsRef.current;
-    const line = processLineRef.current;
-    const flow = processFlowRef.current;
-    if (!items || !line || !flow) return;
-
-    // 1. 只在节点结构变化时定位起点；正文增长由 CSS bottom 自动延伸。
-    const firstNode = items.querySelector<HTMLElement>(".process-item .process-node");
-    const firstItem = firstNode?.closest<HTMLElement>(".process-item");
-    if (!firstNode || !firstItem) return;
-    const lineTop = firstItem.offsetTop + firstNode.offsetTop + firstNode.offsetHeight / 2;
-    line.style.top = `${lineTop}px`;
-
-    // 2. 活动段从上一个节点延伸到当前活动内容末端（相对 items，以适配框内滚动）。
-    const processItems = Array.from(items.querySelectorAll<HTMLElement>(".process-item"));
-    const activeItemIndex = processItems.findIndex((item) => item.classList.contains("active"));
-    if (activeItemIndex < 0) {
-      flow.dataset.active = "false";
-      return;
-    }
-    const activeItem = processItems[activeItemIndex];
-    const frontierItem = processItems[Math.max(0, activeItemIndex - 1)];
-    const frontierNode = frontierItem.querySelector<HTMLElement>(".process-node");
-    if (!frontierNode) return;
-    const flowTop = frontierItem.offsetTop + frontierNode.offsetTop + frontierNode.offsetHeight / 2;
-    const flowBottom = activeItem.offsetTop + activeItem.offsetHeight;
-    flow.style.top = `${flowTop}px`;
-    flow.style.bottom = `${Math.max(0, items.offsetHeight - flowBottom)}px`;
-    flow.dataset.active = "true";
-  }, [activeBlockIndex, blocks.length]);
-
+  const lastThinkingIndex = blocks.reduce((last, block, index) => block.kind === "thinking" ? index : last, -1);
   return (
-    <Reasoning
-      className="process-trace"
-      isStreaming={streaming}
-      defaultOpen={streaming}
-      duration={durationMs ? Math.max(1, Math.round(durationMs / 1000)) : undefined}
-    >
-      <ProcessTraceTrigger interrupted={interrupted} />
+    <div className="process-trace">
+      {startContent}
+      {blocks.map((block, index) => (
+        <Fragment key={block.kind === "thinking" ? `thinking-${index}` : block.callId}>
+          {beforeBlock?.(block, index)}
+          {block.kind === "thinking" ? (
+            <ThinkingRow
+              content={block.content}
+              streaming={streaming && index === lastThinkingIndex}
+              duration={index === lastThinkingIndex && durationMs
+                ? Math.max(1, Math.round(durationMs / 1000)) : undefined}
+            />
+          ) : (
+            <ToolStep
+              block={block}
+              active={block.status === "input-available"}
+              onCopyDetail={onCopyToolDetail}
+            />
+          )}
+        </Fragment>
+      ))}
+      {interrupted ? <div className="process-status-line">已中止</div> : null}
+    </div>
+  );
+});
+
+const ThinkingRow = memo(function ThinkingRow({
+  content,
+  streaming,
+  duration,
+}: {
+  content: string;
+  streaming: boolean;
+  duration?: number;
+}) {
+  const latestLine = streaming
+    ? content.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? ""
+    : "";
+  return (
+    <Reasoning className="thinking-row" isStreaming={streaming} defaultOpen={streaming} duration={duration}>
+      <div className="process-trigger-sticky"><ThinkingRowTrigger summary={latestLine} /></div>
       <CollapsibleContent className="process-content">
-        <div className="process-panel">
-          <div className="process-panel-body">
-            <div className="process-items" ref={processItemsRef}>
-              <div className="process-line" aria-hidden="true" ref={processLineRef} />
-              <div className="process-flow" aria-hidden="true" data-active="false" ref={processFlowRef} />
-              {startContent}
-              {blocks.map((block, index) => (
-                <Fragment key={block.kind === "thinking" ? `thinking-${index}` : block.callId}>
-                  {beforeBlock?.(block, index)}
-                  {block.kind === "thinking" ? (
-                    <ThinkingStep
-                      block={block}
-                      active={streaming && index === blocks.length - 1}
-                      origin={index === 0}
-                    />
-                  ) : (
-                    <ToolStep
-                      block={block}
-                      active={block.status === "input-available"}
-                      origin={index === 0}
-                      onCopyDetail={onCopyToolDetail}
-                    />
-                  )}
-                </Fragment>
-              ))}
-            </div>
-          </div>
-          <ProcessTraceCollapse />
+        <div className="process-text process-markdown">
+          <Suspense fallback={<span className="process-markdown-fallback">{content}</span>}>
+            <LazyMessageResponse isAnimating={streaming}>{content}</LazyMessageResponse>
+          </Suspense>
         </div>
       </CollapsibleContent>
     </Reasoning>
   );
 });
 
-function ProcessTraceTrigger({ interrupted }: { interrupted: boolean }) {
+function ThinkingRowTrigger({ summary }: { summary: string }) {
   const { isOpen, isStreaming, duration } = useReasoning();
-  const label = interrupted
-    ? `已中止${duration ? ` · ${duration}s` : ""}`
-    : isStreaming
-      ? "正在思考"
-      : `已思考${duration ? ` ${duration}s` : ""}`;
-
+  // 收起长内容后视口可能跳离原位；结束后把行滚回最近可见位置。
+  const handleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    if (!isOpen) return;
+    const row = event.currentTarget.closest<HTMLElement>(".thinking-row");
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      row?.scrollIntoView({ block: "nearest" });
+    }));
+  };
   return (
-    <ReasoningTrigger className="process-trigger">
-      <span>{label}</span>
-      <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={15} aria-hidden="true" />
+    <ReasoningTrigger className={`process-trigger ${isStreaming ? "is-streaming" : ""}`} onClick={handleClick}>
+      <Brain className="process-trigger-icon" size={13} aria-hidden="true" />
+      <span className="process-trigger-label">
+        {isStreaming ? "正在思考" : duration ? `已思考 ${duration}s` : "已思考"}
+      </span>
+      {summary ? <span className="process-trigger-summary">{summary}</span> : null}
+      <ChevronDown className={`process-chevron ${isOpen ? "open" : ""}`} size={13} aria-hidden="true" />
     </ReasoningTrigger>
   );
 }
 
-function ProcessTraceCollapse() {
-  const { setIsOpen } = useReasoning();
-
-  return (
-    <button
-      type="button"
-      className="process-collapse"
-      aria-label="收起思考过程"
-      onClick={(event) => {
-        setIsOpen(false);
-        const trigger = event.currentTarget
-          .closest(".process-trace")
-          ?.querySelector<HTMLElement>(".process-trigger");
-        trigger?.focus({ preventScroll: true });
-      }}
-    >
-      <ChevronUp size={14} aria-hidden="true" />
-      <span>收起</span>
-    </button>
-  );
-}
-
-const ThinkingStep = memo(function ThinkingStep({
-  block,
-  active,
-  origin,
-}: {
-  block: ThinkingBlock;
-  active: boolean;
-  origin: boolean;
-}) {
-  return (
-    <div className={`process-item thinking-step ${active ? "active" : ""} ${origin ? "trace-origin" : ""}`}>
-      <span className="process-node circle" />
-      <div className="process-text process-markdown">
-        <Suspense fallback={<span className="process-markdown-fallback">{block.content}</span>}>
-          <LazyMessageResponse isAnimating={active}>{block.content}</LazyMessageResponse>
-        </Suspense>
-      </div>
-    </div>
-  );
-});
-
 const ToolStep = memo(function ToolStep({
   block,
   active,
-  origin,
   onCopyDetail,
 }: {
   block: ToolBlock;
   active: boolean;
-  origin: boolean;
   onCopyDetail?: (text: string) => void;
 }) {
   const description = toolDescription(block.input);
@@ -673,9 +657,8 @@ const ToolStep = memo(function ToolStep({
 
   return (
     <div
-      className={`process-item tool-step ${active ? "active" : ""} ${origin ? "trace-origin" : ""} ${block.status === "output-error" ? "error" : ""}`}
+      className={`tool-step ${active ? "active" : ""} ${block.status === "output-error" ? "error" : ""}`}
     >
-      <span className="process-node diamond" />
       <div className="tool-step-body">
         {hasDetails ? (
           <button
@@ -788,17 +771,15 @@ function ToolStepSummary({
   open: boolean;
 }) {
   return (
-    <>
-          <span className="tool-step-heading">
-            <span className="tool-step-title">
-              <Wrench className="tool-step-icon" size={14} />
-              <span>{block.name}</span>
-            </span>
-            <span className="tool-step-state">{stateLabel}</span>
-            {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={15} /> : null}
-          </span>
-          {description ? <span className="tool-step-description">{description}</span> : null}
-    </>
+    <span className="tool-step-heading">
+      <span className="tool-step-title">
+        <Wrench className="tool-step-icon" size={13} />
+        <span>{block.name}</span>
+      </span>
+      <span className="tool-step-description">{description}</span>
+      <span className="tool-step-state">{stateLabel}</span>
+      {expandable ? <ChevronDown className={`tool-step-chevron ${open ? "open" : ""}`} size={13} /> : null}
+    </span>
   );
 }
 
