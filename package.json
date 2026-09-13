@@ -85,6 +85,7 @@
     "react-dom": "^19.2.5",
     "recharts": "^3.8.1",
     "shiki": "3.23.0",
+    "stream-diffs": "0.0.2",
     "stream-markdown-parser": "1.2.12",
     "tailwind-merge": "^2.6.0",
     "type-fest": "^5.8.0",

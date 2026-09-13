@@ -90,13 +90,18 @@
   text-decoration-skip-ink: auto;
 }
 
-.agent-content pre,
-.agent-content table {
+.agent-content pre {
   max-width: min(100%, calc(100vw - 40px));
   overflow-x: auto;
 }
 
-/* Booktabs 式表格：只留横线，贴合纸面排版。 */
+/* Booktabs 式表格：只留横线，贴合纸面排版；宽表在 markstream 包装器内横滚。 */
+.agent-content .table-node-wrapper,
+.process-markdown .table-node-wrapper {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .agent-content table,
 .process-markdown table {
   width: 100%;
@@ -114,6 +119,8 @@
   border-block-end: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent);
   text-align: start;
   vertical-align: top;
+  min-width: 5rem;
+  max-width: min(30vw, 20rem);
 }
 
 .agent-content thead th,
@@ -130,7 +137,7 @@
   border-block-end: 0;
 }
 
-/* Memoh: markdown images keep natural ratio inside a quiet frame. */
+/* 图片按 dsh 式裸排：圆角、无边框无底色，只限高防止刷屏。 */
 .agent-content img,
 .process-markdown img {
   display: block;
@@ -139,11 +146,9 @@
   max-height: 20rem;
   height: auto;
   margin-block: 0.35rem;
-  border: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 12%, transparent);
-  border-radius: var(--md-sys-shape-corner-small);
+  border-radius: var(--md-sys-shape-corner-medium);
   object-fit: contain;
   outline: none;
-  background: var(--md-sys-color-surface-container-low);
 }
 
 .image-preview-full,
@@ -182,11 +187,11 @@
   max-width: 100%;
   margin-block: 0.5rem !important;
   overflow-x: auto;
-  border: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent) !important;
-  border-radius: var(--md-sys-shape-corner-small) !important;
+  border: none !important;
+  border-radius: var(--md-sys-shape-corner-medium) !important;
   padding: 10px 14px !important;
   color: var(--md-sys-color-on-surface) !important;
-  background: var(--md-sys-color-surface) !important;
+  background: var(--md-sys-color-surface-container-low) !important;
   font-family: var(--md-ref-typeface-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace) !important;
   font-size: 0.8125rem !important;
   font-weight: 480;
@@ -238,24 +243,69 @@
   border-block-start: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 12%, transparent);
 }
 
-/* markstream 代码块按聊天阅读面收束：发丝框、无投影，只留折叠与复制。 */
+/* markstream 代码块按 dsh 式阅读面收束：填充底色、无框线、无行号，
+   头部只留语言名与文字复制钮（其余控件经 codeBlockProps 关闭）。 */
 .agent-content .code-block-container,
 .process-markdown .code-block-container {
   margin-block: 0.5rem;
-  border: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 10%, transparent) !important;
-  border-radius: var(--md-sys-shape-corner-small) !important;
+  border: none !important;
+  border-radius: var(--md-sys-shape-corner-medium) !important;
   box-shadow: none !important;
+  background: var(--md-sys-color-surface-container-low) !important;
 }
 
 .agent-content .code-block-header,
 .process-markdown .code-block-header {
+  padding: 6px 12px !important;
   background: color-mix(in oklch, var(--md-sys-color-on-surface) 4%, transparent) !important;
-  border-block-end: 1px solid color-mix(in oklch, var(--md-sys-color-on-surface) 8%, transparent);
+  border-block-end: none;
 }
 
-.agent-content .code-header-actions .code-action-btn:not([aria-pressed]):not([aria-label="Copy"]):not([aria-label="Copied"]),
-.process-markdown .code-header-actions .code-action-btn:not([aria-pressed]):not([aria-label="Copy"]):not([aria-label="Copied"]) {
+.agent-content .code-block-header .icon-slot,
+.process-markdown .code-block-header .icon-slot {
   display: none;
+}
+
+.agent-content .code-header-title,
+.process-markdown .code-header-title {
+  font-family: var(--md-ref-typeface-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.6875rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.agent-content .code-header-actions .code-action-btn:not([aria-label="Copy"]):not([aria-label="Copied"]),
+.process-markdown .code-header-actions .code-action-btn:not([aria-label="Copy"]):not([aria-label="Copied"]) {
+  display: none;
+}
+
+/* 图标复制钮换成 dsh 式文字钮。 */
+.agent-content .code-action-btn[aria-label="Copy"] svg,
+.agent-content .code-action-btn[aria-label="Copied"] svg,
+.process-markdown .code-action-btn[aria-label="Copy"] svg,
+.process-markdown .code-action-btn[aria-label="Copied"] svg {
+  display: none;
+}
+
+.agent-content .code-action-btn[aria-label="Copy"]::after,
+.process-markdown .code-action-btn[aria-label="Copy"]::after {
+  content: "复制";
+  font-size: 0.6875rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.agent-content .code-action-btn[aria-label="Copied"]::after,
+.process-markdown .code-action-btn[aria-label="Copied"]::after {
+  content: "已复制";
+  font-size: 0.6875rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.agent-content .code-block-container pre,
+.process-markdown .code-block-container pre {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 10px 14px !important;
 }
 
 .message-reply-reference {
