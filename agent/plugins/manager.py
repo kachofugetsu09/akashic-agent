@@ -740,11 +740,27 @@ class PluginManager:
             old_factories=(
                 self._channel_provider_factories(previous) if changed else {}
             ),
-            new_factories=(
-                self._channel_provider_factories(candidate) if changed else {}
-            ),
+            # The candidate still points at validation data here.  Resolve its
+            # factories only after the formal payload/root has been installed.
+            new_factories={},
             changed=changed,
         )
+
+    def _refresh_channel_publication_factories(
+        self,
+        state: _ChannelPublicationState,
+        *,
+        old: bool = False,
+        new: bool = False,
+    ) -> None:
+        """Resolve channel factories from the exact snapshot payload in use."""
+
+        if not state.changed:
+            return
+        if old:
+            state.old_factories = self._channel_provider_factories(state.previous)
+        if new:
+            state.new_factories = self._channel_provider_factories(state.candidate)
 
     def _channel_binding_changed(
         self,
@@ -865,6 +881,9 @@ class PluginManager:
             return
         restored = state.old_runtime
         if state.old_stopped and state.previous is not None:
+            # The old factory was closed by stop().  Re-resolve it from the
+            # rebuilt exact old snapshot instead of reusing the closed object.
+            self._refresh_channel_publication_factories(state, old=True)
             try:
                 restored = await self._channel_generation_host.start_formal(
                     state.previous,
@@ -2575,6 +2594,18 @@ class PluginManager:
                 await self._close_channel_publication(channel_state)
             elif channel_state.old_runtime is not None and not channel_state.old_stopped:
                 raise RuntimeError("预关闭 Channel publication 尚未完成 old stop")
+            # A preclosed state is refreshed by its caller after formal Root
+            # replacement; a state closed in this method still has the live
+            # previous Root and can resolve the old side now.  The candidate
+            # side is always resolved from the final snapshot payload here.
+            if channel_state is not None:
+                if preclosed_channel_state is None:
+                    self._refresh_channel_publication_factories(
+                        channel_state, old=True
+                    )
+                self._refresh_channel_publication_factories(
+                    channel_state, new=True
+                )
             if endpoints_changed:
                 participants_switch_attempted = True
                 try:
@@ -2659,7 +2690,11 @@ class PluginManager:
                     keep_candidate_latest=promote_latest,
                     reopen_previous=(reopen_previous_on_failure and not rollback_errors),
                 )
-            if channel_state is not None and not channel_cleanup_failed:
+            if (
+                channel_state is not None
+                and not channel_cleanup_failed
+                and preclosed_channel_state is None
+            ):
                 try:
                     await self._restore_old_channel_publication(channel_state)
                 except BaseException as caught:
@@ -2671,7 +2706,11 @@ class PluginManager:
                     keep_candidate_latest=promote_latest,
                     reopen_previous=(reopen_previous_on_failure and not rollback_errors),
                 )
-            if not rollback_errors and channel_state is not None:
+            if (
+                not rollback_errors
+                and channel_state is not None
+                and preclosed_channel_state is None
+            ):
                 self._reopen_restored_channel_publication(channel_state)
                 if channel_state.old_runtime is not None:
                     try:
@@ -2846,6 +2885,13 @@ class PluginManager:
                             ready,
                             stable_snapshot=quiesced_snapshot,
                         )
+                        if channel_state is not None:
+                            # _restore_ready_runtime replaced the validation
+                            # payload with production data/root.  Only now may
+                            # the new channel factory read formal credentials.
+                            self._refresh_channel_publication_factories(
+                                channel_state, new=True
+                            )
                     finally:
                         stable_root_stopped = generation.formal_root_stopped
                     generation = ready.candidate
@@ -3765,6 +3811,12 @@ class PluginManager:
                         validation_snapshot=snapshot,
                         stable_snapshot=quiesced_snapshot,
                     )
+                    if channel_state is not None:
+                        # The candidate snapshot now carries its formal
+                        # production payload, so discard validation factories.
+                        self._refresh_channel_publication_factories(
+                            channel_state, new=True
+                        )
                 finally:
                     stable_root_stopped = generation.formal_root_stopped
             except (asyncio.CancelledError, Exception) as error:
@@ -3937,6 +3989,18 @@ class PluginManager:
                     )
                 else:
                     await self._restore_replaced_composition_runtime(generation)
+                if (
+                    runtime_restore_error is None
+                    and channel_state is not None
+                    and channel_state.old_runtime is not None
+                    and channel_state.old_stopped
+                ):
+                    try:
+                        await self._restore_old_channel_publication(channel_state)
+                        self._reopen_restored_channel_publication(channel_state)
+                        await self._channel_generation_host.recover_durable_inbounds()
+                    except BaseException as error:
+                        runtime_restore_error = error
             except BaseException as error:
                 runtime_restore_error = error
             if (
