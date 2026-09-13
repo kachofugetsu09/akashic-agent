@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
 
-from agent.plugin_composition.models import EmbeddingResult, EmbeddingSpaceDescriptor
+from agent.plugin_composition.bindings import Bindings
+from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
+from agent.plugin_composition.models import BoundEmbeddingModel, EmbeddingResult, EmbeddingSpaceDescriptor
 from agent.plugin_contracts import ContentPart, Input, Message, Output
 from plugins.akasha.application.consumer import MessageConsumer
 from plugins.akasha.application.cycle import MemoryCycle
@@ -45,7 +49,7 @@ from plugins.akasha.infrastructure.frozen_history import (
     recall_record_key,
 )
 from plugins.akasha.infrastructure.persistence import write_memory_database
-from plugins.akasha.recalls import ContextSource, Hit, ProgramSource, Recall
+from plugins.akasha.recalls import ContextSource, Hit, ProgramSource, Recall, RecallRecords
 from plugins.akasha.recall_tool import PreparedRecall, RecallTool
 
 
@@ -80,9 +84,30 @@ class _NoBindingOpen:
         raise AssertionError("冻结历史不应打开旧 learning binding")
 
 
+def _catalog(messages: tuple[Message, ...]) -> MessageCatalog:
+    """测试目录只实现冻结路径实际读取的窄方法。"""
+    return cast(MessageCatalog, _Catalog(messages))
+
+
+def _embeddings() -> MessageEmbeddings:
+    """冻结路径不得访问消息向量；构造器仍需要真实类型边界。"""
+    return cast(MessageEmbeddings, object())
+
+
+def _bindings(value: object) -> Bindings:
+    """测试 binding double 只允许验证是否错误打开旧实现。"""
+    return cast(Bindings, value)
+
+
+def _records(value: object) -> RecallRecords:
+    """测试记录 double 只实现当前读取或保存路径。"""
+    return cast(RecallRecords, value)
+
+
 @asynccontextmanager
-async def _unused_embedding_context():
-    yield object()
+async def _unused_embedding_context() -> AsyncIterator[BoundEmbeddingModel]:
+    """冻结记录路径不应打开 embedding；这个值只满足构造器的窄类型。"""
+    yield cast(BoundEmbeddingModel, object())
 
 
 def _fixture() -> tuple[
@@ -325,6 +350,7 @@ async def test_consumer_restores_old_applied_without_opening_binding(tmp_path: P
     state = Consumption(legacy_prefix=manifest.legacy_prefix, cutover_heads=(), applied=(entry,))
     cycle = MemoryCycle(config)
     cycle.commit(turn, None)
+    assert cycle.context is not None
     memory_path = tmp_path / "akasha.db"
     _ = write_memory_database(
         memory_path, turns=[turn], graph=cycle.graph, events=cycle.events,
@@ -332,8 +358,8 @@ async def test_consumer_restores_old_applied_without_opening_binding(tmp_path: P
         burst_members=cycle.burst_members, config=config, metadata={}, consumption=state,
     )
     consumer = await MessageConsumer.load(
-        memory_path, legacy_index=None, catalog=_Catalog(messages), embeddings=object(),
-        bindings=_NoBindingOpen(), config=config, frozen_history=history,
+        memory_path, legacy_index=None, catalog=_catalog(messages), embeddings=_embeddings(),
+        bindings=_bindings(_NoBindingOpen()), config=config, frozen_history=history,
     )
     try:
         restored = consumer.cycle.turns[0]
@@ -381,6 +407,7 @@ async def test_consumer_reopens_frozen_prefix_and_current_api2_suffix_without_ol
     cycle = MemoryCycle(config)
     cycle.commit(turn, None)
     cycle.commit(new_turn, None)
+    assert cycle.context is not None
     memory_path = tmp_path / "akasha.db"
     _ = write_memory_database(
         memory_path, turns=[turn, new_turn], graph=cycle.graph, events=cycle.events,
@@ -411,8 +438,9 @@ async def test_consumer_reopens_frozen_prefix_and_current_api2_suffix_without_ol
     catalog = _Catalog((*messages, user, assistant))
     for _ in range(2):
         consumer = await MessageConsumer.load(
-            memory_path, legacy_index=None, catalog=catalog, embeddings=object(),
-            bindings=bindings, config=config, frozen_history=history,
+            memory_path, legacy_index=None, catalog=_catalog((*messages, user, assistant)),
+            embeddings=_embeddings(), bindings=_bindings(bindings), config=config,
+            frozen_history=history,
         )
         try:
             assert tuple(item.turn_id for item in consumer.cycle.turns) == ("turn-1", "turn-2")
@@ -424,15 +452,15 @@ async def test_consumer_reopens_frozen_prefix_and_current_api2_suffix_without_ol
 def test_frozen_recall_validates_live_message_identity() -> None:
     messages, _turn, _entry, manifest, recall = _fixture()
     history = FrozenHistory(manifest)
-    assert history.material_for("tool:old-query", recall, _Catalog(messages))["references"]
+    assert history.material_for("tool:old-query", recall, _catalog(messages))["references"]
     changed = Message(
         "u1", "s", 0, messages[0].recorded_at, "user", "chat",
         Input((ContentPart("text", "tampered question"),)),
     )
     with pytest.raises(FrozenHistoryError, match="内容发生变化"):
-        history.material_for("tool:old-query", recall, _Catalog((changed, messages[1])))
+        history.material_for("tool:old-query", recall, _catalog((changed, messages[1])))
     with pytest.raises(FrozenHistoryError, match="出处缺失"):
-        history.material_for("tool:old-query", recall, _Catalog((messages[0],)))
+        history.material_for("tool:old-query", recall, _catalog((messages[0],)))
 
 
 def test_embedding_match_allows_new_snapshot_but_not_new_revision_or_model() -> None:
@@ -483,7 +511,7 @@ async def test_recall_invoke_passes_frozen_history_to_read_memory_and_opens_only
     class Model:
         descriptor = current_descriptor
 
-        async def embed(self, _texts: list[str]) -> EmbeddingResult:
+        async def embed(self, _texts: Sequence[str]) -> EmbeddingResult:
             return EmbeddingResult(((0.6, 0.8),))
 
     @asynccontextmanager
@@ -511,6 +539,7 @@ async def test_recall_invoke_passes_frozen_history_to_read_memory_and_opens_only
     config = MemoryConfig()
     cycle = MemoryCycle(config)
     cycle.commit(turn, None)
+    assert cycle.context is not None
     memory_path = tmp_path / "akasha.db"
     _ = write_memory_database(
         memory_path, turns=[turn], graph=cycle.graph, events=cycle.events,
@@ -529,10 +558,12 @@ async def test_recall_invoke_passes_frozen_history_to_read_memory_and_opens_only
         },
     )
     tool = RecallTool(
-        memory=memory_path, legacy_index=None, config=config, catalog=_Catalog(messages),
-        embeddings=object(), bindings=CurrentBindings(),
-        select_learning=lambda: ("current-api2", "current-model"), records=records,
-        open_embedding=open_embedding, frozen_history=history,
+        memory=memory_path, legacy_index=None, config=config, catalog=_catalog(messages),
+        embeddings=_embeddings(), bindings=_bindings(CurrentBindings()),
+        select_learning=lambda: ("current-api2", "current-model"), records=_records(records),
+        open_embedding=cast(
+            Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]], open_embedding,
+        ), frozen_history=history,
     )
     arguments = PreparedRecall(
         query="new question", limit=1, source=None, learning_binding="current-api2",
@@ -555,8 +586,8 @@ async def test_recall_query_restores_saved_frozen_tool_recall_without_old_bindin
 
     tool = RecallTool(
         memory=Path("/unused"), legacy_index=None, config=MemoryConfig(),
-        catalog=_Catalog(messages), embeddings=object(), bindings=_NoBindingOpen(),
-        select_learning=lambda: ("current-api2", "current-model"), records=Records(),
+        catalog=_catalog(messages), embeddings=_embeddings(), bindings=_bindings(_NoBindingOpen()),
+        select_learning=lambda: ("current-api2", "current-model"), records=_records(Records()),
         open_embedding=lambda _identity: _unused_embedding_context(),
         frozen_history=FrozenHistory(manifest),
     )
@@ -571,7 +602,7 @@ async def test_context_reuses_saved_frozen_material_without_opening_old_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from plugins.akasha import runtime as runtime_module
-    from plugins.akasha.learning import LearningConfig
+    from plugins.akasha.learning import Learning as LearningOwner, LearningConfig
 
     messages, _turn, _entry, manifest, recall = _fixture()
     context_recall = Recall(
@@ -634,12 +665,19 @@ async def test_context_reuses_saved_frozen_material_without_opening_old_binding(
 
     monkeypatch.setattr(runtime_module, "tool_references", lambda *_args, **_kwargs: ())
     records = Records()
+    state = Consumption(legacy_prefix=manifest.legacy_prefix, cutover_heads=(), applied=())
+
+    async def no_embed(_texts: list[str]) -> list[list[float]]:
+        raise AssertionError("冻结历史命中时不应重新嵌入")
+
     material = await runtime_module.prepare_materials(
-        (messages[0],), "chat", cycle=MemoryCycle(), state=object(), catalog=_Catalog(messages),
-        embeddings=object(), bindings=_NoBindingOpen(), learning_binding="legacy-learning",
-        learning=Learning(), rule=LearningConfig(embedding_model="current", dimension=2, sources=("chat",)),
-        records=records, embed_batch=lambda _texts: None, limit=1, max_chars=12000,
+        (messages[0],), "chat", cycle=MemoryCycle(), state=state, catalog=_catalog(messages),
+        embeddings=_embeddings(), bindings=_bindings(_NoBindingOpen()), learning_binding="legacy-learning",
+        learning=cast(LearningOwner, Learning()),
+        rule=LearningConfig(embedding_model="current", dimension=2, sources=("chat",)),
+        records=_records(records), embed_batch=no_embed, limit=1, max_chars=12000,
         frozen_history=history,
     )
     assert records.read_ids and records.read_ids[0].startswith("context:")
-    assert tuple(row["ref"] for row in material["references"]) == ("u1", "a1")
+    references = cast(tuple[Mapping[str, str], ...], material["references"])
+    assert tuple(row["ref"] for row in references) == ("u1", "a1")
