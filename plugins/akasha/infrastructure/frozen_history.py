@@ -27,7 +27,9 @@ from .consumption import Applied, Consumption, LegacyPrefix
 
 FROZEN_HISTORY_FORMAT = "akasha.frozen-history.v1"
 _DIGEST = r"^[0-9a-f]{64}$"
+_CAPABILITY_DIGEST = r"^(?:[0-9a-f]{20}|[0-9a-f]{64})$"
 Digest = Annotated[str, Field(pattern=_DIGEST)]
+CapabilityDigest = Annotated[str, Field(pattern=_CAPABILITY_DIGEST)]
 Text = Annotated[str, Field(min_length=1)]
 
 
@@ -190,7 +192,7 @@ class FrozenMessageRef(BaseModel):
 
 
 class FrozenEmbeddingSpace(BaseModel):
-    """Full provider identity; snapshot ID is provenance, not a match key."""
+    """Full provider identity plus the exact identity stored by the old rule."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     plugin_snapshot_id: Text
@@ -204,15 +206,16 @@ class FrozenEmbeddingSpace(BaseModel):
     model: Text
     dimensions: Annotated[int, Field(gt=0)]
     normalization: Text
-    capability_digest: Digest
+    capability_digest: CapabilityDigest
     schema_version: Annotated[int, Field(gt=0)] = 1
+    source_identity: Text | None = None
 
     @classmethod
     def from_descriptor(cls, value: EmbeddingSpaceDescriptor) -> FrozenEmbeddingSpace:
         return cls(**asdict(value))
 
     @property
-    def identity(self) -> str:
+    def semantic_identity(self) -> str:
         return ":".join((
             self.driver_id, self.driver_contract_version, self.connection_id,
             self.auth_identity, self.connection_fingerprint, self.model_id,
@@ -220,10 +223,51 @@ class FrozenEmbeddingSpace(BaseModel):
             str(self.schema_version),
         ))
 
+    @property
+    def identity(self) -> str:
+        """Keep the existing name for the verified API2 semantic identity."""
+        return self.semantic_identity
+
+    @property
+    def rule_identity(self) -> str:
+        """Return the exact identity used by the exported Learning rule."""
+        return self.source_identity or self.semantic_identity
+
+    @model_validator(mode="after")
+    def check_source_identity(self) -> Self:
+        if self.source_identity is None or self.source_identity == self.semantic_identity:
+            return self
+        parts = self.source_identity.split(":")
+        if len(parts) != 11:
+            raise FrozenHistoryError("冻结 embedding source identity 格式无效")
+        expected_prefix = (
+            self.driver_id,
+            self.driver_contract_version,
+            self.connection_id,
+            self.auth_identity,
+        )
+        if tuple(parts[:4]) != expected_prefix:
+            raise FrozenHistoryError("冻结 embedding source identity 前缀不匹配")
+        expected = (
+            self.model_id,
+            self.connection_fingerprint,
+            self.model_id,
+            str(self.dimensions),
+            self.normalization,
+            self.capability_digest,
+            str(self.schema_version),
+        )
+        if tuple(parts[4:]) != expected:
+            raise FrozenHistoryError("冻结 embedding source identity 与 descriptor 不匹配")
+        return self
+
     def matches_provider(self, value: EmbeddingSpaceDescriptor) -> bool:
         """Compare behavior and credentials exactly; permit a new snapshot ID only."""
         candidate = FrozenEmbeddingSpace.from_descriptor(value)
-        return candidate.model_copy(update={"plugin_snapshot_id": self.plugin_snapshot_id}) == self
+        return candidate.model_copy(update={
+            "plugin_snapshot_id": self.plugin_snapshot_id,
+            "source_identity": self.source_identity,
+        }) == self
 
 
 class FrozenLearningRule(BaseModel):
@@ -270,7 +314,7 @@ class FrozenApplied(BaseModel):
             raise FrozenHistoryError("冻结 Applied 消息跨 Session")
         if self.rule.dimension != self.embedding.dimensions:
             raise FrozenHistoryError("冻结 Learning rule 与 embedding 维度不一致")
-        if self.rule.embedding_model != self.embedding.identity:
+        if self.rule.embedding_model != self.embedding.rule_identity:
             raise FrozenHistoryError("冻结 Learning rule 与 embedding identity 不一致")
         for vector in (self.turn.user_dense, self.turn.assistant_dense):
             if vector is None:
@@ -455,7 +499,14 @@ def applied_record_key(entry: Applied, algorithm_digest: str) -> str:
 
 def applied_entries_digest(values: Sequence[FrozenApplied]) -> str:
     """Digest exporter Applied rows in their committed order."""
-    return _digest([item.model_dump(mode="json") for item in values])
+    rows: list[dict[str, object]] = []
+    for item in values:
+        row = item.model_dump(mode="json")
+        embedding = row.get("embedding")
+        if isinstance(embedding, dict) and embedding.get("source_identity") is None:
+            del embedding["source_identity"]
+        rows.append(row)
+    return _digest(rows)
 
 
 def recall_record_digest(recall: Recall) -> str:
@@ -482,7 +533,10 @@ def binding_provenance_reference(binding_id: str) -> str:
 
 def embedding_descriptor_digest(space: FrozenEmbeddingSpace) -> str:
     """Digest the full exported embedding descriptor, including its snapshot."""
-    return _digest(space.model_dump(mode="json"))
+    row = space.model_dump(mode="json")
+    if row.get("source_identity") is None:
+        del row["source_identity"]
+    return _digest(row)
 
 
 def embedding_provenance_reference(space: FrozenEmbeddingSpace) -> str:

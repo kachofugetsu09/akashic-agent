@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import cast
 
@@ -110,7 +110,7 @@ async def _unused_embedding_context() -> AsyncIterator[BoundEmbeddingModel]:
     yield cast(BoundEmbeddingModel, object())
 
 
-def _fixture() -> tuple[
+def _fixture(*, legacy_embedding: bool = False) -> tuple[
     tuple[Message, Message], Turn, Applied, FrozenHistoryManifest, Recall,
 ]:
     started = datetime(2026, 9, 13, 8, 0, tzinfo=UTC)
@@ -126,9 +126,19 @@ def _fixture() -> tuple[
         plugin_snapshot_id="old-snapshot", model_revision=7, model_id="embed",
         connection_id="conn", driver_id="driver", driver_contract_version="v1",
         auth_identity="account", connection_fingerprint="fingerprint", model="embed-v7",
-        dimensions=2, normalization="unit", capability_digest="a" * 64,
+        dimensions=2, normalization="unit",
+        capability_digest="a" * (20 if legacy_embedding else 64),
     )
-    space = FrozenEmbeddingSpace.from_descriptor(descriptor)
+    if legacy_embedding:
+        source_identity = (
+            "driver:v1:conn:account:embed:fingerprint:embed:2:unit:"
+            f"{'a' * 20}:1"
+        )
+        space = FrozenEmbeddingSpace(
+            **asdict(descriptor), source_identity=source_identity,
+        )
+    else:
+        space = FrozenEmbeddingSpace.from_descriptor(descriptor)
     turn = Turn(
         node_id=0, turn_id="turn-1", session_key="s", user_seq=0,
         user_message_id="u1", assistant_message_id="a1",
@@ -156,7 +166,7 @@ def _fixture() -> tuple[
     frozen_applied = FrozenApplied(
         record_key=applied_record_key(entry, algorithm_digest),
         algorithm_digest=algorithm_digest, entry=entry,
-        rule=FrozenLearningRule(embedding_model=space.identity, dimension=2, sources=("chat",)),
+        rule=FrozenLearningRule(embedding_model=space.rule_identity, dimension=2, sources=("chat",)),
         embedding=space, messages=refs, turn=FrozenTurn.from_value(turn),
     )
     recall = Recall(
@@ -342,6 +352,44 @@ def test_frozen_applied_rejects_rule_identity_and_bad_vectors() -> None:
         )
 
 
+def test_frozen_embedding_preserves_legacy_source_identity_and_accepts_20_hex_digest() -> None:
+    descriptor = EmbeddingSpaceDescriptor(
+        plugin_snapshot_id="old-snapshot", model_revision=38, model_id="legacy-model",
+        connection_id="source", driver_id="openai-compatible", driver_contract_version="1",
+        auth_identity="legacy-account", connection_fingerprint="fingerprint",
+        model="text-embedding-v4", dimensions=2, normalization="none",
+        capability_digest="a" * 20,
+    )
+    source_identity = (
+        "openai-compatible:1:source:legacy-account:legacy-model:fingerprint:"
+        "legacy-model:2:none:" + "a" * 20 + ":1"
+    )
+    frozen = FrozenEmbeddingSpace(
+        **asdict(descriptor), source_identity=source_identity,
+    )
+    assert frozen.rule_identity == source_identity
+    assert frozen.identity == (
+        "openai-compatible:1:source:legacy-account:fingerprint:legacy-model:"
+        "2:none:" + "a" * 20 + ":1"
+    )
+    assert frozen.matches_provider(replace(descriptor, plugin_snapshot_id="new-snapshot"))
+    with pytest.raises(ValueError, match="source identity"):
+        FrozenEmbeddingSpace(
+            **asdict(descriptor),
+            source_identity=source_identity.replace("legacy-model", "other-model", 1),
+        )
+
+    _messages, _turn, _entry, manifest, _recall = _fixture(legacy_embedding=True)
+    original = manifest.applied[0]
+    with pytest.raises(ValueError, match="embedding identity"):
+        FrozenApplied(
+            record_key=original.record_key, algorithm_digest=original.algorithm_digest,
+            entry=original.entry, rule=original.rule,
+            embedding=original.embedding.model_copy(update={"source_identity": None}),
+            messages=original.messages, turn=original.turn,
+        )
+
+
 @pytest.mark.asyncio
 async def test_consumer_restores_old_applied_without_opening_binding(tmp_path: Path) -> None:
     messages, turn, entry, manifest, _recall = _fixture()
@@ -374,11 +422,14 @@ async def test_consumer_restores_old_applied_without_opening_binding(tmp_path: P
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_embedding", [False, True], ids=["api2_identity", "legacy_identity"])
 async def test_consumer_reopens_frozen_prefix_and_current_api2_suffix_without_old_binding(
-    tmp_path: Path,
+    tmp_path: Path, legacy_embedding: bool,
 ) -> None:
-    messages, turn, entry, manifest, _recall = _fixture()
-    history = FrozenHistory(manifest)
+    messages, turn, entry, manifest, _recall = _fixture(legacy_embedding=legacy_embedding)
+    history_path = tmp_path / "akasha-frozen-history.json"
+    history_path.write_bytes(encode_manifest(manifest))
+    history = FrozenHistory.load(history_path)
     started = datetime(2026, 9, 13, 8, 0, tzinfo=UTC)
     user = Message(
         "u2", "s", 2, started + timedelta(seconds=4), "user", "chat",
