@@ -47,6 +47,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(here, "src"),
+      mermaid: resolve(here, "src", "mermaid-stub.ts"),
     },
   },
   build: {

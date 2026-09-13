@@ -5,9 +5,9 @@ import { cn } from "@/lib/utils";
 import { canBatchStreamingMarkdown } from "@/message-rendering-policy";
 import { memo, type ComponentProps, useEffect } from "react";
 import MarkdownRender, {
+  CodeBlockNode,
   MathBlockNode,
   MathInlineNode,
-  MermaidBlockNode,
   setCustomComponents,
   type NodeComponentProps,
 } from "markstream-react";
@@ -51,12 +51,11 @@ function DeferredMathInline({ node, ctx }: NodeComponentProps<DeferredNode>) {
   return <MathInlineNode node={node as ComponentProps<typeof MathInlineNode>["node"]} />;
 }
 
-function DeferredMermaid({ node, ctx, isDark }: NodeComponentProps<DeferredNode>) {
-  if (!ctx?.final) return <pre className="markstream-deferred-source">{String(node.raw ?? node.code ?? "")}</pre>;
+/** Mermaid 已下线；围栏改按普通代码块渲染源码。 */
+function MermaidAsCode({ node, isDark }: NodeComponentProps<DeferredNode>) {
   return (
-    <MermaidBlockNode
-      node={node as ComponentProps<typeof MermaidBlockNode>["node"]}
-      loading={false}
+    <CodeBlockNode
+      node={{ ...node, type: "code_block", language: "mermaid", code: String(node.code ?? node.content ?? "") } as ComponentProps<typeof CodeBlockNode>["node"]}
       isDark={isDark}
     />
   );
@@ -66,7 +65,7 @@ setCustomComponents({
   kaomoji_literal: KaomojiLiteral,
   math_block: DeferredMathBlock,
   math_inline: DeferredMathInline,
-  mermaid: DeferredMermaid,
+  mermaid: MermaidAsCode,
 });
 
 /** Render complete or append-only Markdown with Markstream's incremental parser. */
