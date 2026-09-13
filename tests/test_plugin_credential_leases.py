@@ -230,14 +230,15 @@ async def apply(ctx, config):
         async with host.open_validation(result.update_id) as scope:
             validation = next(iter(host._validation_hosts.values()))
             copied = validation.workspace / "plugin-data/secret_reader-builtin"
-            assert not (copied / "config.local.toml").exists()
-            assert (copied / "notes.txt").read_text() == "preserved history"
             assert (validation.workspace / "plugin-data/plain-lab/config.local.toml").read_text() == 'label="public config"\n'
             if shared_directory:
+                assert not (copied / "config.local.toml").exists()
+                assert (copied / "notes.txt").read_text() == "preserved history"
                 async with scope.require(BINDINGS).open(reference, PROBE) as (reader, _):
                     with pytest.raises(RuntimeError, match="candidate 验证期"):
                         await reader.read()
             else:
+                assert not copied.exists()
                 with pytest.raises(RuntimeError, match="当前 runtime scope 不提供服务"):
                     async with scope.require(BINDINGS).open(reference, PROBE):
                         pytest.fail("removed historical provider was reopened")

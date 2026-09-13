@@ -1,6 +1,7 @@
 """真实候选的独立消息/Task 与清理；不把程序验证冒充正式来源启动。"""
 import asyncio
 from contextlib import closing
+from typing import cast
 
 import pytest
 
@@ -485,8 +486,8 @@ async def test_validation_reply_reads_real_memory_without_starting_learning(tmp_
 
 
 @pytest.mark.asyncio
-async def test_validation_copies_wal_history_archived_workspace_and_artifact_bytes(tmp_path):
-    """当前组件不再声明旧数据时，实际旧 binding 和附件仍从独立副本打开。"""
+async def test_validation_preserves_history_without_archived_workspace(tmp_path):
+    """验证保留历史事实和 descriptor，但不复活旧服务、代码或 workspace。"""
     from agent.plugin_composition.artifacts import ARTIFACT_READ
     from agent.plugin_composition.bindings import BINDINGS
     from agent.plugins.snapshot import lease_runtime_snapshot
@@ -502,11 +503,16 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
     await ctx.provide(ServiceKey("test.history"), history)
 '''
     _write_v3_plugin(source, name="probe", module_source=original)
+    (source / "akashic.plugin.toml").write_text(
+        (source / "akashic.plugin.toml").read_text()
+        + '\n[validation]\nexclude_data_paths = ["legacy-secret.txt"]\n'
+    )
     _commit(source)
-    _ = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    old = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
     (workspace / "legacy").mkdir()
     (workspace / "legacy/old.txt").write_text("old workspace")
     (workspace / "old-setting.txt").write_text(" and file")
+    (old.data_path / "legacy-secret.txt").write_text("old private data")
     log = MessageLog(workspace / "sessions.db")
     _ = log._connection.execute("PRAGMA journal_mode=WAL").fetchall()
     artifacts = ArtifactStore(workspace / "sessions.db")
@@ -517,6 +523,14 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             reference = snapshot.composition_root.context.require(BINDINGS).bind(ServiceKey("test.history"), {})
+        binding = log.read_binding(reference)
+        root_ref = cast(str, binding["root_ref"])
+        root_descriptor = host._archive.read_descriptor(root_ref)
+        component_refs = cast(tuple[str, ...], root_descriptor["components"])
+        component_descriptors = {
+            ref: host._archive.read_descriptor(ref) for ref in component_refs
+        }
+        old_code_ref = cast(str, component_descriptors[component_refs[0]]["code"])
         attachment = await physical.import_bytes(b"historical attachment bytes", kind=AttachmentKind.FILE,
                                                 filename="history.txt", media_type="text/plain")
         def check_file(part):
@@ -527,6 +541,10 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
             "past-input", Input((ContentPart("file", attachment.artifact_id),)))
         assert (workspace / "sessions.db-wal").stat().st_size > 0
         (source / "plugin.py").write_text(MODULE)
+        (source / "akashic.plugin.toml").write_text(
+            'schema_version = 1\nname = "probe"\nversion = "1.0.0"\n'
+            'api_version = 3\nentrypoint = "plugin.py"\n'
+        )
         _commit(source)
         result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         (source / "plugin.py").unlink()
@@ -534,15 +552,24 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
         async with host.open_validation(result.update_id) as scope:
             validation = next(iter(host._validation_hosts.values()))
             assert validation.messages.reader("past").snapshot() == log.reader("past").snapshot()
-            async with scope.require(BINDINGS).open(reference, ServiceKey("test.history")) as (read, _):
-                assert await read() == "old workspace and file"
+            assert validation.manager._archive.read_descriptor(root_ref) == root_descriptor
+            for ref, descriptor in component_descriptors.items():
+                assert validation.manager._archive.read_descriptor(ref) == descriptor
+            assert not (validation.manager._archive.path / old_code_ref).exists()
+            with pytest.raises(RuntimeError, match="当前 runtime scope 不提供服务"):
+                async with scope.require(BINDINGS).open(reference, ServiceKey("test.history")):
+                    pytest.fail("removed historical provider was imported")
+            assert not (validation.workspace / "legacy").exists()
+            assert not (validation.workspace / "old-setting.txt").exists()
+            assert not (validation.workspace / "plugin-data/probe-lab/legacy-secret.txt").exists()
             lease = await scope.require(ARTIFACT_READ).acquire(attachment)
             try:
                 assert await lease.read_bytes(max_bytes=attachment.size_bytes) == b"historical attachment bytes"
             finally:
                 await lease.aclose()
-            (validation.workspace / "legacy/old.txt").write_text("only in the copy")
         assert (workspace / "legacy/old.txt").read_text() == "old workspace"
+        assert (workspace / "old-setting.txt").read_text() == " and file"
+        assert (old.data_path / "legacy-secret.txt").read_text() == "old private data"
         assert tuple(log._connection.iterdump()) == before
     finally:
         await host.terminate_all()

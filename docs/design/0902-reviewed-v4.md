@@ -269,11 +269,11 @@ Core 需要补齐或改造的能力限定为四组。插件提供业务能力，
 | Message 日志 | 窄 read/append/follow，幂等、顺序和条件提交 | 改造已有 Session 存储；不再等待最终 transcript 批次 |
 | 通用 Task scope | start/cancel/join、排他 key、资源释放与 writer 失效 | 复用现有 Fiber/任务机制；移除 Turn、Prompt 和 terminal tool 业务字段 |
 | 受限持久化事务 | 获授权的消息写入与 owner 状态可以一致提交 | 补齐 cursor、工具回执、发送回执所需合同；不开放任意 SQL |
-| 能力绑定与耐久资源引用 | 固定实际实现，跨重启保留未结算调用所需 generation | 扩展已有 binding/generation 机制；Core 不解释工具或发送状态机 |
+| 能力绑定与耐久资源引用 | 固定实际实现供活动 scope 使用；跨进程只按 stable/latest 恢复未完成调用 | 扩展已有 binding/generation 机制；Core 不解释工具或发送状态机 |
 
 服务注册/依赖解析、事件、Timer、Artifact、进程与 Workload 能力继续复用。事务只接纳各自有权验证的操作：消息 writer、owner 状态写入与资源引用各有明确授权，统一提交不授予任意跨插件写权。插件定义自己的 receipt schema 与状态转换，Core 只保证存储与提交；不能把一张业务表移到 Core 再称其 owner 已插件化。
 
-状态访问权由组合配置授予，不能写死为某个内置插件 ID。替换有持久状态的实现时，先核对其公开状态合同；兼容者获得同一状态访问能力，不兼容者使用显式迁移。未完成调用仍引用原绑定，不能因更换插件把旧回执当成空状态重跑。此处事务参与、状态授权与 durable binding 的具体合同列为实施前置项，见第 14 节。
+状态访问权由组合配置授予，不能写死为某个内置插件 ID。替换有持久状态的实现时，先核对其公开状态合同；兼容者获得同一状态访问能力，不兼容者使用显式迁移。未完成调用保留原 binding 作为事实；尚未开始的请求可在当前选定 scope 接纳，prepared/started 若无法证明实现兼容则明确终态，不能把旧回执当成空状态重跑。此处事务参与、状态授权与 durable binding 的具体合同列为实施前置项，见第 14 节。
 
 | 能力 | 最小调用 | owner 与真实边界 | 独立使用的例子 |
 |---|---|---|---|
@@ -371,7 +371,7 @@ provider 输出到中立模型响应的转换归 provider；引用/meme 等产�
 
 Delivery 独占以下提交顺序：按生效策略选出 sink → durable prepared，固定 message_id、实际地址、adapter generation 与幂等 key → durable started → 外部发送 → delivered/rejected/unknown。prepared 与来源消费进度在本地事务或明确的 durable handoff 中提交；多 sink 的选择集合也一并固定。策略热更不能在旧消息重扫时生成另一组发送；追加新目的地必须是明确的新发送动作。
 
-started 后缺回执时，只能查询远端或在其支持幂等时用原 key 重试，否则记 unknown，不能把超时当 rejected。cancel 先于 start 则不发出，start 之后只能如实结算。未解决发送耐久持有原 adapter generation 和地址；凭据撤销时暂停并报错，不换一条路线重发。来源 ACK 只消费已确认 delivered 或该来源明确接受的失败处理结果；unknown 不算送达。
+started 后缺回执时，只能查询远端或在其支持幂等时用原 key 重试，否则记 unknown，不能把超时当 rejected。cancel 先于 start 则不发出，start 之后只能如实结算。未解决发送记录保留原 adapter generation 和地址；进程重启只按 stable/latest 恢复，原实现或配置不兼容时明确 failed，不换一条路线重发。凭据撤销时暂停并报错。来源 ACK 只消费已确认 delivered 或该来源明确接受的失败处理结果；unknown 不算送达。
 
 ### 5.7 取消、流与 generation：围绕真实资源
 
@@ -454,7 +454,7 @@ started ── 外部调用 ──▶ result / unknown
 - 对话 result 追加与本地 receipt 的结果指针在同一存储事务完成；独立调用在其 receipt 提交结果。不同存储时必须有已验收的 outbox/handoff，不能默认跨库原子。
 - 取消与 effect start 由执行 owner 排序：普通取消先被接纳则不新发起；已开始则结算为真实结果或 unknown。明确 abandon 按第 7.4 节结算 interrupted，不能假称没执行。
 
-unknown 是原工具调用的终态，不证明远端失败，也不永久阻塞模型决策。模型投影保留原状态和正文，并明确提示先检查现场，不得直接重复原操作；检查后可在当前授权内提出新调用。不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 持久引用其 exact generation，进程重启后按该引用打开所需目标。内存 lease 排空后释放资源，耐久归档没有自动 GC，也不另存 active claim 或 refcount。
+unknown 是原工具调用的终态，不证明远端失败，也不永久阻塞模型决策。模型投影保留原状态和正文，并明确提示先检查现场，不得直接重复原操作；检查后可在当前授权内提出新调用。不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 保留原 binding 及外部效果事实；同一进程内已取得的 scope 继续使用其选定 snapshot，进程重启只按 stable/latest 恢复。原实现不兼容时沿领域 terminal 语义收尾，不盲目复活旧 generation。内存 lease 排空后释放资源，耐久归档没有自动 GC，也不另存 active claim 或 refcount。
 
 Tool 与 Delivery 都需要外部效果记录，但各自拥有不同状态和查询协议。暂不创建统一 EffectManager；相同 SQL/锁 helper 只有在实现重复且合同相同时才共享。
 
@@ -964,7 +964,7 @@ Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在
 
 执行层 Gate 还复现了旧 Shell 在 deadline 附近丢失最后输出的竞态。DSH 的 subprocess 同样把进程 exit 与输出 close 分开；本栈沿此边界修复：收集截止时发现进程已退出，先完成有界输出排空，再生成终态响应和清理记录；继承 pipe 的残留子进程不能无限拖延结束。这不改变 Message 或逻辑 Turn 的终态。
 
-第 06 层按内容 hash 保存独立于 installed cache 的不可变归档。binding 引用完整代码、运行要求、manifest 与可复建配置闭包；凭据只保存受保护引用，plugin-data 仍由原 owner 管理。需要历史业务状态的能力必须自行保存其不可变输入，Core 不快照整个运行 workspace。打开 binding 时只从该归档构建短命 exact scope；缺失、损坏或不兼容必须明确失败，不切到 stable/latest。
+第 06 层按内容 hash 保存独立于 installed cache 的不可变归档。binding 引用完整代码、运行要求、manifest 与可复建配置闭包；凭据只保存受保护引用，plugin-data 仍由原 owner 管理。需要历史业务状态的能力必须自行保存其不可变输入，Core 不快照整个运行 workspace。普通 binding 不再从该归档构建短命 exact scope，而是在调用者已选的 stable 或 candidate scope 中打开实际 service；进程重启只由 stable/latest pointer 与 reload journal 恢复。实现或配置无法证明兼容时沿领域既有 terminal 语义收尾，不盲目复活旧 generation。
 
 本轮不增加 active claim、持久 refcount 或 terminal 表：Tool、Delivery、Akasha 已各自拥有调用、发送或消费事实，是否需要打开 binding 从这些事实计算。内存 lease 关闭后释放运行资源；归档文件不阻挡当前插件 drain 或卸载。归档是耐久恢复材料，没有自动 GC；当前 cache 的清理不拥有它。归档写成但 Message/receipt 提交失败时允许留下未引用文件和不可变 binding descriptor row，不自动减少恢复材料。未来若要回收归档，须单独制定显式减少协议，不能倒推当前需要另一套业务状态机。
 
@@ -975,7 +975,7 @@ Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在
 - 代码归档保留 manifest 和 requirements；`.venv`、`node_modules` 属于运行环境，不作为代码归档。第 06 层只分开代码/cwd 与安装环境，不打开历史外部 runtime。第 07 层已由安装 owner 在最终路径创建并固定 Python 环境；历史调用按所选目标校验环境引用，缺失或不匹配明确失败。当前 installed cache 不参与历史环境恢复，具体边界见下一节。
 - binding 从所需 Service 的实际 provider 出发，只向上收集插件与子 Fiber 的声明依赖。Content、Tool 等注册表由自己选择目标的注册 Context，再将真实 Context 交给 binding；Core 校验其属于当前所选 Root 的存活 Fiber，随后将其 owner 纳入同一闭包。调用者不拼 plugin ID，也不恢复整个 fleet。目标选择和 definition 身份属于 registry 的不可变 metadata；第 07 层完成这些具体注册表消费者接入。
 - 配置正文与 revision 来自同一次读取。归档保存可复建投影和已捕获的静态启用选择，不重算当前环境下的 `is_active`。日期和 CredentialRef 使用明确的值编码；凭据解析仍通过其 owner 的 revision fence，不在归档中存 secret 原文。
-- 打开历史 binding 只装配其闭包和 Root 本地注册表，不执行 `runtime.started`。第 08 层允许归档目标显式声明所需的通用 Message 读写、owner state、Bindings、Tasks、Timer 和 Artifact 读口；未声明的能力不可用。旧 Session、Turn、Delivery 和 Undo 业务端口仍不进入归档。纯注册不打开目标，实际资源由目标的 open 和 scope 释放；不能用空数据或 candidate 兼容壳冒充恢复成功。
+- 普通 binding 打开调用者已选 scope 中实际提供的服务，不执行历史模块导入；候选业务验证只导入当前 candidate snapshot 的组件并使用独立数据。旧 `root_ref`/component descriptor 仍可作为 provenance 读取，但旧组件代码、plugin-data 与 workspace 不复制或复活；旧 manifest 的 credential/exclude 声明只读合并并在 current data 首次复制前生效。未声明的能力不可用，不能用空数据或 candidate 兼容壳冒充恢复成功。
 - scope 退出先停止接纳新 lease，等待保留的 lease 排空，再在取消保护中释放 Root 和模块。它管理真实运行生命周期，不是任意 Python 对象的可撤销沙箱；服务必须在 `async with` 内使用。具体 Tool/Model/Delivery/MCP facade 在执行入口检查 exact scope 和目标，这是各资源 owner 的职责，不增加透明代理。
 - 本层复用第 03 层的 `bindings`/`message_bindings` 表，不引入 SQL schema 或配置迁移，因此没有空 yoyo。binding descriptor 与 archive 都是不可变恢复材料；Message 对它的引用仍与正文同事务提交，不持久保存另一份 active claim。
 
@@ -1103,13 +1103,13 @@ Channel 接纳以 Input 原子提交为边界，Core 启动在全部渠道完成
 
 候选 `delivery` 插件拥有 `(message_id, sink)` 回执，`delivery_policy` 独立跟随日志。首次策略选择、全部目的地的 prepared 与消费 cursor 在同一 owner 事务提交；显式来源也能先固定一条已提交消息的发送集合，不替自动消费者跳过其他消息。原选择不改写，新增目的地必须显式 add。回执只保存消息引用、固定 binding、地址、阶段与实际 provider 回执，不复制正文、附件或模型结果。
 
-出站注册只有普通插件提供的资源 factory。`Bindings` 固定真实注册 owner 和配置；打开归档只取得选定 sender，不发送正文、不启动收件循环。started 前取消只停止当前调用并保留 prepared；来源明确撤回尚未开始的通知才调用 `cancel_prepared` 写 rejected。started/unknown 先查原效果，只有原协议保证幂等才可用同一 key 重试；非幂等且无回执保留 unknown。已 delivered 不再打开资源，rejected 只有显式 retry 才重新接纳；并发 retry 必须先排空旧 rejected Task，不能被旧结果吞掉。凭据撤销保留原目的地并报错，不改投当前渠道。
+出站注册只有普通插件提供的资源 factory。`Bindings` 固定真实注册 owner 和配置；调用者在已选 scope 中取得 sender，不发送正文、不启动收件循环。started 前取消只停止当前调用并保留 prepared；来源明确撤回尚未开始的通知才调用 `cancel_prepared` 写 rejected。started/unknown 先查原效果，只有原协议保证幂等才可用同一 key 重试；非幂等且无回执保留 unknown。已 delivered 不再打开资源，rejected 只有显式 retry 才重新接纳；并发 retry 必须先排空旧 rejected Task，不能被旧结果吞掉。重启按 stable/latest 恢复，原实现或配置不兼容时明确 failed，不改投当前渠道。
 
 默认策略仅发送所选来源的完整可见 Output，当前默认是 conversation；Input、continue、ToolResult、quiet 与 Control 不发送。目的地来自该 Output 前缀内最后一个同源 Input 的 channel.origin，后来输入不能改写旧选路。显式通知沿来源已固定的集合处理。每个 Session 按 seq 追赶，各目的地独立结算，一个 ACK 丢失不能取消其他已开始的发送。
 
-已验证真实普通插件删除当前源码、数据库重启后仍打开原 sender，且不再次启动 receiver；也验证实际 Channel Input → ReAct → complete Output → 独立发送链。此子范围的独立 Terra/xhigh 概念 Gate 通过，发送重试竞态已修复。正式 Web/Mobile 的资源迁移、旧 delivery ledger、Scheduler/Subagent/Wake 和发布操作仍待本层后续及第 10 层累计验收。
+早期候选验证曾覆盖删除当前源码后重开数据库并打开原 sender，且不再次启动 receiver；该历史证据不再定义普通 binding 的恢复合同。按 0069，当前调用在已选 scope 取得 sender，重启只沿 stable/latest；发送链的消息、选路和回执事实仍保留。此子范围的独立 Terra/xhigh 概念 Gate 通过，发送重试竞态已修复。正式 Web/Mobile 的资源迁移、旧 delivery ledger、Scheduler/Subagent/Wake 和发布操作仍待本层后续及第 10 层累计验收。
 
-故障验收还覆盖实际 sender 已完成外部写入、随后本地 delivered 事务失败：原记录保留 started，数据库重开和当前源码移除后按原 binding 查询，外部效果仍只有一次。该场景与从 prepared 恢复共用真实插件归档链，不能由手工预置 started 状态替代。
+早期故障验收还覆盖实际 sender 已完成外部写入、随后本地 delivered 事务失败：原记录保留 started，外部效果仍只有一次。当前重启仍保留原 binding、目的地和可能已送达事实；若 stable 中实现或配置不兼容，则由 Delivery 写入明确 failed，不按旧 archive 重开或换路重发。该场景与从 prepared 恢复共用真实插件边界，不能由手工预置 started 状态替代。
 
 Scheduler 的内部持久化已由维护者批准，见 [0058](../decisions/0058-scheduler-keeps-internal-messages.md) 与 SCH-003：每次 fire 使用独立内部 Session，只向目标聊天追加最终通知，不读取同 job 的旧 fire，也不把内部消息纳入记忆学习。来源继续使用既有 job identity，不新增 Core Run 或来源特判。调度文件升级归属本层 yoyo，JobStore 和 Inspection 的读取不得隐式覆盖 schedules.json。
 
@@ -1138,11 +1138,11 @@ Reply 可选消费发送策略的 completion 能力。Conversation 在新 Input/
 
 `RUNTIME_STARTING` 是 Core 的中性同步启动阶段，使用现有 closed publication target lease 与 `before_open`，不在 candidate apply 时改正式资源。每个 Root 只准备一次；原监听器的 `RUNTIME_STARTED` 顺序保持。准备或启动失败自动执行 stopping，先归还临时占位，再关闭 Tasks；清理失败保留可重试状态。已停止 Root 不能跳过发布前准备直接 start；恢复须经正式发布建立准备状态，不能在已开放的 snapshot 上补发 starting。此阶段不写新的权威消息、运行模型或启动渠道收件。策略只认领自己的 pending；恢复得到 unknown 后保留原回执，但本次查询结束即释放占位，不永久阻塞聊天。
 
-热更新失败恢复沿同一边界：关闭并排空 current，重建原 generation 的新 Root，再使用 SnapshotStore 的短命 closed-current lease 执行同一 preparing 回调，最后才恢复接纳。部分准备失败先停止已取得的临时资源和 managed runtime，保留关闭状态供明确恢复；不在已开放的 Root 上补发准备事件。
+热更新失败恢复沿同一边界：关闭并排空 current，使用更新开始时已持久保存的 stable snapshot 重建新 Root，再使用 SnapshotStore 的短命 closed-current lease 执行同一 preparing 回调，最后才恢复接纳。部分准备失败先停止已取得的临时资源和 managed runtime，保留关闭状态供明确恢复；不在已开放的 Root 上补发准备事件。
 
 `message_push` 候选普通工具固定 Sender binding、字面文本和已导入的 Artifact 引用。单次工具 key 决定目标 Message ID，Output 与 Delivery Selection 同事务提交；目标正文、工具结果与发送回执分别属于各自 owner。短发送复用 Delivery 的活动优先级，不等待调用它的回复结束，也不修改 Message 来源或注入 `_commit_role`。进程中断后沿原 Selection 查询，unknown 不触发无幂等保证的重发。
 
-需要动态注册目标或每次程序配置的工具可声明同步 `capture(configuration)`，在实际 Root 中校验配置并返回工具自有的不可变 binding state；回调不获得新增能力。Tools 只检查 JSON 对象并冻结，归档 `open(state)` 由工具解释；不另存未经处理的配置。未声明 capture 的工具拒绝显式 configuration；discovery candidates 与 capture 不叠加。推送拒绝非空配置，并固定当时可选的 Sender bindings，归档 Tool 不从 current registry 补目标。
+需要动态注册目标或每次程序配置的工具可声明同步 `capture(configuration)`，在实际 Root 中校验配置并返回工具自有的不可变 binding state；回调不获得新增能力。Tools 只检查 JSON 对象并冻结，当前选定 scope 中的 `open(state)` 由工具解释；不另存未经处理的配置。未声明 capture 的工具拒绝显式 configuration；discovery candidates 与 capture 不叠加。推送拒绝非空配置，并固定当时可选的 Sender bindings；重启不从 current registry 猜测或补目标。
 
 程序可给 ToolMenu / `run_reply` 提供完整固定目录 `name → binding_id`。描述与搜索候选只读原 binding，当前工具已更新或卸载不影响目录恢复；发现候选必须严格对应固定普通工具集合。闭段预载仍用原 identity，未闭合调用或日志选择与固定集合冲突时明确失败，不悄悄替换已接纳调用。普通回复未指定固定目录时继续使用现行工具发现合同。
 
@@ -1161,7 +1161,7 @@ Reply 可选消费发送策略的 completion 能力。Conversation 在新 Input/
 
 当前标准工具、Host Bridge 与 Process 的 43 项测试覆盖真实归档打开、受限写入、错误结果、图片 Artifact、跨 owner 的 PTY 续接与清理、实际 RPC 和受控 HTTP 响应。相关类型检查无错误；独立 Terra/xhigh 对此标准工具子范围的概念 Gate 通过。此前包含普通回复、Scheduler 与固定目录的七组集成共 59 项通过；这些证据仍不代表来源全量切换和正式启动完成，测试没有访问外部搜索服务或正式 workspace。
 
-Shell 默认归属固定的 `(session_id, source)`，显式配置的作业 key 保持原值。`run_reply` 在本次完整资源范围退出后，读取当前未闭段（含恢复前已有调用）实际引用的 Shell 工具 binding；由原工具闭包固定并打开 `SHELL_OWNERS`，原插件解释固定配置后执行清理。当前插件移除、两个 source 共用 Session、显式作业 owner 与取消都走同一条路径。该过程只复用 Bindings，不增加 Core 业务 owner、工具清理协议或一份重复的作业状态。
+Shell 默认归属固定的 `(session_id, source)`，显式配置的作业 key 保持原值。`run_reply` 在本次完整资源范围退出后，读取当前未闭段（含恢复前已有调用）实际引用的 Shell 工具 binding；先在同一 scope 校验原工具，再直接使用该 scope 的 `SHELL_OWNERS`，由原插件解释固定配置后执行清理。当前插件移除、两个 source 共用 Session、显式作业 owner 与取消都走同一条路径。该过程只复用 Bindings，不写一次性 owner binding，也不增加 Core 业务 owner 或工具清理协议。
 
 清理失败只记录 incident，不改变已提交 Output；已开始清理会排空后再传播调用方取消。明确失败报告由实际 Shell manager 保留执行身份并隔离同 owner 新 spawn。Host Bridge 在 RPC、响应解析或取消导致清理未确认时，另外保留其传输边界上的未确认 owner；成功重试才解除，其他 owner 仍可执行。真实 gRPC 测试覆盖执行前失败、已清理但响应丢失、损坏响应和取消，且证明被隔离 owner 不再发出 Exec RPC。
 
@@ -1792,7 +1792,7 @@ Sender 实现、隔离 wire 验证、原生完整启动、正式 manifest/config
 
 凭据扩大回归中 62 项通过，新增 Channel 权限夹具的启动假设已修复；随后凭据分项 9 项全部通过，证明旧 Channel factory 仍能读取其凭据，而同插件未声明顶层 credential_paths 时无法从通用服务读取。当前 manager/static manifest 类型检查 0 errors、45 个既存边界 warning。原生 Sender 仍待实施。
 
-凭据最终扩大验证为 65 项通过（18.89 秒），Terra/xhigh 独立概念 Gate PASS。审查发现并修复历史 binding 业务验证目录泄漏：第一阶段复制数据图时统一延后 `config.local.toml`；Message backup 完成后，从实际副本 binding 与当前组件的归档 manifest 按共享 data root 合并排除声明，只补回允许的普通配置。旧版本声明凭据而新版本已移除时仍不复制；历史独有目录同样受保护。普通数据和无凭据配置保持，归档凭据服务仍拒绝验证调用。回归实际运行 `open_validation` 并扫描全树无 fixture secret；正式 DB 与配置未变。修复恢复点 `/tmp/message-validation-credentials-backup-20260907`。
+凭据最终扩大验证为 65 项通过（18.89 秒），Terra/xhigh 独立概念 Gate PASS。审查发现并修复历史 binding 业务验证目录泄漏：先固定 Message backup，再从实际副本 binding 与当前组件的归档 manifest 按共享 data root 合并排除声明，并在 current data 首次复制前生效。旧版本声明凭据而新版本已移除时仍不复制；历史独有目录同样不复活。普通数据和无凭据配置保持，归档凭据服务仍拒绝验证调用。回归实际运行 `open_validation` 并扫描全树无 fixture secret；正式 DB 与配置未变。修复恢复点 `/tmp/message-validation-credentials-backup-20260907`。
 
 原生 Sender 已有普通插件候选与 loopback wire 验证。Telegram 用独立 `aiohttp.ClientSession`，避免 HTTPX 默认 INFO 记录含 token 的 URL；QQ 使用每连接的私有 logger，避免 WebSocket DEBUG 输出 Authorization，不修改进程全局日志。握手错误只保留错误类型，不传播可能回显凭据的 header。aiohttp 是已有环境依赖，本批加入直接依赖声明，避免只依赖转接安装。
 
@@ -1851,7 +1851,7 @@ Delivery 恢复 unknown 且 query 无新证据时保留原 receipt，防止丢�
 
 扩大真实验证已通过 22 项：首次默认 Root、真实模型保存后同 Root 学习、未配置 embedding 仍可默认聊天、原生 receiver 启动前 Sender 检查、SDK socket 完整回复、带真实 Web generation 身份的工作台目录/消息页，以及只读请求和已撤下管理请求后的原 SQL dump 保全。原生已注册 Sender 的正向启动、缺失 Sender 的早拒绝和真实 socket 完整回复另有 3 项通过。
 
-归档模型问题已经修复。公开 Models capability API 拥有 `SavedEmbedding` 的严格解码与打开函数；Akasha 不导入兄弟 models 插件的私有 helper。真实嵌套 binding 只含 `models` 与所选 `openai-compatible`，外层 Tool binding 不含该 driver；测试删除实际接入的临时 models/driver 源码后，旧 Tool 仍能打开归档、prepare 并执行。切换默认到 second 后原 Tool 继续调用 first；同 model_id 的 endpoint 变化在零次 embedding POST 前被拒绝；恢复地址并通过原 credential owner 刷新同 auth identity 的 token 后成功，所有操作前后的学习图 hash 相同。
+归档模型问题已经修复。公开 Models capability API 拥有 `SavedEmbedding` 的严格解码与打开函数；Akasha 不导入兄弟 models 插件的私有 helper。早期测试曾删除临时 models/driver 源码后让旧 Tool 打开归档并执行；该结果属于被 0069 取代的历史 binding 合同，不是当前普通 Tool 的恢复承诺。当前仍在零次 embedding POST 前拒绝同 model_id 的 endpoint 变化，并由原 credential owner 在同 auth identity 下刷新 token；所有操作前后的学习图 hash 相同。
 
 新工作台 TypeScript 检查与最终插件构建通过，UI 使用现有主题 token；公开 API 调整后的目标 Python 检查为 0 errors、53 warnings。真实 App 浏览器验收覆盖 53 个会话的 cursor 翻页、55 条消息的固定上界前翻、原始 JSON、刷新、前缀与可见性筛选；390px 视口没有横向溢出，page errors 为零。测试入口使用一次性 workspace，结束后 App/Web 服务均正常关闭。
 
@@ -1884,7 +1884,7 @@ Mobile WebUI 停止生成必须调用 `sendSessionCommand(session_id, "/stop")`�
 | 两个会话交错执行工具，各自拿到自己的正文和发送结果 | 新增 `test_builtin_behavior.py`：独立 App 进程、真实 SDK/Unix socket、HTTP SSE、文件工具和 message_push；阻塞 A 时 B 完成 |
 | 停止后迟到回复不能执行工具，新输入仍能完成；失败不得伪装成功 | 新增同文件 stop 场景；已有 `test_wake_messages.py` 模型失败分类与取消清理场景 |
 | 重启必须等真实输出 drain，失败后恢复接纳 | `test_agent_restart_tool.py`；修正失败时清理，避免连接超时盖住原断言 |
-| 热重载后旧工作继续使用原 generation，新工作使用新配置 | 复用 `test_plugin_hot_reload.py` 与 `test_akasha_message_plugin.py` 归档后删除原源码、切换配置场景 |
+| 热重载中已取得 lease 的调用继续使用其选定 snapshot；重启和新工作沿 stable/latest，无法证明外部效果兼容时明确终态 | 复用 `test_plugin_hot_reload.py` 与 `test_akasha_message_plugin.py` 的 lease、归档事实和切换配置场景 |
 | Scheduler/Wake/Drift 重开后不重复工作或通知，保留原引用 | 复用 `test_scheduler_messages.py` 和 `test_wake_messages.py` 的实际插件、持久化提交故障与恢复场景 |
 | 记忆和压缩引用原始消息，不改写历史正文 | 复用 `test_message_markdown_memory.py`、`test_message_compaction_records.py`、`test_message_compaction_summary.py`；新增跨进程完整历史比较 |
 | Dashboard 在非空、多会话和特殊路径下正确分页，只读请求不改权威事实 | 新增 `test_message_plugin_dashboards.py`：12 条交错召回、原文详情、SQL dump、真实 SQLite 查询观察；Wake 特殊路径与有效诱饵库 |

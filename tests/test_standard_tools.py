@@ -301,6 +301,9 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
             )
         first = await start_shell_call(log, bindings, tasks, tool, "conversation", "first")
         second = await start_shell_call(log, bindings, tasks, tool, "wake", "second")
+        binding_ids = tuple(row[0] for row in log._connection.execute(
+            "SELECT binding_id FROM bindings ORDER BY binding_id"
+        ))
         shutil.rmtree(source)
         # 清理使用稳定 owner key；不因源码目录变化跳过同一进程集合的终止。
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
@@ -315,6 +318,9 @@ async def test_shell_cleanup_uses_original_binding_and_keeps_other_source_runnin
             async with shell_cleanup(ctx, log.reader("shared"), "wake", 0):
                 pass
             assert await backend.active_execution_ids() == []
+        assert tuple(row[0] for row in log._connection.execute(
+            "SELECT binding_id FROM bindings ORDER BY binding_id"
+        )) == binding_ids
     finally:
         await tasks.close()
         await host.terminate_all()

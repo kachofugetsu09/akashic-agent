@@ -47,5 +47,8 @@
 - 没有当前 scope 时，binding 只从所属 Root 获取一次 lease；跨 Root 调用明确失败。
 - 删除或不可用旧 archive 不影响 binding metadata、消息引用和历史事实读取；普通打开不导入旧
   binding archive closure。
+- 候选验证只从已选 candidate snapshot 复制当前 code/data/workspace；消息 binding 的旧
+  `root_ref`/component descriptor 仅作为 provenance。旧组件的代码、数据和 workspace 不复活；旧
+  manifest 的 credential/exclude 声明只读合并，并在 current data 首次复制前生效。
 - 取消、lease 排空和 Root dispose 仍沿现有 `RuntimeScope`/`RuntimeSnapshotStore` owner；不修改
   正式 workspace、消息数据库、plugin-data 或 artifact。
