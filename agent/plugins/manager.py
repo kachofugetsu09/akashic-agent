@@ -3086,6 +3086,23 @@ class PluginManager:
                     except BaseException as error:
                         runtime_error = error
                 if (
+                    runtime_error is None
+                    and channel_state is not None
+                    and channel_state.old_runtime is not None
+                    and channel_state.old_stopped
+                ):
+                    try:
+                        # The final participant commit receives a preclosed
+                        # state and therefore cannot restore the old binding
+                        # while the formal Root is still being rebuilt.  Once
+                        # the stable Root is exact again, rebuild the old
+                        # factories and reopen that binding before resuming.
+                        await self._restore_old_channel_publication(channel_state)
+                        self._reopen_restored_channel_publication(channel_state)
+                        await self._channel_generation_host.recover_durable_inbounds()
+                    except BaseException as error:
+                        runtime_error = error
+                if (
                     previous_snapshot is not None
                     and self.current_snapshot is previous_snapshot
                 ):
