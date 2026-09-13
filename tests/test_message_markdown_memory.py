@@ -8,11 +8,16 @@ from contextlib import asynccontextmanager
 import pytest
 
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
-from agent.plugin_composition.bindings import BINDINGS
+from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
-from plugins.compaction.records import COMPACTION_SUMMARIES, SummaryRecord, SummaryRecords
+from plugins.compaction.records import (
+    COMPACTION_SUMMARIES,
+    NativeSummaryRecordV1,
+    SummaryRecord,
+    SummaryRecords,
+)
 from plugins.content.api import is_user_input
 from plugins.content.plugin import check_text
 from plugins.context.api import check_summary
@@ -191,7 +196,7 @@ async def test_excluded_session_never_reaches_markdown_even_when_source_is_allow
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
             assert not (tmp_path / "requests.jsonl").exists()
             assert not store.is_applied(summary.reference)
             assert log.reader("s").get("input").body.parts[0].value == "fact-one"
@@ -215,7 +220,7 @@ async def test_legacy_suppress_excludes_whole_turn_but_keeps_later_allowed_facts
             async def consume(message):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                    sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
             await consume(use)
             assert not (tmp_path / "requests.jsonl").exists()
             assert not store.is_applied(suppressed.reference)
@@ -256,7 +261,7 @@ async def test_markdown_does_not_reintroduce_abandoned_late_result_from_raw_rang
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
             assert "fact-two" not in (tmp_path / "requests.jsonl").read_text()
             assert "fact-three" in store.read_memory()
             assert store.is_applied(child.reference)
@@ -353,8 +358,61 @@ async def test_markdown_replays_output_after_restart_and_does_not_skip_unused_pa
             assert message is not None
             await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS),
                           store=profile_store(tmp_path), models=ctx.require(CHAT_MODELS),
-                          lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                          lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
+
+
+@pytest.mark.asyncio
+async def test_markdown_replays_v1_summary_through_current_lookup_without_opening_old_binding(tmp_path, monkeypatch):
+    """ABI1 parent and v2 child replay through metadata, without archived code."""
+    async with application(tmp_path) as (log, host):
+        writer = log.writer("s", author="user", source="conversation", body_types=(Input,), content={"text": check_text})
+        writer.append("u1", Input((ContentPart("text", "fact-one"),)))
+        records = SummaryRecords(log.owner("plugin:compaction"))
+        parent = NativeSummaryRecordV1(
+            reference="abi1-parent", session_id="s", generation=1, parent=None,
+            source_message_ids=("u1",), content="old summary", model_call_ids=("old-call",),
+            trigger="soft_limit", context_window=32000, max_output_tokens=4096,
+            keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000,
+        )
+        records._state.transact(lambda tx: tx.save(
+            "summary:abi1-parent", parent.model_dump(mode="json"), expected_version=None,
+        ))
+        records._state.transact(lambda tx: tx.save(
+            "head:s", {"reference": parent.reference}, expected_version=None,
+        ))
+        writer.append("u2", Input((ContentPart("text", "fact-two"),)))
+        writer.append("u3", Input((ContentPart("text", "fact-omitted"),)))
+        child = SummaryRecord(
+            reference="v2-child", session_id="s", generation=2, parent=parent.reference,
+            source_message_ids=("u1", "u2", "u3"), summary_message_ids=("u2",),
+            omitted_message_ids=("u3",), content="new summary", model_call_ids=("new-call",),
+            trigger="soft_limit", context_window=32000, max_output_tokens=4096,
+            keep_recent_tokens=20000, tokens_before=27000, tokens_after=18000,
+        )
+        records.publish(
+            child, log.reader("s"), parent=parent,
+            summary_range=ContextBuilder.summary_range,
+        )
+        used = await record_use(log, host, child, "abi1-v2-output")
+        original_messages = log.reader("s").snapshot()
+        original_parent = records.read(parent.reference)
+        original_child = records.read(child.reference)
+
+    def forbid_archived_open(*_args, **_kwargs):
+        raise AssertionError("历史 Markdown 回放不应打开旧 binding archive")
+
+    monkeypatch.setattr(Bindings, "open", forbid_archived_open)
+    async with application(tmp_path, start=True) as (log, host):
+        await wait_applied(tmp_path, host, child.reference)
+        store = profile_store(tmp_path)
+        memory = store.read_memory()
+        assert "fact-one" in memory and "fact-two" in memory
+        assert "fact-omitted" not in memory
+        assert log.reader("s").snapshot() == original_messages
+        records = SummaryRecords(log.owner("plugin:compaction"))
+        assert records.read(parent.reference) == original_parent
+        assert records.read(child.reference) == original_child
 
 
 @pytest.mark.asyncio
@@ -384,7 +442,7 @@ async def test_markdown_does_not_learn_messages_omitted_by_single_window_compact
                 projection=ctx.require(TURN_PROJECTION),
                 content=ctx.require(CONTENT),
                 context=ctx.require(CONTEXT),
-                compaction=ctx.require(COMPACTION_READER),
+                summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER),
             )
         memory = profile_store(tmp_path).read_memory()
         assert "fact-one" in memory
@@ -419,7 +477,7 @@ async def test_restart_finishes_saved_draft_after_only_memory_file_was_applied(t
             with pytest.raises(OSError, match="second document failure"):
                 await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert not store.is_applied(record.reference)
         assert "fact-one" in store.read_memory()
         assert store.read_self() == before_self
@@ -465,7 +523,7 @@ async def test_delayed_parent_output_cannot_reapply_older_facts_after_child(tmp_
             for message in (first, late):
                 await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                               models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                              sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                              sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert store.latest_applied("s") == (child.reference, child.generation)
         assert store.is_applied(child.reference) and not store.is_applied(parent.reference)
         assert len((tmp_path / "requests.jsonl").read_text().splitlines()) == 1
@@ -491,7 +549,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
             ctx = snapshot.composition_root.context
             with pytest.raises(OSError, match="partial preparation"):
                 await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
-                    models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                    models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert store.read_draft(record.reference) is not None
         assert not store.is_applied(record.reference)
     async with application(tmp_path, start=True) as (log, host):
@@ -501,7 +559,7 @@ async def test_restart_repairs_partial_sqlite_preparation_without_recomputing_mo
             message = log.reader("s").get("used")
             assert message is not None
             await project(message, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
-                          models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                          models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock", sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         assert store.is_applied(record.reference)
         assert store.latest_applied("s") == (record.reference, record.generation)
         assert "fact-one" in store.read_memory()
@@ -576,7 +634,7 @@ async def test_profile_model_work_keeps_materials_readable_and_updates_serial(tm
                 ctx = snapshot.composition_root.context
                 await plugin.project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                     models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                    sources=("conversation",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
 
         monkeypatch.setattr(plugin, "prepare_profile_draft", paused_prepare)
         first = asyncio.create_task(update())
@@ -669,7 +727,7 @@ async def test_default_markdown_uses_programmatic_admission_for_real_summary_pro
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
             assert store.is_applied(summary.reference) is (learning == "eligible")
             assert (tmp_path / "requests.jsonl").exists() is (learning == "eligible")
         assert log.reader("s").get("input").body.parts[0].value == "fact-one"
@@ -807,7 +865,7 @@ async def test_profile_input_omits_large_legacy_replay_but_preserves_user_eviden
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=("legacy-unattributed",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                sources=("legacy-unattributed",), projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         prompts = (tmp_path / "requests.jsonl").read_text()
         request = json.loads(prompts.splitlines()[0])
         rows = json.loads(request.split("本次精确来源：\n", 1)[1])
@@ -921,7 +979,7 @@ async def test_profile_keeps_allowed_turn_inside_mixed_source_group(tmp_path):
             store = profile_store(tmp_path)
             await project(used, reader=log.reader("s"), bindings=ctx.require(BINDINGS), store=store,
                 models=ctx.require(CHAT_MODELS), lock_path=tmp_path / "workspace/memory/markdown-profile.lock",
-                sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), compaction=ctx.require(COMPACTION_READER))
+                sources=Config().sources, projection=ctx.require(TURN_PROJECTION), content=ctx.require(CONTENT), context=ctx.require(CONTEXT), summaries=ctx.require(COMPACTION_SUMMARIES), compaction=ctx.require(COMPACTION_READER))
         prompt = (tmp_path / "requests.jsonl").read_text()
         assert "fact-one" not in prompt and "fact-two" not in prompt
         assert "fact-three" in store.read_memory() and store.is_applied(summary.reference)

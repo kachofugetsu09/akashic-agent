@@ -55,7 +55,7 @@ workspace_files = (
 
 MaterialData = Mapping[str, object]
 inject = (CHAT_MODELS, MATERIALS, BINDINGS, MESSAGE_CATALOG, CONTENT, CONTEXT,
-          TURN_PROJECTION)
+          TURN_PROJECTION, COMPACTION_SUMMARIES)
 
 
 _MEMORY_HEADINGS = (
@@ -699,6 +699,7 @@ async def project(
     sources: tuple[str, ...], projection: TurnProjection,
     content: ContentFacts,
     context: ContextBuilder,
+    summaries: SummaryLookup,
     compaction: CompactionReader | None,
 ) -> None:
     """只处理已提交的模型 Output；两份文件沿原 before-image receipt 恢复。"""
@@ -720,20 +721,21 @@ async def project(
             for pending in store.pending_source_refs():
                 store.apply_pending(pending)
             before_memory, before_self = store.read_memory(), store.read_self()
-        async with bindings.open(reference, COMPACTION_SUMMARIES) as (lookup, metadata):
-            record = lookup.resolve(metadata, session_id=message.session_id)
-            if store.is_applied(record.reference):
-                return
-            draft = store.read_draft(record.reference)
-            groups = await _unapplied_groups(
-                record, lookup, reader, store, sources, projection,
-                compaction=compaction, post_commit_effect=post_commit_effect,
-                summary_range=context.summary_range,
-            )
-            if not groups:
-                return
-            selected = tuple(message for group in groups for message in group)
-        # 模型属于当前 Markdown 作用域；先关闭旧摘要的只读归档 scope。
+        # 2. Binding 固定原始记录身份；当前 compaction 读取该记录及其 v0/v1/v2 父链。
+        metadata = bindings.describe(reference, COMPACTION_SUMMARIES)
+        record = summaries.resolve(metadata, session_id=message.session_id)
+        if store.is_applied(record.reference):
+            return
+        draft = store.read_draft(record.reference)
+        groups = await _unapplied_groups(
+            record, summaries, reader, store, sources, projection,
+            compaction=compaction, post_commit_effect=post_commit_effect,
+            summary_range=context.summary_range,
+        )
+        if not groups:
+            return
+        selected = tuple(message for group in groups for message in group)
+        # 模型属于当前 Markdown 作用域；摘要读取完成后才等待模型，不持有历史 provider。
         if draft is None:
             draft = await prepare_profile_draft(
                 groups, before_memory, before_self, models,
@@ -808,8 +810,9 @@ async def apply(ctx: Context, config: Config) -> None:
                                     await project(message, reader=reader, bindings=ctx.require(BINDINGS),
                                                   store=store, models=ctx.require(CHAT_MODELS), lock_path=lock_path,
                                     sources=config.sources, projection=ctx.require(TURN_PROJECTION),
-                                    content=ctx.require(CONTENT),
-                                    context=context, compaction=compaction)
+                                    content=ctx.require(CONTENT), context=context,
+                                    summaries=ctx.require(COMPACTION_SUMMARIES),
+                                    compaction=compaction)
                                 except ModelError as error:
                                     if not error.retryable:
                                         raise
