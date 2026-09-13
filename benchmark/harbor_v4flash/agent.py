@@ -90,10 +90,7 @@ def _build_gateway_command() -> str:
 
     return (
         f"mkdir -p {_WORKSPACE} && "
-        f"env PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
-        f"{RUNTIME_VENV_PATH}/bin/python {_SOURCE_ROOT}/main.py veda-reset "
-        f"--config {_SOURCE_ROOT}/benchmark/harbor_v4flash/config.toml "
-        f"--workspace {_WORKSPACE} >/dev/null && "
+        f"{_build_prompt_restore_command()} >/dev/null && "
         f"env PATH={GIT_MOUNT_PATH}/bin:$PATH "
         f"PYTHONPATH={_SOURCE_ROOT}:{_SOURCE_ROOT}/sdk/python/src "
         "PYTHONDONTWRITEBYTECODE=1 "
@@ -117,6 +114,22 @@ def _build_gateway_command() -> str:
         "--connection harbor-embedding "
         "--endpoint https://dashscope.aliyuncs.com/compatible-mode/v1 "
         "--api-key-env DASHSCOPE_API_KEY --embedding-model text-embedding-v3"
+    )
+
+
+def _build_prompt_restore_command(
+    *,
+    source_root: str = _SOURCE_ROOT,
+    workspace: str = _WORKSPACE,
+    python_path: str = f"{RUNTIME_VENV_PATH}/bin/python",
+) -> str:
+    """生成隔离 Prompt 包的显式人格恢复命令。"""
+
+    persona = Path(source_root) / "plugins" / "prompt" / "persona.py"
+    return (
+        "env PYTHONDONTWRITEBYTECODE=1 "
+        f"{shlex.quote(python_path)} {shlex.quote(str(persona))} "
+        f"--workspace {shlex.quote(workspace)}"
     )
 
 

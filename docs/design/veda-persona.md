@@ -29,4 +29,4 @@ Akashic 的身份和人格此前由 Python 常量直接拼入 Main、Proactive �
 - `MEMORY.md`、`SELF.md`、session 历史和主动流程状态保持不变。
 - setup 未完成或文件为空、非法 UTF-8 时，正常读取都 fail-loud，错误指向已安装包的 `persona.py` 恢复入口。
 - 首次 setup 只创建缺失文件，失败不记成功；候选 workspace 与正式 workspace 隔离，revert 不删除用户后来修改的 Veda。
-- `veda-reset` 对现有原始字节形成可校验恢复点，并且重复执行默认内容时不新增备份。
+- 已安装 Prompt 包的 `persona.py --workspace PATH` 对现有原始字节形成可校验恢复点，并且重复执行默认内容时不新增备份。
