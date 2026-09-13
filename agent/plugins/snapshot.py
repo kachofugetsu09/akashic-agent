@@ -845,11 +845,13 @@ async def follow_reply_status(
     store: "RuntimeSnapshotStore",
     session_id: str,
 ) -> AsyncGenerator[dict[str, object], None]:
-    """Follow the reply plugin through one exact snapshot at a time."""
+    """Resolve the reply reader briefly; a long follow must not pin a generation."""
 
     from agent.plugin_composition.model import ServiceKey
 
     while True:
+        # 在精确租约内解析 provider，等待通知前释放租约。
+        # generation 停止时 provider 会关闭只读 follower，唤醒循环解析新代。
         async with lease_runtime_snapshot(store) as snapshot:
             root = snapshot.composition_root
             if root is None:
@@ -860,52 +862,54 @@ async def follow_reply_status(
                 "session_id": session_id,
                 "snapshot_id": snapshot.snapshot_id,
             }
-            if read is None:
-                changed = asyncio.create_task(store.wait_for_stable_change(snapshot))
-                try:
-                    yield {**base, "available": False, "items": []}
-                    await changed
-                finally:
-                    if not changed.done():
-                        changed.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await changed
-                continue
-            follow = getattr(read, "follow", None)
-            if not callable(follow):
-                raise TypeError("reply.status.v2 provider 缺少 follow(session_id)")
-            follower = cast(_ReplyStatusReader, read).follow(session_id)
+
+        if read is None:
             changed = asyncio.create_task(store.wait_for_stable_change(snapshot))
-            pending: asyncio.Task[tuple[dict[str, object], ...]] | None = None
             try:
-                while store.current is snapshot:
-                    pending = asyncio.create_task(anext(follower))
-                    done, _ = await asyncio.wait(
-                        (pending, changed),
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    if changed in done:
-                        _ = changed.result()
-                        break
-                    try:
-                        items = pending.result()
-                    except StopAsyncIteration:
-                        yield {**base, "available": False, "items": []}
-                        await changed
-                        break
-                    yield {**base, "available": True, "items": list(items)}
-                    pending = None
+                yield {**base, "available": False, "items": []}
+                await changed
             finally:
-                if pending is not None and not pending.done():
-                    pending.cancel()
-                    with suppress(asyncio.CancelledError, StopAsyncIteration):
-                        await pending
                 if not changed.done():
                     changed.cancel()
                 with suppress(asyncio.CancelledError):
                     await changed
-                async with aclosing(follower):
-                    pass
+            continue
+
+        follow = getattr(read, "follow", None)
+        if not callable(follow):
+            raise TypeError("reply.status.v2 provider 缺少 follow(session_id)")
+        follower = cast(_ReplyStatusReader, read).follow(session_id)
+        changed = asyncio.create_task(store.wait_for_stable_change(snapshot))
+        pending: asyncio.Task[tuple[dict[str, object], ...]] | None = None
+        try:
+            while store.current is snapshot:
+                pending = asyncio.create_task(anext(follower))
+                done, _ = await asyncio.wait(
+                    (pending, changed),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if changed in done:
+                    _ = changed.result()
+                    break
+                try:
+                    items = pending.result()
+                except StopAsyncIteration:
+                    yield {**base, "available": False, "items": []}
+                    await changed
+                    break
+                yield {**base, "available": True, "items": list(items)}
+                pending = None
+        finally:
+            if pending is not None and not pending.done():
+                pending.cancel()
+                with suppress(asyncio.CancelledError, StopAsyncIteration):
+                    await pending
+            if not changed.done():
+                changed.cancel()
+            with suppress(asyncio.CancelledError):
+                await changed
+            async with aclosing(follower):
+                pass
 
 
 def get_current_runtime_lease() -> RuntimeSnapshotLease | None:

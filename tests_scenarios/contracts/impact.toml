@@ -436,7 +436,7 @@ scenarios = ["companion_schedule_capacity_contract"]
 [groups.companion_mobile]
 priority = "p0"
 requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001", "TST-003"]
-paths = ["plugins/akashic_clients/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/app.py", "session/store.py"]
+paths = ["plugins/akashic_clients/mobile_realtime/**", "*/runtime_inspection.py", "agent/plugins/**", "bus/queue.py", "bootstrap/app.py", "session/store.py"]
 depends_on = ["mobile_realtime", "plugin"]
 scenarios = ["companion_mobile_receipt_contract"]
 
