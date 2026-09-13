@@ -532,7 +532,7 @@ Onboarding 注入 `MODEL_CATALOG` 判断是否具备可用默认聊天模型和�
 | Scheduler / Subagent / Wake | 继续只用 `SCOPED_TURNS` | 由 Turn runtime 间接解析 |
 | setup wizard / 无模型壳 | 通用 Plugin Installer；模型配置暂沿用现有 settings surface | 不创建临时 Core provider |
 | `bootstrap/app.py` Mobile binding | 不再接收 registry；Mobile handler 每请求从 exact UI/control Service view 读取 catalog | Mobile command admission |
-| `infra/mobile_realtime/channel.py` model catalog | exact request snapshot 的 `MODEL_CATALOG` | list/refresh command 开始时 |
+| `plugins/akashic_clients/mobile_realtime/channel.py` model catalog（历史 `infra/mobile_realtime/channel.py`） | exact request snapshot 的 `MODEL_CATALOG` | list/refresh command 开始时 |
 | `agent/config.py` | 静态 Config 不读取模型库、不派生 LLM runtime；只保留非模型启动配置 | Config load |
 | `main.py` / `bootstrap/app.py` model reload | Models RPC receipt；删除 `reload_model_config()` 直达 registry | 用户设置事务 |
 

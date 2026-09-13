@@ -860,6 +860,11 @@ inbound 丢失 exact lease、`UNKNOWN` 被盲重试、rollback 只改 pointer、
 6. exact pair E3 后删除两个 external v2 shell；Core adapter zero-consumer Gate 后才物理删除 v2 channel public ABI、
    fixed contribution 与 live snapshot path。
 
+以下段落是 v2 adapter 删除清单的历史对照；客户端归属已由
+[0067](../decisions/0067-clients-are-ordinary-plugin.md) 修订为普通
+`plugins/akashic_clients` artifact，当前运行入口只应读取中立 channel registry、durable
+inbound port 和 exact snapshot lease。
+
 Core 真实入口包括 `agent/plugins/manager.py`、`agent/plugins/snapshot.py`、`bootstrap/app.py`、
 `bootstrap/channel_host.py`、`bootstrap/channels.py`、`plugins/message_push/`、`bus/queue.py`、`bus/events.py`、
 `infra/channels/contract.py`、`infra/channels/delivery.py`、`agent/looping/core.py`、`agent/turns/outbound.py` 与

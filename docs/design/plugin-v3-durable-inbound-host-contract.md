@@ -83,24 +83,29 @@ owner 追加既有 `sync.reset_required`，保留未 ACK inbox/receipt；本合�
    `mobile_v3_handoff/mobile_handoff_id/client_message_id/mobile_v3_attachment_refs` 投影为
    中立字段；不更新既有 SQLite 行、不修改 Message。新记录只写中立字段。
 
-## 5. 必须迁移的消费者
+## 5. 当前消费者与历史迁移对照
 
-这是一次 breaking API 收口，旧名称不保留第二套 Core ABI。C 的 adapter 接线按下表迁移：
+这是一次 breaking API 收口，旧名称不保留第二套 Core ABI。当前客户端 owner 是普通
+`plugins/akashic_clients` artifact；`mobile_realtime/channel.py` 通过
+`ChannelRuntimePorts.durable_inbound` 消费下述中立端口。Core 宿主接线仍在
+`bootstrap/tools.py`，不会构造客户端实现。
+
+下表保留迁移期的旧调用语义，路径带 `infra/mobile_*` 的行只表示历史位置，不是当前源文件：
 
 | 旧位置 | 旧入口 | 新入口 |
 |---|---|---|
 | `bootstrap/tools.py:443` | `bind_mobile_session_admission_owner` | `bind_session_admission_owner` |
-| `infra/mobile_realtime/channel.py:270` | `ports.recovery_ingress` | `ports.durable_inbound` |
-| `infra/mobile_realtime/channel.py:575` | `bind_mobile_channel_inbound_recoverer` | 删除：Host 已绑定唯一全局 recoverer |
-| `infra/mobile_realtime/channel.py:746` | `settle_rejected_mobile_input` | `settle_rejected_inbound(provider_message_id=...)` |
-| `infra/mobile_realtime/channel.py:882` | `has_pending_mobile_handoff` | `has_pending_durable_inbound(provider_message_id=...)` |
-| `infra/mobile_realtime/channel.py:2142` | `reserve_mobile_channel_handoff` | `reserve_durable_inbound` |
-| `infra/mobile_realtime/channel.py:2199` | `defer_mobile_channel_handoff` | `defer_durable_inbound` |
-| `infra/mobile_realtime/channel.py:2690` | `pending_mobile_attachment_refs` | `pending_durable_attachment_refs(provider_message_id=...)` |
-| `tests/mobile_realtime/test_channel.py:242-305` | old fake bus/`recovery_ingress` | same neutral port and methods |
-| `tests/test_mobile_message_input.py:69` | old admission binding | `bind_session_admission_owner` |
-| `tests_scenarios/mobile_isolated_gateway.py:514-520` | old reserve/defer/pending methods | neutral methods |
-| `tests_scenarios/mobile_artifact_history.py:28` | old recoverer binding | neutral recoverer binding |
+| `plugins/akashic_clients/mobile_realtime/channel.py`（历史 `infra/mobile_realtime/channel.py`） | `ports.recovery_ingress` | `ports.durable_inbound` |
+| `plugins/akashic_clients/mobile_realtime/channel.py`（历史 `infra/mobile_realtime/channel.py`） | `bind_mobile_channel_inbound_recoverer` | 删除：Host 已绑定唯一全局 recoverer |
+| `plugins/akashic_clients/mobile_realtime/channel.py`（历史 `infra/mobile_realtime/channel.py`） | `settle_rejected_mobile_input` | `settle_rejected_inbound(provider_message_id=...)` |
+| `plugins/akashic_clients/mobile_realtime/channel.py`（历史 `infra/mobile_realtime/channel.py`） | `has_pending_mobile_handoff` | `has_pending_durable_inbound(provider_message_id=...)` |
+| `plugins/akashic_clients/mobile_realtime/channel.py`（历史 `infra/mobile_realtime/channel.py`） | `reserve_mobile_channel_handoff` | `reserve_durable_inbound` |
+| `plugins/akashic_clients/mobile_realtime/channel.py`（历史 `infra/mobile_realtime/channel.py`） | `defer_mobile_channel_handoff` | `defer_durable_inbound` |
+| `plugins/akashic_clients/mobile_realtime/channel.py`（历史 `infra/mobile_realtime/channel.py`） | `pending_mobile_attachment_refs` | `pending_durable_attachment_refs(provider_message_id=...)` |
+| `tests/mobile_realtime/test_channel.py` | old fake bus/`recovery_ingress` | same neutral port and methods |
+| `tests/test_mobile_message_input.py` | old admission binding | `bind_session_admission_owner` |
+| `tests_scenarios/mobile_isolated_gateway.py` | old reserve/defer/pending methods | neutral methods |
+| `tests_scenarios/mobile_artifact_history.py` | old recoverer binding | neutral recoverer binding |
 
 迁移完成前，Mobile 回归失败属于未迁移消费者，不应通过恢复旧 Core facade 或弱化断言解决。
 

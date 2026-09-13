@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,10 +45,16 @@ def auto_publish_webui(
         store.close()
 
     # 3. 复用唯一发布 CLI 的隔离构建、摘要校验和原子提交
+    publisher = Path(__file__).resolve().with_name("release_cli.py")
+    if not publisher.is_file():
+        raise RuntimeError(f"当前客户端 artifact 缺少发布 CLI: {publisher}")
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("AKASHIC_EXTRA_PLUGIN_DIRS", None)
+    environment["AKASHIC_CORE_ROOT"] = str(_running_core_root())
     command = [
         sys.executable,
-        "-m",
-        "plugins.akashic_clients.mobile_webui.release_cli",
+        str(publisher),
         "publish",
         "--source-repository",
         str(source_repository),
@@ -65,6 +72,7 @@ def auto_publish_webui(
         completed = subprocess.run(
             command,
             cwd=source_repository,
+            env=environment,
             check=True,
             capture_output=True,
             text=True,
@@ -80,6 +88,28 @@ def auto_publish_webui(
         completed.stdout.strip(),
     )
     return True
+
+
+def _running_core_root() -> Path:
+    """Resolve the one Core root already hosting this plugin runtime."""
+
+    import agent
+
+    locations = tuple(
+        Path(path).resolve(strict=True)
+        for path in getattr(agent, "__path__", ())
+    )
+    candidates = tuple(
+        location.parent
+        for location in locations
+        if (location / "plugin_composition").is_dir()
+    )
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "客户端自动发布需要唯一的运行中 Core root，"
+            f"实际发现 {len(candidates)} 个: {candidates}"
+        )
+    return candidates[0]
 
 
 def _current_stable_matches_head(workspace: Path, *, server_id: str, head: str) -> bool:

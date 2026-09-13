@@ -12,14 +12,16 @@ def _add_explicit_core_root() -> None:
     """Add only the explicitly selected Core root for direct CLI execution."""
 
     configured = os.environ.get("AKASHIC_CORE_ROOT", "").strip()
-    candidate = Path(configured).expanduser() if configured else Path.cwd()
-    if configured or (candidate / "agent" / "plugin_composition").is_dir():
-        root = candidate.resolve(strict=True)
-        if not (root / "agent" / "plugin_composition").is_dir():
-            raise RuntimeError(f"Core root 缺少 agent/plugin_composition: {root}")
-        root_text = str(root)
-        if root_text not in sys.path:
-            sys.path.insert(0, root_text)
+    if not configured:
+        raise RuntimeError(
+            "直接运行协议 schema CLI 必须显式设置 AKASHIC_CORE_ROOT"
+        )
+    root = Path(configured).expanduser().resolve(strict=True)
+    if not (root / "agent" / "plugin_composition").is_dir():
+        raise RuntimeError(f"Core root 缺少 agent/plugin_composition: {root}")
+    root_text = str(root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
 
 
 def _direct_package_identity() -> str:
