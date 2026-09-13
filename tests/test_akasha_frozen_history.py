@@ -27,8 +27,11 @@ from plugins.akasha.infrastructure.frozen_history import (
     FrozenProvenance,
     FrozenRecall,
     FrozenTurn,
+    FrozenVector,
+    algorithm_closure_set_digest,
     applied_entries_digest,
     applied_record_key,
+    binding_closure_digest,
     binding_provenance_reference,
     decode_manifest,
     embedding_descriptor_digest,
@@ -42,7 +45,7 @@ from plugins.akasha.infrastructure.frozen_history import (
     recall_record_key,
 )
 from plugins.akasha.infrastructure.persistence import write_memory_database
-from plugins.akasha.recalls import Hit, ProgramSource, Recall
+from plugins.akasha.recalls import ContextSource, Hit, ProgramSource, Recall
 from plugins.akasha.recall_tool import PreparedRecall, RecallTool
 
 
@@ -75,6 +78,11 @@ class _Catalog:
 class _NoBindingOpen:
     def open(self, *_args: object, **_kwargs: object) -> object:
         raise AssertionError("冻结历史不应打开旧 learning binding")
+
+
+@asynccontextmanager
+async def _unused_embedding_context():
+    yield object()
 
 
 def _fixture() -> tuple[
@@ -110,7 +118,11 @@ def _fixture() -> tuple[
         learning_binding="legacy-learning", session_id="s", ending=(1, "a1"),
         members=((0, "u1"), (1, "a1")), observations=(), source_digest="b" * 64,
     )
-    algorithm_digest = "c" * 64
+    binding = FrozenBinding(
+        binding_id="legacy-learning", service_key="akasha.learning.v1", binding_api=1,
+        descriptor_digest="f" * 64, plugin_snapshot_id="old-snapshot",
+    )
+    algorithm_digest = binding_closure_digest(binding)
     refs = tuple(
         FrozenMessageRef(session_id=message.session_id, seq=message.seq,
                          message_id=message.message_id, digest=message_digest(message))
@@ -152,17 +164,15 @@ def _fixture() -> tuple[
     prefix = LegacyPrefix(count=0, index_state_sha256="0" * 64, turns_digest=turns_digest([]))
     manifest = FrozenHistoryManifest(
         source_core_commit="0f2a76e", source_plugin_snapshot_id="old-snapshot",
-        source_python_tag="cpython-3.12", source_algorithm_digest=algorithm_digest,
+        source_python_tag="cpython-3.12",
         legacy_prefix=prefix, consumer_state_sha256="d" * 64, graph_state_sha256="e" * 64,
-        bindings=(FrozenBinding(
-            binding_id="legacy-learning", service_key="akasha.learning.v1", binding_api=1,
-            descriptor_digest="f" * 64, plugin_snapshot_id="old-snapshot",
-        ),),
+        bindings=(binding,),
         applied_count=1, applied_digest=applied_entries_digest((frozen_applied,)),
         applied=(frozen_applied,), recall_count=1,
         recall_digest=recall_entries_digest((frozen_recall,)), recalls=(frozen_recall,),
         reference_count=len(provenance), provenance=provenance,
         embedding_spaces=(space,),
+        algorithm_closure_set_digest=algorithm_closure_set_digest((binding,)),
     )
     return (user, assistant), turn, entry, manifest, recall
 
@@ -179,11 +189,21 @@ def test_manifest_round_trip_rejects_duplicate_fields_and_count_drift() -> None:
 
 def test_manifest_rejects_algorithm_binding_embedding_and_provenance_drift() -> None:
     _messages, _turn, entry, manifest, _recall = _fixture()
-    with pytest.raises(FrozenHistoryError, match="algorithm_digest"):
-        decode_manifest(encode_manifest(manifest.model_copy(update={"source_algorithm_digest": "0" * 64})))
+    with pytest.raises(FrozenHistoryError, match="algorithm_closure_set_digest"):
+        decode_manifest(encode_manifest(manifest.model_copy(update={"algorithm_closure_set_digest": "0" * 64})))
+
+    original = manifest.applied[0]
+    with pytest.raises(FrozenHistoryError, match="引用 binding closure"):
+        drifted_algorithm = original.model_copy(update={
+            "record_key": applied_record_key(original.entry, "0" * 64),
+            "algorithm_digest": "0" * 64,
+        })
+        decode_manifest(encode_manifest(manifest.model_copy(update={
+            "applied": (drifted_algorithm,),
+            "applied_digest": applied_entries_digest((drifted_algorithm,)),
+        })))
 
     missing_binding_entry = entry.model_copy(update={"learning_binding": "missing-learning"})
-    original = manifest.applied[0]
     missing_binding = FrozenApplied(
         record_key=applied_record_key(missing_binding_entry, original.algorithm_digest),
         algorithm_digest=original.algorithm_digest, entry=missing_binding_entry,
@@ -214,6 +234,87 @@ def test_manifest_rejects_algorithm_binding_embedding_and_provenance_drift() -> 
         decode_manifest(encode_manifest(manifest.model_copy(update={
             "reference_count": manifest.reference_count - 1,
         })))
+
+
+def test_manifest_accepts_multiple_binding_closures_and_deduplicates_shared_refs() -> None:
+    _messages, _turn, entry, manifest, _recall = _fixture()
+    original = manifest.applied[0]
+    second_binding = FrozenBinding(
+        binding_id="legacy-learning-2", service_key="akasha.learning.v1", binding_api=1,
+        descriptor_digest="0" * 64, plugin_snapshot_id="second-snapshot",
+        component_digests=(("akasha-learning", "1" * 64),),
+    )
+    second_entry = entry.model_copy(update={
+        "learning_binding": second_binding.binding_id, "source_digest": "2" * 64,
+    })
+    second = FrozenApplied(
+        record_key=applied_record_key(second_entry, binding_closure_digest(second_binding)),
+        algorithm_digest=binding_closure_digest(second_binding), entry=second_entry,
+        rule=original.rule, embedding=original.embedding, messages=original.messages,
+        turn=original.turn,
+    )
+    provenance = (*manifest.provenance, FrozenProvenance(
+        kind="binding", reference=binding_provenance_reference(second_binding.binding_id),
+        digest=second_binding.descriptor_digest,
+    ))
+    decoded = decode_manifest(encode_manifest(manifest.model_copy(update={
+        "bindings": (manifest.bindings[0], second_binding),
+        "algorithm_closure_set_digest": algorithm_closure_set_digest(
+            (manifest.bindings[0], second_binding),
+        ),
+        "applied": (original, second), "applied_count": 2,
+        "applied_digest": applied_entries_digest((original, second)),
+        "provenance": provenance, "reference_count": len(provenance),
+    })))
+    assert decoded.applied[1].algorithm_digest == binding_closure_digest(second_binding)
+    assert len(tuple(item for item in decoded.provenance if item.kind == "message")) == 2
+
+
+def test_manifest_keeps_same_space_snapshots_as_distinct_provenance() -> None:
+    _messages, _turn, _entry, manifest, _recall = _fixture()
+    original = manifest.embedding_spaces[0]
+    second = original.model_copy(update={"plugin_snapshot_id": "new-snapshot"})
+    second_provenance = FrozenProvenance(
+        kind="embedding", reference=embedding_provenance_reference(second),
+        digest=embedding_descriptor_digest(second),
+    )
+    decoded = decode_manifest(encode_manifest(manifest.model_copy(update={
+        "embedding_spaces": (original, second),
+        "provenance": (*manifest.provenance, second_provenance),
+        "reference_count": manifest.reference_count + 1,
+    })))
+    assert decoded.embedding_spaces[0].identity == decoded.embedding_spaces[1].identity
+    assert len(tuple(item for item in decoded.provenance if item.kind == "embedding")) == 2
+
+
+def test_frozen_applied_rejects_rule_identity_and_bad_vectors() -> None:
+    _messages, _turn, _entry, manifest, _recall = _fixture()
+    original = manifest.applied[0]
+    with pytest.raises(ValueError, match="embedding identity"):
+        FrozenApplied(
+            record_key=original.record_key, algorithm_digest=original.algorithm_digest,
+            entry=original.entry,
+            rule=original.rule.model_copy(update={"embedding_model": "wrong-space"}),
+            embedding=original.embedding, messages=original.messages, turn=original.turn,
+        )
+    with pytest.raises(ValueError, match="一维"):
+        FrozenApplied(
+            record_key=original.record_key, algorithm_digest=original.algorithm_digest,
+            entry=original.entry, rule=original.rule, embedding=original.embedding,
+            messages=original.messages,
+            turn=original.turn.model_copy(update={
+                "user_dense": FrozenVector.from_array(np.asarray([[0.6, 0.8]], dtype=np.float32)),
+            }),
+        )
+    with pytest.raises(ValueError, match="有限"):
+        FrozenApplied(
+            record_key=original.record_key, algorithm_digest=original.algorithm_digest,
+            entry=original.entry, rule=original.rule, embedding=original.embedding,
+            messages=original.messages,
+            turn=original.turn.model_copy(update={
+                "user_dense": FrozenVector.from_array(np.asarray([np.nan, 0.8], dtype=np.float32)),
+            }),
+        )
 
 
 @pytest.mark.asyncio
@@ -352,17 +453,19 @@ def test_embedding_match_allows_new_snapshot_but_not_new_revision_or_model() -> 
 
 @pytest.mark.asyncio
 async def test_recall_invoke_passes_frozen_history_to_read_memory_and_opens_only_current_binding(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _messages, _turn, _entry, manifest, _old_recall = _fixture()
+    messages, turn, entry, manifest, _old_recall = _fixture()
     history = FrozenHistory(manifest)
     calls: list[str] = []
-    seen: dict[str, object] = {}
+    frozen = manifest.embedding_spaces[0]
     current_descriptor = EmbeddingSpaceDescriptor(
-        plugin_snapshot_id="new-snapshot", model_revision=8, model_id="current",
-        connection_id="current-conn", driver_id="driver", driver_contract_version="v1",
-        auth_identity="account", connection_fingerprint="current-fingerprint", model="current-v8",
-        dimensions=2, normalization="unit", capability_digest="1" * 64,
+        plugin_snapshot_id="new-snapshot", model_revision=frozen.model_revision,
+        model_id=frozen.model_id, connection_id=frozen.connection_id,
+        driver_id=frozen.driver_id, driver_contract_version=frozen.driver_contract_version,
+        auth_identity=frozen.auth_identity, connection_fingerprint=frozen.connection_fingerprint,
+        model=frozen.model, dimensions=frozen.dimensions, normalization=frozen.normalization,
+        capability_digest=frozen.capability_digest, schema_version=frozen.schema_version,
     )
 
     class CurrentBindings:
@@ -405,13 +508,18 @@ async def test_recall_invoke_passes_frozen_history_to_read_memory_and_opens_only
         timestamp=datetime(2026, 9, 13, 9, 0, tzinfo=UTC), limit=1, hits=(),
         active_basin_count=0, pushes=0, residual_l1=0.0,
     )
-
-    @asynccontextmanager
-    async def fake_read_memory(*_args: object, **kwargs: object):
-        seen["frozen_history"] = kwargs.get("frozen_history")
-        yield object(), object()
-
-    monkeypatch.setattr("plugins.akasha.recall_tool.read_memory", fake_read_memory)
+    config = MemoryConfig()
+    cycle = MemoryCycle(config)
+    cycle.commit(turn, None)
+    memory_path = tmp_path / "akasha.db"
+    _ = write_memory_database(
+        memory_path, turns=[turn], graph=cycle.graph, events=cycle.events,
+        evidence=cycle.evidence, captures=[], context=cycle.context,
+        burst_members=cycle.burst_members, config=config, metadata={},
+        consumption=Consumption(
+            legacy_prefix=manifest.legacy_prefix, cutover_heads=(), applied=(entry,),
+        ),
+    )
     monkeypatch.setattr("plugins.akasha.recall_tool.query_memory", lambda *_args, **_kwargs: new_recall)
     monkeypatch.setattr(
         "plugins.akasha.recall_tool.render_materials",
@@ -421,7 +529,7 @@ async def test_recall_invoke_passes_frozen_history_to_read_memory_and_opens_only
         },
     )
     tool = RecallTool(
-        memory=Path("/unused"), legacy_index=None, config=MemoryConfig(), catalog=object(),
+        memory=memory_path, legacy_index=None, config=config, catalog=_Catalog(messages),
         embeddings=object(), bindings=CurrentBindings(),
         select_learning=lambda: ("current-api2", "current-model"), records=records,
         open_embedding=open_embedding, frozen_history=history,
@@ -433,8 +541,29 @@ async def test_recall_invoke_passes_frozen_history_to_read_memory_and_opens_only
     result = await tool.invoke("new", arguments)
     assert result.outcome == "success"
     assert calls == ["current-api2"]
-    assert seen["frozen_history"] is history
     assert records.saved is not None
+
+
+@pytest.mark.asyncio
+async def test_recall_query_restores_saved_frozen_tool_recall_without_old_binding() -> None:
+    messages, _turn, _entry, manifest, recall = _fixture()
+
+    class Records:
+        def read(self, identity: str) -> Recall | None:
+            assert identity == "tool:old-query"
+            return recall
+
+    tool = RecallTool(
+        memory=Path("/unused"), legacy_index=None, config=MemoryConfig(),
+        catalog=_Catalog(messages), embeddings=object(), bindings=_NoBindingOpen(),
+        select_learning=lambda: ("current-api2", "current-model"), records=Records(),
+        open_embedding=lambda _identity: _unused_embedding_context(),
+        frozen_history=FrozenHistory(manifest),
+    )
+    result = await tool.query("old-query")
+    assert result is not None
+    assert result.outcome == "success"
+    assert any(part.kind == "akasha.recall" for part in result.parts)
 
 
 @pytest.mark.asyncio
@@ -445,6 +574,40 @@ async def test_context_reuses_saved_frozen_material_without_opening_old_binding(
     from plugins.akasha.learning import LearningConfig
 
     messages, _turn, _entry, manifest, recall = _fixture()
+    context_recall = Recall(
+        learning_binding=recall.learning_binding, graph_version=recall.graph_version,
+        source=ContextSource(session_id="s", source="chat", through_seq=0),
+        timestamp=recall.timestamp, limit=recall.limit, max_chars=recall.max_chars,
+        hits=recall.hits, presented_message_ids=recall.presented_message_ids,
+        active_basin_count=recall.active_basin_count, pushes=recall.pushes,
+        residual_l1=recall.residual_l1,
+    )
+    context_digest = recall_record_digest(context_recall)
+    context_identity = "old-random-context"
+    context_material = manifest.recalls[0].material.model_copy(update={
+        "references": tuple(
+            {**reference, "retrieval_ref": context_identity}
+            for reference in manifest.recalls[0].material.references
+        ),
+    })
+    context_frozen = FrozenRecall(
+        record_key=recall_record_key(
+            context_identity, context_digest, manifest.recalls[0].algorithm_digest,
+        ),
+        identity=context_identity, record_digest=context_digest,
+        algorithm_digest=manifest.recalls[0].algorithm_digest,
+        recall=context_recall.model_dump(mode="json"), material=context_material,
+        messages=manifest.recalls[0].messages,
+    )
+    context_provenance = FrozenProvenance(
+        kind="recall", reference=context_identity, digest=context_digest,
+    )
+    manifest = decode_manifest(encode_manifest(manifest.model_copy(update={
+        "recalls": (manifest.recalls[0], context_frozen), "recall_count": 2,
+        "recall_digest": recall_entries_digest((manifest.recalls[0], context_frozen)),
+        "provenance": (*manifest.provenance, context_provenance),
+        "reference_count": manifest.reference_count + 1,
+    })))
     history = FrozenHistory(manifest)
 
     class Projection:
@@ -459,22 +622,24 @@ async def test_context_reuses_saved_frozen_material_without_opening_old_binding(
             return "old question"
 
     class Records:
-        def read(self, _identity: str) -> Recall:
-            return recall
+        def __init__(self) -> None:
+            self.read_ids: list[str] = []
+
+        def read(self, identity: str) -> Recall | None:
+            self.read_ids.append(identity)
+            return None
 
         def list(self) -> tuple[tuple[str, Recall], ...]:
-            return ()
+            return ((context_identity, context_recall),)
 
     monkeypatch.setattr(runtime_module, "tool_references", lambda *_args, **_kwargs: ())
-    monkeypatch.setattr(history, "has_recall", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        history, "material_for", lambda *_args, **_kwargs: manifest.recalls[0].material.as_material(),
-    )
+    records = Records()
     material = await runtime_module.prepare_materials(
         (messages[0],), "chat", cycle=MemoryCycle(), state=object(), catalog=_Catalog(messages),
         embeddings=object(), bindings=_NoBindingOpen(), learning_binding="legacy-learning",
         learning=Learning(), rule=LearningConfig(embedding_model="current", dimension=2, sources=("chat",)),
-        records=Records(), embed_batch=lambda _texts: None, limit=1, max_chars=12000,
+        records=records, embed_batch=lambda _texts: None, limit=1, max_chars=12000,
         frozen_history=history,
     )
+    assert records.read_ids and records.read_ids[0].startswith("context:")
     assert tuple(row["ref"] for row in material["references"]) == ("u1", "a1")

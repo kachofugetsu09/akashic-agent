@@ -296,15 +296,21 @@ Inspector WebUI 源码位于普通插件入口 `plugins/akasha/web/`，与其他
 Recall 的 key 是 `(identity, record_digest, algorithm_digest)` 的摘要。数组、字段和
 浮点向量都用稳定 JSON/原始 bytes 编码，重复 JSON 字段直接拒绝。
 
-manifest 还必须通过输入引用闭包校验：每个 Applied/Recall 的
-`algorithm_digest` 等于顶层 `source_algorithm_digest`，每个旧 learning binding 已在
-`bindings` 声明且 component 名称不重复，每个 Applied 的 embedding descriptor 已在
-`embedding_spaces` 声明。`provenance` 对每个 binding descriptor、embedding descriptor、
+manifest 还必须通过输入引用闭包校验。每个 Applied/Recall 的 `algorithm_digest` 等于它
+引用的 FrozenBinding 完整闭包摘要：
+`binding_id`、service/API、descriptor digest、snapshot provenance 和按名称排序的
+component digests。顶层 `algorithm_closure_set_digest` 是按 binding ID 排序的
+`{binding_id: closure_digest}` map 摘要；exporter 版本属于独立 provenance，不混入算法闭包。
+每个旧 learning binding 已在 `bindings` 声明且 component 名称不重复，每个 Applied 的
+embedding descriptor 已在 `embedding_spaces` 声明。`provenance` 对每个 binding descriptor、embedding descriptor、
 去重后的 Message 引用和 Recall record 各有一个精确 `(kind, reference, digest)`，
 `reference_count` 等于这个去重闭包的实际大小；重复引用或 digest 不一致都拒绝。Applied
-的 rule 必须指向它自己的 embedding identity，非空冻结向量必须是一维、精确匹配该空间
+的 rule 必须指向它自己的 embedding identity，embedding provenance reference 使用包含
+snapshot 的完整 descriptor digest；非空冻结向量必须是一维、精确匹配该空间
 维度且全部为有限值。source、consumer/graph 和 descriptor component 摘要是旧运行时
 导出的跨库证据；它们不要求切流后新 API2 suffix 的当前数据库重新产生同一摘要。
+`applied_count`/`recall_count` 是数组记录数，`reference_count` 是 distinct provenance
+闭包大小，binding 数由 `bindings` 单独给出，三者不能互换。
 
 导出器输入必须是旧 workspace 的只读副本：保留原 `legacy_prefix`、index、graph、
 Message 行、Applied lineage、binding descriptor 闭包和 Recall 记录；只把历史 Applied

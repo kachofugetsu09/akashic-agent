@@ -353,7 +353,6 @@ class FrozenHistoryManifest(BaseModel):
     source_core_commit: Text
     source_plugin_snapshot_id: Text
     source_python_tag: Text
-    source_algorithm_digest: Digest
     legacy_prefix: LegacyPrefix
     consumer_state_sha256: Digest
     graph_state_sha256: Digest
@@ -367,6 +366,7 @@ class FrozenHistoryManifest(BaseModel):
     reference_count: Annotated[int, Field(ge=0)]
     provenance: tuple[FrozenProvenance, ...]
     embedding_spaces: tuple[FrozenEmbeddingSpace, ...]
+    algorithm_closure_set_digest: Digest
 
     @model_validator(mode="after")
     def check_counts(self) -> Self:
@@ -383,18 +383,22 @@ class FrozenHistoryManifest(BaseModel):
         if len({item.record_key for item in self.recalls}) != len(self.recalls):
             raise FrozenHistoryError("冻结 Recall record key 不能重复")
         bindings = {item.binding_id: item for item in self.bindings}
+        if self.algorithm_closure_set_digest != algorithm_closure_set_digest(self.bindings):
+            raise FrozenHistoryError("algorithm_closure_set_digest 与 binding closure 不一致")
         for item in self.applied:
-            if item.algorithm_digest != self.source_algorithm_digest:
-                raise FrozenHistoryError("Applied algorithm_digest 与 manifest 不一致")
-            if item.entry.learning_binding not in bindings:
+            binding = bindings.get(item.entry.learning_binding)
+            if binding is None:
                 raise FrozenHistoryError("Applied 使用了未声明的 learning binding")
+            if item.algorithm_digest != binding_closure_digest(binding):
+                raise FrozenHistoryError("Applied algorithm_digest 与引用 binding closure 不一致")
             if item.embedding not in self.embedding_spaces:
                 raise FrozenHistoryError("Applied 使用了未声明的 embedding space")
         for item in self.recalls:
-            if item.algorithm_digest != self.source_algorithm_digest:
-                raise FrozenHistoryError("Recall algorithm_digest 与 manifest 不一致")
-            if item.parsed().learning_binding not in bindings:
+            binding = bindings.get(item.parsed().learning_binding)
+            if binding is None:
                 raise FrozenHistoryError("Recall 使用了未声明的 learning binding")
+            if item.algorithm_digest != binding_closure_digest(binding):
+                raise FrozenHistoryError("Recall algorithm_digest 与引用 binding closure 不一致")
         if any(
             len({name for name, _digest in item.component_digests}) != len(item.component_digests)
             for item in self.bindings
@@ -476,14 +480,36 @@ def binding_provenance_reference(binding_id: str) -> str:
     return binding_id
 
 
-def embedding_provenance_reference(space: FrozenEmbeddingSpace) -> str:
-    """Return the stable provenance key for one full embedding descriptor."""
-    return space.identity
-
-
 def embedding_descriptor_digest(space: FrozenEmbeddingSpace) -> str:
-    """Digest the full exported embedding descriptor, including provenance fields."""
+    """Digest the full exported embedding descriptor, including its snapshot."""
     return _digest(space.model_dump(mode="json"))
+
+
+def embedding_provenance_reference(space: FrozenEmbeddingSpace) -> str:
+    """Use the full descriptor digest so snapshots cannot collapse into one key."""
+    return embedding_descriptor_digest(space)
+
+
+def binding_closure_digest(binding: FrozenBinding) -> str:
+    """Digest one binding descriptor and its complete named component closure."""
+    return _digest({
+        "binding_id": binding.binding_id,
+        "service_key": binding.service_key,
+        "binding_api": binding.binding_api,
+        "descriptor_digest": binding.descriptor_digest,
+        "plugin_snapshot_id": binding.plugin_snapshot_id,
+        "component_digests": {
+            name: digest for name, digest in sorted(binding.component_digests)
+        },
+    })
+
+
+def algorithm_closure_set_digest(bindings: Sequence[FrozenBinding]) -> str:
+    """Digest the binding-id-sorted map of complete algorithm closures."""
+    return _digest({
+        binding.binding_id: binding_closure_digest(binding)
+        for binding in sorted(bindings, key=lambda item: item.binding_id)
+    })
 
 
 def message_provenance_reference(ref: FrozenMessageRef) -> str:
