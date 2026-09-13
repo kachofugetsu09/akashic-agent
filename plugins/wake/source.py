@@ -15,7 +15,7 @@ from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
 from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
 
-from ._boundary import CONTENT, DELIVERY, DELIVERY_SENDERS, SinkValue
+from ._boundary import CONTENT, DELIVERY
 from .api import EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY
 from .content import (_candidate_id, _content_candidates, _datetime, _mapping,
                       _message_with_source_links, _selected_content_refs, _string)
@@ -135,17 +135,14 @@ class Source:
         self._settled(request, reader)
 
     async def _phase(self, task: Task, request: Request, reader: MessageReader,
-                     stage: Stage, data: Mapping[str, object]) -> tuple[Message, bool]:
+                     stage: Stage, data: Mapping[str, object]) -> Message:
         """每阶段先保存实际 Input；终态存在便不再打开模型或工具。"""
         phase_message = reader.get(request.phase_id(stage))
         terminal = finished(reader, request, stage)
         if terminal is not None:
             if phase_message is None:
                 raise RuntimeError("Wake 阶段终态缺少阶段 Input")
-            return terminal, any(
-                message.source == "wake" and message.seq > phase_message.seq
-                for message in reader.snapshot()
-            )
+            return terminal
         ctx = self.ctx
         await ctx.require(DELIVERY).open(ctx).wait_idle(request.sink["name"], request.sink["address"])
         if not task.active:
@@ -188,11 +185,11 @@ class Source:
                 return failure_writer.append(
                     request.phase_id(stage) + ":failure",
                     Control("failure", reader.head(source="wake"), reason),
-                ), started
+                )
             finally:
                 failure_writer.expire()
         async with bindings.open(request.program_binding, WAKE_PROGRAM) as (program, _):
-            return await program(task, reader, request), started
+            return await program(task, reader, request)
 
     def _settled(self, request: Request, reader: MessageReader) -> None:
         """未进入模型的纯业务决定也正常关闭输入，然后推进唯一来源指针。"""
@@ -225,9 +222,8 @@ class Source:
         all_candidates = _content_candidates(proposal)
         allowed = {_candidate_id(_mapping(item.get("ref"), "Content ref")) for item in all_candidates}
         screen: Screen | None = None
-        investigate_started = False
         if proposal.decision == "select":
-            _, _ = await self._phase(task, request, reader, "screen", {"candidates": screened_candidates(request)})
+            _ = await self._phase(task, request, reader, "screen", {"candidates": screened_candidates(request)})
             value = decision(reader, request, "screen")
             if isinstance(value, Screen) and all(item.candidate_id in allowed for item in value.items):
                 screen = value
@@ -260,7 +256,7 @@ class Source:
                 action = "invalidated" if retryable(finished(reader, request, "screen")) is False else "defer"
                 self._change_content(token, action)
             else:
-                _, investigate_started = await self._phase(
+                _ = await self._phase(
                     task, request, reader, "investigate",
                     {"candidates": screened_candidates(request, screen)},
                 )
@@ -281,10 +277,7 @@ class Source:
                     self._record(request, "defer", "调查没有提交唯一有效决定")
                     action = "invalidated" if retryable(finished(reader, request, "investigate")) is False else "defer"
                     self._change_content(token, action)
-        return await self._finish_domain(
-            task, request, reader, "investigate",
-            allow_current_binding=not investigate_started,
-        )
+        return await self._finish_domain(task, request, reader, "investigate")
 
     def _change_content(self, token: str, action: str, *, refs: Sequence[Mapping[str, object]] | None = None) -> None:
         result = self.ctx.require(EVENTMAIL_WAKE).transition(token, action,
@@ -316,12 +309,11 @@ class Source:
             selected = domain.selection(request.accepted)
             if selected is None:
                 raise ValueError("Drift 领取成功却缺少领域回执")
-        drift_started = False
         if proposal.decision == "decline":
             action = "defer" if selected.get("next_due") is not None else "await_change"
             self._record(request, "skip", "来源明确拒绝本轮 Drift")
         else:
-            _, drift_started = await self._phase(
+            _ = await self._phase(
                 task, request, reader, "drift", {"duty": dict(proposal.payload)}
             )
             value = decision(reader, request, "drift")
@@ -341,13 +333,10 @@ class Source:
         if action != "ready_for_delivery":
             self._settled(request, reader)
             return "deferred" if action == "defer" else "model_skip"
-        return await self._finish_domain(
-            task, request, reader, "drift", allow_current_binding=not drift_started,
-        )
+        return await self._finish_domain(task, request, reader, "drift")
 
     async def _finish_domain(
         self, task: Task, request: Request, reader: MessageReader, stage: Stage,
-        *, allow_current_binding: bool = False,
     ) -> str:
         domain = self.ctx.require(EVENTMAIL_DELIVERY if request.owner == "content" else DRIFT_DELIVERY)
         selected = domain.lookup(request.accepted)
@@ -364,7 +353,7 @@ class Source:
             payloads = {_candidate_id(_mapping(item["ref"], "Content ref")): _mapping(item["payload"], "Content payload")
                         for item in request.items}
             text = _message_with_source_links(text, {"source_refs": [payloads[name] for name in value.items]})
-        if not await self._notify(task, request, text, allow_current_binding=allow_current_binding):
+        if not await self._notify(task, request, text):
             self._fail_notification(request, reader)
             return "failed"
         result = domain.settle(_string(selected.get("selection_token"), "selection_token"), request.notification_id)
@@ -376,24 +365,13 @@ class Source:
     async def _notify(
         self, task: Task, request: Request, text: str, *,
         before_start: Callable[[], str | None] | None = None,
-        allow_current_binding: bool = False,
     ) -> bool:
         """通知正文与原 Sink 一起提交；未知或拒绝回执不冒充领域已送达。"""
         target = request.target
         ctx = self.ctx
         delivery = ctx.require(DELIVERY).open(ctx)
         reader = ctx.require(MESSAGE_CATALOG).reader(target.session_id)
-        selected = delivery.selection(request.notification_id)
-        sink: SinkValue = request.sink
-        if selected is None and allow_current_binding:
-            # 尚未 prepared 的通知没有外部效果；新 stable 可重新绑定同名渠道，保留原地址。
-            sink = {
-                "name": request.sink["name"],
-                "address": request.sink["address"],
-                "binding_id": ctx.require(DELIVERY_SENDERS).bind(
-                    request.sink["name"], ctx.require(BINDINGS)
-                ),
-            }
+        sink = request.sink
         message = reader.get(request.notification_id)
         if message is None:
             if not task.active:
@@ -429,7 +407,7 @@ class Source:
                 self._record(request, "skip", "告警在发送前已过期")
             self._settled(request, reader)
             return "model_skip"
-        _, alert_started = await self._phase(
+        _ = await self._phase(
             task, request, reader, "alert", {"alert": dict(selected)}
         )
         value = decision(reader, request, "alert")
@@ -452,10 +430,7 @@ class Source:
                 return "告警在发送前已过期"
             return None
 
-        if not await self._notify(
-            task, request, value.message, before_start=before_start,
-            allow_current_binding=not alert_started,
-        ):
+        if not await self._notify(task, request, value.message, before_start=before_start):
             receipt = delivery.receipt(request.notification_id, request.sink["name"])
             if receipt is not None and receipt.status == "rejected":
                 if domain.change_alert(ref, request.accepted, "expire", self.now()):

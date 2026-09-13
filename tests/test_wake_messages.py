@@ -619,9 +619,18 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
                 assert source.pending() == ()
                 assert await source.start(original.flow_id) is None
                 delivery = ctx.require(DRIFT_DELIVERY).lookup(original.accepted)
+                if fault == "input":
+                    delivery_execution = ctx.require(DELIVERY).open(ctx)
+                    receipt = delivery_execution.receipt(original.notification_id, "test")
+                    persisted_binding = delivery_execution.destination(
+                        original.notification_id, "test"
+                    ).binding_id
         if fault == "input":
-            assert delivery is not None and delivery["status"] == "settled"
-            assert len(control["calls"]) == 1 and len(control["sent"]) == 1
+            # 未启动的 Wake 程序可以在当前 stable 运行，但投递仍固定使用原 Sink。
+            assert delivery is not None and delivery["status"] == "failed"
+            assert receipt is not None and receipt.status == "failed"
+            assert persisted_binding == original.sink["binding_id"]
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 0
         elif fault == "ready":
             assert delivery is not None and delivery["status"] == "failed"
             assert len(control["calls"]) == 1 and len(control["sent"]) == 0
