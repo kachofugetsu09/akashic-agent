@@ -76,7 +76,6 @@
     "katex": "0.16.47",
     "lucide-react": "^1.23.0",
     "markstream-react": "2.0.6",
-    "mermaid": "11.17.2",
     "micromark": "^4.0.2",
     "micromark-extension-gfm": "^3.0.0",
     "motion": "^12.42.2",
