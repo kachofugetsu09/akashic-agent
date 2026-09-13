@@ -9,22 +9,23 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from agent.config_models import MobileRealtimeConfig
-from infra.channels.message_view import MessageDisplayProviders, message_rows
-from infra.mobile_realtime.auth import DeviceAuthenticator
-from infra.mobile_realtime.channel import MobileCommandError, MobileRealtimeChannel
+from plugins.akashic_clients.config import MobileRealtimeConfig
+from agent.plugin_composition.message_view import MessageDisplayProviders, message_rows
+from plugins.akashic_clients.mobile_realtime.auth import DeviceAuthenticator
+from plugins.akashic_clients.mobile_realtime import channel as mobile_channel_module
+from plugins.akashic_clients.mobile_realtime.channel import MobileCommandError, MobileRealtimeChannel
 from fastapi import WebSocket
 from starlette.types import Message
 
-from infra.mobile_realtime.gateway import ActiveMobileConnection, MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
-from infra.mobile_realtime.inbox import DurableInboxManager
-from infra.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
-from infra.mobile_realtime.pairing import PairingService
-from infra.mobile_realtime.storage import MobileRealtimeStorage
+from plugins.akashic_clients.mobile_realtime.gateway import ActiveMobileConnection, MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
+from plugins.akashic_clients.mobile_realtime.inbox import DurableInboxManager
+from plugins.akashic_clients.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
+from plugins.akashic_clients.mobile_realtime.pairing import PairingService
+from plugins.akashic_clients.mobile_realtime.storage import MobileRealtimeStorage
 from plugins.models.projection import check_facts, display_facts
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
-from tests.mobile_realtime.test_channel import _Runtime, _generic_frame, _register_device
+from tests.akashic_clients_mobile_fixtures import _Runtime, _generic_frame, _register_device
 from tests.sqlite_helpers import snapshot
 
 
@@ -36,6 +37,9 @@ def mobile(tmp_path):
         runtime = _Runtime(storage)
         channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
         channel.bind_messages(log.catalog())
+        # Private command tests call the handler directly; keep that test-only
+        # binding inside the plugin module's explicit direct scope.
+        mobile_channel_module._DIRECT_MESSAGE_CATALOG.set(log.catalog())
         async def display(page, *, display_only):
             return message_rows(page, display_only=display_only, providers=MessageDisplayProviders(
                 tool_name=lambda binding_id: binding_id,
@@ -43,6 +47,7 @@ def mobile(tmp_path):
             ))
         channel.bind_message_display(display)
         yield log, runtime, channel, device
+        mobile_channel_module._DIRECT_MESSAGE_CATALOG.set(None)
 
 
 def command(kind, session_id=None, **payload):
@@ -280,6 +285,7 @@ async def test_mobile_json_range_authentication_and_reopen(mobile, tmp_path):
     with closing(MessageLog(tmp_path / 'sessions.db')) as reopened:
         channel = MobileRealtimeChannel(runtime)
         channel.bind_messages(reopened.catalog())
+        mobile_channel_module._DIRECT_MESSAGE_CATALOG.set(reopened.catalog())
         runtime.bind_channel(channel)
         async def receive() -> Message:
             return {'type': 'websocket.disconnect'}
@@ -330,8 +336,8 @@ async def test_artifact_download_uses_message_reference_and_core_bytes(mobile, t
     from dataclasses import asdict
     import struct
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
-    from infra.mobile_realtime.attachments import encode_attachment_chunk, MAX_ATTACHMENT_CHUNK_BYTES
-    from infra.mobile_realtime.protocol import AttachmentDownloadCommand, parse_frame
+    from plugins.akashic_clients.mobile_realtime.attachments import encode_attachment_chunk, MAX_ATTACHMENT_CHUNK_BYTES
+    from plugins.akashic_clients.mobile_realtime.protocol import AttachmentDownloadCommand, parse_frame
     from session.artifact_store import ArtifactStore
     from session.artifacts import AttachmentKind, AttachmentRef
 

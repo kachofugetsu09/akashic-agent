@@ -157,7 +157,7 @@ paths = [
   "agent/tools/filesystem.py",
   "agent/model_runtime/**",
   "bootstrap/app.py",
-  "bootstrap/chat_api.py",
+  "plugins/akashic_clients/chat_api.py",
   "bootstrap/init_workspace.py",
   "bootstrap/setup_wizard.py",
   "bootstrap/web_shell.py",
@@ -234,7 +234,7 @@ scenarios = ["contract_catalog", "plugin_domain_observe_events"]
 [groups.channel]
 priority = "p1"
 requirements = ["OUT-001", "OUT-002", "COM-001"]
-paths = ["infra/channels/**", "bootstrap/channel_host.py", "bootstrap/channels.py"]
+paths = ["infra/channels/**", "agent/plugin_composition/channels.py"]
 depends_on = ["events"]
 scenarios = ["contract_catalog"]
 
@@ -412,7 +412,7 @@ scenarios = ["companion_tool_context_contract"]
 [groups.companion_external_io]
 priority = "p0"
 requirements = ["SEC-002", "FS-001", "SES-006", "ERR-001", "TST-001", "TST-003"]
-paths = ["core/net/http.py", "bootstrap/chat_api.py", "infra/channels/base.py", "plugins/delivery/**", "plugins/qq_channel/**", "plugins/qq_sender/**", "plugins/telegram_channel/**", "plugins/telegram_sender/**", "infra/channels/web_chat_channel.py", "infra/mobile_realtime/attachments.py", "infra/mobile_realtime/channel.py", "infra/mobile_realtime/gateway.py", "infra/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
+paths = ["core/net/http.py", "plugins/akashic_clients/chat_api.py", "infra/channels/base.py", "plugins/delivery/**", "plugins/qq_channel/**", "plugins/qq_sender/**", "plugins/telegram_channel/**", "plugins/telegram_sender/**", "plugins/akashic_clients/web_chat.py", "plugins/akashic_clients/mobile_realtime/attachments.py", "plugins/akashic_clients/mobile_realtime/channel.py", "plugins/akashic_clients/mobile_realtime/gateway.py", "plugins/akashic_clients/mobile_realtime/storage.py", "tests/mobile_realtime/test_attachments.py", "tests/mobile_realtime/test_channel.py", "tests/mobile_realtime/test_storage.py"]
 deleted_paths = ["agent/tools/web_fetch.py", "infra/channels/qq_channel.py", "infra/channels/telegram_channel.py"]
 depends_on = ["runtime", "mobile_realtime"]
 scenarios = ["companion_external_io_contract"]
@@ -436,7 +436,7 @@ scenarios = ["companion_schedule_capacity_contract"]
 [groups.companion_mobile]
 priority = "p0"
 requirements = ["SEC-006", "MOB-003", "PLG-003", "PLG-004", "ERR-001", "TST-001", "TST-003"]
-paths = ["infra/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/app.py", "session/store.py"]
+paths = ["plugins/akashic_clients/mobile_realtime/**", "agent/plugins/**", "bus/queue.py", "bootstrap/app.py", "session/store.py"]
 depends_on = ["mobile_realtime", "plugin"]
 scenarios = ["companion_mobile_receipt_contract"]
 
