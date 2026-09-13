@@ -270,6 +270,16 @@ class FrozenApplied(BaseModel):
             raise FrozenHistoryError("冻结 Applied 消息跨 Session")
         if self.rule.dimension != self.embedding.dimensions:
             raise FrozenHistoryError("冻结 Learning rule 与 embedding 维度不一致")
+        if self.rule.embedding_model != self.embedding.identity:
+            raise FrozenHistoryError("冻结 Learning rule 与 embedding identity 不一致")
+        for vector in (self.turn.user_dense, self.turn.assistant_dense):
+            if vector is None:
+                continue
+            array = vector.to_array()
+            if array.ndim != 1 or array.shape != (self.embedding.dimensions,):
+                raise FrozenHistoryError("冻结 Turn 向量必须是一维且匹配 embedding 维度")
+            if not np.isfinite(array).all():
+                raise FrozenHistoryError("冻结 Turn 向量必须全部有限")
         if self.turn.session_key != self.entry.session_id:
             raise FrozenHistoryError("冻结 Turn Session 与 Applied 不一致")
         if self.turn.assistant_message_id != self.entry.ending[1]:
@@ -372,10 +382,56 @@ class FrozenHistoryManifest(BaseModel):
             raise FrozenHistoryError("冻结 Applied record key 不能重复")
         if len({item.record_key for item in self.recalls}) != len(self.recalls):
             raise FrozenHistoryError("冻结 Recall record key 不能重复")
+        bindings = {item.binding_id: item for item in self.bindings}
+        for item in self.applied:
+            if item.algorithm_digest != self.source_algorithm_digest:
+                raise FrozenHistoryError("Applied algorithm_digest 与 manifest 不一致")
+            if item.entry.learning_binding not in bindings:
+                raise FrozenHistoryError("Applied 使用了未声明的 learning binding")
+            if item.embedding not in self.embedding_spaces:
+                raise FrozenHistoryError("Applied 使用了未声明的 embedding space")
+        for item in self.recalls:
+            if item.algorithm_digest != self.source_algorithm_digest:
+                raise FrozenHistoryError("Recall algorithm_digest 与 manifest 不一致")
+            if item.parsed().learning_binding not in bindings:
+                raise FrozenHistoryError("Recall 使用了未声明的 learning binding")
+        if any(
+            len({name for name, _digest in item.component_digests}) != len(item.component_digests)
+            for item in self.bindings
+        ):
+            raise FrozenHistoryError("binding component digest 不能重复")
         if applied_entries_digest(self.applied) != self.applied_digest:
             raise FrozenHistoryError("applied_digest 与输入记录不一致")
         if recall_entries_digest(self.recalls) != self.recall_digest:
             raise FrozenHistoryError("recall_digest 与输入记录不一致")
+        expected_provenance: dict[tuple[str, str], str] = {}
+
+        def add_provenance(kind: str, reference: str, digest: str) -> None:
+            key = (kind, reference)
+            previous = expected_provenance.get(key)
+            if previous is not None and previous != digest:
+                raise FrozenHistoryError("同一 provenance reference 的 digest 不一致")
+            expected_provenance[key] = digest
+
+        for item in self.bindings:
+            add_provenance("binding", binding_provenance_reference(item.binding_id), item.descriptor_digest)
+        for item in self.embedding_spaces:
+            add_provenance("embedding", embedding_provenance_reference(item), embedding_descriptor_digest(item))
+        for item in self.applied:
+            for ref in item.messages:
+                add_provenance("message", message_provenance_reference(ref), ref.digest)
+        for item in self.recalls:
+            add_provenance("recall", recall_provenance_reference(item.identity), item.record_digest)
+            for ref in item.messages:
+                add_provenance("message", message_provenance_reference(ref), ref.digest)
+        actual_provenance = {
+            (item.kind, item.reference): item.digest
+            for item in self.provenance
+        }
+        if len(actual_provenance) != len(self.provenance):
+            raise FrozenHistoryError("provenance reference 不能重复")
+        if self.reference_count != len(expected_provenance) or actual_provenance != expected_provenance:
+            raise FrozenHistoryError("reference_count 或 provenance 闭包与输入引用不一致")
         return self
 
 
@@ -413,6 +469,31 @@ def recall_record_key(identity: str, record_digest: str, algorithm_digest: str) 
 def recall_entries_digest(values: Sequence[FrozenRecall]) -> str:
     """Digest exporter Recall rows in their source order."""
     return _digest([item.model_dump(mode="json") for item in values])
+
+
+def binding_provenance_reference(binding_id: str) -> str:
+    """Return the stable provenance key for one binding descriptor."""
+    return binding_id
+
+
+def embedding_provenance_reference(space: FrozenEmbeddingSpace) -> str:
+    """Return the stable provenance key for one full embedding descriptor."""
+    return space.identity
+
+
+def embedding_descriptor_digest(space: FrozenEmbeddingSpace) -> str:
+    """Digest the full exported embedding descriptor, including provenance fields."""
+    return _digest(space.model_dump(mode="json"))
+
+
+def message_provenance_reference(ref: FrozenMessageRef) -> str:
+    """Return a collision-safe provenance key for one Message reference."""
+    return _digest({"session_id": ref.session_id, "seq": ref.seq, "message_id": ref.message_id})
+
+
+def recall_provenance_reference(identity: str) -> str:
+    """Return the stable provenance key for one saved Recall identity."""
+    return identity
 
 
 def message_digest(message: Message) -> str:
@@ -483,11 +564,19 @@ class FrozenHistory:
     def has_applied(self, entry: Applied) -> bool:
         return applied_identity(entry) in self._applied
 
-    def restore_turn(self, entry: Applied, catalog: MessageCatalog) -> Turn:
-        """Restore one exact old Applied result and validate current message bytes."""
+    def _require_applied(self, entry: Applied) -> FrozenApplied:
         frozen = self._applied.get(applied_identity(entry))
         if frozen is None or frozen.entry != entry:
             raise FrozenHistoryError("缺少精确冻结 Applied 记录，禁止回退到当前算法")
+        return frozen
+
+    def embedding_for(self, entry: Applied) -> FrozenEmbeddingSpace:
+        """Return the exact exported space for one old Applied entry."""
+        return self._require_applied(entry).embedding
+
+    def restore_turn(self, entry: Applied, catalog: MessageCatalog) -> Turn:
+        """Restore one exact old Applied result and validate current message bytes."""
+        frozen = self._require_applied(entry)
         _check_messages(catalog, frozen.messages)
         return frozen.turn.to_value()
 

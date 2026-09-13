@@ -154,6 +154,7 @@ class RecallTool:
             async with read_memory(
                 self._memory, legacy_index=self._legacy_index, catalog=self._catalog,
                 embeddings=self._embeddings, bindings=self._bindings, config=self._config,
+                frozen_history=self._frozen_history,
                 embedding_space=(rule.embedding_model, rule.dimension),
             ) as (cycle, state):
                 async with self._open_embedding(request.embedding_binding) as model:

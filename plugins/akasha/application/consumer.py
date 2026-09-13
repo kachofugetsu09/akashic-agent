@@ -99,6 +99,12 @@ class MessageConsumer:
                 frozen_history.uses_binding(entry.learning_binding) for entry in entries
             ):
                 for entry in entries:
+                    frozen_space = frozen_history.embedding_for(entry)
+                    try:
+                        _check_embedding_space(frozen_space.identity, frozen_space.dimensions, space, turns)
+                    except EmbeddingSpaceMismatchError as error:
+                        raise ValueError("已发布 Akasha 学习图的 frozen embedding 空间不一致") from error
+                    space = frozen_space.identity
                     turns.append(frozen_history.restore_turn(entry, catalog))
                 continue
             async with bindings.open(identity, AKASHA_LEARNING) as (learning, metadata):

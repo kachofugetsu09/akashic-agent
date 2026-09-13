@@ -296,6 +296,16 @@ Inspector WebUI 源码位于普通插件入口 `plugins/akasha/web/`，与其他
 Recall 的 key 是 `(identity, record_digest, algorithm_digest)` 的摘要。数组、字段和
 浮点向量都用稳定 JSON/原始 bytes 编码，重复 JSON 字段直接拒绝。
 
+manifest 还必须通过输入引用闭包校验：每个 Applied/Recall 的
+`algorithm_digest` 等于顶层 `source_algorithm_digest`，每个旧 learning binding 已在
+`bindings` 声明且 component 名称不重复，每个 Applied 的 embedding descriptor 已在
+`embedding_spaces` 声明。`provenance` 对每个 binding descriptor、embedding descriptor、
+去重后的 Message 引用和 Recall record 各有一个精确 `(kind, reference, digest)`，
+`reference_count` 等于这个去重闭包的实际大小；重复引用或 digest 不一致都拒绝。Applied
+的 rule 必须指向它自己的 embedding identity，非空冻结向量必须是一维、精确匹配该空间
+维度且全部为有限值。source、consumer/graph 和 descriptor component 摘要是旧运行时
+导出的跨库证据；它们不要求切流后新 API2 suffix 的当前数据库重新产生同一摘要。
+
 导出器输入必须是旧 workspace 的只读副本：保留原 `legacy_prefix`、index、graph、
 Message 行、Applied lineage、binding descriptor 闭包和 Recall 记录；只把历史 Applied
 的确定性 Turn、Recall 的确定性 material、消息摘要和完整 embedding space descriptor
@@ -316,6 +326,10 @@ auth identity、连接指纹、维度、normalization、能力摘要和 schema v
 
 插件配置用 `frozen_history_path` 指向 memory root 内的 sidecar。它是只读派生材料，不
 拥有 Message、graph 或 Recall 删除权，也不改变原有 append-only/用户主动删除语义。
+sidecar 存在但 JSON/schema、引用闭包、消息摘要或 embedding 身份无效时必须 fail-loud；
+fresh workspace 没有历史 `Consumption` 时可以没有 sidecar，不能因此伪造冻结历史。历史
+前缀/Recall 只在当前 Message 仍存在且摘要、lineage 有效时可读，sidecar 不能复活已删除
+或失效的原事实。
 
 ## 11. 失败、回滚与部署前置
 
