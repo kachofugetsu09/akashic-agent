@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.plugin_composition.channels import StopReceipt
 from plugins.akashic_clients.channel import (
     _GenerationAkashicAdapter,
     _SERVER_START_TIMEOUT_SECONDS,
@@ -83,6 +84,25 @@ async def test_start_server_cancels_listener_when_ready_timeout_expires(monkeypa
 
     assert server.should_exit is True
     assert adapter._servers == []
+
+
+class _SentinelChild:
+    def __init__(self, *resources_closed: bool) -> None:
+        self._results = list(resources_closed)
+        self.calls = 0
+
+    async def stop(self) -> StopReceipt:
+        self.calls += 1
+        result = self._results[min(self.calls - 1, len(self._results) - 1)]
+        return StopReceipt("child-binding", resources_closed=result)
+
+
+class _SentinelRuntime:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def stop(self) -> None:
+        self.calls += 1
 
 
 class _BlockingServer:
@@ -162,9 +182,11 @@ async def test_start_rollback_retains_listener_owner_after_stop_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _adapter()
-    adapter._started_children = []
+    child = _SentinelChild(True)
+    runtime = _SentinelRuntime()
+    adapter._started_children = [child]
     adapter._web = None
-    adapter._mobile_runtime = None
+    adapter._mobile_runtime = runtime
     adapter._stopping = True
     server = _BlockingServer()
     task = asyncio.create_task(server.serve())
@@ -178,7 +200,76 @@ async def test_start_rollback_retains_listener_owner_after_stop_failure(
     with pytest.raises(BaseExceptionGroup, match="start rollback"):
         await adapter._rollback_start(RuntimeError("start failed"))
     assert adapter._servers == [(server, task)]
+    assert adapter._started_children == [child]
+    assert child.calls == 0
+    assert runtime.calls == 0
 
     server.release_cleanup.set()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_stop_server_failure_defers_children_and_retries_all_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _adapter()
+    child = _SentinelChild(True)
+    runtime = _SentinelRuntime()
+    adapter._stopped = False
+    adapter._stopping = False
+    adapter._binding_token = "binding"
+    adapter._started_children = [child]
+    adapter._web = None
+    adapter._mobile_runtime = runtime
+    adapter._release_generation_binding = lambda: None
+    server = _BlockingServer()
+    task = asyncio.create_task(server.serve())
+    await server.started.wait()
+    adapter._servers = [(server, task)]
+    monkeypatch.setattr(
+        "plugins.akashic_clients.channel._SERVER_STOP_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    with pytest.raises(BaseExceptionGroup, match="channel stop"):
+        await adapter.stop()
+    assert adapter._servers == [(server, task)]
+    assert adapter._started_children == [child]
+    assert child.calls == 0
+    assert runtime.calls == 0
+
+    server.release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    receipt = await adapter.stop()
+    assert receipt.resources_closed
+    assert child.calls == 1
+    assert runtime.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_child_failure_retains_child_until_retry() -> None:
+    adapter = _adapter()
+    child = _SentinelChild(False, True)
+    runtime = _SentinelRuntime()
+    adapter._stopped = False
+    adapter._stopping = False
+    adapter._binding_token = "binding"
+    adapter._servers = []
+    adapter._started_children = [child]
+    adapter._web = None
+    adapter._mobile_runtime = runtime
+    adapter._release_generation_binding = lambda: None
+
+    with pytest.raises(BaseExceptionGroup, match="channel stop"):
+        await adapter.stop()
+    assert adapter._started_children == [child]
+    assert child.calls == 1
+    assert runtime.calls == 0
+
+    receipt = await adapter.stop()
+    assert receipt.resources_closed
+    assert adapter._started_children == []
+    assert child.calls == 2
+    assert runtime.calls == 1
