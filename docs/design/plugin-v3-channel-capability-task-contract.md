@@ -865,13 +865,12 @@ inbound 丢失 exact lease、`UNKNOWN` 被盲重试、rollback 只改 pointer、
 `plugins/akashic_clients` artifact，当前运行入口只应读取中立 channel registry、durable
 inbound port 和 exact snapshot lease。
 
-Core 真实入口包括 `agent/plugins/manager.py`、`agent/plugins/snapshot.py`、`bootstrap/app.py`、
-`bootstrap/channel_host.py`、`bootstrap/channels.py`、`plugins/message_push/`、`bus/queue.py`、`bus/events.py`、
-`infra/channels/contract.py`、`infra/channels/delivery.py`、`agent/looping/core.py`、`agent/turns/outbound.py` 与
-`bootstrap/passive_worker.py`；还必须迁移 `agent/core/passive_turn.py`、`agent/lifecycle/phases/after_turn.py`、
-`agent/turns/orchestrator.py` 的 normal/error/cancel/proactive outbound，以及
-`infra/channels/telegram_channel.py`、`qq_channel.py`、`web_chat_channel.py`、`infra/mobile_realtime/channel.py` 的
-Core adapter。zero-consumer scan 未覆盖这些入口前不得删除旧 channel/MessagePush callback。
+当前 Core 入口只保留 `agent/plugins/manager.py`、`agent/plugins/snapshot.py`、`bootstrap/app.py`、
+`agent/plugin_composition/channels.py`、`bus/queue.py`、`bus/events.py`、`infra/channels/` 中立原子以及
+`plugins/message_push/` 的通用接线。Web/Mobile/Telegram/QQ 业务 adapter 的现行 owner 是
+`plugins/akashic_clients/`，按已安装 artifact 的 channel registry 和 exact snapshot lease 启动；Core
+不再保留 `infra/mobile_realtime/` 或 `infra/channels/*_channel.py` 的业务副本，也不聚合旧的
+`telegram_bot_commands()`/`mobile_bot_commands()` 表。旧路径只在本节历史 inventory 中作对照，不是当前迁移入口。
 
 V2 删除 inventory 同时覆盖 `RuntimeSnapshot.channels`、Host `_plugin_channels/ChannelSwap`、app endpoint switcher、
 Manager endpoint signatures、bootstrap `plugin_channels`、旧 MessagePush channel registration、fire-and-forget

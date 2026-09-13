@@ -182,11 +182,45 @@ async def _finish_cancelled_server(task: asyncio.Task[Any]) -> None:
         ) from error
 
 
+async def _stop_owned_children(
+    children: Sequence[Any],
+) -> tuple[list[Any], list[StopReceipt], list[BaseException]]:
+    """Stop children while retaining every incomplete owner for retry."""
+
+    receipts: list[StopReceipt] = []
+    remaining: list[Any] = []
+    errors: list[BaseException] = []
+    for child in reversed(children):
+        try:
+            result = await child.stop()
+        except BaseException as error:
+            errors.append(error)
+            remaining.append(child)
+            continue
+        if result is None:
+            continue
+        if not isinstance(result, StopReceipt):
+            errors.append(RuntimeError("akashic child stop 必须返回 StopReceipt 或 None"))
+            remaining.append(child)
+            continue
+        receipts.append(result)
+        if not result.resources_closed or result.failures:
+            remaining.append(child)
+            errors.append(
+                RuntimeError(
+                    f"akashic child stop 未完成: {result.binding_token}"
+                )
+            )
+    return list(reversed(remaining)), receipts, errors
+
+
 async def _stop_server(server: uvicorn.Server, task: asyncio.Task[Any]) -> None:
     """Ask Uvicorn to close its listener before cancelling its task."""
 
     server.should_exit = True
     if task.done():
+        if task.cancelled():
+            return
         task.result()
         return
     try:
@@ -605,22 +639,23 @@ class _GenerationAkashicAdapter:
                 failures.append(error)
                 remaining_servers.append((server, task))
         self._servers = list(reversed(remaining_servers))
-        results = await asyncio.gather(
-            *(child.stop() for child in reversed(self._started_children)),
-            return_exceptions=True,
-        )
-        failures.extend(item for item in results if isinstance(item, BaseException))
-        if self._web is not None and self._web not in self._started_children:
-            try:
-                await self._web.stop()
-            except BaseException as error:
-                failures.append(error)
-        self._started_children.clear()
-        if self._mobile_runtime is not None:
-            try:
-                await self._mobile_runtime.stop()
-            except BaseException as error:
-                failures.append(error)
+        if not self._servers:
+            remaining_children, _receipts, child_failures = await _stop_owned_children(
+                tuple(self._started_children)
+            )
+            failures.extend(child_failures)
+            if self._web is not None and self._web not in self._started_children:
+                try:
+                    await self._web.stop()
+                except BaseException as error:
+                    failures.append(error)
+                    remaining_children.append(self._web)
+            self._started_children = remaining_children
+            if not self._started_children and self._mobile_runtime is not None:
+                try:
+                    await self._mobile_runtime.stop()
+                except BaseException as error:
+                    failures.append(error)
         if failures:
             self._stopping = False
             raise BaseExceptionGroup("akashic channel start rollback 失败", (primary, *failures))
@@ -691,32 +726,27 @@ class _GenerationAkashicAdapter:
                 errors.append(error)
                 remaining_servers.append((server, task))
         self._servers = list(reversed(remaining_servers))
-        receipts: list[StopReceipt] = []
+        if self._servers:
+            self._stopping = False
+            raise BaseExceptionGroup("akashic channel stop 失败", tuple(errors))
+
         started_children = tuple(self._started_children)
-        remaining_children: list[Any] = []
-        for child in reversed(self._started_children):
-            try:
-                result = await child.stop()
-            except BaseException as error:
-                errors.append(error)
-                remaining_children.append(child)
-            else:
-                if isinstance(result, StopReceipt):
-                    receipts.append(result)
-                    if not result.resources_closed or result.failures:
-                        remaining_children.append(child)
-                        errors.append(
-                            RuntimeError(
-                                f"akashic child stop 未完成: {result.binding_token}"
-                            )
-                        )
-        self._started_children = list(reversed(remaining_children))
+        remaining_children, receipts, child_failures = await _stop_owned_children(
+            started_children
+        )
+        errors.extend(child_failures)
         if self._web is not None and self._web not in started_children:
-            try:
-                await self._web.stop()
-            except BaseException as error:
-                errors.append(error)
-        self._started_children.clear()
+            extra_remaining, extra_receipts, extra_failures = await _stop_owned_children(
+                (self._web,)
+            )
+            remaining_children.extend(extra_remaining)
+            receipts.extend(extra_receipts)
+            errors.extend(extra_failures)
+        self._started_children = remaining_children
+        if self._started_children:
+            self._stopping = False
+            raise BaseExceptionGroup("akashic channel stop 失败", tuple(errors))
+
         if self._mobile_runtime is not None:
             try:
                 await self._mobile_runtime.stop()

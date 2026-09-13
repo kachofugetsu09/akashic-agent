@@ -914,6 +914,10 @@ class PluginManager:
                 self._active_channel_generation = None
                 self._active_channel_catalog_identity = None
                 raise
+            # Keep the exact fresh generation returned by start_formal.  The
+            # finish phase must operate on this object, never on the stopped
+            # predecessor that occupied the same snapshot/channel key.
+            state.old_runtime = restored
         self._active_channel_generation = restored
         self._active_channel_catalog_identity = state.previous_identity
 
@@ -987,14 +991,19 @@ class PluginManager:
         if self._snapshot_store.current is not snapshot:
             raise RuntimeError("Channel recovery snapshot 已不是 current")
         try:
-            if not snapshot.accepting_leases:
-                await self._snapshot_store.resume(snapshot)
-            if self._snapshot_store.current is not snapshot or not snapshot.accepting_leases:
+            if self._snapshot_store.current is not snapshot:
                 raise RuntimeError("Channel recovery snapshot 未能重新开放")
             self._active_channel_generation = runtime
             self._active_channel_catalog_identity = catalog_identity
             runtime.open_admission()
             await self._channel_generation_host.recover_durable_inbounds()
+            # The global snapshot admission is the final success gate.  The
+            # channel's recovery path uses the exact internal recovery lease
+            # while this snapshot is still closed.
+            if not snapshot.accepting_leases:
+                await self._snapshot_store.resume(snapshot)
+            if self._snapshot_store.current is not snapshot or not snapshot.accepting_leases:
+                raise RuntimeError("Channel recovery snapshot 未能重新开放")
         except BaseException:
             runtime.close_admission()
             if self._active_channel_generation is runtime:
@@ -2869,6 +2878,13 @@ class PluginManager:
             if (
                 channel_state is not None
                 and not rollback_errors
+                # A preclosed state belongs to the outer formal-root
+                # transaction.  Its old runtime was stopped before the Root
+                # handoff and must be rebuilt from the exact old snapshot
+                # before it can be reopened.  Finishing it here would call
+                # recovery on that closed generation and hide the original
+                # participant failure.
+                and preclosed_channel_state is None
                 and channel_state.previous is self.current_snapshot
                 and channel_state.previous is not None
             ):
@@ -3566,8 +3582,13 @@ class PluginManager:
 
             # 6. Open the exact Channel owner before any public admission resumes.
             if restored_channel_runtime is not None:
+                finish_snapshot = recovery_snapshot
+                if finish_snapshot is None:
+                    finish_snapshot = current
+                if finish_snapshot is None:
+                    raise RuntimeError("runtime recovery 缺少 channel snapshot")
                 await self._finish_channel_runtime_recovery(
-                    recovery_snapshot or current,
+                    finish_snapshot,
                     restored_channel_runtime,
                     current_channel_identity,
                 )
