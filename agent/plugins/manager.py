@@ -3575,8 +3575,13 @@ class PluginManager:
 
             # 6. Open the exact Channel owner before any public admission resumes.
             if restored_channel_runtime is not None:
+                finish_snapshot = recovery_snapshot
+                if finish_snapshot is None:
+                    finish_snapshot = current
+                if finish_snapshot is None:
+                    raise RuntimeError("runtime recovery 缺少 channel snapshot")
                 await self._finish_channel_runtime_recovery(
-                    recovery_snapshot or current,
+                    finish_snapshot,
                     restored_channel_runtime,
                     current_channel_identity,
                 )
