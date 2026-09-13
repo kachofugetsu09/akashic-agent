@@ -280,7 +280,64 @@ Dense 与显式补全按稳定 turn ID 去重后，分别按时间从近到远�
 Inspector WebUI 源码位于普通插件入口 `plugins/akasha/web/`，与其他 Web module 使用同一
 构建和安装路径；构建只发布 `web_module.js/css`，不再生成第二份同名中间产物。
 
-## 10. 失败、回滚与部署前置
+## 10. API1 冻结历史与普通插件切流
+
+旧 Core 的 binding descriptor 是 API1，当前宿主只接受 API2。因此历史 `Applied` 和
+已保存的 Recall 不能继续打开旧 binding，也不能用同名的新 binding 重算。普通 Akasha
+插件使用 `plugins/akasha/infrastructure/frozen_history.py` 读取一次性导出物；旧 Core
+导出器由独立迁移制品拥有，不能作为当前运行时依赖。
+
+导出物是 `akasha.frozen-history.v1` JSON，顶层固定包含 `legacy_prefix`、`bindings`、
+`applied`、`recalls`、`provenance` 和 `embedding_spaces`，并带 `source_core_commit`、
+`source_plugin_snapshot_id`、算法摘要以及旧 consumer/graph 摘要。`applied_count`、
+`recall_count` 和 `reference_count` 必须由本次输入的数组计算；实现不能写死线上
+“49/242/13”等数量。每条冻结 Applied 的 key 是
+`(learning_binding, session_id, ending, source_digest, algorithm_digest)` 的摘要；每条
+Recall 的 key 是 `(identity, record_digest, algorithm_digest)` 的摘要。数组、字段和
+浮点向量都用稳定 JSON/原始 bytes 编码，重复 JSON 字段直接拒绝。
+
+manifest 还必须通过输入引用闭包校验。每个 Applied/Recall 的 `algorithm_digest` 等于它
+引用的 FrozenBinding 完整闭包摘要：
+`binding_id`、service/API、descriptor digest、snapshot provenance 和按名称排序的
+component digests。顶层 `algorithm_closure_set_digest` 是按 binding ID 排序的
+`{binding_id: closure_digest}` map 摘要；exporter 版本属于独立 provenance，不混入算法闭包。
+每个旧 learning binding 已在 `bindings` 声明且 component 名称不重复，每个 Applied 的
+embedding descriptor 已在 `embedding_spaces` 声明。`provenance` 对每个 binding descriptor、embedding descriptor、
+去重后的 Message 引用和 Recall record 各有一个精确 `(kind, reference, digest)`，
+`reference_count` 等于这个去重闭包的实际大小；重复引用或 digest 不一致都拒绝。Applied
+的 rule 必须指向它自己的 embedding identity，embedding provenance reference 使用包含
+snapshot 的完整 descriptor digest；非空冻结向量必须是一维、精确匹配该空间
+维度且全部为有限值。source、consumer/graph 和 descriptor component 摘要是旧运行时
+导出的跨库证据；它们不要求切流后新 API2 suffix 的当前数据库重新产生同一摘要。
+`applied_count`/`recall_count` 是数组记录数，`reference_count` 是 distinct provenance
+闭包大小，binding 数由 `bindings` 单独给出，三者不能互换。
+
+导出器输入必须是旧 workspace 的只读副本：保留原 `legacy_prefix`、index、graph、
+Message 行、Applied lineage、binding descriptor 闭包和 Recall 记录；只把历史 Applied
+的确定性 Turn、Recall 的确定性 material、消息摘要和完整 embedding space descriptor
+写入新文件。导出过程中不得 consume、apply、调用模型、发送网络请求、修改原消息或
+导出凭据；descriptor 中的 auth identity 只用于隔离校验，秘密不能进入导出物。
+
+读取时先核对当前 `Consumption.legacy_prefix` 和 Applied 前缀，再逐条核对当前
+Message 的 session、seq、ID 和完整摘要。消息被用户删除、失效或内容改变时，冻结结果
+立即不可读，不能让 sidecar 重新展示历史正文。旧 binding 缺少对应冻结 Applied/Recall
+时 fail-loud；只有切流后的新 API2 记录才走当前在线算法。旧 Recall 的 material 引用
+必须与原 `presented_message_ids` 顺序一致。
+
+`embedding_spaces` 比较完整行为身份：model revision、model ID、连接、driver/contract、
+auth identity、连接指纹、维度、normalization、能力摘要和 schema version 必须全部相同。
+新安装的 `plugin_snapshot_id` 只是出处，可以不同；model revision 不因同名模型而放宽，
+也不允许默认模型或同名 provider fallback。当前实现因此会在新学习或查询前明确报告
+空间不匹配。
+
+插件配置用 `frozen_history_path` 指向 memory root 内的 sidecar。它是只读派生材料，不
+拥有 Message、graph 或 Recall 删除权，也不改变原有 append-only/用户主动删除语义。
+sidecar 存在但 JSON/schema、引用闭包、消息摘要或 embedding 身份无效时必须 fail-loud；
+fresh workspace 没有历史 `Consumption` 时可以没有 sidecar，不能因此伪造冻结历史。历史
+前缀/Recall 只在当前 Message 仍存在且摘要、lineage 有效时可读，sidecar 不能复活已删除
+或失效的原事实。
+
+## 11. 失败、回滚与部署前置
 
 - upstream 镜像校验失败：停止构建，不从宿主镜像继续开发。
 - embedding audit 失败：保留报告，不触碰现存 sidecar。
@@ -296,7 +353,7 @@ Inspector WebUI 源码位于普通插件入口 `plugins/akasha/web/`，与其他
 本分支只交付代码、隔离证据和迁移设计，不修改正式 workspace，也不把 PR 合入运行中
 分支。
 
-## 11. 验收命令
+## 12. 验收命令
 
 ```bash
 # upstream

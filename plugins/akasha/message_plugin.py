@@ -31,6 +31,7 @@ from .runtime import MessageMemory, prepare_materials
 from .application.snapshot import read_memory
 from agent.plugin_composition.models import open_embedding as open_saved_embedding, read_embedding_binding
 from .tools import FeedbackArguments, FeedbackTool, check_feedback
+from .infrastructure.frozen_history import FrozenHistory
 
 api_version = 3
 name = "akasha"
@@ -68,6 +69,7 @@ class Config(BaseModel):
     sources: tuple[str, ...] = Field(default=("conversation", "programmatic"), min_length=1)
     db_path: str = AkashaConfig.db_path
     index_path: str = AkashaConfig.index_path
+    frozen_history_path: str = AkashaConfig.frozen_history_path
     inject_max_chars: int = AkashaConfig.inject_max_chars
     context_recall_limit: int = AkashaConfig.context_recall_limit
     restart: float = AkashaConfig.restart
@@ -127,6 +129,8 @@ async def apply(ctx: Context, config: Config) -> None:
     settings = config.settings()
     memory_path = resolve_memory_path(ctx.workspace_root("memory"), settings.db_path)
     index_path = resolve_memory_path(ctx.workspace_root("memory"), settings.index_path)
+    frozen_history_path = resolve_memory_path(ctx.workspace_root("memory"), settings.frozen_history_path)
+    frozen_history = FrozenHistory.load_optional(frozen_history_path)
     learning = Learning(
         ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id,
         post_commit_effect=content.legacy_post_commit_effect,
@@ -201,6 +205,8 @@ async def apply(ctx: Context, config: Config) -> None:
     def select_learning() -> tuple[str, LearningConfig, str]:
         try:
             descriptor = ctx.require(EMBEDDINGS).describe()
+            if frozen_history is not None:
+                frozen_history.require_embedding(descriptor)
             if memory_rule is not None and (descriptor.identity, descriptor.dimensions) != (
                 memory_rule.embedding_model, memory_rule.dimension,
             ):
@@ -208,6 +214,9 @@ async def apply(ctx: Context, config: Config) -> None:
         except (ModelUnavailableError, DriverUnavailableError, EmbeddingSpaceMismatchError) as error:
             health.degrade(str(error))
             raise
+        except ValueError as error:
+            health.degrade(str(error))
+            raise EmbeddingSpaceMismatchError(str(error)) from error
         rule = LearningConfig(embedding_model=descriptor.identity, dimension=descriptor.dimensions,
                               sources=config.sources)
         identity = ctx.require(BINDINGS).bind(AKASHA_LEARNING, rule.model_dump())
@@ -265,6 +274,7 @@ async def apply(ctx: Context, config: Config) -> None:
                     memory_path, legacy_index=index_path, catalog=ctx.require(MESSAGE_CATALOG),
                     embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=bindings,
                     config=settings.memory_config(), embedding_space=(rule.embedding_model, rule.dimension),
+                    frozen_history=frozen_history,
                     allow_initial=True,
                 ) as (cycle, state):
                     result = await prepare_materials(
@@ -273,6 +283,7 @@ async def apply(ctx: Context, config: Config) -> None:
                         bindings=bindings, learning_binding=identity, learning=selected, rule=rule,
                         records=query_records, embed_batch=embedder(rule, model_id),
                         limit=settings.context_recall_limit, max_chars=settings.inject_max_chars,
+                        frozen_history=frozen_history,
                     )
         except EmbeddingSpaceMismatchError as error:
             health.degrade(str(error))
@@ -338,6 +349,7 @@ async def apply(ctx: Context, config: Config) -> None:
             catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
             bindings=bindings, select_learning=select, records=records(),
             open_embedding=partial(open_saved_embedding, bindings), max_chars=settings.inject_max_chars,
+            frozen_history=frozen_history,
         )
 
     tool_refs.append(
@@ -374,13 +386,14 @@ async def apply(ctx: Context, config: Config) -> None:
             consumer = await MessageConsumer.load(
                 memory_path, legacy_index=index_path, catalog=ctx.require(MESSAGE_CATALOG),
                 embeddings=ctx.require(MESSAGE_EMBEDDINGS), bindings=ctx.require(BINDINGS),
-                config=settings.memory_config(),
+                config=settings.memory_config(), frozen_history=frozen_history,
             )
             runtime_records = records()
             prepared = MessageMemory(
                 consumer, catalog=ctx.require(MESSAGE_CATALOG), embeddings=ctx.require(MESSAGE_EMBEDDINGS),
                 bindings=ctx.require(BINDINGS), learning_binding=identity, records=runtime_records,
                 embed_batch=embedder(rule, model_id), limit=settings.context_recall_limit,
+                frozen_history=frozen_history,
                 max_chars=settings.inject_max_chars,
             )
             # 2. 新选择必须与已有图一致；失败先归还 writer，绝不自动重建。

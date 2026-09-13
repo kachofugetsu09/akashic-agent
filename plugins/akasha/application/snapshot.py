@@ -12,6 +12,7 @@ from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 
 from ..domain.model import MemoryConfig
 from ..infrastructure.consumption import Consumption
+from ..infrastructure.frozen_history import FrozenHistory
 from .consumer import MessageConsumer, run_memory_job
 from .cycle import MemoryCycle
 
@@ -29,6 +30,7 @@ def _copy_published(source: Path, target: Path) -> None:
 async def read_memory(
     path: Path, *, legacy_index: Path | None, catalog: MessageCatalog,
     embeddings: MessageEmbeddings, bindings: Bindings, config: MemoryConfig,
+    frozen_history: FrozenHistory | None = None,
     embedding_space: tuple[str, int] | None = None,
     allow_initial: bool = False,
 ) -> AsyncGenerator[tuple[MemoryCycle, Consumption]]:
@@ -42,6 +44,7 @@ async def read_memory(
         restored = await MessageConsumer.load(
             snapshot, legacy_index=legacy_index, catalog=catalog,
             embeddings=embeddings, bindings=bindings, config=config,
+            frozen_history=frozen_history,
         )
         try:
             if embedding_space is not None:

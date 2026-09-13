@@ -19,6 +19,7 @@ from .infrastructure.consumption import Consumption
 from .projection import input_features
 from .recalls import ContextSource, RecallRecords, query_memory, render_materials
 from .recall_tool import tool_references
+from .infrastructure.frozen_history import FrozenHistory
 
 MaterialData = Mapping[str, object]
 
@@ -45,6 +46,7 @@ class MessageMemory:
         embeddings: MessageEmbeddings, bindings: Bindings, learning_binding: str,
         records: RecallRecords, embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]],
         limit: int = 40, max_chars: int = 12000,
+        frozen_history: FrozenHistory | None = None,
     ):
         if not 1 <= limit <= 40 or max_chars <= 0:
             raise ValueError("召回数量或文本预算无效")
@@ -57,6 +59,7 @@ class MessageMemory:
         self._embed_batch = embed_batch
         self._limit = limit
         self._max_chars = max_chars
+        self._frozen_history = frozen_history
         self._lock = asyncio.Lock()
         self._closing = False
 
@@ -104,6 +107,7 @@ class MessageMemory:
                     learning_binding=self._learning_binding, learning=learning, rule=rule,
                     records=self._records, embed_batch=self._embed_batch,
                     limit=self._limit, max_chars=self._max_chars,
+                    frozen_history=self._frozen_history,
                 )
 
 
@@ -112,6 +116,7 @@ async def prepare_materials(
     catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
     learning_binding: str, learning: Learning, rule: LearningConfig, records: RecallRecords,
     embed_batch: Callable[[list[str]], Awaitable[list[list[float]]]], limit: int, max_chars: int,
+    frozen_history: FrozenHistory | None = None,
 ) -> MaterialData:
     """在已核对空间的图上查询真实输入前缀，发布出处后交付材料。"""
     if not snapshot:
@@ -143,8 +148,17 @@ async def prepare_materials(
             if previous is not None:
                 identity, recall = previous
         if recall is not None:
-            async with bindings.open(recall.learning_binding, AKASHA_LEARNING) as (original, _):
-                material = render_materials(identity, recall, original, catalog, max_chars=recall.max_chars)
+            if frozen_history is not None:
+                if frozen_history.has_recall(identity, recall):
+                    material = frozen_history.material_for(identity, recall, catalog)
+                elif frozen_history.requires_frozen_binding(recall.learning_binding):
+                    raise ValueError("历史 Recall 缺少冻结结果，禁止用当前 binding 重渲染")
+                else:
+                    async with bindings.open(recall.learning_binding, AKASHA_LEARNING) as (original, _):
+                        material = render_materials(identity, recall, original, catalog, max_chars=recall.max_chars)
+            else:
+                async with bindings.open(recall.learning_binding, AKASHA_LEARNING) as (original, _):
+                    material = render_materials(identity, recall, original, catalog, max_chars=recall.max_chars)
         else:
             material = await query_inputs(
                 inputs, snapshot, source, identity=identity, cycle=cycle, state=state,
