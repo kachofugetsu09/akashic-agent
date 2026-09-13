@@ -22,7 +22,7 @@ MARKETPLACE = "fixture"
 # 需要 Workload Controller 的 computer，以及它们的渠道构造都由专门测试覆盖。
 MINIMAL_MESSAGE_PLUGINS = ("sources", "content", "models", "conversation")
 FULL_RUNTIME_PLUGINS = (
-    "akasha", "akashic_sender", "codex", "compaction", "content", "context",
+    "akasha", "akashic_clients", "akashic_sender", "codex", "compaction", "content", "context",
     "conversation", "conversation_ui", "delivery", "delivery_policy", "drift",
     "eventmail", "markdown_memory", "message_push", "models",
     "openai_compatible", "opencode_go", "plugin_update", "programmatic", "prompt",
