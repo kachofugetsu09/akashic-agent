@@ -44,16 +44,10 @@ def auto_publish_webui(
         store.close()
 
     # 3. 复用唯一发布 CLI 的隔离构建、摘要校验和原子提交
-    publisher = (
-        source_repository
-        / "plugins"
-        / "akashic_clients"
-        / "mobile_webui"
-        / "release_cli.py"
-    )
     command = [
         sys.executable,
-        str(publisher),
+        "-m",
+        "plugins.akashic_clients.mobile_webui.release_cli",
         "publish",
         "--source-repository",
         str(source_repository),

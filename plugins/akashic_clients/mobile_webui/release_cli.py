@@ -13,17 +13,26 @@ import stat
 import subprocess
 import sys
 import tempfile
+import types
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-
-# auto_publish invokes this explicit plugin-owned CLI by file path.  Supplying
-# the source-tree package identity keeps that path on the same relative-import
-# boundary as normal plugin loading.
 if not __package__:
-    __package__ = "plugins.akashic_clients.mobile_webui"
+    artifact_root = Path(__file__).resolve().parents[1]
+    token = hashlib.sha256(str(artifact_root).encode("utf-8")).hexdigest()[:20]
+    package_name = f"_akashic_clients_cli_{token}"
+    existing = sys.modules.get(package_name)
+    if existing is not None:
+        paths = getattr(existing, "__path__", ())
+        if tuple(paths) != (str(artifact_root),):
+            raise RuntimeError(f"插件 CLI package identity 冲突: {package_name}")
+    else:
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(artifact_root)]  # type: ignore[attr-defined]
+        package.__package__ = package_name
+        sys.modules[package_name] = package
+    __package__ = f"{package_name}.mobile_webui"
 
 from .manifest import manifest_from_directory
 from .store import MobileWebUiStore
