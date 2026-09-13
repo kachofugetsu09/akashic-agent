@@ -798,8 +798,10 @@ Chromium profile；Chat 不能用截图、方向按钮或独立文字表单伪�
 
 工具注册返回当前 Root 中的实际引用，provider 通过普通 `ServiceKey` 提供引用 view。工具池只按
 引用建立新 binding；持有工具池不能按全局名字取得未依赖的工具。确需完整目录的管理插件必须
-显式依赖 `ALL_TOOLS`。当前引用失效时 fail-loud；已提交 Message 中的 binding 继续打开原归档
-闭包，不因当前安装、卸载或重启重新选择实现。
+显式依赖 `ALL_TOOLS`。当前引用失效时 fail-loud；已提交 Message 中的 binding 保留不可变业务
+metadata、回执和历史事实，并在调用者已经选定的 stable 或 candidate scope 中打开实际 service，
+不把历史 `root_ref` 当作普通执行的永久 generation 锁。旧 scope 不可安全证明外部效果兼容时，沿
+Tools/Delivery 的 terminal interrupted/error 合同收尾，不按同名或 schema 盲目重试。
 
 工具搜索只在获授 view 内展示完整 schema，并可把自身协议中的间接调用解码为唯一真实
 ToolCall。固定目录在 system 中按插件列出声明用途及各工具简述；搜索返回获授 view 内整组完整 schema，

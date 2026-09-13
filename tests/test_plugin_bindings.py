@@ -1,9 +1,5 @@
-from session.message import ContentReferences
 import asyncio
 import importlib
-import inspect
-import shutil
-import sys
 from pathlib import Path
 from collections.abc import Mapping
 from typing import cast
@@ -19,7 +15,6 @@ from session.log import MessageLog
 
 VALUE = ServiceKey("archive.test.value")
 RESULT = ServiceKey("archive.test.result")
-LEGACY_PROGRAM = ServiceKey("archive.test.legacy-program")
 
 
 def write_plugins(path: Path):
@@ -75,148 +70,6 @@ def manager(tmp_path, plugins):
 
 
 @pytest.mark.asyncio
-async def test_binding_restarts_without_source_and_keeps_exact_config_and_lifecycle(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
-    plugins = tmp_path / "plugins"
-    write_plugins(plugins)
-    first = manager(tmp_path, [plugins])
-    log = MessageLog(tmp_path / "messages.db")
-    try:
-        await first.load_all()
-        binding = Bindings(log, first._archive, first.open_binding)
-        async with lease_runtime_snapshot(first.snapshot_store):
-            identity = binding.bind(RESULT, {"choice": "fixed"})
-            assert binding.bind(RESULT, {"choice": "fixed"}) == identity
-        original_snapshot = first.current_snapshot
-        assert original_snapshot is not None
-        (plugins / "provider" / "helper.py").write_text("VALUE = 'B'\n")
-        (plugins / "provider" / "asset.txt").write_text("asset B")
-        monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "no")
-        await first.terminate_all()
-        shutil.rmtree(plugins)
-        log.close()
-        log = MessageLog(tmp_path / "messages.db")
-        second = manager(tmp_path, [])
-        recovered = Bindings(log, second._archive, second.open_binding)
-        modules_before = set(sys.modules)
-        async with recovered.open(identity, RESULT) as (state, metadata):
-            assert state == {
-                "text": "old:A",
-                "asset": "asset A",
-                "started": False,
-                "closed": False,
-            }
-            assert metadata == {"choice": "fixed"}
-            with pytest.raises(TypeError):
-                cast(dict[str, object], metadata)["choice"] = "changed"
-            current = get_current_runtime_snapshot()
-            assert current is not None
-            assert current is not original_snapshot
-            assert second.current_snapshot is None
-        assert state["closed"] is True
-        assert get_current_runtime_snapshot() is None
-        assert not [
-            name
-            for name in set(sys.modules) - modules_before
-            if name.startswith("_akashic_archive_")
-        ]
-        await second.terminate_all()
-    finally:
-        log.close()
-        await first.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_archived_absolute_program_import_uses_current_run_reply_boundary(
-    tmp_path,
-):
-    """旧归档程序的绝对 import 会进入当前兼容边界。"""
-    from plugins.reply_program.program import run_reply
-
-    sources = tmp_path / "plugins"
-    plugin = sources / "legacy_program"
-    plugin.mkdir(parents=True)
-    (plugin / "plugin.py").write_text("""
-from agent.plugin_composition import ServiceKey
-from plugins.reply_program.program import run_reply
-api_version = 3
-name = "legacy_program"
-version = "1.0.0"
-async def apply(ctx, config):
-    await ctx.provide(ServiceKey("archive.test.legacy-program"), run_reply)
-""")
-    log = MessageLog(tmp_path / "messages.db")
-    first = manager(tmp_path, [sources])
-    try:
-        await first.load_all()
-        bindings = Bindings(log, first._archive, first.open_binding)
-        async with lease_runtime_snapshot(first.snapshot_store):
-            identity = bindings.bind(LEGACY_PROGRAM, {})
-        await first.terminate_all()
-        shutil.rmtree(sources)
-
-        restored = manager(tmp_path, [])
-        recovered = Bindings(log, restored._archive, restored.open_binding)
-        try:
-            async with recovered.open(identity, LEGACY_PROGRAM) as (program, _):
-                assert program is run_reply
-                assert "tool_names" in inspect.signature(program).parameters
-        finally:
-            await restored.terminate_all()
-    finally:
-        log.close()
-        await first.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_missing_provider_and_runtime_mismatch_do_not_use_current_root(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
-    plugins = tmp_path / "plugins"
-    write_plugins(plugins)
-    host = manager(tmp_path, [plugins])
-    try:
-        await host.load_all()
-        current = host.current_snapshot
-        assert current is not None
-        provider = host.generation("provider")
-        consumer = host.generation("consumer")
-        provider_ref = provider.archive_ref
-        consumer_ref = consumer.archive_ref
-        assert provider_ref is not None and consumer_ref is not None
-        with pytest.raises(RuntimeError, match="闭包不完整"):
-            async with host.open_binding((consumer_ref,)):
-                pytest.fail("current provider must not fill the archive")
-        # 即使旧接口位于闭包尾部，也必须在打开任何组件源码前拒绝。
-        for runtime in (
-            {"python_tag": "other", "binding_api": 2},
-            {"python_tag": sys.implementation.cache_tag, "binding_api": 1},
-        ):
-            descriptor = dict(host._archive.read_descriptor(consumer_ref))
-            descriptor["runtime"] = runtime
-            incompatible = host._archive.save_descriptor(descriptor)
-            def unexpected_open(_identity):
-                pytest.fail("incompatible closure must not open any component code")
-            with monkeypatch.context() as patch:
-                patch.setattr(host._archive, "open", unexpected_open)
-                with pytest.raises(RuntimeError, match="不兼容"):
-                    async with host.open_binding((provider_ref, incompatible)):
-                        pytest.fail("incompatible archive must not load")
-        assert host.current_snapshot is current
-        async with host.open_binding(
-            (provider_ref, consumer_ref)
-        ) as scope:
-            assert scope.require(RESULT)["text"] == "old:A"
-        with pytest.raises(RuntimeError, match="关闭"):
-            scope.require(RESULT)
-    finally:
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
 async def test_loaded_generation_keeps_assets_and_late_imports_after_source_changes(
     tmp_path, monkeypatch
 ):
@@ -246,109 +99,7 @@ async def test_loaded_generation_keeps_assets_and_late_imports_after_source_chan
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_archive_close_drains_retained_scope_even_when_cancelled(
-    tmp_path, monkeypatch, cancel
-):
-    from agent.plugins.snapshot import get_current_runtime_lease, RuntimeSnapshotLease, RuntimeSnapshotStore
-
-    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
-    plugins = tmp_path / "plugins"
-    write_plugins(plugins)
-    host = manager(tmp_path, [plugins])
-    await host.load_all()
-    current = host.current_snapshot
-    assert current is not None
-    raw_refs = tuple(g.archive_ref for g in current.generations.values())
-    assert all(ref is not None for ref in raw_refs)
-    refs = tuple(cast(str, ref) for ref in raw_refs)
-    retained: RuntimeSnapshotLease | None = None
-    state: Mapping[str, object] | None = None
-    waiting = asyncio.Event()
-    original_wait = RuntimeSnapshotStore.wait_for_no_leases
-
-    async def observe_wait(store, snapshot):
-        waiting.set()
-        await original_wait(store, snapshot)
-
-    monkeypatch.setattr(RuntimeSnapshotStore, "wait_for_no_leases", observe_wait)
-
-    async def use_binding():
-        nonlocal retained, state
-        async with host.open_binding(refs) as scope:
-            state = cast(Mapping[str, object], scope.require(RESULT))
-            lease = get_current_runtime_lease()
-            assert lease is not None
-            retained = lease.fork()
-
-    task: asyncio.Task[None] = asyncio.create_task(use_binding())
-    try:
-        await asyncio.wait_for(waiting.wait(), timeout=5)
-        assert not task.done()
-        assert state is not None and retained is not None
-        assert not state["closed"]
-        if cancel:
-            task.cancel()
-        await retained.release()
-        if cancel:
-            with pytest.raises(asyncio.CancelledError):
-                await task
-        else:
-            await task
-        assert state["closed"]
-    finally:
-        if retained is not None:
-            await retained.release()
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_archive_apply_cannot_resolve_formal_delivery_port(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
-    plugins = tmp_path / "plugins"
-    write_plugins(plugins)
-    path = plugins / "provider" / "plugin.py"
-    path.write_text(
-        path.read_text().replace(
-            "async def apply(ctx, config):",
-            "from agent.plugin_composition import ServiceKey\n"
-            "LEGACY_DELIVERY = ServiceKey('archive.fixture.delivery')\n"
-            "inject = (LEGACY_DELIVERY,)\n"
-            "async def apply(ctx, config):",
-        )
-    )
-    consumer = plugins / "consumer" / "plugin.py"
-    consumer.write_text(
-        """
-from agent.plugin_composition import ServiceKey
-api_version = 3
-name = "consumer"
-version = "1.0.0"
-async def apply(ctx, config):
-    await ctx.provide(ServiceKey("archive.fixture.delivery"), {})
-"""
-    )
-    host = manager(tmp_path, [plugins])
-    try:
-        await host.load_all()
-        current = host.current_snapshot
-        assert current is not None
-        raw_refs = tuple(
-            generation.archive_ref
-            for plugin_id, generation in current.generations.items()
-            if plugin_id == "provider"
-        )
-        assert all(ref is not None for ref in raw_refs)
-        refs = tuple(cast(str, ref) for ref in raw_refs)
-        with pytest.raises(RuntimeError, match="闭包不完整"):
-            async with host.open_binding(refs):
-                pytest.fail("archive must not borrow the live delivery owner")
-    finally:
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_capture_keeps_child_provider_dependency_and_excludes_unrelated_owner(
+async def test_binding_capture_keeps_declared_dependency_provenance(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
@@ -382,14 +133,26 @@ async def apply(ctx, config):
     try:
         await host.load_all()
         assert len(host.current_snapshot.generations) == 3
-        binding = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot.composition_root is not None
+        binding = Bindings(log, host._archive, snapshot.composition_root)
         async with lease_runtime_snapshot(host.snapshot_store):
             identity = binding.bind(RESULT, {})
+        descriptor = log.read_binding(identity)
+        root_descriptor = host._archive.read_descriptor(cast(str, descriptor["root_ref"]))
+        component_ids = {
+            cast(str, host._archive.read_descriptor(ref)["plugin_id"])
+            for ref in cast(tuple[str, ...], root_descriptor["components"])
+        }
+        assert component_ids == {"consumer", "provider"}
         async with binding.open(identity, RESULT) as (state, _):
             assert state["text"] == "old:A"
-            assert set(get_current_runtime_snapshot().generations) == {
+            selected = get_current_runtime_snapshot()
+            assert selected is snapshot
+            assert set(selected.generations) == {
                 "consumer",
                 "provider",
+                "unrelated",
             }
     finally:
         log.close()
@@ -437,7 +200,9 @@ async def apply(ctx, config):
         foreign = other.current_snapshot.composition_root.context.require(RESULT)[
             "registration"
         ]
-        binding = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot.composition_root is not None
+        binding = Bindings(log, host._archive, snapshot.composition_root)
         async with lease_runtime_snapshot(host.snapshot_store):
             for invalid in (foreign, Context(context._root, context._fiber)):
                 with pytest.raises(ValueError, match="不属于"):
@@ -452,7 +217,9 @@ async def apply(ctx, config):
             )
         async with binding.open(identity, RESULT) as (state, _):
             assert state["extra"] == "registered A"
-            assert set(get_current_runtime_snapshot().generations) == {
+            selected = get_current_runtime_snapshot()
+            assert selected is snapshot
+            assert set(selected.generations) == {
                 "addon",
                 "consumer",
                 "provider",
@@ -464,145 +231,121 @@ async def apply(ctx, config):
 
 
 @pytest.mark.asyncio
-async def test_content_binding_keeps_registered_protocol_owner_after_source_removal(
-    tmp_path,
+async def test_binding_open_uses_selected_scope_without_reopening_archive(
+    tmp_path, monkeypatch,
 ):
-    from plugins.content.plugin import CONTENT, open_content
-
-    sources = tmp_path / "plugins"
-    sources.mkdir()
-    shutil.copytree(
-        Path(__file__).resolve().parents[1] / "plugins" / "content",
-        sources / "content",
-        ignore=shutil.ignore_patterns("__pycache__"),
-    )
-    protocol = sources / "protocol"
-    protocol.mkdir()
-    (protocol / "plugin.py").write_text("""
-from agent.plugin_composition import ServiceKey
-from session.message import ContentPart, ContentReferences
-api_version = 3
-name = "protocol"
-version = "1.0.0"
-inject = (ServiceKey("content.v2"),)
-async def apply(ctx, config):
-    async def decode(source, references):
-        return ({"start": len(source.text), "end": len(source.text), "parts": (ContentPart("sample", "fixed A"),)},), {}
-    await ctx.require(inject[0]).register(ctx, {
-        "name": "sample", "content": {"sample": lambda part: ContentReferences()},
-        "prompt": "Protocol A", "decode": decode,
-    })
-""")
-    host = manager(tmp_path, [sources])
+    """打开旧 binding 只读取事实，并使用当前调用已经选定的 Root。"""
+    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
+    plugins = tmp_path / "plugins"
+    write_plugins(plugins)
+    host = manager(tmp_path, [plugins])
     log = MessageLog(tmp_path / "messages.db")
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            content = snapshot.composition_root.context.require(CONTENT)
-            identity = content.save_binding(bindings)
-            async with content.bind() as view:
-                original = await view.decode("body")
-        await host.terminate_all()
-        shutil.rmtree(sources)
-        restored = manager(tmp_path, [])
-        bindings = Bindings(log, restored._archive, restored.open_binding)
-        async with open_content(bindings, identity) as view:
-            assert view.prompts == ("Protocol A",)
-            assert await view.decode("body") == original
-            assert set(view.checks) == {"text", "artifact_ref", "sample"}
-        with pytest.raises(RuntimeError, match="释放"):
-            await view.decode("late")
-        await restored.terminate_all()
-    finally:
-        log.close()
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_archived_context_accepts_public_summary_from_another_plugin(tmp_path):
-    from datetime import UTC, datetime
-    from agent.plugin_composition.models import ModelRequest
-    from session.message import Input, Message, Output
-
-    sources = tmp_path / "plugins"
-    shutil.copytree(Path(__file__).resolve().parents[1] / "plugins" / "context", sources / "context",
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    host = manager(tmp_path, [sources])
-    log = MessageLog(tmp_path / "messages.db")
-    key = ServiceKey("context.v2")
-    try:
-        await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None
+        root = snapshot.composition_root
+        assert root is not None
+        bindings = Bindings(log, host._archive, root)  # type: ignore[arg-type]
         async with lease_runtime_snapshot(host.snapshot_store):
-            identity = bindings.bind(key, {})
-        await host.terminate_all()
-        shutil.rmtree(sources)
-        snapshot = (
-            Message("u", "s", 0, datetime.now(UTC), "user", "conversation", Input(())),
-            Message("a", "s", 1, datetime.now(UTC), "agent", "conversation", Output((), "complete")),
-        )
-        class Model:
-            context_window = None
-            max_tool_schemas = None
-            def render(self, messages, *, after_seq, summary_reference=None):
-                assert messages == snapshot and after_seq == 1
-                return ModelRequest(())
-            def estimate(self, request):
-                return 1
-        async with bindings.open(identity, key) as (context, metadata):
-            request = context.build(snapshot,
-                                    materials={"summary": {"reference": "saved", "source_message_ids": ("u", "a"), "content": "summary"}},
-                                    model=Model(), max_output_tokens=1)
-            assert "summary" in request.messages[0]["content"]
+            identity = bindings.bind(RESULT, {"choice": "stable"})
+            expected = root.context.require(RESULT)
+
+            def unexpected_archive_read(_identity):
+                raise AssertionError("binding.open 不应重新读取历史 archive")
+
+            monkeypatch.setattr(host._archive, "read_descriptor", unexpected_archive_read)
+            async with bindings.open(identity, RESULT) as (value, metadata):
+                assert value is expected
+                assert metadata == {"choice": "stable"}
+                assert get_current_runtime_snapshot() is snapshot
+            assert get_current_runtime_snapshot() is snapshot
+        assert get_current_runtime_snapshot() is None
     finally:
-        await host.terminate_all()
         log.close()
+        await host.terminate_all()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("declared", [False, True])
-async def test_archive_exposes_only_declared_message_reader_without_starting_runtime(tmp_path, declared):
-    from session.message import Input
-    from agent.plugin_composition.messages import MESSAGE_CATALOG
-
-    sources = tmp_path / "plugins"
-    provider = sources / "reader"
-    provider.mkdir(parents=True)
-    (provider / "plugin.py").write_text('''
-from agent.plugin_composition import ServiceKey, RUNTIME_STARTED
-from agent.plugin_composition.messages import MESSAGE_CATALOG
-api_version = 3
-name = "reader"
-version = "1.0.0"
-inject = DECLARED
-async def apply(ctx, config):
-    value = {"catalog": ctx.get(MESSAGE_CATALOG), "started": False}
-    async def start(event):
-        value["started"] = True
-    await ctx.on(RUNTIME_STARTED, start)
-    await ctx.provide(ServiceKey("reader.test"), value)
-'''.replace("DECLARED", "(MESSAGE_CATALOG,)" if declared else "()"))
-    log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                         installed_cache_root=tmp_path / "home", message_log=log)
-    key = ServiceKey("reader.test")
+async def test_binding_open_acquires_own_root_once_and_rejects_unrelated_scope(
+    tmp_path, monkeypatch,
+):
+    """缺 scope 只从所属 Root 获取一次；已有其他 Root 时明确拒绝跨 Root。"""
+    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
+    plugins = tmp_path / "plugins"
+    write_plugins(plugins)
+    host = manager(tmp_path, [plugins])
+    other = manager(tmp_path / "other", [plugins])
+    log = MessageLog(tmp_path / "messages.db")
     try:
         await host.load_all()
-        await host.start_runtime()
-        bindings = Bindings(log, host._archive, host.open_binding)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            assert snapshot.composition_root.context.require(key)["started"]
-            identity = bindings.bind(key, {})
-        await host.terminate_all()
-        # 窄 reader 读取真实当前日志；归档代码与其启动生命周期仍保持独立。
-        log.writer("s", author="user", source="chat", body_types=(Input,), content={}).append("u", Input(()))
-        async with bindings.open(identity, key) as (state, _):
-            assert state["started"] is False
-            if declared:
-                assert state["catalog"].reader("s").get("u").message_id == "u"
-            else:
-                assert state["catalog"] is None
+        await other.load_all()
+        snapshot = host.current_snapshot
+        other_snapshot = other.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        assert other_snapshot is not None
+        root = snapshot.composition_root
+        bindings = Bindings(log, host._archive, root)  # type: ignore[arg-type]
+        async with lease_runtime_snapshot(host.snapshot_store):
+            identity = bindings.bind(RESULT, {})
+
+        acquire_calls = 0
+        original_acquire = root._acquire_runtime_scope  # type: ignore[union-attr]
+
+        async def acquire_once():
+            nonlocal acquire_calls
+            acquire_calls += 1
+            return await original_acquire()
+
+        monkeypatch.setattr(root, "_acquire_runtime_scope", acquire_once)
+        async with bindings.open(identity, RESULT) as (value, _):
+            assert value is root.context.require(RESULT)  # type: ignore[union-attr]
+            assert get_current_runtime_snapshot() is snapshot
+        assert acquire_calls == 1
+        assert get_current_runtime_snapshot() is None
+
+        async with lease_runtime_snapshot(other.snapshot_store):
+            with pytest.raises(RuntimeError, match="所属 Root"):
+                async with bindings.open(identity, RESULT):
+                    pytest.fail("不相干 Root 不应静默改选 stable")
+            assert get_current_runtime_snapshot() is other_snapshot
     finally:
-        await host.terminate_all()
         log.close()
+        await other.terminate_all()
+        await host.terminate_all()
+
+
+@pytest.mark.asyncio
+async def test_binding_open_releases_fallback_scope_when_cancelled(tmp_path, monkeypatch):
+    """fallback scope 被取消时仍释放 lease，不把取消变成残留运行时。"""
+    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
+    plugins = tmp_path / "plugins"
+    write_plugins(plugins)
+    host = manager(tmp_path, [plugins])
+    log = MessageLog(tmp_path / "messages.db")
+    try:
+        await host.load_all()
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)  # type: ignore[arg-type]
+        async with lease_runtime_snapshot(host.snapshot_store):
+            identity = bindings.bind(RESULT, {})
+
+        entered = asyncio.Event()
+
+        async def use_binding():
+            async with bindings.open(identity, RESULT):
+                entered.set()
+                await asyncio.Future()
+
+        task = asyncio.create_task(use_binding())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert snapshot.lease_count == 1
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert snapshot.lease_count == 0
+        assert get_current_runtime_snapshot() is None
+    finally:
+        log.close()
+        await host.terminate_all()

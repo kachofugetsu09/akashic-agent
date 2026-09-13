@@ -78,6 +78,7 @@
 | [0067](0067-clients-are-ordinary-plugin.md) | accepted | Web/Mobile 由普通插件拥有，Core 只提供中立原子能力 | AKC-001、AKC-002、PLG-001、WSP-003 |
 
 | [0068](0068-compaction-uses-one-recent-window.md) | accepted | Compaction 每代只摘要一个近期窗口 | CTX-001～CTX-007、MEM-011～MEM-012、SES-003～SES-005 |
+| [0069](0069-bindings-follow-selected-runtime-scope.md) | accepted / implementing | Binding 跟随调用已选的 runtime scope | PLG-003、PLG-004、PLG-009、PLG-013、PLG-018、RUN-008～RUN-009、ERR-001 |
 
 ## 新增规则
 

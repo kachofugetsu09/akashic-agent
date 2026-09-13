@@ -18,7 +18,7 @@ from contextlib import ExitStack, asynccontextmanager, contextmanager
 from contextvars import Context as TaskContext
 from pathlib import Path, PurePosixPath
 from types import ModuleType, UnionType
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping
 from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
 from uuid import uuid4
 
@@ -5329,62 +5329,6 @@ class PluginManager:
             raise _CandidateRejected(gate) from error
 
     @asynccontextmanager
-    async def open_binding(self, components: tuple[str, ...]) -> AsyncIterator[BindingScope]:
-        """从归档重建独立 Root；不发布或启动正式 runtime。"""
-        # 1. 每次打开都有自己的模块空间、Root 和 lease store。
-        namespace = secrets.token_hex(12)
-        root = CompositionRoot(f"archive:{namespace}")
-
-        async def drained(_snapshot: RuntimeSnapshot) -> None:
-            await root.dispose()
-
-        store = RuntimeSnapshotStore(drained)
-        root._bind_runtime_scope_acquirer(lambda: store.acquire_composition_root(root))  # pyright: ignore[reportPrivateUsage]
-        modules = ExitStack()
-        scope: BindingScope | None = None
-        installed = False
-        try:
-            generations = modules.enter_context(self._archived_generations(components, namespace))
-
-            # 2. 使用同一 Core 能力装配，依赖只能来自这些归档组件。
-            ordered = tuple(generations[key] for key in sorted(generations))
-            await self._provide_composition_services(root, ordered, candidate=False, archive=True)
-            for generation in ordered:
-                await self._mount_generation_composition(root, generation)
-            if not root.receipt().ready:
-                raise RuntimeError(f"归档 provider 闭包不完整: {root.receipt().required_pending}")
-            result = await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
-            if result is not None:
-                raise RuntimeError("归档 snapshot.sealing 不接受 Bail")
-            snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
-            _validate_static_manifest_runtime(snapshot, generations)
-            store.install(snapshot)
-            installed = True
-            scope = BindingScope(root)
-            async with RuntimeScope(await store.acquire()):
-                yield scope
-        finally:
-            # 3. 先撤销读取并排空 exact leases，成功后才释放模块空间。
-            if scope is not None:
-                scope._expire()  # pyright: ignore[reportPrivateUsage]
-            async def close_scope() -> None:
-                if installed:
-                    snapshot = store.pause_admission()
-                    assert snapshot is not None
-                    await store.wait_for_no_leases(snapshot)
-                try:
-                    if installed:
-                        await store.close()
-                    else:
-                        await root.dispose()
-                finally:
-                    modules.close()
-
-            _, cancelled = await _complete_critical(close_scope())
-            if cancelled:
-                raise asyncio.CancelledError
-
-    @asynccontextmanager
     async def open_validation(self, update_id: str) -> AsyncGenerator[BindingScope]:
         """在独立数据与候选资源中打开实际组件；调用程序自行解释验证结果。"""
         # 1. 固定实际候选并持有租约；其他发布必须等待本次资源真正退出。
@@ -5939,9 +5883,8 @@ class PluginManager:
         mount_order: tuple[PluginGeneration, ...],
         *,
         candidate: bool,
-        archive: bool = False,
     ) -> None:
-        """向独立 Root 提供宿主能力；归档只取得明确声明的窄端口。"""
+        """向当前 stable 或 candidate Root 提供宿主能力。"""
 
         await self._provide_root_registries(
             root, mount_order, resource_mode="candidate" if candidate or self._validation_only else "formal",
@@ -6013,21 +5956,15 @@ class PluginManager:
         if requested & message_services and self._message_log is None:
             raise RuntimeError("消息能力需要 bootstrap 提供已迁移的 MessageLog")
         if self._message_log is not None:
-            if not archive or MESSAGE_CATALOG in requested:
-                _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
-            if not archive or MESSAGE_EMBEDDINGS in requested:
-                _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
-            if not archive or MESSAGE_WRITERS in requested:
-                _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
-            if not archive or OWNER_STATE in requested:
-                _ = await root.context.provide(OWNER_STATE, OwnerState(log))
-            if not archive or SESSION_ADMISSION in requested:
-                _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
-            if not archive or BINDINGS in requested:
-                _ = await root.context.provide(
-                    BINDINGS, Bindings(log, self._archive, self.open_binding)
-                )
-        if TASKS in requested or not archive and self._message_log is not None:
+            _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
+            _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
+            _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
+            _ = await root.context.provide(OWNER_STATE, OwnerState(log))
+            _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
+            _ = await root.context.provide(
+                BINDINGS, Bindings(log, self._archive, root)
+            )
+        if TASKS in requested or self._message_log is not None:
             _ = await root.context.provide(
                 TASKS, PluginTasks(formal=False) if candidate else self._plugin_tasks
             )
@@ -6035,7 +5972,7 @@ class PluginManager:
             _ = await root.context.provide(
                 PROCESSES, PluginProcesses(formal=False) if candidate else self._plugin_processes
             )
-        if (not archive or ARTIFACT_READ in requested) and self._artifact_read is not None:
+        if self._artifact_read is not None:
             _ = await root.context.provide(
                 ARTIFACT_READ, ArtifactRead(None) if candidate else self._artifact_read
             )
@@ -6099,8 +6036,6 @@ class PluginManager:
                 ServiceKey[object]("core.web_ui.v1"),
                 PluginWebUiProvider(self._snapshot_store),
             )
-        if archive:
-            return
         if any(
             INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
