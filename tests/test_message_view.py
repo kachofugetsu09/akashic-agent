@@ -8,9 +8,10 @@ from typing import cast
 
 from fastapi.testclient import TestClient
 
-from bootstrap.chat_api import create_chat_app
+from plugins.akashic_clients.chat_api import create_chat_app
+from plugins.akashic_clients.services import MessageCatalogPort
 from infra.channels.message_view import MessageDisplayProviders, message_rows
-from infra.channels.web_chat_channel import WebChatChannel
+from plugins.akashic_clients.web_chat import WebChatChannel
 from plugins.models.projection import check_facts, display_facts
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
@@ -122,7 +123,7 @@ def test_web_catalog_and_history_use_real_log_without_session_manager(tmp_path):
         log.ensure_session(f"{channel.name}:internal", SessionAttributes(visibility="internal"))
         for index in range(4):
             log.writer(session, author="user", source="conversation", body_types=(Input,), content={}).append(str(index), Input(()))
-        app = create_chat_app(workspace=tmp_path, channel=channel, messages=log.catalog())
+        app = create_chat_app(workspace=tmp_path, channel=channel, messages=cast(MessageCatalogPort, log.catalog()))
         before = snapshot(path)
         with TestClient(app, raise_server_exceptions=False) as client:
             first = client.get("/api/chat/sessions", params={"page_size": 1}).json()

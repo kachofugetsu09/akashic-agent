@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, cast
@@ -346,7 +346,20 @@ class _GenerationAkashicAdapter:
         async with open_scope() as scope:
             reader = cast(ReplyStatusPort, scope.require(REPLY_STATUS))
             async for frame in reader.follow(session_id):
-                yield frame
+                if isinstance(frame, Mapping):
+                    yield dict(frame)
+                    continue
+                if not isinstance(frame, (tuple, list)):
+                    raise TypeError("reply status provider 必须返回 mapping 或 item sequence")
+                if any(not isinstance(item, Mapping) for item in frame):
+                    raise TypeError("reply status item 必须是 mapping")
+                yield {
+                    "version": 2,
+                    "session_id": session_id,
+                    "snapshot_id": None,
+                    "available": True,
+                    "items": [dict(item) for item in frame],
+                }
 
     async def _read_model_catalog(self) -> Any:
         open_scope = self._context.open_scope

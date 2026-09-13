@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import closing
 from datetime import UTC, datetime
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,7 +13,8 @@ from fastapi import WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketState
 
-from bootstrap.chat_api import create_chat_app
+from plugins.akashic_clients.attachments import AttachmentStore
+from plugins.akashic_clients.chat_api import create_chat_app
 from agent.plugin_composition import (
     CapabilitySources,
     ConnectionDescriptor,
@@ -36,21 +36,15 @@ from agent.plugin_composition.channels import (
     ProviderDeliveryRequest,
     RawInbound,
 )
-from agent.plugins.manager import PluginManager
-from agent.plugins.model_catalog import ModelCatalogUnavailable
-from bus.events import AttachmentKind, ChannelAttachment, ChannelMessage
-from bus.event_bus import EventBus
-from bus.events_lifecycle import StreamDeltaReady, TurnOutputCompleted, TurnStarted
-from bus.queue import MessageBus
-from infra.channels.base import AttachmentStore
-from infra.channels.web_chat_channel import UploadTooLargeError, WebChatChannel
-from bootstrap.core_channel_adapter import build_core_channel_definition
+from plugins.akashic_clients.services import ModelCatalogUnavailable
+from plugins.akashic_clients.message_types import (
+    AttachmentKind,
+    ChannelAttachment,
+    ChannelMessage,
+    DeliveryStatus,
+)
+from plugins.akashic_clients.web_chat import UploadTooLargeError, WebChatChannel
 from plugins.models.selection import read_saved
-from session.manager import Session, SessionManager
-from session.log import MessageLog
-from session.identities import ChannelIdentities
-from session.message import ContentPart, ContentReferences, Control, Input, Output
-from tests.test_channel_input import Custody
 
 
 class _Bus:
@@ -59,18 +53,6 @@ class _Bus:
 
     async def publish_inbound(self, msg: Any) -> None:
         self.inbound.append(msg)
-
-
-class _EventBus:
-    def __init__(self) -> None:
-        self.handlers: dict[type[object], Any] = {}
-
-    def on(self, event_type: type[object], handler: Any) -> None:
-        self.handlers[event_type] = handler
-
-
-class _PushTool:
-    pass
 
 
 class _WebSocket:
@@ -163,6 +145,13 @@ class _Inbound:
         return True
 
 
+class _FailingInbound(_Inbound):
+    async def admit(self, raw: RawInbound) -> bool:
+        self.messages.append(raw)
+        self.started.set()
+        raise RuntimeError("message bus 已关闭")
+
+
 def _v3_context(
     read: _AttachmentRead | None = None,
     *,
@@ -213,50 +202,6 @@ async def _open_inbound_adapter(
     ))
     adapter.open_admission()
     return adapter
-
-
-class _SessionManager:
-    def __init__(self) -> None:
-        self.saved: list[Any] = []
-        self.sessions: dict[str, Session] = {}
-        self.appended: list[tuple[Session, list[dict[str, Any]]]] = []
-        self._store = _SessionStore()
-
-    def get_or_create(self, key: str) -> Any:
-        self.sessions.setdefault(key, Session(key=key))
-        return self.sessions[key]
-
-    async def save_async(self, session: Any) -> None:
-        self.saved.append(session)
-
-    async def append_messages(self, session: Session, messages: list[dict[str, Any]]) -> None:
-        self.appended.append((session, list(messages)))
-
-    @property
-    def control_store(self) -> _SessionStore:
-        return self._store
-
-
-class _SessionStore:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-        self.messages: dict[str, dict[str, Any]] = {}
-
-    def get_message(self, message_id: str) -> dict[str, Any] | None:
-        return self.messages.get(message_id)
-
-    def list_sessions_for_dashboard(self, **_: Any) -> tuple[list[dict[str, Any]], int]:
-        return [], 0
-
-    def list_chat_history_page(
-        self,
-        **kwargs: Any,
-    ) -> tuple[list[dict[str, Any]], int, bool]:
-        self.calls.append(kwargs)
-        return [
-            {"id": "m0", "seq": 8, "role": "user", "content": "用户问题"},
-            {"id": "m1", "seq": 9, "role": "assistant", "content": "助手回答"},
-        ], 12, True
 
 
 class _PluginUiProvider:
@@ -314,18 +259,10 @@ class _PluginUiProvider:
 
 @pytest.mark.asyncio
 async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
-    bus = _Bus()
     ingress = _Inbound()
-    session_manager = _SessionManager()
     channel = WebChatChannel()
     adapter = await _open_inbound_adapter(channel, ingress)
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-    )))
+    await channel.start()
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
@@ -345,8 +282,6 @@ async def test_web_chat_session_and_message_flow(tmp_path: Path) -> None:
 
     assert created["type"] == "session.created"
     assert str(session_id).startswith("akashic:")
-    assert session_manager.saved == []
-    assert bus.inbound == []
     assert len(ingress.messages) == 1
     inbound = ingress.messages[0]
     assert inbound.message.content == "你好"
@@ -574,18 +509,10 @@ def test_web_plugin_ui_exposes_shared_slots_but_rejects_dashboard_query(
 
 @pytest.mark.asyncio
 async def test_web_chat_message_send_can_create_session_without_persisting_empty_one(tmp_path: Path) -> None:
-    bus = _Bus()
     ingress = _Inbound()
-    session_manager = _SessionManager()
     channel = WebChatChannel()
     adapter = await _open_inbound_adapter(channel, ingress)
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-    )))
+    await channel.start()
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
@@ -597,8 +524,6 @@ async def test_web_chat_message_send_can_create_session_without_persisting_empty
                 "media": [],
             })
 
-    assert session_manager.saved == []
-    assert bus.inbound == []
     assert len(ingress.messages) == 1
     assert ingress.messages[0].message.content == "你好"
     assert ingress.messages[0].message.chat_id
@@ -610,7 +535,7 @@ async def test_web_chat_message_send_passes_reply_id_without_copying_body(tmp_pa
     ingress = _Inbound()
     channel = WebChatChannel()
     adapter = await _open_inbound_adapter(channel, ingress)
-    # 新入站不需要旧 ChannelContext 或 SessionManager。
+    # 新入站直接构造 RawInbound，不需要宿主业务上下文。
     app = create_chat_app(workspace=tmp_path, channel=channel)
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as ws:
@@ -709,18 +634,10 @@ def test_chat_runtime_routes_share_read_only_inspection_projection(
 
 @pytest.mark.asyncio
 async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_path: Path) -> None:
-    bus = _Bus()
     ingress = _Inbound()
-    session_manager = _SessionManager()
     channel = WebChatChannel()
     adapter = await _open_inbound_adapter(channel, ingress)
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-    )))
+    await channel.start()
     app = create_chat_app(workspace=tmp_path, channel=channel)
 
     with TestClient(app) as client:
@@ -772,7 +689,6 @@ async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_
                 "media": [],
             })
 
-    assert bus.inbound == []
     assert len(ingress.messages) == 1
     assert ingress.messages[0].message.content == "继续"
     await adapter.stop()
@@ -780,7 +696,11 @@ async def test_web_chat_rejects_malformed_fields_without_closing_connection(tmp_
 
 def test_chat_upload_returns_local_path(tmp_path: Path) -> None:
     channel = WebChatChannel()
-    app = create_chat_app(workspace=tmp_path, channel=channel)
+    app = create_chat_app(
+        workspace=tmp_path,
+        channel=channel,
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+    )
 
     with TestClient(app) as client:
         response = client.post(
@@ -926,22 +846,15 @@ def test_chat_messages_project_durable_artifacts_without_paths(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_web_message_push_image_only_broadcasts_realtime_frame(tmp_path: Path) -> None:
-    session_manager = _SessionManager()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=_Bus(),
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-    )))
+    await channel.start()
     image = tmp_path / "meme.png"
     image.write_bytes(b"image")
 
     await channel.send_image("abc", str(image))
 
-    assert "akashic:abc" not in session_manager.sessions
-    assert session_manager.appended == []
+    assert channel._media_paths == {str(image)}
+    assert channel._pending_terminal == {}
 
 
 @pytest.mark.asyncio
@@ -968,7 +881,7 @@ async def test_web_final_preserves_full_outbound_projection(tmp_path: Path) -> N
             execution_attempt_id="attempt-1",
         )
     )
-    assert receipt.succeeded
+    assert receipt.status is DeliveryStatus.SUCCESS
 
     assert socket.frames == [
         {
@@ -1152,7 +1065,7 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
     socket = _WebSocket()
     channel._connections["akashic:abc"] = {cast(Any, socket)}
 
-    await channel._on_turn_started(TurnStarted(
+    await channel._on_turn_started(SimpleNamespace(
         session_key="akashic:abc",
         channel="akashic",
         chat_id="abc",
@@ -1162,14 +1075,15 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
         control_turn_id="turn:server-owner",
         client_message_id="client-1",
     ))
-    await channel._on_stream_delta(StreamDeltaReady(
+    await channel._on_stream_delta(SimpleNamespace(
         session_key="akashic:abc",
         channel="akashic",
         chat_id="abc",
         turn_id="attempt-1",
         content_delta="answer",
+        thinking_delta="",
     ))
-    await channel._on_output_completed(TurnOutputCompleted(
+    await channel._on_output_completed(SimpleNamespace(
         session_key="akashic:abc",
         channel="akashic",
         chat_id="abc",
@@ -1192,12 +1106,13 @@ async def test_web_turn_started_rejects_missing_server_turn_id() -> None:
     channel = WebChatChannel()
 
     with pytest.raises(RuntimeError, match="缺少 Server 权威 turn_id"):
-        await channel._on_turn_started(TurnStarted(
+        await channel._on_turn_started(SimpleNamespace(
             session_key="akashic:abc",
             channel="akashic",
             chat_id="abc",
             content="question",
             timestamp=datetime.now(UTC),
+            turn_id="",
         ))
 
 
@@ -1251,20 +1166,25 @@ async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
     image_path = tmp_path / "source.png"
     Image.new("RGB", (2, 2), (255, 0, 0)).save(image_path)
     image_bytes = image_path.read_bytes()
-    session_manager = SessionManager(tmp_path)
-    try:
+    from infra.channels.artifacts import ChannelAttachmentArtifactStore
+    from session.artifact_store import ArtifactStore
+
+    with closing(ArtifactStore(tmp_path / "artifact.db")) as metadata_store:
+        artifact_store = ChannelAttachmentArtifactStore(
+            workspace=tmp_path,
+            metadata_store=metadata_store,
+        )
         bus = _Bus()
         ingress = _Inbound()
         channel = WebChatChannel()
         adapter = await _open_inbound_adapter(channel, ingress)
-        await channel.start(cast(Any, SimpleNamespace(
-            bus=bus,
-            session_manager=session_manager,
-            event_bus=_EventBus(),
-            push_tool=_PushTool(),
+        await channel.start()
+        app = create_chat_app(
+            workspace=tmp_path,
+            channel=channel,
             attachment_store=AttachmentStore(tmp_path / "uploads"),
-        )))
-        app = create_chat_app(workspace=tmp_path, channel=channel)
+            artifact_store=artifact_store,
+        )
 
         with TestClient(app) as client:
             upload = client.post(
@@ -1310,9 +1230,6 @@ async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
         assert inbound.metadata == {"client_request_id": "send"}
         await adapter.stop()
 
-    finally:
-        session_manager.close()
-
 
 @pytest.mark.asyncio
 async def test_web_v3_adapter_stop_closes_binding_without_stopping_provider() -> None:
@@ -1341,13 +1258,7 @@ async def test_web_v3_closed_admission_rejects_message_without_legacy_bus_call(
     bus = _Bus()
     ingress = _Inbound()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=bus,
-        session_manager=_SessionManager(),
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-    )))
+    await channel.start()
     socket = _WebSocket()
     channel._connections["akashic:abc"] = {cast(Any, socket)}
     adapter = await _open_inbound_adapter(channel, ingress)
@@ -1375,13 +1286,7 @@ async def test_web_v3_adapter_stop_drains_old_callback_before_unregistering(
 ) -> None:
     ingress = _Inbound(block=True)
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=_Bus(),
-        session_manager=_SessionManager(),
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-    )))
+    await channel.start()
     old = await _open_inbound_adapter(channel, ingress, binding_token="old-binding")
     socket = _WebSocket()
     channel._connections["akashic:abc"] = {cast(Any, socket)}
@@ -1407,13 +1312,7 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
     old_ingress = _Inbound(block=True)
     new_ingress = _Inbound()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=_Bus(),
-        session_manager=_SessionManager(),
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-    )))
+    await channel.start()
     old = await _open_inbound_adapter(
         channel,
         old_ingress,
@@ -1456,135 +1355,140 @@ async def test_web_v3_old_inflight_callback_cannot_enter_new_binding(
     await new.stop()
 
 
-@asynccontextmanager
-async def _message_runtime(tmp_path: Path, *, bus=None):
-    """真实 conversation 接纳与 Channel binding，共用同库身份记录。"""
-    source = tmp_path / "plugins"
-    for name in ("conversation", "sources", "content", "models"):
-        shutil.copytree(Path(__file__).parents[1] / "plugins" / name, source / name,
-                        ignore=shutil.ignore_patterns("__pycache__"))
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    log = MessageLog(workspace / "sessions.db")
-    identities = ChannelIdentities(workspace / "sessions.db")
-    manager = PluginManager([source], event_bus=EventBus(), workspace=workspace,
-        message_log=log, channel_identities=identities, installed_cache_root=tmp_path / "cache")
-    bus = bus if bus is not None else MessageBus()
+@pytest.mark.asyncio
+async def test_web_ingress_failure_rolls_back_connection_and_session_mapping() -> None:
+    ingress = _FailingInbound()
     channel = WebChatChannel()
-    manager.channel_generation_host.bind_input_custody(bus)
+    await channel.start()
+    adapter = await _open_inbound_adapter(channel, ingress)
+    existing_socket = _WebSocket()
+    await channel._add_connection("akashic:existing", cast(Any, existing_socket))
     try:
-        await manager.load_all()
-        await manager.bind_core_channel_definitions((build_core_channel_definition(channel),))
-        yield log, identities, manager, bus, channel
-    finally:
-        await channel.stop()
-        await manager.terminate_all()
-        await bus.aclose()
-        log.close()
-        identities.close()
-
-
-@pytest.mark.asyncio
-async def test_web_bus_closed_rolls_back_identity_session_and_connection(tmp_path: Path) -> None:
-    async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
-        log.writer("akashic:existing", author="u", source="conversation", body_types=(Input,), content={}).append("original", Input(()))
-        existing_before = log.reader("akashic:existing").snapshot()
-        existing_socket = _WebSocket()
-        await channel._add_connection("akashic:existing", cast(Any, existing_socket))
-        await bus.aclose()
-        for session, socket in [("akashic:abc", _WebSocket()), ("akashic:existing", existing_socket)]:
+        for session, socket, request_id in [
+            ("akashic:abc", _WebSocket(), "closed-new"),
+            ("akashic:existing", existing_socket, "closed-existing"),
+        ]:
             with pytest.raises(RuntimeError, match="message bus 已关闭"):
-                await channel._send_user_message(cast(Any, socket), "closed-bus",
+                await channel._send_user_message(cast(Any, socket), request_id,
                     {"session_id": session, "text": "hello", "media": []})
-        assert identities.load("akashic") == {}
-        assert not log.reader("akashic:abc").snapshot()
+        assert channel._client_sessions == {}
         assert channel._connections.get("akashic:abc") is None
-        assert log.reader("akashic:existing").snapshot() == existing_before
         assert channel._connections["akashic:existing"] == {existing_socket}
-        assert all(adapter._in_flight == 0 for adapter in channel._v3_adapters.values())
+        assert adapter._in_flight == 0
+    finally:
+        await adapter.stop()
 
 
 @pytest.mark.asyncio
-async def test_web_cancelled_ingress_rolls_back_session_and_connection(tmp_path: Path) -> None:
-    bus = Custody()
-    bus.prepare_gate.clear()
-    async with _message_runtime(tmp_path, bus=bus) as (log, identities, manager, bus, channel):
+async def test_web_cancelled_ingress_rolls_back_session_mapping_and_connection() -> None:
+    ingress = _Inbound(block=True)
+    channel = WebChatChannel()
+    await channel.start()
+    adapter = await _open_inbound_adapter(channel, ingress)
+    try:
         send = asyncio.create_task(channel._send_user_message(cast(Any, _WebSocket()), "cancelled-ingress",
             {"session_id": "akashic:cancel", "text": "hello", "media": []}))
-        await asyncio.wait_for(bus.prepared.wait(), 3)
+        await asyncio.wait_for(ingress.started.wait(), 3)
         send.cancel()
         with pytest.raises(asyncio.CancelledError):
             await send
-        assert identities.load("akashic") == {}
-        assert not log.reader("akashic:cancel").snapshot()
+        assert channel._client_sessions == {}
         assert channel._connections.get("akashic:cancel") is None
-        assert all(adapter._in_flight == 0 for adapter in channel._v3_adapters.values())
+        assert adapter._in_flight == 0
+    finally:
+        ingress.release.set()
+        await adapter.stop()
 
 
 @pytest.mark.asyncio
-async def test_web_v3_ingress_persists_unprefixed_identity_for_exact_session(tmp_path: Path) -> None:
-    async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
+async def test_web_v3_ingress_uses_unprefixed_identity_for_exact_session() -> None:
+    ingress = _Inbound()
+    channel = WebChatChannel()
+    await channel.start()
+    adapter = await _open_inbound_adapter(channel, ingress)
+    try:
         socket = _WebSocket()
         session = await channel._create_session(cast(Any, socket), "create-1")
         await channel._send_user_message(cast(Any, socket), "request-1",
             {"session_id": session, "text": "hello", "media": []})
-        message = log.reader(session).get("request-1")
-        assert isinstance(message.body, Input)
-        value = message.body.parts[0].value
-        assert isinstance(value, Mapping)
-        assert value["chat_id"] == session.removeprefix("akashic:")
-        assert identities.load("akashic") == {session.removeprefix("akashic:"): session.removeprefix("akashic:")}
-        assert bus.inbound_size == 0 and manager.current_snapshot.lease_count == 0
+        message = ingress.messages[0].message
+        assert message.chat_id == session.removeprefix("akashic:")
+        assert ingress.messages[0].provider_identity == message.chat_id
+        assert ingress.messages[0].recipient == message.chat_id
+        assert message.metadata == {"client_request_id": "request-1"}
+        assert message.content == "hello"
+        assert adapter._in_flight == 0
+    finally:
+        await adapter.stop()
 
 
 @pytest.mark.asyncio
-async def test_web_ingress_survives_unrelated_plugin_snapshot_promotion(tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "plugins/plain_probe"
-    plugin_dir.mkdir(parents=True)
-    source = "api_version=3\nname='plain_probe'\nversion={version!r}\nasync def apply(ctx, config): pass\n"
-    (plugin_dir / "plugin.py").write_text(source.format(version="1.0.0"))
-    async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
-        previous = manager.current_snapshot
-        (plugin_dir / "plugin.py").write_text(source.format(version="2.0.0"))
-        assert await manager.prepare_candidate("plain_probe") is not None
-        await manager.publish_prepared("plain_probe")
-        current = manager.current_snapshot
-        assert current is not previous
-        await channel._send_user_message(cast(Any, _WebSocket()), "request-after-promotion",
-            {"session_id": "akashic:after-promotion", "text": "hello", "media": []})
-        message = log.reader("akashic:after-promotion").get("request-after-promotion")
-        assert isinstance(message.body, Input) and message.body.parts[1].value == "hello"
-        assert current.lease_count == previous.lease_count == 0 and bus.inbound_size == 0
+async def test_web_ingress_stays_on_captured_binding_during_replacement() -> None:
+    old_ingress = _Inbound(block=True)
+    new_ingress = _Inbound()
+    channel = WebChatChannel()
+    await channel.start()
+    old = await _open_inbound_adapter(channel, old_ingress, binding_token="old-binding")
+    socket = _WebSocket()
+    channel._connections["akashic:old"] = {cast(Any, socket)}
+    try:
+        old_send = asyncio.create_task(channel._send_user_message(
+            cast(Any, socket), "old-request",
+            {"session_id": "akashic:old", "text": "old binding", "media": []},
+        ))
+        await old_ingress.started.wait()
+        old.close_admission()
+        old_stop = asyncio.create_task(old.stop())
+        await asyncio.sleep(0)
+        new = await _open_inbound_adapter(channel, new_ingress, binding_token="new-binding")
+        try:
+            old_ingress.release.set()
+            await asyncio.gather(old_send, old_stop)
+            await channel._send_user_message(
+                cast(Any, socket), "new-request",
+                {"session_id": "akashic:new", "text": "new binding", "media": []},
+            )
+            assert [item.message.content for item in old_ingress.messages] == ["old binding"]
+            assert [item.message.content for item in new_ingress.messages] == ["new binding"]
+            assert old.binding_token not in channel._v3_adapters
+        finally:
+            await new.stop()
+    finally:
+        old_ingress.release.set()
+        if old.binding_token in channel._v3_adapters:
+            await old.stop()
 
 
 @pytest.mark.asyncio
-async def test_web_reply_uses_real_message_target_and_reports_source_conflicts(tmp_path: Path) -> None:
-    from plugins.models.content import render_content
-    async with _message_runtime(tmp_path) as (log, identities, manager, bus, channel):
-        writer = log.writer("akashic:abc", author="另一个作者", source="program", body_types=(Output, Control),
-            content={"text": lambda p: ContentReferences()})
-        writer.append("target", Output((ContentPart("text", "原始引用全文"),), "complete"))
-        writer.append("control", Control("pause", 0))
-        log.writer("akashic:other", author="u", source="conversation", body_types=(Input,), content={}).append("other", Input(()))
-        socket = _WebSocket()
+async def test_web_reply_preserves_target_metadata_and_rejects_session_conflict() -> None:
+    ingress = _Inbound()
+    channel = WebChatChannel()
+    await channel.start()
+    adapter = await _open_inbound_adapter(channel, ingress)
+    socket = _WebSocket()
+    try:
         await channel._send_user_message(cast(Any, socket), "reply",
             {"session_id": "akashic:abc", "text": "继续", "reply_to_message_id": "target"})
-        reader = log.reader("akashic:abc")
-        message = reader.get("reply")
-        assert message.body.parts[1:] == (ContentPart("text", "继续"), ContentPart("reply_ref", "target"))
-        part = message.body.parts[-1]
-        assert isinstance(part, ContentPart)
-        rendered = render_content(part, artifacts={}, read_message=reader.get)
-        assert "原始引用全文" in rendered[0]["text"]
-        before = reader.snapshot()
-        for target in ("missing", "other", "control"):
-            await channel._send_user_message(cast(Any, socket), f"bad-{target}",
-                {"session_id": "akashic:abc", "text": "继续", "reply_to_message_id": target})
-            assert socket.frames[-1] == {"type": "error", "request_id": f"bad-{target}",
-                "message": "引用目标不是当前 Session 的 Input 或 Output"}
-            assert reader.snapshot() == before
+        message = ingress.messages[0].message
+        assert message.content == "继续"
+        assert message.metadata == {
+            "client_request_id": "reply",
+            "reply_to_message_id": "target",
+        }
+        assert "原始引用全文" not in message.content
+
+        await channel._send_user_message(cast(Any, socket), "reply",
+            {"session_id": "akashic:other", "text": "继续", "reply_to_message_id": "target"})
+        assert len(ingress.messages) == 1
+        assert socket.frames[-1] == {
+            "type": "error",
+            "request_id": "reply",
+            "message": "Web client message id 已绑定到另一个 session: reply",
+        }
         assert channel._connections["akashic:abc"] == {socket}
-        assert bus.inbound_size == 0 and manager.current_snapshot.lease_count == 0
+        assert channel._connections.get("akashic:other") is None
+    finally:
+        await adapter.stop()
 
 
 @pytest.mark.asyncio
@@ -1597,23 +1501,15 @@ async def test_web_reply_uses_real_message_target_and_reports_source_conflicts(t
         ("safe", "akashic:bad\x01id", "safe", "session_id 格式无效"),
     ],
 )
-async def test_web_rejects_invalid_external_ids_before_ingress_or_session_write(
-    tmp_path: Path,
+async def test_web_rejects_invalid_external_ids_before_ingress(
     request_id: str,
     session_id: str,
     expected_request_id: str,
     expected_error: str,
 ) -> None:
-    session_manager = SessionManager(tmp_path / "workspace")
     ingress = _Inbound()
     channel = WebChatChannel()
-    await channel.start(cast(Any, SimpleNamespace(
-        bus=_Bus(),
-        session_manager=session_manager,
-        event_bus=_EventBus(),
-        push_tool=_PushTool(),
-        attachment_store=AttachmentStore(tmp_path / "uploads"),
-    )))
+    await channel.start()
     adapter = await _open_inbound_adapter(channel, ingress)
     socket = _WebSocket()
     try:
@@ -1630,9 +1526,6 @@ async def test_web_rejects_invalid_external_ids_before_ingress_or_session_write(
             "message": expected_error,
         }]
         assert ingress.messages == []
-        assert session_manager.identities.load("akashic") == {}
-        with pytest.raises(KeyError, match="session 不存在"):
-            session_manager.admit_existing("akashic:abc")
+        assert adapter._in_flight == 0
     finally:
         await adapter.stop()
-        session_manager.close()

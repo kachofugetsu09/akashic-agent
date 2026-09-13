@@ -9,9 +9,9 @@ from agent.plugin_composition import CompositionRoot
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 from bootstrap.reply_status import RuntimeReplyStatus
-from bootstrap.chat_api import create_chat_app
-from infra.channels.message_view import follow_messages, message_rows
-from infra.channels.web_chat_channel import WebChatChannel
+from agent.plugin_composition.message_view import follow_messages, message_rows
+from plugins.akashic_clients.chat_api import create_chat_app
+from plugins.akashic_clients.web_chat import WebChatChannel
 from plugins.reply.status import REPLY_STATUS, ReplyState
 from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Input, Control, Output

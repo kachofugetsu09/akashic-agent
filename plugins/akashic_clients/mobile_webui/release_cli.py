@@ -17,10 +17,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from infra.mobile_webui.manifest import manifest_from_directory
-from infra.mobile_webui.store import MobileWebUiStore
+from .manifest import manifest_from_directory
+from .store import MobileWebUiStore
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -478,7 +478,7 @@ def _repository_url(workspace: Path) -> str:
     return remote
 
 
-def _load_sidecar(path: Path) -> dict[str, object]:
+def _load_sidecar(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     required = {
         "artifact_digest", "build_context_digest", "builder_identity", "dirty_provenance",
@@ -601,7 +601,7 @@ def _run_version(
     ).stdout.strip()
 
 
-def _executable_identity(command: str, environment: Mapping[str, str]) -> dict[str, object]:
+def _executable_identity(command: str, environment: Mapping[str, str]) -> dict[str, Any]:
     path = shutil.which(command, path=environment.get("PATH"))
     if path is None:
         raise RuntimeError(f"构建工具不可解析: {command}")

@@ -15,15 +15,15 @@ from agent.config_models import MobileRealtimeConfig
 from agent.plugin_composition.tasks import Tasks
 from agent.plugins.snapshot import RuntimeSnapshotStore
 from bootstrap.reply_status import RuntimeReplyStatus
-from infra.channels.message_view import message_rows
-from infra.mobile_realtime.auth import DeviceAuthenticator, device_proof_signing_bytes
-from infra.mobile_realtime.channel import MobileRealtimeChannel
-from infra.mobile_realtime.gateway import MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
-from infra.mobile_realtime.inbox import DurableInboxManager
-from infra.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
-from infra.mobile_realtime.message_view import bounded_reply_status, message_json
-from infra.mobile_realtime.pairing import PairingService
-from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from agent.plugin_composition.message_view import message_rows
+from plugins.akashic_clients.mobile_realtime.auth import DeviceAuthenticator, device_proof_signing_bytes
+from plugins.akashic_clients.mobile_realtime.channel import MobileRealtimeChannel
+from plugins.akashic_clients.mobile_realtime.gateway import MobileGatewayRuntime, PairingApprovalRegistry, create_mobile_gateway_app
+from plugins.akashic_clients.mobile_realtime.inbox import DurableInboxManager
+from plugins.akashic_clients.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
+from plugins.akashic_clients.mobile_realtime.message_view import bounded_reply_status, message_json
+from plugins.akashic_clients.mobile_realtime.pairing import PairingService
+from plugins.akashic_clients.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
 from plugins.reply.status import ReplyState
 from session.log import MessageLog
 from session.message import ContentPart, Input, Output, Control
