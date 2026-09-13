@@ -387,21 +387,77 @@ async def test_binding_authorize_checks_final_arguments(tmp_path):
             denied = await execution.execute("denied", new_binding, {"value": "blocked"})
             safe = await execution.execute("safe", new_binding, {"value": "ok"})
 
-        assert old.outcome == "success"
-        assert old.parts[0].value == "A:restore:blocked"
+        assert old.outcome == "error"
+        assert "归档工具限制与 binding 不一致" in old.parts[0].value
         assert denied.outcome == "denied"
         assert denied.parts[0].value == "blocked by fixed policy"
         assert safe.outcome == "success"
-        assert caller_checks == [
-            (old_binding, {"value": "restore:blocked"}),
-            (new_binding, {"value": "restore:ok"}),
-        ]
+        assert caller_checks == [(new_binding, {"value": "restore:ok"})]
         effects = sorted(
             line
             for path in (tmp_path / "workspace").rglob("effects.txt")
             for line in path.read_text().splitlines()
         )
-        assert effects == ["program:old", "program:safe"]
+        assert effects == ["program:safe"]
+
+        malformed = dict(bindings.describe(new_binding, TOOLS))
+        malformed["authorize"] = None
+        with pytest.raises(ValueError, match="限制字段无效") as error:
+            async with catalog.open(malformed):
+                raise AssertionError("损坏 binding 不应打开工具")
+        assert type(error.value) is ValueError
+    finally:
+        await host.terminate_all()
+        log.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ["removed", "renamed"])
+async def test_binding_authorize_presence_and_name_must_match_current_registration(
+    tmp_path, replacement
+):
+    sources = tmp_path / "plugins"
+    write_plugins(sources)
+    add_authorize(sources)
+    log = MessageLog(tmp_path / "sessions.db")
+    host = manager(tmp_path, [sources], log)
+    try:
+        await host.load_all()
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            ctx = snapshot.composition_root.context
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
+            catalog = ctx.require(TOOLS)
+            old_binding = catalog.bind(
+                ctx.require(ALL_TOOLS)().select("example"), bindings
+            )
+        await host.terminate_all()
+
+        if replacement == "removed":
+            shutil.rmtree(sources / "authorize")
+        else:
+            path = sources / "authorize" / "plugin.py"
+            path.write_text(path.read_text().replace("fixed-policy", "renamed-policy"))
+
+        host = manager(tmp_path, [sources], log)
+        await host.load_all()
+        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            ctx = snapshot.composition_root.context
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
+            catalog = ctx.require(TOOLS)
+            metadata = bindings.describe(old_binding, TOOLS)
+            with pytest.raises(ValueError, match="归档工具限制与 binding 不一致") as error:
+                async with catalog.open(metadata):
+                    raise AssertionError("不兼容 binding 不应打开工具")
+            assert type(error.value).__name__ == "ToolBindingIncompatible"
+            execution = catalog.execution(
+                lambda binding, arguments: _allow()
+            )
+            result = await execution.execute("incompatible", old_binding, {"value": "ok"})
+            assert result.outcome == "error"
+            assert "归档工具限制与 binding 不一致" in result.parts[0].value
+        assert not list((tmp_path / "workspace").rglob("effects.txt"))
     finally:
         await host.terminate_all()
         log.close()

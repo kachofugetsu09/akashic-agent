@@ -15,7 +15,7 @@ from agent.plugin_composition.tasks import ExternalRootPermit
 
 from .api import (
     Authorize, BoundTool, CallSource, MessageReply, ProviderBoundTool, Result,
-    coerce_result, display_name, result_message_id,
+    ToolBindingIncompatible, coerce_result, display_name, result_message_id,
 )
 from .abandon import follow_abandon, reject_start
 from .execution import ToolExecution
@@ -446,13 +446,18 @@ class ToolCatalog:
         if registration.ref.description != description or metadata["prepare"] != (
             None if preparation is None else preparation.name
         ):
-            raise ValueError("归档工具描述或参数准备与 binding 不一致")
+            raise ToolBindingIncompatible("归档工具描述或参数准备与 binding 不一致")
         expected: set[str] = {"tool", "prepare"}
+        authorization = registration.authorization
         if "authorize" in metadata:
-            authorization = registration.authorization
-            if authorization is None or metadata["authorize"] != authorization.name:
-                raise ValueError("归档工具限制与 binding 不一致")
+            saved_authorization = metadata["authorize"]
+            if not isinstance(saved_authorization, str):
+                raise ValueError("工具 binding 限制字段无效")
+            if authorization is None or saved_authorization != authorization.name:
+                raise ToolBindingIncompatible("归档工具限制与 binding 不一致")
             expected.add("authorize")
+        elif authorization is not None:
+            raise ToolBindingIncompatible("归档工具限制与 binding 不一致")
         if registration.capture is not None:
             expected.add("state")
         if set(metadata) != expected:
@@ -476,7 +481,7 @@ class ToolCatalog:
     async def authorize(
         self, metadata: Mapping[str, object], arguments: Mapping[str, object]
     ) -> str | None:
-        """只执行 binding 固定的独立限制；旧无字段 binding 不追附当前限制。"""
+        """只执行 binding 固定的独立限制；无独立限制时返回 None。"""
         if "authorize" not in metadata:
             return
         description = metadata.get("tool")

@@ -295,8 +295,9 @@ async def test_fixed_bindings_keep_display_schema_but_do_not_reopen_history(
                 with pytest.raises(KeyError):
                     await execution.execute("history", identity, arguments)
             else:
-                with pytest.raises(ValueError, match="归档工具描述或参数准备"):
-                    await execution.execute("history", identity, arguments)
+                result = await execution.execute("history", identity, arguments)
+                assert result.outcome == "error"
+                assert "归档工具描述或参数准备" in result.parts[0].value
         await restored.terminate_all()
     finally:
         await host.terminate_all()

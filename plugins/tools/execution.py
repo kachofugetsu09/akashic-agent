@@ -22,7 +22,7 @@ from agent.plugin_contracts import json_value
 
 from .api import (
     Authorize, Denied, InvalidArguments, MessageReply, OpenTool, Outcome, Result,
-    coerce_result, durable_call_key,
+    ToolBindingIncompatible, coerce_result, durable_call_key,
 )
 
 
@@ -313,6 +313,14 @@ class ToolExecution:
                         raise failure from record_failure
                     raise
                 return finish(self._state, key, record, result, reply)
+        except ToolBindingIncompatible as error:
+            return finish(
+                self._state,
+                key,
+                record,
+                Result("error", (ContentPart("text", str(error)),)),
+                reply,
+            )
         except asyncio.CancelledError as failure:
             # 恢复期间取消也终结原 started intent，不能稍后借重试重新发起效果。
             try:

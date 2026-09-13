@@ -161,6 +161,10 @@ class InvalidArguments(ValueError):
     """工具明确拒绝请求参数；可以返回错误结果供调用者修正。"""
 
 
+class ToolBindingIncompatible(ValueError):
+    """持久 binding 与当前注册约束不一致；调用必须终结而不能重试。"""
+
+
 class Denied(Exception):
     """授权 owner 明确拒绝当前最终参数；没有发生本次调用。"""
 
