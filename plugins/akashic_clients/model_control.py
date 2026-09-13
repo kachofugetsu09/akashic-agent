@@ -4,11 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
+from typing import Protocol, TypeVar
+
+from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.rpc import RpcMethod
-from agent.plugin_composition.requests import RequestContext
 
 from .capabilities import MODEL_CALL, MODEL_CATALOG_RPC, MODEL_COMMAND, MODEL_DISCOVER
 from .services import ModelControlUnavailable
+
+_T = TypeVar("_T")
+
+
+class _RequestScope(Protocol):
+    """The narrow request scope shape needed by model RPC calls."""
+
+    def require(self, key: ServiceKey[_T]) -> _T: ...
 
 
 class ScopedModelRpcControl:
@@ -23,7 +33,7 @@ class ScopedModelRpcControl:
 
     def __init__(
         self,
-        open_scope: Callable[[], AbstractAsyncContextManager[RequestContext]],
+        open_scope: Callable[[], AbstractAsyncContextManager[_RequestScope]],
     ) -> None:
         if not callable(open_scope):
             raise TypeError("model RPC scope 必须可调用")
