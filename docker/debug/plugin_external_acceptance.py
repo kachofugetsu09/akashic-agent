@@ -57,24 +57,6 @@ _SAFE_CAPABILITY_ENTRYPOINTS = {
 _BOOTSTRAP_CONFIG = """[runtime]
 workspace = {workspace!r}
 
-[channels.chat]
-enabled = true
-
-[mobile_realtime]
-enabled = false
-host = "127.0.0.1"
-port = 6323
-database = "data/mobile_realtime.db"
-lan_hostname = "akashic.local"
-public_url = ""
-max_attachment_mb = 50
-inbox_retention_days = 7
-
-[mobile_realtime.key_encryption]
-provider = "secret_service"
-master_key_namespace = "akasic/mobile-realtime"
-keyset_manifest = "data/mobile/keys/current.json"
-
 [app_server]
 enabled = true
 listen = ""
@@ -502,7 +484,7 @@ def _prepare_runtime(
 def _write_bootstrap_config(
     workspace: Path, *, marketplace: str = "external-acceptance"
 ) -> Path:
-    """Create the credential-free config used by the real AppRuntime probe."""
+    """Create neutral Core config and installed client plugin config."""
 
     path = workspace / "external-acceptance-config.toml"
     context_data = workspace / "plugin-data" / f"context-{marketplace}" / "config.local.toml"
@@ -514,6 +496,19 @@ def _write_bootstrap_config(
         "summary_source = [\"compaction\", \"compaction@{marketplace}\"]\n".format(
             marketplace=marketplace,
         ),
+        encoding="utf-8",
+    )
+    client_data = workspace / "plugin-data" / f"akashic_clients-{marketplace}" / "config.local.toml"
+    client_data.parent.mkdir(parents=True, exist_ok=True)
+    client_data.write_text(
+        "enabled = true\n"
+        "\n"
+        "[web]\n"
+        "enabled = true\n"
+        "socket_path = \"\"\n"
+        "\n"
+        "[mobile_realtime]\n"
+        "enabled = false\n",
         encoding="utf-8",
     )
     path.write_text(
@@ -528,9 +523,8 @@ def _runtime_task_evidence(runtime: Any) -> dict[str, Any]:
         name: getattr(runtime, name)
         for name in (
             "dashboard_task",
-            "chat_task",
-            "mobile_gateway_task",
             "plugin_watcher_task",
+            "_primary_task",
         )
     }
     return {
@@ -633,13 +627,22 @@ async def _start_app_runtime(
         }
     )
     checks = evidence["checks"]
+    plugin_manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
+    channel_host = (
+        None
+        if plugin_manager is None
+        else getattr(plugin_manager, "channel_generation_host", None)
+    )
     checks.update(
         {
             "bootstrap_start_returned": True,
             "runtime_started": bool(getattr(runtime, "_started", False)),
             "core_runtime_created": getattr(runtime, "core", None) is not None,
             "stable_snapshot_published": snapshot is not None,
-            "channel_host_started": getattr(runtime, "channel_host", None) is not None,
+            # ChannelGenerationHost is owned by PluginManager; AppRuntime has
+            # no parallel channel_host facade.  The manager is constructed and
+            # custody-bound by build_core_runtime before runtime.start().
+            "channel_host_started": channel_host is not None,
             "app_server_started": getattr(runtime, "app_server", None) is not None,
             "checkout_invisible": not evidence["checkout_modules_visible"],
             "core_modules_from_artifact": not evidence["core_module_violations"],

@@ -241,7 +241,7 @@ Cloudflare Tunnel 是否 Healthy
 | 现象 | 检查 |
 |---|---|
 | 启动时报 Secret Service 不可用或已锁定 | 解锁当前用户的 Secret Service，再启动 Akashic。不要改成明文密钥或删除 keyset 绕过错误。 |
-| `6323` 没有监听 | 检查 `[mobile_realtime].enabled`、启动日志和配置校验错误。 |
+| `6323` 没有监听 | 检查 `CLIENT_CONFIG` 中 `[mobile_realtime].enabled`、启动日志和配置校验错误。 |
 | Tunnel 显示 `Inactive` 或 `Down` | 检查 `cloudflared` 进程、用户服务和 token 文件权限。 |
 | 公开地址返回 `502` | 核对 Service URL 是 `https://127.0.0.1:6323`，端口已监听，并已为自签名 origin 打开 `No TLS Verify`。 |
 | 根路径返回 `404` | 这是移动网关的正常 HTTP 结果；继续运行真实 WSS challenge 检查。 |
