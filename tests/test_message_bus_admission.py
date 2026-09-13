@@ -761,7 +761,8 @@ async def test_host_routes_recovery_by_persisted_channel_to_one_binding() -> Non
     host._bindings = states
     seen = []
 
-    async def recover(key, raw):
+    async def recover(key, raw, **kwargs):
+        assert kwargs.get("_use_recovery_snapshot_lease") is True
         seen.append((key, raw.message.channel))
         return True
 
