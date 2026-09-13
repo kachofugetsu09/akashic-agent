@@ -1,7 +1,4 @@
 """临时 workspace 中运行真正 App 装配和控制 socket。"""
-from typing import cast
-
-from fastapi import FastAPI
 import httpx
 import pytest
 
@@ -9,14 +6,19 @@ from akashic_sdk import AsyncAkashic
 from agent.config_models import Config
 from bootstrap.app import AppRuntime
 from session.log import MessageLog
-from tests.fixtures.formal_plugins import MINIMAL_MESSAGE_PLUGINS, install_formal_plugins
+from tests.fixtures.formal_plugins import FULL_RUNTIME_PLUGINS, install_formal_plugins
 
 
 @pytest.mark.asyncio
 async def test_app_starts_web_and_control_with_message_owners(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    plugin_home, _ = install_formal_plugins(tmp_path, MINIMAL_MESSAGE_PLUGINS)
+    plugin_home, _ = install_formal_plugins(
+        tmp_path,
+        FULL_RUNTIME_PLUGINS,
+        configure_materials=True,
+        initialize_persona=True,
+    )
     monkeypatch.setenv("AKASHIC_PLUGIN_HOME", str(plugin_home))
     app = AppRuntime(Config(), workspace)
     try:
@@ -26,11 +28,10 @@ async def test_app_starts_web_and_control_with_message_owners(tmp_path, monkeypa
             await client.message_send(session, "App 实际输入", message_id="app-input")
             page = await client.message_read(session)
             assert page["items"][0]["id"] == "app-input"
-        assert app.web_chat_channel is not None
-        assert app.channel_host.channels
-        chat_app = cast(FastAPI, app.chat_server.config.app)
+        chat_socket = workspace / "runtime" / "chat.sock"
+        assert chat_socket.is_socket()
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=chat_app),
+            transport=httpx.AsyncHTTPTransport(uds=str(chat_socket)),
             base_url="http://testserver",
         ) as web:
             sessions = await web.get("/api/chat/sessions")

@@ -59,6 +59,7 @@ from .scoped_capabilities import (
 
 
 _SERVER_START_TIMEOUT_SECONDS = 10.0
+_SERVER_STOP_TIMEOUT_SECONDS = 10.0
 
 
 class _ChannelArtifactReadLease:
@@ -158,6 +159,27 @@ def _close_children(
         raise BaseExceptionGroup(message, causes)
     if primary is not None:
         raise primary
+
+
+async def _stop_server(server: uvicorn.Server, task: asyncio.Task[Any]) -> None:
+    """Ask Uvicorn to close its listener before cancelling its task."""
+
+    server.should_exit = True
+    if task.done():
+        task.result()
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=_SERVER_STOP_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 @dataclass(slots=True)
@@ -549,13 +571,8 @@ class _GenerationAkashicAdapter:
     async def _rollback_start(self, primary: BaseException) -> None:
         failures: list[BaseException] = []
         for server, task in reversed(self._servers):
-            server.should_exit = True
-            if not task.done():
-                task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                await _stop_server(server, task)
             except BaseException as error:
                 failures.append(error)
         self._servers.clear()
@@ -639,13 +656,8 @@ class _GenerationAkashicAdapter:
         errors: list[BaseException] = []
         remaining_servers: list[tuple[uvicorn.Server, asyncio.Task[None]]] = []
         for server, task in reversed(self._servers):
-            server.should_exit = True
-            if not task.done():
-                task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                await _stop_server(server, task)
             except BaseException as error:
                 errors.append(error)
                 remaining_servers.append((server, task))

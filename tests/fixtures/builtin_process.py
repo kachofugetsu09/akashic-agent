@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import signal
@@ -104,6 +105,11 @@ async def serve(root: Path, endpoint: str) -> None:
             ready.set()
 
     app = AppRuntime(Config(), workspace, readiness=Readiness(workspace, f"fixture-{os.getpid()}"))
+    # stdout is the fixture's one-line connection protocol.  The dashboard
+    # server is real, but its access log must stay on the inherited stderr
+    # side so a request cannot corrupt that protocol.
+    if app.dashboard_server is not None:
+        app.dashboard_server.config.access_log = False
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, stop.set)
     loop.add_signal_handler(signal.SIGINT, stop.set)
@@ -120,10 +126,16 @@ async def serve(root: Path, endpoint: str) -> None:
         if not ready.is_set():
             raise TimeoutError("App 未发布 readiness")
         assert app.core is not None and app.app_server is not None
+        # The dashboard is created inside App.run, so the construction-time
+        # flag above cannot affect its already configured Uvicorn logger.
+        # Disable the shared access logger before fixture-side HTTP setup;
+        # stdout remains reserved for the JSON connection line.
+        logging.getLogger("uvicorn.access").disabled = True
+        chat_socket = workspace / "runtime" / "chat.sock"
         print(json.dumps({"fixture_ready": True, "pid": os.getpid(),
                           "endpoint": str(app.app_server.endpoint),
                           "dashboard": app.dashboard_server.config.uds,
-                          "chat": app.chat_server.config.uds}), flush=True)
+                          "chat": str(chat_socket)}), flush=True)
         producer = asyncio.create_task(producers(app))
         done, _ = await asyncio.wait((running, stopped, producer), return_when=asyncio.FIRST_COMPLETED)
         if producer in done:
