@@ -254,7 +254,8 @@ supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也�
 Akashic Mobile 是一个通过独立实时网关连接 Akashic Agent 的 Android 客户端。远程接入推荐使用 Cloudflare Tunnel：Web Chat 和模型设置继续留在本机 `127.0.0.1:2236`，Tunnel 只转发由 Akashic 设备认证保护的 `6323` 端口。
 
 ```text
-1. 在已安装 akashic_clients 的 config.local.toml 启用 [mobile_realtime]
+1. 在 `<workspace>/plugin-data/akashic_clients-<marketplace>/config.local.toml`
+   启用 `[mobile_realtime]`（默认正式安装身份是 `release`）
 2. 用 Cloudflare Tunnel 把一个公共域名转到 https://127.0.0.1:6323
 3. 在本机 Web Chat 点击“连接手机”，用 Akashic Mobile 扫描二维码
 4. 两端核对六位确认码，在电脑上批准设备
