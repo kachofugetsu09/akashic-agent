@@ -75,6 +75,8 @@
 
 | [0066](0066-yoyo-current-baseline.md) | accepted | 保留 Yoyo，以当前基线退役历史兼容脚本 | MIG-001、MIG-002、WSP-003 |
 
+| [0067](0067-clients-are-ordinary-plugin.md) | accepted | Web/Mobile 由普通插件拥有，Core 只提供中立原子能力 | AKC-001、AKC-002、PLG-001、WSP-003 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

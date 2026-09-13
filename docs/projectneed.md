@@ -241,11 +241,13 @@ candidate 在 10 秒健康提交前必须由 process-scope attempt lease 持有�
 或子插件时按 Web module Effect 递归清理。Core Web Host 与 conversation-ui 不得按 Computer、Browser 或
 其他子插件名称分支，工具区也不得取得 Session、Turn 或插件领域状态所有权。
 
-### AKC-001 Web 与 Mobile 使用一个 Core Akashic Channel
+### AKC-001 Web 与 Mobile 使用一个插件拥有的 Akashic Channel
 
-Web 与 Mobile 对话必须由 Core 内建且只注册一次的 `akashic` Channel 承载。两端只是这个
-Channel 的边界 adapter，不得分别注册 `web`、`mobile` 对话 Channel，也不得为统一入口新增
-共同客户端协议、状态机或平台能力 owner。外部 Channel 不受影响。
+Web 与 Mobile 对话必须由普通 `akashic_clients` 插件只注册一次的 `akashic` Channel 承载。
+两端是这个 Channel 的边界 adapter，不得分别注册 `web`、`mobile` 对话 Channel。客户端认证、
+传输、配对和监听生命周期由该插件拥有；Core 只提供中立渠道、请求作用域与持久输入原子能力，
+不得按客户端名称或插件 ID 分支。共同 Session 身份与既有客户端协议保持不变。
+该归属修订见 [0067](decisions/0067-clients-are-ordinary-plugin.md)。
 
 ### AKC-002 两个 Adapter 复用同一个既有 Session 空间
 

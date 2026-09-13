@@ -49,7 +49,7 @@
 - **F（实施前基线）：** Android 通过 `WebViewAssetLoader` 从 `https://appassets.androidplatform.net` 加载 APK 资产并阻止外部资源请求。Native→Web 使用指定 origin 的 `postWebMessage`；Web→Native 当时使用 `addJavascriptInterface`，因而服务端下发 JS 的 candidate 路径必须收窄 bridge admission。
 - **F：** Room、outbox、附件传输、通知、Keystore、配对、系统 Activity result 和生命周期由 Android 原生层拥有。
 - **F：** Core 已有配对后的 WSS 与同源认证 HTTPS 传输模式，可以作为发布发现与资源下载的现有信任基础。
-- **I（Core provider）：** `infra/mobile_webui/` 拥有 canonical manifest、发布仓、ticket 和 HTTP 数据面；`scripts/publish-mobile-webui.py` 拥有 build/import/promote/rollback/GC 命令；`infra/mobile_realtime/` 只读已提交的 `ReleaseView`。`scripts/generate_mobile_realtime_schema.py`、`schema/mobile-realtime-v1.json` 与 `tests/mobile_webui/` 共同构成 provider 的机器可读证据。
+- **I（普通插件 provider）：** `plugins/akashic_clients/mobile_webui/` 拥有 canonical manifest、发布仓、ticket 和 HTTP 数据面；`python -m plugins.akashic_clients.mobile_webui.release_cli` 拥有 build/import/promote/rollback/GC 命令；`plugins/akashic_clients/mobile_realtime/` 只读已提交的 `ReleaseView`。`plugins/akashic_clients/mobile_realtime/schema_cli.py` 与相关移动端测试共同构成 provider 的机器可读证据。旧 `infra/mobile_*` 与 `scripts/publish-mobile-webui.py` 路径已经退役。
 - **I（跨仓库 consumer）：** Android 只能消费 Mobile 仓库锁定到 Core merge commit/tree/schema SHA-256 的快照。OTA 的当前实际支持范围必须继续从该锁、Android 源码、migration test、隔离 runtime 和真机报告读取，不由本文档代为宣布。
 
 因此，服务端发布 OTA 是对“移动产物怎样交付”的有意改变，不是把旧固定 ZIP 路径改名。决策 0022 勘误 0018 的交付边界，但不改变 WEBUI-001～WEBUI-003 的单一源码真源和状态 owner；移动仓库必须以自己的决策和锁定证据同步接受。

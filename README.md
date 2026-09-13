@@ -266,7 +266,7 @@ AKASHIC_WEBUI_SERVER_ID="$(sqlite3 -readonly \
   ~/.akashic/workspace/mobile-webui/publication.sqlite3 \
   "SELECT value FROM webui_meta WHERE key = 'server_id'")"
 
-.venv/bin/python scripts/publish-mobile-webui.py backup \
+.venv/bin/python -m plugins.akashic_clients.mobile_webui.release_cli backup \
   --workspace ~/.akashic/workspace \
   --server-id "$AKASHIC_WEBUI_SERVER_ID" \
   --destination ~/.akashic/backups/mobile-webui-"$(date +%Y%m%d-%H%M%S)"
@@ -275,7 +275,7 @@ AKASHIC_WEBUI_SERVER_ID="$(sqlite3 -readonly \
 开发中的 dirty 前端只能发布到 Preview，适合在配置为 Preview 频道的真机上验收：
 
 ```bash
-.venv/bin/python scripts/publish-mobile-webui.py publish \
+.venv/bin/python -m plugins.akashic_clients.mobile_webui.release_cli publish \
   --source-repository "$PWD" \
   --workspace ~/.akashic/workspace \
   --server-id "$AKASHIC_WEBUI_SERVER_ID" \
@@ -292,7 +292,7 @@ git pull --ff-only origin main
 test -z "$(git status --porcelain)"
 
 AKASHIC_WEBUI_SOURCE_COMMIT="$(git rev-parse HEAD)"
-.venv/bin/python scripts/publish-mobile-webui.py publish \
+.venv/bin/python -m plugins.akashic_clients.mobile_webui.release_cli publish \
   --source-repository "$PWD" \
   --workspace ~/.akashic/workspace \
   --server-id "$AKASHIC_WEBUI_SERVER_ID" \
@@ -301,7 +301,7 @@ AKASHIC_WEBUI_SOURCE_COMMIT="$(git rev-parse HEAD)"
   --actor local-stable
 ```
 
-用 `publish-mobile-webui.py inspect` 核对 Stable/Preview 的 generation、协议窗口和
+用 `python -m plugins.akashic_clients.mobile_webui.release_cli inspect` 核对 Stable/Preview 的 generation、协议窗口和
 `minimum_native_build`。发布只更新 WebUI 发布仓，不会改写会话、记忆或插件数据。
 
 ---
