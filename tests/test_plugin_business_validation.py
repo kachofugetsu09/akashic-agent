@@ -341,19 +341,22 @@ async def test_validation_host_construction_failure_releases_candidate_scope(tmp
 
 
 def memory_sources(root):
-    """使用两个实际记忆入口，只替换外部 embedding provider。"""
+    """安装 Akasha/Markdown 及其实际摘要依赖，只替换外部 embedding provider。"""
     from pathlib import Path
     import shutil
-    for name in ("akasha", "markdown_memory"):
+    versions = {"akasha": "4.0.0", "markdown_memory": "4.1.0", "compaction": "4.1.0"}
+    for name in ("akasha", "markdown_memory", "compaction"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
-        version = "4.1.0" if name == "markdown_memory" else "4.0.0"
         (root / name / "akashic.plugin.toml").write_text(
-            f'schema_version = 1\nname = "{name}"\nversion = "{version}"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
+            f'schema_version = 1\nname = "{name}"\nversion = "{versions[name]}"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
     settings = root.parent / "workspace/plugin-data/context-builtin/config.local.toml"
     settings.parent.mkdir(parents=True, exist_ok=True)
     with settings.open("a") as handle:
-        handle.write('prompt_sources = {markdown_memory = "markdown_memory"}\n')
+        handle.write(
+            'summary_source = ["compaction", "compaction"]\n'
+            'prompt_sources = {markdown_memory = "markdown_memory"}\n'
+        )
     provider = root / "fixture_embeddings"
     provider.mkdir()
     (provider / "plugin.py").write_text('''
