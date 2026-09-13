@@ -819,7 +819,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### 第 09 层候选业务验证的持久证据
 
-候选业务验证另在 `runtime/plugin-update-validation/<id>/workspace/` 保存一次运行的独立证据。PluginManager 先用 MessageLog 原生 backup 固定已提交的 `sessions.db`，再从这份副本读取 binding，并只读扫描正式 archive 中的 manifest；旧 manifest 的 credential/exclude 声明在 current data 首次复制前合并生效。随后只复制实际候选 snapshot 的固定代码、descriptor、声明的 plugin-data 与 workspace 数据；SQLite 不复制 WAL/SHM。旧 binding 的 root/component descriptor 仍从正式 archive 保存为 provenance，但旧组件代码、plugin-data 和 workspace 不复制、不导入。副本包括历史 Message、向量、binding、owner record 与附件元数据；已发布附件通过原 Artifact 读取 owner 校验后复制其字节，再由独立 MessageLog 与 ArtifactStore 打开。验证 Message、binding、owner record 和 Artifact 只写入此目录；正式消息库及插件数据不因此变化。Python 环境仍只读已发布的不可变环境及原路径。
+候选业务验证另在 `runtime/plugin-update-validation/<id>/workspace/` 保存一次运行的独立证据。PluginManager 先从正式 MessageLog 读取一次 binding，并只读扫描正式 archive 中的 manifest；旧 manifest 的 credential/exclude 声明与 current manifest 在 current data 首次复制前合并生效。随后只复制实际候选 snapshot 的固定代码、descriptor、声明的 plugin-data 与 workspace 数据（含图）；SQLite 不复制 WAL/SHM。图与其他 workspace 复制完成后，PluginManager 只用 MessageLog 原生 backup 一次固定已提交的 `sessions.db`，再由独立 MessageLog 与 ArtifactStore 打开。这样复制期间追加的 Message 也覆盖图已有引用。旧 binding 的 root/component descriptor 仍从正式 archive 保存为 provenance，但旧组件代码、plugin-data 和 workspace 不复制、不导入。副本包括历史 Message、向量、binding、owner record 与附件元数据；已发布附件通过原 Artifact 读取 owner 校验后复制其字节。验证 Message、binding、owner record 和 Artifact 只写入此目录；正式消息库及插件数据不因此变化。Python 环境仍只读已发布的不可变环境及原路径。
 
 验证程序可增加其消息和领域结果、按各 owner 原有协议修改副本；没有自动减少或 GC。退出只关闭 Task、进程、MCP、Root、模块与数据连接，不删除证据目录。清理失败由现存 ValidationHost 保留真实资源和候选租约，原 owner 重试成功后才释放；程序仍在执行或资源未清理时不得发布候选。验证代码、数据副本及 journal 中的组件身份和路径提供恢复证据，进程死亡后不自动重跑验证。
 
@@ -850,7 +850,7 @@ Delivery provider 的 Core Tasks 按目标 key 持有活动计数和短发送排
 
 原生 Sender 的凭据仍由原 plugin-data 的 `config.local.toml` 拥有。静态 `credential_paths` 授予通用短租约，旧 Channel 声明只授予自身 factory；二者的并集只用于脱敏与验证排除。归档只增加原配置版本和 CredentialRef，不保存明文或复制新 token。用户改写/撤销配置后，旧 binding 版本检查失败；没有自动凭据迁移、轮换或减少。本任务只写隔离 fixture 配置，未操作正式凭据。
 
-业务验证先用 MessageLog 原生 backup 固定历史 binding、owner 和消息事实，再从副本 binding 与当前组件归档 manifest 合并每个 data root 的 credential/exclude 声明；这份并集在 current data 首次复制前生效。未被声明为凭据或排除路径的普通数据（包括普通配置）仍可复制，旧组件代码、历史独有数据和 workspace 不随 binding 复活。这样既保留消息图已有引用，又阻止新版本移除声明后通过共用目录读到旧 secret。验证副本保留原有恢复/不自动删除协议。
+业务验证先从正式 MessageLog 读取一次 binding，计算历史 manifest 并与 current 组件的 credential/exclude 声明合并；这份并集在 current data 首次复制前生效。current data/workspace（含图）复制完成后，再只用 MessageLog 原生 backup 固定已提交消息并打开副本，复制期间追加的 Message 因而不会成为图的悬空引用。未被声明为凭据或排除路径的普通数据（包括普通配置）仍可复制，旧组件代码、历史独有数据和 workspace 不随 binding 复活。这样既保留消息图已有引用，又阻止新版本移除声明后通过共用目录读到旧 secret。验证副本保留原有恢复/不自动删除协议。
 
 ### 2026-09-07 · 首次 App、工作台读取与 embedding binding
 

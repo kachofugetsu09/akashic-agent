@@ -1792,7 +1792,7 @@ Sender 实现、隔离 wire 验证、原生完整启动、正式 manifest/config
 
 凭据扩大回归中 62 项通过，新增 Channel 权限夹具的启动假设已修复；随后凭据分项 9 项全部通过，证明旧 Channel factory 仍能读取其凭据，而同插件未声明顶层 credential_paths 时无法从通用服务读取。当前 manager/static manifest 类型检查 0 errors、45 个既存边界 warning。原生 Sender 仍待实施。
 
-凭据最终扩大验证为 65 项通过（18.89 秒），Terra/xhigh 独立概念 Gate PASS。审查发现并修复历史 binding 业务验证目录泄漏：先固定 Message backup，再从实际副本 binding 与当前组件的归档 manifest 按共享 data root 合并排除声明，并在 current data 首次复制前生效。旧版本声明凭据而新版本已移除时仍不复制；历史独有目录同样不复活。普通数据和无凭据配置保持，归档凭据服务仍拒绝验证调用。回归实际运行 `open_validation` 并扫描全树无 fixture secret；正式 DB 与配置未变。修复恢复点 `/tmp/message-validation-credentials-backup-20260907`。
+凭据最终扩大验证为 65 项通过（18.89 秒），Terra/xhigh 独立概念 Gate PASS。审查发现并修复历史 binding 业务验证目录泄漏：先从正式 MessageLog 读取一次 binding，再从历史与当前组件的归档 manifest 按共享 data root 合并排除声明，并在 current data 首次复制前生效；current data/workspace（含图）复制完成后才只做一次 Message backup，复制期间追加的 Message 也随副本打开。旧版本声明凭据而新版本已移除时仍不复制；历史独有目录同样不复活。普通数据和无凭据配置保持，归档凭据服务仍拒绝验证调用。回归实际运行 `open_validation` 并扫描全树无 fixture secret；正式 DB 与配置未变。修复恢复点 `/tmp/message-validation-credentials-backup-20260907`。
 
 原生 Sender 已有普通插件候选与 loopback wire 验证。Telegram 用独立 `aiohttp.ClientSession`，避免 HTTPX 默认 INFO 记录含 token 的 URL；QQ 使用每连接的私有 logger，避免 WebSocket DEBUG 输出 Authorization，不修改进程全局日志。握手错误只保留错误类型，不传播可能回显凭据的 header。aiohttp 是已有环境依赖，本批加入直接依赖声明，避免只依赖转接安装。
 

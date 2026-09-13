@@ -486,6 +486,147 @@ async def test_validation_reply_reads_real_memory_without_starting_learning(tmp_
 
 
 @pytest.mark.asyncio
+async def test_validation_message_backup_covers_graph_reference_added_during_copy(tmp_path, monkeypatch):
+    """图复制期间追加的消息必须随最后一次日志副本一同进入验证宿主。"""
+    from datetime import datetime
+    import sqlite3
+
+    from agent.plugin_composition import EMBEDDINGS
+    from agent.plugin_composition.bindings import BINDINGS
+    from agent.plugin_composition.messages import MESSAGE_EMBEDDINGS
+    from agent.plugins.snapshot import lease_runtime_snapshot
+    from plugins.akasha.application.consumer import MessageConsumer
+    from plugins.akasha.domain.model import MemoryConfig
+    from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
+    from plugins.akasha.projection import applied_source, dialogue_turn, project_samples
+    from plugins.content.plugin import CONTENT
+    from plugins.turn_projection.plugin import TurnProjection
+    from session.message import Output
+    from tests.test_default_reply import application
+    import agent.plugins.manager as manager_module
+
+    async with application(tmp_path, replying=False, start=False, provider_effect_data=True,
+                           extra_sources=memory_sources) as (log, host):
+        memory = tmp_path / "workspace/memory"
+        graph = memory / "akasha.db"
+        consumer = None
+        try:
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                ctx = snapshot.composition_root.context
+                api = ctx.require(EMBEDDINGS)
+                bindings = ctx.require(BINDINGS)
+                vectors = ctx.require(MESSAGE_EMBEDDINGS)
+                learning = ctx.require(AKASHA_LEARNING)
+                consumer = await MessageConsumer.load(
+                    graph, legacy_index=None, catalog=log.catalog(), embeddings=vectors,
+                    bindings=bindings, config=MemoryConfig(),
+                )
+                async with ctx.require(CONTENT).bind() as content:
+                    writer = log.writer(
+                        "past", author="user", source="conversation",
+                        body_types=(Input, Output), content=content.checks,
+                    )
+                    writer.append("historical-input", Input((
+                        ContentPart("text", "remember the original route"),
+                    )))
+                    writer.append("historical-answer", Output((
+                        ContentPart("text", "the original route is the blue lake"),
+                    ), "complete"))
+                descriptor = api.describe()
+                binding = bindings.bind(AKASHA_LEARNING, LearningConfig(
+                    embedding_model=descriptor.identity, dimension=2,
+                    sources=("conversation",),
+                ).model_dump())
+
+                async def embed(texts):
+                    async with api.bind() as model:
+                        return [list(vector) for vector in (await model.embed(texts)).vectors]
+
+                assert await consumer.consume(
+                    catalog=log.catalog(), learning_binding=binding, embeddings=vectors,
+                    bindings=bindings, embed_batch=embed,
+                ) == 1
+
+            source = tmp_path / "source"
+            _write_v3_plugin(source, name="probe", module_source=REPLY_MODULE)
+            _commit(source)
+            await host.install_candidate(
+                source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+            )
+
+            def text(message):
+                return "".join(
+                    part.value for part in message.body.parts
+                    if isinstance(part, ContentPart) and isinstance(part.value, str)
+                )
+
+            appended = False
+            real_copy = manager_module._copy_validation_tree
+
+            def append_graph_reference() -> None:
+                assert consumer is not None
+                writer = log.writer(
+                    "past", author="user", source="conversation",
+                    body_types=(Input, Output),
+                    content={"text": lambda part: ContentReferences()},
+                )
+                user = writer.append("during-copy-input", Input((
+                    ContentPart("text", "message appended while copying the graph"),
+                )))
+                answer = writer.append("during-copy-answer", Output((
+                    ContentPart("text", "the graph now points at this message"),
+                ), "complete"))
+                records = vectors.bind(learning.text)
+                records.save(user, model=descriptor.identity, embedding=[0.6, 0.8])
+                records.save(answer, model=descriptor.identity, embedding=[0.6, 0.8])
+                sample = project_samples(
+                    log.catalog(), TurnProjection(),
+                    include=lambda session, source: source == "conversation",
+                )[-1]
+                turn = dialogue_turn(
+                    sample, node_id=consumer.cycle.state_version,
+                    previous=datetime.fromisoformat(consumer.cycle.turns[-1].committed_at),
+                    text=text, embeddings=records,
+                    embedding_model=descriptor.identity, dimension=2,
+                )
+                assert turn is not None
+                assert consumer.apply(
+                    turn, applied_source(sample, learning_binding=binding),
+                )
+
+            def copy_tree(source, target, exclude_paths, *, keep_existing=False):
+                nonlocal appended
+                if source.resolve() == memory.resolve() and not appended:
+                    appended = True
+                    append_graph_reference()
+                return real_copy(
+                    source, target, exclude_paths, keep_existing=keep_existing,
+                )
+
+            monkeypatch.setattr(manager_module, "_copy_validation_tree", copy_tree)
+            candidate = host.latest_snapshot
+            assert candidate is not None
+            lease = host.snapshot_store.lease(candidate.snapshot_id)
+            validation = await host._build_validation_host(lease)
+            try:
+                assert appended
+                with closing(sqlite3.connect(validation.workspace / "memory/akasha.db")) as copied:
+                    refs = copied.execute(
+                        "SELECT user_message_id, assistant_message_id FROM turn_nodes ORDER BY node_id"
+                    ).fetchall()
+                assert refs[-1] == ("during-copy-input", "during-copy-answer")
+                assert {
+                    row.message_id for row in validation.messages.reader("past").snapshot()
+                } >= {"during-copy-input", "during-copy-answer"}
+            finally:
+                await validation.close()
+                await lease.release()
+        finally:
+            if consumer is not None:
+                consumer.close()
+
+
+@pytest.mark.asyncio
 async def test_validation_preserves_history_without_archived_workspace(tmp_path):
     """验证保留历史事实和 descriptor，但不复活旧服务、代码或 workspace。"""
     from agent.plugin_composition.artifacts import ARTIFACT_READ

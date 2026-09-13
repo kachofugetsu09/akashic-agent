@@ -50,5 +50,7 @@
 - 候选验证只从已选 candidate snapshot 复制当前 code/data/workspace；消息 binding 的旧
   `root_ref`/component descriptor 仅作为 provenance。旧组件的代码、数据和 workspace 不复活；旧
   manifest 的 credential/exclude 声明只读合并，并在 current data 首次复制前生效。
+- 正式 `MessageLog` 只先读取一次 binding 以计算上述排除集合；current data/workspace（含图）复制完成后，
+  再只做一次原生 `backup` 并打开消息副本，确保复制期间新增的图消息引用不会悬空。
 - 取消、lease 排空和 Root dispose 仍沿现有 `RuntimeScope`/`RuntimeSnapshotStore` owner；不修改
   正式 workspace、消息数据库、plugin-data 或 artifact。

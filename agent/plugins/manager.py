@@ -5398,7 +5398,7 @@ class PluginManager:
     async def _build_validation_host(
         self, lease: RuntimeSnapshotLease,
     ) -> ValidationHost:
-        """先固定消息库与历史 binding，再复制候选数据；验证只打开独立副本。"""
+        """先读取排除声明，再复制候选数据，最后固定消息库副本。"""
         if self._message_log is None:
             raise RuntimeError("业务验证缺少正式 MessageLog")
         identity = secrets.token_hex(16)
@@ -5407,12 +5407,13 @@ class PluginManager:
         archive = PluginArchive(workspace / "runtime" / "plugin-archives")
         messages: MessageLog | None = None
         try:
-            await _copy_in_thread(self._message_log.backup, workspace / "sessions.db")
-            messages = MessageLog(workspace / "sessions.db")
-            bindings = messages.read_bindings()
+            bindings = self._message_log.read_bindings()
             await self._copy_validation_components(
                 lease.snapshot, workspace, archive, bindings,
             )
+            # 图副本可能引用复制期间追加的 Message；最后一次 backup 必须覆盖这些引用。
+            await _copy_in_thread(self._message_log.backup, workspace / "sessions.db")
+            messages = MessageLog(workspace / "sessions.db")
         except BaseException:
             if messages is not None:
                 messages.close()
