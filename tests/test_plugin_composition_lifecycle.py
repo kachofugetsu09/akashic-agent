@@ -408,3 +408,67 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
     finally:
         await manager.terminate_all()
         await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_recovery_disposes_candidate_root_before_rebuilding_same_generation(tmp_path):
+    """回退时先释放候选 Root，避免 generation effect 残留到 stable 重建。"""
+    source = tmp_path / "plugins" / "registry"
+    source.mkdir(parents=True)
+    (source / "plugin.py").write_text(
+        """
+api_version = 3
+name = "registry"
+version = "1.0.0"
+_registry = set()
+async def apply(ctx, config):
+    generation_id = ctx.runtime.generation_id
+    if generation_id in _registry:
+        raise RuntimeError("generation owner still registered")
+    _registry.add(generation_id)
+    async def cleanup():
+        _registry.remove(generation_id)
+    await ctx.effect(lambda: cleanup, label="registry-owner")
+""",
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = PluginManager(
+        [source.parent],
+        event_bus=EventBus(),
+        workspace=workspace,
+        installed_cache_root=tmp_path / "home",
+    )
+    try:
+        await manager.load_all()
+        await manager.start_runtime()
+        stable_snapshot = manager.current_snapshot
+        assert stable_snapshot is not None
+        stable = manager.generation("registry")
+        assert stable is not None
+        paused = manager.snapshot_store.pause_admission()
+        assert paused is stable_snapshot
+        await manager.snapshot_store.wait_for_no_leases(stable_snapshot)
+        await manager._stop_runtime_snapshot(stable_snapshot)
+        await manager._stop_stable_root(stable, stable_snapshot)
+        old_root = stable_snapshot.composition_root
+        candidate = await manager._compile_generation_snapshot(
+            stable, force_fresh_composition=True
+        )
+        candidate_root = candidate.composition_root
+        assert candidate_root is not None and candidate_root is not old_root
+        stable.runtime_snapshot = candidate
+
+        await manager._recover_stable_root(stable, stable_snapshot)
+
+        assert candidate_root.receipt().fibers == ()
+        assert stable_snapshot.composition_root is not old_root
+        root = stable_snapshot.composition_root
+        assert root is not None
+        assert root.receipt().ready
+        module = stable.instance.module
+        assert module is not None
+        assert module.__dict__["_registry"] == {stable.generation_id}
+    finally:
+        await manager.terminate_all()

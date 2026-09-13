@@ -6649,6 +6649,18 @@ class PluginManager:
         if candidate_snapshot is not None:
             await self._stop_runtime_snapshot(candidate_snapshot)
             await self._stop_snapshot_composition_runtimes(candidate_snapshot)
+            candidate_root = candidate_snapshot.composition_root
+            if (
+                candidate_root is not None
+                and candidate_root is not stable_snapshot.composition_root
+                and not self._snapshot_store.composition_is_referenced_elsewhere(
+                    candidate_root,
+                    excluding_snapshot_id=candidate_snapshot.snapshot_id,
+                )
+            ):
+                # 候选快照仍可被 Store 保留，但它的 Root 已无其他 owner。
+                # 先释放该 Root 的 effect，才能重建同一 generation。
+                await candidate_root.dispose()
         else:
             await self._stop_composition_generation_runtime(generation)
         if not generation.formal_root_released:
