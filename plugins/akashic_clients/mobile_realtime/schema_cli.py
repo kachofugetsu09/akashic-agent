@@ -1,18 +1,51 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
+import types
 from pathlib import Path
 
+def _add_explicit_core_root() -> None:
+    """Add only the explicitly selected Core root for direct CLI execution."""
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
+    configured = os.environ.get("AKASHIC_CORE_ROOT", "").strip()
+    if not configured:
+        raise RuntimeError(
+            "直接运行协议 schema CLI 必须显式设置 AKASHIC_CORE_ROOT"
+        )
+    root = Path(configured).expanduser().resolve(strict=True)
+    if not (root / "agent" / "plugin_composition").is_dir():
+        raise RuntimeError(f"Core root 缺少 agent/plugin_composition: {root}")
+    root_text = str(root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
 
-# Running this source file directly has no package context.  Set the same
-# source-tree package identity before using the normal relative imports.
+
+def _direct_package_identity() -> str:
+    """Create a collision-checked package identity rooted at this artifact."""
+
+    artifact_root = Path(__file__).resolve().parents[1]
+    token = hashlib.sha256(str(artifact_root).encode("utf-8")).hexdigest()[:20]
+    package_name = f"_akashic_clients_cli_{token}"
+    existing = sys.modules.get(package_name)
+    if existing is not None:
+        paths = getattr(existing, "__path__", ())
+        if tuple(paths) != (str(artifact_root),):
+            raise RuntimeError(f"插件 CLI package identity 冲突: {package_name}")
+        return package_name
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(artifact_root)]  # type: ignore[attr-defined]
+    package.__package__ = package_name
+    sys.modules[package_name] = package
+    return package_name
+
+
 if not __package__:
-    __package__ = "plugins.akashic_clients.mobile_realtime"
+    _add_explicit_core_root()
+    __package__ = f"{_direct_package_identity()}.mobile_realtime"
 
 from .protocol import (
     COMMAND_TYPES,
@@ -38,7 +71,14 @@ from ..mobile_webui.protocol import (
 from pydantic import TypeAdapter
 
 
-OUTPUT = ROOT / "schema" / "mobile-realtime-v1.json"
+def _source_schema_output() -> Path | None:
+    """Resolve a writable source output without reaching outside this plugin."""
+
+    configured = os.environ.get("AKASHIC_SCHEMA_OUTPUT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve(strict=False)
+    candidate = Path.cwd() / "schema" / "mobile-realtime-v1.json"
+    return candidate if candidate.parent.is_dir() else None
 
 
 def build_schema() -> dict[str, object]:
@@ -224,11 +264,20 @@ def main() -> int:
         json.dumps(build_schema(), ensure_ascii=False, indent=2, sort_keys=True)
         + "\n"
     )
+    output = _source_schema_output()
     if args.check:
-        matches = OUTPUT.is_file() and OUTPUT.read_text(encoding="utf-8") == encoded
+        # Installed artifacts carry the generator and protocol modules, while
+        # the checked-in generated file belongs only to the source checkout.
+        matches = output is None or (
+            output.is_file() and output.read_text(encoding="utf-8") == encoded
+        )
         return 0 if matches else 1
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    _ = OUTPUT.write_text(encoded, encoding="utf-8")
+    if output is None:
+        raise RuntimeError(
+            "生成 schema 需要 source schema 目录或 AKASHIC_SCHEMA_OUTPUT"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _ = output.write_text(encoded, encoding="utf-8")
     return 0
 
 
