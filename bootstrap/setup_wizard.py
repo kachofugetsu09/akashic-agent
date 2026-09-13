@@ -58,15 +58,21 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
 
     if config_path.exists():
         click.echo(f"\n已存在配置文件 {config_path}")
-        if not click.confirm("覆盖并重新配置？", default=False):
-            click.echo("已取消。")
-            return
+        if click.confirm("覆盖并重新配置？", default=False):
+            _divider()
+            click.echo("\n正在生成 Core 配置并运行插件配置命令...")
+            _atomic_write_with_backup(
+                config_path, _render_config(workspace), mode=0o600
+            )
+            _ok(f"{config_path} 已生成")
+        else:
+            _hint("保留现有 Core 配置，继续运行已安装插件的 setup")
+    else:
+        _divider()
+        click.echo("\n正在生成 Core 配置并运行插件配置命令...")
+        _atomic_write_with_backup(config_path, _render_config(workspace), mode=0o600)
+        _ok(f"{config_path} 已生成")
 
-    _divider()
-    click.echo("\n正在生成 Core 配置并运行插件配置命令...")
-
-    _atomic_write_with_backup(config_path, _render_config(workspace), mode=0o600)
-    _ok(f"{config_path} 已生成")
     _validate_config(config_path, workspace)
 
     from bootstrap.init_workspace import init_workspace
@@ -130,6 +136,9 @@ def _run_declared_plugin_setups(workspace: Path) -> None:
                 "AKASHIC_PLUGIN_ID": f"{manifest.name}@{marketplace}",
                 "AKASHIC_PLUGIN_DATA_DIR": str(data_dir),
                 "AKASHIC_SETUP_CONFIG_PATH": str(data_dir / "config.local.toml"),
+                "AKASHIC_SETUP_WORKSPACE": str(
+                    workspace.expanduser().resolve(strict=False)
+                ),
             }
         )
         _ok(f"运行插件配置：{manifest.name}")

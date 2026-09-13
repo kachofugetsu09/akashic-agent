@@ -118,7 +118,7 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | 对象 | 正常增加 | 允许的原位或逻辑变化 | 允许物理减少的条件 |
 |---|---|---|---|
 | `MEMORY.md`、`SELF.md` | Markdown memory 普通插件消费 committed compaction fact，按文档发布下一版 | 每个文档以独立 draft、before-image、atomic replace 和 applied receipt 收敛；在线投影不能隐式删除既有事实 | 没有普通自动减少协议；未来移除事实需要显式 tombstone、来源、理由和独立管理合同 |
-| `VEDA.md` | 新 workspace 初始化或旧 workspace 一次性迁移只在缺失时创建默认人格 | Main Agent 仅在用户明确要求时原子更新；`main.py veda-reset` 先备份原始字节再原子恢复版本化默认 | 正常运行没有删除协议；migration revert 仅可删除该 migration 创建且此后未修改的文件 |
+| `VEDA.md` | 已安装 Prompt 包的 setup 在首次配置时只在缺失时创建默认人格 | Prompt 包的显式 `persona.py` 恢复入口仅在用户明确要求时原子更新，并先备份原始字节 | 正常运行没有删除协议；候选 setup 使用隔离 workspace，不能回写正式文件 |
 | `PENDING.md` / `PENDING.snapshot.md` | 在线路径不再增加 | Markdown plugin 启动迁移先把两份原始文本和 digest 写入 immutable receipt，再确定性合入 MEMORY | 合入和 `PENDING.retired.md` 发布成功后才清空旧文件；任一步失败由 receipt 重启收敛 |
 | `RECENT_CONTEXT.md` | 旧版本曾由近期会话生成投影；新安装不创建 | 新语义不读取、不原位更新 | 仅由 DAG 最后阶段 R06 在备份、完整性检查和 config 归档成功后删除；失败恢复原文件 |
 | `consolidation_writes.db` | compaction plugin 为 `session_compaction_receipt` INSERT immutable crash-recovery receipt | v4 保存 source-plan digest、实际 runtime/model/usage 并发布新 profile fact；旧 v3 只恢复 ledger 和保留审计；同 key 内容漂移 fail-loud | receipt 是恢复与审计证据，当前没有自动删除或跨库 cascade |
@@ -363,7 +363,7 @@ workspace 之外还有两组明确的全局状态：
 └── akashic.sock                       Unix 控制面启用时
 ```
 
-`bootstrap/init_workspace.py` 只预创建基础 Markdown（包括缺失时的 `memory/VEDA.md`）、`schedules.json`、`memes/manifest.json`、目录、`sessions.db`、`consolidation_writes.db` 和当前 memory engine 声明的存储。新安装不创建 `memory/RECENT_CONTEXT.md`、`PROACTIVE_CONTEXT.md` 或 `proactive.db`；已有这些旧文件即使在 `init --force` 下也不覆盖或删除。附件、诊断记录和插件私有文件按对应普通能力首次使用时创建。
+`bootstrap/init_workspace.py` 只准备 Core 配置、迁移起点和基础目录；它不创建 `memory/VEDA.md`。已安装 Prompt 包由通用 `main.py setup` 运行自身 setup，在首次配置时只创建缺失的 `memory/VEDA.md`，并对空、损坏或 I/O 失败保持明确错误。新安装不创建 `memory/RECENT_CONTEXT.md`、`PROACTIVE_CONTEXT.md` 或 `proactive.db`；已有这些旧文件即使在 `init --force` 下也不覆盖或删除。附件、诊断记录和插件私有文件按对应普通能力首次使用时创建。
 
 ## 7. 会话、消息与附件
 
@@ -406,7 +406,7 @@ workspace 之外还有两组明确的全局状态：
 |---|---|---|---|
 | `memory/MEMORY.md` | ordinary `markdown_memory` plugin | 稳定用户档案，通过 ordered prompt event 进入 prompt | 人类可读长期事实 |
 | `memory/SELF.md` | ordinary `markdown_memory` plugin | Akashic 自我认知，通过 ordered prompt event 进入 prompt | 人类可读长期事实 |
-| `memory/VEDA.md` | Main Agent 仅响应用户明确指令；`main.py veda-reset` 是独立恢复 owner | React 链路与已安装插件按各自生命周期读取的人格真源 | 用户可维护的权威人格状态 |
+| `memory/VEDA.md` | 已安装 `prompt` 包 setup 只创建缺失文件；`persona.py` 是用户明确恢复 owner | React 链路与已安装插件按各自生命周期读取的人格真源 | 用户可维护的权威人格状态 |
 | `memory/PENDING.md` / `PENDING.snapshot.md` | 仅 `markdown_memory` legacy migration 读取 | 升级前未迁移事实；在线不再写入 | 迁移完成前的历史输入 |
 | `memory/RECENT_CONTEXT.md` | 旧安装遗留文件；新运行时无 writer/reader | 不再进入 prompt、proactive、Wake 或 Drift | 只由最后阶段 R06 带备份、校验并归档删除 |
 

@@ -478,9 +478,10 @@ Core 不再提供 veda-reset，也不在启动前读取 VEDA；用户显式运�
 原文备份、默认结果与重复执行不重写。
 
 Core init 只准备配置和空 workspace；不再写 VEDA、Context 默认授权、meme 清单
-或业务目录，已有文件即便 --force 也不会被这些已移出的动作改写。新安装组合须
-由产品配置与各包维护入口完成业务初始化；这是显式行为变化，不保留隐式 builtin
-产品组装作为兼容 fallback。
+或业务目录，已有文件即便 --force 也不会被这些已移出的动作改写。首次配置由
+通用 `main.py setup` 按已安装 manifest 的 setup 声明调用各包维护入口；新安装组合须
+明确完成这一步，不能把纯 bundle 安装当成业务初始化，也不保留隐式 builtin 产品组装
+作为兼容 fallback。
 
 Markdown JSON 解析属于自身；日期、原子文件写入、Turn effect 持久编码和 Message
 embedding writer 使用实际 owner 的精确公共入口。没有另建业务接口全集，writer

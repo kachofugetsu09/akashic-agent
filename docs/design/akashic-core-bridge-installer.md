@@ -256,6 +256,12 @@ receipt；已有 receipt 时只校验历史 receipt 与当前 manifest/artifact�
 启用或覆盖用户组合。通过普通运行时控制面卸载或替换插件后重启仍保持当前组合；普通卸载保留
 `plugin-data`。软件 rollback 只恢复上一代 release/env，不回滚已经提交的 Workspace 数据或外部效果。
 
+安装 receipt 只证明 bundle 已安装，不证明业务 setup 已完成。首次正式运行前，operator 以同一
+`distribution-entrypoint.sh` 执行一次 `setup`（例如 `docker run --rm ... <image> setup`），向导会
+读取当前配置并运行已启用、已安装 manifest 的 setup；配置已存在时可以保留它。Prompt setup 仅在
+`memory/VEDA.md` 缺失时创建，既有字节、空/损坏文件和 setup 失败都不会被覆盖或伪装成成功。随后再以
+`supervise` 启动服务；候选验证始终把 setup 的 workspace 与正式 workspace 分开。
+
 每个发行候选还要从仓库外的 `core.tar` 证明 Core-only 启停。可复用下面的仓库外制品验收命令；runner
 先执行 Core bootstrap 的 AppRuntime 启动和停止，再执行 bundle 组合，报告中的 `core_bootstrap.status`
 与 stop 证据必须闭合。该结果只证明 Core 制品没有 checkout/plugins 兜底，不能替代默认 profile 和正式

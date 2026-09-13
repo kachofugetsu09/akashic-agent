@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import stat
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
-from agent.plugin_contracts.json_store import atomic_write_text
-
 
 VEDA_RELATIVE_PATH = Path("memory/VEDA.md")
 DEFAULT_VEDA_PATH = Path(__file__).with_name("VEDA.md")
@@ -22,6 +22,15 @@ class VedaResetResult:
     path: Path
     backup_path: Path | None
     previous_sha256: str | None
+    default_sha256: str
+    changed: bool
+
+
+@dataclass(frozen=True)
+class VedaInitializationResult:
+    """记录首次安装是否发布了缺失的 Veda。"""
+
+    path: Path
     default_sha256: str
     changed: bool
 
@@ -65,6 +74,8 @@ def read_veda_file(path: Path) -> str:
             f"缺少 Veda: {path}；"
             "请显式运行已安装 Prompt 包的 persona.py --workspace PATH 恢复默认人格"
         ) from exc
+    except OSError as exc:
+        raise VedaLoadError(f"读取 Veda 失败: {path}: {exc}") from exc
     return _decode_veda(payload, path=path)
 
 
@@ -73,11 +84,126 @@ def read_default_veda() -> str:
         payload = DEFAULT_VEDA_PATH.read_bytes()
     except FileNotFoundError as exc:
         raise VedaLoadError(f"缺少默认 Veda 模板: {DEFAULT_VEDA_PATH}") from exc
+    except OSError as exc:
+        raise VedaLoadError(
+            f"读取默认 Veda 模板失败: {DEFAULT_VEDA_PATH}: {exc}"
+        ) from exc
     return _decode_veda(payload, path=DEFAULT_VEDA_PATH)
 
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _sync_directory(path: Path) -> None:
+    """持久化同目录的发布结果；setup runtime 不依赖 Core。"""
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        _ = os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _publish_veda_if_missing(path: Path, payload: bytes) -> bool:
+    """用临时文件和排他 hard-link 发布缺失 Veda，绝不覆盖竞争者。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            _ = stream.write(payload)
+            stream.flush()
+            _ = os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        _sync_directory(path.parent)
+        return True
+    except OSError as exc:
+        raise VedaLoadError(f"创建 Veda 失败: {path}: {exc}") from exc
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def initialize_veda_if_missing(workspace: Path) -> VedaInitializationResult:
+    """只为首次安装创建缺失 Veda，已有内容由读取边界严格验证并保留。"""
+
+    default_content = read_default_veda()
+    default_payload = f"{default_content}\n".encode("utf-8")
+    default_digest = _sha256(default_payload)
+    target = veda_path(workspace)
+
+    # 1. 先读取现有文件；空白、非法 UTF-8 和其他 I/O 错误都保持失败可见。
+    try:
+        existing_payload = target.read_bytes()
+    except FileNotFoundError:
+        existing_payload = None
+    except OSError as exc:
+        raise VedaLoadError(f"读取 Veda 失败: {target}: {exc}") from exc
+    if existing_payload is not None:
+        _ = _decode_veda(existing_payload, path=target)
+        return VedaInitializationResult(
+            path=target,
+            default_sha256=default_digest,
+            changed=False,
+        )
+
+    # 2. 通过排他发布解决两个首次初始化者的竞争；竞争者发布完成后只读验证。
+    created = _publish_veda_if_missing(target, default_payload)
+    if created:
+        return VedaInitializationResult(
+            path=target,
+            default_sha256=default_digest,
+            changed=True,
+        )
+    try:
+        published_payload = target.read_bytes()
+    except OSError as exc:
+        raise VedaLoadError(f"竞争发布后读取 Veda 失败: {target}: {exc}") from exc
+    _ = _decode_veda(published_payload, path=target)
+    return VedaInitializationResult(
+        path=target,
+        default_sha256=default_digest,
+        changed=False,
+    )
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """原子替换文本；仅供用户明确调用的 reset 使用。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        try:
+            target_mode = stat.S_IMODE(path.stat().st_mode)
+        except FileNotFoundError:
+            target_mode = None
+        if target_mode is not None:
+            os.fchmod(descriptor, target_mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            _ = stream.write(content)
+            stream.flush()
+            _ = os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
+    except OSError as exc:
+        raise VedaLoadError(f"写入 Veda 失败: {path}: {exc}") from exc
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def _write_backup(path: Path, payload: bytes) -> None:
@@ -138,7 +264,7 @@ def reset_veda(workspace: Path) -> VedaResetResult:
         _write_backup(backup_path, previous_payload)
 
     # 3. 原子发布默认内容；正在进行的轮次仍持有此前 prompt。
-    atomic_write_text(target, f"{default_content}\n", domain="veda_reset")
+    _atomic_write_text(target, f"{default_content}\n")
     return VedaResetResult(
         path=target,
         backup_path=backup_path,
@@ -164,7 +290,6 @@ AKASHIC_BEHAVIOR_RULES = """你有工具执行能力，必须先验证再回答�
 def main() -> None:
     """显式维护已安装包的人格文件，缺失与损坏都先记录可恢复结果。"""
     import argparse
-    import json
     from dataclasses import asdict
 
     parser = argparse.ArgumentParser(description="备份并重建 Prompt 默认人格")

@@ -61,7 +61,26 @@ uv venv && uv pip install -r requirements.txt -e sdk/python
 
 没有 uv？先 `pip install uv`。
 
-**1. 启动 Akashic Web**
+**1. 首次配置并启动 Akashic Web**
+
+正式 profile 安装完成后，先运行一次通用 setup 向导；它会让已安装插件执行各自声明的
+setup。Prompt 包的 setup 只创建缺失的 `memory/VEDA.md`，不会覆盖已有人格。未完成这一步
+就直接启动时，Prompt 会对缺失人格明确失败：
+
+```bash
+uv run python main.py setup --config /path/to/config.toml --workspace /path/to/workspace
+```
+
+发行容器同样使用入口的 `setup` 命令完成首次配置：
+
+```bash
+docker run --rm --env-file /path/to/runtime.env \
+  -v /srv/data/services/akashic/state:/srv/data/services/akashic/state \
+  <akashic-image> setup
+```
+
+配置已存在时，向导默认保留它并继续运行已安装插件 setup；只有确认覆盖才会生成新的 Core 配置。
+setup 失败会保持失败可见，不应直接启动首个 Prompt。
 
 ```bash
 uv run python main.py
@@ -95,7 +114,7 @@ Chat；没有模型配置时，Chat 会保留完整界面并引导进入“模�
 OpenCode Go 会动态读取订阅当前提供的模型，隐藏已知走 Messages API 的型号，其余型号
 默认按 Chat Completions 验证。因此新增 Chat Completions 型号通常不需要更新 Akashic。
 
-**2. 可选：使用终端初始化 Core**
+**2. 仅初始化 Core（不创建业务人格）**
 
 仍然可以使用原有命令：
 
@@ -104,7 +123,7 @@ uv run python main.py setup    # 交互向导
 uv run python main.py init     # 非交互，CI/自动化用
 ```
 
-终端初始化只创建 Core 和 workspace 配置；模型仍在 2236 的“模型”页添加。
+`init` 只创建 Core 和 workspace 配置；它不创建 VEDA。模型仍在 2236 的“模型”页添加。
 根 `config.toml` 只接受 Core 中立设置，最小示例：
 
 ```toml

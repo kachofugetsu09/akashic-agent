@@ -26,7 +26,8 @@ def _write_plugin(root: Path) -> None:
         "import os\n"
         "import sys\n"
         "Path(os.environ['AKASHIC_SETUP_CONFIG_PATH']).write_text(\n"
-        "    os.environ['AKASHIC_PLUGIN_ID'] + '\\n' + sys.prefix,\n"
+        "    os.environ['AKASHIC_PLUGIN_ID'] + '\\n' + sys.prefix + '\\n' +\n"
+        "    os.environ['AKASHIC_SETUP_WORKSPACE'],\n"
         "    encoding='utf-8',\n"
         ")\n",
         encoding="utf-8",
@@ -127,6 +128,38 @@ def test_wizard_initializes_core_before_plugin_data_setup(
     assert events == ["validate", "init", "plugins"]
 
 
+def test_wizard_keeps_existing_config_and_still_runs_plugin_setup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    original = "[runtime]\nworkspace = 'existing'\n"
+    config_path.write_text(original, encoding="utf-8")
+    events: list[str] = []
+    init_workspace_module = importlib.import_module("bootstrap.init_workspace")
+    monkeypatch.setattr(setup_wizard.click, "confirm", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        setup_wizard,
+        "_validate_config",
+        lambda config, workspace: events.append("validate"),
+    )
+    monkeypatch.setattr(
+        init_workspace_module,
+        "init_workspace",
+        lambda **kwargs: events.append("init"),
+    )
+    monkeypatch.setattr(
+        setup_wizard,
+        "_run_declared_plugin_setups",
+        lambda workspace: events.append("plugins"),
+    )
+    monkeypatch.setattr(setup_wizard, "_print_completion", lambda workspace: None)
+
+    setup_wizard.run_setup_wizard(config_path, tmp_path / "workspace")
+
+    assert config_path.read_text(encoding="utf-8") == original
+    assert events == ["validate", "init", "plugins"]
+
+
 def test_setup_runner_passes_plugin_data_boundary(tmp_path: Path, monkeypatch) -> None:
     plugin_home = tmp_path / "plugin-home"
     root = plugin_home / "cache" / "lab" / "fixture_setup" / ".artifacts" / "v1"
@@ -162,6 +195,7 @@ def test_setup_runner_passes_plugin_data_boundary(tmp_path: Path, monkeypatch) -
     config = workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
     lines = config.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "fixture_setup@lab"
+    assert lines[2] == str(workspace.resolve())
     record = python_environments.archive.read_descriptor(environment_ref)
     descriptor_input = record["input"]
     assert isinstance(descriptor_input, Mapping)
@@ -197,7 +231,9 @@ def test_setup_runner_reads_formal_install_artifact(
     setup_wizard._run_declared_plugin_setups(workspace)
 
     config = workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
-    assert config.read_text(encoding="utf-8").splitlines()[0] == "fixture_setup@lab"
+    lines = config.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "fixture_setup@lab"
+    assert lines[2] == str(workspace.resolve())
 
 
 def test_setup_runner_skips_disabled_installed_plugin(
