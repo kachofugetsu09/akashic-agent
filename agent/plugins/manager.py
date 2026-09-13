@@ -2878,6 +2878,13 @@ class PluginManager:
             if (
                 channel_state is not None
                 and not rollback_errors
+                # A preclosed state belongs to the outer formal-root
+                # transaction.  Its old runtime was stopped before the Root
+                # handoff and must be rebuilt from the exact old snapshot
+                # before it can be reopened.  Finishing it here would call
+                # recovery on that closed generation and hide the original
+                # participant failure.
+                and preclosed_channel_state is None
                 and channel_state.previous is self.current_snapshot
                 and channel_state.previous is not None
             ):
