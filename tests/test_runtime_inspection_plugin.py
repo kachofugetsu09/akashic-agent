@@ -144,15 +144,18 @@ async def test_runtime_inspection_provider_propagates_business_failure(
 
 
 @pytest.mark.asyncio
-async def test_core_inspection_binds_lease_for_real_skill_projection(tmp_path: Path) -> None:
+async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path: Path) -> None:
     """真实技能 owner 的租约读取经 Web/Mobile 共用的检查入口完成。"""
     import shutil
     from bus.event_bus import EventBus
     from agent.plugins.manager import PluginManager
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
     from session.artifact_store import ArtifactStore
-    from agent.plugins.snapshot import get_current_runtime_snapshot
-    from infra.mobile_realtime.runtime_inspection import RuntimeInspectionService
+    from agent.plugins.snapshot import (
+        get_current_runtime_snapshot,
+        lease_runtime_snapshot,
+    )
+    from plugins.akashic_clients.runtime_inspection import ScopedRpcRuntimeInspection
 
     source = tmp_path / "plugins"
     for name in ("content", "context", "tools", "standard_tools", "runtime_inspection"):
@@ -177,10 +180,20 @@ async def test_core_inspection_binds_lease_for_real_skill_projection(tmp_path: P
         await manager.load_all()
         snapshot = manager.snapshot_store.current
         assert snapshot is not None
-        service = RuntimeInspectionService(workspace=tmp_path / "workspace", snapshot_store=manager.snapshot_store)
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def open_scope():
+            async with lease_runtime_snapshot(manager.snapshot_store) as snapshot:
+                root = snapshot.composition_root
+                if root is None:
+                    raise RuntimeError("inspection fixture 缺少 composition root")
+                yield root.context
+
+        service = ScopedRpcRuntimeInspection(open_scope)
         for _ in range(2):
             result = await service.list_capabilities()
-            assert [item["name"] for item in _rows(result["skills"])] == ["probe"]
+            assert [item["name"] for item in _rows(result["items"])] == ["probe"]
             assert snapshot.lease_count == 0
             assert get_current_runtime_snapshot() is None
     finally:
