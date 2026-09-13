@@ -77,6 +77,8 @@
 
 | [0067](0067-clients-are-ordinary-plugin.md) | accepted | Web/Mobile 由普通插件拥有，Core 只提供中立原子能力 | AKC-001、AKC-002、PLG-001、WSP-003 |
 
+| [0068](0068-compaction-uses-one-recent-window.md) | accepted | Compaction 每代只摘要一个近期窗口 | CTX-001～CTX-007、MEM-011～MEM-012、SES-003～SES-005 |
+
 ## 新增规则
 
 1. 使用四位递增编号和短英文文件名。

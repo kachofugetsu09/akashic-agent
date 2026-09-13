@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Protocol
+from typing import Literal, Protocol
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_contracts import ContentPart, ContentReferences, Message
@@ -17,6 +17,9 @@ class MaterialRegistry(Protocol):
 
 
 class StoredSummary(Protocol):
+    @property
+    def version(self) -> int: ...
+
     @property
     def reference(self) -> str: ...
 
@@ -34,6 +37,19 @@ class StoredSummary(Protocol):
 
     @property
     def content(self) -> str: ...
+
+
+class PartitionedSummary(StoredSummary, Protocol):
+    """compaction v2 的结构化分区；不依赖 compaction 的 class identity。"""
+
+    @property
+    def version(self) -> Literal[2]: ...
+
+    @property
+    def summary_message_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def omitted_message_ids(self) -> tuple[str, ...]: ...
 
 
 class SummaryLookup(Protocol):
