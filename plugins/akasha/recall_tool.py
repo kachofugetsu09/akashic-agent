@@ -23,6 +23,7 @@ from .application.snapshot import read_memory
 from .domain.model import MemoryConfig
 from .learning import AKASHA_LEARNING, Learning, LearningConfig
 from .recalls import ProgramSource, Recall, RecallRecords, ToolSource, query_memory, render_materials
+from .infrastructure.frozen_history import FrozenHistory
 
 
 class RecallArguments(BaseModel):
@@ -105,7 +106,8 @@ class RecallTool:
         self, *, memory: Path, legacy_index: Path | None, config: MemoryConfig,
         catalog: MessageCatalog, embeddings: MessageEmbeddings, bindings: Bindings,
         select_learning: Callable[[], tuple[str, str]], records: RecallRecords,
-        open_embedding: Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]], max_chars: int = 12000,
+        open_embedding: Callable[[str], AbstractAsyncContextManager[BoundEmbeddingModel]],
+        max_chars: int = 12000, frozen_history: FrozenHistory | None = None,
     ):
         if max_chars <= 0:
             raise ValueError("召回文本预算必须为正")
@@ -119,6 +121,7 @@ class RecallTool:
         self._records = records
         self._open_embedding = open_embedding
         self._max_chars = max_chars
+        self._frozen_history = frozen_history
 
     async def prepare(
         self, arguments: Mapping[str, object], source: CallSource | None = None,
@@ -186,8 +189,17 @@ class RecallTool:
         recall = self._records.read(identity)
         if recall is None:
             return None
-        async with self._bindings.open(recall.learning_binding, AKASHA_LEARNING) as (learning, _metadata):
-            material = render_materials(identity, recall, learning, self._catalog, max_chars=recall.max_chars)
+        if self._frozen_history is not None:
+            if self._frozen_history.has_recall(identity, recall):
+                material = self._frozen_history.material_for(identity, recall, self._catalog)
+            elif self._frozen_history.requires_frozen_binding(recall.learning_binding):
+                raise ValueError("历史 Recall 缺少冻结结果，禁止用当前 binding 重渲染")
+            else:
+                async with self._bindings.open(recall.learning_binding, AKASHA_LEARNING) as (learning, _metadata):
+                    material = render_materials(identity, recall, learning, self._catalog, max_chars=recall.max_chars)
+        else:
+            async with self._bindings.open(recall.learning_binding, AKASHA_LEARNING) as (learning, _metadata):
+                material = render_materials(identity, recall, learning, self._catalog, max_chars=recall.max_chars)
         if tuple(dict.fromkeys(ref["ref"] for ref in cast(tuple[Mapping[str, str], ...], material["references"]))) != recall.presented_message_ids:
             raise ValueError("原查询呈现的材料发生变化，不能用当前结果冒充恢复")
         return self._result(identity, recall, tuple(ContentPart("text", part["text"]) for part in cast(tuple[Mapping[str, str], ...], material["reminders"])))

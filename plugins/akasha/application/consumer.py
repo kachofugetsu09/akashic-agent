@@ -15,6 +15,7 @@ from agent.plugin_composition.messages import MessageCatalog, MessageEmbeddings
 from ..domain.features import BurstAwareFeaturePool
 from ..domain.model import ContextState, EmbeddingSpaceMismatchError, MemoryConfig, Turn
 from ..infrastructure.consumption import Applied, Consumption, LegacyPrefix, turns_digest, load_legacy_prefix, legacy_embedding_model
+from ..infrastructure.frozen_history import FrozenHistory
 from ..infrastructure.lease import WriterLease
 from ..infrastructure.persistence import load_consumption, load_memory_state, write_memory_database
 from .cycle import MemoryCycle
@@ -64,7 +65,7 @@ class MessageConsumer:
     async def load(
         cls, path: Path, *, legacy_index: Path | None, catalog: MessageCatalog,
         embeddings: MessageEmbeddings, bindings: Bindings,
-        config: MemoryConfig,
+        config: MemoryConfig, frozen_history: FrozenHistory | None = None,
     ) -> MessageConsumer:
         """先按原绑定还原材料，再取得唯一 writer 装载图；缺失来源不自动重学。"""
         from ..learning import AKASHA_LEARNING, LearningConfig
@@ -82,6 +83,8 @@ class MessageConsumer:
         state = load_consumption(path)
         if state is None:
             raise ValueError("旧学习图尚未完成 yoyo 消费切换")
+        if frozen_history is not None:
+            frozen_history.validate_consumption(state)
         turns = load_legacy_prefix(state, legacy_index)
         space = None
         if state.legacy_prefix.count:
@@ -90,7 +93,14 @@ class MessageConsumer:
             space = legacy_embedding_model(legacy_index)
 
         # 2. 后缀逐项打开原算法闭包；不开模型、不嵌入，也不调用 commit。
-        for identity, entries in groupby(state.applied, key=lambda entry: entry.learning_binding):
+        for identity, grouped in groupby(state.applied, key=lambda entry: entry.learning_binding):
+            entries = tuple(grouped)
+            if frozen_history is not None and any(
+                frozen_history.uses_binding(entry.learning_binding) for entry in entries
+            ):
+                for entry in entries:
+                    turns.append(frozen_history.restore_turn(entry, catalog))
+                continue
             async with bindings.open(identity, AKASHA_LEARNING) as (learning, metadata):
                 rule = LearningConfig.model_validate(dict(metadata))
                 try:
