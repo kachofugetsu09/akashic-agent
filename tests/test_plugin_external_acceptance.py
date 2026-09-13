@@ -349,6 +349,7 @@ def test_core_probe_records_real_start_and_stop_contract(
 
     class Manager:
         current_snapshot = object()
+        channel_generation_host = object()
 
     class Core:
         plugin_manager = Manager()
@@ -357,12 +358,12 @@ def test_core_probe_records_real_start_and_stop_contract(
         _started = True
         _shutdown = False
         core = Core()
-        channel_host = object()
         app_server = object()
         dashboard_task = None
         chat_task = None
         mobile_gateway_task = None
         plugin_watcher_task = None
+        _primary_task = None
 
         async def shutdown(self) -> None:
             calls.append("stop")

@@ -627,13 +627,22 @@ async def _start_app_runtime(
         }
     )
     checks = evidence["checks"]
+    plugin_manager = getattr(getattr(runtime, "core", None), "plugin_manager", None)
+    channel_host = (
+        None
+        if plugin_manager is None
+        else getattr(plugin_manager, "channel_generation_host", None)
+    )
     checks.update(
         {
             "bootstrap_start_returned": True,
             "runtime_started": bool(getattr(runtime, "_started", False)),
             "core_runtime_created": getattr(runtime, "core", None) is not None,
             "stable_snapshot_published": snapshot is not None,
-            "channel_host_started": getattr(runtime, "channel_host", None) is not None,
+            # ChannelGenerationHost is owned by PluginManager; AppRuntime has
+            # no parallel channel_host facade.  The manager is constructed and
+            # custody-bound by build_core_runtime before runtime.start().
+            "channel_host_started": channel_host is not None,
             "app_server_started": getattr(runtime, "app_server", None) is not None,
             "checkout_invisible": not evidence["checkout_modules_visible"],
             "core_modules_from_artifact": not evidence["core_module_violations"],
