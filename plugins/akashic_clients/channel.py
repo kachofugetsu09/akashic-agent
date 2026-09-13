@@ -161,6 +161,27 @@ def _close_children(
         raise primary
 
 
+async def _finish_cancelled_server(task: asyncio.Task[Any]) -> None:
+    """Wait for a cancelled listener without hiding cleanup or a live task."""
+
+    _ = task.cancel()
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=_SERVER_STOP_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        # A task cancelled by this stop path has completed its cleanup.  A
+        # cancellation of the caller is still raised by _stop_server itself.
+        if task.cancelled():
+            return
+        raise
+    except asyncio.TimeoutError as error:
+        raise TimeoutError(
+            "akashic listener task did not settle after cancellation"
+        ) from error
+
+
 async def _stop_server(server: uvicorn.Server, task: asyncio.Task[Any]) -> None:
     """Ask Uvicorn to close its listener before cancelling its task."""
 
@@ -174,11 +195,17 @@ async def _stop_server(server: uvicorn.Server, task: asyncio.Task[Any]) -> None:
             timeout=_SERVER_STOP_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-    except asyncio.CancelledError:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        await _finish_cancelled_server(task)
+    except asyncio.CancelledError as cancellation:
+        try:
+            await _finish_cancelled_server(task)
+        except BaseException as cleanup_error:
+            if isinstance(cleanup_error, asyncio.CancelledError):
+                raise
+            raise BaseExceptionGroup(
+                "akashic listener stop cancelled and cleanup failed",
+                (cancellation, cleanup_error),
+            ) from cancellation
         raise
 
 
@@ -570,12 +597,14 @@ class _GenerationAkashicAdapter:
 
     async def _rollback_start(self, primary: BaseException) -> None:
         failures: list[BaseException] = []
+        remaining_servers: list[tuple[uvicorn.Server, asyncio.Task[None]]] = []
         for server, task in reversed(self._servers):
             try:
                 await _stop_server(server, task)
             except BaseException as error:
                 failures.append(error)
-        self._servers.clear()
+                remaining_servers.append((server, task))
+        self._servers = list(reversed(remaining_servers))
         results = await asyncio.gather(
             *(child.stop() for child in reversed(self._started_children)),
             return_exceptions=True,

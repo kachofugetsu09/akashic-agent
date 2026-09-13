@@ -10,6 +10,7 @@ import pytest
 from plugins.akashic_clients.channel import (
     _GenerationAkashicAdapter,
     _SERVER_START_TIMEOUT_SECONDS,
+    _stop_server,
 )
 
 
@@ -82,3 +83,102 @@ async def test_start_server_cancels_listener_when_ready_timeout_expires(monkeypa
 
     assert server.should_exit is True
     assert adapter._servers == []
+
+
+class _BlockingServer:
+    def __init__(self, *, cleanup_error: BaseException | None = None) -> None:
+        self.should_exit = False
+        self.started = asyncio.Event()
+        self.release_cleanup = asyncio.Event()
+        self.cleanup_error = cleanup_error
+
+    async def serve(self) -> None:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await self.release_cleanup.wait()
+            if self.cleanup_error is not None:
+                raise self.cleanup_error
+            raise
+
+
+@pytest.mark.asyncio
+async def test_stop_server_propagates_listener_cleanup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _BlockingServer(cleanup_error=RuntimeError("listener cleanup failed"))
+    task = asyncio.create_task(server.serve())
+    await server.started.wait()
+    monkeypatch.setattr(
+        "plugins.akashic_clients.channel._SERVER_STOP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    server.release_cleanup.set()
+
+    with pytest.raises(RuntimeError, match="listener cleanup failed"):
+        await _stop_server(server, task)
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_stop_server_retains_task_when_cancellation_does_not_settle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _BlockingServer()
+    task = asyncio.create_task(server.serve())
+    await server.started.wait()
+    monkeypatch.setattr(
+        "plugins.akashic_clients.channel._SERVER_STOP_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    with pytest.raises(TimeoutError, match="did not settle"):
+        await _stop_server(server, task)
+    assert not task.done()
+
+    server.release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_stop_server_preserves_outer_cancellation_after_listener_settles() -> None:
+    server = _BlockingServer()
+    task = asyncio.create_task(server.serve())
+    await server.started.wait()
+    stopping = asyncio.create_task(_stop_server(server, task))
+    await asyncio.sleep(0)
+    server.release_cleanup.set()
+
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+    assert task.done() and task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_start_rollback_retains_listener_owner_after_stop_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _adapter()
+    adapter._started_children = []
+    adapter._web = None
+    adapter._mobile_runtime = None
+    adapter._stopping = True
+    server = _BlockingServer()
+    task = asyncio.create_task(server.serve())
+    await server.started.wait()
+    adapter._servers = [(server, task)]
+    monkeypatch.setattr(
+        "plugins.akashic_clients.channel._SERVER_STOP_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    with pytest.raises(BaseExceptionGroup, match="start rollback"):
+        await adapter._rollback_start(RuntimeError("start failed"))
+    assert adapter._servers == [(server, task)]
+
+    server.release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
