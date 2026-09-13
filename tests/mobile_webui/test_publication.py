@@ -13,16 +13,16 @@ from typing import Any, cast
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from infra.mobile_realtime.key_protection import LoadedKeyset
-from infra.mobile_realtime.protocol import (
+from plugins.akashic_clients.mobile_realtime.key_protection import LoadedKeyset
+from plugins.akashic_clients.mobile_realtime.protocol import (
     MobileWebUiContentPrepareCommand,
     MobileWebUiReleaseChangedControl,
     parse_frame,
 )
-from infra.mobile_webui.protocol import PrepareReplyWire, ReleaseViewWire
-from infra.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
-from infra.mobile_webui.http import WebUiTicketIssuer, WebUiTicketError, parse_single_range
-from infra.mobile_webui.manifest import (
+from plugins.akashic_clients.mobile_webui.protocol import PrepareReplyWire, ReleaseViewWire
+from plugins.akashic_clients.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from plugins.akashic_clients.mobile_webui.http import WebUiTicketIssuer, WebUiTicketError, parse_single_range
+from plugins.akashic_clients.mobile_webui.manifest import (
     ManifestError,
     WebUiManifest,
     WebUiFile,
@@ -34,7 +34,7 @@ from infra.mobile_webui.manifest import (
     manifest_from_json,
     validate_manifest,
 )
-from infra.mobile_webui.store import MobileWebUiStore, UnknownReleaseError
+from plugins.akashic_clients.mobile_webui.store import MobileWebUiStore, UnknownReleaseError
 
 
 _SOURCE = {
@@ -61,7 +61,7 @@ def _manifest(root: Path, text: bytes = b"<html>ok</html>\n"):
 
 
 def _kill_backup_before_rename(root: str, destination: str) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     original_replace = store_module.os.replace
     absolute_destination = os.path.abspath(destination)
@@ -77,7 +77,7 @@ def _kill_backup_before_rename(root: str, destination: str) -> None:
 
 
 def _kill_backup_after_rename(root: str, destination: str) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     original_replace = store_module.os.replace
     absolute_destination = os.path.abspath(destination)
@@ -113,7 +113,7 @@ def _restore_target_name(target: str) -> str:
 
 
 def _kill_restore_before_old_rename(backup: str, target: str, pre_restore: str) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     original_replace = store_module.os.replace
     target_name = _restore_target_name(target)
@@ -133,7 +133,7 @@ def _kill_restore_before_old_rename(backup: str, target: str, pre_restore: str) 
 
 
 def _kill_restore_after_old_rename(backup: str, target: str, pre_restore: str) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     original_replace = store_module.os.replace
     target_name = _restore_target_name(target)
@@ -153,7 +153,7 @@ def _kill_restore_after_old_rename(backup: str, target: str, pre_restore: str) -
 
 
 def _kill_restore_after_new_install(backup: str, target: str, pre_restore: str) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     original_replace = store_module.os.replace
     absolute_target = os.path.abspath(target)
@@ -173,7 +173,7 @@ def _kill_restore_after_new_install(backup: str, target: str, pre_restore: str) 
 
 
 def _kill_restore_before_new_install_without_old(backup: str, target: str) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     original_replace = store_module.os.replace
     marker_path = os.path.abspath(store_module.MobileWebUiStore._restore_marker_path(Path(target)))
@@ -316,7 +316,7 @@ def test_manifest_directory_covers_wire_reachable_script_and_binary_mimes(tmp_pa
         "style.css": "text/css",
         "worker.cjs": "text/javascript",
     }
-    from infra.mobile_webui.protocol import WebUiManifestWire, WebUiFileWire
+    from plugins.akashic_clients.mobile_webui.protocol import WebUiManifestWire, WebUiFileWire
 
     WebUiManifestWire.model_validate(manifest.as_json(), strict=True)
     with pytest.raises(ValueError):
@@ -343,7 +343,7 @@ def test_wire_manifest_rejects_ambiguous_digest_size(tmp_path: Path) -> None:
     ]
     payload["file_count"] = 2
     payload["unpacked_size_bytes"] = 3
-    from infra.mobile_webui.protocol import WebUiManifestWire
+    from plugins.akashic_clients.mobile_webui.protocol import WebUiManifestWire
 
     with pytest.raises(ValueError, match="size/mime"):
         WebUiManifestWire.model_validate(payload, strict=True)
@@ -796,7 +796,7 @@ def test_restore_parent_fsync_failure_keeps_marker_for_valid_new_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
     original_replace = store_module.os.replace
@@ -846,7 +846,7 @@ def test_restore_recovery_delete_failure_keeps_marker_for_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
     original_rmtree = store_module.shutil.rmtree
@@ -888,7 +888,7 @@ def test_restore_recovery_delete_fsync_failure_keeps_marker_for_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
     original_rmtree = store_module.shutil.rmtree
@@ -935,7 +935,7 @@ def test_restore_marker_cleanup_failure_keeps_marker_and_recovers_on_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from infra.mobile_webui import store as store_module
+    from plugins.akashic_clients.mobile_webui import store as store_module
 
     backup, target, pre_restore, source_manifest, _old_manifest = _restore_fixture(tmp_path)
     original_clear = store_module.MobileWebUiStore._clear_restore_marker

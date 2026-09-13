@@ -1,7 +1,6 @@
 import asyncio
 import json
 import hashlib
-import logging
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -13,26 +12,160 @@ import pytest
 from pydantic import ValidationError
 
 from agent.plugins.manager import PluginManager
-from bootstrap.core_channel_adapter import build_core_channel_definition
+from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugin_composition.channels import (
+    CHANNEL_INPUT,
+    ChannelRuntimePorts,
+    InboundEnvelope,
+    RawInbound,
+)
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
-from infra.channels.base import AttachmentStore
-from infra.channels.contract import ChannelContext
+from plugins.akashic_clients.attachments import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from core.net.http import SharedHttpResources
-from infra.mobile_realtime.attachments import AttachmentChunk
+from plugins.akashic_clients.mobile_realtime.attachments import AttachmentChunk
 from session.artifact_store import ArtifactStore
-from infra.mobile_realtime.channel import MobileRealtimeChannel, _command_hash
-from infra.mobile_realtime.gateway import MobileGatewayRuntime
-from infra.mobile_realtime.protocol import MessageSendCommand
-from infra.mobile_realtime.storage import MobileRealtimeStorage
+from plugins.akashic_clients.mobile_realtime.channel import MobileRealtimeChannel, _command_hash
+from plugins.akashic_clients.mobile_realtime.gateway import MobileGatewayRuntime
+from plugins.akashic_clients.mobile_realtime.protocol import MessageSendCommand
+from plugins.akashic_clients.mobile_realtime.storage import MobileRealtimeStorage
 from session.admissions import SessionAdmissions
 from session.identities import ChannelIdentities
 from session.inbound_store import InboundHandoffStore
 from session.log import MessageLog, SessionAttributes
 from session.message import ContentPart, ContentReferences, Control, Input, Output
-from tests.mobile_realtime.test_channel import _Runtime, _register_device
+from tests.akashic_clients_mobile_fixtures import _Runtime, _register_device
 from tests.fixtures.formal_plugins import MINIMAL_MESSAGE_PLUGINS, install_formal_plugins
+
+
+class _TestBinding:
+    """最小 exact binding，仅让 MessageBus 保持正式 envelope 生命周期。"""
+
+    snapshot_lease = object()
+    snapshot_id = "test-snapshot"
+    generation_id = "test-generation"
+    channel_name = "akashic"
+    binding_token = "test-binding"
+    active = True
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _MessageBusIngress:
+    """把插件声明的 inbound port 接到真实 MessageBus/MessageLog owner。"""
+
+    def __init__(
+        self,
+        bus: MessageBus,
+        manager: PluginManager,
+        identities: ChannelIdentities,
+    ) -> None:
+        self._bus = bus
+        self._manager = manager
+        self._identities = identities
+        self._binding = _TestBinding()
+
+    async def reserve(self, raw: RawInbound) -> bool:
+        return await self._bus.reserve_durable_inbound(raw)
+
+    async def admit(self, raw: RawInbound) -> bool:
+        return await self._process(raw)
+
+    async def recover(self, raw: RawInbound) -> bool:
+        return await self._process(raw)
+
+    async def _process(self, raw: RawInbound) -> bool:
+        session_key = raw.message.metadata.get("session_key_override")
+        if not isinstance(session_key, str) or not session_key:
+            raise RuntimeError("测试 ingress 缺少 session_key_override")
+        identity_receipt = None
+        if raw.provider_identity is not None and raw.recipient is not None:
+            identity_receipt = self._identities.remember(
+                "akashic", raw.provider_identity, raw.recipient,
+            )
+        envelope = InboundEnvelope(
+            message_id=raw.message_id,
+            session_key=session_key,
+            snapshot_id=self._binding.snapshot_id,
+            generation_id=self._binding.generation_id,
+            binding_token=self._binding.binding_token,
+            message=raw.message,
+            lease=self._binding,
+        )
+        await self._bus.prepare_channel_input(envelope)
+        try:
+            async with lease_runtime_snapshot(self._manager.snapshot_store) as snapshot:
+                root = snapshot.composition_root
+                if root is None:
+                    raise RuntimeError("测试 ingress 缺少当前 composition snapshot")
+                accept = root.context.require(CHANNEL_INPUT)
+                await accept(session_key, raw.message_id, raw.message)
+            await self._bus.complete_channel_input(envelope)
+            return True
+        except BaseException:
+            if identity_receipt is not None:
+                self._identities.rollback(identity_receipt)
+            await self._bus.retain_channel_input(envelope)
+            raise
+
+
+class _MessageBusDurablePort:
+    """Expose only the formal durable operations required by Mobile."""
+
+    def __init__(self, bus: MessageBus, ingress: _MessageBusIngress) -> None:
+        self._bus = bus
+        self._ingress = ingress
+
+    async def reserve(self, raw: RawInbound) -> bool:
+        return await self._bus.reserve_durable_inbound(raw)
+
+    async def defer(self, handoff_id: str) -> None:
+        _ = await self._bus.defer_durable_inbound(handoff_id)
+
+    async def settle_rejected(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> None:
+        await self._bus.settle_rejected_inbound(
+            channel="akashic",
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
+
+    def has_pending(self, *, session_key: str, provider_message_id: str) -> bool:
+        return self._bus.has_pending_durable_inbound(
+            channel="akashic",
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
+
+    def pending_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> tuple[object, ...] | None:
+        return self._bus.pending_durable_attachment_refs(
+            channel="akashic",
+            session_key=session_key,
+            provider_message_id=provider_message_id,
+        )
+
+    async def recover(self, raw: RawInbound) -> bool:
+        return await self._ingress.recover(raw)
+
+
+class _ChannelRecovery:
+    """Route durable rows through the plugin command receipt recovery path."""
+
+    def __init__(self, channel: MobileRealtimeChannel) -> None:
+        self._channel = channel
+
+    async def __call__(self, raw: RawInbound) -> bool:
+        return await self._channel._recover_v3_handoff(raw)
 
 
 def command(session: str, number: int = 0, **payload: object) -> MessageSendCommand:
@@ -66,7 +199,7 @@ async def runtime(tmp_path, *, device=None, store_type=InboundHandoffStore):
         _register_device(storage, device)
     bus = MessageBus()
     bus.bind_durable_inbound_store(handoffs)
-    bus.bind_mobile_session_admission_owner(admissions)
+    bus.bind_session_admission_owner(admissions)
     gateway_runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, gateway_runtime))
     channel.bind_messages(log.catalog())
@@ -75,26 +208,35 @@ async def runtime(tmp_path, *, device=None, store_type=InboundHandoffStore):
     manager = PluginManager([], event_bus=event_bus, workspace=workspace,
         message_log=log, channel_identities=identities, channel_attachment_store=physical,
         installed_cache_root=plugin_home / 'cache')
-    manager.channel_generation_host.bind_input_custody(bus)
-    http_resources = SharedHttpResources()
-    context = ChannelContext(
-        bus=bus,
-        event_bus=event_bus,
-        attachment_store=AttachmentStore(tmp_path / 'uploads'),
-        http_resources=http_resources,
-        log=logging.getLogger(__name__),
-    )
+    ingress = _MessageBusIngress(bus, manager, identities)
+    durable = _MessageBusDurablePort(bus, ingress)
+    bus.bind_durable_inbound_recoverer(_ChannelRecovery(channel))
+    attachment_store = AttachmentStore(tmp_path / 'uploads')
     try:
-        await channel.start(context)
         await manager.load_all()
-        await manager.bind_core_channel_definitions((build_core_channel_definition(channel),))
+        await channel.start(
+            host_boot_id=f"test-boot-{uuid4().hex}",
+            durable_inbound=durable,
+            attachment_store=attachment_store,
+        )
+        channel._attach_v3_inbound(
+            ChannelRuntimePorts(
+                snapshot_id="test-snapshot",
+                generation_id="test-generation",
+                binding_token="test-binding",
+                ingress=ingress,
+                identity=None,
+                attachment_import=None,
+                durable_inbound=durable,
+            )
+        )
+        channel._open_v3_inbound()
         yield log, identities, manager, bus, channel, storage, device, handoffs
     finally:
         await manager.terminate_all()
         await channel.stop()
         await bus.aclose()
         await event_bus.aclose()
-        await http_resources.aclose()
         for store in (log, identities, admissions, handoffs, storage, artifacts):
             store.close()
 
@@ -344,7 +486,10 @@ async def test_rejection_cannot_expire_while_cross_database_cleanup_is_pending(t
         future = datetime.now(UTC) + timedelta(days=20)
         assert storage.cleanup_command_receipts(device_id=device, now=future) == 0
         assert storage.read_command(device_id=device, command_id=frame.id).status == 'completed'
-        monkeypatch.setattr('infra.mobile_realtime.channel._utc_now', lambda: future)
+        monkeypatch.setattr(
+            'plugins.akashic_clients.mobile_realtime.channel._utc_now',
+            lambda: future,
+        )
         append(log, session, 'later', Input(()))
         with pytest.raises(OSError):
             await channel.handle_command(device_id=device, frame=frame)

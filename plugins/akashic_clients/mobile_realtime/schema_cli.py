@@ -44,6 +44,7 @@ def _direct_package_identity() -> str:
 
 
 if not __package__:
+    sys.dont_write_bytecode = True
     _add_explicit_core_root()
     __package__ = f"{_direct_package_identity()}.mobile_realtime"
 

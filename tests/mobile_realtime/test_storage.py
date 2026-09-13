@@ -9,9 +9,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-import infra.mobile_realtime.storage as storage_module
+import plugins.akashic_clients.mobile_realtime.storage as storage_module
 
-from infra.mobile_realtime.storage import (
+from plugins.akashic_clients.mobile_realtime.storage import (
     AckOverflowError,
     AckRollbackError,
     AttachmentRecord,

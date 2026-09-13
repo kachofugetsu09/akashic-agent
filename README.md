@@ -104,24 +104,37 @@ uv run python main.py setup    # 交互向导
 uv run python main.py init     # 非交互，CI/自动化用
 ```
 
-终端初始化只创建 Core、渠道和 workspace 配置；模型仍在 2236 的“模型”页添加。
-`config.toml` 不再接受 `[llm]` 或 `[memory]`。手动 Core 配置的最小示例：
+终端初始化只创建 Core 和 workspace 配置；模型仍在 2236 的“模型”页添加。
+根 `config.toml` 只接受 Core 中立设置，最小示例：
 
 ```toml
 [runtime]
 workspace = "~/.akashic/workspace"
 
-[agent.context.compaction]
-keep_recent_tokens = 20000
-
-[channels.telegram]
-token = "123456:ABC..."
-allow_from = ["your_username"]
-
-[channels.chat]
+[app_server]
 enabled = true
-channel_name = "web"
+listen = ""
+max_connections = 32
+ingress_queue_size = 128
+outbound_queue_size = 512
 ```
+
+安装 `akashic_clients` 正式插件后，在其安装身份对应的 workspace data root
+（默认为 `<workspace>/plugin-data/akashic_clients-release/config.local.toml`）配置 Web/Mobile：
+
+```toml
+enabled = true
+
+[web]
+enabled = true
+
+[mobile_realtime]
+enabled = false
+```
+
+Telegram、QQ 和其他业务配置同样由各自已安装插件的 `config.local.toml` 拥有；Core 不读取
+`[channels.*]`、`[mobile_realtime]` 或模型业务表。若安装市场身份不是 `release`，以安装清单给出的
+`plugin-data/<name>-<marketplace>/` 为准。
 
 当前状态作为新的迁移基线，历史兼容脚本已经退役；Yoyo 保留用于未来升级。
 Core 只加载自有迁移和正式安装插件声明的 bundle，以 `<workspace>/migrations.sqlite3`
@@ -241,7 +254,7 @@ supervisor；需要直接调试 child 时把程序参数设为 `gateway`。也�
 Akashic Mobile 是一个通过独立实时网关连接 Akashic Agent 的 Android 客户端。远程接入推荐使用 Cloudflare Tunnel：Web Chat 和模型设置继续留在本机 `127.0.0.1:2236`，Tunnel 只转发由 Akashic 设备认证保护的 `6323` 端口。
 
 ```text
-1. 在 config.toml 启用 [mobile_realtime]
+1. 在已安装 akashic_clients 的 config.local.toml 启用 [mobile_realtime]
 2. 用 Cloudflare Tunnel 把一个公共域名转到 https://127.0.0.1:6323
 3. 在本机 Web Chat 点击“连接手机”，用 Akashic Mobile 扫描二维码
 4. 两端核对六位确认码，在电脑上批准设备

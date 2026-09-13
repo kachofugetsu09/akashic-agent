@@ -16,11 +16,10 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-import infra.mobile_realtime.channel as channel_module
-import infra.mobile_realtime.gateway as gateway_module
+import plugins.akashic_clients.mobile_realtime.channel as channel_module
+import plugins.akashic_clients.mobile_realtime.gateway as gateway_module
 
-from agent.config_models import MobileRealtimeConfig
-from agent.control.models import TurnRecord, TurnStatus
+from plugins.akashic_clients.config import MobileRealtimeConfig
 from agent.plugin_composition import (
     CapabilitySources,
     ConnectionDescriptor,
@@ -40,8 +39,10 @@ from agent.plugin_composition.channels import (
     ProviderDeliveryRequest,
     RawInbound,
 )
-from infra.mobile_realtime.runtime_inspection import RuntimeInspectionService
-from agent.plugins.model_catalog import ModelCatalogUnavailable
+from plugins.akashic_clients.services import (
+    ModelCatalogUnavailable,
+    RuntimeInspectionService,
+)
 from bus.events import (
     AttachmentKind,
     ChannelAttachment,
@@ -58,20 +59,23 @@ from bus.events_lifecycle import (
     TurnOutputCompleted,
     TurnStarted,
 )
-from infra.channels.base import AttachmentStore
+from plugins.akashic_clients.attachments import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
-from infra.mobile_realtime.attachments import attachment_descriptor
-from infra.mobile_realtime.channel import MobileRealtimeChannel
-from infra.mobile_realtime.gateway import MobileGatewayRuntime
+from plugins.akashic_clients.mobile_realtime.attachments import attachment_descriptor
+from plugins.akashic_clients.mobile_realtime.channel import MobileRealtimeChannel
+from plugins.akashic_clients.mobile_realtime.gateway import MobileGatewayRuntime
 from plugins.models.selection import read_saved
-from infra.mobile_realtime.protocol import (
+from plugins.akashic_clients.mobile_realtime.protocol import (
     GenericCommand,
     MAX_JSON_FRAME_BYTES,
     MessageSendCommand,
     parse_frame,
 )
-from infra.mobile_realtime.remote_media import RemoteMediaError, RemoteMediaSnapshot
-from infra.mobile_realtime.storage import (
+from plugins.akashic_clients.message_types import (
+    TurnTerminalStatus as PluginTurnTerminalStatus,
+)
+from plugins.akashic_clients.mobile_realtime.remote_media import RemoteMediaError, RemoteMediaSnapshot
+from plugins.akashic_clients.mobile_realtime.storage import (
     AttachmentRecord,
     DeviceRecord,
     MobileStorageError,
@@ -79,24 +83,64 @@ from infra.mobile_realtime.storage import (
 )
 from session.manager import SessionManager
 from session.log import MessageLog
+from session.message import ContentPart, ContentReferences, Output
 
 
 @pytest.fixture(autouse=True)
 def _bind_real_mobile_message_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """给旧测试夹具接入真实只读 MessageCatalog，避免伪造会话对象。"""
+    """给插件测试夹具接入真实消息目录与正式 v3 channel ports。"""
 
     logs: list[MessageLog] = []
     original_start = MobileRealtimeChannel.start
 
     async def start_with_message_log(
         channel: MobileRealtimeChannel,
-        ctx: Any,
+        ctx: Any | None = None,
+        *,
+        host_boot_id: str | None = None,
+        durable_inbound: Any | None = None,
+        attachment_store: Any | None = None,
     ) -> None:
-        if channel._messages is None:
+        if channel._message_scope is None:
             log = MessageLog(tmp_path / f"sessions-{len(logs)}.db")
             channel.bind_messages(log.catalog())
+            channel._test_message_log = log
             logs.append(log)
-        await original_start(channel, ctx)
+        if ctx is not None:
+            bus = getattr(ctx, "bus", None)
+            if not isinstance(bus, _Bus):
+                raise TypeError("Mobile 测试上下文缺少 _Bus durable ingress")
+            port = _DurablePort(bus)
+            await original_start(
+                channel,
+                host_boot_id=host_boot_id or f"test-boot-{id(channel)}",
+                durable_inbound=port,
+                attachment_store=ctx.attachment_store,
+            )
+            channel._attach_v3_inbound(
+                ChannelRuntimePorts(
+                    snapshot_id="test-snapshot",
+                    generation_id="test-generation",
+                    binding_token=f"test-binding-{id(channel)}",
+                    ingress=bus,
+                    identity=None,
+                    attachment_import=None,
+                    durable_inbound=port,
+                )
+            )
+            channel._open_v3_inbound()
+            command_catalog_provider = getattr(ctx, "command_catalog_provider", None)
+            if command_catalog_provider is not None:
+                channel.bind_command_catalog(command_catalog_provider)
+            return
+        if durable_inbound is None or attachment_store is None:
+            raise TypeError("Mobile 测试启动缺少正式 durable port 或 attachment store")
+        await original_start(
+            channel,
+            host_boot_id=host_boot_id or f"test-boot-{id(channel)}",
+            durable_inbound=durable_inbound,
+            attachment_store=attachment_store,
+        )
 
     monkeypatch.setattr(MobileRealtimeChannel, "start", start_with_message_log)
     try:
@@ -104,6 +148,27 @@ def _bind_real_mobile_message_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     finally:
         for log in logs:
             log.close()
+
+
+def _milestone_fields(record: logging.LogRecord) -> dict[str, object]:
+    """Read the plugin's flat structured-log fields across old test records."""
+
+    nested = getattr(record, "akashic_fields", None)
+    if isinstance(nested, Mapping):
+        return dict(nested)
+    return {
+        name: getattr(record, name)
+        for name in (
+            "event",
+            "session_id",
+            "turn_id",
+            "client_message_id",
+            "duration_ms",
+            "counts",
+            "outcome",
+        )
+        if hasattr(record, name)
+    }
 
 
 class _Runtime:
@@ -135,6 +200,11 @@ class _Runtime:
         capabilities: tuple[str, ...],
     ) -> None:
         self.storage.update_device_capabilities(device_id, capabilities)
+
+    def close_admission(self) -> None:
+        """Provide the gateway lifecycle edge used by the formal channel port."""
+
+        return None
 
 
 class _GatedPublishRuntime(_Runtime):
@@ -296,6 +366,55 @@ class _Bus:
         return self.pending_refs if self.pending_handoff else None
 
 
+class _DurablePort:
+    """把旧测试 bus 的行为接到插件声明的 durable inbound port。"""
+
+    def __init__(self, bus: _Bus) -> None:
+        self._bus = bus
+
+    async def reserve(self, raw: RawInbound) -> bool:
+        return await self._bus.reserve_mobile_channel_handoff(raw)
+
+    async def defer(self, handoff_id: str) -> None:
+        await self._bus.defer_mobile_channel_handoff(handoff_id)
+
+    async def settle_rejected(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> None:
+        await self._bus.settle_rejected_mobile_input(
+            session_key=session_key,
+            client_message_id=provider_message_id,
+        )
+
+    def has_pending(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> bool:
+        return self._bus.has_pending_mobile_handoff(
+            session_key=session_key,
+            client_message_id=provider_message_id,
+        )
+
+    def pending_attachment_refs(
+        self,
+        *,
+        session_key: str,
+        provider_message_id: str,
+    ) -> tuple[AttachmentRef, ...] | None:
+        return self._bus.pending_mobile_attachment_refs(
+            session_key=session_key,
+            client_message_id=provider_message_id,
+        )
+
+    async def recover(self, raw: RawInbound) -> bool:
+        return await self._bus.recover(raw)
+
+
 class _GatedReserveBus(_Bus):
     def __init__(self) -> None:
         super().__init__()
@@ -325,6 +444,44 @@ class _EventBus:
 
 class _PushTool:
     pass
+
+
+class _NativeMessageManager:
+    """Small test owner backed by the current append-only MessageLog."""
+
+    def __init__(self, log: MessageLog) -> None:
+        self._log = log
+
+    async def append_durable_delivery(
+        self,
+        *,
+        session_key: str,
+        content: str,
+        delivery_id: str,
+        control_turn_id: str,
+    ) -> str:
+        _ = delivery_id
+        message_id = uuid4().hex
+        writer = self._log.writer(
+            session_key,
+            author="assistant",
+            source="conversation",
+            body_types=(Output,),
+            content={"text": lambda _: ContentReferences()},
+        )
+        writer.append(
+            message_id,
+            Output(
+                (ContentPart("text", content),),
+                "complete",
+            ),
+        )
+        return message_id
+
+    def close(self) -> None:
+        """The autouse fixture owns the log connection lifecycle."""
+
+        return None
 
 
 class _ProviderFactory:
@@ -366,14 +523,13 @@ async def _started_native_mobile_channel(
     *,
     active_device: bool = True,
     runtime: Any | None = None,
-) -> tuple[MobileRealtimeChannel, MobileRealtimeStorage, SessionManager]:
+) -> tuple[MobileRealtimeChannel, MobileRealtimeStorage, _NativeMessageManager]:
     if runtime is None:
         storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     else:
         storage = cast(MobileRealtimeStorage, runtime.storage)
     if active_device:
         _register_device(storage, "device-1")
-    manager = SessionManager(tmp_path / "workspace")
     channel = MobileRealtimeChannel(
         cast(MobileGatewayRuntime, runtime or _Runtime(storage))
     )
@@ -382,13 +538,14 @@ async def _started_native_mobile_channel(
             Any,
             SimpleNamespace(
                 bus=_Bus(),
-                session_manager=manager,
+                session_manager=SimpleNamespace(),
                 event_bus=_EventBus(),
                 push_tool=_PushTool(),
                 attachment_store=AttachmentStore(tmp_path / "uploads"),
             ),
         )
     )
+    manager = _NativeMessageManager(cast(MessageLog, channel._test_message_log))
     return channel, storage, manager
 
 
@@ -432,6 +589,13 @@ def _provider_delivery(channel: MobileRealtimeChannel):
                 execution_attempt_id=message.control_turn_id,
             )
         channel_message = channel_message_from_outbound(message)
+        if channel_message.terminal_status is not None:
+            channel_message = replace(
+                channel_message,
+                terminal_status=PluginTurnTerminalStatus(
+                    channel_message.terminal_status.value
+                ),
+            )
         metadata = dict(channel_message.metadata)
         metadata["_channel_commit_role"] = "passive"
         return await channel._deliver_message(
@@ -1123,17 +1287,17 @@ def _register_device(storage: MobileRealtimeStorage, device_id: str) -> None:
 
 @pytest.mark.asyncio
 async def test_lazy_mcp_catalog_error_does_not_abort_next_command(tmp_path: Path) -> None:
-    from agent.plugins.snapshot import RuntimeSnapshot
-    from infra.mobile_realtime.runtime_inspection import _mcp_items
-
-    snapshot = RuntimeSnapshot("lazy-mcp", {}, ())
-    snapshot.mcp_server_registry = cast(Any, SimpleNamespace(
-        descriptors=(SimpleNamespace(owner="computer", name="computer"),),
-    ))
-
     class Inspection(_RuntimeInspection):
         async def list_capabilities(self) -> dict[str, object]:
-            return {"mcp_servers": _mcp_items(snapshot)}
+            # MCP schemas are lazy and are not part of the Mobile command's
+            # own provider.  Keep the provider failure explicit so the next
+            # independent command can still run on this connection.
+            from plugins.akashic_clients.runtime_inspection import RuntimeInspectionError
+
+            raise RuntimeInspectionError(
+                "mcp_catalog_unavailable",
+                "MCP 工具目录暂不可用，声明的服务按需启动",
+            )
 
     storage = MobileRealtimeStorage(tmp_path / "mobile.db")
     device_id = uuid4().hex
@@ -1244,10 +1408,11 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
             }
         ]
         before = log.catalog().snapshot_heads()
-        unknown = await channel._model_catalog(_generic_frame(
-            frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAW", command_type="model.catalog.get",
-            session_id=f"akashic:{uuid4()}",
-        ))
+        async with channel.open_message_scope():
+            unknown = await channel._model_catalog(_generic_frame(
+                frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAW", command_type="model.catalog.get",
+                session_id=f"akashic:{uuid4()}",
+            ))
         assert unknown.payload["selected_runtime_id"] == ""
         assert log.catalog().snapshot_heads() == before
 
@@ -1691,7 +1856,7 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
     workspace = tmp_path / "workspace"
     manager = SessionManager(workspace)
     legacy_store = AttachmentStore(tmp_path / "uploads")
-    legacy_store.root.mkdir(parents=True)
+    legacy_store.root.mkdir(parents=True, exist_ok=True)
     source = legacy_store.root / "upload.bin"
     original = b"reserved attachment bytes"
     source.write_bytes(original)
@@ -1973,7 +2138,10 @@ async def test_remote_outbound_media_keeps_response_filename(
             sha256="f" * 64,
         )
 
-    monkeypatch.setattr("infra.mobile_realtime.channel.snapshot_remote_media", snapshot)
+    monkeypatch.setattr(
+        "plugins.akashic_clients.mobile_realtime.channel.snapshot_remote_media",
+        snapshot,
+    )
     descriptors = await channel._outbound_descriptors(
         f"akashic:{uuid4()}",
         ["https://media.example/reaction"],
@@ -2017,7 +2185,10 @@ async def test_remote_media_failure_keeps_final_text(
     async def fail(*args: object, **kwargs: object) -> RemoteMediaSnapshot:
         raise RemoteMediaError("签名链接已失效")
 
-    monkeypatch.setattr("infra.mobile_realtime.channel.snapshot_remote_media", fail)
+    monkeypatch.setattr(
+        "plugins.akashic_clients.mobile_realtime.channel.snapshot_remote_media",
+        fail,
+    )
     await _provider_delivery(channel)(
         OutboundMessage(
             channel="akashic",
@@ -2081,7 +2252,7 @@ async def test_failed_terminal_accepts_client_message_id_without_user_message_id
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
-    with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
+    with caplog.at_level(logging.INFO, logger="plugins.akashic_clients.mobile_realtime.channel"):
         await _provider_delivery(channel)(
             OutboundMessage(
                 channel="akashic",
@@ -2111,11 +2282,11 @@ async def test_failed_terminal_accepts_client_message_id_without_user_message_id
     final_records = [
         record
         for record in caplog.records
-        if record.akashic_fields.get("event") == "tl:final.published"
+        if _milestone_fields(record).get("event") == "tl:final.published"
     ]
     assert len(final_records) == 1
-    assert final_records[0].akashic_fields["turn_id"] == turn_id
-    assert final_records[0].akashic_fields["client_message_id"] == "cmid-fail"
+    assert _milestone_fields(final_records[0])["turn_id"] == turn_id
+    assert _milestone_fields(final_records[0])["client_message_id"] == "cmid-fail"
     storage.close()
 
 
@@ -2194,75 +2365,6 @@ async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) ->
 
     payload = cast(dict[str, object], runtime.events[-1]["payload"])
     assert "message_id" not in payload
-    await channel.stop()
-    manager.close()
-    storage.close()
-
-
-@pytest.mark.asyncio
-async def test_resume_reconciles_recovered_terminal_turn_for_mobile_device(
-    tmp_path: Path,
-) -> None:
-    storage = MobileRealtimeStorage(tmp_path / "mobile.db")
-    device_id = uuid4().hex
-    _register_device(storage, device_id)
-    runtime = _Runtime(storage)
-    channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    manager = SessionManager(tmp_path / "workspace")
-    session_id = f"akashic:{uuid4()}"
-    turn_id = "01ARZ3NDEKTSV4RRFFQ69G5FAY"
-    storage.claim_session(
-        device_id=device_id,
-        session_id=session_id,
-        created_at=datetime.now(timezone.utc),
-    )
-    manager.save(manager.get_or_create(session_id))
-    manager.control_store.create_turn(
-        TurnRecord(
-            id=turn_id,
-            thread_id=session_id,
-            status=TurnStatus.QUEUED,
-            input="维护前的提问",
-            created_at=datetime.now(timezone.utc),
-        )
-    )
-    manager.control_store.transition_turn(
-        turn_id,
-        expected_status=TurnStatus.QUEUED,
-        status=TurnStatus.CANCELLED,
-    )
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
-    )
-
-    await channel.reconcile_active_turns(
-        device_id=device_id,
-        active_turns=(turn_id,),
-    )
-
-    assert runtime.events == [
-        {
-            "event_type": "turn.interrupted",
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "payload": {
-                "status": "cancelled",
-                "message": "服务端已确认本轮生成结束",
-                "control_turn_id": turn_id,
-                "reason": "resume_reconciliation",
-            },
-            "device_id": device_id,
-        }
-    ]
     await channel.stop()
     manager.close()
     storage.close()
@@ -2921,7 +3023,7 @@ async def test_first_delta_orders_received_then_publish_then_published(
     )
 
     # 2. 发布被闸门挂起时：delta 已写入 runtime，received 已打点，published 未打。
-    with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
+    with caplog.at_level(logging.INFO, logger="plugins.akashic_clients.mobile_realtime.channel"):
         delta_task = asyncio.create_task(
             channel._on_stream_delta(
                 StreamDeltaReady(
@@ -2939,9 +3041,9 @@ async def test_first_delta_orders_received_then_publish_then_published(
             "react.thinking.delta",
         ]
         milestones = [
-            record.akashic_fields
+            _milestone_fields(record)
             for record in caplog.records
-            if record.akashic_fields.get("event", "").startswith(
+            if _milestone_fields(record).get("event", "").startswith(
                 "tl:delta.first_thinking"
             )
         ]
@@ -2957,9 +3059,9 @@ async def test_first_delta_orders_received_then_publish_then_published(
         runtime.delta_publish_release.set()
         await asyncio.wait_for(delta_task, timeout=5)
         milestones = [
-            record.akashic_fields
+            _milestone_fields(record)
             for record in caplog.records
-            if record.akashic_fields.get("event", "").startswith(
+            if _milestone_fields(record).get("event", "").startswith(
                 "tl:delta.first_thinking"
             )
         ]
@@ -3028,16 +3130,16 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
 
     def _first_milestones() -> list[dict[str, object]]:
         return [
-            record.akashic_fields
+            _milestone_fields(record)
             for record in caplog.records
-            if getattr(record, "akashic_fields", {})
+            if _milestone_fields(record)
             .get("event", "")
             .startswith("tl:delta.first_")
         ]
 
     # 1. 首个双字段事件：两个 helper 各执行一次，state 全量建立，首段即时
     #    flush，wire 严格 react.thinking.delta → answer.delta。
-    with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
+    with caplog.at_level(logging.INFO, logger="plugins.akashic_clients.mobile_realtime.channel"):
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
@@ -3126,7 +3228,7 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
 
 
 @pytest.mark.asyncio
-async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
+async def test_interrupted_terminal_flushes_pending_delta_before_terminal_event(
     tmp_path: Path,
 ) -> None:
     """终态前必须先 flush 已缓冲 delta；终态后批与定时器消失，无迟到发布。"""
@@ -3212,22 +3314,8 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
         "message.final",
     ]
 
-    # 3. reconcile 终态同样先 flush 残留批再发布 turn.interrupted。
+    # 3. typed interrupted terminal 同样先 flush 残留批再发布 turn.interrupted。
     second_turn = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-    manager.control_store.create_turn(
-        TurnRecord(
-            id=second_turn,
-            thread_id=session_id,
-            status=TurnStatus.QUEUED,
-            input="第二问",
-            created_at=datetime.now(timezone.utc),
-        )
-    )
-    manager.control_store.transition_turn(
-        second_turn,
-        expected_status=TurnStatus.QUEUED,
-        status=TurnStatus.CANCELLED,
-    )
     await channel._on_turn_started(
         TurnStarted(
             session_key=session_id,
@@ -3258,9 +3346,16 @@ async def test_terminal_and_reconcile_flush_pending_delta_before_terminal_event(
         )
     )
     events_before = [event["event_type"] for event in runtime.events]
-    await channel.reconcile_active_turns(
-        device_id=device_id,
-        active_turns=(second_turn,),
+    await _provider_delivery(channel)(
+        OutboundMessage(
+            channel="akashic",
+            chat_id=session_id.removeprefix("akashic:"),
+            content="本轮已中断。",
+            metadata={"client_message_id": "cmid-B"},
+            control_turn_id=second_turn,
+            execution_attempt_id=second_turn,
+            terminal_status=TurnTerminalStatus.INTERRUPTED,
+        )
     )
     assert [event["event_type"] for event in runtime.events] == [
         *events_before,
@@ -3329,7 +3424,7 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
 
     # 1. final 路径：top flush 发布已缓冲 delta → suffix delta → barrier 内发布
     #    message.final；闸门卡住 terminal 发布，让 barrier 临界区真实持锁。
-    with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
+    with caplog.at_level(logging.INFO, logger="plugins.akashic_clients.mobile_realtime.channel"):
         final_task = asyncio.create_task(
             _provider_delivery(channel)(
                 OutboundMessage(
@@ -3415,7 +3510,7 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
     ]
 
     # 6. 收口完成后（maps 已清理）的迟到 delta 仍被拒绝，且不能重建 lock/batch
-    with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
+    with caplog.at_level(logging.INFO, logger="plugins.akashic_clients.mobile_realtime.channel"):
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
@@ -3431,15 +3526,15 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
     dropped = [
         record
         for record in caplog.records
-        if record.akashic_fields.get("event") == "tl:turn.late.drop"
+        if _milestone_fields(record).get("event") == "tl:turn.late.drop"
     ]
     assert len(dropped) == 2
-    assert {item.akashic_fields["counts"] for item in dropped} == {
+    assert {_milestone_fields(item)["counts"] for item in dropped} == {
         "event_type=answer.delta",
     }
     assert all(
-        item.akashic_fields["session_id"] == session_id
-        and item.akashic_fields["turn_id"] == turn_id
+        _milestone_fields(item)["session_id"] == session_id
+        and _milestone_fields(item)["turn_id"] == turn_id
         for item in dropped
     )
     await channel.stop()
@@ -3855,7 +3950,7 @@ async def test_post_terminal_flush_duplicate_and_late_events_never_rebuild(
         is False
     )
     # 2. 迟到 delta / tool.started / tool.completed：全部丢弃，无 state 异常。
-    with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
+    with caplog.at_level(logging.INFO, logger="plugins.akashic_clients.mobile_realtime.channel"):
         await channel._on_stream_delta(
             StreamDeltaReady(
                 session_key=session_id,
@@ -3906,9 +4001,9 @@ async def test_post_terminal_flush_duplicate_and_late_events_never_rebuild(
     dropped = [
         record
         for record in caplog.records
-        if record.akashic_fields.get("event") == "tl:turn.late.drop"
+        if _milestone_fields(record).get("event") == "tl:turn.late.drop"
     ]
-    assert {item.akashic_fields["counts"] for item in dropped} == {
+    assert {_milestone_fields(item)["counts"] for item in dropped} == {
         "event_type=answer.delta",
         "event_type=react.tool.started",
         "event_type=react.tool.completed",
@@ -4063,7 +4158,7 @@ async def test_late_a_final_keeps_b_active_and_identity(
 
     # 1. 迟到的 A final 通过 execution attempt 归属 A；逻辑 Turn 独立投影。
     logical_turn_a = "turn:logical-A"
-    with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
+    with caplog.at_level(logging.INFO, logger="plugins.akashic_clients.mobile_realtime.channel"):
         await _provider_delivery(channel)(
             OutboundMessage(
                 channel="akashic",
@@ -4087,11 +4182,11 @@ async def test_late_a_final_keeps_b_active_and_identity(
     final_records = [
         record
         for record in caplog.records
-        if record.akashic_fields.get("event") == "tl:final.published"
+        if _milestone_fields(record).get("event") == "tl:final.published"
     ]
     assert len(final_records) == 1
-    assert final_records[0].akashic_fields["turn_id"] == turn_a
-    assert final_records[0].akashic_fields["client_message_id"] == "cmid-A"
+    assert _milestone_fields(final_records[0])["turn_id"] == turn_a
+    assert _milestone_fields(final_records[0])["client_message_id"] == "cmid-A"
 
     # 2. A cleanup 只清 A：B 的 active/process/turn/send maps 全部保留。
     assert channel._active_turn_ids == {session_id: turn_b}
@@ -4297,7 +4392,7 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
     session_id = f"akashic:{uuid4()}"
     first_id = "01ARZ3NDEKTSV4RRFFQ69G5FAA"
     second_id = "01ARZ3NDEKTSV4RRFFQ69G5FAB"
-    with caplog.at_level(logging.INFO, logger="infra.mobile_realtime.channel"):
+    with caplog.at_level(logging.INFO, logger="plugins.akashic_clients.mobile_realtime.channel"):
         first = await channel.handle_command(
             device_id=device_id,
             frame=_message_frame(frame_id=first_id, session_id=session_id),
@@ -4340,18 +4435,20 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
     started = [
         record
         for record in caplog.records
-        if record.akashic_fields.get("event") == "tl:turn.started"
+        if _milestone_fields(record).get("event") == "tl:turn.started"
     ]
-    by_cmid = {record.akashic_fields["client_message_id"]: record for record in started}
+    by_cmid = {
+        _milestone_fields(record)["client_message_id"]: record for record in started
+    }
     assert set(by_cmid) == {first_id, second_id}
-    assert by_cmid[first_id].akashic_fields["duration_ms"] == pytest.approx(103_000.0)
-    assert by_cmid[second_id].akashic_fields["duration_ms"] == pytest.approx(193_000.0)
+    assert _milestone_fields(by_cmid[first_id])["duration_ms"] == pytest.approx(103_000.0)
+    assert _milestone_fields(by_cmid[second_id])["duration_ms"] == pytest.approx(193_000.0)
     acks = [
         record
         for record in caplog.records
-        if record.akashic_fields.get("event") == "tl:send.ack"
+        if _milestone_fields(record).get("event") == "tl:send.ack"
     ]
-    assert {record.akashic_fields["client_message_id"] for record in acks} == {
+    assert {_milestone_fields(record)["client_message_id"] for record in acks} == {
         first_id,
         second_id,
     }

@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from infra.mobile_realtime.runtime_inspection import (
-    RuntimeInspectionError,
-    RuntimeInspectionService,
-)
+from agent.plugins.snapshot import lease_runtime_snapshot
+from plugins.akashic_clients.runtime_inspection import ScopedRpcRuntimeInspection
 from plugins.scheduler.inspection import SchedulerInspectionProvider
 from plugins.scheduler.schedule import ScheduledJob
 from plugins.scheduler.store import JobStore
@@ -37,6 +36,20 @@ def _job(
         name=job_id,
         id=job_id,
     )
+
+
+def _inspection_service(store):
+    """Resolve inspection RPC methods through one current snapshot per call."""
+
+    @asynccontextmanager
+    async def open_scope():
+        async with lease_runtime_snapshot(store) as snapshot:
+            root = snapshot.composition_root
+            if root is None:
+                raise RuntimeError("inspection fixture 缺少 composition root")
+            yield root.context
+
+    return ScopedRpcRuntimeInspection(open_scope)
 
 
 def test_scheduler_provider_projects_only_enabled_jobs(tmp_path: Path) -> None:
@@ -85,7 +98,7 @@ class _Provider:
 
 
 @pytest.mark.asyncio
-async def test_core_passes_through_scheduler_projection_without_reading_workspace(tmp_path: Path) -> None:
+async def test_client_passes_through_scheduler_projection_without_reading_workspace(tmp_path: Path) -> None:
     from agent.plugin_composition import CompositionRoot
     from agent.plugin_composition.rpc import rpc_method_key
     from plugins.runtime_inspection.rpc import rpc_methods
@@ -101,7 +114,7 @@ async def test_core_passes_through_scheduler_projection_without_reading_workspac
     store = RuntimeSnapshotStore()
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
     store.install(snapshot)
-    service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=store)
+    service = _inspection_service(store)
     original = provider.list_jobs
     def list_jobs():
         assert get_current_runtime_snapshot() is snapshot
@@ -119,7 +132,7 @@ async def test_core_passes_through_scheduler_projection_without_reading_workspac
 
 
 @pytest.mark.asyncio
-async def test_core_does_not_swallow_scheduler_provider_failure(tmp_path: Path) -> None:
+async def test_client_does_not_swallow_scheduler_provider_failure(tmp_path: Path) -> None:
     from agent.plugin_composition import CompositionRoot
     from agent.plugin_composition.rpc import rpc_method_key
     from plugins.runtime_inspection.rpc import rpc_methods
@@ -141,7 +154,7 @@ async def test_core_does_not_swallow_scheduler_provider_failure(tmp_path: Path) 
     store = RuntimeSnapshotStore()
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
     store.install(snapshot)
-    service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=store)
+    service = _inspection_service(store)
     try:
         with pytest.raises(RuntimeError, match="scheduler read failed"):
             await service.list_jobs()
@@ -151,40 +164,75 @@ async def test_core_does_not_swallow_scheduler_provider_failure(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_core_reports_scheduler_unavailable_without_provider(tmp_path: Path) -> None:
-    service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=None)
-
-    with pytest.raises(RuntimeInspectionError, match="调度检查服务尚未绑定") as error:
-        await service.list_jobs()
-
-    assert error.value.code == "scheduler_unavailable"
-
-
-@pytest.mark.asyncio
-async def test_core_reports_skills_unavailable_without_provider(tmp_path: Path) -> None:
+async def test_client_reports_scheduler_unavailable_without_provider(tmp_path: Path) -> None:
     from agent.plugin_composition import CompositionRoot
+    from agent.plugin_composition.rpc import rpc_method_key
+    from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
+    from plugins.runtime_inspection.rpc import rpc_methods
     from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
 
-    root = CompositionRoot("skill-inspection")
+    root = CompositionRoot("scheduler-inspection-unavailable")
+    provider = RuntimeInspectionProvider(
+        {name: tmp_path / f"{name}.md" for name in ("memory", "self", "veda")}
+    )
+
+    async def apply(ctx):
+        for method, operation in rpc_methods(provider).items():
+            await ctx.provide(rpc_method_key(method), operation)
+
+    await root.mount(apply, name="runtime-inspection")
     store = RuntimeSnapshotStore()
-    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    store.install(snapshot)
-    service = RuntimeInspectionService(workspace=tmp_path, snapshot_store=store)
+    store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
+    service = _inspection_service(store)
     try:
-        payload = await service.list_capabilities()
-        assert payload["plugins"] == []
-        assert payload["mcp_servers"] == []
-        assert payload["skills"] == []
-        assert payload["unavailable"] == [
-            {"kind": "skills", "code": "skills_unavailable", "status": "unavailable"}
-        ]
+        assert await service.list_jobs() == {
+            "unavailable": {
+                "code": "scheduler_unavailable",
+                "message": "调度检查服务尚未绑定",
+            }
+        }
     finally:
         await store.close()
         await root.dispose()
 
 
-def test_core_runtime_inspection_has_no_scheduler_implementation_import() -> None:
-    source = (Path(__file__).parents[1] / "infra/mobile_realtime/runtime_inspection.py").read_text(
+@pytest.mark.asyncio
+async def test_client_reports_skills_unavailable_without_provider(tmp_path: Path) -> None:
+    from agent.plugin_composition import CompositionRoot
+    from agent.plugin_composition.rpc import rpc_method_key
+    from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
+    from plugins.runtime_inspection.rpc import rpc_methods
+    from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
+
+    root = CompositionRoot("skill-inspection")
+    provider = RuntimeInspectionProvider(
+        {name: tmp_path / f"{name}.md" for name in ("memory", "self", "veda")}
+    )
+
+    async def apply(ctx):
+        for method, operation in rpc_methods(provider).items():
+            await ctx.provide(rpc_method_key(method), operation)
+
+    await root.mount(apply, name="runtime-inspection")
+    store = RuntimeSnapshotStore()
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    store.install(snapshot)
+    service = _inspection_service(store)
+    try:
+        payload = await service.list_capabilities()
+        assert payload == {
+            "unavailable": {
+                "code": "skills_unavailable",
+                "message": "技能检查服务尚未绑定",
+            }
+        }
+    finally:
+        await store.close()
+        await root.dispose()
+
+
+def test_client_runtime_inspection_has_no_scheduler_implementation_import() -> None:
+    source = (Path(__file__).parents[1] / "plugins/akashic_clients/runtime_inspection.py").read_text(
         encoding="utf-8"
     )
 
