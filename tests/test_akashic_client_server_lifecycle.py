@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+import uvicorn
 
 from agent.plugin_composition.channels import StopReceipt
 from plugins.akashic_clients.channel import (
@@ -46,7 +48,7 @@ async def test_start_server_returns_only_after_listener_is_ready() -> None:
     adapter = _adapter()
     server = _FakeServer()
 
-    await adapter._start_server(server, name="test-web")
+    await adapter._start_server(cast(uvicorn.Server, server), name="test-web")
 
     assert server.started is True
     assert len(adapter._servers) == 1
@@ -63,7 +65,7 @@ async def test_start_server_propagates_failure_before_listener_ready() -> None:
     server = _FakeServer(failure=failure)
 
     with pytest.raises(OSError, match="address already in use") as raised:
-        await adapter._start_server(server, name="test-web")
+        await adapter._start_server(cast(uvicorn.Server, server), name="test-web")
 
     assert raised.value is failure
     assert server.should_exit is True
@@ -80,7 +82,7 @@ async def test_start_server_cancels_listener_when_ready_timeout_expires(monkeypa
     )
 
     with pytest.raises(TimeoutError):
-        await adapter._start_server(server, name="test-web")
+        await adapter._start_server(cast(uvicorn.Server, server), name="test-web")
 
     assert server.should_exit is True
     assert adapter._servers == []
@@ -137,7 +139,7 @@ async def test_stop_server_propagates_listener_cleanup_error(
     server.release_cleanup.set()
 
     with pytest.raises(RuntimeError, match="listener cleanup failed"):
-        await _stop_server(server, task)
+        await _stop_server(cast(uvicorn.Server, server), task)
     assert task.done()
 
 
@@ -154,7 +156,7 @@ async def test_stop_server_retains_task_when_cancellation_does_not_settle(
     )
 
     with pytest.raises(TimeoutError, match="did not settle"):
-        await _stop_server(server, task)
+        await _stop_server(cast(uvicorn.Server, server), task)
     assert not task.done()
 
     server.release_cleanup.set()
@@ -167,7 +169,7 @@ async def test_stop_server_preserves_outer_cancellation_after_listener_settles()
     server = _BlockingServer()
     task = asyncio.create_task(server.serve())
     await server.started.wait()
-    stopping = asyncio.create_task(_stop_server(server, task))
+    stopping = asyncio.create_task(_stop_server(cast(uvicorn.Server, server), task))
     await asyncio.sleep(0)
     server.release_cleanup.set()
 

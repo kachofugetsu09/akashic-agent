@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,10 @@ from agent.plugin_composition.channels import (
     RawInbound,
 )
 from plugins.akashic_clients.services import ModelCatalogUnavailable
+from plugins.akashic_clients.services import (
+    ArtifactStorePort,
+    MessageCatalogPort,
+)
 from plugins.akashic_clients.message_types import (
     AttachmentKind,
     ChannelAttachment,
@@ -45,6 +50,42 @@ from plugins.akashic_clients.message_types import (
 )
 from plugins.akashic_clients.web_chat import UploadTooLargeError, WebChatChannel
 from plugins.models.selection import read_saved
+from session.log import MessageLog
+
+
+@dataclass
+class _TurnStartedEvent:
+    session_key: str
+    channel: str
+    chat_id: str
+    content: str
+    timestamp: object
+    turn_id: str
+    control_turn_id: str
+    client_message_id: str
+
+
+@dataclass
+class _StreamDeltaReadyEvent:
+    session_key: str
+    channel: str
+    chat_id: str
+    turn_id: str
+    content_delta: str
+    thinking_delta: str
+
+
+@dataclass
+class _TurnOutputCompletedEvent:
+    session_key: str
+    channel: str
+    chat_id: str
+    turn_id: str
+    client_message_id: str
+
+
+def _catalog_port(log: MessageLog) -> MessageCatalogPort:
+    return cast(MessageCatalogPort, log.catalog())
 
 
 class _Bus:
@@ -378,7 +419,7 @@ def test_chat_model_catalog_reports_session_override(tmp_path: Path) -> None:
             channel=channel,
             model_catalog_reader=read_catalog,
             model_selection_reader=read_selection,
-            messages=log.catalog(),
+            messages=_catalog_port(log),
         )
 
         response = TestClient(app).get(
@@ -805,7 +846,7 @@ def test_chat_messages_default_to_latest_seq_order(tmp_path: Path) -> None:
         writer = log.writer("akashic:abc", author="user", source="conversation", body_types=(Input,), content={})
         for index in range(52):
             writer.append(str(index), Input(()))
-        app = create_chat_app(workspace=tmp_path, channel=WebChatChannel(), messages=log.catalog())
+        app = create_chat_app(workspace=tmp_path, channel=WebChatChannel(), messages=_catalog_port(log))
         with TestClient(app) as client:
             response = client.get("/api/chat/sessions/akashic:abc/messages")
         payload = response.json()
@@ -830,8 +871,8 @@ def test_chat_messages_project_durable_artifacts_without_paths(tmp_path: Path) -
                    content={"artifact_ref": lambda part: ContentReferences(artifact_ids=(cast(str, part.value),))}).append(
                        "m1", Output((ContentPart("artifact_ref", ref.artifact_id),), "complete"))
         channel = WebChatChannel()
-        channel.bind_artifact_store(store)
-        app = create_chat_app(workspace=tmp_path, channel=channel, messages=log.catalog())
+        channel.bind_artifact_store(cast(ArtifactStorePort, store))
+        app = create_chat_app(workspace=tmp_path, channel=channel, messages=_catalog_port(log))
         with TestClient(app) as client:
             payload = client.get("/api/chat/sessions/akashic:abc/messages").json()
             content = client.get(f"/api/chat/artifacts/{ref.artifact_id}")
@@ -1065,7 +1106,7 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
     socket = _WebSocket()
     channel._connections["akashic:abc"] = {cast(Any, socket)}
 
-    await channel._on_turn_started(SimpleNamespace(
+    await channel._on_turn_started(_TurnStartedEvent(
         session_key="akashic:abc",
         channel="akashic",
         chat_id="abc",
@@ -1075,7 +1116,7 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
         control_turn_id="turn:server-owner",
         client_message_id="client-1",
     ))
-    await channel._on_stream_delta(SimpleNamespace(
+    await channel._on_stream_delta(_StreamDeltaReadyEvent(
         session_key="akashic:abc",
         channel="akashic",
         chat_id="abc",
@@ -1083,7 +1124,7 @@ async def test_web_turn_lifecycle_projects_server_owned_turn_id() -> None:
         content_delta="answer",
         thinking_delta="",
     ))
-    await channel._on_output_completed(SimpleNamespace(
+    await channel._on_output_completed(_TurnOutputCompletedEvent(
         session_key="akashic:abc",
         channel="akashic",
         chat_id="abc",
@@ -1106,13 +1147,15 @@ async def test_web_turn_started_rejects_missing_server_turn_id() -> None:
     channel = WebChatChannel()
 
     with pytest.raises(RuntimeError, match="缺少 Server 权威 turn_id"):
-        await channel._on_turn_started(SimpleNamespace(
+        await channel._on_turn_started(_TurnStartedEvent(
             session_key="akashic:abc",
             channel="akashic",
             chat_id="abc",
             content="question",
             timestamp=datetime.now(UTC),
             turn_id="",
+            control_turn_id="",
+            client_message_id="",
         ))
 
 
@@ -1183,7 +1226,7 @@ async def test_web_artifact_api_returns_opaque_upload_and_bounded_readback(
             workspace=tmp_path,
             channel=channel,
             attachment_store=AttachmentStore(tmp_path / "uploads"),
-            artifact_store=artifact_store,
+            artifact_store=cast(ArtifactStorePort, artifact_store),
         )
 
         with TestClient(app) as client:

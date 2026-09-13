@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Mapping
 from contextlib import aclosing, closing, suppress
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from bootstrap.reply_status import RuntimeReplyStatus
 from agent.plugin_composition.message_view import follow_messages, message_rows
 from plugins.akashic_clients.chat_api import create_chat_app
 from plugins.akashic_clients.web_chat import WebChatChannel
+from plugins.akashic_clients.services import MessageCatalogPort
 from plugins.reply.status import REPLY_STATUS, ReplyState
 from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Input, Control, Output
@@ -28,6 +30,10 @@ def page_items(page: Mapping[str, object]) -> list[Mapping[str, object]]:
     assert isinstance(items, list)
     assert all(isinstance(item, Mapping) for item in items)
     return items
+
+
+def _catalog_port(log: MessageLog) -> MessageCatalogPort:
+    return cast(MessageCatalogPort, log.catalog())
 
 
 @pytest.mark.asyncio
@@ -139,7 +145,7 @@ def test_websocket_follow_reads_real_messages_switches_and_disconnects(tmp_path)
         append('akashic:a', 'a1')
         append('akashic:b', 'b0')
         channel = WebChatChannel()
-        app = create_chat_app(workspace=tmp_path, channel=channel, messages=log.catalog())
+        app = create_chat_app(workspace=tmp_path, channel=channel, messages=_catalog_port(log))
         def follow(ws, session, seq):
             ws.send_json({'type': 'session.follow', 'version': 2, 'session_id': session,
                           'after_seq': seq, 'request_id': 'follow'})
@@ -173,7 +179,7 @@ def test_websocket_preview_is_separate_until_same_id_commits(tmp_path):
         state = ReplyState()
         store, tasks = RuntimeSnapshotStore(), Tasks()
         channel = WebChatChannel()
-        app = create_chat_app(workspace=tmp_path, channel=channel, messages=log.catalog(),
+        app = create_chat_app(workspace=tmp_path, channel=channel, messages=_catalog_port(log),
                               reply_status=RuntimeReplyStatus(store).follow)
         with TestClient(app) as client:
             root, snapshot = client.portal.call(status_root, 'socket-reply', state)
@@ -238,7 +244,7 @@ def test_channel_stop_waits_for_active_subscriptions_to_close(tmp_path):
                 await release.wait()
                 finished.set()
         channel = WebChatChannel()
-        app = create_chat_app(workspace=tmp_path, channel=channel, messages=log.catalog(), reply_status=status)
+        app = create_chat_app(workspace=tmp_path, channel=channel, messages=_catalog_port(log), reply_status=status)
         with TestClient(app) as client:
             root, snapshot = client.portal.call(status_root, 'stop', state)
             store.install(snapshot)
@@ -266,7 +272,7 @@ def test_channel_stop_waits_for_active_subscriptions_to_close(tmp_path):
 def test_websocket_follow_rejects_invalid_boundary(tmp_path, changes):
     with closing(MessageLog(tmp_path / 'sessions.db')) as log:
         channel = WebChatChannel()
-        with TestClient(create_chat_app(workspace=tmp_path, channel=channel, messages=log.catalog())) as client:
+        with TestClient(create_chat_app(workspace=tmp_path, channel=channel, messages=_catalog_port(log))) as client:
             with client.websocket_connect('/ws') as ws:
                 ws.send_json({'type': 'session.follow', 'version': 2, 'session_id': 'akashic:new',
                               'after_seq': -1, 'request_id': 'bad', **changes})

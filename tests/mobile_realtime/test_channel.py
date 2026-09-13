@@ -8,11 +8,12 @@ import json
 import logging
 import sqlite3
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from collections.abc import Callable
 from uuid import uuid4
 
 import pytest
@@ -32,6 +33,7 @@ from agent.plugin_composition import (
 from agent.plugin_composition.channels import (
     AttachmentKind as V3AttachmentKind,
     AttachmentRef,
+    ChannelDurableInboundPort,
     ChannelCommitRole,
     ChannelFactoryContext,
     ChannelRuntimePorts,
@@ -40,6 +42,8 @@ from agent.plugin_composition.channels import (
     RawInbound,
 )
 from plugins.akashic_clients.services import (
+    ArtifactStorePort,
+    MessageCatalogPort,
     ModelCatalogUnavailable,
     RuntimeInspectionService,
 )
@@ -52,13 +56,73 @@ from bus.events import (
     TurnTerminalStatus,
     channel_message_from_outbound,
 )
-from bus.events_lifecycle import (
-    StreamDeltaReady,
-    ToolCallCompleted,
-    ToolCallStarted,
-    TurnOutputCompleted,
-    TurnStarted,
-)
+@dataclass
+class TurnStarted:
+    """测试用的正式客户端事件投影。"""
+
+    session_key: str
+    channel: str
+    chat_id: str
+    content: str
+    timestamp: object
+    turn_id: str = ""
+    control_turn_id: str = ""
+    client_message_id: str = ""
+
+
+@dataclass
+class StreamDeltaReady:
+    """测试用的正式客户端增量事件投影。"""
+
+    session_key: str
+    channel: str
+    chat_id: str
+    turn_id: str = ""
+    content_delta: str = ""
+    thinking_delta: str = ""
+
+
+@dataclass
+class TurnOutputCompleted:
+    """测试用的正式客户端完成事件投影。"""
+
+    session_key: str
+    channel: str
+    chat_id: str
+    turn_id: str = ""
+    client_message_id: str = ""
+
+
+@dataclass
+class ToolCallStarted:
+    """测试用的正式客户端工具开始事件投影。"""
+
+    session_key: str
+    channel: str
+    chat_id: str
+    iteration: int
+    call_id: str
+    tool_name: str
+    arguments: dict[str, object]
+    turn_id: str = ""
+
+
+@dataclass
+class ToolCallCompleted:
+    """测试用的正式客户端工具完成事件投影。"""
+
+    session_key: str
+    channel: str
+    chat_id: str
+    iteration: int
+    call_id: str
+    tool_name: str
+    arguments: dict[str, object]
+    final_arguments: dict[str, object]
+    status: str
+    result_preview: str
+    runtime_provenance: dict[str, str] = field(default_factory=dict)
+    turn_id: str = ""
 from plugins.akashic_clients.attachments import AttachmentStore
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.akashic_clients.mobile_realtime.attachments import attachment_descriptor
@@ -72,6 +136,9 @@ from plugins.akashic_clients.mobile_realtime.protocol import (
     parse_frame,
 )
 from plugins.akashic_clients.message_types import (
+    AttachmentKind as PluginAttachmentKind,
+    ChannelAttachment as PluginChannelAttachment,
+    ChannelMessage as PluginChannelMessage,
     TurnTerminalStatus as PluginTurnTerminalStatus,
 )
 from plugins.akashic_clients.mobile_realtime.remote_media import RemoteMediaError, RemoteMediaSnapshot
@@ -86,6 +153,18 @@ from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Output
 
 
+def _message_catalog_port(log: MessageLog) -> MessageCatalogPort:
+    """把 MessageLog 的具体 catalog 交给插件窄 Protocol。"""
+
+    return cast(MessageCatalogPort, log.catalog())
+
+
+def _artifact_store_port(store: ChannelAttachmentArtifactStore) -> ArtifactStorePort:
+    """把 Core artifact owner 交给插件窄 Protocol。"""
+
+    return cast(ArtifactStorePort, store)
+
+
 @pytest.fixture(autouse=True)
 def _bind_real_mobile_message_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """给插件测试夹具接入真实消息目录与正式 v3 channel ports。"""
@@ -95,49 +174,19 @@ def _bind_real_mobile_message_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     async def start_with_message_log(
         channel: MobileRealtimeChannel,
-        ctx: Any | None = None,
         *,
-        host_boot_id: str | None = None,
-        durable_inbound: Any | None = None,
-        attachment_store: Any | None = None,
+        host_boot_id: str,
+        durable_inbound: ChannelDurableInboundPort,
+        attachment_store: AttachmentStore,
     ) -> None:
         if channel._message_scope is None:
             log = MessageLog(tmp_path / f"sessions-{len(logs)}.db")
-            channel.bind_messages(log.catalog())
+            channel.bind_messages(_message_catalog_port(log))
             channel._test_message_log = log
             logs.append(log)
-        if ctx is not None:
-            bus = getattr(ctx, "bus", None)
-            if not isinstance(bus, _Bus):
-                raise TypeError("Mobile 测试上下文缺少 _Bus durable ingress")
-            port = _DurablePort(bus)
-            await original_start(
-                channel,
-                host_boot_id=host_boot_id or f"test-boot-{id(channel)}",
-                durable_inbound=port,
-                attachment_store=ctx.attachment_store,
-            )
-            channel._attach_v3_inbound(
-                ChannelRuntimePorts(
-                    snapshot_id="test-snapshot",
-                    generation_id="test-generation",
-                    binding_token=f"test-binding-{id(channel)}",
-                    ingress=bus,
-                    identity=None,
-                    attachment_import=None,
-                    durable_inbound=port,
-                )
-            )
-            channel._open_v3_inbound()
-            command_catalog_provider = getattr(ctx, "command_catalog_provider", None)
-            if command_catalog_provider is not None:
-                channel.bind_command_catalog(command_catalog_provider)
-            return
-        if durable_inbound is None or attachment_store is None:
-            raise TypeError("Mobile 测试启动缺少正式 durable port 或 attachment store")
         await original_start(
             channel,
-            host_boot_id=host_boot_id or f"test-boot-{id(channel)}",
+            host_boot_id=host_boot_id,
             durable_inbound=durable_inbound,
             attachment_store=attachment_store,
         )
@@ -320,7 +369,7 @@ class _Bus:
                 ingress=self,
                 identity=None,
                 attachment_import=None,
-                recovery_ingress=self,
+                durable_inbound=_DurablePort(self),
             )
         )
         channel._open_v3_inbound()
@@ -413,6 +462,37 @@ class _DurablePort:
 
     async def recover(self, raw: RawInbound) -> bool:
         return await self._bus.recover(raw)
+
+
+async def _start_test_channel(
+    channel: MobileRealtimeChannel,
+    *,
+    bus: _Bus,
+    attachment_store: AttachmentStore,
+    command_catalog_provider: Callable[[], tuple[tuple[str, str], ...]] | None = None,
+) -> None:
+    """通过正式 durable inbound port 启动 Mobile 测试 channel。"""
+
+    durable = _DurablePort(bus)
+    await channel.start(
+        host_boot_id=f"test-boot-{id(channel)}",
+        durable_inbound=durable,
+        attachment_store=attachment_store,
+    )
+    channel._attach_v3_inbound(
+        ChannelRuntimePorts(
+            snapshot_id="test-snapshot",
+            generation_id="test-generation",
+            binding_token=f"test-binding-{id(channel)}",
+            ingress=bus,
+            identity=None,
+            attachment_import=None,
+            durable_inbound=durable,
+        )
+    )
+    channel._open_v3_inbound()
+    if command_catalog_provider is not None:
+        channel.bind_command_catalog(command_catalog_provider)
 
 
 class _GatedReserveBus(_Bus):
@@ -533,17 +613,10 @@ async def _started_native_mobile_channel(
     channel = MobileRealtimeChannel(
         cast(MobileGatewayRuntime, runtime or _Runtime(storage))
     )
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=SimpleNamespace(),
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     manager = _NativeMessageManager(cast(MessageLog, channel._test_message_log))
     return channel, storage, manager
@@ -577,25 +650,51 @@ def _native_ref(data: bytes, *, artifact_id: str = "core-artifact-1") -> Attachm
     )
 
 
+def _to_plugin_channel_message(message: ChannelMessage) -> PluginChannelMessage:
+    """把 bus outbound fixture 转为插件自己的 channel message 类型。"""
+
+    terminal_status = message.terminal_status
+    return PluginChannelMessage(
+        channel=message.channel,
+        chat_id=message.chat_id,
+        content=message.content,
+        attachments=tuple(
+            PluginChannelAttachment(
+                kind=PluginAttachmentKind(attachment.kind.value),
+                source=attachment.source,
+                filename=attachment.filename,
+            )
+            for attachment in message.attachments
+        ),
+        attachment_refs=message.attachment_refs,
+        thinking=message.thinking,
+        reply_to=message.reply_to,
+        metadata=dict(message.metadata),
+        session_message_id=message.session_message_id,
+        control_turn_id=message.control_turn_id,
+        execution_attempt_id=message.execution_attempt_id,
+        terminal_status=(
+            PluginTurnTerminalStatus(terminal_status.value)
+            if terminal_status is not None
+            else None
+        ),
+    )
+
+
 def _provider_delivery(channel: MobileRealtimeChannel):
     """把测试 outbound 映射为正式 Channel provider callback。"""
 
     async def deliver(message: OutboundMessage | ChannelMessage):
         if isinstance(message, ChannelMessage):
-            return await channel._deliver_message(message)
+            return await channel._deliver_message(_to_plugin_channel_message(message))
         if message.execution_attempt_id is None:
             message = replace(
                 message,
                 execution_attempt_id=message.control_turn_id,
             )
-        channel_message = channel_message_from_outbound(message)
-        if channel_message.terminal_status is not None:
-            channel_message = replace(
-                channel_message,
-                terminal_status=PluginTurnTerminalStatus(
-                    channel_message.terminal_status.value
-                ),
-            )
+        channel_message = _to_plugin_channel_message(
+            channel_message_from_outbound(message)
+        )
         metadata = dict(channel_message.metadata)
         metadata["_channel_commit_role"] = "passive"
         return await channel._deliver_message(
@@ -616,17 +715,10 @@ async def test_mobile_message_send_uses_exact_v3_ingress_without_legacy_bus(
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     bus = _Bus()
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=bus,
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     session_id = f"akashic:{uuid4()}"
     reply = await channel.handle_command(
@@ -659,17 +751,10 @@ async def test_mobile_captured_callback_blocks_drain_through_preprocessing(
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
     bus = _GatedReserveBus()
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=bus,
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     session_id = f"akashic:{uuid4()}"
     sending = asyncio.create_task(
@@ -716,17 +801,10 @@ async def test_mobile_exact_ingress_false_never_commits_success_receipt(
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, _Runtime(storage)))
     bus = _RejectingIngressBus()
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=bus,
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     frame = _message_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAC",
@@ -857,17 +935,10 @@ async def test_native_v3_mobile_adapter_reports_unknown_if_durable_call_raises(
     channel = MobileRealtimeChannel(
         cast(MobileGatewayRuntime, _FailingRuntime(storage))
     )
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     adapter = channel.build_v3_adapter(_native_context())
     await adapter.start()
@@ -1376,7 +1447,7 @@ async def test_model_catalog_returns_bound_registry_and_session_selection(
             return read_saved(metadata)
 
         channel.bind_model_selection(read_selection)
-        channel.bind_messages(log.catalog())
+        channel.bind_messages(_message_catalog_port(log))
 
         reply = await channel.handle_command(
             device_id=device_id,
@@ -1899,22 +1970,15 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
         media_type="application/octet-stream",
     )
     bus.pending_refs = (expected,)
-    context = cast(
-        Any,
-        SimpleNamespace(
-            bus=bus,
-            session_manager=manager,
-            event_bus=_EventBus(),
-            push_tool=_PushTool(),
-            attachment_store=legacy_store,
-        ),
-    )
-
     source.write_bytes(b"changed after durable reserve")
     failed = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    failed.bind_channel_attachment_store(artifact_store)
+    failed.bind_channel_attachment_store(_artifact_store_port(artifact_store))
     with pytest.raises(ValueError, match="durable ref 不一致"):
-        await failed.start(context)
+        await _start_test_channel(
+            failed,
+            bus=bus,
+            attachment_store=legacy_store,
+        )
     assert metadata_store.get_attachment(mapping.artifact_id) is None
     assert artifact_store.audit_orphan_artifact_ids() == ()
     assert storage.list_attachment_imports(
@@ -1925,8 +1989,12 @@ async def test_mobile_restart_never_publishes_source_drift_after_handoff_reserve
 
     source.write_bytes(original)
     restarted = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    restarted.bind_channel_attachment_store(artifact_store)
-    await restarted.start(context)
+    restarted.bind_channel_attachment_store(_artifact_store_port(artifact_store))
+    await _start_test_channel(
+        restarted,
+        bus=bus,
+        attachment_store=legacy_store,
+    )
     assert artifact_store.resolve_refs((mapping.artifact_id,)) == (expected,)
     assert storage.list_attachment_imports(
         session_id=session_id,
@@ -1951,17 +2019,10 @@ async def test_message_send_keeps_unknown_outcome_without_persisted_user(
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     bus = _Bus()
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=bus,
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     session_id = f"akashic:{uuid4()}"
     frame = _message_frame(
@@ -2049,17 +2110,10 @@ async def test_message_send_keeps_current_owner_when_receipt_completion_fails(
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     bus = _Bus()
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=bus,
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     frame = _message_frame(
         frame_id="01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -2113,17 +2167,10 @@ async def test_remote_outbound_media_keeps_response_filename(
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     store = AttachmentStore(tmp_path / "uploads")
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=store,
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=store,
     )
 
     async def snapshot(*args: object, **kwargs: object) -> RemoteMediaSnapshot:
@@ -2164,17 +2211,10 @@ async def test_remote_media_failure_keeps_final_text(
     runtime = _Runtime(storage)
     manager = SessionManager(tmp_path / "workspace")
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     session_id = f"akashic:{uuid4()}"
     media = ["https://expired.example/reaction.gif"]
@@ -2340,17 +2380,10 @@ async def test_control_reply_never_reuses_previous_message_id(tmp_path: Path) ->
     session.add_message("assistant", "相同的固定回复")
     manager.save(session)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
 
     await _provider_delivery(channel)(
@@ -2386,18 +2419,11 @@ async def test_command_list_uses_active_channel_catalog_without_stop(
         ("emoji", "😀" * 129),
         ("stop", "中断当前回复"),
     ]
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-                command_catalog_provider=lambda: tuple(active_catalog),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        command_catalog_provider=lambda: tuple(active_catalog),
     )
 
     reply = await channel.handle_command(
@@ -2443,18 +2469,11 @@ async def test_message_send_preserves_mobile_slash_command_for_bus(
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
     bus = _Bus()
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-                command_catalog_provider=lambda: (("undo", "撤销上一轮对话"),),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=bus,
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
+        command_catalog_provider=lambda: (("undo", "撤销上一轮对话"),),
     )
     session_id = f"akashic:{uuid4()}"
 
@@ -2822,17 +2841,10 @@ async def test_stream_deltas_batch_within_transport_window_and_flush_before_tool
     runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     session_id = f"akashic:{uuid4()}"
     storage.claim_session(
@@ -2996,17 +3008,10 @@ async def test_first_delta_orders_received_then_publish_then_published(
     runtime = _GatedPublishRuntime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     session_id = f"akashic:{uuid4()}"
     turn_id = "turn-1"
@@ -3104,17 +3109,10 @@ async def test_dual_field_delta_accepts_thinking_and_answer_without_short_circui
     session_id = f"akashic:{uuid4()}"
     turn_id = "turn-dual"
     manager.save(manager.get_or_create(session_id))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -3248,17 +3246,10 @@ async def test_interrupted_terminal_flushes_pending_delta_before_terminal_event(
         created_at=datetime.now(timezone.utc),
     )
     manager.save(manager.get_or_create(session_id))
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -3382,17 +3373,10 @@ async def test_terminal_barrier_flushes_accepted_deltas_then_terminal_and_drops_
     manager = SessionManager(tmp_path / "workspace")
     session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -3555,17 +3539,10 @@ async def test_terminal_and_late_delta_queued_on_same_lock_release_terminal_then
     manager = SessionManager(tmp_path / "workspace")
     session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -3658,17 +3635,10 @@ async def _race_channel(
     manager = SessionManager(tmp_path / "workspace")
     session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -4108,17 +4078,10 @@ async def test_late_a_final_keeps_b_active_and_identity(
     session_id = f"akashic:{uuid4()}"
     turn_a = "turn-A"
     turn_b = "turn-B"
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -4377,17 +4340,10 @@ async def test_send_and_turn_started_bind_each_client_message_id_per_session(
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
     bus = _Bus()
     manager = SessionManager(tmp_path / "workspace")
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=bus,
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=bus,
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     session_id = f"akashic:{uuid4()}"
     first_id = "01ARZ3NDEKTSV4RRFFQ69G5FAA"
@@ -4484,17 +4440,10 @@ async def test_terminal_final_publish_fail_once_is_retryable_without_fake_succes
     manager = SessionManager(tmp_path / "workspace")
     session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -4594,17 +4543,10 @@ async def test_terminal_failure_after_batch_flush_retry_does_not_duplicate_delta
     manager = SessionManager(tmp_path / "workspace")
     session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -4700,17 +4642,10 @@ async def test_late_delta_queued_during_terminal_failure_gap_accepted_then_retry
     manager = SessionManager(tmp_path / "workspace")
     session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -4821,17 +4756,10 @@ async def test_interrupted_terminal_publish_fail_once_is_retryable(
     manager = SessionManager(tmp_path / "workspace")
     session_id = f"akashic:{uuid4()}"
     turn_id = "turn-interrupt-retry"
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
@@ -4993,17 +4921,10 @@ async def _fail_delta_channel(
     manager = SessionManager(tmp_path / "workspace")
     session_id = f"akashic:{uuid4()}"
     turn_id = uuid4().hex
-    await channel.start(
-        cast(
-            Any,
-            SimpleNamespace(
-                bus=_Bus(),
-                session_manager=manager,
-                event_bus=_EventBus(),
-                push_tool=_PushTool(),
-                attachment_store=AttachmentStore(tmp_path / "uploads"),
-            ),
-        )
+    await _start_test_channel(
+        channel,
+        bus=_Bus(),
+        attachment_store=AttachmentStore(tmp_path / "uploads"),
     )
     await channel._on_turn_started(
         TurnStarted(
