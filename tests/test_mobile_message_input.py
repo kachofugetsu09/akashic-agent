@@ -15,6 +15,7 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugin_composition.channels import (
     CHANNEL_INPUT,
+    AttachmentRef,
     ChannelRuntimePorts,
     InboundEnvelope,
     RawInbound,
@@ -29,6 +30,7 @@ from plugins.akashic_clients.mobile_realtime.channel import MobileRealtimeChanne
 from plugins.akashic_clients.mobile_realtime.gateway import MobileGatewayRuntime
 from plugins.akashic_clients.mobile_realtime.protocol import MessageSendCommand
 from plugins.akashic_clients.mobile_realtime.storage import MobileRealtimeStorage
+from plugins.akashic_clients.services import ArtifactStorePort, MessageCatalogPort
 from session.admissions import SessionAdmissions
 from session.identities import ChannelIdentities
 from session.inbound_store import InboundHandoffStore
@@ -147,7 +149,7 @@ class _MessageBusDurablePort:
         *,
         session_key: str,
         provider_message_id: str,
-    ) -> tuple[object, ...] | None:
+    ) -> tuple[AttachmentRef, ...] | None:
         return self._bus.pending_durable_attachment_refs(
             channel="akashic",
             session_key=session_key,
@@ -202,8 +204,8 @@ async def runtime(tmp_path, *, device=None, store_type=InboundHandoffStore):
     bus.bind_session_admission_owner(admissions)
     gateway_runtime = _Runtime(storage)
     channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, gateway_runtime))
-    channel.bind_messages(log.catalog())
-    channel.bind_channel_attachment_store(physical)
+    channel.bind_messages(cast(MessageCatalogPort, log.catalog()))
+    channel.bind_channel_attachment_store(cast(ArtifactStorePort, physical))
     event_bus = EventBus()
     manager = PluginManager([], event_bus=event_bus, workspace=workspace,
         message_log=log, channel_identities=identities, channel_attachment_store=physical,

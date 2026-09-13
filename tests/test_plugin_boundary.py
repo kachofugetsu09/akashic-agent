@@ -320,7 +320,7 @@ def test_all_production_python_roots_are_checked() -> None:
     """增加生产包不能让其中的跨插件依赖自动绕过门。"""
     from scripts.measure_production_sloc import PYTHON_DIRECTORY_ROOTS
 
-    for root in set(PYTHON_DIRECTORY_ROOTS) - {"plugins"}:
+    for root in set[str](PYTHON_DIRECTORY_ROOTS) - {"plugins"}:
         assert boundary.check_core_imports_plugin([_import(f"{root}/probe.py", "plugins.alpha")])
         assert boundary.check_plugin_deep_core([_import("plugins/alpha/plugin.py", f"{root}.probe")])
 

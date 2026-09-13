@@ -4,11 +4,14 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
+from agent.plugin_composition.channels import ProviderClientFactory
+from agent.plugin_composition.context import Context
 from agent.plugin_composition.channels import (
     ChannelCapability,
     ChannelDefinition,
@@ -27,7 +30,7 @@ from plugins.akashic_clients.channel import (
     unregister_generation,
 )
 from plugins.akashic_clients.config import AkashicClientsConfig
-from plugins.akashic_clients.web_chat import WebChatChannel
+from plugins.akashic_clients.web_chat import WebChatChannel, WebNativeChannelAdapter
 
 
 class _Socket:
@@ -148,7 +151,7 @@ class _ApplyContext:
 @pytest.mark.asyncio
 async def test_apply_registers_one_formal_channel_definition() -> None:
     registry = _ChannelRegistry()
-    await plugin.apply(_ApplyContext(registry), AkashicClientsConfig())
+    await plugin.apply(cast(Context, _ApplyContext(registry)), AkashicClientsConfig())
 
     assert registry.definition is not None
     assert registry.definition.name == "akashic"
@@ -178,7 +181,7 @@ def test_same_generation_allows_distinct_binding_tokens(tmp_path: Path) -> None:
                 binding_token=token,
                 config={},
                 credentials={},
-                provider_client_factory=object(),
+                provider_client_factory=cast(ProviderClientFactory, object()),
                 ingress=None,
                 identity=None,
             )
@@ -202,7 +205,7 @@ async def test_web_presents_formal_turn_stream_by_inbound_message_id() -> None:
     channel = WebChatChannel()
     socket = _Socket()
     session_key = "akashic:chat-1"
-    assert await channel._add_connection(session_key, socket) is True
+    assert await channel._add_connection(session_key, cast(WebSocket, socket)) is True
     channel._client_sessions["client-1"] = session_key
     stream = _TurnStream()
     channel.attach_presentation(ChannelPresentationPorts(control=None, turn_stream=stream))
@@ -296,11 +299,11 @@ async def test_web_admission_close_cancels_follow_and_releases_scope() -> None:
     scope = _MessageScope(_FollowingCatalog(reader))
     channel.bind_message_scope(scope)
     socket = _Socket()
-    task = asyncio.create_task(channel._follow(socket, reader.session_id, -1))
+    task = asyncio.create_task(channel._follow(cast(WebSocket, socket), reader.session_id, -1))
     await reader.started.wait()
-    channel._followers[socket] = (reader.session_id, task)
+    channel._followers[cast(WebSocket, socket)] = (reader.session_id, task)
 
-    adapter = SimpleNamespace(binding_token="binding")
+    adapter = cast(WebNativeChannelAdapter, SimpleNamespace(binding_token="binding"))
     channel._v3_adapters["binding"] = adapter
     channel._close_v3_binding(adapter)
     result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=1)

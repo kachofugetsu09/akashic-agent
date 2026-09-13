@@ -22,6 +22,7 @@ from plugins.akashic_clients.mobile_realtime.inbox import DurableInboxManager
 from plugins.akashic_clients.mobile_realtime.key_protection import FileMasterKeyStore, KeysetManager
 from plugins.akashic_clients.mobile_realtime.pairing import PairingService
 from plugins.akashic_clients.mobile_realtime.storage import MobileRealtimeStorage
+from plugins.akashic_clients.services import MessageCatalogPort
 from plugins.models.projection import check_facts, display_facts
 from session.log import MessageLog, SessionAttributes
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
@@ -36,10 +37,11 @@ def mobile(tmp_path):
         _register_device(storage, device)
         runtime = _Runtime(storage)
         channel = MobileRealtimeChannel(cast(MobileGatewayRuntime, runtime))
-        channel.bind_messages(log.catalog())
+        catalog = cast(MessageCatalogPort, log.catalog())
+        channel.bind_messages(catalog)
         # Private command tests call the handler directly; keep that test-only
         # binding inside the plugin module's explicit direct scope.
-        mobile_channel_module._DIRECT_MESSAGE_CATALOG.set(log.catalog())
+        mobile_channel_module._DIRECT_MESSAGE_CATALOG.set(catalog)
         async def display(page, *, display_only):
             return message_rows(page, display_only=display_only, providers=MessageDisplayProviders(
                 tool_name=lambda binding_id: binding_id,
@@ -284,8 +286,9 @@ async def test_mobile_json_range_authentication_and_reopen(mobile, tmp_path):
     # 重开同一消息库后仍下载同一表示，不依赖内存正文缓存。
     with closing(MessageLog(tmp_path / 'sessions.db')) as reopened:
         channel = MobileRealtimeChannel(runtime)
-        channel.bind_messages(reopened.catalog())
-        mobile_channel_module._DIRECT_MESSAGE_CATALOG.set(reopened.catalog())
+        catalog = cast(MessageCatalogPort, reopened.catalog())
+        channel.bind_messages(catalog)
+        mobile_channel_module._DIRECT_MESSAGE_CATALOG.set(catalog)
         runtime.bind_channel(channel)
         async def receive() -> Message:
             return {'type': 'websocket.disconnect'}

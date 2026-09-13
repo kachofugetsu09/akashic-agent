@@ -24,6 +24,7 @@ from plugins.akashic_clients.mobile_realtime.key_protection import FileMasterKey
 from plugins.akashic_clients.mobile_realtime.message_view import bounded_reply_status, message_json
 from plugins.akashic_clients.mobile_realtime.pairing import PairingService
 from plugins.akashic_clients.mobile_realtime.storage import DeviceRecord, MobileRealtimeStorage
+from plugins.akashic_clients.services import MessageCatalogPort
 from plugins.reply.status import ReplyState
 from session.log import MessageLog
 from session.message import ContentPart, Input, Output, Control
@@ -46,7 +47,7 @@ def gateway(tmp_path):
             authenticator=DeviceAuthenticator(storage, keyset), inbox=DurableInboxManager(storage),
             approvals=PairingApprovalRegistry(loop), keyset=keyset)
         channel = MobileRealtimeChannel(runtime)
-        channel.bind_messages(log.catalog())
+        channel.bind_messages(cast(MessageCatalogPort, log.catalog()))
         runtime.bind_channel(channel)
         with TestClient(create_mobile_gateway_app(runtime)) as client:
             yield log, runtime, client, device, private
