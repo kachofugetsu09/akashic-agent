@@ -98,6 +98,7 @@ export function ConversationNavigation({
               key={session.id}
               aria-current={session.active ? "true" : undefined}
               aria-busy={pendingSessionId === session.id || undefined}
+              title={session.preview ? `${session.title} · ${session.preview}` : session.title}
               onClick={() => onSessionActivate(session.id)}
             >
               <span className="conversation-session__copy">
