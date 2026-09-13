@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from agent.plugin_composition.models import ModelContinuation, ModelRequest
-from plugins.compaction.message_summary import SummaryError, _request
+from plugins.compaction.message_summary import _request
 from plugins.context.plugin import ContextBuilder
 from session.message import ContentPart, Input, Message, Output
 from tests.model_plugin_fakes import BoundChatModelFake
@@ -72,7 +72,7 @@ def test_context_overflow_keeps_real_messages_and_model_continuation() -> None:
     assert projection.seen == snapshot
 
 
-def test_summary_request_stops_at_current_soft_watermark() -> None:
+def test_summary_request_accepts_the_exact_soft_watermark() -> None:
     class SoftWatermarkProvider:
         context_window = 100
         max_tool_schemas = None
@@ -86,9 +86,9 @@ def test_summary_request_stops_at_current_soft_watermark() -> None:
         async def chat(self, **kwargs):
             raise AssertionError("soft-watermark request must not call provider")
 
-    with pytest.raises(SummaryError, match="软水位"):
-        _request(
-            BoundChatModelFake(SoftWatermarkProvider()),
-            "",
-            ((message(0, Output((ContentPart("text", "facts"),), "complete")),),),
-        )
+    request = _request(
+        BoundChatModelFake(SoftWatermarkProvider()),
+        "",
+        ((message(0, Output((ContentPart("text", "facts"),), "complete")),),),
+    )
+    assert request.max_output_tokens == 0

@@ -1,5 +1,5 @@
 schema_version = 1
 name = "compaction"
-version = "4.0.0"
+version = "4.1.0"
 api_version = 3
 entrypoint = "message_plugin.py"
