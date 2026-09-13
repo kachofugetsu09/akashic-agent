@@ -51,6 +51,7 @@ def auto_publish_webui(
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment.pop("AKASHIC_EXTRA_PLUGIN_DIRS", None)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["AKASHIC_CORE_ROOT"] = str(_configured_core_root())
     command = [
         sys.executable,

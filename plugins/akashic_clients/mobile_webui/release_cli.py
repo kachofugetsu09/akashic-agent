@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 if not __package__:
+    sys.dont_write_bytecode = True
     artifact_root = Path(__file__).resolve().parents[1]
     token = hashlib.sha256(str(artifact_root).encode("utf-8")).hexdigest()[:20]
     package_name = f"_akashic_clients_cli_{token}"
