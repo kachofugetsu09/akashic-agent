@@ -411,6 +411,7 @@ class PluginManager:
             on_failure=self._on_channel_cleanup_failure,
             boot_id=self._host_boot_id,
             snapshot_lease_acquirer=self._snapshot_store.lease,
+            recovery_snapshot_lease_acquirer=self._acquire_channel_recovery_lease,
             identity_resolver=self._resolve_channel_identity,
             identity_rememberer=self._remember_channel_identity,
             identity_rollbacker=self._rollback_channel_identity,
@@ -426,6 +427,19 @@ class PluginManager:
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
         self._durable_delivery_sender: DurableSender | None = None
         self._durable_delivery_recovered = False
+
+    def _acquire_channel_recovery_lease(
+        self,
+        snapshot_id: str,
+    ) -> RuntimeSnapshotLease:
+        """Retain the exact current snapshot for internal durable recovery."""
+
+        snapshot = self._snapshot_store.current
+        if snapshot is None or snapshot.snapshot_id != snapshot_id:
+            raise RuntimeError("Channel durable recovery snapshot owner 不一致")
+        if snapshot.accepting_leases:
+            return self._snapshot_store.lease(snapshot_id)
+        return self._snapshot_store.retain_recovery_target(snapshot)
 
     @property
     def loaded_count(self) -> int:
@@ -766,6 +780,8 @@ class PluginManager:
     async def _start_channel_publication(
         self,
         state: _ChannelPublicationState,
+        *,
+        startup_snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> None:
         """Start the new exact runtime with admission still closed."""
 
@@ -775,6 +791,7 @@ class PluginManager:
             state.new_runtime = await self._channel_generation_host.start_formal(
                 state.candidate,
                 state.new_factories,
+                startup_snapshot_lease=startup_snapshot_lease,
             )
 
     def _open_channel_publication(self, state: _ChannelPublicationState) -> None:
@@ -2472,6 +2489,7 @@ class PluginManager:
                 provisional_started=provisional_started,
                 reopen_previous_on_failure=reopen_previous_on_failure,
                 before_open=prepare, after_open=after_open,
+                startup_snapshot_lease=lease,
             )
         except BaseException as error:
             if prepared_here:
@@ -2495,6 +2513,7 @@ class PluginManager:
         reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
+        startup_snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> SnapshotTransaction:
         """Publish one snapshot around a single closed external-participant step."""
 
@@ -2552,7 +2571,10 @@ class PluginManager:
                 except BaseException as error:
                     forward_error = error
                     raise
-            await self._start_channel_publication(channel_state)
+            await self._start_channel_publication(
+                channel_state,
+                startup_snapshot_lease=startup_snapshot_lease,
+            )
             def open_participants() -> None:
                 if after_open is not None:
                     after_open()
@@ -5635,6 +5657,56 @@ class PluginManager:
                 if not candidate else PluginTimers.candidate_validation()
             )
             _ = await root.context.provide(TIMERS, timers)
+
+        # Client UI and message display are neutral snapshot projections.  The
+        # host publishes them under stable names; each client request resolves
+        # the provider again inside its exact RuntimeSnapshot scope.
+        host_ui_requested = {
+            key.name
+            for key in requested
+            if key.name in {
+                "core.message_display.v1",
+                "core.mobile_ui.v1",
+                "core.web_ui.v1",
+            }
+        }
+        if "core.message_display.v1" in host_ui_requested:
+            from agent.plugins.snapshot import project_message_rows
+
+            async def display_message_page(
+                page: object,
+                *,
+                display_only: bool,
+            ) -> list[dict[str, object]]:
+                return await project_message_rows(
+                    self._snapshot_store,
+                    page,
+                    display_only=display_only,
+                )
+
+            _ = await root.context.provide(
+                ServiceKey[object]("core.message_display.v1"),
+                display_message_page,
+            )
+        if "core.mobile_ui.v1" in host_ui_requested:
+            from agent.plugins.mobile_ui import PluginMobileUiProvider
+
+            mobile_ui = PluginMobileUiProvider(self)
+            _ = await root.context.provide(
+                ServiceKey[object]("core.mobile_ui.v1"),
+                mobile_ui,
+            )
+            root._defer_internal_cleanup(  # pyright: ignore[reportPrivateUsage]
+                "mobile_ui_provider.close",
+                mobile_ui.aclose,
+            )
+        if "core.web_ui.v1" in host_ui_requested:
+            from agent.plugins.web_ui import PluginWebUiProvider
+
+            _ = await root.context.provide(
+                ServiceKey[object]("core.web_ui.v1"),
+                PluginWebUiProvider(self._snapshot_store),
+            )
         if archive:
             return
         if any(

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager, suppress
 from contextvars import ContextVar, Token
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from agent.control.scoped_turn import TurnAdmissionRetiredError
 
@@ -29,6 +29,9 @@ from agent.plugin_composition import (
     UI_SLOTS,
     TopologyView,
 )
+
+if TYPE_CHECKING:
+    from session.log import MessagePage
 from agent.plugin_composition.channels import (
     ChannelFactoryFreezeInput,
     ChannelRegistrySnapshot,
@@ -59,6 +62,15 @@ SnapshotState = Literal[
     "retired",
 ]
 RuntimeSelector = Literal["stable", "latest"]
+
+
+class _ReplyStatusReader(Protocol):
+    """窄读取合同；回复插件实现仍由当前 composition root 提供。"""
+
+    def follow(
+        self,
+        session_id: str,
+    ) -> AsyncGenerator[tuple[dict[str, object], ...], None]: ...
 
 
 @dataclass
@@ -785,6 +797,115 @@ async def lease_runtime_snapshot(
         if token is not None:
             reset_runtime_snapshot(token)
         await lease.release()
+
+
+async def project_message_rows(
+    store: "RuntimeSnapshotStore",
+    page: object,
+    *,
+    display_only: bool,
+) -> list[dict[str, object]]:
+    """Project one message page through the exact current snapshot lease."""
+
+    from agent.plugin_composition.message_view import (
+        MessageDisplayProviders,
+        PartDisplayProvider,
+        message_rows,
+    )
+    from agent.plugin_composition.model import ServiceKey
+    from session.log import MessagePage
+
+    if not isinstance(page, MessagePage):
+        raise TypeError("消息展示需要 MessagePage")
+    async with lease_runtime_snapshot(store) as snapshot:
+        root = snapshot.composition_root
+        if root is None:
+            raise RuntimeError("消息展示需要已发布的插件 Root")
+        providers = root.provided_services()
+        renderers = {
+            key.name.removeprefix("message.display:"): cast(PartDisplayProvider, value)
+            for key, value in providers.items()
+            if key.name.startswith("message.display:")
+            and callable(value)
+        }
+        tool_name = root.context.get(
+            ServiceKey[Callable[[str], str]]("tools.display-name.v1")
+        )
+        return message_rows(
+            page,
+            display_only=display_only,
+            providers=MessageDisplayProviders(
+                tool_name=tool_name,
+                part_display=renderers,
+            ),
+        )
+
+
+async def follow_reply_status(
+    store: "RuntimeSnapshotStore",
+    session_id: str,
+) -> AsyncGenerator[dict[str, object], None]:
+    """Follow the reply plugin through one exact snapshot at a time."""
+
+    from agent.plugin_composition.model import ServiceKey
+
+    while True:
+        async with lease_runtime_snapshot(store) as snapshot:
+            root = snapshot.composition_root
+            if root is None:
+                raise RuntimeError("回复状态需要已发布的插件 Root")
+            read = root.context.get(ServiceKey[object]("reply.status.v2"))
+            base: dict[str, object] = {
+                "version": 2,
+                "session_id": session_id,
+                "snapshot_id": snapshot.snapshot_id,
+            }
+            if read is None:
+                changed = asyncio.create_task(store.wait_for_stable_change(snapshot))
+                try:
+                    yield {**base, "available": False, "items": []}
+                    await changed
+                finally:
+                    if not changed.done():
+                        changed.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await changed
+                continue
+            follow = getattr(read, "follow", None)
+            if not callable(follow):
+                raise TypeError("reply.status.v2 provider 缺少 follow(session_id)")
+            follower = cast(_ReplyStatusReader, read).follow(session_id)
+            changed = asyncio.create_task(store.wait_for_stable_change(snapshot))
+            pending: asyncio.Task[tuple[dict[str, object], ...]] | None = None
+            try:
+                while store.current is snapshot:
+                    pending = asyncio.create_task(anext(follower))
+                    done, _ = await asyncio.wait(
+                        (pending, changed),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if changed in done:
+                        _ = changed.result()
+                        break
+                    try:
+                        items = pending.result()
+                    except StopAsyncIteration:
+                        yield {**base, "available": False, "items": []}
+                        await changed
+                        break
+                    yield {**base, "available": True, "items": list(items)}
+                    pending = None
+            finally:
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    with suppress(asyncio.CancelledError, StopAsyncIteration):
+                        await pending
+                if not changed.done():
+                    changed.cancel()
+                with suppress(asyncio.CancelledError):
+                    await changed
+                async with aclosing(follower):
+                    pass
 
 
 def get_current_runtime_lease() -> RuntimeSnapshotLease | None:

@@ -119,7 +119,7 @@ from ..mobile_webui.store import (
 )
 
 if TYPE_CHECKING:
-    from .channel import MobileRealtimeChannel
+    from .channel import MessageFollowRequest, MobileRealtimeChannel
 
 _CLOSE_PROTOCOL = 4400
 _CLOSE_UNAUTHENTICATED = 4401
@@ -178,6 +178,14 @@ class MobileWebUiHttpError(RuntimeError):
 class PairingApproval:
     pairing_id: str
     device_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _MessageFollowReady:
+    """Scalar readiness receipt returned by the child follow task."""
+
+    session_id: str
+    through_seq: int
 
 
 @dataclass(slots=True)
@@ -705,25 +713,96 @@ class MobileGatewayRuntime:
         from .channel import MobileCommandError
 
         try:
-            reader, after_seq = self.channel.prepare_message_follow(frame)
+            request = self.channel.validate_message_follow(frame)
         except MobileCommandError as error:
             async with connection.send_lock:
                 await _send_reply(connection.websocket, frame_id=frame.id,
                     connection_epoch=connection.connection_epoch, reply_type="session.follow.error",
                     payload={"code": error.code, "message": str(error)}, session_id=frame.session_id, turn_id=None)
             return
+
         await self._cancel_message_follow(connection.websocket)
         if self._stopping or self._connections.get(device_id) is not connection:
+            return
+
+        ready: asyncio.Future[_MessageFollowReady | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+        task = tasks.create_task(
+            self._follow_message_session_scoped(
+                request,
+                device_id,
+                connection,
+                ready,
+            )
+        )
+        self._message_followers[connection.websocket] = task
+        try:
+            result = await ready
+        except MobileCommandError as error:
+            await self._cancel_message_follow(connection.websocket)
+            async with connection.send_lock:
+                await _send_reply(connection.websocket, frame_id=frame.id,
+                    connection_epoch=connection.connection_epoch, reply_type="session.follow.error",
+                    payload={"code": error.code, "message": str(error)}, session_id=frame.session_id, turn_id=None)
+            return
+        except BaseException:
+            await self._cancel_message_follow(connection.websocket)
+            raise
+        if result is None:
+            await self._cancel_message_follow(connection.websocket)
+            return
+        if self._stopping or self._connections.get(device_id) is not connection:
+            await self._cancel_message_follow(connection.websocket)
             return
         async with connection.send_lock:
             await _send_reply(connection.websocket, frame_id=frame.id,
                 connection_epoch=connection.connection_epoch, reply_type="session.follow.ok",
-                payload={"version": 2, "through_seq": reader.head()}, session_id=reader.session_id, turn_id=None)
-        if self._stopping or self._connections.get(device_id) is not connection:
-            return
-        self._message_followers[connection.websocket] = tasks.create_task(
-            self._follow_message_session(reader, after_seq, device_id, connection,
-                display_only=cast(bool, frame.payload.get("display_only", False))))
+                payload={"version": 2, "through_seq": result.through_seq},
+                session_id=result.session_id, turn_id=None)
+
+    async def _follow_message_session_scoped(
+        self,
+        request: MessageFollowRequest,
+        device_id: str,
+        connection: ActiveMobileConnection,
+        ready: asyncio.Future[_MessageFollowReady | None],
+    ) -> None:
+        """Create, use, and close the exact message scope in one child task."""
+        started = False
+        try:
+            async with self.channel.open_message_scope():
+                try:
+                    reader = self.channel.prepare_message_follow(request)
+                except BaseException as error:
+                    if not ready.done():
+                        ready.set_exception(error)
+                    return
+                if not ready.done():
+                    ready.set_result(
+                        _MessageFollowReady(
+                            session_id=reader.session_id,
+                            through_seq=reader.head(),
+                        )
+                    )
+                started = True
+                await self._follow_message_session(
+                    reader,
+                    request.after_seq,
+                    device_id,
+                    connection,
+                    display_only=request.display_only,
+                )
+        except asyncio.CancelledError:
+            if not ready.done():
+                ready.set_result(None)
+            raise
+        except BaseException as error:
+            if not ready.done():
+                ready.set_exception(error)
+                if not started:
+                    return
+            raise
 
     async def _follow_message_session(
         self, reader: MessageReader, after_seq: int, device_id: str,
@@ -1362,6 +1441,13 @@ class MobileGatewayRuntime:
         if self._stopping or self.publication is None or self._publication_monitor_task is not None:
             return
         self._publication_monitor_task = asyncio.create_task(self._watch_publication())
+
+    def close_admission(self) -> None:
+        """Cancel long-lived follow readers before the host drains this binding."""
+
+        for task in tuple(self._message_followers.values()):
+            if not task.done() and not task.cancelling():
+                task.cancel()
 
     async def stop(self) -> None:
         """停止新订阅并排空连接 reader，再停止 publication watcher。"""

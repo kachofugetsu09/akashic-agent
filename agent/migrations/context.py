@@ -4,13 +4,18 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from types import MappingProxyType
+from typing import Iterator, Mapping
 
 
 @dataclass(frozen=True)
 class MigrationContext:
     config_path: Path
     workspace: Path
+    # Each artifact migration receives only its own declared data root.  The
+    # mapping is keyed by the immutable bundle owner, so a migration cannot
+    # guess another plugin's marketplace directory.
+    bundle_data_roots: Mapping[str, Path]
 
 
 _CURRENT_CONTEXT: ContextVar[MigrationContext | None] = ContextVar(
@@ -24,10 +29,15 @@ def bind_migration_context(
     *,
     config_path: Path,
     workspace: Path,
+    bundle_data_roots: Mapping[str, Path] | None = None,
 ) -> Iterator[MigrationContext]:
     """在 Yoyo 调用迁移回调期间暴露当前安装上下文。"""
 
-    context = MigrationContext(config_path=config_path, workspace=workspace)
+    context = MigrationContext(
+        config_path=config_path,
+        workspace=workspace,
+        bundle_data_roots=MappingProxyType(dict(bundle_data_roots or {})),
+    )
     token = _CURRENT_CONTEXT.set(context)
     try:
         yield context

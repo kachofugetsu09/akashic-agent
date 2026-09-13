@@ -10,15 +10,17 @@ from agent.config_models import Config
 from agent.control.service import ControlService
 from agent.plugin_composition.rpc import RpcMethod, rpc_method_key
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
-from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugins.snapshot import (
+    follow_reply_status,
+    lease_runtime_snapshot,
+    project_message_rows,
+)
 from bootstrap.cleanup import run_cleanup_steps
-from bootstrap.reply_status import RuntimeReplyStatus
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from core.net.http import SharedHttpResources
 from infra.control.stdio import StdioAppServer
-from bootstrap.message_display import RuntimeMessageDisplay
-from session.log import MessageCatalog
+from session.log import MessageCatalog, MessagePage
 from session.message import Message
 
 
@@ -75,11 +77,21 @@ def build_control_service(
             workspace=core.workspace, plugins_home=manager.installed_plugins_home)
         return {"plugin_id": plugin_id, "cache_path": str(cache_path), "data_path": str(data_path)}
 
+    async def message_display(page: MessagePage, *, display_only: bool) -> list[dict[str, object]]:
+        return await project_message_rows(
+            manager.snapshot_store,
+            page,
+            display_only=display_only,
+        )
+
     return ControlService(
         MessageCatalog(core.message_log), core.workspace, accept=accept,
         attachments=core.channel_attachment_store.resolve_refs,
-        reply_status=RuntimeReplyStatus(manager.snapshot_store).follow,
-        message_display=RuntimeMessageDisplay(manager.snapshot_store),
+        reply_status=lambda session_id: follow_reply_status(
+            manager.snapshot_store,
+            session_id,
+        ),
+        message_display=message_display,
         plugin_install=install, plugin_status=manager.candidate_status,
         plugin_update=lambda identity: asdict(manager.read_update(identity)),
         plugin_promote=promote, plugin_discard=discard, plugin_drain=drain,

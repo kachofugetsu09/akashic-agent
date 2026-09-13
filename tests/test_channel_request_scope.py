@@ -29,6 +29,10 @@ def build_channel(context):
         def attach_runtime(self, ports):
             pass
         async def start(self):
+            if context.open_scope is None:
+                raise AssertionError("startup request scope missing")
+            async with context.open_scope() as startup_scope:
+                assert startup_scope.require(CHANNELS) is not None
             self.finish = asyncio.Event()
             ready = asyncio.Event()
             async def serve():

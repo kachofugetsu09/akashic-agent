@@ -23,7 +23,7 @@ from agent.migrations.bundles import (
     validate_bundle_dependencies,
     validate_pending_requirements,
 )
-from agent.plugins.manifest import plugins_root
+from agent.plugins.manifest import plugins_root, workspace_plugin_data_dir
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 
 
@@ -127,12 +127,21 @@ class MigrationRunner:
             os.chmod(self.ledger_path, 0o600)
 
             # 2. 为 Yoyo Python step 绑定明确的安装路径
+            bundle_data_roots = {
+                bundle.bundle_id: workspace_plugin_data_dir(
+                    self.workspace,
+                    bundle.plugin_name or bundle.bundle_id,
+                    bundle.marketplace or "builtin",
+                )
+                for bundle in bundles
+            }
             with (
                 _bind_yoyo_username(),
                 backend,
                 bind_migration_context(
                     config_path=self.config_path,
                     workspace=self.workspace,
+                    bundle_data_roots=bundle_data_roots,
                 ),
                 migration_import_paths(bundles),
             ):

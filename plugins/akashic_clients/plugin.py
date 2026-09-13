@@ -48,6 +48,7 @@ async def apply(ctx: Context, config: AkashicClientsConfig) -> None:
             capabilities=frozenset(
                 {
                     ChannelCapability.INBOUND,
+                    ChannelCapability.DURABLE_INBOUND,
                     ChannelCapability.OUTBOUND,
                     ChannelCapability.TURN_STREAM,
                 }

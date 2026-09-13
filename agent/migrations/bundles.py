@@ -113,6 +113,8 @@ class MigrationBundle:
     migrations: tuple[MigrationSpec, ...]
     package_name: str
     package_files: tuple[tuple[str, str], ...]
+    plugin_name: str = ""
+    marketplace: str = ""
 
     @property
     def migration_ids(self) -> tuple[str, ...]:
@@ -335,6 +337,8 @@ def load_migration_bundle(
         migrations=tuple(specs),
         package_name=package_name,
         package_files=tuple(package_files),
+        plugin_name=source.plugin_name,
+        marketplace=source.marketplace,
     )
 
 

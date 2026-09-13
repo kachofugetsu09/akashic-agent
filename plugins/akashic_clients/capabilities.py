@@ -11,8 +11,12 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from agent.plugin_composition import MODEL_CALL_STATS, MODEL_CATALOG, ServiceKey
+from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.rpc import rpc_method_key
+from agent.plugin_composition.message_view import MessageDisplayReader
+
+from .services import MobileUiProvider, WebUiProvider
 
 
 class ReplyStatusReader(Protocol):
@@ -32,6 +36,9 @@ class ModelSelectionReader(Protocol):
 # name, so this module remains independent from the provider plugin package.
 REPLY_STATUS = ServiceKey[ReplyStatusReader]("reply.status.v2")
 MODEL_SELECTION = ServiceKey[ModelSelectionReader]("models.selection.v1")
+MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
+MOBILE_UI = ServiceKey[MobileUiProvider]("core.mobile_ui.v1")
+WEB_UI = ServiceKey[WebUiProvider]("core.web_ui.v1")
 
 INSPECTION_DOCUMENTS_LIST = rpc_method_key("inspection/documents.list")
 INSPECTION_DOCUMENTS_GET = rpc_method_key("inspection/documents.get")
@@ -58,6 +65,10 @@ MODEL_RPC_KEYS = (MODEL_CALL, MODEL_CATALOG_RPC, MODEL_DISCOVER, MODEL_COMMAND)
 # exact providers are present.
 CLIENT_CAPABILITIES = (
     MESSAGE_CATALOG,
+    COMMANDS,
+    MESSAGE_DISPLAY,
+    MOBILE_UI,
+    WEB_UI,
     MODEL_CATALOG,
     MODEL_CALL_STATS,
     MODEL_SELECTION,
@@ -83,6 +94,9 @@ __all__ = [
     "MODEL_DISCOVER",
     "MODEL_RPC_KEYS",
     "MODEL_SELECTION",
+    "MESSAGE_DISPLAY",
+    "MOBILE_UI",
+    "WEB_UI",
     "ReplyStatusReader",
     "ModelSelectionReader",
     "REPLY_STATUS",

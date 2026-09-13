@@ -92,14 +92,18 @@ class PluginWebUiProvider:
         self._snapshot_store = snapshot_store
 
     async def bootstrap(self) -> bytes:
-        async with self._snapshot_store.lease() as snapshot:
+        from agent.plugins.snapshot import lease_runtime_snapshot
+
+        async with lease_runtime_snapshot(self._snapshot_store) as snapshot:
             catalog = snapshot.web_ui_catalog
             if catalog is None:
                 raise RuntimeError("当前 snapshot 缺少 Web UI catalog")
             return catalog.encode_bootstrap(snapshot.snapshot_id)
 
     async def state(self) -> dict[str, str]:
-        async with self._snapshot_store.lease() as snapshot:
+        from agent.plugins.snapshot import lease_runtime_snapshot
+
+        async with lease_runtime_snapshot(self._snapshot_store) as snapshot:
             catalog = snapshot.web_ui_catalog
             if catalog is None:
                 raise RuntimeError("当前 snapshot 缺少 Web UI catalog")

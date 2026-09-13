@@ -15,7 +15,12 @@ from agent.control.protocol.errors import JsonRpcError, UNAUTHORIZED
 from agent.control.protocol.models import InitializeParams, MessageSendParams
 from agent.control.protocol.method import RpcMethod
 from agent.plugin_composition.channels import ChannelInboundMessage
-from infra.channels.message_view import MessageDisplayReader, follow_messages, read_message_rows, session_row
+from agent.plugin_composition.message_view import (
+    MessageDisplayReader,
+    follow_messages,
+    read_message_rows,
+    session_row,
+)
 from session.artifacts import AttachmentRef
 from session.log import MessageCatalog
 from session.message import Message

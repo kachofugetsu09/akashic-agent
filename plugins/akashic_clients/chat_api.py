@@ -183,6 +183,7 @@ def create_chat_app(
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
+    mobile_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     model_selection_reader: Callable[
@@ -197,6 +198,8 @@ def create_chat_app(
 ) -> FastAPI:
     if messages is not None and message_scope is not None:
         raise ValueError("chat API 不能同时绑定直接消息 provider 与 request scope")
+    if plugin_ui_provider is not None and mobile_ui_scope is not None:
+        raise ValueError("chat API 不能同时绑定直接 Mobile UI provider 与 request scope")
     if messages is not None:
         channel.bind_message_readers(messages, reply_status)
     if message_display is not None:
@@ -345,23 +348,35 @@ def create_chat_app(
         }
 
     @app.get("/api/chat/plugin-ui/catalog")
-    def plugin_ui_catalog() -> dict[str, object]:
+    async def plugin_ui_catalog() -> dict[str, object]:
+        if mobile_ui_scope is not None:
+            async with mobile_ui_scope() as provider:
+                return provider.catalog()
         return _require_plugin_ui_provider(plugin_ui_provider).catalog()
 
     @app.get("/api/chat/plugin-ui/asset")
-    def plugin_ui_asset(
+    async def plugin_ui_asset(
         plugin_id: str = Query(..., min_length=1, max_length=128),
         plugin_revision: str = Query(..., min_length=1, max_length=128),
         kind: Literal["module", "stylesheet"] = Query(...),
         sha256: str = Query(..., pattern=r"^[0-9a-f]{64}$"),
     ) -> Response:
         try:
-            asset = _require_plugin_ui_provider(plugin_ui_provider).asset(
-                plugin_id,
-                plugin_revision,
-                kind,
-                sha256,
-            )
+            if mobile_ui_scope is not None:
+                async with mobile_ui_scope() as provider:
+                    asset = provider.asset(
+                        plugin_id,
+                        plugin_revision,
+                        kind,
+                        sha256,
+                    )
+            else:
+                asset = _require_plugin_ui_provider(plugin_ui_provider).asset(
+                    plugin_id,
+                    plugin_revision,
+                    kind,
+                    sha256,
+                )
         except (MobileUiPluginUnavailable, MobileUiStaleRevision) as error:
             raise _plugin_ui_http_error(error) from error
         return Response(
@@ -386,6 +401,16 @@ def create_chat_app(
         if len(encoded) > 64 * 1024:
             raise HTTPException(status_code=413, detail="插件参数超过 64 KiB")
         try:
+            if mobile_ui_scope is not None:
+                async with mobile_ui_scope() as provider:
+                    return await provider.query(
+                        request.plugin_id,
+                        request.plugin_revision,
+                        request.method,
+                        request.payload,
+                        session_id=request.session_id,
+                        turn_id=request.turn_id,
+                    )
             return await _require_plugin_ui_provider(plugin_ui_provider).query(
                 request.plugin_id,
                 request.plugin_revision,
@@ -464,15 +489,15 @@ def create_chat_app(
             try:
                 page = catalog.reader(session_key).read_tail(
                     before_seq=before_seq, through_seq=through_seq, limit=page_size)
+                items = await read_message_rows(
+                    cast(Any, page),
+                    display_only=True,
+                    reader=channel.message_display,
+                )
             except KeyError as error:
                 raise HTTPException(status_code=404, detail="会话不存在") from error
             except InvalidPage as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
-        items = await read_message_rows(
-            cast(Any, page),
-            display_only=True,
-            reader=channel.message_display,
-        )
         return {"version": 2, "items": items, "through_seq": page.through_seq,
                 "has_more": page.has_more,
                 "before_seq": page.messages[0].seq if page.has_more else None}
@@ -600,6 +625,7 @@ def build_chat_server(
     runtime_inspection: RuntimeInspectionService | None = None,
     message_display: MessageDisplayReader | None = None,
     plugin_ui_provider: MobileUiProvider | None = None,
+    mobile_ui_scope: Callable[[], Any] | None = None,
     web_ui_provider: WebUiProvider | None = None,
     model_catalog_reader: Callable[[], Awaitable[ModelCatalogSnapshot]] | None = None,
     model_selection_reader: Callable[
@@ -621,6 +647,7 @@ def build_chat_server(
             runtime_inspection=runtime_inspection,
             message_display=message_display,
             plugin_ui_provider=plugin_ui_provider,
+            mobile_ui_scope=mobile_ui_scope,
             web_ui_provider=web_ui_provider,
             model_catalog_reader=model_catalog_reader,
             model_selection_reader=model_selection_reader,
