@@ -740,11 +740,27 @@ class PluginManager:
             old_factories=(
                 self._channel_provider_factories(previous) if changed else {}
             ),
-            new_factories=(
-                self._channel_provider_factories(candidate) if changed else {}
-            ),
+            # The candidate still points at validation data here.  Resolve its
+            # factories only after the formal payload/root has been installed.
+            new_factories={},
             changed=changed,
         )
+
+    def _refresh_channel_publication_factories(
+        self,
+        state: _ChannelPublicationState,
+        *,
+        old: bool = False,
+        new: bool = False,
+    ) -> None:
+        """Resolve channel factories from the exact snapshot payload in use."""
+
+        if not state.changed:
+            return
+        if old:
+            state.old_factories = self._channel_provider_factories(state.previous)
+        if new:
+            state.new_factories = self._channel_provider_factories(state.candidate)
 
     def _channel_binding_changed(
         self,
@@ -776,6 +792,22 @@ class PluginManager:
             state.old_stopped = True
             self._active_channel_generation = None
             self._active_channel_catalog_identity = None
+
+    def _close_channel_admission_before_snapshot_drain(
+        self,
+        state: _ChannelPublicationState | None,
+    ) -> None:
+        """Cancel long channel followers before waiting for snapshot leases."""
+
+        if (
+            state is None
+            or not state.changed
+            or state.old_runtime is None
+            or state.old_stopped
+        ):
+            return
+        state.old_runtime.close_admission()
+        state.old_closed = True
 
     async def _start_channel_publication(
         self,
@@ -858,6 +890,8 @@ class PluginManager:
     async def _restore_old_channel_publication(
         self,
         state: _ChannelPublicationState,
+        *,
+        startup_snapshot_lease: RuntimeSnapshotLease | None = None,
     ) -> None:
         """Reconstruct the old runtime after all other owners rolled back."""
 
@@ -865,11 +899,15 @@ class PluginManager:
             return
         restored = state.old_runtime
         if state.old_stopped and state.previous is not None:
+            # The old factory was closed by stop().  Re-resolve it from the
+            # rebuilt exact old snapshot instead of reusing the closed object.
+            self._refresh_channel_publication_factories(state, old=True)
             try:
                 restored = await self._channel_generation_host.start_formal(
                     state.previous,
                     state.old_factories,
                     boot_owner="plugin-manager-rollback",
+                    startup_snapshot_lease=startup_snapshot_lease,
                 )
             except BaseException:
                 self._active_channel_generation = None
@@ -877,6 +915,81 @@ class PluginManager:
                 raise
         self._active_channel_generation = restored
         self._active_channel_catalog_identity = state.previous_identity
+
+    async def _restore_old_channel_after_failure(
+        self,
+        state: _ChannelPublicationState,
+    ) -> None:
+        """Restore one old binding through an exact closed-snapshot lease."""
+
+        snapshot = state.previous
+        if snapshot is None:
+            self._reopen_restored_channel_publication(state)
+            return
+        startup_lease: RuntimeSnapshotLease | None = None
+        resumed = False
+        try:
+            if state.old_stopped:
+                if self._snapshot_store.current is not snapshot:
+                    raise RuntimeError("旧 Channel recovery snapshot 已不是 current")
+                startup_lease = (
+                    self._snapshot_store.lease(snapshot.snapshot_id)
+                    if snapshot.accepting_leases
+                    else self._snapshot_store.retain_recovery_target(snapshot)
+                )
+                await self._restore_old_channel_publication(
+                    state,
+                    startup_snapshot_lease=startup_lease,
+                )
+            if self._snapshot_store.current is snapshot and not snapshot.accepting_leases:
+                await self._snapshot_store.resume(snapshot)
+                resumed = True
+            self._reopen_restored_channel_publication(state)
+            if state.old_runtime is not None:
+                await self._channel_generation_host.recover_durable_inbounds()
+        except BaseException:
+            if resumed and self._snapshot_store.current is snapshot:
+                self._snapshot_store.pause_admission()
+            raise
+        finally:
+            if startup_lease is not None:
+                await startup_lease.release()
+
+    async def _start_channel_with_recovery_lease(
+        self,
+        snapshot: RuntimeSnapshot,
+        factories: Mapping[str, ProviderClientFactory],
+        *,
+        boot_owner: str,
+    ) -> ChannelGeneration:
+        """Start a current channel with a lease allowed during closed recovery."""
+
+        if self._snapshot_store.current is not snapshot:
+            raise RuntimeError("Channel recovery snapshot 已不是 current")
+        startup_lease = (
+            self._snapshot_store.lease(snapshot.snapshot_id)
+            if snapshot.accepting_leases
+            else self._snapshot_store.retain_recovery_target(snapshot)
+        )
+        try:
+            return await self._channel_generation_host.start_formal(
+                snapshot,
+                factories,
+                boot_owner=boot_owner,
+                startup_snapshot_lease=startup_lease,
+            )
+        finally:
+            await startup_lease.release()
+
+    def _pause_snapshot_after_channel_recovery_failure(
+        self,
+        snapshot: RuntimeSnapshot | None,
+        resumed: bool,
+    ) -> None:
+        """Keep the exact snapshot closed when restoring its channel failed."""
+
+        if resumed and snapshot is not None and self._snapshot_store.current is snapshot:
+            self._snapshot_store.pause_admission()
 
     def _reopen_restored_channel_publication(
         self,
@@ -2331,11 +2444,22 @@ class PluginManager:
             await self._dispose_unreferenced_composition_root(snapshot)
             raise RuntimeError("持有 RuntimeSnapshot lease 时不能切换独占端点")
         quiesced = self._snapshot_store.pause_admission() if publication_gated else None
+        channel_state: _ChannelPublicationState | None = None
         transaction = None
         try:
             if quiesced is not None:
                 if exclusive_endpoint_changed and self._endpoint_quiescer is not None:
                     await self._endpoint_quiescer()
+                if (
+                    current_snapshot is not None
+                    and current_snapshot.composition_root is not None
+                    and self._channel_binding_changed(current_snapshot, snapshot)
+                ):
+                    channel_state = self._prepare_channel_publication(
+                        current_snapshot,
+                        snapshot,
+                    )
+                    self._close_channel_admission_before_snapshot_drain(channel_state)
                 if exclusive_endpoint_changed or v3_channel_catalog_changed:
                     await self._snapshot_store.wait_for_no_leases(quiesced)
             transaction = self._snapshot_store.begin_publish(snapshot)
@@ -2345,6 +2469,13 @@ class PluginManager:
                 await self._snapshot_store.abort(transaction)
             else:
                 await self._snapshot_store.resume(quiesced)
+                if (
+                    channel_state is not None
+                    and channel_state.old_runtime is not None
+                    and channel_state.old_closed
+                    and not channel_state.old_stopped
+                ):
+                    await self._restore_old_channel_after_failure(channel_state)
                 await self._dispose_unreferenced_composition_root(snapshot)
             if self._endpoint_resumer is not None and exclusive_endpoint_changed:
                 await self._endpoint_resumer()
@@ -2461,6 +2592,7 @@ class PluginManager:
         reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
+        preclosed_channel_state: _ChannelPublicationState | None = None,
     ) -> SnapshotTransaction:
         """关闭目标 lease 内准备临时资源，全部完成后才开放正式接纳。"""
 
@@ -2490,6 +2622,7 @@ class PluginManager:
                 reopen_previous_on_failure=reopen_previous_on_failure,
                 before_open=prepare, after_open=after_open,
                 startup_snapshot_lease=lease,
+                preclosed_channel_state=preclosed_channel_state,
             )
         except BaseException as error:
             if prepared_here:
@@ -2514,6 +2647,7 @@ class PluginManager:
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
         startup_snapshot_lease: RuntimeSnapshotLease | None = None,
+        preclosed_channel_state: _ChannelPublicationState | None = None,
     ) -> SnapshotTransaction:
         """Publish one snapshot around a single closed external-participant step."""
 
@@ -2523,6 +2657,13 @@ class PluginManager:
             transaction.previous,
             transaction.candidate,
         )
+        if preclosed_channel_state is not None:
+            if (
+                preclosed_channel_state.previous is not transaction.previous
+                or preclosed_channel_state.candidate is not transaction.candidate
+            ):
+                raise RuntimeError("预关闭 Channel publication 与 snapshot 不匹配")
+            channel_binding_changed = True
         if (
             not endpoints_changed
             and not channel_binding_changed
@@ -2556,11 +2697,27 @@ class PluginManager:
         participants_switch_attempted = False
         forward_error: BaseException | None = None
         try:
-            channel_state = self._prepare_channel_publication(
-                provisional.previous,
-                provisional.candidate,
-            )
-            await self._close_channel_publication(channel_state)
+            channel_state = preclosed_channel_state
+            if channel_state is None:
+                channel_state = self._prepare_channel_publication(
+                    provisional.previous,
+                    provisional.candidate,
+                )
+                await self._close_channel_publication(channel_state)
+            elif channel_state.old_runtime is not None and not channel_state.old_stopped:
+                raise RuntimeError("预关闭 Channel publication 尚未完成 old stop")
+            # A preclosed state is refreshed by its caller after formal Root
+            # replacement; a state closed in this method still has the live
+            # previous Root and can resolve the old side now.  The candidate
+            # side is always resolved from the final snapshot payload here.
+            if channel_state is not None:
+                if preclosed_channel_state is None:
+                    self._refresh_channel_publication_factories(
+                        channel_state, old=True
+                    )
+                self._refresh_channel_publication_factories(
+                    channel_state, new=True
+                )
             if endpoints_changed:
                 participants_switch_attempted = True
                 try:
@@ -2645,9 +2802,13 @@ class PluginManager:
                     keep_candidate_latest=promote_latest,
                     reopen_previous=(reopen_previous_on_failure and not rollback_errors),
                 )
-            if channel_state is not None and not channel_cleanup_failed:
+            if (
+                channel_state is not None
+                and not channel_cleanup_failed
+                and preclosed_channel_state is None
+            ):
                 try:
-                    await self._restore_old_channel_publication(channel_state)
+                    await self._restore_old_channel_after_failure(channel_state)
                 except BaseException as caught:
                     rollback_errors.append(caught)
                     channel_cleanup_failed = True
@@ -2657,14 +2818,6 @@ class PluginManager:
                     keep_candidate_latest=promote_latest,
                     reopen_previous=(reopen_previous_on_failure and not rollback_errors),
                 )
-            if not rollback_errors and channel_state is not None:
-                self._reopen_restored_channel_publication(channel_state)
-                if channel_state.old_runtime is not None:
-                    try:
-                        await self._channel_generation_host.recover_durable_inbounds()
-                    except BaseException as caught:
-                        rollback_errors.append(caught)
-                        channel_cleanup_failed = True
             self._abort_channel_boot_transactions(
                 provisional.candidate,
                 publication_error,
@@ -2786,8 +2939,23 @@ class PluginManager:
             )
             runtime_restore_started = False
             stable_root_stopped = False
+            channel_state: _ChannelPublicationState | None = None
             provisional_transaction: SnapshotTransaction | None = None
             provisional_cancelled = False
+            if (
+                quiesced_snapshot is not None
+                and stable_snapshot is not None
+                and stable_snapshot.composition_root is not None
+                and self._channel_binding_changed(
+                    stable_snapshot,
+                    ready.snapshot,
+                )
+            ):
+                channel_state = self._prepare_channel_publication(
+                    stable_snapshot,
+                    ready.snapshot,
+                )
+                self._close_channel_admission_before_snapshot_drain(channel_state)
             if publication_gated:
                 try:
                     if (
@@ -2809,12 +2977,24 @@ class PluginManager:
                     ) = await _complete_critical(
                         self._snapshot_store.promote_latest_provisional()
                     )
+                    # A formal Root owns the plugin channel registration.  Stop
+                    # the old binding before disposing that Root, then carry the
+                    # exact participant state into the final publication step.
+                    if channel_state is not None:
+                        await self._close_channel_publication(channel_state)
                     runtime_restore_started = True
                     try:
                         await self._restore_ready_runtime(
                             ready,
                             stable_snapshot=quiesced_snapshot,
                         )
+                        if channel_state is not None:
+                            # _restore_ready_runtime replaced the validation
+                            # payload with production data/root.  Only now may
+                            # the new channel factory read formal credentials.
+                            self._refresh_channel_publication_factories(
+                                channel_state, new=True
+                            )
                     finally:
                         stable_root_stopped = generation.formal_root_stopped
                     generation = ready.candidate
@@ -2835,6 +3015,26 @@ class PluginManager:
                             await self._rollback_composition_runtime_replacement(
                                 generation
                             )
+                        except BaseException as error:
+                            gated_runtime_error = error
+                    if (
+                        gated_runtime_error is None
+                        and channel_state is not None
+                        and channel_state.old_runtime is not None
+                        and not channel_state.old_stopped
+                        and not channel_state.old_closed
+                    ):
+                        gated_runtime_error = RuntimeError(
+                            "旧 Channel binding 未完成 stop，不能释放其 plugin Root"
+                        )
+                    if (
+                        gated_runtime_error is None
+                        and channel_state is not None
+                        and channel_state.old_runtime is not None
+                        and (channel_state.old_stopped or channel_state.old_closed)
+                    ):
+                        try:
+                            await self._restore_old_channel_after_failure(channel_state)
                         except BaseException as error:
                             gated_runtime_error = error
                     if provisional_transaction is not None:
@@ -2954,6 +3154,7 @@ class PluginManager:
                         reopen_previous_on_failure=not formal_root_handoff,
                         before_open=before_open,
                         after_open=after_open,
+                        preclosed_channel_state=channel_state,
                     )
                 )
                 cancelled = provisional_cancelled or final_cancelled
@@ -2986,6 +3187,21 @@ class PluginManager:
                 elif runtime_restore_started:
                     try:
                         await self._rollback_composition_runtime_replacement(generation)
+                    except BaseException as error:
+                        runtime_error = error
+                if (
+                    runtime_error is None
+                    and channel_state is not None
+                    and channel_state.old_runtime is not None
+                    and (channel_state.old_stopped or channel_state.old_closed)
+                ):
+                    try:
+                        # The final participant commit receives a preclosed
+                        # state and therefore cannot restore the old binding
+                        # while the formal Root is still being rebuilt.  Once
+                        # the stable Root is exact again, rebuild the old
+                        # factories through its exact snapshot lease.
+                        await self._restore_old_channel_after_failure(channel_state)
                     except BaseException as error:
                         runtime_error = error
                 if (
@@ -3189,6 +3405,11 @@ class PluginManager:
             # 2. Rebuild the exact committed stable runtime when rollback left it absent.
             stable = self._active_generations.get(plugin_id)
             current = self.current_snapshot
+            recovery_snapshot = (
+                current
+                if current is not None and not current.accepting_leases
+                else None
+            )
             if (
                 action.action == "retry_runtime_recovery"
                 and stable is not None
@@ -3200,7 +3421,7 @@ class PluginManager:
                     or ready.candidate.replaced_composition_runtime_generation is None
                 )
             ):
-                _ = self._snapshot_store.pause_admission()
+                recovery_snapshot = self._snapshot_store.pause_admission()
                 await self._snapshot_store.wait_for_no_leases(current)
                 await self._rebuild_stable_root(stable, current)
                 receipts.append("stable-composition-runtime-restored")
@@ -3266,20 +3487,40 @@ class PluginManager:
                     is None
                     or self._active_channel_catalog_identity != current_channel_identity
                 ):
-                    restored_channel_runtime = (
-                        await self._channel_generation_host.start_formal(
+                    channel_recovery_resumed = False
+                    try:
+                        restored_channel_runtime = await self._start_channel_with_recovery_lease(
                             current,
                             self._channel_provider_factories(current),
                             boot_owner="plugin-manager-recovery",
                         )
-                    )
+                        recovery_target = recovery_snapshot or current
+                        if (
+                            self._snapshot_store.current is recovery_target
+                            and not recovery_target.accepting_leases
+                        ):
+                            await self._snapshot_store.resume(recovery_target)
+                            channel_recovery_resumed = True
+                    except BaseException:
+                        self._pause_snapshot_after_channel_recovery_failure(
+                            recovery_snapshot or current,
+                            channel_recovery_resumed,
+                        )
+                        raise
 
             # 6. Open the exact Channel owner before any public admission resumes.
             if restored_channel_runtime is not None:
                 self._active_channel_generation = restored_channel_runtime
                 self._active_channel_catalog_identity = current_channel_identity
-                restored_channel_runtime.open_admission()
-                await self._channel_generation_host.recover_durable_inbounds()
+                try:
+                    restored_channel_runtime.open_admission()
+                    await self._channel_generation_host.recover_durable_inbounds()
+                except BaseException:
+                    self._pause_snapshot_after_channel_recovery_failure(
+                        recovery_snapshot or current,
+                        channel_recovery_resumed,
+                    )
+                    raise
                 receipts.append("stable-channel-runtime-restored")
             receipt = ";".join(receipts) or "runtime-owner-already-clean"
             _, resume_cancelled = await _complete_critical(
@@ -3628,6 +3869,7 @@ class PluginManager:
                 )
 
         quiesced_snapshot: RuntimeSnapshot | None = None
+        channel_state: _ChannelPublicationState | None = None
         if publication_gated:
             from agent.plugins.snapshot import get_current_runtime_lease
 
@@ -3644,6 +3886,16 @@ class PluginManager:
             try:
                 if exclusive_endpoint_changed and self._endpoint_quiescer is not None:
                     await self._endpoint_quiescer()
+                if (
+                    quiesced_snapshot is not None
+                    and quiesced_snapshot.composition_root is not None
+                    and self._channel_binding_changed(quiesced_snapshot, snapshot)
+                ):
+                    channel_state = self._prepare_channel_publication(
+                        quiesced_snapshot,
+                        snapshot,
+                    )
+                    self._close_channel_admission_before_snapshot_drain(channel_state)
                 if quiesced_snapshot is not None and (
                     exclusive_endpoint_changed
                     or v3_channel_catalog_changed
@@ -3653,6 +3905,19 @@ class PluginManager:
             except BaseException as error:
                 error_text = str(error) or type(error).__name__
                 await self._snapshot_store.resume(quiesced_snapshot)
+                if (
+                    channel_state is not None
+                    and channel_state.old_runtime is not None
+                    and channel_state.old_closed
+                    and not channel_state.old_stopped
+                ):
+                    try:
+                        await self._restore_old_channel_after_failure(channel_state)
+                    except BaseException as recovery_error:
+                        raise BaseExceptionGroup(
+                            "endpoint quiesce 与旧 Channel 恢复失败",
+                            [error, recovery_error],
+                        ) from None
                 if exclusive_endpoint_changed and self._endpoint_resumer is not None:
                     await self._endpoint_resumer()
                 await self.discard_prepared(
@@ -3694,12 +3959,20 @@ class PluginManager:
                         self._snapshot_store.commit_provisional(transaction)
                     )
                     provisional_started = True
+                if channel_state is not None:
+                    await self._close_channel_publication(channel_state)
                 try:
                     _ = await self._restore_direct_candidate_runtime(
                         generation,
                         validation_snapshot=snapshot,
                         stable_snapshot=quiesced_snapshot,
                     )
+                    if channel_state is not None:
+                        # The candidate snapshot now carries its formal
+                        # production payload, so discard validation factories.
+                        self._refresh_channel_publication_factories(
+                            channel_state, new=True
+                        )
                 finally:
                     stable_root_stopped = generation.formal_root_stopped
             except (asyncio.CancelledError, Exception) as error:
@@ -3712,6 +3985,25 @@ class PluginManager:
                             generation,
                             quiesced_snapshot,
                         )
+                    except BaseException as recovery_error:
+                        stable_recovery_error = recovery_error
+                if (
+                    stable_recovery_error is None
+                    and channel_state is not None
+                    and channel_state.old_runtime is not None
+                    and not channel_state.old_stopped
+                    and not channel_state.old_closed
+                ):
+                    stable_recovery_error = RuntimeError(
+                        "旧 Channel binding 未完成 stop，不能释放其 plugin Root"
+                    )
+                if (
+                    stable_recovery_error is None
+                    and channel_state is not None
+                    and channel_state.old_stopped
+                ):
+                    try:
+                        await self._restore_old_channel_after_failure(channel_state)
                     except BaseException as recovery_error:
                         stable_recovery_error = recovery_error
                 self._record_failed_gate(
@@ -3814,6 +4106,7 @@ class PluginManager:
                             if active is None
                             else lambda: self._retire_generation(active)
                         ),
+                        preclosed_channel_state=channel_state,
                     )
                 )
                 commit_cancelled = commit_cancelled or final_commit_cancelled
@@ -3852,6 +4145,16 @@ class PluginManager:
                     )
                 else:
                     await self._restore_replaced_composition_runtime(generation)
+                if (
+                    runtime_restore_error is None
+                    and channel_state is not None
+                    and channel_state.old_runtime is not None
+                    and (channel_state.old_stopped or channel_state.old_closed)
+                ):
+                    try:
+                        await self._restore_old_channel_after_failure(channel_state)
+                    except BaseException as error:
+                        runtime_restore_error = error
             except BaseException as error:
                 runtime_restore_error = error
             if (
