@@ -84,7 +84,7 @@ def manager(tmp_path, plugins, log):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("receipt_write_fails", [False, True])
-async def test_archived_sender_survives_removed_source_without_starting_a_receiver(
+async def test_sender_survives_restart_without_repeating_a_delivery(
     tmp_path, monkeypatch, receipt_write_fails,
 ):
     source = tmp_path / "plugins"
@@ -99,8 +99,9 @@ async def test_archived_sender_survives_removed_source_without_starting_a_receiv
         message = log.writer("chat", author="reply", source="conversation", body_types=(Output,),
                              content={"text": lambda part: ContentReferences()}).append(
             "answer", Output((ContentPart("text", "original body"),), "complete"))
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             root = snapshot.composition_root.context
             binding = root.require(SENDERS).bind("test", bindings)
             execution = root.require(ServiceKey("fixture.delivery"))()
@@ -125,20 +126,26 @@ async def test_archived_sender_survives_removed_source_without_starting_a_receiv
         starts = next((tmp_path / "workspace").rglob("receiver-starts"))
         assert starts.read_text().splitlines() == ["started"]
         await host.terminate_all()
-        shutil.rmtree(source)
         log.close()
         log = MessageLog(tmp_path / "sessions.db")
-        restored = manager(tmp_path, [], log)
-        bindings = Bindings(log, restored._archive, restored.open_binding)
+        restored = manager(tmp_path, [source], log)
+        await restored.load_all()
+        await restored.start_runtime()
+        snapshot = restored.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, restored._archive, snapshot.composition_root)
         records = DeliveryRecords(log.owner("plugin:delivery"), "test_sender")
-        execution = Deliveries(records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery")
+        execution = Deliveries(
+            records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
+            binding_matches=lambda identity: bindings.matches_current(identity, SENDERS),
+        )
         result = await execution.send(message.message_id, sink.name)
         assert result.provider_ids == ("original-A",)
         assert (await execution.send(message.message_id, sink.name)).provider_ids == ("original-A",)
         effect = next((tmp_path / "workspace").rglob("sent.jsonl"))
         assert len(effect.read_text().splitlines()) == 1
         assert "original-room" in effect.read_text()
-        assert starts.read_text().splitlines() == ["started"]
+        assert starts.read_text().splitlines() == ["started", "started"]
         async with open_sender(bindings, binding) as closed:
             assert closed.idempotent
         with pytest.raises(RuntimeError, match="释放"):
@@ -153,8 +160,8 @@ async def test_archived_sender_survives_removed_source_without_starting_a_receiv
 
 
 @pytest.mark.asyncio
-async def test_formal_and_archived_delivery_share_target_coordination(tmp_path):
-    """两个真实 Root 共用 Delivery owner 的短命活动，归档不能绕过正式忙闲状态。"""
+async def test_selected_and_formal_delivery_share_target_coordination(tmp_path):
+    """正式服务与当前 binding 共用 Delivery owner 的短命活动。"""
     import asyncio
 
     source = tmp_path / "plugins"
@@ -165,18 +172,19 @@ async def test_formal_and_archived_delivery_share_target_coordination(tmp_path):
         await host.load_all()
         await host.start_runtime()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
             root = snapshot.composition_root.context
-            bindings = Bindings(log, host._archive, host.open_binding)
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             service = ServiceKey("fixture.delivery")
             binding = bindings.bind(service, {})
             formal = root.require(service)()
             async with bindings.open(binding, service) as (factory, _):
-                archived = factory()
+                selected = factory()
                 waiting = asyncio.Event()
 
                 async def check():
                     waiting.set()
-                    await archived.wait_idle("test", "room")
+                    await selected.wait_idle("test", "room")
 
                 with formal.activity("test", "room"):
                     pending = asyncio.create_task(check())
@@ -185,7 +193,7 @@ async def test_formal_and_archived_delivery_share_target_coordination(tmp_path):
                 await pending
                 # 反方向也走相同 owner；测试不依赖两个 Root 内的 Python 类身份。
                 waiting.clear()
-                with archived.activity("test", "room"):
+                with selected.activity("test", "room"):
                     async def reverse():
                         waiting.set()
                         await formal.wait_idle("test", "room")

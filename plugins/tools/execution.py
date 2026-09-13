@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Awaitable, Callable, Hashable, Mapping
 from typing import cast
 
 from agent.plugin_composition.tasks import Task, TaskAdmission, TaskSlot
@@ -38,6 +38,7 @@ class ToolExecution:
         *,
         task_key: Hashable,
         child_permit: Callable[[], ExternalRootPermit] | None = None,
+        binding_matches: Callable[[str], Awaitable[bool]],
     ):
         self._state = state
         self._tasks = tasks
@@ -45,6 +46,7 @@ class ToolExecution:
         self._authorize = authorize
         self._task_key = task_key
         self._child_permit = child_permit
+        self._binding_matches = binding_matches
 
     async def execute(
         self, key: str, binding_id: str, arguments: Mapping[str, object]
@@ -203,6 +205,23 @@ class ToolExecution:
                     "reply_id": None if reply is None else reply.message_id,
                     "phase": "requested", "arguments": arguments,
                 })
+            if (
+                record.value["phase"] in {"prepared", "started"}
+                and not await self._binding_matches(binding_id)
+            ):
+                return finish(
+                    self._state,
+                    key,
+                    record,
+                    Result(
+                        "error",
+                        (ContentPart(
+                            "text",
+                            "原工具 binding 与当前 stable 不兼容；不查询或重试，已发生效果不会撤销。",
+                        ),),
+                    ),
+                    reply,
+                )
             async with self._open_tool(binding_id) as tool:
                 if not task.active:
                     raise asyncio.CancelledError

@@ -28,6 +28,10 @@ from session.log import MessageLog
 from session.message import ContentPart, ContentReferences, Output
 
 
+async def _binding_matches(_identity: str) -> bool:
+    return True
+
+
 @asynccontextmanager
 async def telegram_server(respond):
     calls = []
@@ -94,7 +98,9 @@ async def application(tmp_path, channel, endpoint):
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            bindings = Bindings(log, host._archive, host.open_binding)
+            root = snapshot.composition_root
+            assert root is not None
+            bindings = Bindings(log, host._archive, root)
             binding = snapshot.composition_root.context.require(DELIVERY_SENDERS).bind(channel, bindings)
         yield log, host, bindings, binding, physical, config
     finally:
@@ -124,7 +130,7 @@ async def tg_success(request, index, payload):
 
 
 @pytest.mark.asyncio
-async def test_telegram_archived_sender_preserves_rich_text_and_artifact_order(tmp_path, caplog):
+async def test_telegram_sender_preserves_rich_text_and_artifact_order(tmp_path, caplog):
     caplog.set_level(logging.DEBUG)
     async with telegram_server(tg_success) as (endpoint, calls):
         async with application(tmp_path, "telegram", endpoint) as (log, host, bindings, binding, physical, _):
@@ -133,9 +139,6 @@ async def test_telegram_archived_sender_preserves_rich_text_and_artifact_order(t
             msg = message(log, [ContentPart("text", "**Hello 🌙**\n" + "长" * 4300), attachment, photo,
                                 ContentPart("model.facts", {"private": "never render"})])
             before = tuple(log._connection.iterdump())
-            await host.terminate_all()
-            shutil.rmtree(tmp_path / "plugins")
-            # 绑定只用归档代码和原凭据，不需要当前插件源码或收件实例。
             async with open_sender(bindings, binding) as sender:
                 assert not sender.idempotent
                 assert calls == []
@@ -173,15 +176,16 @@ async def test_telegram_unknown_never_replays_a_successful_prefix(tmp_path, fail
             msg = message(log, [ContentPart("text", "first"), ContentPart("text", "second")])
             tasks = Tasks()
             records = DeliveryRecords(log.owner("plugin:delivery"), "test")
-            execution = Deliveries(records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery")
+            execution = Deliveries(
+                records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
+                binding_matches=_binding_matches,
+            )
             execution.prepare(log.reader("chat"), msg, (Sink(name="telegram", binding_id=binding, address="123"),))
             try:
                 receipt = await execution.send(msg.message_id, "telegram")
                 assert receipt.status == ("rejected" if failure == "rejected" else "failed")
                 assert len(calls) == (2 if failure == "partial" else 1)
                 count = len(calls)
-                await host.terminate_all()
-                shutil.rmtree(tmp_path / "plugins")
                 recovered = await execution.send(msg.message_id, "telegram")
                 assert recovered == receipt
                 assert recovered.provider_ids == (("1",) if failure == "partial" else ())
@@ -204,8 +208,6 @@ async def test_qq_uses_echo_and_sends_files_without_inventing_message_ids(tmp_pa
             file, payload, _ = await file_part(physical)
             photo, photo_payload, _ = await file_part(physical, AttachmentKind.IMAGE)
             msg = message(log, [ContentPart("text", "literal [CQ:at,qq=1]"), file, photo])
-            await host.terminate_all()
-            shutil.rmtree(tmp_path / "plugins")
             async with open_sender(bindings, binding) as sender:
                 assert calls == []
                 receipt = await sender.send("once", address, msg)
@@ -237,7 +239,10 @@ async def test_qq_uncertain_receipt_does_not_resend(tmp_path, failure):
             msg = message(log, [file, ContentPart("text", "after upload")])
             tasks = Tasks()
             records = DeliveryRecords(log.owner("plugin:delivery"), "test")
-            execution = Deliveries(records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery")
+            execution = Deliveries(
+                records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
+                binding_matches=_binding_matches,
+            )
             execution.prepare(log.reader("chat"), msg, (Sink(name="qq", binding_id=binding, address="gqq:42"),))
             try:
                 receipt = await execution.send(msg.message_id, "qq")
@@ -267,7 +272,10 @@ async def test_native_sender_reads_all_artifacts_before_any_provider_effect(tmp_
             path.write_bytes(b"corrupt")
             tasks = Tasks()
             records = DeliveryRecords(log.owner("plugin:delivery"), "test")
-            execution = Deliveries(records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery")
+            execution = Deliveries(
+                records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
+                binding_matches=_binding_matches,
+            )
             execution.prepare(log.reader("chat"), msg, (Sink(name=channel, binding_id=binding, address="123"),))
             try:
                 receipt = await execution.send(msg.message_id, channel)
@@ -293,7 +301,10 @@ async def test_native_address_rejection_and_credential_revocation_have_no_effect
             msg = message(log, [ContentPart("text", "must not send")])
             tasks = Tasks()
             records = DeliveryRecords(log.owner("plugin:delivery"), "test")
-            execution = Deliveries(records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery")
+            execution = Deliveries(
+                records, log.catalog(), tasks, partial(open_sender, bindings), task_key="delivery",
+                binding_matches=_binding_matches,
+            )
             execution.prepare(log.reader("chat"), msg, (Sink(name=channel, binding_id=binding, address="not-a-chat"),))
             try:
                 receipt = await execution.send(msg.message_id, channel)

@@ -1,7 +1,5 @@
 import asyncio
 import shutil
-from collections.abc import Mapping
-from typing import cast
 
 import pytest
 
@@ -82,99 +80,6 @@ for raw in sys.stdin:
 
 
 @pytest.mark.asyncio
-async def test_archive_opens_only_selected_mcp_after_source_and_cache_removal(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKASHIC_BOOT_ID", "scoped-test-boot")
-    monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
-    plugins = tmp_path / "plugins"
-    write_plugin(plugins / "probe")
-    other = plugins / "other"
-    other.mkdir()
-    (other / "plugin.py").write_text("""
-from agent.plugin_composition import MCP_SERVERS, ServiceKey
-api_version = 3
-name = "other"
-version = "1.0.0"
-inject = (MCP_SERVERS, ServiceKey("test.bound.mcp"))
-async def apply(ctx, config):
-    await ctx.provide(ServiceKey("test.foreign.mcp"), lambda: ctx.require(MCP_SERVERS).open(ctx, "first"))
-    await ctx.provide(ServiceKey("test.delegated.mcp"), ctx.require(ServiceKey("test.bound.mcp")))
-""")
-    first = manager(tmp_path, [plugins])
-    log = MessageLog(tmp_path / "messages.db")
-    try:
-        await first.load_all()
-        bindings = Bindings(log, first._archive, first.open_binding)
-        async with lease_runtime_snapshot(first.snapshot_store):
-            identity = bindings.bind(SERVICE, {})
-            foreign = first.current_snapshot.composition_root.service_value(
-                ServiceKey("test.foreign.mcp")
-            )
-            with pytest.raises(PermissionError, match="owner"):
-                async with foreign():
-                    pytest.fail("foreign Context opened a private target")
-            delegated = first.current_snapshot.composition_root.service_value(
-                ServiceKey("test.delegated.mcp")
-            )
-            async with delegated() as server:
-                async with server.route() as route:
-                    assert (await route.call("ping", {})).output == "fixed A"
-            text_identity = bindings.bind(ServiceKey("test.bound.text"), {})
-            generation = first.snapshot_store.current.generations["probe"]
-            data = generation.data_dir
-        assert (data / "first.count").read_text() == "2"
-        assert (data / "second.count").read_text() == "1"
-        archive_ref = generation.archive_ref
-        assert archive_ref is not None
-        record = first._archive.read_descriptor(archive_ref)
-        old_component = first._archive.save_descriptor({**record, "version": 1})
-        with pytest.raises(RuntimeError, match="运行合同不兼容"):
-            async with first.open_binding((old_component,)):
-                pytest.fail("old component descriptor opened")
-        env_refs = cast(Mapping[str, object], record["python_environments"])
-        unused_ref = env_refs["second"]
-        assert isinstance(unused_ref, str)
-        unused_env = first._archive.read_descriptor(unused_ref)
-        environment_root = tmp_path / "workspace/runtime/plugin-python-environments"
-        await first.terminate_all()
-        location = unused_env["location"]
-        assert isinstance(location, str)
-        shutil.rmtree(environment_root / location)
-        shutil.rmtree(plugins)
-        second = manager(tmp_path, [])
-        try:
-            recovered = Bindings(log, second._archive, second.open_binding)
-            async with recovered.open(identity, SERVICE) as (open_server, _):
-                async with open_server() as server:
-                    async with server.route() as route:
-                        result = await route.call("ping", {})
-                        assert result.output == "fixed A"
-            assert (data / "first.count").read_text() == "3"
-            import json
-            assert json.loads((data / "first.boot").read_text()) == {
-                "AKASHIC_BOOT_ID": "scoped-test-boot", "AKASHIC_SUPERVISED": "1",
-            }
-            assert (data / "second.count").read_text() == "1"
-            with pytest.raises(RuntimeError):
-                server.route()
-            shutil.rmtree(environment_root)
-            async with recovered.open(text_identity, ServiceKey("test.bound.text")) as (
-                text,
-                _,
-            ):
-                assert text == "fixed text"
-            async with recovered.open(identity, SERVICE) as (open_server, _):
-                with pytest.raises(FileNotFoundError, match="环境根"):
-                    async with open_server():
-                        pytest.fail("missing environment was rebuilt")
-            assert not environment_root.exists()
-        finally:
-            await second.terminate_all()
-    finally:
-        await first.terminate_all()
-        log.close()
-
-
-@pytest.mark.asyncio
 async def test_runtime_command_failure_releases_root_before_scope_disposal(tmp_path):
     """环境无法打开时不保留 Root，也不启动额外的外部进程。"""
     from agent.plugins.composition_generation_host import CompositionGenerationHost
@@ -228,7 +133,8 @@ async def test_scoped_cleanup_failure_retains_resources_without_plugin_reload(
     try:
         await owner.load_all()
         snapshot = owner.current_snapshot
-        bindings = Bindings(log, owner._archive, owner.open_binding)
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, owner._archive, snapshot.composition_root)
         async with lease_runtime_snapshot(owner.snapshot_store):
             identity = bindings.bind(SERVICE, {})
         status = owner.candidate_status()
@@ -295,7 +201,8 @@ async def test_shutdown_waits_for_admitted_mcp_start_and_closes_new_admission(tm
         await owner.load_all()
         snapshot = owner.current_snapshot
         assert snapshot is not None
-        bindings = Bindings(log, owner._archive, owner.open_binding)
+        assert snapshot.composition_root is not None
+        bindings = Bindings(log, owner._archive, snapshot.composition_root)
         async with lease_runtime_snapshot(owner.snapshot_store):
             identity = bindings.bind(SERVICE, {})
         monkeypatch.setattr(host._mcp_host, "start_generation", delayed_start)
@@ -315,14 +222,14 @@ async def test_shutdown_waits_for_admitted_mcp_start_and_closes_new_admission(tm
             async with host.open_mcp(snapshot, "first"):
                 pytest.fail("shutdown admitted another MCP")
         release.set()
+        leave.set()
+        await task
         await shutdown
         assert selected is not None
         assert host.get(selected) is None
         assert selected not in host._bridges
         assert host._mcp_host.get(selected) is None
         assert host._process_host.get(selected) is None
-        leave.set()
-        await task
     finally:
         release.set()
         leave.set()
@@ -457,7 +364,8 @@ if own_count > 1:
         await owner.load_all()
         snapshot = owner.current_snapshot
         data = snapshot.generations["probe"].data_dir
-        bindings = Bindings(log, owner._archive, owner.open_binding)
+        assert snapshot.composition_root is not None
+        bindings = Bindings(log, owner._archive, snapshot.composition_root)
         async with lease_runtime_snapshot(owner.snapshot_store):
             identity = bindings.bind(SERVICE, {})
 

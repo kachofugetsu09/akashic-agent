@@ -51,7 +51,7 @@ def environment(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_credential_archive_keeps_refs_and_rejects_new_config_before_read(tmp_path):
+async def test_credential_binding_stops_after_config_change_before_read(tmp_path):
     source, config, log, host = environment(tmp_path)
     try:
         await host.load_all()
@@ -76,18 +76,16 @@ async def test_credential_archive_keeps_refs_and_rejects_new_config_before_read(
     finally:
         await host.terminate_all()
         log.close()
-    shutil.rmtree(source.parent)
+    config.write_text('token="replacement-token"\n')
     log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
+    host = PluginManager([source.parent], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home/cache", message_log=log)
     try:
-        bindings = Bindings(log, host._archive, host.open_binding)
-        async with bindings.open(reference, PROBE) as (reader, _):
-            assert await reader.read() == "fixture-private-token"
-        config.write_text('token="replacement-token"\n')
-        async with bindings.open(reference, PROBE) as (reader, _):
-            with pytest.raises(RuntimeError, match="revision 已漂移"):
-                await reader.read()
+        await host.load_all()
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
+        assert not await bindings.matches_current(reference, PROBE)
     finally:
         await host.terminate_all()
         log.close()
@@ -181,7 +179,7 @@ def test_manifest_rejects_ambiguous_or_escaping_credential_redaction(tmp_path, d
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shared_directory", [False, True])
 async def test_business_validation_never_copies_historical_credentials(tmp_path, shared_directory):
-    """旧 binding 的凭据声明同时保护历史独有目录与新版本共用目录。"""
+    """候选验证不复制历史 binding 的秘密或重新打开正式服务。"""
     from agent.plugins.install import install_git_plugin
     from tests.test_plugin_install import _commit, _write_v3_plugin
 
@@ -235,9 +233,14 @@ async def apply(ctx, config):
             assert not (copied / "config.local.toml").exists()
             assert (copied / "notes.txt").read_text() == "preserved history"
             assert (validation.workspace / "plugin-data/plain-lab/config.local.toml").read_text() == 'label="public config"\n'
-            async with scope.require(BINDINGS).open(reference, PROBE) as (reader, _):
-                with pytest.raises(RuntimeError, match="candidate 验证期"):
-                    await reader.read()
+            if shared_directory:
+                async with scope.require(BINDINGS).open(reference, PROBE) as (reader, _):
+                    with pytest.raises(RuntimeError, match="candidate 验证期"):
+                        await reader.read()
+            else:
+                with pytest.raises(RuntimeError, match="当前 runtime scope 不提供服务"):
+                    async with scope.require(BINDINGS).open(reference, PROBE):
+                        pytest.fail("removed historical provider was reopened")
             for path in validation.workspace.rglob("*"):
                 if path.is_file():
                     assert b"fixture-private-token" not in path.read_bytes(), path

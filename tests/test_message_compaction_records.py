@@ -224,7 +224,7 @@ def test_version_two_readers_reject_corrupt_persisted_partition(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_summary_use_reopens_original_archive_after_head_advance_and_source_removal(tmp_path):
+async def test_summary_use_reads_original_record_after_head_advance_and_restart(tmp_path):
     from pathlib import Path
     import shutil
     from agent.plugin_composition.bindings import BINDINGS, Bindings
@@ -292,12 +292,14 @@ async def apply(ctx, config):
         await host.terminate_all()
         log.close()
 
-    shutil.rmtree(sources)
     log = MessageLog(tmp_path / "sessions.db")
-    host = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
+    host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
-    bindings = Bindings(log, host._archive, host.open_binding)
     try:
+        await host.load_all()
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         assert log.reader("s").snapshot()[:2] == original
         assert log.reader("s").get("used").body.parts[-1] == used
         async with bindings.open(reference, COMPACTION_SUMMARIES) as (lookup, metadata):

@@ -9,7 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.plugin_composition import Context, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
-from agent.plugin_composition.commands import COMMANDS, CommandExecution, CommandRegistry
+from agent.plugin_composition.commands import (
+    COMMANDS, CommandExecution, CommandRecoveryRequired, CommandRegistry,
+)
 from agent.plugin_composition.messages import MESSAGE_WRITERS, OWNER_STATE
 from agent.plugin_composition.tasks import Task
 from agent.plugin_composition.messages import MessageReader
@@ -136,6 +138,10 @@ async def run_commands(ctx: Context, task: Task, reader: MessageReader, source: 
                     raise ValueError("固定的命令 handler 与原 Input 不匹配")
                 return value
             if recovering:
+                if not await bindings.matches_current(intent.binding_id, COMMANDS):
+                    raise CommandRecoveryRequired(
+                        "命令 binding 与当前 stable 不兼容；没有可确认的领域回执"
+                    )
                 async with bindings.open(intent.binding_id, COMMANDS) as (archived, _metadata):
                     result = await execute(archived.freeze())
             else:

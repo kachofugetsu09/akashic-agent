@@ -40,7 +40,9 @@ async def memory_runtime(tmp_path, *, max_chars=12000):
     calls = []
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         embeddings = MessageEmbeddings(log)
         consumer = await MessageConsumer.load(tmp_path / "memory.db", legacy_index=None,
             catalog=log.catalog(), embeddings=embeddings, bindings=bindings, config=MemoryConfig())

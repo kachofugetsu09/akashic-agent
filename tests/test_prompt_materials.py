@@ -10,10 +10,10 @@ import pytest
 from pydantic import ValidationError
 
 from agent.plugin_composition import ServiceKey
-from agent.plugin_composition.bindings import BINDINGS, Bindings
+from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
-from agent.plugins.snapshot import get_current_runtime_snapshot, lease_runtime_snapshot
+from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from plugins.content.plugin import check_text
@@ -191,7 +191,7 @@ async def test_skill_catalog_cache_still_requires_the_calling_task_lease(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_load_skill_reopens_original_tree_after_source_removal_and_restart(tmp_path):
+async def test_load_skill_uses_new_stable_tree_after_restart(tmp_path):
     async with application(tmp_path) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
@@ -209,7 +209,7 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
                 if item.owner_id == "fixture_skills" and item.category == "skills"
             )
             original_root = asset.root_dir / "example"
-        # 原安装改变后，工具打开的是 capture 已归档的完整资源。
+        # 安装改变后，下一次 stable 只使用新生成的资源树。
         (tmp_path / "plugins/fixture_skills/skills/example/resource.txt").write_text("resource-b")
         (tmp_path / "plugins/fixture_skills/skills/example/SKILL.md").write_text("---\ndescription: updated\n---\n新版指令")
     assert not original_root.exists()
@@ -229,31 +229,13 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
     try:
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
             ctx = snapshot.composition_root.context
+            bindings = ctx.require(BINDINGS)
             replacement = ctx.require(TOOLS).bind(
-                ctx.require(ALL_TOOLS)().select("load_skill"), ctx.require(BINDINGS)
+                ctx.require(ALL_TOOLS)().select("load_skill"), bindings
             )
             assert replacement != reference
-    finally:
-        await host.terminate_all()
-        log.close()
-        store.close()
-    shutil.rmtree(tmp_path / "plugins")
-    log = MessageLog(tmp_path / "workspace/sessions.db")
-    store = ArtifactStore(tmp_path / "workspace/sessions.db")
-    artifacts = ChannelAttachmentArtifactStore(
-        workspace=tmp_path / "workspace", metadata_store=store
-    )
-    host = PluginManager(
-        [],
-        event_bus=EventBus(),
-        workspace=tmp_path / "workspace",
-        installed_cache_root=tmp_path / "home/cache",
-        message_log=log,
-        channel_attachment_store=artifacts,
-    )
-    try:
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with bindings.open(replacement, TOOLS) as (tools, metadata):
             async with tools.open(metadata) as tool:
                 newer_arguments = await tool.prepare({"skill": "example"})
@@ -262,25 +244,6 @@ async def test_load_skill_reopens_original_tree_after_source_removal_and_restart
                 current = cast(Mapping[str, object], json.loads(cast(str, newer.parts[0].value)))
                 assert current["instructions"] == "新版指令"
                 assert (Path(cast(str, current["base_directory"])) / "resource.txt").read_text() == "resource-b"
-        async with bindings.open(reference, TOOLS) as (tools, metadata):
-            assert "fixture_skills" not in get_current_runtime_snapshot().generations
-            async with tools.open(metadata) as tool:
-                arguments = await tool.prepare({"skill": "example"})
-                assert isinstance(arguments, Mapping)
-                result = await tool.invoke("original", arguments)
-                assert result.outcome == "success"
-                value = cast(Mapping[str, object], json.loads(cast(str, result.parts[0].value)))
-                root = Path(cast(str, value["base_directory"]))
-                assert (root / "resource.txt").read_text() == "resource-a"
-                assert value["source_id"] == "fixture_skills"
-                unmanaged = await tool.prepare({"skill": "unmanaged"})
-                assert isinstance(unmanaged, Mapping)
-                assert (await tool.invoke("unknown", unmanaged)).outcome == "error"
-                # 损坏已发布树必须报错；不能从安装路径补齐或伪造成功。
-                (root / "resource.txt").chmod(0o600)
-                (root / "resource.txt").write_text("tampered")
-                with pytest.raises(RuntimeError, match="文件树损坏"):
-                    await tool.invoke("retry", arguments)
     finally:
         await host.terminate_all()
         log.close()

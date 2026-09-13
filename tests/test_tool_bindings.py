@@ -252,7 +252,7 @@ async def test_display_name_reads_old_binding_without_opening_removed_tool(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_ordinary_tool_binding_restores_code_and_preparer_without_current_plugins(
+async def test_ordinary_tool_binding_runs_in_the_selected_stable_scope(
     tmp_path,
 ):
     sources = tmp_path / "plugins"
@@ -262,17 +262,14 @@ async def test_ordinary_tool_binding_restores_code_and_preparer_without_current_
     tasks = Tasks()
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             ctx = snapshot.composition_root.context
             catalog = ctx.require(TOOLS)
             binding_id = catalog.bind(
                 ctx.require(ALL_TOOLS)().select("example"), bindings
             )
-        await host.terminate_all()
-        shutil.rmtree(sources)
-        restored = manager(tmp_path, [])
-        bindings = Bindings(log, restored._archive, restored.open_binding)
         authorized = []
 
         async def authorize(binding, arguments):
@@ -285,6 +282,7 @@ async def test_ordinary_tool_binding_restores_code_and_preparer_without_current_
             partial(open_tool, bindings),
             authorize,
             task_key="tools",
+            binding_matches=lambda identity: bindings.matches_current(identity, TOOLS),
         )
         result = await execution.execute("request", binding_id, {"value": "input "})
         assert result.parts[0].value == "A:restore:input"
@@ -300,7 +298,6 @@ async def test_ordinary_tool_binding_restores_code_and_preparer_without_current_
         with pytest.raises(RuntimeError, match="释放"):
             await expired.invoke("escaped", {"value": "should not run"})
         assert effects[0].read_text().splitlines() == ["program:request"]
-        await restored.terminate_all()
     finally:
         await tasks.close()
         await host.terminate_all()
@@ -308,7 +305,7 @@ async def test_ordinary_tool_binding_restores_code_and_preparer_without_current_
 
 
 @pytest.mark.asyncio
-async def test_tool_configuration_is_owned_frozen_and_restored_without_recapture(tmp_path):
+async def test_tool_configuration_is_owned_frozen_without_recapture(tmp_path):
     sources = tmp_path / "plugins"
     write_plugins(sources)
     path = sources / "target/plugin.py"
@@ -326,8 +323,9 @@ async def test_tool_configuration_is_owned_frozen_and_restored_without_recapture
     host = manager(tmp_path, [sources])
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             ctx = snapshot.composition_root.context
             catalog = ctx.require(TOOLS)
             ref = ctx.require(ALL_TOOLS)().select("example")
@@ -339,10 +337,6 @@ async def test_tool_configuration_is_owned_frozen_and_restored_without_recapture
             identity = catalog.bind(ref, bindings, configuration=options)
             options["prefix"] = "job-b:"
             assert bindings.describe(identity, TOOLS)["state"] == {"prefix": "job-a:"}
-        await host.terminate_all()
-        shutil.rmtree(sources)
-        host = manager(tmp_path, [])
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with open_tool(bindings, identity) as target:
             prepared = await target.prepare({"value": "input"})
             assert isinstance(prepared, Mapping)
@@ -354,15 +348,16 @@ async def test_tool_configuration_is_owned_frozen_and_restored_without_recapture
 
 
 @pytest.mark.asyncio
-async def test_binding_authorize_checks_final_arguments_and_old_binding_keeps_old_policy(tmp_path):
+async def test_binding_authorize_checks_final_arguments(tmp_path):
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
     host = manager(tmp_path, [sources], log)
     try:
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             ctx = snapshot.composition_root.context
             catalog = ctx.require(TOOLS)
             old_binding = catalog.bind(
@@ -373,7 +368,6 @@ async def test_binding_authorize_checks_final_arguments_and_old_binding_keeps_ol
         add_authorize(sources)
         host = manager(tmp_path, [sources], log)
         await host.load_all()
-        bindings = Bindings(log, host._archive, host.open_binding)
         caller_checks = []
 
         async def caller_authorize(binding, arguments):
@@ -381,17 +375,20 @@ async def test_binding_authorize_checks_final_arguments_and_old_binding_keeps_ol
             return {"permission": "caller"}
 
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
             ctx = snapshot.composition_root.context
             catalog = ctx.require(TOOLS)
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             new_binding = catalog.bind(
                 ctx.require(ALL_TOOLS)().select("example"), bindings
             )
             execution = catalog.execution(caller_authorize)
-            old_result = await execution.execute("old", old_binding, {"value": "blocked"})
-            denied = await execution.execute("new", new_binding, {"value": "blocked"})
+            old = await execution.execute("old", old_binding, {"value": "blocked"})
+            denied = await execution.execute("denied", new_binding, {"value": "blocked"})
             safe = await execution.execute("safe", new_binding, {"value": "ok"})
 
-        assert old_result.outcome == "success"
+        assert old.outcome == "success"
+        assert old.parts[0].value == "A:restore:blocked"
         assert denied.outcome == "denied"
         assert denied.parts[0].value == "blocked by fixed policy"
         assert safe.outcome == "success"

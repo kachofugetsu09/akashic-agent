@@ -67,14 +67,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
     workloads = PluginWorkloads(root.instance_token)
     archive = PluginArchive(tmp_path / "archives")
 
-    from contextlib import asynccontextmanager
-    from agent.plugin_composition.bindings import BindingScope
-
-    @asynccontextmanager
-    async def unused_open(_components):
-        yield BindingScope(root)
-
-    bindings = Bindings(log, archive, unused_open)
+    bindings = Bindings(log, archive, root)
     for key, value in (
         (MCP_SERVERS, mcp),
         (WORKLOADS, workloads),
@@ -709,6 +702,34 @@ async def test_computer_message_tool_and_follower_closes_turn_statuses(tmp_path:
 
         harness.finish(open_reply, "abandoned")
         await _wait_until(lambda: harness.owner(open_reply).value["phase"] == "ended")
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_computer_incompatible_binding_preserves_unended_owner_and_incident(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """换版后不能调用旧 driver；failed 只记录未收尾事实，不冒称 ended。"""
+    harness = await _computer_harness(tmp_path)
+    try:
+        reply = harness.add_call("incompatible")
+        result = await harness.execute(reply)
+        assert result.outcome == "success"
+
+        async def mismatch(_identity: str, _service) -> bool:
+            return False
+
+        monkeypatch.setattr(harness.bindings, "matches_current", mismatch)
+        harness.finish(reply, "complete")
+        await _wait_until(lambda: harness.owner(reply).value["phase"] == "failed")
+
+        owner = harness.owner(reply)
+        assert owner is not None
+        assert owner.value["phase"] == "failed"
+        assert "不兼容" in owner.value["error"]
+        assert not any(call.get("endTurn") for call in harness.gateway_state.calls)
+        assert any(incident.kind == "computer-end-turn" for incident in harness.composition_root.receipt().incidents)
     finally:
         await harness.close()
 

@@ -13,14 +13,15 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message, Output
+from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
 
-from ._boundary import CONTENT, DELIVERY
+from ._boundary import CONTENT, DELIVERY, DELIVERY_SENDERS, SinkValue
 from .api import EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY
 from .content import (_candidate_id, _content_candidates, _datetime, _mapping,
                       _message_with_source_links, _selected_content_refs, _string)
 from .messages import decision, finished, screened_candidates
-from .request import Phase, Request, Stage, WAKE_PROGRAM, check_phase, check_request, read_request, retryable
+from .request import (Phase, Request, Stage, WAKE_PROGRAM, WakeFailure, check_phase,
+                      check_request, read_request, retryable)
 from .selection import propose_content, propose_drift
 from .state import WakeState
 from .tools import Alert, Screen, Share, Skip
@@ -134,27 +135,64 @@ class Source:
         self._settled(request, reader)
 
     async def _phase(self, task: Task, request: Request, reader: MessageReader,
-                     stage: Stage, data: Mapping[str, object]) -> Message:
+                     stage: Stage, data: Mapping[str, object]) -> tuple[Message, bool]:
         """每阶段先保存实际 Input；终态存在便不再打开模型或工具。"""
+        phase_message = reader.get(request.phase_id(stage))
         terminal = finished(reader, request, stage)
         if terminal is not None:
-            return terminal
+            if phase_message is None:
+                raise RuntimeError("Wake 阶段终态缺少阶段 Input")
+            return terminal, any(
+                message.source == "wake" and message.seq > phase_message.seq
+                for message in reader.snapshot()
+            )
         ctx = self.ctx
         await ctx.require(DELIVERY).open(ctx).wait_idle(request.sink["name"], request.sink["address"])
         if not task.active:
             raise asyncio.CancelledError
-        writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Input,),
-            content={"wake.phase": check_phase, "model.selection": ctx.require(MODEL_SELECTION).check,
-                     "text": ctx.require(CONTENT).check_text})(request.session_id)
-        try:
-            phase = Phase(input_id=request.input_id, stage=stage)
-            _ = writer.append(request.phase_id(stage), Input((ContentPart("wake.phase", phase.model_dump(mode="json")),
-                ContentPart("text", json.dumps({"stage": stage, "data": dict(data)}, ensure_ascii=False)),
-                ContentPart("model.selection", {"model_id": request.model_id, "reasoning_effort": request.reasoning_effort}))))
-        finally:
-            writer.expire()
-        async with ctx.require(BINDINGS).open(request.program_binding, WAKE_PROGRAM) as (program, _):
-            return await program(task, reader, request)
+        if phase_message is None:
+            writer = ctx.require(MESSAGE_WRITERS).bind(ctx, author="wake", source="wake", body_types=(Input,),
+                content={"wake.phase": check_phase, "model.selection": ctx.require(MODEL_SELECTION).check,
+                         "text": ctx.require(CONTENT).check_text})(request.session_id)
+            try:
+                phase = Phase(input_id=request.input_id, stage=stage)
+                phase_message = writer.append(
+                    request.phase_id(stage),
+                    Input((ContentPart("wake.phase", phase.model_dump(mode="json")),
+                          ContentPart("text", json.dumps({"stage": stage, "data": dict(data)}, ensure_ascii=False)),
+                          ContentPart("model.selection", {"model_id": request.model_id, "reasoning_effort": request.reasoning_effort}))),
+                )
+            finally:
+                writer.expire()
+        elif not isinstance(phase_message.body, Input):
+            raise ValueError("Wake 阶段引用不是 Input")
+
+        # 只有阶段 Input 之后已有持久消息，才说明模型/工具已经越过启动边界。
+        # Tool owner 只能由该阶段已提交的 Output ToolCall 接纳，因此不会漏掉无 Output 的已开始效果。
+        started = any(
+            message.source == "wake" and message.seq > phase_message.seq
+            for message in reader.snapshot()
+        )
+        bindings = ctx.require(BINDINGS)
+        if started and not await bindings.matches_current(request.program_binding, WAKE_PROGRAM):
+            if not task.active:
+                raise asyncio.CancelledError
+            reason = WakeFailure(
+                message="Wake program binding 与当前 stable 不兼容；不自动重试",
+                retryable=False,
+            ).model_dump_json()
+            failure_writer = ctx.require(MESSAGE_WRITERS).bind(
+                ctx, author="wake", source="wake", body_types=(Control,), content={}
+            )(request.session_id)
+            try:
+                return failure_writer.append(
+                    request.phase_id(stage) + ":failure",
+                    Control("failure", reader.head(source="wake"), reason),
+                ), started
+            finally:
+                failure_writer.expire()
+        async with bindings.open(request.program_binding, WAKE_PROGRAM) as (program, _):
+            return await program(task, reader, request), started
 
     def _settled(self, request: Request, reader: MessageReader) -> None:
         """未进入模型的纯业务决定也正常关闭输入，然后推进唯一来源指针。"""
@@ -187,8 +225,9 @@ class Source:
         all_candidates = _content_candidates(proposal)
         allowed = {_candidate_id(_mapping(item.get("ref"), "Content ref")) for item in all_candidates}
         screen: Screen | None = None
+        investigate_started = False
         if proposal.decision == "select":
-            _ = await self._phase(task, request, reader, "screen", {"candidates": screened_candidates(request)})
+            _, _ = await self._phase(task, request, reader, "screen", {"candidates": screened_candidates(request)})
             value = decision(reader, request, "screen")
             if isinstance(value, Screen) and all(item.candidate_id in allowed for item in value.items):
                 screen = value
@@ -221,7 +260,10 @@ class Source:
                 action = "invalidated" if retryable(finished(reader, request, "screen")) is False else "defer"
                 self._change_content(token, action)
             else:
-                _ = await self._phase(task, request, reader, "investigate", {"candidates": screened_candidates(request, screen)})
+                _, investigate_started = await self._phase(
+                    task, request, reader, "investigate",
+                    {"candidates": screened_candidates(request, screen)},
+                )
                 value = decision(reader, request, "investigate")
                 if isinstance(value, Share):
                     try:
@@ -239,7 +281,10 @@ class Source:
                     self._record(request, "defer", "调查没有提交唯一有效决定")
                     action = "invalidated" if retryable(finished(reader, request, "investigate")) is False else "defer"
                     self._change_content(token, action)
-        return await self._finish_domain(task, request, reader, "investigate")
+        return await self._finish_domain(
+            task, request, reader, "investigate",
+            allow_current_binding=not investigate_started,
+        )
 
     def _change_content(self, token: str, action: str, *, refs: Sequence[Mapping[str, object]] | None = None) -> None:
         result = self.ctx.require(EVENTMAIL_WAKE).transition(token, action,
@@ -271,11 +316,14 @@ class Source:
             selected = domain.selection(request.accepted)
             if selected is None:
                 raise ValueError("Drift 领取成功却缺少领域回执")
+        drift_started = False
         if proposal.decision == "decline":
             action = "defer" if selected.get("next_due") is not None else "await_change"
             self._record(request, "skip", "来源明确拒绝本轮 Drift")
         else:
-            _ = await self._phase(task, request, reader, "drift", {"duty": dict(proposal.payload)})
+            _, drift_started = await self._phase(
+                task, request, reader, "drift", {"duty": dict(proposal.payload)}
+            )
             value = decision(reader, request, "drift")
             if isinstance(value, Share) and not value.items:
                 action = "ready_for_delivery"
@@ -293,9 +341,14 @@ class Source:
         if action != "ready_for_delivery":
             self._settled(request, reader)
             return "deferred" if action == "defer" else "model_skip"
-        return await self._finish_domain(task, request, reader, "drift")
+        return await self._finish_domain(
+            task, request, reader, "drift", allow_current_binding=not drift_started,
+        )
 
-    async def _finish_domain(self, task: Task, request: Request, reader: MessageReader, stage: Stage) -> str:
+    async def _finish_domain(
+        self, task: Task, request: Request, reader: MessageReader, stage: Stage,
+        *, allow_current_binding: bool = False,
+    ) -> str:
         domain = self.ctx.require(EVENTMAIL_DELIVERY if request.owner == "content" else DRIFT_DELIVERY)
         selected = domain.lookup(request.accepted)
         if selected is None:
@@ -311,7 +364,7 @@ class Source:
             payloads = {_candidate_id(_mapping(item["ref"], "Content ref")): _mapping(item["payload"], "Content payload")
                         for item in request.items}
             text = _message_with_source_links(text, {"source_refs": [payloads[name] for name in value.items]})
-        if not await self._notify(task, request, text):
+        if not await self._notify(task, request, text, allow_current_binding=allow_current_binding):
             self._fail_notification(request, reader)
             return "failed"
         result = domain.settle(_string(selected.get("selection_token"), "selection_token"), request.notification_id)
@@ -320,12 +373,27 @@ class Source:
         self._settled(request, reader)
         return "shared"
 
-    async def _notify(self, task: Task, request: Request, text: str, *, before_start: Callable[[], str | None] | None = None) -> bool:
+    async def _notify(
+        self, task: Task, request: Request, text: str, *,
+        before_start: Callable[[], str | None] | None = None,
+        allow_current_binding: bool = False,
+    ) -> bool:
         """通知正文与原 Sink 一起提交；未知或拒绝回执不冒充领域已送达。"""
-        target, sink = request.target, request.sink
+        target = request.target
         ctx = self.ctx
         delivery = ctx.require(DELIVERY).open(ctx)
         reader = ctx.require(MESSAGE_CATALOG).reader(target.session_id)
+        selected = delivery.selection(request.notification_id)
+        sink: SinkValue = request.sink
+        if selected is None and allow_current_binding:
+            # 尚未 prepared 的通知没有外部效果；新 stable 可重新绑定同名渠道，保留原地址。
+            sink = {
+                "name": request.sink["name"],
+                "address": request.sink["address"],
+                "binding_id": ctx.require(DELIVERY_SENDERS).bind(
+                    request.sink["name"], ctx.require(BINDINGS)
+                ),
+            }
         message = reader.get(request.notification_id)
         if message is None:
             if not task.active:
@@ -361,7 +429,9 @@ class Source:
                 self._record(request, "skip", "告警在发送前已过期")
             self._settled(request, reader)
             return "model_skip"
-        _ = await self._phase(task, request, reader, "alert", {"alert": dict(selected)})
+        _, alert_started = await self._phase(
+            task, request, reader, "alert", {"alert": dict(selected)}
+        )
         value = decision(reader, request, "alert")
         if not isinstance(value, Alert):
             action = "skip" if retryable(finished(reader, request, "alert")) is False else "defer"
@@ -382,7 +452,10 @@ class Source:
                 return "告警在发送前已过期"
             return None
 
-        if not await self._notify(task, request, value.message, before_start=before_start):
+        if not await self._notify(
+            task, request, value.message, before_start=before_start,
+            allow_current_binding=not alert_started,
+        ):
             receipt = delivery.receipt(request.notification_id, request.sink["name"])
             if receipt is not None and receipt.status == "rejected":
                 if domain.change_alert(ref, request.accepted, "expire", self.now()):

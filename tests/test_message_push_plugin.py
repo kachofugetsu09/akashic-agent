@@ -62,8 +62,9 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
     try:
         await host.load_all()
         await host.start_runtime()
-        bindings = Bindings(log, host._archive, host.open_binding)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             ctx = snapshot.composition_root.context
             tools = ctx.require(TOOLS)
             binding = tools.bind(
@@ -72,10 +73,9 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
             activity = snapshot.composition_root.context.require(
                 ServiceKey("fixture.delivery")
             )().activity("test", "room")
-        # 原 Tool 的捕获状态已保存 Sender binding，归档不再依赖当前注册或源码。
-        shutil.rmtree(source)
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(bindings, key),
-                                  authorize, task_key="effects")
+                                  authorize, task_key="effects",
+                                  binding_matches=lambda identity: bindings.matches_current(identity, TOOLS))
         invalid = await execution.execute("bad-route", binding, {**parameters, "target_channel": "missing"})
         assert invalid.outcome == "error" and permission == []
         assert store.list_attachments() == () and log.reader("test:room").snapshot() == ()
@@ -107,12 +107,17 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
         store = ArtifactStore(workspace / "sessions.db")
         artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
         log = MessageLog(workspace / "sessions.db")
-        restored = manager([])
-        recovered = Bindings(log, restored._archive, restored.open_binding)
+        restored = manager([source])
+        await restored.load_all()
+        await restored.start_runtime()
+        snapshot = restored.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        recovered = Bindings(log, restored._archive, snapshot.composition_root)
         async def no_new_authorization(*_):
             pytest.fail("query original send must not reauthorize or reprepare")
         execution = ToolExecution(log.owner("plugin:tools"), tasks, lambda key: open_tool(recovered, key),
-                                  no_new_authorization, task_key="effects")
+                                  no_new_authorization, task_key="effects",
+                                  binding_matches=lambda identity: recovered.matches_current(identity, TOOLS))
         answer = await execution.execute("push-once", binding, parameters)
         assert answer.outcome == ("success" if confirmed else "error")
         repeated = await execution.execute("push-once", binding, parameters)
@@ -122,7 +127,7 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
         assert record.phase == ("delivered" if confirmed else "failed")
         sent = [json.loads(line) for line in next(workspace.rglob("sent.jsonl")).read_text().splitlines()]
         assert len(sent) == 1 and sent[0][1:] == ["room", identity, "original-A"]
-        assert next(workspace.rglob("receiver-starts")).read_text().splitlines() == ["started"]
+        assert next(workspace.rglob("receiver-starts")).read_text().splitlines() == ["started", "started"]
     finally:
         await tasks.close()
         if restored is not None:

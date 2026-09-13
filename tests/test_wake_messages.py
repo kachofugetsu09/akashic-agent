@@ -590,10 +590,16 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
                 await asyncio.wait_for(task.join(), 10)
         saved = log.reader(original.session_id).snapshot()
     module = tmp_path / "plugins/models_fixture/plugin.py"
-    module.write_text(module.read_text().replace("async def complete(self, request):",
-        'async def complete(self, request):\n            raise RuntimeError("changed model must not run")').replace(
-        "async def send(self, key, address, message):",
-        'async def send(self, key, address, message):\n            raise RuntimeError("changed sender must not run")'))
+    changed = module.read_text()
+    if fault == "input":
+        # 只有阶段 Input 的未启动请求可以使用新 stable；让新 provider 留下可观察的新正文。
+        changed = changed.replace('"useful notification"', '"new provider notification"')
+    else:
+        changed = changed.replace("async def complete(self, request):",
+            'async def complete(self, request):\n            raise RuntimeError("changed model must not run")').replace(
+            "async def send(self, key, address, message):",
+            'async def send(self, key, address, message):\n            raise RuntimeError("changed sender must not run")')
+    module.write_text(changed)
     workspace = tmp_path / "workspace"
     log = MessageLog(workspace / "sessions.db")
     metadata = ArtifactStore(workspace / "sessions.db")
@@ -612,10 +618,18 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
                     await asyncio.wait_for(task.join(), 10)
                 assert source.pending() == ()
                 assert await source.start(original.flow_id) is None
-                assert ctx.require(DRIFT_DELIVERY).lookup(original.accepted)["status"] == "settled"
-        assert len(control["calls"]) == 1 and len(control["sent"]) == 1
+                delivery = ctx.require(DRIFT_DELIVERY).lookup(original.accepted)
+        if fault == "input":
+            assert delivery is not None and delivery["status"] == "settled"
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 1
+        elif fault == "ready":
+            assert delivery is not None and delivery["status"] == "failed"
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 0
+        else:
+            assert delivery is not None and delivery["status"] == "settled"
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 1
         assert log.reader(original.session_id).snapshot()[:len(saved)] == saved
-        assert len(log.reader(original.session_id).snapshot()) == 5
+        assert len(log.reader(original.session_id).snapshot()) == (5 if fault == "input" else len(saved) if fault == "ready" else 5)
     finally:
         await host.terminate_all()
         log.close()

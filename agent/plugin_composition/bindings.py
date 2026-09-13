@@ -139,13 +139,48 @@ class Bindings:
 
     def describe(self, identity: str, service: ServiceKey[object]) -> Mapping[str, object]:
         """只读绑定的业务选择；展示或请求投影无需启动归档目标。"""
-        descriptor = self._log.read_binding(identity)
-        if descriptor["version"] != 1 or descriptor["service"] != service.name:
-            raise ValueError("binding 版本或服务不匹配")
-        metadata = descriptor["metadata"]
-        if not isinstance(metadata, Mapping):
-            raise ValueError("binding metadata 必须是对象")
-        return cast(Mapping[str, object], metadata)
+        return cast(Mapping[str, object], self._read_descriptor(identity, service)["metadata"])
+
+    async def matches_current(self, identity: str, service: ServiceKey[object]) -> bool:
+        """在当前选定 Root 中核对 binding 的实际插件闭包。"""
+        descriptor = self._read_descriptor(identity, service)
+        root_ref = descriptor.get("root_ref")
+        if not isinstance(root_ref, str) or not root_ref:
+            raise ValueError("binding 缺少 root descriptor")
+        root_descriptor = self._archive.read_descriptor(root_ref)
+        components = root_descriptor.get("components")
+        if not isinstance(components, tuple) or not components:
+            raise ValueError("binding root descriptor 的 components 无效")
+
+        from agent.plugins.snapshot import get_current_runtime_lease
+
+        current = get_current_runtime_lease()
+        lease = (
+            await self._root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
+            if current is None
+            else current.fork()
+        )
+        async with RuntimeScope(lease):
+            root = lease.snapshot.composition_root
+            if root is None:
+                raise RuntimeError("核对 binding 需要实际 runtime scope")
+            if not self._root_is_selected(root):
+                raise RuntimeError("核对 binding 的所属 Root 不属于当前 runtime scope")
+            if root.context.get(service) is None:
+                return False
+            seen: set[str] = set()
+            for component_ref in components:
+                if not isinstance(component_ref, str) or not component_ref or component_ref in seen:
+                    raise ValueError("binding root descriptor 的 component 无效")
+                seen.add(component_ref)
+                component = self._archive.read_descriptor(component_ref)
+                plugin_id = component.get("plugin_id")
+                if not isinstance(plugin_id, str) or not plugin_id:
+                    raise ValueError("binding component 缺少 plugin_id")
+                generation = lease.snapshot.generations.get(plugin_id)
+                if generation is None or generation.archive_ref != component_ref:
+                    return False
+            return True
 
     @asynccontextmanager
     async def open(
@@ -164,14 +199,26 @@ class Bindings:
 
         async with RuntimeScope(lease):
             root = lease.snapshot.composition_root
-            if not self._root_is_selected(root):
-                raise RuntimeError("打开 binding 的所属 Root 不属于当前 runtime scope")
             if root is None:
                 raise RuntimeError("打开 binding 需要实际 runtime scope")
+            if not self._root_is_selected(root):
+                raise RuntimeError("打开 binding 的所属 Root 不属于当前 runtime scope")
             value = root.context.get(service)
             if value is None:
                 raise RuntimeError(f"当前 runtime scope 不提供服务: {service.name}")
             yield cast(_T, value), cast(Mapping[str, object], metadata)
+
+    def _read_descriptor(
+        self, identity: str, service: ServiceKey[object]
+    ) -> Mapping[str, object]:
+        """读取并校验 binding descriptor 的共同结构。"""
+        descriptor = self._log.read_binding(identity)
+        if descriptor["version"] != 1 or descriptor["service"] != service.name:
+            raise ValueError("binding 版本或服务不匹配")
+        metadata = descriptor["metadata"]
+        if not isinstance(metadata, Mapping):
+            raise ValueError("binding metadata 必须是对象")
+        return descriptor
 
     def _root_is_selected(self, root: object) -> bool:
         """检查当前 snapshot 是否选中了 binding 所属的 Root。"""

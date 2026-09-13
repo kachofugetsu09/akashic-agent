@@ -43,6 +43,10 @@ class Provider:
         return self.receipt
 
 
+async def _binding_matches(_identity: str) -> bool:
+    return True
+
+
 @pytest.fixture
 def env(tmp_path):
     log = MessageLog(tmp_path / "state.db")
@@ -65,7 +69,10 @@ def env(tmp_path):
                         content={"text": lambda part: ContentReferences()})
     message = writer.append("answer", Output((ContentPart("text", "unique original body"),), "complete"))
     sink = Sink(name="phone", binding_id="original-adapter", address="original-address")
-    execution = Deliveries(records, MessageCatalog(log), tasks, open_sender, task_key="delivery")
+    execution = Deliveries(
+        records, MessageCatalog(log), tasks, open_sender, task_key="delivery",
+        binding_matches=_binding_matches,
+    )
     yield log, records, state, reader, writer, message, sink, tasks, provider, opened, denied, execution
     log.close()
 
@@ -290,7 +297,10 @@ async def test_restart_preserves_original_effect_and_queries_before_retry(env, t
         reopened = MessageLog(path)
         try:
             restored = DeliveryRecords(reopened.owner("plugin:delivery"), "fixture")
-            execution = Deliveries(restored, MessageCatalog(reopened), tasks, execution._open_sender, task_key="delivery")
+            execution = Deliveries(
+                restored, MessageCatalog(reopened), tasks, execution._open_sender, task_key="delivery",
+                binding_matches=_binding_matches,
+            )
             result = await execution.send(message.message_id, sink.name)
             assert result.status == expected
             assert len(provider.sent) == sends
@@ -302,6 +312,28 @@ async def test_restart_preserves_original_effect_and_queries_before_retry(env, t
             assert restored.read(message.message_id, sink.name)[1].phase == expected
         finally:
             reopened.close()
+    finally:
+        await tasks.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["prepared", "started"])
+async def test_incompatible_binding_finishes_pending_delivery_without_open_or_send(env, phase):
+    _, records, _, reader, _, message, sink, tasks, provider, opened, _, execution = env
+    records.consume(reader, message, (sink,))
+    row, selected = records.read(message.message_id, sink.name)
+    records.save(message.message_id, row, Delivery(sink=selected.sink, phase=phase))
+
+    async def mismatch(_binding):
+        return False
+
+    execution._binding_matches = mismatch
+    try:
+        result = await execution.send(message.message_id, sink.name)
+        assert result.status == "failed"
+        assert "不兼容" in (result.error or "")
+        assert records.read(message.message_id, sink.name)[1].phase == "failed"
+        assert provider.sent == [] and provider.queries == [] and opened == []
     finally:
         await tasks.close()
 
@@ -614,8 +646,10 @@ async def test_foreign_owner_cannot_join_an_active_send(env):
         pytest.fail("foreign consumer must not open the provider")
         yield provider
 
-    foreign = Deliveries(DeliveryRecords(log.owner("plugin:delivery"), "foreign"), log.catalog(),
-                         tasks, open_sender, task_key="delivery")
+    foreign = Deliveries(
+        DeliveryRecords(log.owner("plugin:delivery"), "foreign"), log.catalog(),
+        tasks, open_sender, task_key="delivery", binding_matches=_binding_matches,
+    )
     try:
         with pytest.raises(PermissionError, match="owner"):
             await foreign.send(reply.message_id, sink.name)

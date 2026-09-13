@@ -401,8 +401,30 @@ async def _try_end(
     )
     end_id = "end:" + hashlib.sha256(group.encode()).hexdigest()
     binding = cast(str, value["control_binding"])
+    bindings = ctx.require(BINDINGS)
+    if not await bindings.matches_current(binding, COMPUTER_CONTROL):
+        reason = "Computer control binding 与当前 stable 不兼容；不自动结束原 Turn"
+        state = ctx.require(OWNER_STATE).open(ctx)
+
+        def stop(tx) -> None:
+            for item_key, item_record in records:
+                current = tx.read(item_key)
+                if (
+                    current is None
+                    or current.version != item_record.version
+                    or current.value != item_record.value
+                ):
+                    continue
+                _ = tx.save(
+                    item_key,
+                    {**item_record.value, "phase": "failed", "error": reason},
+                    expected_version=item_record.version,
+                )
+
+        state.transact(stop)
+        ctx.report_incident("computer-end-turn", f"{key}: {reason}")
+        return
     try:
-        bindings = ctx.require(BINDINGS)
         async with bindings.open(binding, COMPUTER_CONTROL) as (bound, _):
             await bound.end_turn(identity, end_id)
     except Exception as error:

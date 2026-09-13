@@ -317,6 +317,7 @@ class ToolCatalog:
             authorize_binding,
             task_key="effects",
             child_permit=child_permit,
+            binding_matches=lambda identity: bindings.matches_current(identity, TOOLS),
         )
 
     def view(self, *refs: ToolRef) -> ToolView:

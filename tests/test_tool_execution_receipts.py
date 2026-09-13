@@ -38,6 +38,10 @@ class Probe:
         return self.query_result
 
 
+async def _binding_matches(_identity: str) -> bool:
+    return True
+
+
 @pytest.fixture
 def environment(tmp_path):
     log = MessageLog(tmp_path / "state.db")
@@ -55,7 +59,9 @@ def environment(tmp_path):
         assert binding == "fixed-A"
         yield probe
 
-    execution = ToolExecution(state, tasks, open_tool, authorize, task_key="tools")
+    execution = ToolExecution(
+        state, tasks, open_tool, authorize, task_key="tools", binding_matches=_binding_matches,
+    )
     yield log, state, tasks, probe, permissions, execution
     log.close()
 
@@ -170,6 +176,39 @@ async def test_restart_started_call_queries_before_closing_failure(environment, 
         result = await execution.execute("request", "fixed-A", {})
         assert result.outcome == ("success" if query else "error")
         assert probe.query_count == 1
+        assert len(probe.calls) == 1
+    finally:
+        await tasks.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["prepared", "started"])
+async def test_incompatible_binding_finishes_pending_call_without_open_or_query(environment, phase):
+    _, state, tasks, probe, _, execution = environment
+    await execution.execute("request", "fixed-A", {})
+    completed = state.read("program:request")
+    assert completed is not None
+    state.transact(
+        lambda tx: tx.save(
+            "program:request",
+            {
+                key: value
+                for key, value in {**completed.value, "phase": phase}.items()
+                if key != "result"
+            },
+            expected_version=completed.version,
+        )
+    )
+    async def mismatch(_binding):
+        return False
+
+    execution._binding_matches = mismatch
+    try:
+        result = await execution.execute("request", "fixed-A", {})
+        assert result.outcome == "error"
+        assert "binding" in result.parts[0].value
+        assert state.read("program:request").value["phase"] == "done"
+        assert probe.query_count == 0
         assert len(probe.calls) == 1
     finally:
         await tasks.close()

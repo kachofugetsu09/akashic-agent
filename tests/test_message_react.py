@@ -33,6 +33,10 @@ from session.message import (
 )
 
 
+async def _binding_matches(_identity: str) -> bool:
+    return True
+
+
 @asynccontextmanager
 async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=None,
                   reducer=None, material_source=None, estimate=None, preview_state=None, terminal_tools=frozenset()):
@@ -79,7 +83,10 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         if authorize_hook is not None:
             await authorize_hook()
         return {"decision": "allowed"}
-    execution = ToolExecution(log.owner("tools"), tasks, open_tool, authorize, task_key="tools")
+    execution = ToolExecution(
+        log.owner("tools"), tasks, open_tool, authorize, task_key="tools",
+        binding_matches=_binding_matches,
+    )
     class Menu(ToolMenu):
         def __init__(self, task: Task) -> None:
             self.task = task

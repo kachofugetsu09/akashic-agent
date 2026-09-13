@@ -330,7 +330,8 @@ async def shell_cleanup(
                             description = cast(Mapping[str, object], metadata["tool"])
                             if description["name"] not in {"shell", "write_stdin", "task_stop"}:
                                 continue
-                            # 2. 只装配原工具闭包，不打开或重跑工具；在其 scope 固定清理 provider。
+                            # 2. 清理按 PluginProcesses 的稳定 owner key 进行；它不是外部效果重试，
+                            # 不因插件换版跳过同一进程集合的终止。
                             async with bindings.open(identity, TOOLS):
                                 owners_binding = bindings.bind(SHELL_OWNERS, {})
                             async with bindings.open(owners_binding, SHELL_OWNERS) as (owners, _):

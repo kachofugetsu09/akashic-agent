@@ -41,6 +41,10 @@ class ModelControl:
 CONTROLS: dict[str, ModelControl] = {}
 
 
+async def _binding_matches(_identity: str) -> bool:
+    return True
+
+
 def text_part(part: ContentPart | ToolCall) -> str:
     """Read a fixture text part after checking the persisted part shape."""
     assert isinstance(part, ContentPart)
@@ -173,7 +177,10 @@ async def apply(ctx, config):
         reply = MessageReply("parent-result", ref, reader, result_writer, lambda: None)
         async def authorize(binding, arguments):
             return {"allowed": True}
-        execution = ToolExecution(log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize, task_key="effects")
+        execution = ToolExecution(
+            log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
+            task_key="effects", binding_matches=_binding_matches,
+        )
         yield host, log, execution, reply
     finally:
         await tasks.close()
@@ -361,15 +368,15 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
             returned = await asyncio.wait_for(completed(), 10)
             assert returned is not None
             assert len(returned) == 1 and "main summary: child finished" in text_part(returned[0].body.parts[0])
-            _, address, sent = await asyncio.wait_for(CONTROLS[str(tmp_path)].sent.get(), 10)
-            assert address == "parent" and sent == returned[0]
+            # 新 stable 与旧发送 binding 不兼容时只保存 failed 回执，不盲目重发。
+            assert CONTROLS[str(tmp_path)].sent.empty()
             assert CONTROLS[str(tmp_path)].main_calls == (2 if stage == "finished" else 1)
             assert "new provider result" not in text_part(returned[0].body.parts[0])
             assert reopened.reader(session_id).snapshot()[0] == original[0]
             assert CONTROLS[str(tmp_path)].calls == 2
             request = next(mapping_part(part) for part in original[0].body.parts if isinstance(part, ContentPart) and part.kind == "subagent.request")
             task_dir = workspace / "subagent-runs" / request["job_id"]
-            assert (task_dir / "answer.txt").read_text() == "once"
+            assert (task_dir / "answer.txt").read_text() == ("new tool content" if stage == "input" else "once")
             async with lease_runtime_snapshot(resumed.snapshot_store) as snapshot:
                 bindings = snapshot.composition_root.context.require(BINDINGS)
                 tools_value = request.get("tools")
