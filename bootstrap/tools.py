@@ -120,6 +120,9 @@ def build_core_runtime(
     from agent.plugins.manager import PluginManager
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
 
+    # 插件子进程只能使用宿主明确绑定的 Core；不能让普通插件从自身路径猜测。
+    os.environ["AKASHIC_CORE_ROOT"] = str(Path(__file__).resolve().parents[1])
+
     # 1. MessageLog 先核对 schema，旧库不能借普通启动绕过 yoyo。
     bus = MessageBus()
     event_bus = EventBus()

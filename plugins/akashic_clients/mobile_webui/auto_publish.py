@@ -51,7 +51,7 @@ def auto_publish_webui(
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment.pop("AKASHIC_EXTRA_PLUGIN_DIRS", None)
-    environment["AKASHIC_CORE_ROOT"] = str(_running_core_root())
+    environment["AKASHIC_CORE_ROOT"] = str(_configured_core_root())
     command = [
         sys.executable,
         str(publisher),
@@ -90,26 +90,18 @@ def auto_publish_webui(
     return True
 
 
-def _running_core_root() -> Path:
-    """Resolve the one Core root already hosting this plugin runtime."""
+def _configured_core_root() -> Path:
+    """读取宿主明确绑定的 Core root，不从插件反向导入宿主。"""
 
-    import agent
-
-    locations = tuple(
-        Path(path).resolve(strict=True)
-        for path in getattr(agent, "__path__", ())
-    )
-    candidates = tuple(
-        location.parent
-        for location in locations
-        if (location / "plugin_composition").is_dir()
-    )
-    if len(candidates) != 1:
+    configured = os.environ.get("AKASHIC_CORE_ROOT", "").strip()
+    if not configured:
         raise RuntimeError(
-            "客户端自动发布需要唯一的运行中 Core root，"
-            f"实际发现 {len(candidates)} 个: {candidates}"
+            "客户端自动发布需要宿主显式设置 AKASHIC_CORE_ROOT"
         )
-    return candidates[0]
+    root = Path(configured).expanduser().resolve(strict=True)
+    if not (root / "agent" / "plugin_composition").is_dir():
+        raise RuntimeError(f"AKASHIC_CORE_ROOT 缺少 agent/plugin_composition: {root}")
+    return root
 
 
 def _current_stable_matches_head(workspace: Path, *, server_id: str, head: str) -> bool:
