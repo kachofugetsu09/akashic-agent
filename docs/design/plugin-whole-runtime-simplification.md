@@ -174,19 +174,17 @@ components；记录不复制插件身份、配置或环境内容。boot 沿唯�
 安装 owner 的显式回退仍拥有安装文件副作用。Manager 的 promote/drop 不再写 per-plugin pointers。
 业务数据和归档不随上述结算删除或回滚。
 
-### 发布前仍需协调器完成的接线
+### App 接线与尚未集成的操作许可
 
-- `bootstrap/tools.py:CoreRuntime.start` 仍在 load_all 后调用 `sync_manifest()`，会扫描
-  可变安装并写安装清单；该操作应移出正常 boot，交还显式安装入口。
-- `bootstrap/app.py` 仍创建 `baseline_revision=""` 的 watcher 并立即 wake，可能从
-  旧 latest 重新准备候选。必须取消这次启动自动 reconcile；以后明确的更新事件才授权准备。
-- App 目前在 Core.start 之后绑定 endpoint switcher；含 commands 的完整 Root 需要
-  协调器把发布参与者绑定安排在 load_all 之前，否则初始化会明确失败。
+- `CoreRuntime.start` 不再扫描可变安装或写安装清单；安装清单由显式安装入口维护。
+- watcher 不在启动时自动 reconcile，首次扫描只建立基线。
+- App 在 load_all 之前绑定现有 endpoint callback，闭接纳初始化不再依赖启动之后的接线。
+  该 callback 在当前 App 中无实际端点操作，待 Channel provider 收敛时连同中央参与者删除。
 - 统一 operation owner/deadline 由另一个切片实现。安装 reconcile 外层仍有 shield；
   该 owner 必须把原操作取消许可送到本层同步 commit 点，不能只检查内层任务。
   本层已拦截成功/uncertain 后的安装回退并保持 maintenance，没有改写安装取消协议。
 
-这些文件不在本层写入范围；Manager 聚焦测试不代表累计 App 启动验收已通过。
+Manager 聚焦测试不代表累计 App 启动验收已通过。
 旧测试中隐式初始化 Manager 的批量适配另行处理，本层新增测试均显式初始化。
 
 ### 存量 workspace 的显式空选择入口

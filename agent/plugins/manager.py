@@ -109,7 +109,6 @@ from agent.plugins.manifest import (
     plugins_root,
     validate_workspace_plugin_data_path,
     workspace_plugin_data_dir,
-    write_plugin_manifest,
 )
 from infra.channels.artifacts import ChannelAttachmentArtifactStore
 from session.identities import ChannelIdentities, ChannelIdentityWriteReceipt
@@ -1208,12 +1207,6 @@ class PluginManager:
     @property
     def reload_journal(self) -> ReloadJournal:
         return self._reload_journal
-
-    def sync_manifest(self, *, plugins_home: Path | None = None) -> Path:
-        entries = load_plugin_manifest(plugins_home)
-        for mod in self.discover(installed_selector="latest"):
-            _ = entries.setdefault(_resolve_plugin_id(mod), True)
-        return write_plugin_manifest(entries, plugins_home=plugins_home)
 
     def watch_revision(self) -> str:
         digest = hashlib.sha256()

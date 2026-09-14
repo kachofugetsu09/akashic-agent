@@ -61,7 +61,6 @@ class CoreRuntime:
         """取得插件目录独占权，再发布插件；业务资源由插件生命周期拥有。"""
         self._lock_plugin_publication()
         await self.plugin_manager.load_all()
-        self.plugin_manager.sync_manifest()
 
     async def inspect_modules(self) -> str:
         """展示实际发布的组合图，不再构造旧回复 Pipeline。"""

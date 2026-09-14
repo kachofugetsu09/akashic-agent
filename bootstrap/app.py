@@ -207,6 +207,7 @@ class AppRuntime:
             event_bus = self.core.event_bus
             self.event_bus = event_bus
             manager = self.core.plugin_manager
+            manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
             await self.core.start()
             if self.readiness is not None:
                 self.readiness.mark_stage("core.ready")
@@ -247,7 +248,6 @@ class AppRuntime:
                 self.readiness.mark_stage("channels.ready")
             if plugin_manager is None:
                 raise RuntimeError("插件 Runtime 不可用")
-            plugin_manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
             # 正式 lifecycle 完成后才公布 runtime ready；一次调度机会不等于启动完成。
             await plugin_manager.start_runtime()
 
