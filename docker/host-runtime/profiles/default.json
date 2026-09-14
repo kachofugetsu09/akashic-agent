@@ -139,7 +139,7 @@
     },
     {
       "name": "delivery_policy",
-      "depends_on": ["delivery", "akashic_sender"],
+      "depends_on": ["delivery"],
       "reason": "应用来源级投递策略，不包含具体外部通道。"
     },
     {

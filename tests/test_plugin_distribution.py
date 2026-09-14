@@ -29,8 +29,8 @@ from scripts.install_plugin_distribution import (
 )
 
 
-def test_default_profile_installs_akashic_sender_before_delivery_policy() -> None:
-    """The default Akashic channel must have its matching delivery sender."""
+def test_default_profile_installs_akashic_sender() -> None:
+    """The default Akashic channel must include its matching delivery sender."""
 
     profile = json.loads(
         Path("docker/host-runtime/profiles/default.json").read_text(encoding="utf-8")
@@ -38,7 +38,6 @@ def test_default_profile_installs_akashic_sender_before_delivery_policy() -> Non
     plugins = {item["name"]: item for item in profile["plugins"]}
 
     assert plugins["akashic_sender"]["depends_on"] == ["delivery"]
-    assert "akashic_sender" in plugins["delivery_policy"]["depends_on"]
 
 
 def test_workload_controller_imports_core_from_distribution_source() -> None:
