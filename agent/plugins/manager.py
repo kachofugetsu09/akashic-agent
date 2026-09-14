@@ -4754,6 +4754,8 @@ class PluginManager:
         if plugin_manifest.get(initial_plugin_id, True) is False:
             logger.info("插件已禁用（manifest.toml）: %s", initial_plugin_id)
             return None
+        # 新尝试的失败由本次加载记录；不能继续展示上次已被替代的错误。
+        self._gate_results.pop(initial_plugin_id, None)
         created_activation_data_dir = False
         self._generation_sequence += 1
         generation_sequence = self._generation_sequence
