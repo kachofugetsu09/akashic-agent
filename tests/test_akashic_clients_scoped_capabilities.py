@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -96,6 +97,19 @@ async def test_scoped_projections_resolve_each_operation() -> None:
             "p", "r", "method", {}, session_id=None, turn_id=None
         ) == {"version": 2}
     assert scope.entered == scope.exited == 6
+
+
+@pytest.mark.asyncio
+async def test_child_task_opens_its_own_message_display_scope() -> None:
+    scope = _Scope()
+    display = ScopedMessageDisplay(scope)
+
+    async with open_request_scope(scope):
+        assert await asyncio.create_task(display(object(), display_only=True)) == [
+            {"version": 1, "display_only": True}
+        ]
+
+    assert scope.entered == scope.exited == 2
 
 
 def test_mobile_sync_projection_requires_an_active_scope() -> None:

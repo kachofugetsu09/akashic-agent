@@ -43,10 +43,13 @@ from tests.test_mobile_message_log import append
 
 
 class _HostScope:
-    def __init__(self, catalog: Any) -> None:
+    def __init__(self, catalog: Any, owner_task: asyncio.Task[Any] | None) -> None:
         self._catalog = catalog
+        self._owner_task = owner_task
 
     def require(self, key: Any) -> Any:
+        if asyncio.current_task() is not self._owner_task:
+            raise RuntimeError("request scope was inherited by a child task")
         if key != MESSAGE_CATALOG:
             raise AssertionError(f"unexpected test capability: {key!r}")
         return self._catalog
@@ -99,7 +102,7 @@ def gateway(tmp_path):
             task = asyncio.current_task()
             scope_tasks.append(("enter", task))
             try:
-                yield _HostScope(log.catalog())
+                yield _HostScope(log.catalog(), task)
             finally:
                 scope_tasks.append(("exit", asyncio.current_task()))
 
@@ -191,6 +194,16 @@ def _follow(websocket, epoch: int, session_id: str, command_id: str) -> None:
         assert reply.get("type") == "session.message", reply
 
 
+def _receive_appended_message(websocket) -> dict[str, Any]:
+    while True:
+        wire = websocket.receive_json()
+        assert wire["kind"] == "control" and wire["type"] == "session.message", wire
+        payload = wire["payload"]
+        if payload["type"] == "messages.appended":
+            return payload
+        assert payload["type"] == "reply.status"
+
+
 def test_mobile_follow_scope_stays_in_child_and_releases_on_reload(gateway):
     log, runtime, _client, _device, _private = gateway
     session_id = f"akashic:{uuid4()}"
@@ -198,6 +211,9 @@ def test_mobile_follow_scope_stays_in_child_and_releases_on_reload(gateway):
 
     with connected(gateway) as (websocket, epoch):
         _follow(websocket, epoch, session_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+        assert [
+            item["id"] for item in _receive_appended_message(websocket)["items"]
+        ] == ["one"]
         # Replacing the follow cancels its child and opens a new exact scope.
         _follow(websocket, epoch, session_id, "01ARZ3NDEKTSV4RRFFQ69G5FAW")
 
