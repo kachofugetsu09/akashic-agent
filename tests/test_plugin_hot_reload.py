@@ -1078,26 +1078,27 @@ async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
+async def test_runtime_snapshot_latest_closes_before_fresh_formal_publication(
     tmp_path: Path,
 ) -> None:
-    _write_plugin(
-        tmp_path / "plugins", "snapshot_selector", _v3_source("snapshot_selector")
-    )
-    initialize_plugin_workspace(tmp_path / "workspace")
-    manager = _manager(tmp_path)
-    await manager.load_all()
-    active = manager.generation("snapshot_selector")
-    prepared = await manager.prepare_candidate("snapshot_selector")
-    assert active is not None and prepared is not None
+    from agent.plugin_composition import CompositionRoot
+
     compiler = RuntimeSnapshotCompiler()
-    stable = compiler.compile({"snapshot_selector": active}, snapshot_revision="stable")
-    latest = compiler.compile(
-        {"snapshot_selector": prepared}, snapshot_revision="latest"
-    )
     drained: list[str] = []
+    closed: list[str] = []
+
+    async def build(revision: str) -> RuntimeSnapshot:
+        root = CompositionRoot(revision)
+        async def apply(ctx):
+            await ctx.effect(lambda: lambda: closed.append(revision))
+        await root.mount(apply, name="snapshot_selector")
+        return compiler.compile({}, snapshot_revision=revision, composition_root=root)
+
+    stable = await build("stable")
+    latest = await build("latest")
 
     async def on_drained(snapshot: RuntimeSnapshot) -> None:
+        await snapshot.composition_root.dispose()
         drained.append(snapshot.snapshot_id)
 
     store = RuntimeSnapshotStore(on_drained)
@@ -1109,20 +1110,31 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
     assert latest_lease.snapshot is latest
     with pytest.raises(RuntimeError, match="等待 promote/discard"):
         store.begin_publish(
-            compiler.compile({"snapshot_selector": prepared}, snapshot_revision="next")
+            compiler.compile({}, snapshot_revision="next")
         )
     store.pause_candidate_admission(latest)
     await latest_lease.release()
     await store.wait_for_no_leases(latest)
-    promoted = await store.promote_latest()
-    assert promoted.previous is stable
-    assert store.current is latest
+    await store.discard_latest(latest)
+    assert drained == [latest.snapshot_id]
+    assert closed == ["latest"]
+    assert store.current is stable
+    assert stable_lease.snapshot is stable
+    formal = await build("fresh-formal")
+    transaction = store.begin_publish(formal)
+    await store.commit_provisional(transaction)
+    assert store.current is stable
+    await store.finalize_provisional(transaction)
+    assert transaction.previous is stable
+    assert store.current is formal
+    assert formal is not latest
+    assert formal.composition_root is not latest.composition_root
+    assert drained == [latest.snapshot_id]
     await stable_lease.release()
     await store.retry_drains()
-    assert drained == [stable.snapshot_id]
+    assert drained == [latest.snapshot_id, stable.snapshot_id]
     await store.close()
-    await manager.discard_prepared("snapshot_selector")
-    await manager.terminate_all()
+    assert closed == ["latest", "stable", "fresh-formal"]
 
 
 @pytest.mark.asyncio

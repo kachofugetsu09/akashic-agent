@@ -2060,13 +2060,9 @@ class PluginManager:
         *,
         old_commands: tuple[tuple[str, str], ...],
         new_commands: tuple[tuple[str, str], ...],
-        promote_latest: bool,
-        force_provisional: bool = False,
-        provisional_started: bool = False,
-        reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
-        preclosed_channel_state: _ChannelPublicationState | None = None,
+        preclosed_channel_state: _ChannelPublicationState,
     ) -> SnapshotTransaction:
         """关闭目标 lease 内准备临时资源，全部完成后才开放正式接纳。"""
 
@@ -2074,9 +2070,6 @@ class PluginManager:
         try:
             return await self._commit_snapshot_participants(
                 transaction, old_commands=old_commands, new_commands=new_commands,
-                promote_latest=promote_latest, force_provisional=force_provisional,
-                provisional_started=provisional_started,
-                reopen_previous_on_failure=reopen_previous_on_failure,
                 before_open=before_open, after_open=after_open,
                 startup_snapshot_lease=lease,
                 preclosed_channel_state=preclosed_channel_state,
@@ -2115,104 +2108,46 @@ class PluginManager:
         *,
         old_commands: tuple[tuple[str, str], ...],
         new_commands: tuple[tuple[str, str], ...],
-        promote_latest: bool,
-        force_provisional: bool = False,
-        provisional_started: bool = False,
-        reopen_previous_on_failure: bool = True,
         before_open: Callable[[], None] | None = None,
         after_open: Callable[[], None] | None = None,
-        startup_snapshot_lease: RuntimeSnapshotLease | None = None,
-        preclosed_channel_state: _ChannelPublicationState | None = None,
+        startup_snapshot_lease: RuntimeSnapshotLease,
+        preclosed_channel_state: _ChannelPublicationState,
     ) -> SnapshotTransaction:
         """Publish one snapshot around a single closed external-participant step."""
 
-        # 1. Snapshots without external participants retain the one-step path.
-        endpoints_changed = force_provisional or old_commands != new_commands
-        channel_binding_changed = self._channel_binding_changed(
-            transaction.previous,
-            transaction.candidate,
-        )
-        if preclosed_channel_state is not None:
-            if (
-                preclosed_channel_state.previous is not transaction.previous
-                or preclosed_channel_state.candidate is not transaction.candidate
-            ):
-                raise RuntimeError("预关闭 Channel publication 与 snapshot 不匹配")
-            channel_binding_changed = True
+        # 1. 唯一 caller 已关闭旧组合；必须核对实际 Channel owner。
         if (
-            not endpoints_changed
-            and not channel_binding_changed
-            and not force_provisional
-            and not provisional_started
+            preclosed_channel_state.previous is not transaction.previous
+            or preclosed_channel_state.candidate is not transaction.candidate
         ):
-            if startup_snapshot_lease is not None:
-                await self._start_closed_runtime_snapshot(startup_snapshot_lease)
-            if promote_latest:
-                return await self._snapshot_store.promote_latest(
-                    before_open=before_open,
-                    after_open=after_open,
-                )
-            await self._snapshot_store.commit(
-                transaction, before_open=before_open, after_open=after_open,
-            )
-            return transaction
+            raise RuntimeError("预关闭 Channel publication 与 snapshot 不匹配")
 
         # 2. Close both snapshots before any service/channel/command side effect.
         provisional = transaction
-        if not provisional_started:
-            provisional = (
-                await self._snapshot_store.promote_latest_provisional()
-                if promote_latest
-                else transaction
-            )
-            if not promote_latest:
-                await self._snapshot_store.commit_provisional(provisional)
+        await self._snapshot_store.commit_provisional(provisional)
 
-        channel_state: _ChannelPublicationState | None = None
+        channel_state = preclosed_channel_state
         participants_switch_attempted = False
         forward_error: BaseException | None = None
         try:
-            channel_state = preclosed_channel_state
-            if channel_state is None:
-                channel_state = self._prepare_channel_publication(
-                    provisional.previous,
-                    provisional.candidate,
-                )
-                await self._close_channel_publication(channel_state)
-            elif channel_state.old_runtime is not None and not channel_state.old_stopped:
+            if channel_state.old_runtime is not None and not channel_state.old_stopped:
                 raise RuntimeError("预关闭 Channel publication 尚未完成 old stop")
-            # A preclosed state is refreshed by its caller after formal Root
-            # replacement; a state closed in this method still has the live
-            # previous Root and can resolve the old side now.  The candidate
-            # side is always resolved from the final snapshot payload here.
-            if channel_state is not None:
-                if preclosed_channel_state is None:
-                    self._refresh_channel_publication_factories(
-                        channel_state, old=True
-                    )
-                self._refresh_channel_publication_factories(
-                    channel_state, new=True
-                )
-            if endpoints_changed:
-                participants_switch_attempted = True
-                try:
-                    await self._switch_plugin_endpoints(
-                        old_commands,
-                        new_commands,
-                    )
-                except BaseException as error:
-                    forward_error = error
-                    raise
+            # 正式 Root 已重新构造，只从实际新 snapshot 解析新 factory。
+            self._refresh_channel_publication_factories(channel_state, new=True)
+            participants_switch_attempted = True
+            try:
+                await self._switch_plugin_endpoints(old_commands, new_commands)
+            except BaseException as error:
+                forward_error = error
+                raise
             await self._start_channel_publication(
                 channel_state,
                 startup_snapshot_lease=startup_snapshot_lease,
             )
-            if startup_snapshot_lease is not None:
-                await self._start_closed_runtime_snapshot(startup_snapshot_lease)
+            await self._start_closed_runtime_snapshot(startup_snapshot_lease)
             def open_participants() -> None:
                 if after_open is not None:
                     after_open()
-                assert channel_state is not None
                 self._open_channel_publication(channel_state)
 
             await self._snapshot_store.finalize_provisional(
@@ -2222,8 +2157,7 @@ class PluginManager:
                 schedule_previous_drain=False,
             )
             if (
-                channel_state is not None
-                and channel_state.old_runtime is not None
+                channel_state.old_runtime is not None
                 and channel_state.new_runtime is not None
             ):
                 # A stopped binding has already handed reserve-only rows back
@@ -2236,38 +2170,36 @@ class PluginManager:
             revoke_on_cancel(publication_error)
             if provisional.must_retain:
                 self._hold_selection_publication(provisional)
-                if channel_state is not None and channel_state.new_runtime is not None:
+                if channel_state.new_runtime is not None:
                     self._active_channel_generation = channel_state.new_runtime
                     self._active_channel_catalog_identity = channel_state.candidate_identity
                     channel_state.new_runtime.close_admission()
                 raise
             rollback_errors: list[BaseException] = []
-            channel_cleanup_failed = False
             endpoint_restore_failed = False
-            if channel_state is not None:
-                old_snapshot_id = (
-                    None
-                    if channel_state.previous is None
-                    else (
-                        channel_state.old_runtime.snapshot_id
-                        if channel_state.old_runtime is not None
-                        else None
-                    )
+            old_snapshot_id = (
+                None
+                if channel_state.previous is None
+                else (
+                    channel_state.old_runtime.snapshot_id
+                    if channel_state.old_runtime is not None
+                    else None
                 )
-                channel_cleanup_failed = self._channel_generation_host.failure(
-                    channel_state.candidate.snapshot_id
-                ) is not None or (
-                    old_snapshot_id is not None
-                    and self._channel_generation_host.failure(old_snapshot_id)
-                    is not None
-                )
-                try:
-                    await self._stop_staged_channel_publication(channel_state)
-                except BaseException as caught:
-                    rollback_errors.append(caught)
-                    channel_cleanup_failed = True
-                if channel_cleanup_failed and not rollback_errors:
-                    rollback_errors.append(publication_error)
+            )
+            channel_cleanup_failed = self._channel_generation_host.failure(
+                channel_state.candidate.snapshot_id
+            ) is not None or (
+                old_snapshot_id is not None
+                and self._channel_generation_host.failure(old_snapshot_id)
+                is not None
+            )
+            try:
+                await self._stop_staged_channel_publication(channel_state)
+            except BaseException as caught:
+                rollback_errors.append(caught)
+                channel_cleanup_failed = True
+            if channel_cleanup_failed and not rollback_errors:
+                rollback_errors.append(publication_error)
             if participants_switch_attempted and not channel_cleanup_failed:
                 try:
                     await self._switch_plugin_endpoints(
@@ -2284,53 +2216,15 @@ class PluginManager:
                 # old channel catalog.
                 await self._snapshot_store.rollback_published(
                     provisional,
-                    keep_candidate_latest=promote_latest,
-                    reopen_previous=(
-                        reopen_previous_on_failure and self._operation_can_continue()
-                        and not rollback_errors
-                        and (channel_state is None or not channel_state.changed)
-                    ),
+                    keep_candidate_latest=False,
+                    reopen_previous=False,
                 )
-            if (
-                channel_state is not None
-                and not channel_cleanup_failed
-                and preclosed_channel_state is None
-                and self._operation_can_continue()
-            ):
-                try:
-                    await self._restore_old_channel_after_failure(channel_state)
-                except BaseException as caught:
-                    rollback_errors.append(caught)
-                    channel_cleanup_failed = True
             if not published_rollback:
                 await self._snapshot_store.rollback_provisional(
                     provisional,
-                    keep_candidate_latest=promote_latest,
-                    reopen_previous=(
-                        reopen_previous_on_failure and self._operation_can_continue()
-                        and not rollback_errors
-                        and (channel_state is None or not channel_state.changed)
-                    ),
+                    keep_candidate_latest=False,
+                    reopen_previous=False,
                 )
-            if (
-                channel_state is not None
-                and not rollback_errors
-                # A preclosed state belongs to the outer formal-root
-                # transaction.  Its old runtime was stopped before the Root
-                # handoff and must be rebuilt from the exact old snapshot
-                # before it can be reopened.  Finishing it here would call
-                # recovery on that closed generation and hide the original
-                # participant failure.
-                and preclosed_channel_state is None
-                and self._operation_can_continue()
-                and channel_state.previous is self.current_snapshot
-                and channel_state.previous is not None
-            ):
-                try:
-                    await self._finish_restored_channel_publication(channel_state)
-                except BaseException as caught:
-                    rollback_errors.append(caught)
-                    channel_cleanup_failed = True
             self._abort_channel_boot_transactions(
                 provisional.candidate,
                 publication_error,
@@ -2690,8 +2584,6 @@ class PluginManager:
                     transaction,
                     old_commands=_snapshot_command_catalog(previous),
                     new_commands=_snapshot_command_catalog(snapshot),
-                    promote_latest=False, force_provisional=True,
-                    reopen_previous_on_failure=False,
                     before_open=authorize_commit,
                     after_open=lambda: self._activate_snapshot(snapshot, previous),
                     preclosed_channel_state=channel_state,
@@ -4351,56 +4243,6 @@ class PluginManager:
         if boot_id:
             self._reload_journal.mark_runtime_owner(tx_id, boot_id)
         return tx_id
-
-    def _record_drained_root_failure(
-        self,
-        snapshot: RuntimeSnapshot,
-        generation: PluginGeneration,
-        error: BaseException,
-    ) -> None:
-        """Persist one retained Host owner while allowing Root and module drain."""
-
-        drain_tx_id = self._drain_transactions.get(snapshot.snapshot_id)
-        tx_id = drain_tx_id or generation.reload_tx_id
-        if tx_id is None:
-            return
-        record = self._reload_journal.get(tx_id)
-        if record.phase in {"complete", "aborted", "recovered"}:
-            return
-        self._reload_journal.annotate(tx_id, {
-            "event": "drained_runtime_failure_owner",
-            "runtime_generation_id": generation.generation_id,
-        })
-        action: RecoveryActionName = "retry_generation_cleanup"
-        self._reload_journal.advance(
-            tx_id,
-            "cleanup_failed",
-            error=str(error) or type(error).__name__,
-            resource=f"root:{generation.generation_id}",
-            formal_effects=(
-                (
-                    "committed_generation_retained",
-                    "old_runtime_cleanup_pending",
-                )
-                if drain_tx_id is not None
-                else (
-                    "candidate_pointer_restored",
-                    "candidate_runtime_cleanup_pending",
-                )
-            ),
-            recovery_action=action,
-            recovery_target=(
-                record.recovery_target
-                or (
-                    "candidate"
-                    if drain_tx_id is not None
-                    else self._composition_recovery_target(
-                        generation,
-                        tx_id=tx_id,
-                    )
-                )
-            ),
-        )
 
     def _composition_recovery_target(
         self, generation: PluginGeneration, *, tx_id: str | None = None,
