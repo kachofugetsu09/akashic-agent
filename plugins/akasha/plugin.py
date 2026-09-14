@@ -1,7 +1,8 @@
-from importlib import import_module
-from agent.plugin_composition.ui import UI
 """从消息学习；模型未配置时保持可见的记忆不可用状态。"""
 from __future__ import annotations
+
+from importlib import import_module
+from agent.plugin_composition.ui import UI
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable

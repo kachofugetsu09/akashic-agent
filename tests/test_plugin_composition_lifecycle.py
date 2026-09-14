@@ -1074,17 +1074,19 @@ async def test_freeze_rejects_incomplete_mount_without_caching_assembly_status(p
 
 
 @pytest.mark.asyncio
-async def test_failed_compilation_does_not_freeze_root(monkeypatch):
-    """目录编译失败尚未越过冻结边界，初始化 owner 仍可继续装配。"""
+async def test_failed_compilation_does_not_freeze_root():
+    """缺失依赖的组合不能冻结，初始化 owner 仍可继续装配。"""
     from agent.plugin_composition import ServiceKey
-    from agent.plugins import snapshot as snapshot_module
 
     root = CompositionRoot("failed-compile-not-frozen")
-    def fail_catalog(*args, **kwargs):
-        raise ValueError("catalog failed")
-    monkeypatch.setattr(snapshot_module, "freeze_web_ui_catalog", fail_catalog)
-    with pytest.raises(ValueError, match="catalog failed"):
+    service = ServiceKey("test.after.failed.compile")
+
+    async def plugin(ctx):
+        ctx.require(service)
+
+    await root.mount(plugin, name="missing-dependency", inject=(service,))
+    with pytest.raises(RuntimeError, match="组合拓扑未就绪"):
         RuntimeSnapshotCompiler().compile({}, composition_root=root)
     assert not root.frozen
-    await root.context.provide(ServiceKey("test.after.failed.compile"), object())
+    await root.context.provide(service, object())
     await root.dispose()
