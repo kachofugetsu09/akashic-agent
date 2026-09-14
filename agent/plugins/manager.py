@@ -1624,7 +1624,8 @@ class PluginManager:
                 )
 
             # 3. Root mount 已完成全部 v3 lifecycle，登记待发布 generation。
-            await self._activate_stable_batch(staged)
+            for generation in staged:
+                generation.state = "activating"
 
             # 4. 全部准备成功后才登记 stable owner，并一次安装快照。
             await self._publish_stable_batch(staged, snapshot)
@@ -1660,19 +1661,6 @@ class PluginManager:
                 ) from error
             raise
 
-    async def _activate_stable_batch(
-        self,
-        staged: list[PluginGeneration],
-    ) -> None:
-        """Mark every fully mounted v3 generation ready for publication."""
-
-        for generation in staged:
-            try:
-                await self._prepare_generation(generation)
-                generation.state = "activating"
-            except Exception as error:
-                raise _StablePluginFailed(generation, "prepare", error) from error
-
     async def _publish_stable_batch(
         self,
         staged: list[PluginGeneration],
@@ -1682,7 +1670,6 @@ class PluginManager:
 
         for generation in staged:
             try:
-                generation.minimum_resource_count = generation.scope.resource_count
                 self._scopes[generation.module_path] = generation.scope
                 self._loaded.add(generation.module_path)
                 generation.state = "active"
@@ -3856,34 +3843,6 @@ class PluginManager:
                 error=f"publish_rebase: {error_text}",
             )
             raise
-        try:
-            await self._prepare_generation(generation)
-        except (asyncio.CancelledError, Exception) as error:
-            error_text = str(error) or type(error).__name__
-            self._record_failed_gate(
-                plugin_id=plugin_id,
-                revision=generation.source_revision,
-                check_id="prepare",
-                reason=error_text,
-            )
-            await self.discard_prepared(
-                plugin_id,
-                error=f"prepare: {error_text}",
-            )
-            if isinstance(error, asyncio.CancelledError):
-                raise
-            result = self._publication_status(
-                plugin_id,
-                active=active,
-                candidate=generation,
-                publication_state="failed",
-            )
-            logger.info(
-                "plugin_snapshot_status %s",
-                json.dumps(result, ensure_ascii=False, sort_keys=True),
-            )
-            return result
-
         old_commands = _snapshot_command_catalog(self.current_snapshot)
         new_commands = _snapshot_command_catalog(snapshot)
         current = self.current_snapshot
@@ -4476,16 +4435,6 @@ class PluginManager:
             module_path=generation.module_path,
         )
 
-    async def _prepare_generation(
-        self,
-        generation: PluginGeneration,
-    ) -> None:
-        if generation.prepare_started:
-            return
-        assert generation.runtime_snapshot is not None
-        generation.prepare_started = True
-        generation.minimum_resource_count = generation.scope.resource_count
-
     async def _post_publish_invariants(
         self,
         generation: PluginGeneration,
@@ -4511,8 +4460,6 @@ class PluginManager:
         for item in snapshot.generations.values():
             if item.scope.closed:
                 raise RuntimeError("RuntimeSnapshot 插件作用域已关闭")
-            if item.scope.resource_count < item.minimum_resource_count:
-                raise RuntimeError("RuntimeSnapshot 插件资源数量不足")
 
     def _advance_reload(
         self,
@@ -5206,7 +5153,6 @@ class PluginManager:
                     "prepared",
                     candidate_snapshot_id=generation.runtime_snapshot.snapshot_id,
                 )
-                generation.minimum_resource_count = scope.resource_count
                 self._prepared_generations[plugin_id] = generation
                 return generation
             if stage_stable:
@@ -5215,11 +5161,8 @@ class PluginManager:
                 generation,
                 allow_pending_composition=True,
             )
-            load_phase = "prepare"
-            await self._prepare_generation(generation)
             generation.state = "activating"
             load_phase = "publish"
-            generation.minimum_resource_count = scope.resource_count
         except asyncio.CancelledError:
             rollback_task = asyncio.create_task(
                 rollback_load(f"candidate {load_phase} cancelled"),

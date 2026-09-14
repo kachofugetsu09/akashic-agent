@@ -19,7 +19,8 @@ async def apply(ctx: Context, config: object) -> None:
     pass
 ```
 
-Core 只接受精确的 `apply(ctx, config)`。`api_version != 3`、V2 `Plugin` 子类、固定 lifecycle
+Core 用两个位置参数调用 `apply`，不限制参数名字或默认值；无法调用时由实际装配报告原错误。
+`api_version != 3`、V2 `Plugin` 子类、固定 lifecycle
 方法和 phase module 注入都不会被加载，也没有自动包装或兼容 fallback。插件不能直接接入
 `EventBus`；V3 事件由明确 owner 通过 typed key 发布。
 

@@ -98,9 +98,7 @@ class PluginGeneration:
     entrypoint: str = "plugin.py"
     asset_catalog: PreparedAssetCatalog | None = None
     runtime_snapshot: RuntimeSnapshot | None = None
-    prepare_started: bool = False
     retire_started: bool = False
-    minimum_resource_count: int = 0
     state: str = "active"
     lease_count: int = 0
     reload_tx_id: str | None = None
