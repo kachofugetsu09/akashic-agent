@@ -39,6 +39,9 @@
 
 三个 provider 的注册限于 `apply`。MCP 的 `open` 是运行期操作，取得 exact Root scope。
 其工具目录没有常驻会话时明确报告不可用，不把定义当成已发现的工具。
+每次实际连接检查必需工具和候选只读范围，不承诺两次远端连接返回相同目录。
+无调用者的 `expected_catalog_digest` 参数、摘要副本及比较链已删除；可调用工具仍来自
+本次握手，并保持 schema 冻结、route 失效和只读执行边界。
 Dashboard 从实际贡献 Context 取得 Workload 服务，runtime catalog 从所选 Root 取得 MCP 服务。
 Snapshot 不再存储三份 registry 或 identity；编译器不校验资源定义与依赖路径。
 

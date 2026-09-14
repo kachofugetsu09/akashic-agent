@@ -48,7 +48,7 @@ class Session:
         self._reason = None if ready or reason == "stopped" else reason
         self._provider.refresh_health(self._entry)
 
-    async def start(self, expected_catalog_digest):
+    async def start(self):
         """会话先归 Scope，再借实际资源并等待 MCP 握手。"""
         async with self._lock:
             if self._closed:
@@ -72,8 +72,7 @@ class Session:
                 str(grant.cwd(definition.cwd)), environment)
             runtime = await self._host.start_generation(self.identity,
                 {definition.name: binding},
-                {definition.name: command}, mode=grant.mode,
-                expected_catalog_digests=None if expected_catalog_digest is None else {definition.name: expected_catalog_digest})
+                {definition.name: command}, mode=grant.mode)
             return runtime.server(definition.name)
 
     async def aclose(self):
@@ -131,7 +130,7 @@ class McpServers:
         await ctx.effect(setup, label="mcp-target:" + definition.name)
 
     @asynccontextmanager
-    async def open(self, ctx: Context, name: str, *, expected_catalog_digest: str | None = None):
+    async def open(self, ctx: Context, name: str):
         self.check(ctx)
         async with ctx.runtime_scope():
             ctx.require_runtime_owner(MCP_SERVERS, self)
@@ -145,7 +144,7 @@ class McpServers:
             effect = await ctx.effect(setup, label="mcp-session:" + owner.identity)
             owner._effect = effect
             try:
-                yield await owner.start(expected_catalog_digest)
+                yield await owner.start()
             finally:
                 await effect.aclose()
 
