@@ -1022,6 +1022,28 @@ async def test_sealing_precedes_freeze_and_started_resources_and_health_remain_l
 
 
 @pytest.mark.asyncio
+async def test_mount_observer_cannot_wait_for_its_own_reconcile():
+    """重入调用明确失败；调用方处理错误后挂载仍能正常完成。"""
+    root = CompositionRoot("observer-reconcile")
+    events: list[str] = []
+
+    async def observer(fiber):
+        with pytest.raises(CompositionError) as caught:
+            await fiber.reconcile()
+        assert caught.value.code == "REENTRANT_LIFECYCLE_WAIT"
+        events.append("observer")
+
+    async def plugin(ctx):
+        events.append("apply")
+
+    root.on_mount(observer)
+    await root.mount(plugin, name="observed")
+    assert events == ["observer", "apply"]
+    root.freeze()
+    await root.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["observer", "apply"])
 async def test_freeze_rejects_incomplete_mount_without_caching_assembly_status(phase):
     """已有 Fiber 过渡锁覆盖挂载 observer 与 apply 的异步等待。"""
