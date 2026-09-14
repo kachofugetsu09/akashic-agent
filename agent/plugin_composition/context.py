@@ -15,7 +15,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, AsyncGenerator, TypeVar, cast
 
-from agent.plugin_composition.effect import Effect, EffectSetup
+from agent.plugin_composition.effect import Effect, EffectSetup, _join_cleanup as _await_critical
 from agent.plugin_composition.diagnostics import (
     CorePluginDiagnostics,
     PluginDiagnostics,
@@ -640,13 +640,13 @@ class Fiber:
             providers = self.root._dependency_snapshot(self._activation_dependencies)
             target_epoch = self.root._provider_epoch(providers)
             if providers is None:
-                if self.state in {FiberState.ACTIVE, FiberState.FAILED}:
+                if self.state in {FiberState.ACTIVE, FiberState.FAILED, FiberState.UNLOADING}:
                     await self._unload(next_state=FiberState.PENDING)
                 return
             assert target_epoch is not None
             if self.state == FiberState.ACTIVE and self._epoch == target_epoch:
                 return
-            if self.state in {FiberState.ACTIVE, FiberState.FAILED}:
+            if self.state in {FiberState.ACTIVE, FiberState.FAILED, FiberState.UNLOADING}:
                 await self._unload(next_state=FiberState.PENDING)
             await self._load(providers, target_epoch)
 
@@ -663,7 +663,7 @@ class Fiber:
         async with self._locked_transition():
             if self._dispose_requested or self._is_root:
                 return
-            if self.state in {FiberState.ACTIVE, FiberState.FAILED}:
+            if self.state in {FiberState.ACTIVE, FiberState.FAILED, FiberState.UNLOADING}:
                 await self._unload(next_state=FiberState.PENDING)
         await self.reconcile()
 
@@ -1283,18 +1283,38 @@ class CompositionRoot:
         self._bump_composition_revision()
         try:
             await self._notify_mount(fiber)
-        except BaseException:
-            await fiber.dispose()
+        except BaseException as error:
+            await self._rollback_mount(fiber, error)
             raise
         if parent.state in {FiberState.UNLOADING, FiberState.DISPOSED}:
-            await fiber.dispose()
+            try:
+                await fiber.dispose()
+            except BaseException as error:
+                fiber.error = error
+                self._record_error(fiber, error)
+                raise
             return fiber
         try:
             await fiber.reconcile()
-        except BaseException:
-            await fiber.dispose()
+        except BaseException as error:
+            await self._rollback_mount(fiber, error)
             raise
         return fiber
+
+    async def _rollback_mount(self, fiber: Fiber, error: BaseException) -> None:
+        """保留挂载错误；清理失败的 Fiber 继续拥有资源和名称。"""
+
+        fiber.error = error
+        self._record_error(fiber, error)
+        try:
+            await fiber.dispose()
+        except BaseException as cleanup_error:
+            failure = BaseExceptionGroup(
+                f"插件挂载和清理均失败: {fiber.name}", [error, cleanup_error]
+            )
+            fiber.error = failure
+            self._record_error(fiber, cleanup_error)
+            raise failure from None
 
     def _resolve_plugin(
         self,
@@ -1678,12 +1698,3 @@ def _error_message(error: BaseException) -> str:
         return f"<unprintable {type(error).__name__}>"
     return message or type(error).__name__
 
-
-async def _await_critical(task: asyncio.Task[None]) -> None:
-    """Finish lifecycle cleanup before propagating caller cancellation."""
-
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
-        raise
