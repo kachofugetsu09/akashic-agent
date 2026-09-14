@@ -42,13 +42,6 @@ class WebModuleAsset:
 
 
 @dataclass(frozen=True)
-class PluginSemanticCheck:
-    check_id: str
-    passed: bool
-    evidence: object = ""
-
-
-@dataclass(frozen=True)
 class GateCheckResult:
     check_id: str
     status: GateStatus
@@ -86,7 +79,6 @@ class PluginGeneration:
     instance: object
     scope: PluginScope
     contributions: PluginContributions
-    gate_result: GateResult
     config_projection: dict[str, object] = field(default_factory=dict)
     source_type: Literal["builtin", "installed"] = "builtin"
     static_manifest: StaticPluginManifest | None = None

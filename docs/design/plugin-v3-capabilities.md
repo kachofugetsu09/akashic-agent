@@ -30,13 +30,15 @@ Core 用两个位置参数调用 `apply`，不限制参数名字或默认值；�
 | `Config` | 可选配置模型；Core 校验后传给 `apply` |
 | `inject` | 根 Fiber 激活所需的 `ServiceKey` |
 | `is_active(services)` | 根据冻结的静态 Service view 决定是否发布静态贡献 |
-| `static_semantic_checks()` | 返回安装或 generation 的静态语义检查 |
 | `skill_roots`、`drift_skill_roots` | 发布普通 Skill 和 Drift Skill |
 | `workspace_roots`、`workspace_files` | 声明被授权的 workspace 路径；只授予真正的数据 owner |
 | `dashboard_module` | 发布 Dashboard HTTP/面板模块 |
 | `web_module`、`web_requires`、`web_provides`、`web_contract_digests` | 发布 Web 模块及版本化组合合同 |
 
 ## 2. 组合原子能力
+
+初始化约束在 `apply` 或对应 provider 的实际注册中检查并抛出错误。底座不调用另一个
+`static_semantic_checks` 自测入口，也不把报告存入运行 generation；诊断报告只记录真实装配步骤。
 
 每次 `apply` 都属于一个 generation-bound Fiber。下列注册和任务归该 Fiber 所有，并在失活、
 重启或卸载时逆序清理。

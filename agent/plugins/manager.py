@@ -143,7 +143,6 @@ from agent.plugins.generation import (
     GateResult,
     PluginContributions,
     PluginGeneration,
-    PluginSemanticCheck,
 )
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.install import PluginInstallResult, install_git_plugin
@@ -5027,14 +5026,6 @@ class PluginManager:
                 plugin_id=plugin_id,
                 plugin_dir=archived_dir,
             )
-            gate_result = self._validate_candidate(
-                instance=instance,
-                plugin_id=plugin_id,
-                revision=source_revision,
-            )
-            self._gate_results[plugin_id] = gate_result
-            if gate_result.status == "failed":
-                raise _CandidateRejected(gate_result)
             archive_ref = self._archive.save_descriptor({
                 "version": 2,
                 "code": code_archive,
@@ -5063,7 +5054,6 @@ class PluginManager:
                 instance=instance,
                 scope=scope,
                 contributions=contributions,
-                gate_result=gate_result,
                 source_type=cast(
                     Literal["builtin", "installed"],
                     mod["source_type"],
@@ -5086,25 +5076,24 @@ class PluginManager:
                     asset_roots=PluginAssetHost.roots_for([generation]),
                 )
             except Exception as error:
-                gate_result = _with_gate_check(
-                    gate_result,
+                gate_result = self._record_failed_gate(
+                    plugin_id=plugin_id,
+                    revision=source_revision,
                     check_id="asset_catalog",
-                    passed=False,
-                    evidence=str(error),
+                    reason=str(error),
                 )
-                self._gate_results[plugin_id] = gate_result
                 raise _CandidateRejected(gate_result) from error
-            gate_result = _with_gate_check(
-                gate_result,
-                check_id="asset_catalog",
-                passed=True,
-                evidence=[
-                    (asset.owner_id, asset.category)
-                    for asset in asset_catalog.assets
-                ],
+            self._gate_results[plugin_id] = GateResult(
+                gate_id="assembly",
+                plugin_id=plugin_id,
+                candidate_revision=source_revision,
+                status="passed",
+                checks=(GateCheckResult(
+                    check_id="asset_catalog",
+                    status="passed",
+                    evidence=[(asset.owner_id, asset.category) for asset in asset_catalog.assets],
+                ),),
             )
-            self._gate_results[plugin_id] = gate_result
-            generation.gate_result = gate_result
             generation.asset_catalog = asset_catalog
             scope.defer(
                 "asset_catalog",
@@ -5255,14 +5244,12 @@ class PluginManager:
         except Exception as error:
             if created_root and composition_root is not None:
                 await composition_root.dispose()
-            gate = _with_gate_check(
-                generation.gate_result,
+            gate = self._record_failed_gate(
+                plugin_id=generation.plugin_id,
+                revision=generation.source_revision,
                 check_id="runtime_snapshot",
-                passed=False,
-                evidence=str(error),
+                reason=str(error),
             )
-            generation.gate_result = gate
-            self._gate_results[generation.plugin_id] = gate
             raise _CandidateRejected(gate) from error
 
     @asynccontextmanager
@@ -5563,9 +5550,6 @@ class PluginManager:
                 config = _validate_plugin_config_projection(
                     cast(dict[str, object], projection), cast(type[BaseModel] | None, plugin.ConfigModel),
                 )
-                gate = self._validate_candidate(instance=plugin, plugin_id=plugin_id, revision=revision)
-                if gate.status != "passed":
-                    raise RuntimeError(f"归档插件检查失败: {gate.failure_reason}")
                 generation_id = f"archive:{namespace}:{index}"
                 generations[plugin_id] = PluginGeneration(
                     plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
@@ -5576,7 +5560,7 @@ class PluginManager:
                     contributions=self._collect_candidate_contributions(
                         instance=plugin, plugin_id=plugin_id, plugin_dir=plugin_dir,
                     ),
-                    gate_result=gate, static_manifest=manifest, entrypoint=entrypoint,
+                    static_manifest=manifest, entrypoint=entrypoint,
                     source_type=cast(Literal["builtin", "installed"], record["source_type"]),
                     archive_ref=ref,
                 )
@@ -6981,63 +6965,6 @@ class PluginManager:
             ),
         )
 
-    def _validate_candidate(
-        self,
-        *,
-        instance: ComposablePlugin,
-        plugin_id: str,
-        revision: str,
-    ) -> GateResult:
-        """Validate the remaining module-level v3 semantic checks."""
-
-        checks = [
-            GateCheckResult(
-                check_id="api_version",
-                status="passed",
-                evidence=3,
-            ),
-            GateCheckResult(
-                check_id="lifecycle_api",
-                status="passed",
-                evidence={"contract": "apply(ctx, config)"},
-            ),
-        ]
-        try:
-            semantic_checks = instance.static_semantic_checks()
-        except Exception as error:
-            checks.append(
-                GateCheckResult(
-                    check_id="semantic_checks",
-                    status="failed",
-                    evidence=str(error) or type(error).__name__,
-                )
-            )
-        else:
-            invalid_semantic = [
-                semantic
-                for semantic in semantic_checks
-                if not isinstance(semantic, PluginSemanticCheck) or not semantic.passed
-            ]
-            checks.append(
-                GateCheckResult(
-                    check_id="semantic_checks",
-                    status="failed" if invalid_semantic else "passed",
-                    evidence=[
-                        getattr(semantic, "evidence", repr(semantic))
-                        for semantic in invalid_semantic
-                    ],
-                )
-            )
-        failed = [item for item in checks if item.status == "failed"]
-        return GateResult(
-            gate_id="G1/G3-static",
-            plugin_id=plugin_id,
-            candidate_revision=revision,
-            status="failed" if failed else "passed",
-            checks=tuple(checks),
-            failure_reason="; ".join(item.check_id for item in failed),
-        )
-
     def _record_failed_gate(
         self,
         *,
@@ -7045,9 +6972,9 @@ class PluginManager:
         revision: str,
         check_id: str,
         reason: str,
-    ) -> None:
-        self._gate_results[plugin_id] = GateResult(
-            gate_id="G1/G3-static",
+    ) -> GateResult:
+        result = GateResult(
+            gate_id="assembly",
             plugin_id=plugin_id,
             candidate_revision=revision,
             status="failed",
@@ -7060,6 +6987,8 @@ class PluginManager:
             ),
             failure_reason=reason,
         )
+        self._gate_results[plugin_id] = result
+        return result
 
     def _import_plugin(self, module_name: str, path: Path) -> None:
         self._fresh_importer.register(module_name, path.parent)
@@ -7227,31 +7156,6 @@ def _gate_failure_details(gate: GateResult) -> str:
             if check.status == "failed"
         )
         or gate.failure_reason
-    )
-
-
-def _with_gate_check(
-    gate: GateResult,
-    *,
-    check_id: str,
-    passed: bool,
-    evidence: object,
-    gate_id: str | None = None,
-) -> GateResult:
-    check = GateCheckResult(
-        check_id=check_id,
-        status="passed" if passed else "failed",
-        evidence=evidence,
-    )
-    checks = (*gate.checks, check)
-    failed = [item.check_id for item in checks if item.status == "failed"]
-    return GateResult(
-        gate_id=gate_id or gate.gate_id,
-        plugin_id=gate.plugin_id,
-        candidate_revision=gate.candidate_revision,
-        status="failed" if failed else "passed",
-        checks=checks,
-        failure_reason="; ".join(failed),
     )
 
 

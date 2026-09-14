@@ -6,12 +6,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import ModuleType
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from agent.plugin_composition import Context, ServiceKey, ServiceView
-
-if TYPE_CHECKING:
-    from agent.plugins.generation import PluginSemanticCheck
 
 _CORE_RESERVED_WORKSPACE_ROOTS = frozenset({"plugin-data", "runtime"})
 
@@ -74,9 +71,6 @@ class ComposablePlugin:
         )
         if len(set(inject)) != len(inject):
             raise ValueError(f"v3 插件依赖重复: {name}")
-        static_checks = getattr(module, "static_semantic_checks", None)
-        if static_checks is not None and not callable(static_checks):
-            raise ValueError("v3 插件 static_semantic_checks 必须可调用")
         active = getattr(module, "is_active", None)
         if active is not None and not callable(active):
             raise ValueError("v3 插件 is_active 必须是可调用对象")
@@ -185,13 +179,6 @@ class ComposablePlugin:
     @property
     def static_active(self) -> bool:
         return self.is_active()
-
-    def static_semantic_checks(self) -> list[PluginSemanticCheck]:
-        provider = getattr(self.module, "static_semantic_checks", None)
-        if provider is None:
-            return []
-        return cast(list[PluginSemanticCheck], provider())
-
 
 def _string_tuple_export(module: ModuleType, name: str) -> tuple[str, ...]:
     raw = cast(object, getattr(module, name, ()))

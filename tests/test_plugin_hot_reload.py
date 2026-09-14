@@ -191,31 +191,6 @@ async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature
 
 
 @pytest.mark.asyncio
-async def test_static_semantic_failure_never_prepares_candidate(tmp_path: Path):
-    source = _v3_source(
-        "bad_semantic",
-        exports=(
-            "from agent.plugins.generation import PluginSemanticCheck\n"
-            "def static_semantic_checks():\n"
-            "    return [PluginSemanticCheck('model', False, 'missing')]\n"
-        ),
-    )
-    _write_plugin(tmp_path / "plugins", "bad_semantic", source)
-    manager = _manager(tmp_path)
-
-    await manager.load_all()
-
-    gate = manager.latest_gate("bad_semantic")
-    assert manager.loaded_count == 0
-    assert manager.generation("bad_semantic") is None
-    assert gate is not None and gate.status == "failed"
-    assert any(
-        check.check_id == "semantic_checks" and check.status == "failed"
-        for check in gate.checks
-    )
-
-
-@pytest.mark.asyncio
 async def test_import_failure_returns_failed_gate_without_generation(tmp_path: Path):
     _write_plugin(tmp_path / "plugins", "broken", "this is not python !!!\n")
     manager = _manager(tmp_path)
@@ -749,11 +724,7 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
         _v3_source(
             "installed_snapshot",
             version="release-b",
-            exports=(
-                "from agent.plugins.generation import PluginSemanticCheck\n"
-                "def static_semantic_checks():\n"
-                "    return [PluginSemanticCheck('candidate', False, 'rejected')]\n"
-            ),
+            body="    raise ValueError('candidate rejected during apply')\n",
         ),
     )
     stable_pointer = ArtifactPointer(".artifacts/1.0.0-aaaa")
