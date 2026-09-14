@@ -13,6 +13,7 @@ from agent.control.scoped_turn import TurnAdmissionRetiredError
 from agent.plugin_composition.effect import _join_cleanup
 
 from agent.plugins.generation import PluginGeneration
+from agent.plugins.selection import SelectionWriteError
 from agent.plugin_composition import (
     CHANNELS,
     MANAGED_PROCESSES,
@@ -111,10 +112,19 @@ class RuntimeSnapshot:
         self._store_token = store_token
 
 
-@dataclass(frozen=True)
+@dataclass
 class SnapshotTransaction:
     previous: RuntimeSnapshot | None
     candidate: RuntimeSnapshot
+    selection_result: str | SelectionWriteError | None = None
+
+    @property
+    def must_retain(self) -> bool:
+        """持久提交成功或结果不确定时，必须保留真实的新 owner。"""
+        result = self.selection_result
+        return isinstance(result, str) or (
+            isinstance(result, SelectionWriteError) and result.outcome == "uncertain"
+        )
 
 
 class RuntimeSnapshotCompiler:
@@ -730,18 +740,28 @@ class RuntimeSnapshotStore:
     ) -> None:
         self._require_pending(transaction)
         self._validate_composition(transaction.candidate)
-        if before_open is not None:
-            before_open()
+        try:
+            if before_open is not None:
+                before_open()
+        except BaseException:
+            if transaction.must_retain:
+                self.hold_failed_publication(transaction)
+            raise
         transaction.candidate.state = "committed"
-        transaction.candidate.accepting_leases = True
         self._current = transaction.candidate
         self._latest = transaction.candidate
         self._pending = None
         previous = transaction.previous
-        if previous is not None:
-            previous.state = "retired"
+        try:
             if after_open is not None:
                 after_open()
+        except BaseException:
+            if transaction.must_retain:
+                self.hold_failed_publication(transaction)
+            raise
+        transaction.candidate.accepting_leases = True
+        if previous is not None:
+            previous.state = "retired"
             self._schedule_drain(previous)
         async with self._condition:
             self._condition.notify_all()
@@ -827,8 +847,13 @@ class RuntimeSnapshotStore:
         # 1. Complete fallible projection work while the old stable stays visible.
         self._require_provisional(transaction)
         self._validate_composition(transaction.candidate)
-        if before_open is not None:
-            before_open()
+        try:
+            if before_open is not None:
+                before_open()
+        except BaseException:
+            if transaction.must_retain:
+                self.hold_failed_publication(transaction)
+            raise
 
         # 2. Switch the stable pointer synchronously around the owner callback.
         transaction.candidate.state = "committed"
@@ -838,7 +863,10 @@ class RuntimeSnapshotStore:
             if after_open is not None:
                 after_open()
         except BaseException:
-            self._current = previous
+            if transaction.must_retain:
+                self.hold_failed_publication(transaction)
+            else:
+                self._current = previous
             raise
 
         # 3. Open the new stable only after all publication work succeeded.
@@ -859,6 +887,25 @@ class RuntimeSnapshotStore:
             raise RuntimeError("只能排空已退役且不再为 stable 的 RuntimeSnapshot")
         self._schedule_drain(snapshot)
 
+    def hold_failed_publication(self, transaction: SnapshotTransaction) -> None:
+        """保留新物理 owner 供显式关闭；closed current 不声称磁盘写入已确认。"""
+        if not transaction.must_retain:
+            raise RuntimeError("没有需要保留的持久写入结果")
+        if self._snapshots.get(transaction.candidate.snapshot_id) is not transaction.candidate:
+            raise RuntimeError("发布 owner 已丢失")
+        self._current = self._latest = transaction.candidate
+        transaction.candidate.accepting_leases = False
+        transaction.candidate.state = "committed"
+        if self._pending is transaction:
+            self._pending = None
+        if self._provisional is transaction:
+            self._provisional = None
+        if transaction.previous is not None:
+            transaction.previous.state = "retired"
+            transaction.previous.accepting_leases = False
+
+        # 失败路径只保留 owner；显式 close/retry_drains 再尝试旧资源清理。
+
     async def rollback_provisional(
         self,
         transaction: SnapshotTransaction,
@@ -870,6 +917,8 @@ class RuntimeSnapshotStore:
 
         # 1. Reopen the old pointer; the candidate was never publicly current.
         self._require_provisional(transaction)
+        if transaction.must_retain:
+            raise RuntimeError("stable 已提交或结果不确定，不能恢复旧 snapshot")
         candidate = transaction.candidate
         previous = transaction.previous
         if self._current is not previous:
@@ -906,6 +955,8 @@ class RuntimeSnapshotStore:
         provisional.
         """
 
+        if transaction.must_retain:
+            raise RuntimeError("stable 已提交或结果不确定，不能回滚发布")
         if self._provisional is not None:
             raise RuntimeError("RuntimeSnapshot 已仍处于 provisional 发布阶段")
         if self._current is not transaction.candidate:
@@ -1013,6 +1064,8 @@ class RuntimeSnapshotStore:
         reopen_previous: bool = True,
     ) -> None:
         self._require_pending(transaction)
+        if transaction.must_retain:
+            raise RuntimeError("stable 已提交或结果不确定，不能丢弃 owner")
         transaction.candidate.state = "aborted"
         transaction.candidate.accepting_leases = False
         if self._current is transaction.previous and transaction.previous is not None:

@@ -29,7 +29,7 @@ snapshot 保存实际挂载的实例，禁止跨 snapshot 共用物理 Root 或 
 恢复也是一次真实新 Root 构建，关闭失败仍由原 Root 或 Store 保存 owner，不能隐式重试。
 Dashboard 从该实例的验证环境归属读取限制，不再比较两份不一致的数据路径猜测环境。
 这仍未完成整体重构：Manager 仍拥有业务验证、逐类运行宿主和发布特例，
-snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能把局部删除视作整体换代已经完成。
+snapshot 仍枚举其他能力，App 启动装配仍有下述接线缺口。不能把局部删除视作整体换代已经完成。
 
 余下收敛顺序如下；并行实现只用于互不争夺 owner 的切片：
 
@@ -73,11 +73,11 @@ snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能�
 本步提供固定绑定原语；初始化仍保留 pending、provider epoch 和依赖协调，
 整体发布与旧增量分支的删除仍按下述分层合同继续。新增回归尚未运行。
 
-## 完整选择的持久格式（存储子层，尚未接入运行消费者）
+## 完整选择的持久格式与 Manager 消费者
 
 `agent/plugins/selection.py` 的 `PluginSelection(workspace)` 拥有唯一可变文件
-`runtime/plugin-stable.json`。本层未修改 Manager：当前 boot、候选、晋升和 journal
-仍走旧链路，不能把新文件已存在表述为完整 stable 已生效。
+`runtime/plugin-stable.json`。Manager 的 boot、整组替换和显式恢复现消费该选择；
+App 的自动 watcher 和安装扫描接线仍需主协调器处理，不能单独发布本层。
 
 指针 v1 为 `{"version": 1, "root_ref": null}` 或指向 SHA-256 记录的同形对象。
 null 只由显式 `initialize()` 创建，表示尚无成功提交；它与已提交的空组件集合不同。
@@ -106,7 +106,7 @@ owner 处理，本层没有修改它。`components` 必须由 wholeRoot 构造�
 
 initialize 和 commit 的调用者必须持续持有 workspace 单 writer 锁；expected_ref 不是
 跨进程锁的替代品。候选授权、未 revert、正式实例已就绪但接纳仍关闭，均由提交调用者保证。
-本层没有另建候选记录协议、运行身份或自动恢复流程。
+候选沿用 ReloadJournal 事件保存本次基线及完整 refs，不建立另一份可变 stable。
 
 记录先 fsync 发布；指针采用同目录临时文件 fsync → 原子 replace → 父目录 fsync。
 初始化改用无覆盖 hardlink 发布，防止覆盖未知指针，并同步新 runtime 目录的父目录。
@@ -124,13 +124,76 @@ initialize 和 commit 的调用者必须持续持有 workspace 单 writer 锁；
 不可变记录只增加；每次完整提交仅原位替换 pointer，旧记录保留为 previous 链或未引用证据。
 失败的临时文件保留用于诊断，没有自动扫描清理、GC 或制品删除。恢复材料是 pointer 与
 整个 archive 及各输入 owner 的环境/数据；业务数据不随代码选择回滚。
-本层只编写 storage/init 边界测试并做静态复查，未运行测试或 runtime 验收。
+本层只编写 storage/init 与 Manager 消费者边界测试并做静态复查，未运行测试或 runtime 验收。
+
+### 完整 Root 的读取、提交与故障
+
+`PluginManager.load_all()` 在扫描、资源启动和 journal 结算之前读取 selection。
+缺失或坏格式直接失败；非 null 使用完整 record.components 调用
+`_replace_formal_root(components, expected_ref=ref)`，由 `_compile_topology_snapshot`
+与 `_archived_generations(..., sources={})` 创建真实新实例。
+它不按当前源码、enabled、latest、安装 cache 或可变配置重选插件。
+空 tuple 是已经选中的空组合；只有显式 null 从安装 stable desired 固定初始整组。
+安装输入的临时导入仍有 Root owner，但在正式构建及 durable commit 前关闭；
+非 null boot 不创建临时输入 generation。
+
+```text
+┌──────────────────┐
+│ read 唯一 selection│
+└────────┬─────────┘
+         ├─ null ── 固定安装输入，关闭临时 owner
+         └─ ref ─── 读取完整归档 components
+                          │
+                          ▼
+        fresh Root → closed 初始化 → CAS commit → 开放接纳
+```
+
+`_build_and_publish_root` 完成 Composition/Channel 启动及 exact closed scope 内的
+`RUNTIME_STARTING`、`RUNTIME_STARTED` 后才运行同步提交回调。生命周期回调必须完成
+初始化，不能等待尚未开放的外部接纳。回调检查原 publisher 的取消请求及候选授权；
+首次 null 或完整 refs 改变时调用 `commit(expected_ref=...)`。恢复同一选择不新增记录。
+候选和正式实例使用相同完整 refs，但分别构建，候选先实际关闭。
+
+本次 `SnapshotTransaction.selection_result` 保存真实结果：成功 ref、类型化写入错误，
+或尚未得到结果。调用同步 commit 前先保留 uncertain 结果；调用若中断而未返回，
+不能假定写入没有发生。成功或 uncertain 后，SnapshotStore 保留新 closed owner，
+Manager 不回滚旧内存选择、安装指针或端点，不自动重建旧组合。
+普通异常与 `unchanged` 才允许清理新 Root，并从旧完整 refs 重建；清理失败保留原 owner。
+确认成功后的资源故障可走显式恢复，恢复输入仍重新读取 selection；uncertain 必须先
+显式关闭并重新启动，从磁盘结果恢复，不能把当前可读 ref 当成已确认刷盘。
+Store 中的 closed current 仅持有物理资源，不能作为第二份 durable authority。
+
+ReloadJournal 的 preparing 事件保存 `base_selection_ref`，同一次候选事件保存完整
+components；记录不复制插件身份、配置或环境内容。boot 沿唯一 selection 的 previous
+链检查精确转换，能处理 stable 已提交而 journal 尚未更新的崩溃窗口，不能只比较源码版本。
+旧 boot 清理仍使用 `_cleanup_boot_processes` 的真实回执；原有 supervised/旧 boot ID
+前置条件保留。本层不把安装指针对齐或每类能力检查当成运行恢复依据。
+有证据的提交结算为 recovered，未提交候选结算为 aborted，均不续跑候选。
+历史记录缺少完整转换证据时保持原 phase，只追加未知诊断，等待显式处理。
+未确认提交的安装更新保留 armed 和错误说明，不能谎称安装文件已经 rolled_back；
+安装 owner 的显式回退仍拥有安装文件副作用。Manager 的 promote/drop 不再写 per-plugin pointers。
+业务数据和归档不随上述结算删除或回滚。
+
+### 发布前仍需协调器完成的接线
+
+- `bootstrap/tools.py:CoreRuntime.start` 仍在 load_all 后调用 `sync_manifest()`，会扫描
+  可变安装并写安装清单；该操作应移出正常 boot，交还显式安装入口。
+- `bootstrap/app.py` 仍创建 `baseline_revision=""` 的 watcher 并立即 wake，可能从
+  旧 latest 重新准备候选。必须取消这次启动自动 reconcile；以后明确的更新事件才授权准备。
+- App 目前在 Core.start 之后绑定 endpoint switcher；含 commands 的完整 Root 需要
+  协调器把发布参与者绑定安排在 load_all 之前，否则初始化会明确失败。
+- 统一 operation owner/deadline 由另一个切片实现。安装 reconcile 外层仍有 shield；
+  该 owner 必须把原操作取消许可送到本层同步 commit 点，不能只检查内层任务。
+  本层已拦截成功/uncertain 后的安装回退并保持 maintenance，没有改写安装取消协议。
+
+这些文件不在本层写入范围；Manager 聚焦测试不代表累计 App 启动验收已通过。
+旧测试中隐式初始化 Manager 的批量适配另行处理，本层新增测试均显式初始化。
 
 ### 存量 workspace 的显式空选择入口
 
 `scripts/upgrade_plugin_selection.py` 只建立新协议的明确 null，不转换旧组合，
 不从历史 binding 猜测完整 Root，也不表示当前安装代码已经验证或晋升。
-它与 Manager 消费者一起发布；本层仍未接通运行恢复，不单独发布 primitive PR。
+它与 Manager 消费者和 App 接线一起发布，不单独发布 primitive PR。
 
 停用目标 workspace 的宿主及安装 writer 后，在项目环境中明确执行：
 
@@ -153,7 +216,7 @@ SQLite backup 纳入已提交 WAL，并检查副本完整性，不修改源 jour
 不是另一份运行选择。文件及目录同步完成后才调用 `PluginSelection.initialize()`。
 不读取消息库、binding、代码归档或 plugin-data；不安装、导入插件或复制业务数据。
 
-命令成功只说明 null 已初始化。待完整消费者接通后，下一次正常启动才从操作者明确的
+命令成功只说明 null 已初始化。下一次 Manager 启动才从操作者明确的
 安装选择固定整组代码和配置，构造 whole Root，并在真正 ready 后首次 commit。
 未晋升候选不会因此获授权；旧 journal、安装指针和业务数据保持不变。
 
