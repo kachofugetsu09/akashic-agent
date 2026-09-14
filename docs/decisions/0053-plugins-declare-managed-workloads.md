@@ -1,5 +1,7 @@
 # 0053 · 插件声明受管 Workload
 
+> [0071](0071-plugin-composition-and-whole-runtime-updates.md) 已调整目标：运行请求只由插件代码定义，Workload provider 与 Controller 校验执行，不再维护静态 manifest 对账。窄权限 Controller、数据与端口隔离仍保留。
+
 - 状态：accepted / implemented
 - 日期：2026-08-31
 - 关联条款：RUN-016、PLG-017、WEBUI-008、WSP-006
