@@ -107,6 +107,10 @@ class Effect:
 async def _join_cleanup(task: asyncio.Task[None]) -> None:
     """等待同一关闭操作，重复取消也不能中断资源 owner。"""
 
+    if task is asyncio.current_task():
+        raise CompositionError(
+            "REENTRANT_CLEANUP_WAIT", "cleanup 不能等待自身关闭完成",
+        )
     cancelled = False
     while not task.done():
         try:
