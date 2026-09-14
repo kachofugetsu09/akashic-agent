@@ -15,6 +15,7 @@ class _ReadLease:
     def __init__(self, lease: AttachmentReadLease):
         self._ref = lease.ref
         self._read = lease.read_bytes
+        self._read_chunk = lease.read_chunk
         self._close = lease.aclose
 
     @property
@@ -23,6 +24,9 @@ class _ReadLease:
 
     async def read_bytes(self, *, max_bytes: int) -> bytes:
         return await self._read(max_bytes=max_bytes)
+
+    async def read_chunk(self, *, offset: int, max_bytes: int) -> bytes:
+        return await self._read_chunk(offset=offset, max_bytes=max_bytes)
 
     async def aclose(self) -> None:
         await self._close()
