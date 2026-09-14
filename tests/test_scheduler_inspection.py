@@ -185,12 +185,12 @@ async def test_client_reports_scheduler_unavailable_without_provider(tmp_path: P
     store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
     service = _inspection_service(store)
     try:
-        assert await service.list_jobs() == {
-            "unavailable": {
-                "code": "scheduler_unavailable",
-                "message": "调度检查服务尚未绑定",
-            }
-        }
+        from plugins.akashic_clients.runtime_inspection import RuntimeInspectionError
+
+        with pytest.raises(RuntimeInspectionError) as captured:
+            await service.list_jobs()
+        assert captured.value.code == "scheduler_unavailable"
+        assert str(captured.value) == "调度检查服务尚未绑定"
     finally:
         await store.close()
         await root.dispose()
@@ -200,9 +200,11 @@ async def test_client_reports_scheduler_unavailable_without_provider(tmp_path: P
 async def test_client_reports_skills_unavailable_without_provider(tmp_path: Path) -> None:
     from agent.plugin_composition import CompositionRoot
     from agent.plugin_composition.rpc import rpc_method_key
+    from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
     from plugins.runtime_inspection.inspection import RuntimeInspectionProvider
     from plugins.runtime_inspection.rpc import rpc_methods
     from agent.plugins.snapshot import RuntimeSnapshotCompiler, RuntimeSnapshotStore
+    from plugins.akashic_clients.runtime_inspection import RuntimeInspectionError
 
     root = CompositionRoot("skill-inspection")
     provider = RuntimeInspectionProvider(
@@ -213,19 +215,19 @@ async def test_client_reports_skills_unavailable_without_provider(tmp_path: Path
         for method, operation in rpc_methods(provider).items():
             await ctx.provide(rpc_method_key(method), operation)
 
+    await root.context.provide(
+        RUNTIME_CATALOG,
+        lambda: {"snapshot_id": "fixture", "plugins": [], "mcp_servers": []},
+    )
     await root.mount(apply, name="runtime-inspection")
     store = RuntimeSnapshotStore()
     snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
     store.install(snapshot)
     service = _inspection_service(store)
     try:
-        payload = await service.list_capabilities()
-        assert payload == {
-            "unavailable": {
-                "code": "skills_unavailable",
-                "message": "技能检查服务尚未绑定",
-            }
-        }
+        with pytest.raises(RuntimeInspectionError) as captured:
+            await service.list_capabilities()
+        assert captured.value.code == "skills_unavailable"
     finally:
         await store.close()
         await root.dispose()

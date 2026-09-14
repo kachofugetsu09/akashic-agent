@@ -166,7 +166,10 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: probe\ndescription: lease proof\n---\nRead safely.\n")
     (asset / "plugin.py").write_text(
+        "from agent.plugin_composition import ServiceKey\n"
+        "RUNTIME_CATALOG = ServiceKey('core.runtime_catalog.v1')\n"
         "api_version = 3\nname = 'external_assets'\nversion = '1'\n"
+        "inject = (RUNTIME_CATALOG,)\n"
         "asset_roots = {'skills': ('skills',)}\ndef apply(ctx, config): pass\n")
     (tmp_path / "workspace").mkdir()
     configuration = tmp_path / "workspace/plugin-data/context-builtin"
@@ -193,9 +196,48 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
         service = ScopedRpcRuntimeInspection(open_scope)
         for _ in range(2):
             result = await service.list_capabilities()
-            assert [item["name"] for item in _rows(result["items"])] == ["probe"]
+            assert set(result) == {"snapshot_id", "plugins", "skills", "mcp_servers"}
+            assert result["snapshot_id"] == snapshot.snapshot_id
+            assert [item["name"] for item in _rows(result["skills"])] == ["probe"]
+            assert "items" not in result
             assert snapshot.lease_count == 0
             assert get_current_runtime_snapshot() is None
     finally:
         await manager.terminate_all()
         metadata.close()
+
+
+@pytest.mark.asyncio
+async def test_client_translates_runtime_catalog_unavailable() -> None:
+    """Core 的中立 unavailable 结果在插件边界转换为既有错误合同。"""
+    from contextlib import asynccontextmanager
+
+    from agent.plugin_composition import CompositionRoot
+    from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
+    from plugins.akashic_clients.runtime_inspection import (
+        RuntimeInspectionError,
+        ScopedRpcRuntimeInspection,
+    )
+
+    root = CompositionRoot("catalog-unavailable")
+    await root.context.provide(
+        RUNTIME_CATALOG,
+        lambda: {
+            "unavailable": {
+                "code": "mcp_catalog_unavailable",
+                "message": "MCP 工具目录暂不可用，声明的服务按需启动",
+            }
+        },
+    )
+
+    @asynccontextmanager
+    async def open_scope():
+        yield root.context
+
+    try:
+        service = ScopedRpcRuntimeInspection(open_scope)
+        with pytest.raises(RuntimeInspectionError) as captured:
+            await service.list_capabilities()
+        assert captured.value.code == "mcp_catalog_unavailable"
+    finally:
+        await root.dispose()

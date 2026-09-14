@@ -7,7 +7,7 @@ host resolves these keys inside each request scope.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from agent.plugin_composition import MODEL_CALL_STATS, MODEL_CATALOG, ServiceKey
@@ -39,6 +39,8 @@ MODEL_SELECTION = ServiceKey[ModelSelectionReader]("models.selection.v1")
 MESSAGE_DISPLAY = ServiceKey[MessageDisplayReader]("core.message_display.v1")
 MOBILE_UI = ServiceKey[MobileUiProvider]("core.mobile_ui.v1")
 WEB_UI = ServiceKey[WebUiProvider]("core.web_ui.v1")
+RuntimeCatalogReader = Callable[[], dict[str, object]]
+RUNTIME_CATALOG = ServiceKey[RuntimeCatalogReader]("core.runtime_catalog.v1")
 
 INSPECTION_DOCUMENTS_LIST = rpc_method_key("inspection/documents.list")
 INSPECTION_DOCUMENTS_GET = rpc_method_key("inspection/documents.get")
@@ -64,6 +66,7 @@ MODEL_RPC_KEYS = (MODEL_CALL, MODEL_CATALOG_RPC, MODEL_DISCOVER, MODEL_COMMAND)
 # by the manifest importer to activate the ordinary channel only when the
 # exact providers are present.
 CLIENT_CAPABILITIES = (
+    RUNTIME_CATALOG,
     MESSAGE_CATALOG,
     COMMANDS,
     MESSAGE_DISPLAY,
@@ -100,4 +103,5 @@ __all__ = [
     "ReplyStatusReader",
     "ModelSelectionReader",
     "REPLY_STATUS",
+    "RUNTIME_CATALOG",
 ]
