@@ -565,7 +565,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", ["input", "ready", "delivered"])
-async def test_reopen_uses_original_program_sender_and_input_after_source_changes(tmp_path, monkeypatch, fault):
+async def test_reopen_current_plugins_handle_original_facts_after_source_changes(tmp_path, monkeypatch, fault):
     from agent.plugins.manager import PluginManager
     from bus.event_bus import EventBus
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
@@ -596,9 +596,7 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
         changed = changed.replace('"useful notification"', '"new provider notification"')
     else:
         changed = changed.replace("async def complete(self, request):",
-            'async def complete(self, request):\n            raise RuntimeError("changed model must not run")').replace(
-            "async def send(self, key, address, message):",
-            'async def send(self, key, address, message):\n            raise RuntimeError("changed sender must not run")')
+            'async def complete(self, request):\n            raise RuntimeError("completed model work must not run again")')
     module.write_text(changed)
     workspace = tmp_path / "workspace"
     log = MessageLog(workspace / "sessions.db")
@@ -627,18 +625,15 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
                     ).binding_id
         if fault == "input":
             # 未启动的 Wake 程序可以在当前 stable 运行，但投递仍固定使用原 Sink。
-            assert delivery is not None and delivery["status"] == "failed"
-            assert receipt is not None and receipt.status == "failed"
+            assert delivery is not None and delivery["status"] == "settled"
+            assert receipt is not None and receipt.status == "delivered"
             assert persisted_binding == original.sink["binding_id"]
-            assert len(control["calls"]) == 1 and len(control["sent"]) == 0
-        elif fault == "ready":
-            assert delivery is not None and delivery["status"] == "failed"
-            assert len(control["calls"]) == 1 and len(control["sent"]) == 0
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 1
         else:
             assert delivery is not None and delivery["status"] == "settled"
             assert len(control["calls"]) == 1 and len(control["sent"]) == 1
         assert log.reader(original.session_id).snapshot()[:len(saved)] == saved
-        assert len(log.reader(original.session_id).snapshot()) == (5 if fault == "input" else len(saved) if fault == "ready" else 5)
+        assert len(log.reader(original.session_id).snapshot()) == 5
     finally:
         await host.terminate_all()
         log.close()

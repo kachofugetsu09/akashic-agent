@@ -337,7 +337,6 @@ async def test_computer_control_against_optional_container_oracle(tmp_path: Path
         assert child.returncode == 0, (await child.stderr.read()).decode() if child.stderr else ""
 
 
-
 class _ComputerGatewayState:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -707,34 +706,6 @@ async def test_computer_message_tool_and_follower_closes_turn_statuses(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_computer_incompatible_binding_preserves_unended_owner_and_incident(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    """换版后不能调用旧 driver；failed 只记录未收尾事实，不冒称 ended。"""
-    harness = await _computer_harness(tmp_path)
-    try:
-        reply = harness.add_call("incompatible")
-        result = await harness.execute(reply)
-        assert result.outcome == "success"
-
-        async def mismatch(_identity: str, _service) -> bool:
-            return False
-
-        monkeypatch.setattr(harness.bindings, "matches_current", mismatch)
-        harness.finish(reply, "complete")
-        await _wait_until(lambda: harness.owner(reply).value["phase"] == "failed")
-
-        owner = harness.owner(reply)
-        assert owner is not None
-        assert owner.value["phase"] == "failed"
-        assert "不兼容" in owner.value["error"]
-        assert not any(call.get("endTurn") for call in harness.gateway_state.calls)
-        assert any(incident.kind == "computer-end-turn" for incident in harness.composition_root.receipt().incidents)
-    finally:
-        await harness.close()
-
-
-@pytest.mark.asyncio
 async def test_computer_cancel_releases_driver_and_follower_ends_unknown_call(tmp_path: Path) -> None:
     """取消先取得 driver released，再把已 started 的效果持久为 unknown 并可收尾。"""
     harness = await _computer_harness(tmp_path)
@@ -762,7 +733,7 @@ async def test_computer_cancel_releases_driver_and_follower_ends_unknown_call(tm
 
 @pytest.mark.asyncio
 async def test_computer_failure_retries_started_owner_after_restart_and_source_change(tmp_path: Path) -> None:
-    """启动失败保留 owner；重启后的旧 binding 仍命中旧 driver。"""
+    """清理错误使任务明确失败；显式重启由选定的 stable 处理旧 owner。"""
     state = _ComputerGatewayState()
     harness = await _computer_harness(
         tmp_path, gateway_state=state, gateway_label="old"
@@ -788,8 +759,11 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
             if call.get("endTurn")
         )
         await _wait_until(lambda: harness.manager.current_snapshot.lease_count == 0)
-        incidents = harness.composition_root.receipt().incidents
-        assert any(incident.kind == "computer-end-turn" for incident in incidents)
+        await _wait_until(lambda: any(
+            incident.kind == "task_failure"
+            for incident in harness.composition_root.receipt().incidents
+        ))
+        assert not harness.composition_root.receipt().ready
 
         computer_source = harness.root / "computer" / "plugin.py"
         manifest_source = harness.root / "computer" / "akashic.plugin.toml"

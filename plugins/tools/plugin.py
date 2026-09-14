@@ -15,7 +15,7 @@ from agent.plugin_composition.tasks import ExternalRootPermit
 
 from .api import (
     Authorize, BoundTool, CallSource, MessageReply, ProviderBoundTool, Result,
-    ToolBindingIncompatible, coerce_result, display_name, result_message_id,
+    coerce_result, display_name, result_message_id,
 )
 from .abandon import follow_abandon, reject_start
 from .execution import ToolExecution
@@ -317,7 +317,6 @@ class ToolCatalog:
             authorize_binding,
             task_key="effects",
             child_permit=child_permit,
-            binding_matches=lambda identity: bindings.matches_current(identity, TOOLS),
         )
 
     def view(self, *refs: ToolRef) -> ToolView:
@@ -446,7 +445,7 @@ class ToolCatalog:
         if registration.ref.description != description or metadata["prepare"] != (
             None if preparation is None else preparation.name
         ):
-            raise ToolBindingIncompatible("归档工具描述或参数准备与 binding 不一致")
+            raise ValueError("归档工具描述或参数准备与 binding 不一致")
         expected: set[str] = {"tool", "prepare"}
         authorization = registration.authorization
         if "authorize" in metadata:
@@ -454,10 +453,10 @@ class ToolCatalog:
             if not isinstance(saved_authorization, str):
                 raise ValueError("工具 binding 限制字段无效")
             if authorization is None or saved_authorization != authorization.name:
-                raise ToolBindingIncompatible("归档工具限制与 binding 不一致")
+                raise ValueError("归档工具限制与 binding 不一致")
             expected.add("authorize")
         elif authorization is not None:
-            raise ToolBindingIncompatible("归档工具限制与 binding 不一致")
+            raise ValueError("归档工具限制与 binding 不一致")
         if registration.capture is not None:
             expected.add("state")
         if set(metadata) != expected:

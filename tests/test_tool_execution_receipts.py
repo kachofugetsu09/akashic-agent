@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 import pytest
 
 from agent.plugin_composition.tasks import Tasks
-from plugins.tools.api import ToolBindingIncompatible
 from plugins.tools.execution import Denied, MessageReply, Result, ToolExecution
 from session.log import MessageLog, OwnerTransaction
 from session.message import CallRef, ContentPart, Output, ToolCall, ToolResult
@@ -39,10 +38,6 @@ class Probe:
         return self.query_result
 
 
-async def _binding_matches(_identity: str) -> bool:
-    return True
-
-
 @pytest.fixture
 def environment(tmp_path):
     log = MessageLog(tmp_path / "state.db")
@@ -61,7 +56,7 @@ def environment(tmp_path):
         yield probe
 
     execution = ToolExecution(
-        state, tasks, open_tool, authorize, task_key="tools", binding_matches=_binding_matches,
+        state, tasks, open_tool, authorize, task_key="tools",
     )
     yield log, state, tasks, probe, permissions, execution
     log.close()
@@ -184,40 +179,7 @@ async def test_restart_started_call_queries_before_closing_failure(environment, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["prepared", "started"])
-async def test_incompatible_binding_finishes_pending_call_without_open_or_query(environment, phase):
-    _, state, tasks, probe, _, execution = environment
-    await execution.execute("request", "fixed-A", {})
-    completed = state.read("program:request")
-    assert completed is not None
-    state.transact(
-        lambda tx: tx.save(
-            "program:request",
-            {
-                key: value
-                for key, value in {**completed.value, "phase": phase}.items()
-                if key != "result"
-            },
-            expected_version=completed.version,
-        )
-    )
-    async def mismatch(_binding):
-        return False
-
-    execution._binding_matches = mismatch
-    try:
-        result = await execution.execute("request", "fixed-A", {})
-        assert result.outcome == "error"
-        assert "binding" in result.parts[0].value
-        assert state.read("program:request").value["phase"] == "done"
-        assert probe.query_count == 0
-        assert len(probe.calls) == 1
-    finally:
-        await tasks.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["prepared", "started"])
-async def test_binding_open_incompatibility_finishes_without_query_or_invoke(environment, phase):
+async def test_binding_open_failure_propagates_without_query_or_invoke(environment, phase):
     _, state, tasks, probe, _, execution = environment
     await execution.execute("request", "fixed-A", {})
     completed = state.read("program:request")
@@ -236,15 +198,14 @@ async def test_binding_open_incompatibility_finishes_without_query_or_invoke(env
 
     @asynccontextmanager
     async def incompatible(_binding):
-        raise ToolBindingIncompatible("binding 不兼容")
+        raise ValueError("插件无法读取旧数据")
         yield
 
     execution._open_tool = incompatible
     try:
-        result = await execution.execute("request", "fixed-A", {})
-        assert result.outcome == "error"
-        assert result.parts[0].value == "binding 不兼容"
-        assert state.read("program:request").value["phase"] == "done"
+        with pytest.raises(ValueError, match="插件无法读取旧数据"):
+            await execution.execute("request", "fixed-A", {})
+        assert state.read("program:request").value["phase"] == phase
         assert probe.query_count == 0
         assert len(probe.calls) == 1
     finally:

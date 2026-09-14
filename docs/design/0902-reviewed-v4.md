@@ -273,7 +273,7 @@ Core 需要补齐或改造的能力限定为四组。插件提供业务能力，
 
 服务注册/依赖解析、事件、Timer、Artifact、进程与 Workload 能力继续复用。事务只接纳各自有权验证的操作：消息 writer、owner 状态写入与资源引用各有明确授权，统一提交不授予任意跨插件写权。插件定义自己的 receipt schema 与状态转换，Core 只保证存储与提交；不能把一张业务表移到 Core 再称其 owner 已插件化。
 
-状态访问权由组合配置授予，不能写死为某个内置插件 ID。替换有持久状态的实现时，先核对其公开状态合同；兼容者获得同一状态访问能力，不兼容者使用显式迁移。未完成调用保留原 binding 作为事实；尚未开始的请求可在当前选定 scope 接纳，prepared/started 若无法证明实现兼容则明确终态，不能把旧回执当成空状态重跑。此处事务参与、状态授权与 durable binding 的具体合同列为实施前置项，见第 14 节。
+状态访问权由组合配置授予，不能写死为某个内置插件 ID。替换有持久状态的实现时，先核对其公开状态合同；兼容者获得同一状态访问能力，不兼容者使用显式迁移。未完成调用保留原 binding 作为事实；尚未开始的请求可在当前选定 scope 接纳，prepared/started 由当前插件处理自己的数据，处理不了就明确报错，不能把旧回执当成空状态重跑。此处事务参与、状态授权与 durable binding 的具体合同列为实施前置项，见第 14 节。
 
 | 能力 | 最小调用 | owner 与真实边界 | 独立使用的例子 |
 |---|---|---|---|
@@ -371,7 +371,7 @@ provider 输出到中立模型响应的转换归 provider；引用/meme 等产�
 
 Delivery 独占以下提交顺序：按生效策略选出 sink → durable prepared，固定 message_id、实际地址、adapter generation 与幂等 key → durable started → 外部发送 → delivered/rejected/unknown。prepared 与来源消费进度在本地事务或明确的 durable handoff 中提交；多 sink 的选择集合也一并固定。策略热更不能在旧消息重扫时生成另一组发送；追加新目的地必须是明确的新发送动作。
 
-started 后缺回执时，只能查询远端或在其支持幂等时用原 key 重试，否则记 unknown，不能把超时当 rejected。cancel 先于 start 则不发出，start 之后只能如实结算。未解决发送记录保留原 adapter generation 和地址；进程重启只按 stable/latest 恢复，原实现或配置不兼容时明确 failed，不换一条路线重发。凭据撤销时暂停并报错。来源 ACK 只消费已确认 delivered 或该来源明确接受的失败处理结果；unknown 不算送达。
+started 后缺回执时，只能查询远端或在其支持幂等时用原 key 重试，否则记 unknown，不能把超时当 rejected。cancel 先于 start 则不发出，start 之后只能如实结算。未解决发送记录保留原 adapter generation 和地址；进程重启只按 stable/latest 恢复，当前插件处理不了旧数据时明确报错，不换一条路线重发。凭据撤销时暂停并报错。来源 ACK 只消费已确认 delivered 或该来源明确接受的失败处理结果；unknown 不算送达。
 
 ### 5.7 取消、流与 generation：围绕真实资源
 
@@ -454,7 +454,7 @@ started ── 外部调用 ──▶ result / unknown
 - 对话 result 追加与本地 receipt 的结果指针在同一存储事务完成；独立调用在其 receipt 提交结果。不同存储时必须有已验收的 outbox/handoff，不能默认跨库原子。
 - 取消与 effect start 由执行 owner 排序：普通取消先被接纳则不新发起；已开始则结算为真实结果或 unknown。明确 abandon 按第 7.4 节结算 interrupted，不能假称没执行。
 
-unknown 是原工具调用的终态，不证明远端失败，也不永久阻塞模型决策。模型投影保留原状态和正文，并明确提示先检查现场，不得直接重复原操作；检查后可在当前授权内提出新调用。不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 保留原 binding 及外部效果事实；同一进程内已取得的 scope 继续使用其选定 snapshot，进程重启只按 stable/latest 恢复。原实现不兼容时沿领域 terminal 语义收尾，不盲目复活旧 generation。内存 lease 排空后释放资源，耐久归档没有自动 GC，也不另存 active claim 或 refcount。
+unknown 是原工具调用的终态，不证明远端失败，也不永久阻塞模型决策。模型投影保留原状态和正文，并明确提示先检查现场，不得直接重复原操作；检查后可在当前授权内提出新调用。不改写原 unknown，也不以后台重试偷偷重复效果。未处理的调用与 receipt 保留原 binding 及外部效果事实；同一进程内已取得的 scope 继续使用其选定 snapshot，进程重启只按 stable/latest 恢复。当前插件处理不了自己的旧数据时明确报错，不盲目复活旧 generation。内存 lease 排空后释放资源，耐久归档没有自动 GC，也不另存 active claim 或 refcount。
 
 Tool 与 Delivery 都需要外部效果记录，但各自拥有不同状态和查询协议。暂不创建统一 EffectManager；相同 SQL/锁 helper 只有在实现重复且合同相同时才共享。
 
@@ -1103,13 +1103,13 @@ Channel 接纳以 Input 原子提交为边界，Core 启动在全部渠道完成
 
 候选 `delivery` 插件拥有 `(message_id, sink)` 回执，`delivery_policy` 独立跟随日志。首次策略选择、全部目的地的 prepared 与消费 cursor 在同一 owner 事务提交；显式来源也能先固定一条已提交消息的发送集合，不替自动消费者跳过其他消息。原选择不改写，新增目的地必须显式 add。回执只保存消息引用、固定 binding、地址、阶段与实际 provider 回执，不复制正文、附件或模型结果。
 
-出站注册只有普通插件提供的资源 factory。`Bindings` 固定真实注册 owner 和配置；调用者在已选 scope 中取得 sender，不发送正文、不启动收件循环。started 前取消只停止当前调用并保留 prepared；来源明确撤回尚未开始的通知才调用 `cancel_prepared` 写 rejected。started/unknown 先查原效果，只有原协议保证幂等才可用同一 key 重试；非幂等且无回执保留 unknown。已 delivered 不再打开资源，rejected 只有显式 retry 才重新接纳；并发 retry 必须先排空旧 rejected Task，不能被旧结果吞掉。重启按 stable/latest 恢复，原实现或配置不兼容时明确 failed，不改投当前渠道。
+出站注册只有普通插件提供的资源 factory。`Bindings` 固定真实注册 owner 和配置；调用者在已选 scope 中取得 sender，不发送正文、不启动收件循环。started 前取消只停止当前调用并保留 prepared；来源明确撤回尚未开始的通知才调用 `cancel_prepared` 写 rejected。started/unknown 先查原效果，只有原协议保证幂等才可用同一 key 重试；非幂等且无回执保留 unknown。已 delivered 不再打开资源，rejected 只有显式 retry 才重新接纳；并发 retry 必须先排空旧 rejected Task，不能被旧结果吞掉。重启按 stable/latest 恢复，当前插件处理不了旧数据时明确报错，不改投当前渠道。
 
 默认策略仅发送所选来源的完整可见 Output，当前默认是 conversation；Input、continue、ToolResult、quiet 与 Control 不发送。目的地来自该 Output 前缀内最后一个同源 Input 的 channel.origin，后来输入不能改写旧选路。显式通知沿来源已固定的集合处理。每个 Session 按 seq 追赶，各目的地独立结算，一个 ACK 丢失不能取消其他已开始的发送。
 
 早期候选验证曾覆盖删除当前源码后重开数据库并打开原 sender，且不再次启动 receiver；该历史证据不再定义普通 binding 的恢复合同。按 0069，当前调用在已选 scope 取得 sender，重启只沿 stable/latest；发送链的消息、选路和回执事实仍保留。此子范围的独立 Terra/xhigh 概念 Gate 通过，发送重试竞态已修复。正式 Web/Mobile 的资源迁移、旧 delivery ledger、Scheduler/Subagent/Wake 和发布操作仍待本层后续及第 10 层累计验收。
 
-早期故障验收还覆盖实际 sender 已完成外部写入、随后本地 delivered 事务失败：原记录保留 started，外部效果仍只有一次。当前重启仍保留原 binding、目的地和可能已送达事实；若 stable 中实现或配置不兼容，则由 Delivery 写入明确 failed，不按旧 archive 重开或换路重发。该场景与从 prepared 恢复共用真实插件边界，不能由手工预置 started 状态替代。
+早期故障验收还覆盖实际 sender 已完成外部写入、随后本地 delivered 事务失败：原记录保留 started，外部效果仍只有一次。当前重启仍保留原 binding、目的地和可能已送达事实；若当前插件处理不了旧数据，则明确报错，不按旧 archive 重开或换路重发。该场景与从 prepared 恢复共用真实插件边界，不能由手工预置 started 状态替代。
 
 Scheduler 的内部持久化已由维护者批准，见 [0058](../decisions/0058-scheduler-keeps-internal-messages.md) 与 SCH-003：每次 fire 使用独立内部 Session，只向目标聊天追加最终通知，不读取同 job 的旧 fire，也不把内部消息纳入记忆学习。来源继续使用既有 job identity，不新增 Core Run 或来源特判。调度文件升级归属本层 yoyo，JobStore 和 Inspection 的读取不得隐式覆盖 schedules.json。
 
@@ -1884,7 +1884,7 @@ Mobile WebUI 停止生成必须调用 `sendSessionCommand(session_id, "/stop")`�
 | 两个会话交错执行工具，各自拿到自己的正文和发送结果 | 新增 `test_builtin_behavior.py`：独立 App 进程、真实 SDK/Unix socket、HTTP SSE、文件工具和 message_push；阻塞 A 时 B 完成 |
 | 停止后迟到回复不能执行工具，新输入仍能完成；失败不得伪装成功 | 新增同文件 stop 场景；已有 `test_wake_messages.py` 模型失败分类与取消清理场景 |
 | 重启必须等真实输出 drain，失败后恢复接纳 | `test_agent_restart_tool.py`；修正失败时清理，避免连接超时盖住原断言 |
-| 热重载中已取得 lease 的调用继续使用其选定 snapshot；重启和新工作沿 stable/latest，无法证明外部效果兼容时明确终态 | 复用 `test_plugin_hot_reload.py` 与 `test_akasha_message_plugin.py` 的 lease、归档事实和切换配置场景 |
+| 热重载中已取得 lease 的调用继续使用其选定 snapshot；重启和新工作沿 stable/latest，插件处理不了自己的旧数据时明确报错 | 复用 `test_plugin_hot_reload.py` 与 `test_akasha_message_plugin.py` 的 lease、归档事实和切换配置场景 |
 | Scheduler/Wake/Drift 重开后不重复工作或通知，保留原引用 | 复用 `test_scheduler_messages.py` 和 `test_wake_messages.py` 的实际插件、持久化提交故障与恢复场景 |
 | 记忆和压缩引用原始消息，不改写历史正文 | 复用 `test_message_markdown_memory.py`、`test_message_compaction_records.py`、`test_message_compaction_summary.py`；新增跨进程完整历史比较 |
 | Dashboard 在非空、多会话和特殊路径下正确分页，只读请求不改权威事实 | 新增 `test_message_plugin_dashboards.py`：12 条交错召回、原文详情、SQL dump、真实 SQLite 查询观察；Wake 特殊路径与有效诱饵库 |

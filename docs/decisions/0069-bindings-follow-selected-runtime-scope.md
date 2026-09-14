@@ -2,6 +2,7 @@
 
 - 状态：accepted / implementing
 - 日期：2026-09-14
+- 部分取代于：[0070](0070-plugins-own-persisted-data.md)（旧数据处理责任，取代第 4 项兼容性准入）
 - 关联条款：PLG-003、PLG-004、PLG-009、PLG-013、PLG-018、RUN-008、RUN-009、ERR-001
 - 部分取代：[0062](0062-tools-flow-through-provider-views.md) 中“已提交 binding 继续打开原归档实现”的选择
 

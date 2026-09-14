@@ -281,8 +281,7 @@ async def test_ordinary_tool_binding_runs_in_the_selected_stable_scope(
             tasks,
             partial(open_tool, bindings),
             authorize,
-            task_key="tools",
-            binding_matches=lambda identity: bindings.matches_current(identity, TOOLS),
+            task_key="tools"
         )
         result = await execution.execute("request", binding_id, {"value": "input "})
         assert result.parts[0].value == "A:restore:input"
@@ -383,12 +382,11 @@ async def test_binding_authorize_checks_final_arguments(tmp_path):
                 ctx.require(ALL_TOOLS)().select("example"), bindings
             )
             execution = catalog.execution(caller_authorize)
-            old = await execution.execute("old", old_binding, {"value": "blocked"})
+            with pytest.raises(ValueError, match="归档工具限制与 binding 不一致"):
+                await execution.execute("old", old_binding, {"value": "blocked"})
             denied = await execution.execute("denied", new_binding, {"value": "blocked"})
             safe = await execution.execute("safe", new_binding, {"value": "ok"})
 
-        assert old.outcome == "error"
-        assert "归档工具限制与 binding 不一致" in old.parts[0].value
         assert denied.outcome == "denied"
         assert denied.parts[0].value == "blocked by fixed policy"
         assert safe.outcome == "success"
@@ -450,13 +448,12 @@ async def test_binding_authorize_presence_and_name_must_match_current_registrati
             with pytest.raises(ValueError, match="归档工具限制与 binding 不一致") as error:
                 async with catalog.open(metadata):
                     raise AssertionError("不兼容 binding 不应打开工具")
-            assert type(error.value).__name__ == "ToolBindingIncompatible"
+            assert type(error.value) is ValueError
             execution = catalog.execution(
                 lambda binding, arguments: _allow()
             )
-            result = await execution.execute("incompatible", old_binding, {"value": "ok"})
-            assert result.outcome == "error"
-            assert "归档工具限制与 binding 不一致" in result.parts[0].value
+            with pytest.raises(ValueError, match="归档工具限制与 binding 不一致"):
+                await execution.execute("incompatible", old_binding, {"value": "ok"})
         assert not list((tmp_path / "workspace").rglob("effects.txt"))
     finally:
         await host.terminate_all()

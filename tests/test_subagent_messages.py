@@ -41,10 +41,6 @@ class ModelControl:
 CONTROLS: dict[str, ModelControl] = {}
 
 
-async def _binding_matches(_identity: str) -> bool:
-    return True
-
-
 def text_part(part: ContentPart | ToolCall) -> str:
     """Read a fixture text part after checking the persisted part shape."""
     assert isinstance(part, ContentPart)
@@ -179,7 +175,7 @@ async def apply(ctx, config):
             return {"allowed": True}
         execution = ToolExecution(
             log.owner("plugin:tools"), tasks, partial(open_tool, bindings), authorize,
-            task_key="effects", binding_matches=_binding_matches,
+            task_key="effects",
         )
         yield host, log, execution, reply
     finally:
@@ -341,7 +337,7 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
         assert CONTROLS[str(tmp_path)].calls == (0 if stage == "input" else 2)
         await host.terminate_all()
         log.close()
-        # 原已接纳程序和工具来自归档；当前文件的行为变化不应改写原任务。
+        # 当前插件处理原已接纳事实；已完成结果不因源码变化重算。
         provider = tmp_path / "plugins/models_fixture/plugin.py"
         provider.write_text(provider.read_text().replace('LLMResponse("child finished")', 'LLMResponse("new provider result")')
                             .replace('control.sent.put_nowait((key, address, message))',
@@ -368,7 +364,7 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
             returned = await asyncio.wait_for(completed(), 10)
             assert returned is not None
             assert len(returned) == 1 and "main summary: child finished" in text_part(returned[0].body.parts[0])
-            # 新 stable 与旧发送 binding 不兼容时只保存 failed 回执，不盲目重发。
+            # 当前 sender 报错时保留原任务事实，不伪造送达。
             assert CONTROLS[str(tmp_path)].sent.empty()
             assert CONTROLS[str(tmp_path)].main_calls == (2 if stage == "finished" else 1)
             assert "new provider result" not in text_part(returned[0].body.parts[0])

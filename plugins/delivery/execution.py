@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from contextlib import AbstractContextManager, AsyncExitStack
 from typing import cast
 
@@ -20,14 +20,12 @@ class Deliveries:
     def __init__(
         self, records: DeliveryRecords, catalog: MessageCatalog,
         tasks: TaskAdmission, open_sender: OpenSender, *, task_key: Hashable,
-        binding_matches: Callable[[str], Awaitable[bool]],
     ):
         self._records = records
         self._catalog = catalog
         self._tasks = tasks
         self._open_sender = open_sender
         self._task_key = task_key
-        self._binding_matches = binding_matches
 
     def prepare(
         self,
@@ -198,22 +196,6 @@ class Deliveries:
             if delivery.phase in {"delivered", "rejected", "failed"}:
                 assert delivery.receipt is not None
                 return delivery.receipt
-            if (
-                delivery.phase in {"prepared", "started"}
-                and not await self._binding_matches(delivery.sink.binding_id)
-            ):
-                if not task.active:
-                    raise asyncio.CancelledError
-                error = (
-                    "原发送 binding 与当前 stable 不兼容；可能已送达，不自动重发"
-                    if delivery.phase == "started"
-                    else "原发送 binding 与当前 stable 不兼容；未开始发送，不自动重试"
-                )
-                result = Receipt(status="failed", error=error)
-                _ = self._records.save(message_id, record, Delivery(
-                    sink=delivery.sink, phase="failed", receipt=result,
-                ))
-                return result
             sender = await scope.enter_async_context(self._open_sender(delivery.sink.binding_id))
             # 1. 恢复已开始的发送；查询原回执，只有幂等协议允许重发。
             if delivery.phase == "started":

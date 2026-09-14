@@ -51,7 +51,7 @@ def environment(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_credential_binding_stops_after_config_change_before_read(tmp_path):
+async def test_credential_binding_uses_current_reader_after_config_change(tmp_path):
     source, config, log, host = environment(tmp_path)
     try:
         await host.load_all()
@@ -85,7 +85,9 @@ async def test_credential_binding_stops_after_config_change_before_read(tmp_path
         snapshot = host.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
         bindings = Bindings(log, host._archive, snapshot.composition_root)
-        assert not await bindings.matches_current(reference, PROBE)
+        async with bindings.open(reference, PROBE) as (reader, metadata):
+            assert metadata == {}
+            assert await reader.read() == "replacement-token"
     finally:
         await host.terminate_all()
         log.close()

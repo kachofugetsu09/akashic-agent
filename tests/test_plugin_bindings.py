@@ -308,8 +308,6 @@ async def test_binding_open_acquires_own_root_once_and_rejects_unrelated_scope(
             with pytest.raises(RuntimeError, match="所属 Root"):
                 async with bindings.open(identity, RESULT):
                     pytest.fail("不相干 Root 不应静默改选 stable")
-            with pytest.raises(RuntimeError, match="所属 Root"):
-                await bindings.matches_current(identity, RESULT)
             assert get_current_runtime_snapshot() is other_snapshot
     finally:
         log.close()
@@ -350,37 +348,4 @@ async def test_binding_open_releases_fallback_scope_when_cancelled(tmp_path, mon
         assert get_current_runtime_snapshot() is None
     finally:
         log.close()
-        await host.terminate_all()
-
-
-@pytest.mark.asyncio
-async def test_binding_matches_current_checks_only_captured_components(tmp_path, monkeypatch):
-    """恢复前只核对 binding 闭包内的插件，不把无关插件变化算作不兼容。"""
-    monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
-    plugins = tmp_path / "plugins"
-    write_plugins(plugins)
-    host = manager(tmp_path, [plugins])
-    changed = None
-    log = MessageLog(tmp_path / "messages.db")
-    try:
-        await host.load_all()
-        snapshot = host.current_snapshot
-        assert snapshot is not None and snapshot.composition_root is not None
-        bindings = Bindings(log, host._archive, snapshot.composition_root)
-        async with lease_runtime_snapshot(host.snapshot_store):
-            identity = bindings.bind(RESULT, {})
-            assert await bindings.matches_current(identity, RESULT)
-
-        (plugins / "provider" / "helper.py").write_text("VALUE = 'B'\n")
-        changed = manager(tmp_path / "changed", [plugins])
-        await changed.load_all()
-        changed_snapshot = changed.current_snapshot
-        assert changed_snapshot is not None and changed_snapshot.composition_root is not None
-        changed_bindings = Bindings(log, host._archive, changed_snapshot.composition_root)
-        async with lease_runtime_snapshot(changed.snapshot_store):
-            assert not await changed_bindings.matches_current(identity, RESULT)
-    finally:
-        log.close()
-        if changed is not None:
-            await changed.terminate_all()
         await host.terminate_all()

@@ -349,3 +349,5 @@ docs/
 - [0066 · Yoyo 当前基线](decisions/0066-yoyo-current-baseline.md)：保留未来迁移能力，退役历史兼容脚本。
 
 - [0067 · 客户端属于普通插件](decisions/0067-clients-are-ordinary-plugin.md)：Web/Mobile 业务与中立渠道宿主的归属边界。
+
+插件旧数据处理责任见 [0070](decisions/0070-plugins-own-persisted-data.md)。

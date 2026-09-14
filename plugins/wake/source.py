@@ -13,14 +13,14 @@ from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, SESSION_ADMISSION
 from agent.plugin_composition.tasks import TASKS, Task, TaskSlot
 from agent.plugin_composition.messages import MessageReader, OwnerRecord, OwnerTransaction, SessionAttributes
-from agent.plugin_contracts import ContentPart, ContentReferences, Control, Input, Message, Output
+from agent.plugin_contracts import ContentPart, ContentReferences, Input, Message, Output
 
 from ._boundary import CONTENT, DELIVERY
 from .api import EVENTMAIL_WAKE, EVENTMAIL_DELIVERY, DRIFT_WAKE, DRIFT_DELIVERY
 from .content import (_candidate_id, _content_candidates, _datetime, _mapping,
                       _message_with_source_links, _selected_content_refs, _string)
 from .messages import decision, finished, screened_candidates
-from .request import (Phase, Request, Stage, WAKE_PROGRAM, WakeFailure, check_phase,
+from .request import (Phase, Request, Stage, WAKE_PROGRAM, check_phase,
                       check_request, read_request, retryable)
 from .selection import propose_content, propose_drift
 from .state import WakeState
@@ -164,31 +164,7 @@ class Source:
         elif not isinstance(phase_message.body, Input):
             raise ValueError("Wake 阶段引用不是 Input")
 
-        # 只有阶段 Input 之后已有持久消息，才说明模型/工具已经越过启动边界。
-        # Tool owner 只能由该阶段已提交的 Output ToolCall 接纳，因此不会漏掉无 Output 的已开始效果。
-        started = any(
-            message.source == "wake" and message.seq > phase_message.seq
-            for message in reader.snapshot()
-        )
-        bindings = ctx.require(BINDINGS)
-        if started and not await bindings.matches_current(request.program_binding, WAKE_PROGRAM):
-            if not task.active:
-                raise asyncio.CancelledError
-            reason = WakeFailure(
-                message="Wake program binding 与当前 stable 不兼容；不自动重试",
-                retryable=False,
-            ).model_dump_json()
-            failure_writer = ctx.require(MESSAGE_WRITERS).bind(
-                ctx, author="wake", source="wake", body_types=(Control,), content={}
-            )(request.session_id)
-            try:
-                return failure_writer.append(
-                    request.phase_id(stage) + ":failure",
-                    Control("failure", reader.head(source="wake"), reason),
-                )
-            finally:
-                failure_writer.expire()
-        async with bindings.open(request.program_binding, WAKE_PROGRAM) as (program, _):
+        async with ctx.require(BINDINGS).open(request.program_binding, WAKE_PROGRAM) as (program, _):
             return await program(task, reader, request)
 
     def _settled(self, request: Request, reader: MessageReader) -> None:
