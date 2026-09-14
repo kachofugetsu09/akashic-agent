@@ -35,10 +35,6 @@ class PluginScope:
         self._closed = False
 
     @property
-    def resource_count(self) -> int:
-        return len(self._cleanups)
-
-    @property
     def closed(self) -> bool:
         return self._closed
 
