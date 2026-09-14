@@ -3,6 +3,8 @@ import shutil
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.model import ServiceKey
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -64,6 +66,7 @@ async def test_runtime_command_failure_releases_root_before_scope_disposal(tmp_p
 
     plugins = tmp_path / "plugins"
     write_plugin(plugins / "probe")
+    initialize_plugin_workspace(tmp_path / "workspace")
     owner = manager(tmp_path, [plugins])
 
     def missing_environment(generation, kind, name):
@@ -93,6 +96,7 @@ async def test_scoped_cleanup_failure_retains_resources_without_plugin_reload(
     """真实 MCP 清理失败由调用资源 owner 重试，不能进入正式插件发布。"""
     plugins = tmp_path / "plugins"
     write_plugin(plugins / "probe")
+    initialize_plugin_workspace(tmp_path / "workspace")
     owner = manager(tmp_path, [plugins])
     log = MessageLog(tmp_path / "messages.db")
     returned = []
@@ -154,6 +158,7 @@ async def test_shutdown_waits_for_admitted_mcp_start_and_closes_new_admission(tm
     """在实际 MCP 启动前暂停，关闭必须等完整启动后回收同一 owner。"""
     plugins = tmp_path / "plugins"
     write_plugin(plugins / "probe")
+    initialize_plugin_workspace(tmp_path / "workspace")
     owner = manager(tmp_path, [plugins])
     log = MessageLog(tmp_path / "messages.db")
     host = owner._composition_generation_host
@@ -221,6 +226,7 @@ async def test_manager_restart_reopens_scoped_resources_after_old_owners_drain(t
     """同一 Manager 可以在完整停止后重新打开新 generation 的调用资源。"""
     plugins = tmp_path / "plugins"
     write_plugin(plugins / "probe")
+    initialize_plugin_workspace(tmp_path / "workspace")
     owner = manager(tmp_path, [plugins])
     try:
         for _ in range(2):
@@ -280,6 +286,7 @@ async def test_candidate_scoped_mcp_uses_candidate_environment_and_tool_permissi
             '[{"name": "ping", "description": "fixed A", "inputSchema": {"type": "object"}}]',
             '[{"name": name, "description": "probe", "inputSchema": {"type": "object"}} for name in ("ping", "mutate")]',
         ).replace('"text": "fixed A"', '"text": os.environ.get("VALIDATION_MARK", "formal")'))
+    initialize_plugin_workspace(tmp_path / "workspace")
     owner = manager(tmp_path, [plugins])
     try:
         await owner.load_all()
@@ -322,6 +329,7 @@ if own_count > 1:
     count.with_suffix(".eof-pid").write_text(str(os.getpid()))
     signal.pause()
 ''')
+    initialize_plugin_workspace(tmp_path / "workspace")
     owner = manager(tmp_path, [plugins])
     log = MessageLog(tmp_path / "messages.db")
     waiting_for_exit = asyncio.Event()

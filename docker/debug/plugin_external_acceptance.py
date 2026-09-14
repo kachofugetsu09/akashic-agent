@@ -999,6 +999,9 @@ async def _exercise_core_bootstrap(
             core_root=core_root,
             workspace=workspace,
         )
+        from agent.plugins.selection import PluginSelection
+
+        PluginSelection(workspace).initialize()
         evidence["checks"]["core_artifact_external"] = True
         runtime, startup, previous_environment = await _start_app_runtime(
             workspace=workspace,
@@ -1062,6 +1065,9 @@ async def _exercise(
             core_root=core_root,
             workspace=workspace,
         )
+        from agent.plugins.selection import PluginSelection
+
+        PluginSelection(workspace).initialize()
         evidence["checks"]["core_artifact_external"] = True
         from agent.plugins.install import install_git_plugin
 
@@ -1245,6 +1251,9 @@ async def _exercise_fleet(
         core_root=core_root,
         workspace=workspace,
     )
+    from agent.plugins.selection import PluginSelection
+
+    PluginSelection(workspace).initialize()
     from agent.plugins.install import install_git_plugin
 
     installed: list[dict[str, Any]] = []
@@ -1506,6 +1515,9 @@ async def _exercise_business_composition(
         # the surrounding pytest process before loading the external subset.
         _purge_modules((repo_root / "plugins",))
 
+    from agent.plugins.selection import PluginSelection
+
+    PluginSelection(workspace).initialize()
     from agent.plugins.install import install_git_plugin
     from agent.plugins.manager import PluginManager
     from agent.plugins.snapshot import lease_runtime_snapshot

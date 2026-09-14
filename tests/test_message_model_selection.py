@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.effect import Effect
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
@@ -251,6 +253,7 @@ async def test_metadata_grants_belong_to_one_registered_plugin(tmp_path, duplica
     await ctx.provide(ServiceKey("registration." + name), registration)
 ''')
     with closing(MessageLog(tmp_path / "sessions.db")) as log:
+        initialize_plugin_workspace(tmp_path / "workspace")
         host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                              installed_cache_root=tmp_path / "home", message_log=log)
         try:

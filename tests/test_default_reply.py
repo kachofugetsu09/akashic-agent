@@ -9,6 +9,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config
 
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
@@ -25,6 +27,7 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
                       updates=False, validation_passed=True, extra_sources=None):
     sources = tmp_path / "plugins"
     workspace = tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
     for name in (
         "commands",
         "sources",

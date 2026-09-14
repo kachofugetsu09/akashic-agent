@@ -12,6 +12,8 @@ import httpx
 from PIL import Image
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config
 
 from agent.media import encode_image_data_uri
@@ -95,6 +97,7 @@ async def apply(ctx):
     artifacts = ChannelAttachmentArtifactStore(
         workspace=workspace, metadata_store=store
     )
+    initialize_plugin_workspace(workspace)
     host = PluginManager(
         [source],
         event_bus=EventBus(),

@@ -5,6 +5,8 @@ import shutil
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
@@ -44,6 +46,7 @@ async def test_push_keeps_artifacts_and_original_sender_after_crash_without_rese
     sender.write_text(code)
     workspace = tmp_path / "workspace"
     store, log = storage(workspace)
+    initialize_plugin_workspace(workspace)
     artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
     def manager(paths):
         return PluginManager(paths, event_bus=EventBus(), workspace=workspace,

@@ -10,6 +10,8 @@ import shutil
 
 from aiohttp import web
 import pytest
+
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from websockets.asyncio.server import serve
 
 from agent.plugin_composition.bindings import Bindings
@@ -88,6 +90,7 @@ async def application(tmp_path, channel, endpoint):
     field = "api_base" if channel == "telegram" else "endpoint"
     save_config(config.parent, {"enabled": True, "token": save_credential(config.parent, "wire-fixture-secret"),
                                 field: endpoint, "timeout_seconds": 2})
+    initialize_plugin_workspace(workspace)
     log = MessageLog(workspace / "sessions.db")
     artifacts = ArtifactStore(workspace / "sessions.db")
     physical = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=artifacts)

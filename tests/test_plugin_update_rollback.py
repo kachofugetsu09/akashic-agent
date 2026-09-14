@@ -10,6 +10,8 @@ import sys
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import ServiceKey
 from agent.plugins.artifacts import ArtifactPointer, read_pointers, write_pointers
 from agent.plugins.install import install_git_plugin
@@ -77,6 +79,7 @@ async def apply(ctx):
     _write_v3_plugin(source, name="probe", module_source=module)
     _commit(source)
     home, workspace = tmp_path / "home", tmp_path / "workspace"
+    initialize_plugin_workspace(workspace)
     old = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
     (old.data_path / "history.txt").write_text("existing durable data")
     (source / "plugin.py").write_text(module.replace('"old"', '"new"'))

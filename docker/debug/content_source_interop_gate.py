@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.plugins.manager import PluginManager
+from agent.plugins.selection import PluginSelection
 from bus.event_bus import EventBus
 from plugins.eventmail.store import EventMailStore
 
@@ -498,6 +499,8 @@ async def _run_coexistence_probe(
             ),
         )
         workspace = root / "workspace"
+        workspace.mkdir()
+        PluginSelection(workspace).initialize()
         data_root = workspace / "plugin-data" / f"{plugin_id}-builtin"
         data_root.mkdir(parents=True)
         from agent.plugin_composition.config_input import save_config

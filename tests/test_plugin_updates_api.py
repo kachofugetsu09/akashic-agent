@@ -4,6 +4,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.plugin_updates import PLUGIN_UPDATES
 from agent.plugins.install import install_git_plugin
@@ -35,6 +37,7 @@ async def test_ordinary_update_api_checks_scope_and_isolates_validation(tmp_path
     _commit(source)
     install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
     log = MessageLog(workspace / "sessions.db")
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, message_log=log,
                          installed_cache_root=home / "cache")
     stream = None
@@ -112,6 +115,7 @@ async def test_queued_publication_cannot_publish_a_replacement_candidate(tmp_pat
     from tests.test_plugin_update_rollback import prepare
 
     source, home, workspace, _ = prepare(tmp_path)
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     entered, release = asyncio.Event(), asyncio.Event()
     original_publish = host._publish_update

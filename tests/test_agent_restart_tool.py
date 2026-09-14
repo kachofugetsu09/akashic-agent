@@ -13,6 +13,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config
 
 from agent.plugin_composition import CompositionRoot, Context, ServiceKey
@@ -462,6 +464,7 @@ async def test_restart_requires_prepare_and_query_is_unknown() -> None:
 @pytest.mark.asyncio
 async def test_unmanaged_runtime_does_not_register_restart_tool(tmp_path: Path) -> None:
     gate = RestartGate(boot_id="fixture-boot", supervised=False)
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (_log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             names = {
@@ -482,6 +485,7 @@ async def test_starting_baseline_ignores_old_result_and_reads_result_after_prepa
         boot_id="first-boot", supervised=True,
         commit=_commit_recorder(first_commits, first_committed),
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(
         tmp_path, first_gate, channel=False, source_tag="baseline-first", startup_run="first",
     ):
@@ -525,6 +529,7 @@ async def test_real_channel_restart_waits_for_cleanup_and_delivery_before_commit
             cleanup_blocked.set()
             await cleanup_release.wait()
 
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=True) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             context = snapshot.composition_root.context
@@ -574,6 +579,7 @@ async def test_real_channel_restart_reopens_after_rejected_delivery(
         commit=_commit_recorder(commits, committed),
         drain_timeout_s=2.0,
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(
         tmp_path, gate, channel=True, reject_first=True,
     ) as (log, host):
@@ -627,6 +633,7 @@ async def test_manager_reload_hands_late_tool_result_to_new_watcher(
     )
     log = MessageLog(tmp_path / "sessions.db")
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with _restart_application(
             tmp_path, gate, channel=False, source_tag="reload-first", reload_probe=True,
             message_log=log,
@@ -771,6 +778,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     context_config = tmp_path / "workspace/plugin-data/context-builtin"
     context_config.parent.mkdir(parents=True, exist_ok=True)
     save_config(context_config, {"prompt_sources": {"skills": "standard_tools"}})
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager(
         [sources],
         event_bus=EventBus(),
@@ -1027,6 +1035,7 @@ async def test_real_programmatic_restart_waits_for_frame_writer_drain_before_com
         commit=_commit_recorder(commits, committed),
         drain_timeout_s=2.0,
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:restart"
         frames = host._control_frames  # type: ignore[attr-defined]
@@ -1174,6 +1183,7 @@ async def test_programmatic_restart_watcher_aborts_preclaim_after_disconnect(
         boot_id="fixture-boot", supervised=True,
         commit=commits.append,
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:disconnect"
         frames = host._control_frames  # type: ignore[attr-defined]
@@ -1285,6 +1295,7 @@ async def test_programmatic_restart_rejection_keeps_other_gate_request_and_abort
         boot_id="fixture-boot", supervised=True,
         commit=commits.append,
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with _restart_application(tmp_path, gate, channel=False) as (log, host):
         session = "programmatic:settings"
         frames = host._control_frames  # type: ignore[attr-defined]

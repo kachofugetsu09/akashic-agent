@@ -8,6 +8,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config
 from pydantic import ValidationError
 
@@ -89,6 +91,7 @@ async def application(tmp_path):
     sources = tmp_path / "plugins"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     log = MessageLog(workspace / "sessions.db")
     store = ArtifactStore(workspace / "sessions.db")
     for name in ("content", "context", "tools"):

@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.model import ServiceKey
 from agent.plugins.manager import PluginManager
@@ -78,6 +80,7 @@ async def test_loaded_generation_keeps_assets_and_late_imports_after_source_chan
     plugins = tmp_path / "plugins"
     write_plugins(plugins)
     (plugins / "provider" / "late.py").write_text("VALUE = 'late A'\n")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [plugins])
     try:
         await host.load_all()
@@ -129,6 +132,7 @@ inject = (LEGACY_DELIVERY,)
 async def apply(ctx):
     pass
 """)
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [plugins])
     log = MessageLog(tmp_path / "messages.db")
     try:
@@ -189,7 +193,9 @@ async def apply(ctx):
     value["registration"] = ctx
     value["extra"] = "registered A"
 """)
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [plugins])
+    initialize_plugin_workspace(tmp_path / "other/workspace")
     other = manager(tmp_path / "other", [plugins])
     log = MessageLog(tmp_path / "messages.db")
     try:
@@ -239,6 +245,7 @@ async def test_binding_open_uses_selected_scope_without_reopening_archive(
     monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
     plugins = tmp_path / "plugins"
     write_plugins(plugins)
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [plugins])
     log = MessageLog(tmp_path / "messages.db")
     try:
@@ -275,7 +282,9 @@ async def test_binding_open_acquires_own_root_once_and_rejects_unrelated_scope(
     monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
     plugins = tmp_path / "plugins"
     write_plugins(plugins)
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [plugins])
+    initialize_plugin_workspace(tmp_path / "other/workspace")
     other = manager(tmp_path / "other", [plugins])
     log = MessageLog(tmp_path / "messages.db")
     try:
@@ -322,6 +331,7 @@ async def test_binding_open_releases_fallback_scope_when_cancelled(tmp_path, mon
     monkeypatch.setenv("ARCHIVE_PROVIDER_ACTIVE", "yes")
     plugins = tmp_path / "plugins"
     write_plugins(plugins)
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [plugins])
     log = MessageLog(tmp_path / "messages.db")
     try:

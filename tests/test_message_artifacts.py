@@ -5,6 +5,8 @@ import sqlite3
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from session.artifacts import AttachmentKind, AttachmentRef
 from session.log import MessageLog, MessageConflict
 from session.message import CallRef, ContentPart, Input, Output, ToolCall, ToolResult
@@ -84,6 +86,7 @@ async def test_host_exposes_only_bounded_artifact_read_and_candidate_cannot_open
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     store = ArtifactStore(workspace / "sessions.db")
     artifacts = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=store)
     ref = await artifacts.import_bytes(b"fixed bytes", kind=AttachmentKind.FILE,

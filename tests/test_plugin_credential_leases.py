@@ -3,6 +3,8 @@ import shutil
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import CredentialRef, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.credentials import CREDENTIALS
@@ -45,6 +47,7 @@ def environment(tmp_path):
     config.parent.mkdir(parents=True)
     save_config(config.parent, {"token": save_credential(config.parent, "fixture-private-token")})
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([source.parent], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home/cache", message_log=log)
     return source, config, log, host

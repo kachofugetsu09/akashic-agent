@@ -30,6 +30,7 @@ from agent.plugin_composition import (
     ToolCall,
 )
 from agent.plugins.manager import PluginManager
+from agent.plugins.selection import PluginSelection
 from agent.plugins.model_control import RuntimeModelControl
 from agent.plugins.snapshot import lease_runtime_snapshot
 from bus.event_bus import EventBus
@@ -374,6 +375,7 @@ async def run_suite(
     # 1. Seed only the fixture-owned external source and plugin configuration.
     workspace = root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
+    PluginSelection(workspace).initialize()
     receipt_db = workspace / "recording-receipts.sqlite3"
     _write_plugin_configs(workspace, receipt_db)
     source_store = FixtureSourceStore(
@@ -948,6 +950,7 @@ async def run_quiet_suite(root: Path) -> dict[str, object]:
     # 1. Install the same formal chain with a declined source fact.
     workspace = root / "workspace"
     workspace.mkdir(parents=True)
+    PluginSelection(workspace).initialize()
     _write_plugin_configs(workspace, workspace / "recording-receipts.sqlite3")
     source_store = FixtureSourceStore(
         workspace / "plugin-data" / "content_clock_source-builtin" / "source.sqlite3"

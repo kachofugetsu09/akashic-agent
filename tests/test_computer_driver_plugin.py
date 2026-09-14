@@ -10,6 +10,8 @@ from threading import Event, Thread
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import (
     MCP_SERVERS,
     WORKLOADS,
@@ -618,6 +620,7 @@ async def _wait_until(predicate, *, timeout: float = 10) -> None:
 @pytest.mark.asyncio
 async def test_computer_message_tool_and_follower_closes_turn_statuses(tmp_path: Path) -> None:
     """真实 Message CallRef 执行后，follower 只收尾 complete/quiet/abandoned Turn。"""
+    initialize_plugin_workspace(tmp_path / "computer-workspace")
     harness = await _computer_harness(tmp_path)
     try:
         replies: list[tuple[MessageReply, Literal["complete", "quiet", "abandoned"]]] = []
@@ -703,6 +706,7 @@ async def test_computer_message_tool_and_follower_closes_turn_statuses(tmp_path:
 @pytest.mark.asyncio
 async def test_computer_cancel_releases_driver_and_follower_ends_unknown_call(tmp_path: Path) -> None:
     """取消先取得 driver released，再把已 started 的效果持久为 unknown 并可收尾。"""
+    initialize_plugin_workspace(tmp_path / "computer-workspace")
     harness = await _computer_harness(tmp_path)
     try:
         reply = harness.add_call("cancel", code="hold")
@@ -730,6 +734,7 @@ async def test_computer_cancel_releases_driver_and_follower_ends_unknown_call(tm
 async def test_computer_failure_retries_started_owner_after_restart_and_source_change(tmp_path: Path) -> None:
     """收尾失败记 incident 并保留 owner；显式重启由选定的 stable 处理旧 owner。"""
     state = _ComputerGatewayState()
+    initialize_plugin_workspace(tmp_path / "computer-workspace")
     harness = await _computer_harness(
         tmp_path, gateway_state=state, gateway_label="old"
     )
@@ -871,6 +876,7 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
 async def test_computer_end_turn_failure_isolated_per_group(tmp_path: Path) -> None:
     """单组收尾失败记 incident：永久失败收敛 failed，暂时失败保留 started，兄弟组和 follower 不受影响。"""
     state = _ComputerGatewayState()
+    initialize_plugin_workspace(tmp_path / "computer-workspace")
     harness = await _computer_harness(tmp_path, gateway_state=state)
     try:
         await harness.bind_computer()
@@ -923,6 +929,7 @@ async def test_computer_end_turn_failure_isolated_per_group(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_computer_script_error_is_durable_and_next_call_can_continue(tmp_path: Path) -> None:
+    initialize_plugin_workspace(tmp_path / "computer-workspace")
     harness = await _computer_harness(tmp_path)
     try:
         reply = harness.add_call("script-error", code="browser.tabs.create()")

@@ -5,6 +5,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config, load_config
 
 from agent.plugin_composition import ServiceKey
@@ -136,6 +138,7 @@ def prepare(tmp_path):
     log.writer("formal", author="user", source="conversation", body_types=(Input,),
                content={"text": lambda part: ContentReferences()}).append(
         "formal-input", Input((ContentPart("text", "existing formal message"),)))
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, message_log=log,
                          installed_cache_root=home / "cache")
     return source, workspace, old, log, host
@@ -275,6 +278,7 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
     _commit(source)
     install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
     log = MessageLog(workspace / "sessions.db")
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, message_log=log,
                          installed_cache_root=home / "cache")
     try:
@@ -657,6 +661,7 @@ async def test_validation_preserves_history_without_archived_workspace(tmp_path)
     _ = log._connection.execute("PRAGMA journal_mode=WAL").fetchall()
     artifacts = ArtifactStore(workspace / "sessions.db")
     physical = ChannelAttachmentArtifactStore(workspace=workspace, metadata_store=artifacts)
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, message_log=log,
                          installed_cache_root=home / "cache", channel_attachment_store=physical)
     try:

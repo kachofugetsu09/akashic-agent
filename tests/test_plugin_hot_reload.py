@@ -16,6 +16,8 @@ from urllib.parse import urlencode
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -200,6 +202,7 @@ def _write_installed_skill(plugin_root: Path, name: str, body: str) -> Path:
 @pytest.mark.asyncio
 async def test_candidate_publishes_unique_generation(tmp_path: Path):
     _write_plugin(tmp_path / "plugins", "candidate", _v3_source("candidate"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
     await manager.load_all()
@@ -224,6 +227,7 @@ async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature
         f'async def apply({signature}):\n    return None\n'
     )
     _write_plugin(tmp_path / "plugins", "ordinary", source)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     try:
         if accepted:
@@ -239,6 +243,7 @@ async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature
 @pytest.mark.asyncio
 async def test_import_failure_report_is_replaced_by_next_load_attempt(tmp_path: Path):
     plugin = _write_plugin(tmp_path / "plugins", "broken", "this is not python !!!\n")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
     try:
@@ -264,6 +269,7 @@ async def test_boot_failure_never_publishes_a_smaller_plugin_selection(tmp_path:
     _write_plugin(tmp_path / "plugins", "broken", _v3_source(
         "broken", body="    raise ValueError('cannot initialize')\n",
     ))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     try:
         with pytest.raises(RuntimeError, match="拓扑未就绪"):
@@ -280,6 +286,7 @@ async def test_candidate_failure_is_bound_to_requested_plugin(tmp_path: Path):
     root = tmp_path / "plugins"
     _write_plugin(root, "first", _v3_source("first"))
     _write_plugin(root, "second", _v3_source("second"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
 
@@ -304,6 +311,7 @@ async def test_candidate_failure_is_bound_to_requested_plugin(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_same_source_gets_new_generation_namespace_after_restart(tmp_path: Path):
     _write_plugin(tmp_path / "plugins", "repeat", _v3_source("repeat"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     first = manager.generation("repeat")
@@ -342,6 +350,7 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
     config_dir = tmp_path / "workspace" / "plugin-data" / "module_tree-builtin"
     config_dir.mkdir(parents=True)
     save_config(config_dir, {})
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
     with pytest.raises(RuntimeError, match="拓扑未就绪"):
@@ -371,6 +380,7 @@ async def test_source_revision_includes_helper_changes(tmp_path: Path):
     )
     helper = plugin_dir / "helper.py"
     helper.write_text("value = 1\n", encoding="utf-8")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("revision")
@@ -396,6 +406,7 @@ async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
         "escaped",
         _asset_source("escaped", "../outside"),
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
     with pytest.raises(RuntimeError, match="插件组合拓扑未就绪"):
@@ -414,6 +425,7 @@ async def test_source_symlink_cannot_escape_plugin_root(tmp_path: Path):
         _v3_source("linked_source", exports="from . import helper\n"),
     )
     (plugin_dir / "helper.py").symlink_to(outside)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
 
     with pytest.raises(RuntimeError, match="完整插件组合加载失败"):
@@ -442,6 +454,7 @@ async def test_candidate_ignores_stale_bytecode_for_root_and_helper(tmp_path: Pa
     helper_stat = helper_file.stat()
     py_compile.compile(str(plugin_file), doraise=True)
     py_compile.compile(str(helper_file), doraise=True)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
 
@@ -475,6 +488,7 @@ async def test_assets_provider_leaves_skill_duplicates_to_standard_tools(tmp_pat
     (first_skill / "SKILL.md").write_text(
         "---\ndescription: first\n---\nfirst\n", encoding="utf-8"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path, workspace=tmp_path / "workspace")
     await manager.load_all()
     first = manager.generation("first_skills")
@@ -538,6 +552,7 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
     (workspace_skill / "SKILL.md").write_text(
         "---\ndescription: workspace one\n---\nworkspace body a\n", encoding="utf-8"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path, workspace=workspace)
     await manager.load_all()
     active = manager.generation("skill_reload")
@@ -602,6 +617,7 @@ async def test_disabled_installed_plugin_is_not_part_of_boot_selection(tmp_path:
         {"installed_snapshot@lab": False}, plugins_home=tmp_path / "home",
     )
     _write_plugin(tmp_path / "plugins", "selected", _v3_source("selected"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     try:
         await manager.load_all()
@@ -633,6 +649,7 @@ async def test_installed_candidate_requires_explicit_promote_or_discard(
     write_plugin_manifest(
         {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -705,6 +722,7 @@ async def test_installed_promotion_uses_fixed_assets_without_touching_workspace_
     (personal / "SKILL.md").write_bytes(b"user-owned bytes")
     legacy = workspace / "skills" / "old-link"
     legacy.symlink_to(stable_root / "skills" / "shared")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager([], event_bus=EventBus(), workspace=workspace,
                             installed_cache_root=tmp_path / "home" / "cache")
 
@@ -750,6 +768,7 @@ async def test_workspace_skill_name_does_not_block_plugin_promotion(
     personal = workspace / "skills" / "personal"
     personal.mkdir(parents=True)
     (personal / "SKILL.md").write_text("user body\n", encoding="utf-8")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -792,6 +811,7 @@ async def test_rejected_installed_candidate_restores_latest_to_stable(
     write_plugin_manifest(
         {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -829,6 +849,7 @@ async def test_startup_recovers_installed_candidate_from_durable_pointers(
     write_plugin_manifest(
         {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -899,6 +920,7 @@ async def test_latest_candidate_staging_waits_for_runtime_service_start(
     write_plugin_manifest(
         {"installed_snapshot@lab": True}, plugins_home=tmp_path / "home"
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[],
         event_bus=EventBus(),
@@ -931,6 +953,7 @@ async def test_snapshot_admission_waits_while_current_is_quiesced(
     _write_plugin(
         tmp_path / "plugins", "snapshot_admission", _v3_source("snapshot_admission")
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     snapshot = manager.current_snapshot
@@ -1003,6 +1026,7 @@ async def test_snapshot_cleanup_join_survives_repeated_caller_cancel() -> None:
 @pytest.mark.asyncio
 async def test_runtime_snapshot_lease_commit_and_abort(tmp_path: Path) -> None:
     _write_plugin(tmp_path / "plugins", "snapshot", _v3_source("snapshot"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("snapshot")
@@ -1052,6 +1076,7 @@ async def test_runtime_snapshot_latest_requires_explicit_selector_and_promotion(
     _write_plugin(
         tmp_path / "plugins", "snapshot_selector", _v3_source("snapshot_selector")
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("snapshot_selector")
@@ -1099,6 +1124,7 @@ async def test_runtime_snapshot_discard_keeps_stable_and_waits_for_latest_lease(
     _write_plugin(
         tmp_path / "plugins", "snapshot_discard", _v3_source("snapshot_discard")
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     active = manager.generation("snapshot_discard")
@@ -1138,6 +1164,7 @@ async def test_reconcile_changed_adds_and_removes_discovered_plugin(
 ) -> None:
     plugins = tmp_path / "plugins"
     _write_plugin(plugins, "anchor", _v3_source("anchor"))
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     added_dir = _write_plugin(plugins, "added", _v3_source("added"))
@@ -1182,6 +1209,7 @@ async def test_runtime_runner_holds_publication_until_started_scope_finishes(
         ),
     )
     plugin_dir = _write_plugin(tmp_path / "plugins", "runner_race", source)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     generation = manager.generation("runner_race")
@@ -1249,6 +1277,7 @@ async def test_plugin_watcher_reloads_v3_source_without_signal(tmp_path: Path) -
         "watched",
         _v3_source("watched", version="release-a"),
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     baseline_revision = await asyncio.to_thread(manager.watch_revision)
@@ -1282,6 +1311,7 @@ async def test_plugin_toggle_changes_assets_without_creating_workspace_projectio
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("# OpenCLI\n")
     write_plugin_manifest({"computer": True}, plugins_home=tmp_path / "home")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     try:
         await manager.load_all()
@@ -1448,6 +1478,7 @@ async def test_dashboard_routes_follow_snapshot_generation(
         )
 
     write_dashboard("release-a")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     old_snapshot = manager.current_snapshot
@@ -1553,6 +1584,7 @@ async def test_initial_web_module_is_not_served_without_its_dashboard_api(
         "raise RuntimeError('paired API broken')\n",
         encoding="utf-8",
     )
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
 
@@ -1708,6 +1740,7 @@ async def test_dashboard_websocket_uses_exact_generation_and_closes_for_publish(
         return f"/api/dashboard/snapshot-socket?{query}"
 
     write_dashboard("release-a")
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = _manager(tmp_path)
     await manager.load_all()
     old_snapshot = manager.current_snapshot

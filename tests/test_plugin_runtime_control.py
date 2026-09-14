@@ -11,6 +11,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from akashic_sdk import ConnectionClosedError
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
@@ -35,6 +37,7 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
     _write_v3_plugin(source, name="candidate", static_manifest=True)
     _commit(source)
     bus = EventBus()
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[builtin.parent],
         event_bus=bus,
@@ -397,6 +400,7 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
         _commit(source)
         sources[name] = source
     bus = EventBus()
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[builtin.parent],
         event_bus=bus,
@@ -480,6 +484,7 @@ async def _start_runtime_mcp(
     shutil.copytree(Path(__file__).parents[1] / "plugins/assets", provider,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     bus = EventBus()
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager(
         plugin_dirs=[provider.parent],
         event_bus=bus,

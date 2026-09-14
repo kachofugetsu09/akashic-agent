@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
@@ -231,6 +233,7 @@ async def test_source_loading_never_prepares_even_an_empty_environment(tmp_path,
         raise AssertionError("loading cannot prepare environments")
 
     monkeypatch.setattr(PythonEnvironments, "prepare", forbidden)
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([code], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "empty-cache")
     try:

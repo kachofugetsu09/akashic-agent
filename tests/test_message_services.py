@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import CompositionError, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE
@@ -38,6 +40,7 @@ async def test_formal_capabilities_use_real_owner_and_task_holds_exact_runtime(t
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -94,6 +97,7 @@ async def test_task_cancel_before_first_instruction_releases_admission_lease(tmp
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -132,6 +136,7 @@ async def test_candidate_caps_reject_formal_log_state_tasks_and_bindings(tmp_pat
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -190,6 +195,7 @@ async def apply(ctx):
     await ctx.on(RUNTIME_STARTED, start)
 ''')
     log = MessageLog(tmp_path / "sessions.db") if formal_log else None
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:

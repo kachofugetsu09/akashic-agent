@@ -7,6 +7,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition import CompositionRoot
 from agent.plugin_composition.model import PluginRuntime, ServiceKey
@@ -223,6 +225,7 @@ async def test_display_name_reads_old_binding_without_opening_removed_tool(tmp_p
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [sources], log)
     try:
         await host.load_all()
@@ -257,6 +260,7 @@ async def test_ordinary_tool_binding_runs_in_the_selected_stable_scope(
 ):
     sources = tmp_path / "plugins"
     write_plugins(sources)
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [sources])
     log = MessageLog(tmp_path / "sessions.db")
     tasks = Tasks()
@@ -319,6 +323,7 @@ async def test_tool_configuration_is_owned_frozen_without_recapture(tmp_path):
     source = source.replace('yield Target()', 'yield Target(state)').replace('open=open_target,', 'open=open_target, capture=capture,')
     path.write_text(source)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [sources])
     try:
         await host.load_all()
@@ -351,6 +356,7 @@ async def test_binding_authorize_checks_final_arguments(tmp_path):
     sources = tmp_path / "plugins"
     write_plugins(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [sources], log)
     try:
         await host.load_all()
@@ -418,6 +424,7 @@ async def test_binding_authorize_presence_and_name_must_match_current_registrati
     write_plugins(sources)
     add_authorize(sources)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [sources], log)
     try:
         await host.load_all()

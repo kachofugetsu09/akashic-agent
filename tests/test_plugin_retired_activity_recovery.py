@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugins.manager import PluginManager
 from agent.plugins.reload_journal import ReloadJournal
 from bus.event_bus import EventBus
@@ -64,7 +66,7 @@ async def test_startup_keeps_retired_activity_recovery_pending(tmp_path: Path, r
     """旧 Activity owner 记录不能在启动时被伪造为 recovered。"""
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     _write_plugin(tmp_path)
     journal = _write_recovery_action(
         workspace,
@@ -116,7 +118,7 @@ async def test_startup_still_finishes_non_activity_runtime_recovery(
     """未涉及旧 Activity owner 的正常 runtime recovery 仍可完成。"""
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     _write_plugin(tmp_path)
     journal = _write_recovery_action(workspace, resource="channel-publication")
     monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
@@ -146,7 +148,7 @@ async def test_startup_finishes_runtime_recovery_without_prior_runtime_owner(
     """未启动旧 runtime 的失败事务无需伪造 boot cleanup。"""
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     _write_plugin(tmp_path)
     journal = _write_recovery_action(
         workspace,
@@ -186,7 +188,7 @@ async def test_startup_rejects_runtime_recovery_owned_by_current_boot(
     """当前 boot 不能冒充需要清理的旧 runtime owner。"""
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     _write_plugin(tmp_path)
     journal = _write_recovery_action(
         workspace,

@@ -5,6 +5,8 @@ from contextlib import closing
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config
 
 from plugins.compaction.records import (
@@ -260,6 +262,7 @@ async def apply(ctx):
     await ctx.provide(CHAT_MODELS, Models())
 ''')
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:

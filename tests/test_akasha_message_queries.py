@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.akasha.application.consumer import MessageConsumer
@@ -34,6 +36,7 @@ async def memory_runtime(tmp_path, *, max_chars=12000):
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     runtime = None
     consumer = None

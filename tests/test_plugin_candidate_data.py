@@ -4,6 +4,8 @@ import sqlite3
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import ServiceKey
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
@@ -28,6 +30,7 @@ async def apply(ctx):
         _write_v3_plugin(source, name=name, module_source=module.replace("NAME", name))
         _commit(source)
         install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     try:
         await host.load_all()
@@ -91,6 +94,7 @@ async def apply(ctx):
         writer.execute("INSERT INTO records VALUES ('latest committed')")
         writer.commit()
         assert path.with_name(path.name + "-wal").stat().st_size > 0
+        initialize_plugin_workspace(workspace)
         host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
         try:
             await host.load_all()
@@ -123,6 +127,7 @@ async def test_locked_candidate_database_fails_without_changing_stable(tmp_path,
     _write_v3_plugin(source, name="probe", module_source=MODULE)
     _commit(source)
     install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    initialize_plugin_workspace(workspace)
     host = PluginManager([], event_bus=EventBus(), workspace=workspace, installed_cache_root=home / "cache")
     try:
         await host.load_all()

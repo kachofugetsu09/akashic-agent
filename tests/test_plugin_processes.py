@@ -5,6 +5,8 @@ import sys
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import PROCESSES, PluginProcesses, ProcessCleanupError, ServiceKey
 from agent.plugin_composition.bindings import Bindings
 from agent.plugins.manager import PluginManager
@@ -53,6 +55,7 @@ def manager(tmp_path, log):
 @pytest.mark.asyncio
 async def test_formal_and_archived_processes_share_backend_and_isolate_actual_owner(tmp_path, monkeypatch):
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, log)
     built = []
 
@@ -110,6 +113,7 @@ async def test_formal_and_archived_processes_share_backend_and_isolate_actual_ow
 @pytest.mark.asyncio
 async def test_process_shutdown_failure_retains_original_backend_until_cleanup(tmp_path, monkeypatch):
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, log)
     try:
         await host.load_all()
@@ -151,6 +155,7 @@ async def test_process_shutdown_failure_retains_original_backend_until_cleanup(t
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_shutdown_waits_for_admitted_spawn_before_cleaning_backend(tmp_path, monkeypatch, cancel):
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, log)
     backend = ShellProcessManager()
     entered, release, closing = asyncio.Event(), asyncio.Event(), asyncio.Event()

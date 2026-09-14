@@ -4,6 +4,8 @@ import shutil
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.model import ServiceKey
 from agent.plugin_composition.tasks import Tasks
@@ -90,6 +92,7 @@ async def test_sender_survives_restart_without_repeating_a_delivery(
     source = tmp_path / "plugins"
     sources(source)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [source], log)
     tasks = Tasks()
     restored = None
@@ -166,6 +169,7 @@ async def test_selected_and_formal_delivery_share_target_coordination(tmp_path):
     source = tmp_path / "plugins"
     sources(source)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [source], log)
     try:
         await host.load_all()

@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.models import ToolCall as ModelToolCall
 from agent.plugins.manager import PluginManager
@@ -85,6 +87,7 @@ def _unexpected_reply(call_ref: CallRef) -> MessageReply:
 async def test_search_presentation_keeps_fixed_schemas_and_executes_awarded_ref(tmp_path):
     sources = _sources(tmp_path)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()
@@ -200,6 +203,7 @@ async def test_standard_web_is_directly_callable_without_search(tmp_path):
     shutil.copytree(Path(__file__).parents[1] / "plugins/standard_web", sources / "standard_web",
                     ignore=shutil.ignore_patterns("__pycache__"))
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()
@@ -238,6 +242,7 @@ async def test_fixed_bindings_keep_display_schema_but_do_not_reopen_history(
 ):
     sources = _sources(tmp_path)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = _manager(tmp_path, [sources], log)
     try:
         await host.load_all()

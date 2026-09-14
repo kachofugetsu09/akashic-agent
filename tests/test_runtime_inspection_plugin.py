@@ -8,6 +8,8 @@ from typing import cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config
 
 from agent.plugin_composition import CompositionRoot, PluginRuntime
@@ -181,6 +183,7 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
     save_config(configuration, {"summary_source": [], "prompt_sources": {"skills": "standard_tools"}})
     metadata = ArtifactStore(tmp_path / "workspace" / "sessions.db")
     attachments = ChannelAttachmentArtifactStore(workspace=tmp_path / "workspace", metadata_store=metadata)
+    initialize_plugin_workspace(tmp_path / "workspace")
     manager = PluginManager([source], event_bus=EventBus(), workspace=tmp_path / "workspace",
                             installed_cache_root=tmp_path / "empty-cache", channel_attachment_store=attachments)
     try:

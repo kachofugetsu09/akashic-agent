@@ -6,6 +6,8 @@ from typing import Any, AsyncIterator, cast
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition import (
     Bail,
     CompositionError,
@@ -205,6 +207,7 @@ async def apply(ctx):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     log = MessageLog(workspace / "sessions.db")
+    initialize_plugin_workspace(workspace)
     manager = PluginManager([source.parent], event_bus=EventBus(), workspace=workspace,
                             installed_cache_root=tmp_path / "home", message_log=log)
     try:
@@ -552,6 +555,7 @@ async def apply(ctx):
     )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     manager = PluginManager(
         [source.parent],
         event_bus=EventBus(),
@@ -628,6 +632,7 @@ async def apply(ctx):
     )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    initialize_plugin_workspace(workspace)
     return PluginManager(
         [source.parent], event_bus=EventBus(), workspace=workspace,
         installed_cache_root=tmp_path / "home",

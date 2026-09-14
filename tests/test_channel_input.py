@@ -7,6 +7,8 @@ import shutil
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.channels import (
     ChannelCapability, ChannelInboundMessage, ChannelReady, CoreChannelDefinition,
     InboundIdentity, RawInbound, StopReceipt,
@@ -154,6 +156,7 @@ async def test_durable_port_rejects_cross_channel_reservation(tmp_path):
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("probe:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="probe",
@@ -191,6 +194,7 @@ async def test_durable_prepare_requires_prior_port_reservation(tmp_path):
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -212,6 +216,7 @@ async def test_durable_recovery_retains_closed_current_snapshot_lease(tmp_path):
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -238,6 +243,7 @@ async def test_durable_recovery_retains_closed_current_snapshot_lease(tmp_path):
 
 @pytest.mark.asyncio
 async def test_exact_root_input_commits_without_queue_model_or_delivery(tmp_path):
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with runtime(tmp_path) as (log, host, custody, identities, rollbacks, adapter):
         assert await adapter.context.ingress.admit(raw()) is True
         assert await adapter.context.ingress.admit(raw()) is False
@@ -255,6 +261,7 @@ async def test_exact_root_input_commits_without_queue_model_or_delivery(tmp_path
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["prepare", "committed"])
 async def test_input_cancellation_respects_commit_boundary_and_closes_exact_lease(tmp_path, stage):
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with runtime(tmp_path) as (log, host, custody, identities, rollbacks, adapter):
         gate = custody.prepare_gate if stage == "prepare" else custody.complete_gate
         signal = custody.prepared if stage == "prepare" else custody.committed
@@ -311,6 +318,7 @@ async def test_mobile_delete_retry_does_not_turn_committed_input_into_failed_acc
     monkeypatch.setattr(queue.MessageBus, "_retry_inbound_cleanup", gated_retry)
     monkeypatch.setattr(queue, "_INBOUND_CLEANUP_RETRY_INITIAL_DELAY", 0)
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, identities, rollbacks, adapter):
             message = RawInbound("mobile-1", ChannelInboundMessage(
                 channel="akashic", chat_id="room", sender="device:one", content="hello",
@@ -346,6 +354,7 @@ async def test_mobile_delete_retry_does_not_turn_committed_input_into_failed_acc
 async def test_retry_uses_message_identity_without_copying_transport_clock_or_handoff(tmp_path):
     from agent.plugin_composition.channels import CHANNEL_INPUT
     from agent.plugins.snapshot import lease_runtime_snapshot
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with runtime(tmp_path) as (log, host, custody, identities, rollbacks, adapter):
         first = raw().message
         second = replace(first, timestamp=first.timestamp + timedelta(hours=1),
@@ -366,6 +375,7 @@ async def test_stop_commits_pause_before_draining_and_duplicate_does_not_pause_n
     from plugins.sources.session import needs_reply
     from session.message import Control
 
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with runtime(tmp_path) as (log, host, custody, identities, rollbacks, adapter):
         started, cancelled, drain = asyncio.Event(), asyncio.Event(), asyncio.Event()
         async def program(task, reader, source):
@@ -452,6 +462,7 @@ async def test_mobile_restart_replays_input_once_and_only_finishes_transport(
 
     # 2. 分别模拟正文提交前与提交后进程结束，重开都不能重复正文。
     if committed:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic") as (log, host, *rest):
             async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
                 first = await snapshot.composition_root.context.require(CHANNEL_INPUT)(
@@ -488,6 +499,7 @@ async def test_stop_transfers_reserve_only_handoff_and_revokes_old_port(tmp_path
     raw_message = mobile_raw()
     old_durable = None
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -530,6 +542,7 @@ async def test_adapter_stop_can_compensate_reservation_before_host_transfer(tmp_
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -563,6 +576,7 @@ async def test_adapter_stop_failure_retains_reservation_owner_until_retry(tmp_pa
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -614,6 +628,7 @@ async def test_reserve_cancellation_registers_owner_before_propagating(tmp_path)
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -661,6 +676,7 @@ async def test_same_host_replacement_recovers_reserve_only_row_without_manual_re
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -691,6 +707,7 @@ async def test_same_host_replacement_recovery_failure_restores_old_binding(tmp_p
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -738,6 +755,7 @@ async def test_old_port_cannot_settle_handoff_reclaimed_by_next_generation(tmp_p
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(
             tmp_path,
             channel_name="akashic",
@@ -794,6 +812,7 @@ async def test_mobile_recovery_pages_past_live_owner_without_replaying_it(tmp_pa
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             custody.reserve_gate.clear()
             assert await custody.reserve_durable_inbound(mobile_raw(1))
@@ -826,6 +845,7 @@ async def test_mobile_recovery_missing_session_retains_row_and_releases_batch_cl
     await original.aclose()
     assert manager.delete_session("akashic:room")
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager, recover=False) as (log, host, custody, _, _, adapter):
             with pytest.raises(KeyError, match="session 不存在"):
                 await custody.recover_durable_inbounds()
@@ -847,6 +867,7 @@ async def test_mobile_precommit_cancel_or_shutdown_keeps_exact_attachment_handof
     manager.save(manager.get_or_create("akashic:room"))
     ref = AttachmentRef("image", AttachmentKind.IMAGE, "image.png", "image/png", 3, "a" * 64)
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             custody.reserve_gate.clear()
             message = mobile_raw(attachments=(ref,))
@@ -888,6 +909,7 @@ async def test_mobile_committed_cancel_waits_for_durable_delete_and_exact_releas
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             custody.complete_gate.clear()
             assert await custody.reserve_durable_inbound(mobile_raw())
@@ -925,6 +947,7 @@ async def test_mobile_postcommit_cleanup_shutdown_retains_recoverable_row(tmp_pa
     monkeypatch.setattr(queue.MessageBus, "_retry_inbound_cleanup", wait_for_shutdown)
     monkeypatch.setattr(manager.inbound_store, "complete_inbound_handoff", fail_delete)
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             assert await custody.reserve_durable_inbound(mobile_raw())
             assert await adapter.context.ingress.admit(mobile_raw())
@@ -946,6 +969,7 @@ async def test_mobile_prepare_waiting_on_handoff_lock_cannot_commit_after_close(
     manager = SessionManager(tmp_path / "transport")
     manager.save(manager.get_or_create("akashic:room"))
     try:
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             assert await custody.reserve_durable_inbound(mobile_raw())
             await custody._durable_handoff_lock.acquire()
@@ -990,6 +1014,7 @@ async def test_channel_input_imported_artifact_is_pinned_and_read_lease_closed(t
             opened.append(lease)
             return lease
         monkeypatch.setattr(artifacts, "acquire", track)
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, artifacts=artifacts) as (log, host, custody, _, _, adapter):
             message = replace(raw(), message=replace(raw().message, attachments=(ref,)))
             assert await adapter.context.ingress.admit(message)
@@ -1026,6 +1051,7 @@ async def test_mixed_legacy_recovery_keeps_one_page_and_still_accepts_exact_inpu
                 metadata_json=json.dumps({"client_message_id": f"legacy-{number}"}, separators=(",", ":")), created_at=created)
         assert await original.reserve_durable_inbound(mobile_raw())
         await original.aclose()
+        initialize_plugin_workspace(tmp_path / "workspace")
         async with runtime(tmp_path, channel_name="akashic", session_manager=manager) as (log, host, custody, _, _, adapter):
             assert custody.inbound_size == 1
             assert [message.message_id for message in log.reader("akashic:room").snapshot()] == ["mobile-1"]
@@ -1044,6 +1070,7 @@ async def test_mixed_legacy_recovery_keeps_one_page_and_still_accepts_exact_inpu
 
 @pytest.mark.asyncio
 async def test_channel_identity_uses_real_owner_without_legacy_session_runtime(tmp_path):
+    initialize_plugin_workspace(tmp_path / "workspace")
     async with runtime(tmp_path, durable_identities=True) as (log, host, custody, _, _, adapter):
         custody.reject = True
         with pytest.raises(ValueError, match="rejected before commit"):

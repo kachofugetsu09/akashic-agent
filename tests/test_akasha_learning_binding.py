@@ -9,6 +9,8 @@ from typing import Literal
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.bindings import Bindings
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -73,6 +75,7 @@ async def test_excluded_learning_materials_never_reach_embeddings_or_graph(tmp_p
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     try:
@@ -127,6 +130,7 @@ async def test_learning_restores_complete_interrupted_turn_without_relearning(tm
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     memory = tmp_path / "memory.db"
@@ -229,6 +233,7 @@ async def test_learning_restores_complete_interrupted_turn_without_relearning(tm
 @pytest.mark.asyncio
 async def test_initial_cutover_is_not_recomputed_after_restart_before_first_learning(tmp_path):
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [], log)
     memory = tmp_path / "memory.db"
     consumer = None
@@ -263,6 +268,7 @@ async def test_consume_retries_missing_vectors_and_learns_each_complete_source_o
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     memory = tmp_path / "memory.db"
@@ -377,6 +383,7 @@ async def test_feedback_uses_prepared_message_identity_after_interrupt_and_repor
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     try:
@@ -472,6 +479,7 @@ async def apply(ctx):
         parameters={"type": "object"}, open=open, idempotent=True)
 ''')
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     memory = tmp_path / "memory.db"
@@ -532,6 +540,7 @@ async def test_same_output_feedback_checks_all_member_targets_before_authorizati
     root = tmp_path / "plugins"
     sources(root)
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = manager(tmp_path, [root], log)
     consumer = None
     try:

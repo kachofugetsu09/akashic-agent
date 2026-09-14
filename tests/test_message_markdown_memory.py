@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from tests.fixtures.plugin_workspace import initialize_plugin_workspace
+
 from agent.plugin_composition.config_input import save_config
 
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
@@ -154,6 +156,7 @@ async def apply(ctx):
         fixture.write_text(fixture.read_text().replace("            completed.set()",
             f"            if attempts > {draft_failures}:\n                completed.set()"))
     log = MessageLog(tmp_path / "sessions.db")
+    initialize_plugin_workspace(tmp_path / "workspace")
     host = PluginManager([sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
                          installed_cache_root=tmp_path / "home", message_log=log)
     try:
