@@ -111,7 +111,7 @@ class CompositionGenerationHost:
         workload_controller: WorkloadController | None = None,
         workspace_id: str | None = None,
         on_failure: Callable[[CompositionRuntimeFailure], None] | None = None,
-        command_resolver: Callable[[PluginGeneration, str, str], tuple[str, ...]] | None = None,
+        command_resolver: Callable[[PluginGeneration, tuple[str, ...], str], tuple[str, ...]] | None = None,
     ) -> None:
         self._on_failure = on_failure
         self._command_resolver = command_resolver
@@ -190,12 +190,6 @@ class CompositionGenerationHost:
         if workload_bindings and self._workload_host is None:
             raise RuntimeError("插件声明了 Workload，但 Core 未配置 Controller")
         _assert_root_token(snapshot, root.instance_token)
-        if self._command_resolver is not None:
-            generation.static_runtime_commands = tuple(
-                (f"{kind}:{name}", self._command_resolver(generation, kind, name))
-                for kind, bindings in (("process", process_bindings), ("mcp", mcp_bindings))
-                for name in bindings
-            )
         bridge = _RootBridge(
             root_instance_token=root.instance_token,
             workload_bindings=workload_bindings,
@@ -227,6 +221,7 @@ class CompositionGenerationHost:
                 definitions = _materialized_process_definitions(
                     generation,
                     process_bindings,
+                    self._command_resolver,
                 )
                 processes = await self._process_host.start_generation(
                     generation.generation_id,
@@ -241,6 +236,7 @@ class CompositionGenerationHost:
                 commands = _materialized_mcp_commands(
                     generation,
                     mcp_bindings,
+                    self._command_resolver,
                 )
                 ports = (
                     {
@@ -327,15 +323,6 @@ class CompositionGenerationHost:
         names = {endpoint.workload for endpoint in binding.descriptor.workload_env}
         declared_workloads = _owned_workload_bindings(snapshot, generation.plugin_id)
         workload_bindings = {name: declared_workloads[name] for name in names}
-        if self._command_resolver is not None:
-            bound_generation.static_runtime_commands = tuple(
-                (f"{kind}:{target}", self._command_resolver(generation, kind, target))
-                for kind, targets in (
-                    ("process", process_bindings),
-                    ("mcp", {name: binding}),
-                )
-                for target in targets
-            )
         borrowed = AsyncExitStack()
         bridge = _RootBridge(root.instance_token, workload_bindings, process_bindings, {name: binding})
         self._bridges[scope_id] = bridge
@@ -374,7 +361,7 @@ class CompositionGenerationHost:
                     processes = await self._process_host.start_generation(
                         scope_id,
                         _materialized_process_definitions(
-                            bound_generation, process_bindings
+                            bound_generation, process_bindings, self._command_resolver
                         ),
                         mode=mode,
                         fixed_ports=False,
@@ -386,7 +373,7 @@ class CompositionGenerationHost:
                         {name: binding}, root_instance_token=root.instance_token
                     ),
                     _materialized_mcp_commands(
-                        bound_generation, {name: binding}, scope_id=scope_id
+                        bound_generation, {name: binding}, self._command_resolver, scope_id=scope_id
                     ),
                     mode=mode,
                     endpoint_ports=(
@@ -950,15 +937,16 @@ def _assert_root_token(snapshot: RuntimeSnapshot, root_token: object) -> None:
 def _materialized_process_definitions(
     generation: PluginGeneration,
     bindings: Mapping[str, ManagedProcessBinding],
+    resolver: Callable[[PluginGeneration, tuple[str, ...], str], tuple[str, ...]] | None,
 ) -> dict[str, ManagedProcessDefinition]:
-    commands = dict(generation.static_runtime_commands)
     result: dict[str, ManagedProcessDefinition] = {}
     for name, binding in bindings.items():
         command = _runtime_command(
             generation,
-            commands,
+            resolver,
             key=f"process:{name}",
             declared=binding.definition.command,
+            cwd=binding.definition.cwd,
         )
         result[name] = replace(
             binding.definition,
@@ -985,18 +973,19 @@ def _materialized_process_definitions(
 def _materialized_mcp_commands(
     generation: PluginGeneration,
     bindings: Mapping[str, McpServerBinding],
+    resolver: Callable[[PluginGeneration, tuple[str, ...], str], tuple[str, ...]] | None,
     *,
     scope_id: str | None = None,
 ) -> dict[str, McpMaterializedCommand]:
-    commands = dict(generation.static_runtime_commands)
     materialized_scope = generation.generation_id if scope_id is None else scope_id
     return {
         name: McpMaterializedCommand(
             command=_runtime_command(
                 generation,
-                commands,
+                resolver,
                 key=f"mcp:{name}",
                 declared=binding.definition.command,
+                cwd=binding.definition.cwd,
             ),
             cwd=str(
                 _runtime_cwd(
@@ -1020,19 +1009,21 @@ def _materialized_mcp_commands(
 
 def _runtime_command(
     generation: PluginGeneration,
-    commands: Mapping[str, tuple[str, ...]],
+    resolver: Callable[[PluginGeneration, tuple[str, ...], str], tuple[str, ...]] | None,
     *,
     key: str,
     declared: tuple[str, ...],
+    cwd: str,
 ) -> tuple[str, ...]:
-    command = commands.get(key)
-    if command is None:
+    if resolver is None:
         head = Path(declared[0])
         if _PYTHON_COMMAND.fullmatch(head.name) is not None:
             raise RuntimeError(f"v3 Python runtime 缺少 staged command: {key}")
         if not head.is_absolute():
             raise RuntimeError(f"v3 runtime command 未固定为绝对路径: {key}")
         command = declared
+    else:
+        command = resolver(generation, declared, cwd)
     executable = Path(command[0])
     if not executable.is_absolute() or not executable.is_file():
         raise RuntimeError(f"v3 runtime executable 无效: {key}: {executable}")

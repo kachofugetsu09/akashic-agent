@@ -162,10 +162,10 @@ Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影
 | `EXECUTOR_SERVICE` | `parallel_sync(jobs)` | 有界纯同步工作；worker 不取得 Context/Fiber |
 
 Skill 和 Drift Skill 使用模块级 `skill_roots` / `drift_skill_roots`，由安装、candidate readiness
-和 generation catalog 原子发布。Workload 只在插件代码中声明，字段与权限在 Workload provider
-和 Controller 边界校验；MCP 引用的 owner 与端口仍在组合检查。MCP 和 process 的重复描述尚在迁移：
-`akashic.plugin.toml` 提供 import-free admission identity，`apply` 再通过上表 Service 建立
-Fiber-owned registration；这两类的逐字段核对随后续单一来源迁移一起删除，不作为目标协议保留。
+和 generation catalog 原子发布。MCP、process 和 Workload 只在插件代码中声明，通过上表 Service
+建立 Fiber-owned registration；字段与权限由各 provider 和 Controller 校验。命令直接来自实际注册，
+Python 命令绑定安装制品的固定环境，不再与 TOML 中的第二份命令对账。MCP 引用的 owner 与端口
+暂时仍在 snapshot 组合检查，后续移入对应 provider。
 
 ### 4.4 模型
 

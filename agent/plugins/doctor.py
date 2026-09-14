@@ -231,8 +231,7 @@ def _check_capabilities(
             f"{prefix}assets:{category}", "error" if invalid else "ok",
             f"roots={len(paths)} invalid={invalid}",
         ))
-    servers = _declared_mcp_servers(plugin_root)
-    checks.append(_check(f"{prefix}mcp", "ok", f"declared_servers={len(servers)} names={list(servers)}"))
+    checks.append(_check(f"{prefix}runtime", "deferred", "运行能力由实际装配确定"))
     return checks
 
 
@@ -241,17 +240,6 @@ def _check_candidate_declaration(
     plugin_root: Path,
 ) -> list[dict[str, str]]:
     return _check_capabilities(declaration, plugin_root, prefix="candidate_")
-
-
-def _declared_mcp_servers(
-    plugin_root: Path,
-) -> tuple[str, ...]:
-    """Return import-free MCP names declared by the artifact."""
-
-    manifest = _load_optional_static_manifest(plugin_root)
-    if manifest is None:
-        return ()
-    return tuple(server.name for server in manifest.mcp_servers)
 
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:

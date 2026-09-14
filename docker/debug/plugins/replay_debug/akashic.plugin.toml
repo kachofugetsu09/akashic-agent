@@ -7,11 +7,5 @@ entrypoint = "plugin.py"
 [[python]]
 requirements = "requirements.txt"
 
-[[mcp]]
-name = "replay-debug"
-command = ["python", "replay_mcp.py"]
-cwd = "."
-candidate_read_only_tools = ["fetch_replay_events"]
-
 [channel_credentials]
 replay = ["replay_token"]

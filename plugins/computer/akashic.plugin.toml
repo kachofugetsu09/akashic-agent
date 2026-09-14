@@ -13,12 +13,3 @@ exclude_data_paths = [
   "state/profile/SingletonLock",
   "state/profile/SingletonSocket",
 ]
-
-[[mcp]]
-name = "computer"
-command = ["mcp_server.py"]
-
-[[mcp.workload_env]]
-env = "COMPUTER_URL"
-workload = "computer"
-port = "gateway"

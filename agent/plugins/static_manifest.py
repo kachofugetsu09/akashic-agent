@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
 import tomllib
@@ -12,22 +11,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
-from urllib.parse import urlsplit
 
 STATIC_MANIFEST_FILENAME = "akashic.plugin.toml"
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _CONFIG_KEY = re.compile(r"^[a-z][A-Za-z0-9_-]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
-_RESERVED_ENV = frozenset(
-    {
-        "AKA_PLUGIN_DATA_DIR",
-        "AKASHIC_PLUGIN_DATA_DIR",
-        "AKASHIC_WORKSPACE",
-        "AKASHIC_MCP_SCOPE_ID",
-    }
-)
 _TOP_LEVEL_KEYS = frozenset(
     {
         "schema_version",
@@ -37,8 +26,6 @@ _TOP_LEVEL_KEYS = frozenset(
         "entrypoint",
         "python",
         "validation",
-        "mcp",
-        "processes",
         "channel_credentials",
         "credential_paths",
         "migration",
@@ -54,37 +41,6 @@ class StaticPythonRuntime:
 
     requirements: str
     runtime_root: str
-
-
-@dataclass(frozen=True, slots=True)
-class StaticMcpDeclaration:
-    """The import-free MCP declaration projection from an artifact manifest."""
-
-    name: str
-    command: tuple[str, ...]
-    cwd: str
-    env: tuple[tuple[str, str], ...]
-    required_tools: tuple[str, ...]
-    candidate_read_only_tools: tuple[str, ...]
-    endpoint_env: tuple[tuple[str, str], ...]
-    workload_env: tuple[tuple[str, str, str], ...]
-    candidate_env: tuple[tuple[str, str], ...]
-    python_runtime: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class StaticManagedProcessDeclaration:
-    """The import-free managed-process declaration projection."""
-
-    name: str
-    command: tuple[str, ...]
-    cwd: str
-    env: tuple[tuple[str, str], ...]
-    port_env: str
-    formal_port: int
-    readiness_path: str
-    startup_timeout_seconds: float
-    python_runtime: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,8 +70,6 @@ class StaticPluginManifest:
     entrypoint: str
     python: tuple[StaticPythonRuntime, ...]
     exclude_data_paths: tuple[str, ...]
-    mcp_servers: tuple[StaticMcpDeclaration, ...]
-    managed_processes: tuple[StaticManagedProcessDeclaration, ...]
     channel_credentials: tuple[tuple[str, tuple[str, ...]], ...]
     identity_digest: str
     credential_paths: tuple[str, ...] = ()
@@ -208,36 +162,32 @@ def staged_python_interpreter(
     return interpreter
 
 
-def materialize_static_command(
+def materialize_command(
     plugin_root: Path,
-    manifest: StaticPluginManifest,
-    declaration: StaticMcpDeclaration | StaticManagedProcessDeclaration,
+    python: tuple[StaticPythonRuntime, ...],
+    command: tuple[str, ...],
+    cwd: str = ".",
     *,
     environment_root: Path | None = None,
 ) -> tuple[str, ...]:
-    """Bind a static Python command to its staged artifact interpreter."""
+    """把实际注册命令绑定到固定制品及其 Python 环境。"""
 
-    runtime_root = declaration.python_runtime
+    runtime_root = command_python_runtime(plugin_root, command, cwd, python)
     if runtime_root is None:
-        head = declaration.command[0]
+        head = command[0]
         if _looks_like_artifact_path(head):
             executable = plugin_root.joinpath(
                 *PurePosixPath(head).parts
             ).resolve(strict=True)
             if not executable.is_relative_to(plugin_root.resolve(strict=True)):
-                raise RuntimeError("静态 command executable 越过 artifact")
-            return (str(executable), *declaration.command[1:])
-        return declaration.command
-    runtime = next(
-        (item for item in manifest.python if item.runtime_root == runtime_root),
-        None,
-    )
-    if runtime is None:
-        raise RuntimeError(f"静态 command 引用了未知 Python runtime: {runtime_root}")
+                raise RuntimeError("command executable 越过 artifact")
+            return (str(executable), *command[1:])
+        return command
+    runtime = next(item for item in python if item.runtime_root == runtime_root)
     if environment_root is None:
-        raise RuntimeError("静态 Python command 缺少显式运行环境")
+        raise RuntimeError("Python command 缺少显式运行环境")
     interpreter = staged_python_interpreter(environment_root, runtime)
-    return (str(interpreter), "-E", "-s", "-B", *declaration.command[1:])
+    return (str(interpreter), "-E", "-s", "-B", *command[1:])
 
 
 def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginManifest:
@@ -269,8 +219,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     exclude_data_paths = _validation_paths(root, raw.get("validation", {}))
 
     # 3. Optional declarations are checked statically and kept immutable.
-    mcp_servers = _mcp_declarations(root, raw, python)
-    managed_processes = _process_declarations(root, raw, python)
     channel_credentials = _channel_credentials(raw.get("channel_credentials", {}))
     credential_paths = _credential_paths(raw.get("credential_paths", []), "credential_paths")
     migration = _migration_declaration(root, raw.get("migration", {}))
@@ -278,7 +226,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     _check_credential_overlap(set(credential_paths) | {
         path for _channel, paths in channel_credentials for path in paths
     }, "credential_paths/channel_credentials")
-    _validate_endpoint_process_refs(mcp_servers, managed_processes)
     identity: dict[str, object] = {
         "schema_version": schema_version,
         "name": name,
@@ -293,8 +240,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
             for item in python
         ],
         "exclude_data_paths": list(exclude_data_paths),
-        "mcp_servers": [_mcp_identity(item) for item in mcp_servers],
-        "managed_processes": [_process_identity(item) for item in managed_processes],
         "channel_credentials": [
             {"channel": channel, "paths": list(paths)}
             for channel, paths in channel_credentials
@@ -329,8 +274,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         entrypoint=entrypoint,
         python=python,
         exclude_data_paths=exclude_data_paths,
-        mcp_servers=mcp_servers,
-        managed_processes=managed_processes,
         channel_credentials=channel_credentials,
         identity_digest=identity_digest,
         credential_paths=credential_paths,
@@ -498,236 +441,11 @@ def _validation_paths(root: Path, raw: object) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _mcp_declarations(
-    root: Path,
-    raw: Mapping[str, object],
-    python: tuple[StaticPythonRuntime, ...],
-) -> tuple[StaticMcpDeclaration, ...]:
-    raw_items = raw.get("mcp", [])
-    if not isinstance(raw_items, list):
-        raise ValueError("MCP 声明必须是表数组")
-    items = cast(list[object], raw_items)
-    result: list[StaticMcpDeclaration] = []
-    seen: set[str] = set()
-    for index, item in enumerate(items):
-        table = _table(item, f"mcp[{index}]")
-        allowed = {
-            "name",
-            "command",
-            "cwd",
-            "env",
-            "required_tools",
-            "candidate_read_only_tools",
-            "endpoint_env",
-            "workload_env",
-            "candidate_env",
-        }
-        _exact_keys(table, allowed, f"mcp[{index}]")
-        name = _name(table.get("name"), f"mcp[{index}].name")
-        if name in seen:
-            raise ValueError(f"MCP server 名称重复: {name}")
-        seen.add(name)
-        command = _command(root, table.get("command"), f"mcp[{index}].command")
-        cwd = _relative_artifact_path(
-            root,
-            table.get("cwd", "."),
-            label=f"mcp[{index}].cwd",
-            must_exist=True,
-            require_file=False,
-        )
-        env = _environment(table.get("env", {}), f"mcp[{index}].env")
-        candidate_env = _environment(
-            table.get("candidate_env", {}),
-            f"mcp[{index}].candidate_env",
-        )
-        required_tools = _string_list(
-            table.get("required_tools", []), f"mcp[{index}].required_tools"
-        )
-        candidate_tools = _string_list(
-            table.get("candidate_read_only_tools", []),
-            f"mcp[{index}].candidate_read_only_tools",
-        )
-        endpoint_env = _endpoint_env(
-            table.get("endpoint_env", []), f"mcp[{index}].endpoint_env"
-        )
-        workload_env = _workload_env(
-            table.get("workload_env", []), f"mcp[{index}].workload_env"
-        )
-        occupied = set(env) | set(candidate_env)
-        endpoint_names = [item[0] for item in endpoint_env]
-        endpoint_names.extend(item[0] for item in workload_env)
-        if occupied.intersection(endpoint_names) or len(endpoint_names) != len(
-            set(endpoint_names)
-        ):
-            raise ValueError(f"MCP endpoint env 与声明 env 冲突: {name}")
-        python_runtime = _python_runtime_binding(
-            root,
-            command,
-            cwd,
-            python,
-            label=f"mcp[{index}].command",
-        )
-        result.append(
-            StaticMcpDeclaration(
-                name=name,
-                command=command,
-                cwd=cwd,
-                env=env,
-                required_tools=required_tools,
-                candidate_read_only_tools=candidate_tools,
-                endpoint_env=endpoint_env,
-                workload_env=workload_env,
-                candidate_env=candidate_env,
-                python_runtime=python_runtime,
-            )
-        )
-    return tuple(result)
-
-
-def _process_declarations(
-    root: Path,
-    raw: Mapping[str, object],
-    python: tuple[StaticPythonRuntime, ...],
-) -> tuple[StaticManagedProcessDeclaration, ...]:
-    raw_items = raw.get("processes", [])
-    if not isinstance(raw_items, list):
-        raise ValueError("managed process 声明必须是表数组")
-    items = cast(list[object], raw_items)
-    result: list[StaticManagedProcessDeclaration] = []
-    seen: set[str] = set()
-    for index, item in enumerate(items):
-        table = _table(item, f"process[{index}]")
-        allowed = {
-            "name",
-            "command",
-            "cwd",
-            "env",
-            "port_env",
-            "formal_port",
-            "readiness_path",
-            "startup_timeout_seconds",
-        }
-        _exact_keys(table, allowed, f"process[{index}]")
-        name = _name(table.get("name"), f"process[{index}].name")
-        if name in seen:
-            raise ValueError(f"managed process 名称重复: {name}")
-        seen.add(name)
-        command = _command(
-            root,
-            table.get("command"),
-            f"process[{index}].command",
-        )
-        cwd = _relative_artifact_path(
-            root,
-            table.get("cwd", "."),
-            label=f"process[{index}].cwd",
-            must_exist=True,
-            require_file=False,
-        )
-        env = _environment(table.get("env", {}), f"process[{index}].env")
-        port_env = table.get("port_env")
-        if (
-            not isinstance(port_env, str)
-            or not _ENV_NAME.fullmatch(port_env)
-            or port_env in _RESERVED_ENV
-        ):
-            raise ValueError(f"process[{index}].port_env 无效")
-        formal_port = table.get("formal_port")
-        if (
-            isinstance(formal_port, bool)
-            or not isinstance(formal_port, int)
-            or not 1 <= formal_port <= 65535
-        ):
-            raise ValueError(f"process[{index}].formal_port 无效")
-        if port_env in dict(env):
-            raise ValueError(f"process[{index}].env 不得覆盖 port_env: {port_env}")
-        readiness_path = table.get("readiness_path", "/health")
-        if (
-            not isinstance(readiness_path, str)
-            or not readiness_path.startswith("/")
-            or readiness_path.startswith("//")
-            or readiness_path != readiness_path.strip()
-            or "\\" in readiness_path
-            or any(part in {".", ".."} for part in readiness_path.split("/"))
-        ):
-            raise ValueError(f"process[{index}].readiness_path 无效")
-        parsed_readiness = urlsplit(readiness_path)
-        if (
-            parsed_readiness.scheme
-            or parsed_readiness.netloc
-            or parsed_readiness.query
-            or parsed_readiness.fragment
-        ):
-            raise ValueError(f"process[{index}].readiness_path 无效")
-        timeout = table.get("startup_timeout_seconds", 15.0)
-        if (
-            isinstance(timeout, bool)
-            or not isinstance(timeout, (int, float))
-            or not math.isfinite(float(timeout))
-            or not 0 < float(timeout) <= 300
-        ):
-            raise ValueError(f"process[{index}].startup_timeout_seconds 无效")
-        python_runtime = _python_runtime_binding(
-            root,
-            command,
-            cwd,
-            python,
-            label=f"process[{index}].command",
-        )
-        result.append(
-            StaticManagedProcessDeclaration(
-                name=name,
-                command=command,
-                cwd=cwd,
-                env=env,
-                port_env=port_env,
-                formal_port=formal_port,
-                readiness_path=readiness_path,
-                startup_timeout_seconds=float(timeout),
-                python_runtime=python_runtime,
-            )
-        )
-    return tuple(result)
-
-
-def _validate_endpoint_process_refs(
-    servers: tuple[StaticMcpDeclaration, ...],
-    processes: tuple[StaticManagedProcessDeclaration, ...],
-) -> None:
-    names = {item.name for item in processes}
-    for server in servers:
-        for _, process in server.endpoint_env:
-            if process not in names:
-                raise ValueError(
-                    f"MCP endpoint_env 引用了未声明的 managed process: {process}"
-                )
-
-
-def _command(root: Path, raw: object, label: str) -> tuple[str, ...]:
-    if not isinstance(raw, list) or not raw:
-        raise ValueError(f"{label} 必须是非空字符串数组")
-    values = _string_list(raw, label)
-    for index, value in enumerate(values):
-        if _is_absolute_path(value):
-            raise ValueError(f"{label}[{index}] 不得是 artifact 外绝对路径")
-        if _looks_like_artifact_path(value):
-            _ = _relative_artifact_path(
-                root,
-                value,
-                label=f"{label}[{index}] path",
-                must_exist=True,
-                require_file=True,
-            )
-    return values
-
-
-def _python_runtime_binding(
+def command_python_runtime(
     root: Path,
     command: tuple[str, ...],
     cwd: str,
     runtimes: tuple[StaticPythonRuntime, ...],
-    *,
-    label: str,
 ) -> str | None:
     """Resolve a Python command to exactly one staged runtime root."""
 
@@ -751,7 +469,7 @@ def _python_runtime_binding(
     )
     if len(matches) != 1:
         raise ValueError(
-            f"{label} 必须唯一绑定已声明 Python runtime: "
+            "command 必须唯一绑定已声明 Python runtime: "
             f"matches={[item.runtime_root for item in matches]}"
         )
     return matches[0].runtime_root
@@ -761,79 +479,6 @@ def _venv_python(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
-
-
-def _endpoint_env(raw: object, label: str) -> tuple[tuple[str, str], ...]:
-    if not isinstance(raw, list):
-        raise ValueError(f"{label} 必须是表数组")
-    result: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(raw):
-        table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"env", "process"}, f"{label}[{index}]")
-        env = table.get("env")
-        process = table.get("process")
-        if (
-            not isinstance(env, str)
-            or not _ENV_NAME.fullmatch(env)
-            or env in _RESERVED_ENV
-            or not isinstance(process, str)
-            or not _NAME.fullmatch(process)
-        ):
-            raise ValueError(f"{label}[{index}] 无效")
-        if env in seen:
-            raise ValueError(f"{label} 环境变量重复: {env}")
-        seen.add(env)
-        result.append((env, process))
-    return tuple(result)
-
-
-def _workload_env(
-    raw: object,
-    label: str,
-) -> tuple[tuple[str, str, str], ...]:
-    if not isinstance(raw, list):
-        raise ValueError(f"{label} 必须是表数组")
-    result: list[tuple[str, str, str]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(raw):
-        table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"env", "workload", "port"}, f"{label}[{index}]")
-        env = table.get("env")
-        workload = table.get("workload")
-        port = table.get("port")
-        if (
-            not isinstance(env, str)
-            or not _ENV_NAME.fullmatch(env)
-            or env in _RESERVED_ENV
-            or not isinstance(workload, str)
-            or not _NAME.fullmatch(workload)
-            or not isinstance(port, str)
-            or not _NAME.fullmatch(port)
-        ):
-            raise ValueError(f"{label}[{index}] 无效")
-        if env in seen:
-            raise ValueError(f"{label} 环境变量重复: {env}")
-        seen.add(env)
-        result.append((env, workload, port))
-    return tuple(result)
-
-
-def _environment(raw: object, label: str) -> tuple[tuple[str, str], ...]:
-    if not isinstance(raw, dict):
-        raise ValueError(f"{label} 必须是字符串映射")
-    values: dict[str, str] = {}
-    for key, value in cast(dict[object, object], raw).items():
-        if (
-            not isinstance(key, str)
-            or not _ENV_NAME.fullmatch(key)
-            or not isinstance(value, str)
-        ):
-            raise ValueError(f"{label} 包含无效环境变量")
-        if key in _RESERVED_ENV:
-            raise ValueError(f"{label} 不得覆盖 Core 保留环境变量: {key}")
-        values[key] = value
-    return tuple(sorted(values.items()))
 
 
 def _string_list(raw: object, label: str) -> tuple[str, ...]:
@@ -940,32 +585,3 @@ def _version(raw: object, label: str) -> str:
     if not isinstance(raw, str) or not _VERSION.fullmatch(raw):
         raise ValueError(f"插件静态 manifest {label} 无效")
     return raw
-
-
-def _mcp_identity(item: StaticMcpDeclaration) -> dict[str, object]:
-    return {
-        "name": item.name,
-        "command": list(item.command),
-        "cwd": item.cwd,
-        "env": list(item.env),
-        "required_tools": list(item.required_tools),
-        "candidate_read_only_tools": list(item.candidate_read_only_tools),
-        "endpoint_env": [list(value) for value in item.endpoint_env],
-        "workload_env": [list(value) for value in item.workload_env],
-        "candidate_env": list(item.candidate_env),
-        "python_runtime": item.python_runtime,
-    }
-
-
-def _process_identity(item: StaticManagedProcessDeclaration) -> dict[str, object]:
-    return {
-        "name": item.name,
-        "command": list(item.command),
-        "cwd": item.cwd,
-        "env": list(item.env),
-        "port_env": item.port_env,
-        "formal_port": item.formal_port,
-        "readiness_path": item.readiness_path,
-        "startup_timeout_seconds": item.startup_timeout_seconds,
-        "python_runtime": item.python_runtime,
-    }

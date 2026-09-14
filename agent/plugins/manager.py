@@ -147,11 +147,10 @@ from agent.plugins.generation import (
 from agent.plugins.importer import FreshPluginImporter
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.static_manifest import (
-    StaticManagedProcessDeclaration,
-    StaticMcpDeclaration,
     StaticPluginManifest,
     load_static_plugin_manifest,
-    materialize_static_command,
+    command_python_runtime,
+    materialize_command,
     validate_module_exports,
 )
 from agent.plugins.reload_journal import (
@@ -2916,7 +2915,6 @@ class PluginManager:
                 composition_root=composition_root,
                 core_channel_definitions=self._core_channel_definitions,
             )
-            _validate_static_manifest_runtime(snapshot, generations)
             self._refresh_composition_runtime_tools(snapshot)
             return snapshot
         except BaseException:
@@ -5236,7 +5234,6 @@ class PluginManager:
                 core_channel_definitions=self._core_channel_definitions,
                 require_composition_ready=True,
             )
-            _validate_static_manifest_runtime(snapshot, generations)
             if candidate_owner is not None:
                 self._preflight_durable_delivery_targets(snapshot)
             snapshot.tool_registry = self._compile_snapshot_tools()
@@ -5297,7 +5294,6 @@ class PluginManager:
                     if result is not None:
                         raise RuntimeError("验证 snapshot.sealing 不接受 Bail")
                     snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
-                    _validate_static_manifest_runtime(snapshot, generations)
                     child._active_generations = generations
                     child._snapshot_store.install(snapshot)
                     # 2. 数据能力指向副本，外部声明仍按 candidate env/权限启动。
@@ -6328,36 +6324,29 @@ class PluginManager:
     def _resolve_runtime_command(
         self,
         generation: PluginGeneration,
-        kind: str,
-        name: str,
+        command: tuple[str, ...],
+        cwd: str,
     ) -> tuple[str, ...]:
         """仅在实际打开目标前校验其环境，不阻挡同组件的纯读取能力。"""
         manifest = generation.static_manifest
-        if manifest is None:
-            raise RuntimeError("外部 runtime 需要静态 manifest")
-        targets: dict[
-            str, tuple[StaticMcpDeclaration | StaticManagedProcessDeclaration, ...]
-        ] = {
-            "mcp": manifest.mcp_servers,
-            "process": manifest.managed_processes,
-        }
-        declaration = next(item for item in targets[kind] if item.name == name)
+        runtimes = () if manifest is None else manifest.python
+        runtime_root = command_python_runtime(generation.code_dir, command, cwd, runtimes)
         environment = None
-        if declaration.python_runtime is not None:
+        if runtime_root is not None:
             if generation.archive_ref is None:
                 raise RuntimeError("外部 runtime 缺少代码归档")
             record = self._archive.read_descriptor(generation.archive_ref)
             refs = cast(Mapping[str, str], record["python_environments"])
             runtime = next(
                 item
-                for item in manifest.python
-                if item.runtime_root == declaration.python_runtime
+                for item in runtimes
+                if item.runtime_root == runtime_root
             )
             environment = self._python_environments.open(
                 refs[runtime.runtime_root], generation.code_dir, runtime
             )
-        return materialize_static_command(
-            generation.code_dir, manifest, declaration, environment_root=environment
+        return materialize_command(
+            generation.code_dir, runtimes, command, cwd, environment_root=environment
         )
 
     async def _start_composition_generation_runtime(
@@ -7773,125 +7762,6 @@ def _replace_snapshot_payload(
         setattr(target, name, getattr(source, name))
 
 
-def _validate_static_manifest_runtime(
-    snapshot: RuntimeSnapshot,
-    generations: Mapping[str, PluginGeneration],
-) -> None:
-    """Reconcile static runtime policy with the frozen Root projection."""
-
-    all_manifests = {
-        plugin_id: generation.static_manifest
-        for plugin_id, generation in generations.items()
-        if generation.static_manifest is not None
-    }
-    if not all_manifests:
-        return
-
-    # 2. Compare every static owner's import-free declarations with the exact
-    # Root-frozen descriptors.  Missing, extra, and field drift all fail closed.
-    if snapshot.composition_active_plugin_ids is None:
-        raise RuntimeError("静态 v3 manifest snapshot 缺少 active plugin projection")
-    active_plugin_ids = set(snapshot.composition_active_plugin_ids)
-    manifests = {
-        plugin_id: manifest
-        for plugin_id, manifest in all_manifests.items()
-        if plugin_id in active_plugin_ids
-    }
-    expected: set[tuple[object, ...]] = set()
-    for plugin_id, manifest in manifests.items():
-        assert manifest is not None
-        expected.update(
-            (
-                plugin_id,
-                declaration.name,
-                declaration.command,
-                declaration.cwd,
-                declaration.env,
-                declaration.required_tools,
-                declaration.candidate_read_only_tools,
-                declaration.endpoint_env,
-                declaration.workload_env,
-                declaration.candidate_env,
-            )
-            for declaration in manifest.mcp_servers
-        )
-    registry = snapshot.mcp_server_registry
-    actual: set[tuple[object, ...]] = set()
-    if registry is not None:
-        static_owners = set(all_manifests)
-        actual.update(
-            (
-                descriptor.owner,
-                descriptor.name,
-                descriptor.command,
-                descriptor.cwd,
-                descriptor.env,
-                descriptor.required_tools,
-                descriptor.candidate_read_only_tools,
-                tuple(
-                    (endpoint.env, endpoint.process)
-                    for endpoint in descriptor.endpoint_env
-                ),
-                tuple(
-                    (endpoint.env, endpoint.workload, endpoint.port)
-                    for endpoint in descriptor.workload_env
-                ),
-                descriptor.candidate_env,
-            )
-            for descriptor in registry.descriptors
-            if descriptor.owner in static_owners
-        )
-    if actual != expected:
-        missing = sorted(expected - actual, key=repr)
-        extra = sorted(actual - expected, key=repr)
-        raise RuntimeError(
-            "静态 manifest MCP 声明与 Root frozen registry 不一致: "
-            f"missing={missing!r} extra={extra!r}"
-        )
-
-    expected_processes: set[tuple[object, ...]] = set()
-    for plugin_id, manifest in manifests.items():
-        assert manifest is not None
-        expected_processes.update(
-            (
-                plugin_id,
-                declaration.name,
-                declaration.command,
-                declaration.cwd,
-                declaration.env,
-                declaration.port_env,
-                declaration.formal_port,
-                declaration.readiness_path,
-                declaration.startup_timeout_seconds,
-            )
-            for declaration in manifest.managed_processes
-        )
-    process_registry = snapshot.managed_process_registry
-    actual_processes: set[tuple[object, ...]] = set()
-    if process_registry is not None:
-        static_owners = set(all_manifests)
-        actual_processes.update(
-            (
-                descriptor.owner,
-                descriptor.name,
-                descriptor.command,
-                descriptor.cwd,
-                descriptor.env,
-                descriptor.port_env,
-                descriptor.formal_port,
-                descriptor.readiness_path,
-                descriptor.startup_timeout_seconds,
-            )
-            for descriptor in process_registry.descriptors
-            if descriptor.owner in static_owners
-        )
-    if actual_processes != expected_processes:
-        missing = sorted(expected_processes - actual_processes, key=repr)
-        extra = sorted(actual_processes - expected_processes, key=repr)
-        raise RuntimeError(
-            "静态 manifest managed process 声明与 Root frozen registry 不一致: "
-            f"missing={missing!r} extra={extra!r}"
-        )
 
 
 

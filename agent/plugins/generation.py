@@ -82,7 +82,6 @@ class PluginGeneration:
     config_projection: dict[str, object] = field(default_factory=dict)
     source_type: Literal["builtin", "installed"] = "builtin"
     static_manifest: StaticPluginManifest | None = None
-    static_runtime_commands: tuple[tuple[str, tuple[str, ...]], ...] = ()
     composition_runtime_cleanup_registered: bool = False
     replaced_composition_runtime_generation: PluginGeneration | None = None
     formal_root_stopped: bool = False
