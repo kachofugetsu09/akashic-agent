@@ -57,6 +57,29 @@ Snapshot 不再存储三份 registry 或 identity；编译器不校验资源定�
 候选/正式模式与请求身份。插件不能把候选请求改成正式请求，也不能用其他 owner 的 lease
 请求停止资源。Controller 仍拥有容器与挂载的原子操作及回执。
 
+## 新 Core boot 的候选清理
+
+宿主在真实新 Core boot 的 `load_all` 边界先读取有效 selection，再按该 workspace
+的固定身份调用 Controller `cleanup_candidates`，最后才允许任何新插件 `apply`。
+宿主原子模块逐份确认回执属于同一 workspace 的 candidate，且 `container_absent`
+和 `mounts_released` 都成立；任一失败或未知结果阻止 boot，不提前结算恢复记录。
+未配置 Controller 的宿主没有该外部清理调用。
+
+```text
+┌──────────────────┐   ┌────────────────────────┐   ┌─────────────────────┐
+│ 读取有效 selection │ → │ 清理旧候选并确认全部回执 │ → │ 检查 operation 许可 │
+└──────────────────┘   └────────────────────────┘   └──────────┬──────────┘
+                                                              ▼
+                                                       新 Root apply
+```
+
+此调用由已有启动 operation 的实际任务持有；取消或截止撤销许可，迟到的成功回执
+也不能继续 `apply`。Controller 保留其原有 lease/停止账及未决外部工作，Manager 保留
+实际 operation；此边界不重发未知 start，也不把连接取消解释为 Docker 已回滚。
+普通 Root 换代、候选子 Manager、Controller 首次连接或首次 start 均不触发清扫。
+`owner_container` 可选，进程组 guardian 不负责 Docker，二者不能替代该 boot 清理。
+清理仅释放候选容器和挂载，不删除持久业务数据，也不改变实际容器协议。
+
 ## 失败与持久数据
 
 Scope 在外部 await 之前持有关闭回调。取得失败后仍沿原 owner 清理；只有确认成功才解除
