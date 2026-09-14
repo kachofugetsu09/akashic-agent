@@ -349,6 +349,9 @@ class PluginManager:
         self._active_plugins: dict[str, ActivePluginInfo] = {}
         self._scopes: dict[str, PluginScope] = {}
         self._cleanup_failures: list[CleanupFailure] = []
+        # 仅持有尚未交给 snapshot 的真实 Root，以及它仍需使用的模块和数据 owner。
+        self._building_roots: dict[CompositionRoot, tuple[PluginGeneration, ...]] = {}
+        self._terminate_task: asyncio.Task[None] | None = None
         self._active_generations: dict[str, PluginGeneration] = {}
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
         self._prepared_generations: dict[str, PluginGeneration] = {}
@@ -1627,16 +1630,20 @@ class PluginManager:
 
             # 4. 全部准备成功后才登记 stable owner，并一次安装快照。
             await self._publish_stable_batch(staged, snapshot)
-        except BaseException:
-            # 5. 未发布事务失败时恢复所有进程内 owner，并反向释放资源。
-            _, cleanup_cancelled = await _complete_critical(
-                self._discard_stable_batch(
-                    staged,
-                    snapshot=snapshot,
+        except BaseException as error:
+            # 5. 未发布事务失败时保留原错误，资源回收失败不能覆盖它。
+            try:
+                _, cleanup_cancelled = await _complete_critical(
+                    self._discard_stable_batch(staged, snapshot=snapshot)
                 )
-            )
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "启动批次失败且回收未完成", [error, cleanup_error],
+                ) from None
             if cleanup_cancelled:
-                raise asyncio.CancelledError
+                raise BaseExceptionGroup(
+                    "启动批次失败且回收期间取消", [error, asyncio.CancelledError()],
+                ) from None
             raise
 
 
@@ -1679,6 +1686,9 @@ class PluginManager:
                 if not any(item is generation for item in tracked):
                     tracked.append(generation)
                 self._scopes[generation.module_path] = generation.scope
+            if any(self._building_root_uses(item) for item in staged):
+                # 构建路径已报告清理失败；外层回滚不能重试或释放其依赖。
+                return
             errors: list[Exception] = []
             for generation in reversed(staged):
                 try:
@@ -2010,6 +2020,8 @@ class PluginManager:
         async def close_resources() -> None:
             """后取得的资源关闭成功后，才释放其 Root 和作用域依赖。"""
 
+            if self._building_root_uses(generation):
+                raise RuntimeError("未交接 Root 仍持有 generation，须显式 terminate 重试")
             if not skip_composition_runtime:
                 await self._stop_composition_generation_runtime(generation)
             if self._composition_generation_host.failure(generation.generation_id) is not None:
@@ -2092,6 +2104,8 @@ class PluginManager:
             _ = self._draining_generations.pop(generation.plugin_id, None)
 
     async def _on_snapshot_drained(self, snapshot: RuntimeSnapshot) -> None:
+        if any(self._building_root_uses(item) for item in snapshot.generations.values()):
+            raise RuntimeError("未交接 Root 仍持有 snapshot 模块和数据，须显式 terminate 重试")
         composition_root = snapshot.composition_root
         root_unreferenced = (
             composition_root is not None
@@ -2901,11 +2915,13 @@ class PluginManager:
                 core_channel_definitions=self._core_channel_definitions,
             )
             self._refresh_composition_runtime_tools(snapshot)
-            return snapshot
-        except BaseException:
+        except BaseException as error:
             if created_root and composition_root is not None:
-                await composition_root.dispose()
+                await self._discard_building_root(composition_root, error)
             raise
+        if created_root and composition_root is not None:
+            del self._building_roots[composition_root]
+        return snapshot
 
     async def publish_prepared(self, plugin_id: str) -> dict[str, object]:
         async with self._candidate_prepare_lock:
@@ -4972,6 +4988,8 @@ class PluginManager:
                 tracked = self._draining_generations.setdefault(plugin_id, [])
                 if not any(item is generation for item in tracked):
                     tracked.append(generation)
+                if self._building_root_uses(generation):
+                    return
 
             async def close_resources() -> None:
                 if generation is not None:
@@ -5143,35 +5161,36 @@ class PluginManager:
             )
             generation.state = "activating"
             load_phase = "publish"
-        except asyncio.CancelledError:
-            rollback_task = asyncio.create_task(
-                rollback_load(f"candidate {load_phase} cancelled"),
-                name=f"plugin_rollback:{plugin_id}",
+        except BaseException as error:
+            # 取消异常组同样走回滚，且不能把资源清理错误变成普通拒绝结果。
+            reason = (
+                _gate_failure_details(error.gate)
+                if isinstance(error, _CandidateRejected)
+                else str(error) or type(error).__name__
             )
-            while not rollback_task.done():
-                try:
-                    await asyncio.shield(rollback_task)
-                except asyncio.CancelledError:
-                    continue
-            await rollback_task
-            raise
-        except _CandidateRejected as error:
-            logger.warning(
-                "插件 %s 候选验证失败: %s",
-                mod["name"],
-                error.gate.failure_reason,
-            )
-            await rollback_load(_gate_failure_details(error.gate))
-            return None
-        except Exception as error:
-            logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], error)
-            self._record_failed_gate(
-                plugin_id=plugin_id,
-                revision=source_revision,
-                check_id=load_phase,
-                reason=str(error),
-            )
-            await rollback_load(str(error) or type(error).__name__)
+            if isinstance(error, Exception) and not isinstance(error, _CandidateRejected):
+                logger.warning("插件 %s 加载失败，回滚: %s", mod["name"], error)
+                self._record_failed_gate(
+                    plugin_id=plugin_id,
+                    revision=source_revision,
+                    check_id=load_phase,
+                    reason=reason,
+                )
+            try:
+                _, cancelled = await _complete_critical(rollback_load(reason))
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "插件加载和回滚均失败", [error, cleanup_error],
+                ) from None
+            if cancelled and not isinstance(error, asyncio.CancelledError):
+                raise BaseExceptionGroup(
+                    "插件加载失败且回滚期间取消", [error, asyncio.CancelledError()],
+                ) from None
+            if (
+                not isinstance(error, Exception)
+                or generation is not None and self._building_root_uses(generation)
+            ):
+                raise
             return None
         self._scopes[mp] = scope
         self._loaded.add(mp)
@@ -5219,10 +5238,11 @@ class PluginManager:
             if candidate_owner is not None:
                 self._preflight_durable_delivery_targets(snapshot)
             snapshot.tool_registry = self._compile_snapshot_tools()
-            return snapshot
-        except Exception as error:
+        except BaseException as error:
             if created_root and composition_root is not None:
-                await composition_root.dispose()
+                await self._discard_building_root(composition_root, error)
+            if not isinstance(error, Exception):
+                raise
             gate = self._record_failed_gate(
                 plugin_id=generation.plugin_id,
                 revision=generation.source_revision,
@@ -5230,6 +5250,9 @@ class PluginManager:
                 reason=str(error),
             )
             raise _CandidateRejected(gate) from error
+        if created_root and composition_root is not None:
+            del self._building_roots[composition_root]
+        return snapshot
 
     @asynccontextmanager
     async def open_validation(self, update_id: str) -> AsyncGenerator[BindingScope]:
@@ -5608,6 +5631,7 @@ class PluginManager:
                 "plugins:" + hashlib.sha256(identity.encode()).hexdigest()[:16],
                 candidate_incident_limit=1024 if candidate_owner is not None else None,
             )
+            self._building_roots[root] = ordered
             root._bind_runtime_scope_acquirer(
                 lambda root=root: self._snapshot_store.acquire_composition_root(root)
             )
@@ -5647,7 +5671,7 @@ class PluginManager:
                     and not receipt.external_effects
                 ):
                     self._composition_pending = missing_services
-                    await root.dispose()
+                    await self._close_building_root(root)
                     return None, False
                 raise RuntimeError(
                     "v3 插件组合拓扑未就绪: "
@@ -5668,11 +5692,65 @@ class PluginManager:
                     "SNAPSHOT_SEALING_BAIL_NOT_ALLOWED",
                     "snapshot.sealing 接入点不接受 Bail",
                 )
-        except BaseException:
-            if root is not None:
-                await root.dispose()
+        except BaseException as error:
+            if root is not None and root in self._building_roots:
+                await self._discard_building_root(root, error)
             raise
         return resolved_root, True
+
+    def _building_root_uses(self, generation: PluginGeneration) -> bool:
+        return any(
+            item is generation
+            for generations in self._building_roots.values()
+            for item in generations
+        )
+
+    async def _close_building_root(self, root: CompositionRoot) -> None:
+        """关闭成功才解除构建 owner，调用者取消仍等待真实清理结束。"""
+
+        async def close() -> None:
+            await root.dispose()
+            # Root.dispose 自己合并并发关闭；各等待者确认同一成功结果。
+            self._building_roots.pop(root, None)
+
+        try:
+            _, cancelled = await _complete_critical(close())
+        except BaseException as error:
+            _ = self._snapshot_store.pause_admission()
+            caller = asyncio.current_task()
+            if caller is not None and caller.cancelling() and isinstance(error, Exception):
+                raise BaseExceptionGroup(
+                    "Root 清理期间调用者取消且清理失败",
+                    [asyncio.CancelledError(), error],
+                ) from None
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _discard_building_root(
+        self, root: CompositionRoot, error: BaseException,
+    ) -> None:
+        """异常回退只尝试一次；Root 已在关闭时保留原句柄供显式重试。"""
+
+        # 1. Fiber 挂载回退或 Root 关闭已经失败时，不重放同一次清理。
+        if root.root_fiber.state == FiberState.UNLOADING or any(
+            fiber.state == FiberState.UNLOADING for fiber in root.receipt().fibers
+        ):
+            _ = self._snapshot_store.pause_admission()
+            raise error
+        # 2. 首次回收保留初始化与清理的两份真实错误。
+        try:
+            await self._close_building_root(root)
+        except BaseException as cleanup_error:
+            if root not in self._building_roots and isinstance(cleanup_error, asyncio.CancelledError):
+                if isinstance(error, asyncio.CancelledError):
+                    raise error
+                raise BaseExceptionGroup(
+                    "Root 构建失败且回收期间取消", [error, cleanup_error],
+                ) from None
+            raise BaseExceptionGroup(
+                "Root 构建和清理均失败", [error, cleanup_error],
+            ) from None
 
     async def _provide_root_registries(
         self, root: CompositionRoot, mount_order: tuple[PluginGeneration, ...],
@@ -6816,6 +6894,37 @@ class PluginManager:
                 _ = sys.modules.pop(imported_name, None)
 
     async def terminate_all(self) -> None:
+        """并发关闭加入同一操作；完成失败后的显式调用重试原 owner。"""
+
+        current = asyncio.current_task()
+        if current is self._terminate_task:
+            raise RuntimeError("cleanup 不能等待其所属 PluginManager 关闭")
+        if any(host.active and host.task is current for host in self._validation_hosts.values()):
+            raise RuntimeError("请先退出验证 scope，再关闭其插件宿主")
+        if self._terminate_task is None or self._terminate_task.done():
+            self._terminate_task = asyncio.create_task(self._terminate_all())
+        task = self._terminate_task
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException:
+                break
+        try:
+            task.result()
+        except BaseException as error:
+            if cancelled:
+                raise BaseExceptionGroup(
+                    "插件关闭期间调用者取消且清理失败",
+                    [asyncio.CancelledError(), error],
+                ) from None
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _terminate_all(self) -> None:
         """完成快照、插件生命周期和作用域资源的全量关闭。"""
 
         _ = self._snapshot_store.pause_admission()
@@ -6879,6 +6988,9 @@ class PluginManager:
             else:
                 self._active_channel_generation = None
                 self._active_channel_catalog_identity = None
+        # 未交接 Root 先释放；SnapshotStore 和 generation 随后才能移除其依赖。
+        for root in tuple(self._building_roots):
+            await self._close_building_root(root)
         # 2. 关闭当前 generation admission，再完成快照回收。
         for generation in self._active_generations.values():
             self._retire_generation(generation)

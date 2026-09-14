@@ -581,6 +581,8 @@ async def apply(ctx):
         )
         candidate_root = candidate.composition_root
         assert candidate_root is not None and candidate_root is not old_root
+        assert manager._building_roots == {}
+        assert stable_snapshot.composition_root is old_root
         stable.runtime_snapshot = candidate
 
         await manager._recover_stable_root(stable, stable_snapshot)
@@ -595,3 +597,202 @@ async def apply(ctx):
         assert module.__dict__["_registry"] == {stable.generation_id}
     finally:
         await manager.terminate_all()
+
+
+def _root_failure_manager(tmp_path, *, fail_mount=False):
+    """建立真实插件，其连接首次关闭失败且需要原模块和数据才能重试。"""
+    source = tmp_path / "plugins" / "root_owner"
+    source.mkdir(parents=True)
+    (source / "plugin.py").write_text(
+        f'''
+api_version = 3
+name = "root_owner"
+version = "1.0.0"
+attempts = 0
+entered = None
+release = None
+async def apply(ctx):
+    marker = ctx.runtime.data_dir / "connection-owner"
+    marker.write_text("open")
+    async def cleanup():
+        global attempts
+        attempts += 1
+        assert marker.read_text() == "open"
+        if entered is not None:
+            entered.set()
+            await release.wait()
+        if attempts == 1:
+            raise OSError("connection still open")
+        marker.write_text("closed")
+    await ctx.effect(lambda: cleanup)
+    if {fail_mount!r}:
+        raise ValueError("apply failed after acquisition")
+''', encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    return PluginManager(
+        [source.parent], event_bus=EventBus(), workspace=workspace,
+        installed_cache_root=tmp_path / "home",
+    )
+
+
+def _error_leaves(error):
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for child in error.exceptions for leaf in _error_leaves(child)]
+    return [error]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["batch", "generation"])
+@pytest.mark.parametrize("failure", ["mount", "compile"])
+async def test_failed_root_build_keeps_module_data_and_cleanup_owner(
+    tmp_path, monkeypatch, entry, failure,
+):
+    """批次和单 generation 回滚都不能丢弃部分装配后未关闭的连接。"""
+    import sys
+
+    manager = _root_failure_manager(tmp_path, fail_mount=failure == "mount")
+    if failure == "compile":
+        def fail_compile(*args, **kwargs):
+            raise ValueError("catalog compilation failed")
+        monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_compile)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        if entry == "batch":
+            await manager.load_all()
+        else:
+            await manager._load_one(manager.discover()[0])
+    leaves = _error_leaves(caught.value)
+    assert any(isinstance(error, ValueError) for error in leaves)
+    assert any(isinstance(error, OSError) for error in leaves)
+    [(root, generations)] = manager._building_roots.items()
+    [generation] = generations
+    module = sys.modules[generation.module_path]
+    assert module.attempts == 1
+    assert (generation.data_dir / "connection-owner").read_text() == "open"
+    assert not generation.scope.closed
+    assert generation.runtime_snapshot is None
+    assert generation in manager._draining_generations[generation.plugin_id]
+
+    await manager.terminate_all()
+
+    assert module.attempts == 2
+    assert root.receipt().fibers == ()
+    assert manager._building_roots == {}
+    assert manager._draining_generations == {}
+    assert generation.module_path not in sys.modules
+    assert generation.scope.closed
+
+
+@pytest.mark.asyncio
+async def test_cancelled_compilation_cleanup_keeps_cancel_and_real_failure(tmp_path, monkeypatch):
+    """重复取消等待中的回收仍保留原始错误、取消和失败连接。"""
+    import sys
+
+    manager = _root_failure_manager(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    def fail_compile(generations, **kwargs):
+        generation = generations["root_owner"]
+        module = sys.modules[generation.module_path]
+        module.entered, module.release = entered, release
+        raise ValueError("catalog compilation failed")
+
+    monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_compile)
+    task = asyncio.create_task(manager._load_one(manager.discover()[0]))
+    await entered.wait()
+    task.cancel()
+    asyncio.get_running_loop().call_soon(task.cancel)
+    asyncio.get_running_loop().call_soon(release.set)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await task
+    leaves = _error_leaves(caught.value)
+    assert any(isinstance(error, asyncio.CancelledError) for error in leaves)
+    assert any(isinstance(error, ValueError) for error in leaves)
+    assert any(isinstance(error, OSError) for error in leaves)
+    [generations] = manager._building_roots.values()
+    [generation] = generations
+    module = sys.modules[generation.module_path]
+    assert module.attempts == 1
+    assert generation in manager._draining_generations[generation.plugin_id]
+    await manager.terminate_all()
+    assert module.attempts == 2
+    assert manager._building_roots == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_close", [False, True])
+async def test_terminate_joins_untransferred_root_without_generations(tmp_path, monkeypatch, fail_close):
+    """空组合也保留真实 Root；并发关闭和重复取消只尝试一次。"""
+    manager = PluginManager(
+        [], event_bus=EventBus(), workspace=tmp_path / "workspace",
+        installed_cache_root=tmp_path / "home",
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+    attempts = 0
+
+    async def provide(root, generations, **kwargs):
+        async def cleanup():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("still open")
+            entered.set()
+            await release.wait()
+            if fail_close and attempts == 2:
+                raise OSError("still open on explicit retry")
+        await root.context.effect(lambda: cleanup)
+        raise ValueError("service initialization failed")
+
+    monkeypatch.setattr(manager, "_provide_composition_services", provide)
+    with pytest.raises(BaseExceptionGroup):
+        await manager._resolve_composition_root({})
+    assert attempts == 1
+    assert len(manager._building_roots) == 1
+    first = asyncio.create_task(manager.terminate_all())
+    await entered.wait()
+    second = asyncio.create_task(manager.terminate_all())
+    first.cancel()
+    asyncio.get_running_loop().call_soon(first.cancel)
+    asyncio.get_running_loop().call_soon(release.set)
+    if fail_close:
+        with pytest.raises(BaseExceptionGroup) as caught:
+            await first
+        assert any(isinstance(error, asyncio.CancelledError) for error in _error_leaves(caught.value))
+        with pytest.raises(OSError):
+            await second
+        assert attempts == 2
+        assert len(manager._building_roots) == 1
+        await manager.terminate_all()
+        assert attempts == 3
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await second
+        assert attempts == 2
+    assert manager._building_roots == {}
+
+
+@pytest.mark.asyncio
+async def test_compilation_cancellation_with_successful_cleanup_stays_cancelled(tmp_path, monkeypatch):
+    """清理成功后仍抛调用者取消，不伪装为候选拒绝或清理失败。"""
+    import sys
+
+    manager = _root_failure_manager(tmp_path)
+    loaded = []
+
+    def cancel_compile(generations, **kwargs):
+        generation = generations["root_owner"]
+        loaded.append(generation)
+        sys.modules[generation.module_path].attempts = 1
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(manager._snapshot_compiler, "compile", cancel_compile)
+    with pytest.raises(asyncio.CancelledError):
+        await manager._load_one(manager.discover()[0])
+    [generation] = loaded
+    assert generation.module_path not in sys.modules
+    assert generation.scope.closed
+    assert manager._building_roots == {}
+    assert manager._draining_generations == {}
+    await manager.terminate_all()
