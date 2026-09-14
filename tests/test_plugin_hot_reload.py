@@ -347,7 +347,7 @@ async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
     _write_plugin(
         tmp_path / "plugins",
         "escaped",
-        _v3_source("escaped", exports="skill_roots = ('../outside',)\n"),
+        _v3_source("escaped", exports="asset_roots = {'skills': ('../outside',)}\n"),
     )
     manager = _manager(tmp_path)
 
@@ -422,7 +422,7 @@ async def test_asset_host_leaves_skill_duplicates_to_standard_tools(tmp_path: Pa
     first_dir = _write_plugin(
         tmp_path / "plugins",
         "first_skills",
-        _v3_source("first_skills", exports="skill_roots = ('skills',)\n"),
+        _v3_source("first_skills", exports="asset_roots = {'skills': ('skills',)}\n"),
     )
     first_skill = first_dir / "skills" / "shared"
     first_skill.mkdir(parents=True)
@@ -443,7 +443,7 @@ async def test_asset_host_leaves_skill_duplicates_to_standard_tools(tmp_path: Pa
     second_dir = _write_plugin(
         tmp_path / "plugins",
         "second_skills",
-        _v3_source("second_skills", exports="skill_roots = ('skills',)\n"),
+        _v3_source("second_skills", exports="asset_roots = {'skills': ('skills',)}\n"),
     )
     second_skill = second_dir / "skills" / "shared"
     second_skill.mkdir(parents=True)
@@ -478,7 +478,7 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
     plugin_dir = _write_plugin(
         tmp_path / "plugins",
         "skill_reload",
-        _v3_source("skill_reload", exports="skill_roots = ('skills-a',)\n"),
+        _v3_source("skill_reload", exports="asset_roots = {'skills': ('skills-a',)}\n"),
     )
     v1_skill = plugin_dir / "skills-a" / "shared"
     v1_skill.mkdir(parents=True)
@@ -512,7 +512,7 @@ async def test_skill_catalog_freezes_generation_and_ignores_old_root_link(
         "---\ndescription: release b\n---\nbody b\n", encoding="utf-8"
     )
     (plugin_dir / "plugin.py").write_text(
-        _v3_source("skill_reload", exports="skill_roots = ('skills-b',)\n"),
+        _v3_source("skill_reload", exports="asset_roots = {'skills': ('skills-b',)}\n"),
         encoding="utf-8",
     )
 
@@ -541,7 +541,7 @@ async def test_skill_catalog_cleanup_failure_is_reported(
     _write_plugin(
         tmp_path / "plugins",
         "skill_cleanup",
-        _v3_source("skill_cleanup", exports="skill_roots = ('skills',)\n"),
+        _v3_source("skill_cleanup", exports="asset_roots = {'skills': ('skills',)}\n"),
     )
     (tmp_path / "plugins" / "skill_cleanup" / "skills").mkdir()
     manager = _manager(tmp_path)
@@ -576,7 +576,7 @@ def _installed_snapshot_source(
     *,
     skills: bool = False,
 ) -> str:
-    exports = "skill_roots = ('skills',)\n" if skills else ""
+    exports = "asset_roots = {'skills': ('skills',)}\n" if skills else ""
     return _v3_source("installed_snapshot", version=version, exports=exports)
 
 

@@ -29,7 +29,7 @@ Core 用一个位置参数调用 `apply(ctx)`，不限制参数名字或默认�
 | `api_version`、`name`、`version`、`apply` | 必需的身份和唯一入口 |
 | `inject` | 根 Fiber 激活所需的 `ServiceKey` |
 | `is_active(services)` | 根据冻结的静态 Service view 决定是否发布静态贡献 |
-| `skill_roots`、`drift_skill_roots` | 发布普通 Skill 和 Drift Skill |
+| `asset_roots` | 以类别映射发布插件资产；资产消费者解释各类格式 |
 | `workspace_roots`、`workspace_files` | 声明被授权的 workspace 路径；只授予真正的数据 owner |
 | `dashboard_module` | 发布 Dashboard HTTP/面板模块 |
 | `web_module`、`web_requires`、`web_provides`、`web_contract_digests` | 发布 Web 模块及版本化组合合同 |
@@ -37,6 +37,11 @@ Core 用一个位置参数调用 `apply(ctx)`，不限制参数名字或默认�
 配置从 `ctx.config` 读取，是当前组合固定输入的插件本地副本，不跟随全局文件变化。
 插件自行选择解析方式，例如 `config = Config.model_validate(ctx.config)`；`Config` 只是插件内部普通类，
 Core 不读取它。无配置时输入为空对象。候选只取得授权允许的输入，凭据仍是不可直接解析的引用。
+
+可选的根目录 `configure.py` 是插件自己的配置程序，不是普通辅助模块名称。
+只有显式运行 `main.py setup` 才会从已启用的已安装 stable 制品发现并执行它，使用根目录固定 Python 环境。
+正常加载、候选装配和换代不运行配置程序。旧制品的 `[setup]` 等已删字段必须通过显式重装或格式转换更新，
+普通启动不改写旧制品或正式数据。
 
 ## 2. 组合原子能力
 
@@ -164,7 +169,7 @@ Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影
 | `WORKLOADS` | `register(ctx, Workload(...))` | 窄 Controller 管理的容器 workload |
 | `EXECUTOR_SERVICE` | `parallel_sync(jobs)` | 有界纯同步工作；worker 不取得 Context/Fiber |
 
-Skill 和 Drift Skill 使用模块级 `skill_roots` / `drift_skill_roots`，由安装、candidate readiness
+Skill 和 Drift Skill 使用模块级 `asset_roots = {"skills": ("skills",), "drift_skills": ("drift/skills",)}`，由安装、candidate readiness
 和 generation catalog 原子发布。MCP、process 和 Workload 只在插件代码中声明，通过上表 Service
 建立 Fiber-owned registration；字段与权限由各 provider 和 Controller 校验。命令直接来自实际注册，
 Python 命令绑定安装制品的固定环境，不再与 TOML 中的第二份命令对账。MCP 引用的 owner 与端口

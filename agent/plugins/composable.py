@@ -74,13 +74,7 @@ class ComposablePlugin:
         active = getattr(module, "is_active", None)
         if active is not None and not callable(active):
             raise ValueError("v3 插件 is_active 必须是可调用对象")
-        skill_roots = _string_tuple_export(module, "skill_roots")
-        drift_skill_roots = _string_tuple_export(module, "drift_skill_roots")
-        asset_roots = _asset_roots_export(
-            module,
-            skill_roots=skill_roots,
-            drift_skill_roots=drift_skill_roots,
-        )
+        asset_roots = _asset_roots_export(module)
         workspace_roots = _workspace_roots_export(module)
         workspace_files = _workspace_files_export(module)
         dashboard_module = getattr(module, "dashboard_module", None)
@@ -194,22 +188,12 @@ def _string_tuple_export(module: ModuleType, name: str) -> tuple[str, ...]:
 
 def _asset_roots_export(
     module: ModuleType,
-    *,
-    skill_roots: tuple[str, ...],
-    drift_skill_roots: tuple[str, ...],
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    """读取通用资产声明，并把旧技能字段固定转换成两个类别。"""
+    """读取插件自己的资产类别和路径，不解释各类资产的格式。"""
 
     raw = getattr(module, "asset_roots", None)
     if raw is None:
-        legacy: dict[str, tuple[str, ...]] = {}
-        if skill_roots:
-            legacy["skills"] = skill_roots
-        if drift_skill_roots:
-            legacy["drift_skills"] = drift_skill_roots
-        return tuple(sorted(legacy.items()))
-    if skill_roots or drift_skill_roots:
-        raise ValueError("v3 插件不能同时声明 asset_roots 与旧 skill_roots")
+        return ()
     if not isinstance(raw, Mapping):
         raise ValueError("v3 插件 asset_roots 必须是类别到路径序列的映射")
     entries: list[tuple[str, tuple[str, ...]]] = []

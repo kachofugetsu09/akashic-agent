@@ -479,7 +479,7 @@ Core 不再提供 veda-reset，也不在启动前读取 VEDA；用户显式运�
 
 Core init 只准备配置和空 workspace；不再写 VEDA、Context 默认授权、meme 清单
 或业务目录，已有文件即便 --force 也不会被这些已移出的动作改写。首次配置由
-通用 `main.py setup` 按已安装 manifest 的 setup 声明调用各包维护入口；新安装组合须
+通用 `main.py setup` 发现已安装 stable 制品根目录的 `configure.py` 并显式执行；新安装组合须
 明确完成这一步，不能把纯 bundle 安装当成业务初始化，也不保留隐式 builtin 产品组装
 作为兼容 fallback。
 
@@ -546,8 +546,8 @@ provider+原消费者；第二组没有原 provider 安装，也没有更改消�
 ### 9.28 声明资产与 Skill 解析的归属
 
 Core 删除 SkillIndex、SkillsLoader 和技能 frontmatter 解析，只发布当前任务租约固定的
-InstalledAsset(owner_id, category, root_dir)。插件使用 asset_roots 声明目录类别；旧
-skill_roots 在加载边界转换，不能同时使用两种声明。standard_tools 拥有技能解析、
+InstalledAsset(owner_id, category, root_dir)。插件只使用 asset_roots 声明目录类别，
+不再维护 Skill/Drift Skill 专用字段及转换层。standard_tools 拥有技能解析、
 可用性、提示、读取工具与检查投影。工具绑定仍单独归档原始资源树，恢复时不补读
 当前安装。Core 的候选状态删除没有真实数据来源的空技能字段与计数。
 

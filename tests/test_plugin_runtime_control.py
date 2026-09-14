@@ -524,7 +524,7 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "name = 'runtime_mcp'\n"
         "version = '1.0.0'\n"
         "inject = (MCP_SERVERS,)\n"
-        "skill_roots = ('skills',)\n"
+        "asset_roots = {'skills': ('skills',)}\n"
         "async def apply(ctx):\n"
         "    await ctx.require(MCP_SERVERS).register(\n"
         "        ctx, McpServerDefinition(\n"

@@ -258,7 +258,7 @@ receipt；已有 receipt 时只校验历史 receipt 与当前 manifest/artifact�
 
 安装 receipt 只证明 bundle 已安装，不证明业务 setup 已完成。首次正式运行前，operator 以同一
 `distribution-entrypoint.sh` 执行一次 `setup`（例如 `docker run --rm ... <image> setup`），向导会
-读取当前配置并运行已启用、已安装 manifest 的 setup；配置已存在时可以保留它。Prompt setup 仅在
+读取当前配置并运行已启用、已安装 stable 制品的 `configure.py`；配置已存在时可以保留它。Prompt setup 仅在
 `memory/VEDA.md` 缺失时创建，既有字节、空/损坏文件和 setup 失败都不会被覆盖或伪装成成功。随后再以
 `supervise` 启动服务；候选验证始终把 setup 的 workspace 与正式 workspace 分开。
 

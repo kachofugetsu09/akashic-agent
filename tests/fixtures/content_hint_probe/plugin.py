@@ -11,8 +11,6 @@ name = "content_hint_probe"
 version = "3.0.0"
 desc = "Independent observer for Content's lossy changed hint"
 author = "Akashic Core"
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 

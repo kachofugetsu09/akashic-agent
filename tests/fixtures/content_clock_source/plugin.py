@@ -24,8 +24,6 @@ name = "content_clock_source"
 version = "3.0.0"
 desc = "Deterministic clock and feed boundary for Content composition tests"
 author = "Akashic Core"
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 

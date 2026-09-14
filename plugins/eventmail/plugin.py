@@ -13,8 +13,6 @@ version = "4.1.0"
 desc = "Immutable Content, Alert, and Context mailbox"
 author = "Akashic Core"
 inject = ()
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 

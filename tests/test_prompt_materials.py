@@ -73,7 +73,7 @@ def prompt_sources(sources):
     (sources / "fixture_skills/plugin.py").write_text('''api_version = 3
 name = "fixture_skills"
 version = "1.0.0"
-skill_roots = ("skills",)
+asset_roots = {'skills': ("skills",)}
 async def apply(ctx):
     pass
 ''')

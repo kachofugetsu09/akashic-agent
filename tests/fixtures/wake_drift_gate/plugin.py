@@ -11,8 +11,6 @@ name = "wake_drift_gate"
 version = "3.0.0"
 desc = "Deterministic external Content and Drift proposal boundary"
 author = "Akashic Core"
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 

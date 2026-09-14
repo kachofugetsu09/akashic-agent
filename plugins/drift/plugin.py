@@ -13,8 +13,6 @@ version = "3.0.0"
 desc = "Durable Drift proposal state"
 author = "Akashic Core"
 inject = ()
-skill_roots = ()
-drift_skill_roots = ()
 workspace_roots = ()
 workspace_files = ()
 

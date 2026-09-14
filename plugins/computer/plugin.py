@@ -144,8 +144,7 @@ inject = (
     OWNER_STATE,
     TURN_PROJECTION,
 )
-skill_roots = ("skills",)
-drift_skill_roots = ()
+asset_roots = {'skills': ("skills",)}
 workspace_roots = ()
 workspace_files = ()
 dashboard_module = "dashboard.py"
