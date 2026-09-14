@@ -1089,6 +1089,19 @@ class _ChannelAttachmentReadLease:
             raise TypeError("attachment read_bytes 必须返回 bytes")
         return value
 
+    async def read_chunk(self, *, offset: int, max_bytes: int) -> bytes:
+        """Read one bounded chunk without releasing the binding claim."""
+
+        if self._closed:
+            raise RuntimeError("attachment read lease 已关闭")
+        result = self._lease.read_chunk(offset=offset, max_bytes=max_bytes)
+        if not inspect.isawaitable(result):
+            raise TypeError("attachment read_chunk 必须返回 awaitable")
+        value = await result
+        if not isinstance(value, bytes):
+            raise TypeError("attachment read_chunk 必须返回 bytes")
+        return value
+
     async def aclose(self) -> None:
         """Finish the underlying close before releasing Host drain ownership."""
 
@@ -3011,6 +3024,10 @@ def _validate_attachment_read_lease(
 
     if not callable(getattr(lease, "read_bytes", None)):
         raise TypeError("attachment read lease 必须提供 read_bytes(max_bytes=...)")
+    if not callable(getattr(lease, "read_chunk", None)):
+        raise TypeError(
+            "attachment read lease 必须提供 read_chunk(offset=..., max_bytes=...)"
+        )
     if not callable(getattr(lease, "aclose", None)):
         raise TypeError("attachment read lease 必须提供 aclose()")
     if getattr(lease, "ref", None) != ref:
