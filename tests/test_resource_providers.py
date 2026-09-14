@@ -39,7 +39,9 @@ async def root_with_grants(tmp_path, controller, *, candidate=True):
 
 
 def runtime(tmp_path, owner="consumer"):
-    return PluginRuntime(owner, owner + "-code", tmp_path, tmp_path / owner, tmp_path, {})
+    data = tmp_path / owner
+    data.mkdir(exist_ok=True)
+    return PluginRuntime(owner, owner + "-code", tmp_path, data, tmp_path, {})
 
 
 @pytest.mark.asyncio
@@ -160,7 +162,7 @@ async def test_spawn_cancellation_delivers_the_owned_process_receipt(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_managed_process_provider_waits_for_borrow_before_stop(tmp_path):
+async def test_managed_process_provider_waits_for_borrow_before_stop(tmp_path, monkeypatch):
     from plugins.managed_processes import plugin as process_plugin
     from agent.plugin_composition.process_slots import MANAGED_PROCESSES, ManagedProcessDefinition
     (tmp_path / "server.py").write_text('''
@@ -186,11 +188,24 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
         handle, ctx = handles[0], contexts[0]
         current = handle._host._generations[handle._id].entries["server"].process
         assert current.returncode is None
+        effect = next(item for item in ctx._fiber.effects if item.label == "process:server")
+        waiting = asyncio.Event()
+        wait_for_borrowers = handle._drained.wait
+        async def observe_drain():
+            waiting.set()
+            await wait_for_borrowers()
+        monkeypatch.setattr(handle._drained, "wait", observe_drain)
         async with handle.borrow(ctx) as port:
             assert port > 0
-            closing = asyncio.create_task(handle.aclose())
+            closing = asyncio.create_task(effect.aclose())
+            await waiting.wait()
+            assert not closing.done()
             assert current.returncode is None
+            with pytest.raises(PermissionError):
+                async with handle.borrow(ctx):
+                    pytest.fail("关闭中的 owner 不得接纳新借用")
         await closing
+        assert effect not in ctx._fiber.effects
         assert current.returncode is not None
         with pytest.raises(PermissionError):
             handle.port(ctx)

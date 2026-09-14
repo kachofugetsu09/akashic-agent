@@ -16,6 +16,7 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 from akashic_sdk import ConnectionClosedError
 
 from agent.plugins.artifacts import read_pointers, resolve_pointer
+from agent.plugin_composition.context import RuntimeScope
 from agent.plugins.generation import PluginGeneration
 from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
@@ -157,12 +158,27 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         promoted = await asyncio.wait_for(promote_task, timeout=30)
         assert promoted["publication_state"] == "promoted"
         promoted_lease = manager.snapshot_store.lease()
-        assert promoted_lease.snapshot is candidate_snapshot
+        assert promoted_lease.snapshot is not candidate_snapshot
+        assert promoted_lease.snapshot.composition_root is not candidate_snapshot.composition_root
+        assert {
+            key: item.archive_ref for key, item in promoted_lease.snapshot.generations.items()
+        } == {key: item.archive_ref for key, item in candidate_snapshot.generations.items()}
+        for key, item in promoted_lease.snapshot.generations.items():
+            assert item is not candidate_snapshot.generations[key]
+            assert item.generation_id != candidate_snapshot.generations[key].generation_id
         promoted_generation = promoted_lease.snapshot.generations[plugin_id]
         promoted_runtime = _mcp_registration(promoted_lease.snapshot)
         assert promoted_runtime is not latest_runtime
-        assert promoted_runtime.ctx.runtime.generation_id == latest_runtime.ctx.runtime.generation_id
+        assert promoted_generation is not latest_generation
+        assert promoted_runtime.ctx.runtime.generation_id == promoted_generation.generation_id
+        assert promoted_runtime.ctx.runtime.generation_id != latest_runtime.ctx.runtime.generation_id
         assert promoted_runtime.grant.mode == "formal"
+        promoted_probe = await _call_runtime_probe(_mcp_server(promoted_runtime))
+        assert promoted_probe["runtime_version"] == "v2"
+        assert promoted_probe["artifact"] == str(promoted_generation.code_dir)
+        assert promoted_probe["ca_bundle"] == latest_probe["ca_bundle"]
+        assert promoted_probe["data_dir"] == str(promoted_generation.data_dir)
+        assert promoted_probe["workspace"] == str(tmp_path / "workspace")
 
         await promoted_lease.release()
         promoted_lease = None
@@ -314,9 +330,15 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
 
         candidate_runtime = _mcp_registration(manager.latest_snapshot)
         candidate_server = _mcp_server(candidate_runtime)
-        probe = await _call_runtime_probe(
-            candidate_server,
-        )
+        async with RuntimeScope(manager.snapshot_store.lease(selector="latest")):
+            async with candidate_server() as server:
+                assert set(server.tools) == {"probe"}
+                async with server.route() as route:
+                    probe = json.loads((await route.call("probe", {})).output)
+                    with pytest.raises(PermissionError, match="allowlist"):
+                        await route.call("poll_feed", {})
+        assert not (validation_data / "feed-cursor.json").exists()
+        assert not (production_data / "feed-cursor.json").exists()
         runtime_workspace = Path(str(probe["workspace"]))
         runtime_data = Path(str(probe["data_dir"]))
         assert runtime_workspace.name == "workspace"
@@ -337,6 +359,13 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
         assert not validation_root.exists()
+        async with _mcp_server(_mcp_registration(manager.current_snapshot))() as server:
+            assert set(server.tools) == {"probe", "poll_feed"}
+            async with server.route() as route:
+                result = await route.call("poll_feed", {})
+                assert not result.tool_error
+        assert (production_data / "feed-cursor.json").read_text() == "advanced\n"
+        assert marker.read_bytes() == production_before
     finally:
         if manager.ready_candidate is not None:
             await manager.drop_candidate(plugin_id)
@@ -574,6 +603,8 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "        elif method == 'tools/list':\n"
         "            result = {'tools': TOOLS}\n"
         "        elif method == 'tools/call':\n"
+        "            if message['params']['name'] == 'poll_feed':\n"
+        "                (DATA_DIR / 'feed-cursor.json').write_text('advanced\\n', encoding='utf-8')\n"
         "            ca_bundle = Path(certifi.where())\n"
         "            context = ssl.create_default_context(cafile=str(ca_bundle))\n"
         "            probe = {'artifact': str(ARTIFACT), 'ca_bundle': str(ca_bundle), "

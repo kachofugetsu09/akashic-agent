@@ -1,10 +1,11 @@
 import asyncio
+import json
 import shutil
 import sys
 from pathlib import Path
 
 from agent.plugin_composition.mcp_slots import MCP_SERVERS
-from plugins.mcp.host import McpGenerationHost
+from agent.plugin_composition.context import RuntimeScope
 
 import pytest
 
@@ -12,7 +13,7 @@ from tests.fixtures.plugin_workspace import initialize_plugin_workspace
 
 from agent.plugin_composition.bindings import Bindings
 from agent.plugin_composition.model import ServiceKey
-from agent.plugins.snapshot import lease_runtime_snapshot
+from agent.plugins.snapshot import get_current_runtime_lease, lease_runtime_snapshot
 from session.log import MessageLog
 from tests.test_plugin_bindings import manager
 
@@ -161,6 +162,10 @@ async def test_scoped_cleanup_failure_retains_real_owner(tmp_path, monkeypatch, 
         assert service.failures()[0].identity == identity
         assert process.returncode is None
         ctx = service._entries["first"].ctx
+        retained = service._sessions[identity]
+        effect = retained._effect
+        assert effect in ctx._fiber.effects
+        starts = (snapshot.generations["probe"].data_dir / "first.count").read_text()
         if cleanup == "retry":
             await service.retry_cleanup(ctx, identity)
         elif cleanup == "shutdown":
@@ -168,6 +173,8 @@ async def test_scoped_cleanup_failure_retains_real_owner(tmp_path, monkeypatch, 
         else:
             await asyncio.gather(service.retry_cleanup(ctx, identity), owner.terminate_all())
         assert process.returncode is not None
+        assert (snapshot.generations["probe"].data_dir / "first.count").read_text() == starts
+        assert effect not in ctx._fiber.effects
         assert service.failures() == ()
         assert service._sessions == {}
     finally:
@@ -238,13 +245,22 @@ async def test_candidate_environment_and_allowlist_are_host_bound(tmp_path, monk
     write_plugin(source)
     select_mcp_provider(plugins)
     path = source / "plugin.py"
-    path.write_text(path.read_text().replace('candidate_env={"SERVER": name}', 'candidate_env={"SERVER": name, "VALIDATION_MARK": "candidate"}'))
+    path.write_text(path.read_text().replace(
+        'env={"SERVER": name}, candidate_env={"SERVER": name}',
+        'env={"SERVER": name, "FORMAL_TOKEN": "formal-secret"}, candidate_env={"SERVER": name, "VALIDATION_MARK": "candidate"}',
+    ))
     for name in ("first", "second"):
         path = source / name / "server.py"
         path.write_text(path.read_text().replace(
             '[{"name": "ping", "description": "fixed A", "inputSchema": {"type": "object"}}]',
             '[{"name": name, "description": "probe", "inputSchema": {"type": "object"}} for name in ("ping", "mutate")]',
-        ).replace('"text": "fixed A"', '"text": os.environ.get("VALIDATION_MARK", "formal")'))
+        ).replace(
+            'result = {"content": [{"type": "text", "text": "fixed A"}]}',
+            'if request["params"]["name"] == "mutate":\n'
+            '            count.with_suffix(".mutated").write_text("changed")\n'
+            '        result = {"content": [{"type": "text", "text": json.dumps({key: os.environ.get(key) for key in '
+            '("VALIDATION_MARK", "FORMAL_TOKEN", "UNRELATED_HOST_SECRET", "HOME", "AKA_PLUGIN_DATA_DIR", "AKASHIC_WORKSPACE")})}]}',
+        ))
     initialize_plugin_workspace(tmp_path / "workspace")
     owner = manager(tmp_path, [plugins])
     monkeypatch.setenv("UNRELATED_HOST_SECRET", "must-not-inherit")
@@ -255,12 +271,27 @@ async def test_candidate_environment_and_allowlist_are_host_bound(tmp_path, monk
         transaction = owner._begin_snapshot_publication(snapshot)
         await owner.snapshot_store.commit_latest(transaction)
         root = snapshot.composition_root
-        async with root.service_value(SERVICE)() as server:
-            assert set(server.tools) == {"ping"}
-            async with server.route() as route:
-                assert (await route.call("ping", {})).output == "candidate"
-                with pytest.raises(PermissionError, match="allowlist"):
-                    await route.call("mutate", {})
+        lease = owner.snapshot_store.lease(selector="latest")
+        async with RuntimeScope(lease):
+            assert lease.snapshot is snapshot
+            async with root.service_value(SERVICE)() as server:
+                current = get_current_runtime_lease()
+                assert current is not lease and current.snapshot is snapshot
+                assert current.active
+                assert set(server.tools) == {"ping"}
+                async with server.route() as route:
+                    environment = json.loads((await route.call("ping", {})).output)
+                    assert environment == {
+                        "VALIDATION_MARK": "candidate", "FORMAL_TOKEN": None,
+                        "UNRELATED_HOST_SECRET": None, "HOME": str(candidate.data_dir),
+                        "AKA_PLUGIN_DATA_DIR": str(candidate.data_dir),
+                        "AKASHIC_WORKSPACE": str(candidate.validation_workspace),
+                    }
+                    with pytest.raises(PermissionError, match="allowlist"):
+                        await route.call("mutate", {})
+            assert not current.active
+        assert not (candidate.data_dir / "first.mutated").exists()
+        assert not (tmp_path / "workspace" / "plugin-data" / "probe" / "first.count").exists()
     finally:
         await owner.terminate_all()
 
