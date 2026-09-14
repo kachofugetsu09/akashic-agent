@@ -964,7 +964,7 @@ Model 的网络调用仍只有 `_BoundChat.complete` 入口。`ModelRequest` 在
 
 执行层 Gate 还复现了旧 Shell 在 deadline 附近丢失最后输出的竞态。DSH 的 subprocess 同样把进程 exit 与输出 close 分开；本栈沿此边界修复：收集截止时发现进程已退出，先完成有界输出排空，再生成终态响应和清理记录；继承 pipe 的残留子进程不能无限拖延结束。这不改变 Message 或逻辑 Turn 的终态。
 
-第 06 层按内容 hash 保存独立于 installed cache 的不可变归档。binding 引用完整代码、运行要求、manifest 与可复建配置闭包；凭据只保存受保护引用，plugin-data 仍由原 owner 管理。需要历史业务状态的能力必须自行保存其不可变输入，Core 不快照整个运行 workspace。普通 binding 不再从该归档构建短命 exact scope，而是在调用者已选的 stable 或 candidate scope 中打开实际 service；进程重启只由 stable/latest pointer 与 reload journal 恢复。实现或配置无法证明兼容时沿领域既有 terminal 语义收尾，不盲目复活旧 generation。
+第 06 层按内容 hash 保存独立于 installed cache 的不可变归档。binding 引用完整代码、运行要求、manifest 与可复建配置闭包；凭据只保存受保护引用，plugin-data 仍由原 owner 管理。需要历史业务状态的能力必须自行保存其不可变输入，Core 不快照整个运行 workspace。普通 binding 不再从该归档构建短命 exact scope，而是在调用者已选的 stable 或 candidate scope 中打开实际 service；进程重启只由 stable/latest pointer 与 reload journal 恢复。当前插件处理不了自己的旧数据时明确报错，不盲目复活旧 generation。
 
 本轮不增加 active claim、持久 refcount 或 terminal 表：Tool、Delivery、Akasha 已各自拥有调用、发送或消费事实，是否需要打开 binding 从这些事实计算。内存 lease 关闭后释放运行资源；归档文件不阻挡当前插件 drain 或卸载。归档是耐久恢复材料，没有自动 GC；当前 cache 的清理不拥有它。归档写成但 Message/receipt 提交失败时允许留下未引用文件和不可变 binding descriptor row，不自动减少恢复材料。未来若要回收归档，须单独制定显式减少协议，不能倒推当前需要另一套业务状态机。
 
