@@ -500,11 +500,8 @@ def _inspect_static_source(
 
     errors: list[str] = []
     manifest: dict[str, object]
-    if contract.source == "external":
-        manifest, manifest_errors = _inspect_manifest(root)
-        errors.extend(manifest_errors)
-    else:
-        manifest = {"status": "in-tree", "path": None}
+    manifest, manifest_errors = _inspect_manifest(root)
+    errors.extend(manifest_errors)
     if entrypoint.is_symlink() or not entrypoint.is_file():
         errors.append(f"plugin.py 不存在或是 symlink: {entrypoint}")
         return {"status": "failed", "manifest": manifest, "errors": errors}
@@ -514,7 +511,7 @@ def _inspect_static_source(
         errors.append(f"entrypoint 无法解析: {error}")
         return {"status": "failed", "manifest": manifest, "errors": errors}
     errors.extend(_find_forbidden_v2_imports(root))
-    namespace = _inspect_namespace(tree, contract)
+    namespace = _inspect_namespace(tree, contract, manifest)
     errors.extend(cast(list[str], namespace["errors"]))
     return {
         "status": "passed" if not errors else "failed",
@@ -526,48 +523,28 @@ def _inspect_static_source(
 
 
 def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:
-    path = root / "akashic.plugin.toml"
-    if not path.is_file() or path.is_symlink():
-        return {"status": "missing", "path": "akashic.plugin.toml"}, [
-            f"缺少静态 manifest: {path}"
-        ]
-    errors: list[str] = []
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        return {"status": "failed", "path": path.name}, ["manifest 根必须是对象"]
-    allowed = {
-        "schema_version", "name", "version", "api_version",
-        "python", "validation", "mcp", "processes", "channel_credentials",
-    }
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        errors.append(f"manifest 包含未知字段: {unknown}")
-    for field in ("schema_version", "name", "version", "api_version"):
-        if field not in raw:
-            errors.append(f"manifest 缺少字段: {field}")
-    if raw.get("schema_version") != 1:
-        errors.append("manifest schema_version 必须为 1")
-    if raw.get("api_version") != 3:
-        errors.append("manifest api_version 必须为 3")
+    """复用安装 loader，身份只从 plugin.py 读取。"""
+    from agent.plugins.static_manifest import load_static_plugin_manifest
+
+    try:
+        identity = load_static_plugin_manifest(root)
+    except (OSError, ValueError) as error:
+        return {"path": "plugin.py", "status": "failed"}, [str(error)]
     return {
-        "status": "passed" if not errors else "failed",
-        "path": path.name,
-        "name": raw.get("name"),
-        "version": raw.get("version"),
-        "api_version": raw.get("api_version"),
-        "sha256": _sha256(path),
-    }, errors
+        "path": "plugin.py",
+        "status": "passed",
+        "name": identity.name,
+        "version": identity.version,
+        "api_version": identity.api_version,
+        "sha256": _sha256(root / "plugin.py"),
+    }, []
 
 
-def _inspect_namespace(tree: ast.Module, contract: PluginContract) -> dict[str, object]:
+def _inspect_namespace(tree: ast.Module, contract: PluginContract, identity: dict[str, object]) -> dict[str, object]:
     errors: list[str] = []
-    api_version = _top_level_literal(tree, "api_version")
-    name = _top_level_literal(tree, "name")
+    api_version = identity.get("api_version")
+    name = identity.get("name")
     inject = _top_level_name_tuple(tree, "inject")
-    if api_version != 3:
-        errors.append(f"api_version 必须为 3: {api_version!r}")
-    if not isinstance(name, str) or not name.strip():
-        errors.append("name 必须是非空字符串")
     if inject is None or inject.count("UI_SLOTS") != 1:
         errors.append("inject 必须恰好包含 UI_SLOTS")
     apply_nodes = [

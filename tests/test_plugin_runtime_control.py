@@ -599,13 +599,6 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "    print(json.dumps(response), flush=True)\n",
         encoding="utf-8",
     )
-    _ = (source / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        "name = \"runtime_mcp\"\n"
-        "version = \"1.0.0\"\n"
-        "api_version = 3\n",
-        encoding="utf-8",
-    )
 
 
 def _runtime_ca_bundle(manager: PluginManager, generation: PluginGeneration) -> Path:
@@ -681,13 +674,6 @@ def _write_v3_plugin(
         encoding="utf-8",
     )
     if static_manifest:
-        (plugin_dir / "akashic.plugin.toml").write_text(
-            "schema_version = 1\n"
-            f"name = {json.dumps(name)}\n"
-            f"version = {json.dumps(version)}\n"
-            "api_version = 3\n",
-            encoding="utf-8",
-        )
 
 
 def _commit_all(repo: Path, message: str) -> None:

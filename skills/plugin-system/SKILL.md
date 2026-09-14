@@ -22,7 +22,7 @@ metadata: {"akashic": {"always": false}}
    └─ reload、candidate、恢复与 turn rollout 证据
 ```
 
-外部 source 根必须包含 `akashic.plugin.toml` 和普通文件 `plugin.py`，TOML 不再接受 `entrypoint`。manifest 的 `schema_version=1`、`api_version=3`、`name`、`version` 在 import 前校验；`plugin.py` 还必须导出同值的 `api_version/name/version` 与 `apply(ctx)`。Skill/MCP 通过 source 的静态 root 和 typed service 进入 generation catalog。
+外部 source 根必须包含普通文件 `plugin.py`。loader 在 import 前只读取顶层 `name`、`version`、`api_version` 字面量，要求 API 为整数 3；模块提供 `apply(ctx)`。不再从 TOML 声明身份或让导入后的模块重复报告身份。`akashic.plugin.toml` 可省略，仅暂存 validation/credential 策略；旧身份字段明确拒绝。Skill/MCP 通过 source 的静态 root 和 typed service 进入 generation catalog。
 
 不要查找或创建 `registry.json`、`.aka-plugin/plugin.json`、`manifest.yaml`、插件级 `mcp/servers.json` 或 workspace 手工 Skill owner。不要直接编辑 cache、pointer、全局 manifest、workspace Skill 软链接或正式 plugin-data。
 

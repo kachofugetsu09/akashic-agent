@@ -41,7 +41,7 @@ def environment(tmp_path):
     source = tmp_path / "plugins/secret_reader"
     source.mkdir(parents=True)
     (source / "plugin.py").write_text(MODULE)
-    (source / "akashic.plugin.toml").write_text('schema_version=1\nname="secret_reader"\nversion="1.0.0"\napi_version=3\ncredential_paths=["token"]\n[validation]\nexclude_data_paths=["config.local.toml"]\n')
+    (source / "akashic.plugin.toml").write_text('credential_paths=["token"]\n[validation]\nexclude_data_paths=["config.local.toml"]\n')
     config = tmp_path / "workspace/plugin-data/secret_reader-builtin/config.local.toml"
     config.parent.mkdir(parents=True)
     config.write_text('token="fixture-private-token"\n')
@@ -174,7 +174,7 @@ async def apply(ctx):
 def test_manifest_rejects_ambiguous_or_escaping_credential_redaction(tmp_path, declaration):
     source, _, log, _ = environment(tmp_path)
     log.close()
-    (source / "akashic.plugin.toml").write_text('schema_version=1\nname="secret_reader"\nversion="1.0.0"\napi_version=3\n' + declaration)
+    (source / "akashic.plugin.toml").write_text(declaration)
     with pytest.raises(ValueError, match="路径重叠|无效 config path"):
         load_static_plugin_manifest(source)
 

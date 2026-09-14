@@ -19,9 +19,9 @@ Akasha、Wake、Scheduler、Compaction 和 Markdown Memory 的旧 `message_plugi
 
 source revision、实际模块文件路径和代码树仍保留精确来源。Generation 与 source resolver
 不再复制可选入口字段，`code_dir` 从实际导入文件的父目录取得。
-新组件归档 descriptor 使用 v3，不再保存入口选择；旧 v2 在导入前明确拒绝。
+新组件归档 descriptor 使用 v4，不再保存入口选择；旧 v2/v3 在导入前明确拒绝。
 本层不迁移或改写旧归档、binding、插件数据和固定 Python 环境；恢复旧记录须保留基线 Core
-及原归档，采用新入口须从已更新源码显式重装。name/version/API 仍处于单独的过渡层。
+及原归档，采用新入口须从已更新源码显式重装。身份仅由 `plugin.py` 顶层的 `name`、`version`、`api_version` 字面量赋值提供。
 
 ```python
 from agent.plugin_composition import Context
@@ -88,6 +88,23 @@ Computer 的空 requirements 文件已删除；容器内命令不需要 Core 的
 缺少已 staging 的显式环境时失败，不借用 PATH 或制品中的 `.venv`。
 环境只由安装器创建，加载或候选不准备环境，包括空 requirements 文件。
 源码插件的纯进程内能力可以直接装配；实际 Python 命令缺少固定环境时明确失败。
+
+### 身份读取与剩余策略（0071 身份层）
+
+安装和每次加载前，loader 只用 AST 读取 `plugin.py` 顶层三个单次字面量赋值：
+`name`、`version`、`api_version`。支持普通赋值和带类型注解的赋值，不接受计算表达式、
+导入值、条件分支或重复直接赋值作为身份声明；不运行模块，不读取能力或配置 schema。
+API 必须为整数 `3`。身份由 loader 固定后交给 Composable；运行中的模块属性变化不改变
+安装名、展示版本或 API，也不触发第二次 expected/actual 比对。
+
+`akashic.plugin.toml` 是可选的临时策略文件，只接受 `validation.exclude_data_paths`、
+`channel_credentials` 和 `credential_paths`。旧 `schema_version/name/version/api_version`
+以及已删除的入口、Python 声明都明确拒绝，不能靠忽略字段兼容旧格式。没有策略就不发布该文件。
+代码树摘要、source revision、实际导入文件路径和环境引用继续固定原始来源。
+
+v4 组件记录只新增；旧记录和正式数据不改写、不自动迁移或删除。旧格式需用原 Core 和完整
+恢复材料读取，采用新格式须从已更新源码显式重装；旧 binding 不能被解释成新代码身份。
+本层仅编写测试与静态查看，运行验收尚未执行。
 
 ## 2. 组合原子能力
 

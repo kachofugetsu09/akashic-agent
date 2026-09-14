@@ -423,18 +423,9 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         {
             str(Path(path).parent)
             for path in files
-            if path.startswith("plugins/") and path.endswith("/akashic.plugin.toml")
+            if path.startswith("plugins/") and path.endswith("/plugin.py")
         }
     )
-    entry_roots = {
-        str(Path(path).parent)
-        for path in files
-        if path.startswith("plugins/")
-        and path.endswith("/plugin.py")
-    }
-    missing = entry_roots - set(roots)
-    if missing:
-        raise ValueError(f"插件入口缺少发布 manifest: {sorted(missing)}")
     output.mkdir(parents=True, exist_ok=False)
 
     runtime_dependencies = _runtime_dependency_record(repository, commit, tree)

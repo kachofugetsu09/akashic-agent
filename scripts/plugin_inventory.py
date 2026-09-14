@@ -36,20 +36,20 @@ def build_inventory(repo_root: Path) -> dict[str, object]:
         digest = hashlib.sha256()
         for name in package_files:
             digest.update(name.encode() + b"\0" + (root / name).read_bytes() + b"\0")
-        manifest_path = prefix + "akashic.plugin.toml"
+        entry_path = prefix + "plugin.py"
         manifest = None
         error = None
-        if manifest_path not in tracked:
+        if entry_path not in tracked:
             classification = "support-package"
         else:
             try:
                 parsed = load_static_plugin_manifest(root / prefix)
                 manifest = {"name": parsed.name, "version": parsed.version,
                             "api_version": parsed.api_version}
-                classification = "manifest-plugin"
+                classification = "code-plugin"
             except ValueError as exc:
-                classification, error = "invalid-manifest", str(exc)
-        if classification != "manifest-plugin":
+                classification, error = "invalid-plugin", str(exc)
+        if classification != "code-plugin":
             violations.append({"kind": "not_installable_artifact", "file": prefix, "error": error})
         package_imports = [item for item in imports if item.importer.startswith(prefix)]
         dynamic = []
@@ -76,7 +76,7 @@ def build_inventory(repo_root: Path) -> dict[str, object]:
                      "implementation_dependencies": [item for item in violations if item["file"].startswith(prefix)]})
     return {"schema_version": 1, "repository": str(root), "packages": rows,
             "summary": {"package_count": len(rows),
-                "manifest_plugin_count": sum(row["classification"] == "manifest-plugin" for row in rows),
+                "manifest_plugin_count": sum(row["classification"] == "code-plugin" for row in rows),
                 "support_package_count": sum(row["classification"] == "support-package" for row in rows),
                 "static_boundary_violation_count": len(violations)},
             "core_consumer_imports": [{"file": item.importer, "target": item.module} for item in findings["R1"]],

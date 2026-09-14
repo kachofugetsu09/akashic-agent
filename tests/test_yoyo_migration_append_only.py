@@ -93,13 +93,6 @@ def _write_bundle(
         )
     catalog = artifact / "migration.catalog.toml"
     catalog.write_text("\n".join(catalog_lines), encoding="utf-8")
-    (artifact / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        f"name = {plugin_name!r}\n"
-        "version = '1.0.0'\n"
-        "api_version = 3\n",
-        encoding="utf-8",
-    )
     return artifact
 
 
@@ -354,6 +347,7 @@ def test_catalog_history_survives_plugin_manifest_removal(
 ) -> None:
     repo, _base = _repository(tmp_path)
     artifact = _write_bundle(repo, [("20260803_01_old", "steps = []\n")])
+    (artifact / "akashic.plugin.toml").write_text("# obsolete policy file\n")
     base = _commit(repo, "bundle baseline")
     monkeypatch.setattr(checker, "ROOT", repo)
     (artifact / "akashic.plugin.toml").unlink()

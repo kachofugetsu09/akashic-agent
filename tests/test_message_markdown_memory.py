@@ -50,9 +50,6 @@ async def application(tmp_path, *, start=False, transient_failure=False, draft_f
         for name in ("content", "context", "compaction", "markdown_memory", "turn_projection"):
             shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                             ignore=shutil.ignore_patterns("__pycache__"))
-        for name in ("compaction", "markdown_memory"):
-            (sources / name / "akashic.plugin.toml").write_text(
-                f'schema_version = 1\nname = "{name}"\nversion = "4.1.0"\napi_version = 3\n')
         settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text('summary_source = ["compaction", "compaction"]\nprompt_sources = {markdown_memory = "markdown_memory"}\n')

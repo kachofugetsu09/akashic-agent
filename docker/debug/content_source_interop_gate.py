@@ -426,14 +426,11 @@ def _verify_plugin(plugin: PluginContract, root: Path) -> dict[str, object]:
     dirty = tuple(_git(root, "status", "--porcelain").splitlines())
     if dirty:
         raise GateError(f"plugin checkout 非 clean: {plugin.id} {dirty}")
-    manifest_path = root / "akashic.plugin.toml"
-    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("api_version") != 3:
-        raise GateError(f"plugin 不是 pure v3: {plugin.id}")
-    if manifest.get("name") != plugin.id:
-        raise GateError(
-            f"plugin manifest identity 不匹配: {plugin.id} != {manifest.get('name')}"
-        )
+    from agent.plugins.static_manifest import load_static_plugin_manifest
+
+    identity = load_static_plugin_manifest(root)
+    if identity.name != plugin.id:
+        raise GateError(f"plugin source identity 不匹配: {plugin.id} != {identity.name}")
     missing_cases = [case for case in plugin.cases if not (root / case).is_file()]
     if missing_cases:
         raise GateError(f"plugin fixture 缺失: {plugin.id} {missing_cases}")

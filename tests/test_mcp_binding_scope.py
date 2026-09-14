@@ -34,11 +34,6 @@ async def apply(ctx):
     await ctx.provide(ServiceKey("test.bound.mcp"), lambda: service.open(ctx, "first"))
     await ctx.provide(ServiceKey("test.bound.text"), "fixed text")
 """)
-    (path / "akashic.plugin.toml").write_text("""schema_version = 1
-name = "probe"
-version = "1.0.0"
-api_version = 3
-""")
     (path / "server.py").write_text("""
 import json, os, sys
 from pathlib import Path

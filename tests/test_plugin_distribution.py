@@ -80,7 +80,6 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
         root = source / "plugins" / name
         root.mkdir(parents=True)
         (root / "plugin.py").write_text(f'api_version = 3\nname = "{name}"\nversion = "1"\ndef apply(ctx): pass\n')
-        (root / "akashic.plugin.toml").write_text(f'schema_version = 1\napi_version = 3\nname = "{name}"\nversion = "1"\n')
     (source / "main.py").write_text('print("core")\n')
     legacy_memory = source / "memory2"
     legacy_memory.mkdir()
@@ -205,9 +204,6 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     (external / "plugin.py").write_text(
         'api_version = 3\nname = "one"\nversion = "2"\ndef apply(ctx): pass\n'
     )
-    (external / "akashic.plugin.toml").write_text(
-        'schema_version = 1\napi_version = 3\nname = "one"\nversion = "2"\n'
-    )
     subprocess.run(["git", "init", str(external)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(external), "add", "."], check=True, capture_output=True)
     subprocess.run([
@@ -268,10 +264,6 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     replacement_source.mkdir(parents=True)
     (replacement_source / "plugin.py").write_text(
         'api_version = 3\nname = "replacement"\nversion = "1"\ndef apply(ctx): pass\n'
-    )
-    (replacement_source / "akashic.plugin.toml").write_text(
-        'schema_version = 1\napi_version = 3\nname = "replacement"\n'
-        'version = "1"\n'
     )
     (source / "main.py").write_text('print("core-v2")\n')
     subprocess.run(["git", "-C", str(source), "add", "."], check=True, capture_output=True)
@@ -483,9 +475,6 @@ def test_formal_host_context_contains_core_and_bundles_only(tmp_path):
     plugin.mkdir(parents=True)
     (plugin / "plugin.py").write_text(
         'api_version = 3\nname = "one"\nversion = "1"\ndef apply(ctx): pass\n'
-    )
-    (plugin / "akashic.plugin.toml").write_text(
-        'schema_version = 1\napi_version = 3\nname = "one"\nversion = "1"\n'
     )
     (source / "main.py").write_text("print('core')\n")
     runtime = source / "docker" / "host-runtime"

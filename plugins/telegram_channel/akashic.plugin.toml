@@ -1,8 +1,2 @@
-schema_version = 1
-name = "telegram_channel"
-version = "3.0.0"
-api_version = 3
-
-
 [channel_credentials]
 telegram = ["token"]

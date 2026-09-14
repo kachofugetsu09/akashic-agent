@@ -583,16 +583,12 @@ def _write_mcp_plugin(
             "from collections.abc import AsyncIterator, Mapping\n"
             "from contextlib import asynccontextmanager\n"
             "from pathlib import Path\n"
-            "import tomllib\n"
             "from agent.plugin_composition import MCP_SERVERS, McpServerDefinition\n"
             "from plugins.tools.api import BoundTool, CallSource, ContentPart, Result\n"
             "from plugins.tools.plugin import TOOLS\n"
-            "_manifest = tomllib.loads(\n"
-            "    Path(__file__).with_name('akashic.plugin.toml').read_text(encoding='utf-8')\n"
-            ")\n"
             "api_version = 3\n"
             "name = 'restart_probe'\n"
-            "version = str(_manifest['version'])\n"
+            f"version = {version!r}\n"
             "inject = (MCP_SERVERS, TOOLS)\n"
             "\n"
             "class VersionTool:\n"
@@ -644,7 +640,14 @@ def _write_mcp_plugin(
             encoding="utf-8",
         )
 
-    # 2. manifest 只声明 Python 依赖，server 只写 disposable lifecycle。
+    else:
+        lines = module.read_text(encoding="utf-8").splitlines(keepends=True)
+        module.write_text("".join(
+            f"version = {version!r}\n" if line.startswith("version = ") else line
+            for line in lines
+        ), encoding="utf-8")
+
+    # 2. requirements 是安装输入，server 只写 disposable lifecycle。
     server_source = plugin_root / "restart_probe_server.py"
     if (
         not server_source.exists()
@@ -657,14 +660,7 @@ def _write_mcp_plugin(
     runtime = plugin_root / ".venv"
     if stage_runtime and not runtime.exists():
         venv.EnvBuilder(with_pip=False).create(runtime)
-    atomic_write_text(
-        plugin_root / "akashic.plugin.toml",
-        "schema_version = 1\n"
-        "name = 'restart_probe'\n"
-        f"version = {version!r}\n"
-        "api_version = 3\n",
-        domain="restart_gate_fixture",
-    )
+
 
 
 def _run_mcp_call(
@@ -1552,13 +1548,6 @@ def _install_startup_plugin(home: Path, name: str, source: str) -> Path:
     plugin.mkdir(parents=True, exist_ok=True)
     (plugin / "plugin.py").write_text(
         "api_version = 3\n" f"name = {name!r}\n" "version = '1.0.0'\n" f"{source}",
-        encoding="utf-8",
-    )
-    (plugin / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        f"name = {name!r}\n"
-        "version = '1.0.0'\n"
-        "api_version = 3\n",
         encoding="utf-8",
     )
     return root

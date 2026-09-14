@@ -48,18 +48,6 @@ def _write_plugin_source(
 ) -> Path:
     root.mkdir(parents=True)
     (root / "plugin.py").write_text(module, encoding="utf-8")
-    (root / "akashic.plugin.toml").write_text(
-        "\n".join(
-            (
-                "schema_version = 1",
-                f'name = "{name}"',
-                f'version = "{version}"',
-                "api_version = 3",
-                "",
-            )
-        ),
-        encoding="utf-8",
-    )
     _git_commit(root, f"{name}-{version}")
     return root
 

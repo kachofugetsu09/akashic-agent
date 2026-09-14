@@ -18,7 +18,7 @@ from bootstrap import setup_wizard
 
 
 def _write_plugin(root: Path) -> None:
-    (root / "plugin.py").write_text("", encoding="utf-8")
+    (root / "plugin.py").write_text("name = 'fixture_setup'\nversion = '1.0.0'\napi_version = 3\n", encoding="utf-8")
     (root / "requirements.txt").write_text("", encoding="utf-8")
     (root / "configure.py").write_text(
         "from pathlib import Path\n"
@@ -29,13 +29,6 @@ def _write_plugin(root: Path) -> None:
         "    os.environ['AKASHIC_SETUP_WORKSPACE'],\n"
         "    encoding='utf-8',\n"
         ")\n",
-        encoding="utf-8",
-    )
-    (root / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        "name = 'fixture_setup'\n"
-        "version = '1.0.0'\n"
-        "api_version = 3\n",
         encoding="utf-8",
     )
 

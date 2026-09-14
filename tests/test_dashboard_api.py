@@ -75,13 +75,6 @@ def test_standalone_dashboard_does_not_import_plugin_backend(
         "async def apply(ctx): pass\n",
         encoding="utf-8",
     )
-    (plugin_dir / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        "name = 'observe'\n"
-        "version = '1.0.0'\n"
-        "api_version = 3\n",
-        encoding="utf-8",
-    )
     pointer = ArtifactPointer(".artifacts/1.0.0-test")
     _ = write_pointers(plugin_base, stable=pointer, latest=pointer)
     manifest_path = home / ".akashic-plugin" / "manifest.toml"

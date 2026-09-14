@@ -4695,13 +4695,6 @@ def _install_control_failure_plugin(sandbox: Path) -> None:
         "        open=open, risk='read-only', always_on=True, preloadable=True)\n",
         encoding="utf-8",
     )
-    _ = (cache / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        "name = 'control_failure'\n"
-        "version = '1.0.0'\n"
-        "api_version = 3\n",
-        encoding="utf-8",
-    )
     _ = (plugin_base / ".pointers.json").write_text(
         json.dumps(
             {"stable": ".artifacts/1.0.0", "latest": ".artifacts/1.0.0"},

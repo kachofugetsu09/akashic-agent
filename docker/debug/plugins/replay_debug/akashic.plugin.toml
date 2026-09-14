@@ -1,8 +1,2 @@
-schema_version = 1
-name = "replay_debug"
-version = "3.0.0"
-api_version = 3
-
-
 [channel_credentials]
 replay = ["replay_token"]

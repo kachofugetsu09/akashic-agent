@@ -100,22 +100,6 @@ def _manager(
     )
 
 
-def _write_static_manifest(
-    root: Path,
-    *,
-    name: str,
-    version: str,
-) -> None:
-    lines = [
-        "schema_version = 1",
-        f"name = {name!r}",
-        f"version = {version!r}",
-        "api_version = 3",
-        "",
-    ]
-    (root / "akashic.plugin.toml").write_text("\n".join(lines), encoding="utf-8")
-
-
 @pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
 def test_import_boundary_rejects_invalid_plugin_file(tmp_path: Path, kind: str) -> None:
     """直接加载固定制品时也拒绝坏入口，不能执行别名文件。"""
@@ -149,10 +133,11 @@ def test_import_boundary_keeps_exact_root_file_without_calling_apply(tmp_path: P
         owner._remove_module_tree(module_name)
 
 
-def test_archived_custom_entrypoint_contract_is_rejected_before_import(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("version", [2, 3])
+def test_archived_custom_entrypoint_contract_is_rejected_before_import(tmp_path: Path, monkeypatch, version: int) -> None:
     """旧归档不被重新解释为新入口，也不改写其恢复材料。"""
     owner = _manager(tmp_path)
-    record = {"version": 2, "entrypoint": "custom.py"}
+    record = {"version": version, "entrypoint": "custom.py"}
     monkeypatch.setattr(owner._archive, "read_descriptor", lambda ref: record)
 
     def forbidden(*args):
@@ -162,7 +147,7 @@ def test_archived_custom_entrypoint_contract_is_rejected_before_import(tmp_path:
     with pytest.raises(RuntimeError, match="归档运行合同不兼容"):
         with owner._archived_generations(("old-component",), "probe"):
             pytest.fail("old archive must not yield")
-    assert record == {"version": 2, "entrypoint": "custom.py"}
+    assert record == {"version": version, "entrypoint": "custom.py"}
 
 
 def _write_installed_artifact(
@@ -178,14 +163,6 @@ def _write_installed_artifact(
     artifact = plugin_base / ".artifacts" / artifact_id
     artifact.mkdir(parents=True)
     (artifact / "plugin.py").write_text(source, encoding="utf-8")
-    marker = "name = "
-    name_line = next(line for line in source.splitlines() if line.startswith(marker))
-    name = name_line.split("=", 1)[1].strip().strip("'\"")
-    version_line = next(
-        line for line in source.splitlines() if line.startswith("version = ")
-    )
-    version = version_line.split("=", 1)[1].strip().strip("'\"")
-    _write_static_manifest(artifact, name=name, version=version)
     return plugin_base, artifact
 
 

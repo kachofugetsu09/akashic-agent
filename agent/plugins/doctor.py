@@ -10,9 +10,7 @@ from agent.plugins.artifacts import read_pointers, resolve_pointer
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.manifest import load_plugin_manifest, plugins_root
 from agent.plugins.static_manifest import (
-    StaticPluginManifest,
     load_static_plugin_manifest,
-    validate_module_exports,
 )
 
 
@@ -87,7 +85,6 @@ def _inspect_plugin(
         try:
             _load_plugin_declaration(
                 stable_root,
-                require_static="@" in plugin_id,
             )
             checks.append(_check("runtime", "deferred", "运行能力由实际装配确定"))
         except Exception as e:
@@ -105,7 +102,6 @@ def _inspect_plugin(
         try:
             _load_plugin_declaration(
                 latest_root,
-                require_static="@" in plugin_id,
             )
             checks.append(_check("candidate_runtime", "deferred", "运行能力由实际装配确定"))
         except Exception as e:
@@ -154,14 +150,10 @@ def _find_plugin_roots(
 
 def _load_plugin_declaration(
     plugin_root: Path,
-    *,
-    require_static: bool,
 ) -> ComposablePlugin:
     """读取并校验一个 v3 namespace。"""
 
-    static_manifest = _load_optional_static_manifest(plugin_root)
-    if require_static and static_manifest is None:
-        raise ValueError(f"installed v3 插件缺少静态 manifest: {plugin_root}")
+    static_manifest = load_static_plugin_manifest(plugin_root)
     module_name = f"akasic_plugin_doctor_{uuid.uuid4().hex}"
     path = plugin_root / "plugin.py"
     if path.is_symlink() or not path.is_file():
@@ -177,30 +169,11 @@ def _load_plugin_declaration(
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
-        if static_manifest is not None and getattr(module, "api_version", None) != 3:
-            raise ValueError("静态 v3 manifest 与 module api_version 不一致")
-        if getattr(module, "api_version", None) != 3:
-            raise ValueError("plugin.py 必须声明 api_version = 3")
-        if static_manifest is not None:
-            validate_module_exports(
-                static_manifest,
-                module,
-                plugin_root=plugin_root,
-            )
-        return ComposablePlugin.from_module(module)
+        if module.__file__ is None or Path(module.__file__).resolve(strict=True) != path.resolve(strict=True):
+            raise RuntimeError("插件 module 文件与固定制品 plugin.py 不一致")
+        return ComposablePlugin.from_module(module, static_manifest)
     finally:
         _ = sys.modules.pop(module_name, None)
-
-
-def _load_optional_static_manifest(
-    plugin_root: Path,
-) -> StaticPluginManifest | None:
-    """读取可选的 v3 static manifest；内建源码插件可以没有 manifest。"""
-
-    path = plugin_root / "akashic.plugin.toml"
-    if not path.exists() and not path.is_symlink():
-        return None
-    return load_static_plugin_manifest(plugin_root)
 
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:

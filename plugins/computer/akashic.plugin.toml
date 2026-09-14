@@ -1,8 +1,3 @@
-schema_version = 1
-name = "computer"
-version = "2.0.0"
-api_version = 3
-
 [validation]
 exclude_data_paths = [
   "state/config/pulse",

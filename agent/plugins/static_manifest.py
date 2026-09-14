@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -19,10 +20,6 @@ _CONFIG_KEY = re.compile(r"^[a-z][A-Za-z0-9_-]{0,63}$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _TOP_LEVEL_KEYS = frozenset(
     {
-        "schema_version",
-        "name",
-        "version",
-        "api_version",
         "validation",
         "channel_credentials",
         "credential_paths",
@@ -41,9 +38,8 @@ class StaticPythonRuntime:
 
 @dataclass(frozen=True, slots=True)
 class StaticPluginManifest:
-    """Validated immutable identity, runtime and validation policy."""
+    """代码身份和安装输入；TOML 仅暂存剩余策略。"""
 
-    schema_version: int
     name: str
     version: str
     api_version: int
@@ -68,15 +64,17 @@ class StaticPluginManifest:
 
 
 def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
-    """Parse and validate one artifact manifest without importing plugin code."""
+    """不导入插件，从 plugin.py 读取身份并加载可选安装策略。"""
 
     # 1. Resolve the artifact root without accepting a symlink as its owner.
     root = plugin_root.resolve(strict=True)
     if plugin_root.is_symlink() or not root.is_dir():
         raise ValueError(f"插件 artifact 根必须是普通目录: {plugin_root}")
     path = root / STATIC_MANIFEST_FILENAME
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"v3 插件缺少静态 manifest: {path}")
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(f"插件策略必须是普通文件: {path}")
+    if not path.exists():
+        return _validate_manifest(root, {})
 
     # 2. Parse only data; no module, callable or process is touched here.
     try:
@@ -86,35 +84,45 @@ def load_static_plugin_manifest(plugin_root: Path) -> StaticPluginManifest:
     return _validate_manifest(root, raw)
 
 
-def validate_module_exports(
-    manifest: StaticPluginManifest,
-    module: object,
-    *,
-    plugin_root: Path,
-) -> None:
-    """Verify imported module identity matches its already validated manifest."""
+def load_plugin_identity(plugin_root: Path) -> tuple[str, str, int]:
+    """只读取三个顶层字面量身份，不执行模块或解释其他声明。"""
+    # 1. plugin.py 是唯一身份来源，链接和缺失入口不能参与安装。
+    path = plugin_root / "plugin.py"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"插件 plugin.py 必须是普通文件: {path}")
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeError) as error:
+        raise ValueError(f"插件身份源码无法解析: {path}") from error
 
-    for field_name, expected in (
-        ("api_version", manifest.api_version),
-        ("name", manifest.name),
-        ("version", manifest.version),
-    ):
-        actual = getattr(module, field_name, None)
-        if actual != expected:
-            raise ValueError(
-                f"v3 插件 module.{field_name} 与静态 manifest 不一致: "
-                f"expected={expected!r}, actual={actual!r}"
-            )
-    module_file = getattr(module, "__file__", None)
-    if not isinstance(module_file, str):
-        raise ValueError("v3 插件 module 缺少 __file__")
-    imported_path = Path(module_file).resolve(strict=True)
-    expected_path = (plugin_root / "plugin.py").resolve(strict=True)
-    if imported_path != expected_path:
-        raise ValueError(
-            "v3 插件 module 文件与制品 plugin.py 不一致: "
-            f"expected={expected_path}, actual={imported_path}"
-        )
+    # 2. 只接受单次、直接赋值；表达式、导入和条件分支都不提供身份。
+    fields = {"name", "version", "api_version"}
+    values: dict[str, object] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        else:
+            continue
+        names = [target.id for target in targets if isinstance(target, ast.Name) and target.id in fields]
+        if not names:
+            continue
+        if len(targets) != 1 or len(names) != 1 or not isinstance(value, ast.Constant):
+            raise ValueError(f"插件身份必须直接赋字面量: {path}:{statement.lineno}")
+        name = names[0]
+        if name in values:
+            raise ValueError(f"插件身份重复赋值: {name}")
+        values[name] = value.value
+    missing = sorted(fields - values.keys())
+    if missing:
+        raise ValueError(f"plugin.py 缺少顶层字面量身份: {missing}")
+    api_version = _integer(values, "api_version")
+    if api_version != 3:
+        raise ValueError("plugin.py 只接受 api_version = 3")
+    return _name(values["name"], "name"), _version(values["version"], "version"), api_version
 
 
 def staged_python_interpreter(
@@ -166,27 +174,16 @@ def materialize_command(
 
 
 def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginManifest:
-    """Validate manifest identity, declarations and artifact-relative paths."""
+    """合并代码身份与剩余策略，并检查制品相对路径。"""
 
     # 1. Reject fields for which Core has no static contract.
     unknown = sorted(set(raw) - _TOP_LEVEL_KEYS)
     if unknown:
-        raise ValueError(f"插件静态 manifest 包含未知字段: {unknown}")
-    schema_version = _integer(raw, "schema_version")
-    if schema_version != 1:
-        raise ValueError("插件静态 manifest schema_version 必须为 1")
-    name = _name(raw.get("name"), "name")
-    version = _version(raw.get("version"), "version")
-    api_version = _integer(raw, "api_version")
-    if api_version != 3:
-        raise ValueError("静态 artifact manifest 只接受 api_version = 3")
-    _relative_artifact_path(
-        root,
-        "plugin.py",
-        label="plugin.py",
-        must_exist=True,
-        require_file=True,
-    )
+        raise ValueError(
+            f"插件静态 manifest 包含未知字段: {unknown}；"
+            "请升级制品：身份只在 plugin.py 声明，TOML 仅保留策略"
+        )
+    name, version, api_version = load_plugin_identity(root)
     # 2. Requirements are complete before the artifact is published.
     python = _python_runtimes(root)
     exclude_data_paths = _validation_paths(root, raw.get("validation", {}))
@@ -198,7 +195,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         path for _channel, paths in channel_credentials for path in paths
     }, "credential_paths/channel_credentials")
     identity: dict[str, object] = {
-        "schema_version": schema_version,
         "name": name,
         "version": version,
         "api_version": api_version,
@@ -215,7 +211,7 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
             for channel, paths in channel_credentials
         ],
     }
-    # 原渠道 manifest 的身份保持不变；通用声明参与自身不可变身份。
+    # 策略仍参与固定安装输入的身份。
     if credential_paths:
         identity["credential_paths"] = list(credential_paths)
     identity_digest = hashlib.sha256(
@@ -227,7 +223,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         ).encode("utf-8")
     ).hexdigest()
     return StaticPluginManifest(
-        schema_version=schema_version,
         name=name,
         version=version,
         api_version=api_version,

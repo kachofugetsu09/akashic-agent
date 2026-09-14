@@ -147,7 +147,6 @@ from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
     command_python_runtime,
     materialize_command,
-    validate_module_exports,
 )
 from agent.plugins.reload_journal import (
     RecoveryActionName,
@@ -4767,22 +4766,9 @@ class PluginManager:
             )
         if expected_module_path.is_symlink() or not expected_module_path.is_file():
             raise ValueError(f"插件 plugin.py 必须是普通文件: {expected_module_path}")
-        static_manifest: StaticPluginManifest | None = None
-        manifest_path = plugin_dir / "akashic.plugin.toml"
-        if manifest_path.exists() or manifest_path.is_symlink():
-            try:
-                # 导入固定入口前核对发现时的静态身份。
-                static_manifest = load_static_plugin_manifest(plugin_dir)
-                if mod.get("manifest_digest", "") != static_manifest.identity_digest:
-                    raise RuntimeError("source discovery manifest identity 已漂移")
-            except Exception as error:
-                raise RuntimeError(
-                    f"插件 {initial_plugin_id} 静态 manifest admission 失败: {error}"
-                ) from error
-        elif mod.get("source_type") == "installed":
-            raise RuntimeError(
-                f"installed 插件缺少静态 v3 manifest: {initial_plugin_id}"
-            )
+        static_manifest = load_static_plugin_manifest(plugin_dir)
+        if mod.get("manifest_digest", "") != static_manifest.identity_digest:
+            raise RuntimeError("source discovery identity 已漂移")
         try:
             source_revision = _source_revision(plugin_dir)
         except Exception as error:
@@ -4838,7 +4824,7 @@ class PluginManager:
             f"{stable_module_path}__g{generation_sequence}_"
             f"{source_revision[:8]}_{self._manager_namespace}"
         )
-        # Builtin v3 may omit a manifest; installed artifacts were rejected above.
+        # 固定同一份源码和安装输入后才导入。
         try:
             code_archive = self._archive.save(
                 plugin_dir, exclude=frozenset({".venv", "node_modules", ENVIRONMENT_FILE})
@@ -4846,10 +4832,7 @@ class PluginManager:
             archived_dir = self._archive.open(code_archive)
             if _source_revision(archived_dir) != source_revision:
                 raise RuntimeError("插件源码在加载前发生变化")
-            archived_manifest = (
-                load_static_plugin_manifest(archived_dir)
-                if (archived_dir / "akashic.plugin.toml").exists() else None
-            )
+            archived_manifest = load_static_plugin_manifest(archived_dir)
             if archived_manifest != static_manifest:
                 raise RuntimeError("插件 manifest 在加载前发生变化")
             environment_refs: dict[str, str] = {}
@@ -4876,53 +4859,11 @@ class PluginManager:
                 f"插件 {initial_plugin_id} 导入失败: {error_text}"
             ) from error
         loaded_module = sys.modules.get(mp)
-        if static_manifest is not None:
-            try:
-                if not isinstance(loaded_module, ModuleType):
-                    raise RuntimeError("v3 插件模块未保留在 import registry")
-                validate_module_exports(
-                    static_manifest,
-                    loaded_module,
-                    plugin_root=archived_dir,
-                )
-            except Exception as error:
-                self._remove_module_tree(mp)
-                error_text = str(error) or type(error).__name__
-                self._record_failed_gate(
-                    plugin_id=initial_plugin_id,
-                    revision=source_revision,
-                    check_id="static_manifest_exports",
-                    reason=error_text,
-                )
-                self._abort_reload_attempt(
-                    reload_tx_id,
-                    error=f"static_manifest_exports: {error_text}",
-                )
-                return None
-        is_v3 = (
-            loaded_module is not None
-            and getattr(loaded_module, "api_version", None) == 3
-        )
-        if not is_v3:
-            self._remove_module_tree(mp)
-            self._record_failed_gate(
-                plugin_id=initial_plugin_id,
-                revision=source_revision,
-                check_id="plugin_api",
-                reason="plugin.py 必须声明 api_version = 3",
-            )
-            self._abort_reload_attempt(
-                reload_tx_id,
-                error="plugin_api: plugin.py 必须声明 api_version = 3",
-            )
-            raise RuntimeError(f"插件只接受 api_version = 3: {initial_plugin_id}")
         try:
             if not isinstance(loaded_module, ModuleType):
                 raise RuntimeError("v3 插件模块未保留在 import registry")
-            instance = ComposablePlugin.from_module(loaded_module)
-            name = str(instance.name or mod["name"]).strip()
-            if not name:
-                raise RuntimeError("插件缺少 name")
+            instance = ComposablePlugin.from_module(loaded_module, static_manifest)
+            name = static_manifest.name
             plugin_id = f"{name}@{mod['marketplace']}" if mod["marketplace"] else name
             if plugin_id != initial_plugin_id:
                 raise RuntimeError(
@@ -5016,7 +4957,7 @@ class PluginManager:
                 plugin_dir=archived_dir,
             )
             archive_ref = self._archive.save_descriptor({
-                "version": 3,
+                "version": 4,
                 "code": code_archive,
                 "python_environments": environment_refs,
                 "plugin_id": plugin_id,
@@ -5377,10 +5318,7 @@ class PluginManager:
             for component_ref in cast(tuple[str, ...], root["components"]):
                 record = self._archive.read_descriptor(component_ref)
                 plugin_dir = self._archive.open(cast(str, record["code"]))
-                manifest = (
-                    load_static_plugin_manifest(plugin_dir)
-                    if (plugin_dir / "akashic.plugin.toml").exists() else None
-                )
+                manifest = load_static_plugin_manifest(plugin_dir)
                 exclusions.setdefault(cast(str, record["data_dir"]), set()).update(
                     _candidate_data_exclude_paths(manifest)
                 )
@@ -5457,7 +5395,7 @@ class PluginManager:
             records = tuple(self._archive.read_descriptor(ref) for ref in components)
             # 先检查整个闭包，不能导入前半段后才发现后续组件属于旧接口。
             for record in records:
-                if record["version"] != 3 or record["runtime"] != {
+                if record["version"] != 4 or record["runtime"] != {
                     "python_tag": sys.implementation.cache_tag,
                     "binding_api": PLUGIN_ARCHIVE_BINDING_API,
                 }:
@@ -5473,16 +5411,11 @@ class PluginManager:
                 data_dir = self._workspace / cast(str, record["data_dir"])
                 validate_workspace_plugin_data_path(data_dir, self._workspace)
                 module_path = f"_akashic_archive_{namespace}_{index}"
+                manifest = load_static_plugin_manifest(plugin_dir)
                 self._import_plugin(module_path, plugin_dir)
                 modules.append(module_path)
                 module = sys.modules[module_path]
-                manifest = (
-                    load_static_plugin_manifest(plugin_dir)
-                    if (plugin_dir / "akashic.plugin.toml").exists() else None
-                )
-                if manifest is not None:
-                    validate_module_exports(manifest, module, plugin_root=plugin_dir)
-                plugin = ComposablePlugin.from_module(module)
+                plugin = ComposablePlugin.from_module(module, manifest)
                 if plugin.name != plugin_id.split("@", 1)[0]:
                     raise ValueError("归档插件身份不一致")
                 plugin.bind_archived_active(cast(bool, record["static_active"]))
@@ -6108,16 +6041,11 @@ class PluginManager:
             f"{candidate_owner.generation_id.replace(':', '_')}_"
             f"{secrets.token_hex(4)}"
         )
+        identity = load_static_plugin_manifest(plugin_dir)
         self._import_plugin(module_path, plugin_dir)
         try:
             module = sys.modules[module_path]
-            if generation.static_manifest is not None:
-                validate_module_exports(
-                    generation.static_manifest,
-                    module,
-                    plugin_root=plugin_dir,
-                )
-            clone = ComposablePlugin.from_module(module)
+            clone = ComposablePlugin.from_module(module, identity)
             config = copy.deepcopy(generation.config_projection)
             clone.bind_archived_active(cast(bool, record["static_active"]))
             return clone, module_path, data_dir, config
@@ -6791,6 +6719,8 @@ class PluginManager:
         sys.modules[module_name] = module
         try:
             spec.loader.exec_module(module)  # type: ignore[union-attr]
+            if module.__file__ is None or Path(module.__file__).resolve(strict=True) != path.resolve(strict=True):
+                raise RuntimeError("插件 module 文件与固定制品 plugin.py 不一致")
         except BaseException:
             self._remove_module_tree(module_name)
             raise

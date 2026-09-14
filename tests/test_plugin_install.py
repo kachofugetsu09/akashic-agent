@@ -30,13 +30,66 @@ from agent.plugins.static_manifest import (
 from agent.plugins.source_resolver import resolve_plugin_sources
 
 
+def test_code_identity_is_read_without_execution_or_toml(tmp_path: Path) -> None:
+    """身份不依赖目录名或导入，也不要求空策略文件。"""
+    from types import ModuleType
+    from agent.plugins.composable import ComposablePlugin
+
+    (tmp_path / "plugin.py").write_text(
+        'name: str = "probe"\nversion = "1.2.3"\napi_version = 3\n'
+        'raise AssertionError("metadata discovery executed plugin")\n'
+    )
+    identity = load_static_plugin_manifest(tmp_path)
+    assert (identity.name, identity.version, identity.api_version) == ("probe", "1.2.3", 3)
+    assert not (tmp_path / "akashic.plugin.toml").exists()
+    module = ModuleType("loaded_probe")
+    module.apply = lambda ctx: None
+    plugin = ComposablePlugin.from_module(module, identity)
+    assert (plugin.name, plugin.version, plugin.api_version) == ("probe", "1.2.3", 3)
+
+
+@pytest.mark.parametrize("declaration", [
+    'name = "pro" + "be"',
+    'from elsewhere import name',
+    'if True:\n    name = "probe"',
+    'name = "probe"\nname = "again"',
+    'name = other = "probe"',
+])
+def test_code_identity_requires_one_direct_literal(tmp_path: Path, declaration: str) -> None:
+    (tmp_path / "plugin.py").write_text(
+        declaration + '\nversion = "1.0.0"\napi_version = 3\n'
+    )
+    with pytest.raises(ValueError, match="身份"):
+        load_static_plugin_manifest(tmp_path)
+
+
+@pytest.mark.parametrize("api", ["True", "2", '"3"'])
+def test_code_identity_rejects_unsupported_api_before_import(tmp_path: Path, api: str) -> None:
+    (tmp_path / "plugin.py").write_text(
+        f'name = "probe"\nversion = "1.0.0"\napi_version = {api}\n'
+        'raise AssertionError("must reject before import")\n'
+    )
+    with pytest.raises(ValueError, match="api_version"):
+        load_static_plugin_manifest(tmp_path)
+
+
+@pytest.mark.parametrize("declaration", [
+    'schema_version = 1', 'name = "probe"', 'version = "1.0.0"', 'api_version = 3',
+])
+def test_old_toml_identity_requires_artifact_upgrade(tmp_path: Path, declaration: str) -> None:
+    _write_v3_plugin(tmp_path, name="probe")
+    (tmp_path / "akashic.plugin.toml").write_text(declaration + "\n")
+    with pytest.raises(ValueError, match="升级制品"):
+        load_static_plugin_manifest(tmp_path)
+
+
 @pytest.mark.parametrize("entrypoint", ["plugin.py", "nested/custom.py"])
 def test_manifest_rejects_entrypoint_declarations(tmp_path: Path, entrypoint: str) -> None:
     """入口文件固定后，旧 TOML 字段不能悄悄继续生效。"""
     repo = tmp_path / "source"
     _write_v3_plugin(repo, name="probe")
     path = repo / "akashic.plugin.toml"
-    path.write_text(path.read_text() + f"entrypoint = {entrypoint!r}\n")
+    path.write_text(f"entrypoint = {entrypoint!r}\n")
     with pytest.raises(ValueError, match="未知字段.*entrypoint"):
         load_static_plugin_manifest(repo)
 
@@ -106,11 +159,8 @@ def test_install_git_plugin_uses_static_v3_manifest(tmp_path: Path) -> None:
     assert not (pointer_state.parent / ".stable.json").exists()
     assert not (pointer_state.parent / ".latest.json").exists()
     assert (result.installed_path / "plugin.py").exists()
-    installed_manifest = result.installed_path / "akashic.plugin.toml"
-    assert installed_manifest.is_file()
-    assert (
-        tomllib.loads(installed_manifest.read_text(encoding="utf-8"))["name"] == "feed"
-    )
+    assert not (result.installed_path / "akashic.plugin.toml").exists()
+    assert load_static_plugin_manifest(result.installed_path).name == "feed"
     assert (result.data_path / "state.json").exists()
     manifest = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
     assert manifest == {"plugins": {"feed@lab": {"enabled": True}}}
@@ -122,7 +172,7 @@ def test_install_git_plugin_reads_static_v3_manifest(tmp_path: Path) -> None:
         repo,
         name="citation",
         version="2.0.0",
-        module_source="raise RuntimeError('must not import during install')\n",
+        module_source="name = 'citation'\nversion = '2.0.0'\napi_version = 3\nraise RuntimeError('must not import during install')\n",
     )
     _commit(repo)
 
@@ -136,7 +186,7 @@ def test_install_git_plugin_reads_static_v3_manifest(tmp_path: Path) -> None:
     assert result.plugin_name == "citation"
     assert result.plugin_version == "2.0.0"
     assert (result.installed_path / "plugin.py").is_file()
-    assert (result.installed_path / "akashic.plugin.toml").is_file()
+    assert not (result.installed_path / "akashic.plugin.toml").exists()
 
 
 def test_install_git_plugin_prepares_discovered_python_runtime(
@@ -752,14 +802,6 @@ def _write_v3_plugin(
         module_source = "\n".join(lines) + "\n"
     (root / "plugin.py").write_text(module_source, encoding="utf-8")
 
-    # 2. Write the immutable static identity consumed by the installer.
-    (root / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        f"name = {name!r}\n"
-        f"version = {version!r}\n"
-        "api_version = 3\n",
-        encoding="utf-8",
-    )
 
 
 def _commit(repo: Path) -> None:

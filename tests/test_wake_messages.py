@@ -38,8 +38,6 @@ async def application(tmp_path, *, wake_delivery=False):
     for name in ("conversation", "react", "reply_program", "wake", "delivery", "eventmail", "drift"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
-    (sources / "wake/akashic.plugin.toml").write_text(
-        'schema_version = 1\nname = "wake"\nversion = "4.0.0"\napi_version = 3\n')
     module = sources / "wake/plugin.py"
     module.write_text(module.read_text() + '''
 from agent.plugin_composition import ServiceKey

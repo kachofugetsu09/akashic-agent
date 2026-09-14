@@ -45,14 +45,12 @@ def resolve_plugin_sources(
             if normalized in seen:
                 continue
             seen.add(normalized)
-            static_manifest = _load_optional_static_manifest(normalized)
+            static_manifest = load_static_plugin_manifest(normalized)
             discovered.append(
                 ResolvedPluginSource(
                     plugin_root=normalized,
                     source_type="builtin",
-                    plugin_name=(
-                        static_manifest.name if static_manifest is not None else ""
-                    ),
+                    plugin_name=static_manifest.name,
                     static_manifest=static_manifest,
                 )
             )
@@ -96,7 +94,7 @@ def _iter_installed_plugin_roots(
             has_pointers, selected = _resolve_installed_pointer(plugin_dir, selector)
             if has_pointers:
                 if selected is not None:
-                    static_manifest = _require_installed_plugin_root(selected)
+                    static_manifest = load_static_plugin_manifest(selected)
                     _validate_installed_identity(
                         plugin_dir.name,
                         static_manifest,
@@ -147,22 +145,6 @@ def _require_cache_directory(path: Path, label: str) -> None:
 def _require_safe_cache_segment(path: Path, label: str) -> None:
     if not _is_safe_cache_segment(path.name):
         raise ValueError(f"installed cache {label} 路径段无效: {path}")
-
-
-def _require_installed_plugin_root(path: Path) -> StaticPluginManifest:
-    manifest_path = path / "akashic.plugin.toml"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        return load_static_plugin_manifest(path)
-    if not path.exists():
-        raise FileNotFoundError(f"installed cache 版本扫描期间已变化: {path}")
-    raise ValueError(f"installed cache 缺少静态 v3 manifest: {manifest_path}")
-
-
-def _load_optional_static_manifest(path: Path) -> StaticPluginManifest | None:
-    manifest_path = path / "akashic.plugin.toml"
-    if not manifest_path.exists() and not manifest_path.is_symlink():
-        return None
-    return load_static_plugin_manifest(path)
 
 
 def _validate_installed_identity(

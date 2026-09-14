@@ -9,6 +9,7 @@ from types import ModuleType
 from typing import cast
 
 from agent.plugin_composition import Context, ServiceKey, ServiceView
+from agent.plugins.static_manifest import StaticPluginManifest
 
 _CORE_RESERVED_WORKSPACE_ROOTS = frozenset({"plugin-data", "runtime"})
 
@@ -33,25 +34,15 @@ class ComposablePlugin:
     _apply: Callable[[Context], object] = field(repr=False)
     _service_view: ServiceView | None = field(default=None, init=False, repr=False)
     _static_active: bool | None = field(default=None, init=False, repr=False)
-    api_version: int = field(default=3, init=False)
+    api_version: int
 
     @classmethod
-    def from_module(cls, module: ModuleType) -> ComposablePlugin:
+    def from_module(cls, module: ModuleType, identity: StaticPluginManifest) -> ComposablePlugin:
         """Validate and freeze the named exports of one v3 plugin module."""
 
-        # 1. Validate the namespace shape before Manager state is created.
-        if getattr(module, "api_version", None) != 3:
-            raise ValueError("v3 插件模块必须声明 api_version = 3")
-        name = getattr(module, "name", None)
-        version = getattr(module, "version", None)
-        if not isinstance(name, str) or not name.strip() or name != name.strip():
-            raise ValueError("v3 插件 name 必须是非空且无首尾空白的字符串")
-        if (
-            not isinstance(version, str)
-            or not version.strip()
-            or version != version.strip()
-        ):
-            raise ValueError("v3 插件 version 必须是非空且无首尾空白的字符串")
+        # 1. 身份由导入前的 loader 拥有，模块只提供实际能力。
+        name = identity.name
+        version = identity.version
         apply = getattr(module, "apply", None)
         if not callable(apply):
             raise ValueError("插件模块必须导出 apply(ctx)")
@@ -104,6 +95,7 @@ class ComposablePlugin:
             module=module,
             name=name,
             version=version,
+            api_version=identity.api_version,
             desc=str(getattr(module, "desc", "")),
             author=str(getattr(module, "author", "")),
             inject=inject,

@@ -175,7 +175,7 @@ def _write_bundle(
     migration_root = artifact / package_name
     migration_root.mkdir(parents=True, exist_ok=True)
     (artifact / "plugin.py").write_text(
-        "# entrypoint is not needed by the migration runner\n",
+        f"name = {manifest_name or bundle_id!r}\nversion = '1.0.0'\napi_version = 3\n",
         encoding="utf-8",
     )
     (migration_root / "__init__.py").write_text("\n", encoding="utf-8")
@@ -218,17 +218,6 @@ def _write_bundle(
     }
     catalog_path = artifact / "migration.catalog.toml"
     catalog_path.write_text(toml.dumps(catalog), encoding="utf-8")
-    (artifact / "akashic.plugin.toml").write_text(
-        toml.dumps(
-            {
-                "schema_version": 1,
-                "name": manifest_name or bundle_id,
-                "version": "1.0.0",
-                "api_version": 3,
-            }
-        ),
-        encoding="utf-8",
-    )
     return artifact
 
 

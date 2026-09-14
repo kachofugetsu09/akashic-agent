@@ -240,8 +240,6 @@ async def test_summary_use_reads_original_record_after_head_advance_and_restart(
     for name in ("context", "compaction", "turn_projection"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
-    (sources / "compaction/akashic.plugin.toml").write_text(
-        'schema_version = 1\nname = "compaction"\nversion = "4.1.0"\napi_version = 3\n')
     settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text('summary_source = ["compaction", "compaction"]\n')

@@ -87,13 +87,6 @@ def _write_bundle(
     ).encode("utf-8")
     catalog_path = artifact / "migration.catalog.toml"
     catalog_path.write_bytes(catalog)
-    (artifact / "akashic.plugin.toml").write_text(
-        "schema_version = 1\n"
-        f"name = {bundle_id!r}\n"
-        "version = '1.0.0'\n"
-        "api_version = 3\n",
-        encoding="utf-8",
-    )
     return artifact
 
 
@@ -268,7 +261,7 @@ def test_bundle_rejects_current_plugin_namespace_import(tmp_path: Path) -> None:
 
 def test_bundle_discovery_without_plugin_manifest(tmp_path: Path) -> None:
     artifact = _write_bundle(tmp_path)
-    (artifact / "akashic.plugin.toml").unlink()
+    assert not (artifact / "akashic.plugin.toml").exists()
 
     bundles = discover_migration_bundles(plugin_dirs=(artifact,))
 

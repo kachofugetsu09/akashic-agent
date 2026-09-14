@@ -72,10 +72,6 @@ async def test_request_scope_keeps_child_grants_and_blocks_shutdown_until_releas
     source = tmp_path / "plugins/request_channel"
     source.mkdir(parents=True)
     (source / "plugin.py").write_text(MODULE)
-    (source / "akashic.plugin.toml").write_text(
-        'schema_version=1\nname="request_channel"\nversion="1.0.0"\n'
-        'api_version=3\n'
-    )
     log = MessageLog(tmp_path / "sessions.db")
     host = PluginManager(
         [source.parent], event_bus=EventBus(), workspace=tmp_path / "workspace",

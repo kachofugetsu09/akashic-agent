@@ -345,12 +345,9 @@ def memory_sources(root):
     """安装 Akasha/Markdown 及其实际摘要依赖，只替换外部 embedding provider。"""
     from pathlib import Path
     import shutil
-    versions = {"akasha": "4.0.0", "markdown_memory": "4.1.0", "compaction": "4.1.0"}
     for name in ("akasha", "markdown_memory", "compaction"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
-        (root / name / "akashic.plugin.toml").write_text(
-            f'schema_version = 1\nname = "{name}"\nversion = "{versions[name]}"\napi_version = 3\n')
     settings = root.parent / "workspace/plugin-data/context-builtin/config.local.toml"
     settings.parent.mkdir(parents=True, exist_ok=True)
     with settings.open("a") as handle:
@@ -645,8 +642,7 @@ async def test_validation_preserves_history_without_archived_workspace(tmp_path)
 '''
     _write_v3_plugin(source, name="probe", module_source=original)
     (source / "akashic.plugin.toml").write_text(
-        (source / "akashic.plugin.toml").read_text()
-        + '\n[validation]\nexclude_data_paths = ["legacy-secret.txt"]\n'
+        '\n[validation]\nexclude_data_paths = ["legacy-secret.txt"]\n'
     )
     _commit(source)
     old = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
@@ -682,10 +678,7 @@ async def test_validation_preserves_history_without_archived_workspace(tmp_path)
             "past-input", Input((ContentPart("file", attachment.artifact_id),)))
         assert (workspace / "sessions.db-wal").stat().st_size > 0
         (source / "plugin.py").write_text(MODULE)
-        (source / "akashic.plugin.toml").write_text(
-            'schema_version = 1\nname = "probe"\nversion = "1.0.0"\n'
-            'api_version = 3\n'
-        )
+        (source / "akashic.plugin.toml").unlink()
         _commit(source)
         result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         (source / "plugin.py").unlink()

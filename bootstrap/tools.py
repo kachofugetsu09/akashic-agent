@@ -235,7 +235,7 @@ def _disabled_builtin_plugins_for_runtime(
     unavailable = {
         manifest.name
         for root in roots
-        for path in root.glob("*/akashic.plugin.toml")
+        for path in root.glob("*/plugin.py")
         if (manifest := load_static_plugin_manifest(path.parent)).workloads
     }
     if unavailable:

@@ -15,14 +15,9 @@ from agent.plugins.static_manifest import (
 def source(tmp_path):
     code = tmp_path / "source"
     code.mkdir()
-    (code / "plugin.py").write_text("name = 'probe'\n")
+    (code / "plugin.py").write_text("name = 'probe'\nversion = '1.0.0'\napi_version = 3\n")
     (code / "probe.py").write_text("import sys; print(sys.prefix)\n")
     (code / "requirements.txt").write_text("")
-    (code / "akashic.plugin.toml").write_text("""schema_version = 1
-name = "probe"
-version = "1.0.0"
-api_version = 3
-""")
     return code, load_static_plugin_manifest(code)
 
 
@@ -192,7 +187,7 @@ def test_requirements_discovery_rejects_symlink_runtime_paths(tmp_path, kind):
 def test_manifest_rejects_removed_python_declarations(tmp_path):
     code, _ = source(tmp_path)
     path = code / "akashic.plugin.toml"
-    path.write_text(path.read_text() + '\n[[python]]\nrequirements = "requirements.txt"\n')
+    path.write_text('\n[[python]]\nrequirements = "requirements.txt"\n')
     with pytest.raises(ValueError, match="未知字段.*python"):
         load_static_plugin_manifest(code)
 

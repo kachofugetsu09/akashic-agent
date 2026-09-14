@@ -744,12 +744,6 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     provider_repo.mkdir()
     provider_source = generated / "restart_provider" / "plugin.py"
     shutil.copy2(provider_source, provider_repo / "plugin.py")
-    (provider_repo / "akashic.plugin.toml").write_text(
-        "schema_version=1\n"
-        "name='restart_provider'\n"
-        "version='1.0.0'\n"
-        "api_version=3\n",
-    )
     for args in (
         ("git", "init", "-q"),
         ("git", "add", "."),
