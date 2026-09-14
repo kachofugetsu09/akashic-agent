@@ -97,8 +97,7 @@ def _write_bundle(
         "schema_version = 1\n"
         f"name = {plugin_name!r}\n"
         "version = '1.0.0'\n"
-        "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n",
+        "api_version = 3\n",
         encoding="utf-8",
     )
     return artifact

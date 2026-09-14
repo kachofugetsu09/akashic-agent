@@ -105,17 +105,64 @@ def _write_static_manifest(
     *,
     name: str,
     version: str,
-    entrypoint: str = "plugin.py",
 ) -> None:
     lines = [
         "schema_version = 1",
         f"name = {name!r}",
         f"version = {version!r}",
         "api_version = 3",
-        f"entrypoint = {entrypoint!r}",
         "",
     ]
     (root / "akashic.plugin.toml").write_text("\n".join(lines), encoding="utf-8")
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
+def test_import_boundary_rejects_invalid_plugin_file(tmp_path: Path, kind: str) -> None:
+    """直接加载固定制品时也拒绝坏入口，不能执行别名文件。"""
+    root = tmp_path / "artifact"
+    root.mkdir()
+    (root / "custom.py").write_text("raise AssertionError('must not import')\n")
+    if kind == "symlink":
+        (root / "plugin.py").symlink_to(root / "custom.py")
+    elif kind == "directory":
+        (root / "plugin.py").mkdir()
+    owner = _manager(tmp_path)
+    with pytest.raises(ValueError, match="plugin.py 必须是普通文件"):
+        owner._import_plugin("_invalid_entrypoint_probe", root)
+    assert "_invalid_entrypoint_probe" not in sys.modules
+
+
+def test_import_boundary_keeps_exact_root_file_without_calling_apply(tmp_path: Path) -> None:
+    """导入固定文件保留来源路径，但不替组合层调用 apply。"""
+    root = tmp_path / "artifact"
+    root.mkdir()
+    (root / "plugin.py").write_text(_v3_source("probe", body="    raise AssertionError('not yet')\n"))
+    (root / "custom.py").write_text("raise AssertionError('wrong file')\n")
+    owner = _manager(tmp_path)
+    module_name = "_fixed_entrypoint_probe"
+    try:
+        owner._import_plugin(module_name, root)
+        module = sys.modules[module_name]
+        assert Path(module.__file__) == root / "plugin.py"
+        assert callable(module.apply)
+    finally:
+        owner._remove_module_tree(module_name)
+
+
+def test_archived_custom_entrypoint_contract_is_rejected_before_import(tmp_path: Path, monkeypatch) -> None:
+    """旧归档不被重新解释为新入口，也不改写其恢复材料。"""
+    owner = _manager(tmp_path)
+    record = {"version": 2, "entrypoint": "custom.py"}
+    monkeypatch.setattr(owner._archive, "read_descriptor", lambda ref: record)
+
+    def forbidden(*args):
+        raise AssertionError("old archive must not import")
+
+    monkeypatch.setattr(owner, "_import_plugin", forbidden)
+    with pytest.raises(RuntimeError, match="归档运行合同不兼容"):
+        with owner._archived_generations(("old-component",), "probe"):
+            pytest.fail("old archive must not yield")
+    assert record == {"version": 2, "entrypoint": "custom.py"}
 
 
 def _write_installed_artifact(

@@ -696,11 +696,11 @@ async def _stop_app_runtime(
     evidence["status"] = "passed" if all(checks.values()) else "failed"
 
 
-def _plugin_id_from_manifest(artifact: Path, marketplace: str) -> tuple[str, str]:
+def _plugin_id_from_manifest(artifact: Path, marketplace: str) -> str:
     from agent.plugins.static_manifest import load_static_plugin_manifest
 
     manifest = load_static_plugin_manifest(artifact)
-    return f"{manifest.name}@{marketplace}", manifest.entrypoint
+    return f"{manifest.name}@{marketplace}"
 
 
 def _load_source_map(path: Path) -> dict[str, str]:
@@ -955,7 +955,6 @@ def _generation_evidence(
     *,
     generation: Any,
     artifact: Path,
-    entrypoint: str,
     workspace: Path,
     repo_root: Path,
     source_checkout: Path | None,
@@ -973,7 +972,7 @@ def _generation_evidence(
         return evidence
     module_path = Path(module_file).resolve(strict=True)
     archive_root = (workspace / "runtime" / "plugin-archives").resolve(strict=False)
-    installed_entrypoint = (artifact / entrypoint).resolve(strict=True)
+    installed_entrypoint = (artifact / "plugin.py").resolve(strict=True)
     evidence["module_file_sha256"] = _sha256(module_path)
     evidence["installed_entrypoint_sha256"] = _sha256(installed_entrypoint)
     checks["module_file_is_core_archive"] = _under(module_path, archive_root)
@@ -1084,13 +1083,13 @@ async def _exercise(
             plugins_home=plugins_home,
         )
         artifact = result.installed_path.resolve(strict=True)
-        plugin_id, entrypoint = _plugin_id_from_manifest(artifact, marketplace)
+        plugin_id = _plugin_id_from_manifest(artifact, marketplace)
         evidence.update(
             {
                 "plugin_id": plugin_id,
                 "source_revision": result.source_revision,
                 "installed_artifact": str(artifact),
-                "installed_entrypoint": str(artifact / entrypoint),
+                "installed_entrypoint": str(artifact / "plugin.py"),
             }
         )
         evidence["checks"].update(
@@ -1119,7 +1118,6 @@ async def _exercise(
                 _generation_evidence(
                     generation=generation,
                     artifact=artifact,
-                    entrypoint=entrypoint,
                     workspace=workspace,
                     repo_root=repo_root,
                     source_checkout=source_checkout,
@@ -1275,7 +1273,7 @@ async def _exercise_fleet(
                 plugins_home=plugins_home,
             )
             artifact = result.installed_path.resolve(strict=True)
-            plugin_id, entrypoint = _plugin_id_from_manifest(artifact, marketplace)
+            plugin_id = _plugin_id_from_manifest(artifact, marketplace)
             expected_name = str(job.get("label", ""))
             installed_name = plugin_id.split("@", 1)[0]
             if expected_name and installed_name != expected_name:
@@ -1288,8 +1286,7 @@ async def _exercise_fleet(
                     "plugin_id": plugin_id,
                     "source_revision": result.source_revision,
                     "installed_artifact": str(artifact),
-                    "installed_entrypoint": str(artifact / entrypoint),
-                    "entrypoint": entrypoint,
+                    "installed_entrypoint": str(artifact / "plugin.py"),
                     "artifact": artifact,
                     "source_checkout": job.get("source_checkout"),
                     "expected_source_revision": job.get("source_revision"),
@@ -1340,7 +1337,6 @@ async def _exercise_fleet(
                     _generation_evidence(
                         generation=generation,
                         artifact=row["artifact"],
-                        entrypoint=row["entrypoint"],
                         workspace=workspace,
                         repo_root=repo_root,
                         source_checkout=row.get("source_checkout"),
@@ -1596,7 +1592,7 @@ async def _exercise_business_composition(
                     plugins_home=plugins_home,
                 )
                 artifact = install_result_initial.installed_path.resolve(strict=True)
-                plugin_id, entrypoint = _plugin_id_from_manifest(artifact, marketplace)
+                plugin_id = _plugin_id_from_manifest(artifact, marketplace)
                 expected_name = str(job.get("label", ""))
                 actual_name = plugin_id.split("@", 1)[0]
                 row.update(
@@ -1604,7 +1600,6 @@ async def _exercise_business_composition(
                         "plugin_id": plugin_id,
                         "source_revision": install_result_initial.source_revision,
                         "installed_artifact": str(artifact),
-                        "entrypoint": entrypoint,
                         "artifact": artifact,
                         "capability_spec": job.get("capability_spec"),
                     }
@@ -1656,7 +1651,6 @@ async def _exercise_business_composition(
             row["generation"] = _generation_evidence(
                 generation=generation,
                 artifact=Path(str(row["installed_artifact"])),
-                entrypoint=str(row["entrypoint"]),
                 workspace=workspace,
                 repo_root=repo_root,
                 source_checkout=source_checkout,

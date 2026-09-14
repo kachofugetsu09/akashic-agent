@@ -2,7 +2,6 @@ schema_version = 1
 name = "replay_debug"
 version = "3.0.0"
 api_version = 3
-entrypoint = "plugin.py"
 
 
 [channel_credentials]

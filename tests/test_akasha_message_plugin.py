@@ -16,7 +16,7 @@ from plugins.content.plugin import CONTENT
 from plugins.context.materials import MATERIALS
 from plugins.tools.api import MessageReply
 from plugins.tools.plugin import TOOLS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.akasha.plugin import AKASHA_TOOLS
 from agent.plugin_composition.bindings import BINDINGS
 from session.log import MessageLog
 from session.message import CallRef, ContentPart, ContentReferences, Input, Output, ToolCall, ToolResult

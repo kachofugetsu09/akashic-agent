@@ -79,8 +79,7 @@ def test_standalone_dashboard_does_not_import_plugin_backend(
         "schema_version = 1\n"
         "name = 'observe'\n"
         "version = '1.0.0'\n"
-        "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n",
+        "api_version = 3\n",
         encoding="utf-8",
     )
     pointer = ArtifactPointer(".artifacts/1.0.0-test")

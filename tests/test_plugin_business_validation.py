@@ -350,7 +350,7 @@ def memory_sources(root):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
         (root / name / "akashic.plugin.toml").write_text(
-            f'schema_version = 1\nname = "{name}"\nversion = "{versions[name]}"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
+            f'schema_version = 1\nname = "{name}"\nversion = "{versions[name]}"\napi_version = 3\n')
     settings = root.parent / "workspace/plugin-data/context-builtin/config.local.toml"
     settings.parent.mkdir(parents=True, exist_ok=True)
     with settings.open("a") as handle:
@@ -412,7 +412,7 @@ async def test_validation_reply_reads_real_memory_without_starting_learning(tmp_
     from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
     from plugins.akasha.recalls import RecallRecords
     from plugins.content.plugin import CONTENT
-    from plugins.markdown_memory.message_plugin import start_store
+    from plugins.markdown_memory.plugin import start_store
     from plugins.markdown_memory.store import MarkdownProfileStore
     from session.message import Output
     from tests.test_default_reply import application
@@ -684,7 +684,7 @@ async def test_validation_preserves_history_without_archived_workspace(tmp_path)
         (source / "plugin.py").write_text(MODULE)
         (source / "akashic.plugin.toml").write_text(
             'schema_version = 1\nname = "probe"\nversion = "1.0.0"\n'
-            'api_version = 3\nentrypoint = "plugin.py"\n'
+            'api_version = 3\n'
         )
         _commit(source)
         result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])

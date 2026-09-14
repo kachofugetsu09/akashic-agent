@@ -10,7 +10,7 @@ from agent.plugin_composition import DashboardContext
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_contracts import ContentPart, Message
 
-from .message_plugin import AKASHA_RECORDS_VIEW
+from .plugin import AKASHA_RECORDS_VIEW
 from .recalls import ContextSource, Hit, ProgramSource, Recall, RecallRecordsRead, ToolSource
 
 

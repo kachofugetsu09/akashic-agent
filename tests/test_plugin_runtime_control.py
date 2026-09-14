@@ -603,8 +603,7 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "schema_version = 1\n"
         "name = \"runtime_mcp\"\n"
         "version = \"1.0.0\"\n"
-        "api_version = 3\n"
-        "entrypoint = \"plugin.py\"\n\n",
+        "api_version = 3\n",
         encoding="utf-8",
     )
 
@@ -686,8 +685,7 @@ def _write_v3_plugin(
             "schema_version = 1\n"
             f"name = {json.dumps(name)}\n"
             f"version = {json.dumps(version)}\n"
-            "api_version = 3\n"
-            "entrypoint = \"plugin.py\"\n",
+            "api_version = 3\n",
             encoding="utf-8",
         )
 

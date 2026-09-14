@@ -18,7 +18,6 @@ class ResolvedPluginSource:
     source_type: Literal["builtin", "installed"]
     marketplace: str = ""
     plugin_name: str = ""
-    entrypoint: str = "plugin.py"
     static_manifest: StaticPluginManifest | None = None
 
 
@@ -53,11 +52,6 @@ def resolve_plugin_sources(
                     source_type="builtin",
                     plugin_name=(
                         static_manifest.name if static_manifest is not None else ""
-                    ),
-                    entrypoint=(
-                        static_manifest.entrypoint
-                        if static_manifest is not None
-                        else "plugin.py"
                     ),
                     static_manifest=static_manifest,
                 )
@@ -113,7 +107,6 @@ def _iter_installed_plugin_roots(
                             source_type="installed",
                             marketplace=marketplace_dir.name,
                             plugin_name=plugin_dir.name,
-                            entrypoint=static_manifest.entrypoint,
                             static_manifest=static_manifest,
                         )
                     )
@@ -192,7 +185,9 @@ def _is_plugin_root(path: Path) -> bool:
         return True
     # Built-ins may keep the conventional plugin.py entrypoint without an install manifest.
     plugin_file = path / "plugin.py"
-    return not plugin_file.is_symlink() and plugin_file.is_file()
+    if plugin_file.is_symlink():
+        raise ValueError(f"插件 plugin.py 不能是符号链接: {plugin_file}")
+    return plugin_file.is_file()
 
 
 def _is_safe_cache_segment(value: str) -> bool:

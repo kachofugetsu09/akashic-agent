@@ -662,8 +662,7 @@ def _write_mcp_plugin(
         "schema_version = 1\n"
         "name = 'restart_probe'\n"
         f"version = {version!r}\n"
-        "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n\n",
+        "api_version = 3\n",
         domain="restart_gate_fixture",
     )
 
@@ -1559,8 +1558,7 @@ def _install_startup_plugin(home: Path, name: str, source: str) -> Path:
         "schema_version = 1\n"
         f"name = {name!r}\n"
         "version = '1.0.0'\n"
-        "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n",
+        "api_version = 3\n",
         encoding="utf-8",
     )
     return root

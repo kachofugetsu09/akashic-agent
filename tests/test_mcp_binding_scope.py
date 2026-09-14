@@ -38,7 +38,6 @@ async def apply(ctx):
 name = "probe"
 version = "1.0.0"
 api_version = 3
-entrypoint = "plugin.py"
 """)
     (path / "server.py").write_text("""
 import json, os, sys

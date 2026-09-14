@@ -34,7 +34,6 @@ MANIFEST_ALLOWED_KEYS = frozenset(
         "name",
         "version",
         "api_version",
-        "entrypoint",
         "python",
         "validation",
         "mcp",
@@ -341,10 +340,9 @@ def _matching_refs(output: str, sha: str) -> tuple[str, ...]:
 def _inspect_static_plugin(root: Path, plugin_id: str) -> dict[str, object]:
     """Inspect manifest, v3 namespace, and declared Core imports."""
 
-    # 1. Parse the import-free manifest and choose its declared entrypoint.
+    # 1. 读取静态身份，入口固定为制品根 plugin.py。
     manifest, manifest_errors = _inspect_manifest(root)
-    entrypoint_name = str(manifest.get("entrypoint", "plugin.py"))
-    entrypoint = root / entrypoint_name
+    entrypoint = root / "plugin.py"
 
     # 2. Parse the namespace AST and enforce api_version=3/apply(ctx).
     namespace = _inspect_namespace(root, entrypoint)
@@ -456,7 +454,7 @@ def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:
     unknown = sorted(set(raw) - MANIFEST_ALLOWED_KEYS)
     if unknown:
         errors.append(f"静态 manifest 包含未知字段: {unknown}")
-    for field in ("schema_version", "name", "version", "api_version", "entrypoint"):
+    for field in ("schema_version", "name", "version", "api_version"):
         if field not in raw:
             errors.append(f"静态 manifest 缺少字段: {field}")
     if raw.get("schema_version") != 1:
@@ -470,20 +468,12 @@ def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:
         or not str(raw.get("version", "")).strip()
     ):
         errors.append("静态 manifest version 必须是非空字符串")
-    entrypoint = raw.get("entrypoint")
-    if not isinstance(entrypoint, str) or not entrypoint.strip():
-        errors.append("静态 manifest entrypoint 必须是非空字符串")
-    elif not _safe_relative_path(entrypoint):
-        errors.append(f"静态 manifest entrypoint 必须位于 artifact 内: {entrypoint}")
-    elif (root / entrypoint).is_symlink() or not (root / entrypoint).is_file():
-        errors.append(f"静态 manifest entrypoint 不存在或是 symlink: {entrypoint}")
     evidence.update(
         {
             "status": "passed" if not errors else "failed",
             "name": raw.get("name"),
             "version": raw.get("version"),
             "api_version": raw.get("api_version"),
-            "entrypoint": entrypoint,
             "sha256": _sha256(manifest_path),
         }
     )

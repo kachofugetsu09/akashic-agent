@@ -55,7 +55,6 @@ def _write_plugin_source(
                 f'name = "{name}"',
                 f'version = "{version}"',
                 "api_version = 3",
-                'entrypoint = "plugin.py"',
                 "",
             )
         ),

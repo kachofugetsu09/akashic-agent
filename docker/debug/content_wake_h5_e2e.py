@@ -319,8 +319,8 @@ def _verify_plugin_entrypoints(
     # 1. Mirror PluginManager package loading for every exact installed root.
     receipts: list[dict[str, str]] = []
     for index, (plugin_id, root) in enumerate(roots.items()):
-        manifest = load_static_plugin_manifest(root)
-        entrypoint = root / manifest.entrypoint
+        load_static_plugin_manifest(root)
+        entrypoint = root / "plugin.py"
         module_name = f"akashic_h5_plugin_{index}_{plugin_id.replace('-', '_')}"
         importer = FreshPluginImporter()
         importer.register(module_name, entrypoint.parent)
@@ -344,7 +344,7 @@ def _verify_plugin_entrypoints(
         receipts.append(
             {
                 "plugin_id": plugin_id,
-                "entrypoint": manifest.entrypoint,
+                "entrypoint": str(entrypoint),
                 "status": "passed",
             }
         )

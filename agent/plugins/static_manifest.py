@@ -23,7 +23,6 @@ _TOP_LEVEL_KEYS = frozenset(
         "name",
         "version",
         "api_version",
-        "entrypoint",
         "validation",
         "channel_credentials",
         "credential_paths",
@@ -48,7 +47,6 @@ class StaticPluginManifest:
     name: str
     version: str
     api_version: int
-    entrypoint: str
     python: tuple[StaticPythonRuntime, ...]
     exclude_data_paths: tuple[str, ...]
     channel_credentials: tuple[tuple[str, tuple[str, ...]], ...]
@@ -92,7 +90,7 @@ def validate_module_exports(
     manifest: StaticPluginManifest,
     module: object,
     *,
-    plugin_root: Path | None = None,
+    plugin_root: Path,
 ) -> None:
     """Verify imported module identity matches its already validated manifest."""
 
@@ -107,19 +105,16 @@ def validate_module_exports(
                 f"v3 插件 module.{field_name} 与静态 manifest 不一致: "
                 f"expected={expected!r}, actual={actual!r}"
             )
-    entrypoint = getattr(module, "__file__", None)
-    if not isinstance(entrypoint, str):
+    module_file = getattr(module, "__file__", None)
+    if not isinstance(module_file, str):
         raise ValueError("v3 插件 module 缺少 __file__")
-    imported_path = Path(entrypoint).resolve(strict=False)
-    if plugin_root is not None:
-        expected_path = (plugin_root / manifest.entrypoint).resolve(strict=False)
-        if imported_path != expected_path:
-            raise ValueError(
-                "v3 插件 module entrypoint 与静态 manifest 不一致: "
-                f"expected={expected_path}, actual={imported_path}"
-            )
-    elif imported_path.name != Path(manifest.entrypoint).name:
-        raise ValueError("v3 插件 module entrypoint 无法核对")
+    imported_path = Path(module_file).resolve(strict=True)
+    expected_path = (plugin_root / "plugin.py").resolve(strict=True)
+    if imported_path != expected_path:
+        raise ValueError(
+            "v3 插件 module 文件与制品 plugin.py 不一致: "
+            f"expected={expected_path}, actual={imported_path}"
+        )
 
 
 def staged_python_interpreter(
@@ -185,15 +180,13 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     api_version = _integer(raw, "api_version")
     if api_version != 3:
         raise ValueError("静态 artifact manifest 只接受 api_version = 3")
-    entrypoint = _relative_artifact_path(
+    _relative_artifact_path(
         root,
-        raw.get("entrypoint"),
-        label="entrypoint",
+        "plugin.py",
+        label="plugin.py",
         must_exist=True,
         require_file=True,
     )
-    if not entrypoint.endswith(".py"):
-        raise ValueError("插件静态 manifest entrypoint 必须指向 Python 文件")
     # 2. Requirements are complete before the artifact is published.
     python = _python_runtimes(root)
     exclude_data_paths = _validation_paths(root, raw.get("validation", {}))
@@ -209,7 +202,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         "name": name,
         "version": version,
         "api_version": api_version,
-        "entrypoint": entrypoint,
         "python": [
             {
                 "requirements": item.requirements,
@@ -239,7 +231,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         name=name,
         version=version,
         api_version=api_version,
-        entrypoint=entrypoint,
         python=python,
         exclude_data_paths=exclude_data_paths,
         channel_credentials=channel_credentials,

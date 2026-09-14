@@ -45,7 +45,7 @@ def build_inventory(repo_root: Path) -> dict[str, object]:
             try:
                 parsed = load_static_plugin_manifest(root / prefix)
                 manifest = {"name": parsed.name, "version": parsed.version,
-                            "entrypoint": parsed.entrypoint, "api_version": parsed.api_version}
+                            "api_version": parsed.api_version}
                 classification = "manifest-plugin"
             except ValueError as exc:
                 classification, error = "invalid-manifest", str(exc)

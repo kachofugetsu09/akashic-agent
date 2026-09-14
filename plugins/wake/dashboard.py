@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 from agent.plugin_composition import DashboardContext
 
-from .message_plugin import WAKE_DASHBOARD
+from .plugin import WAKE_DASHBOARD
 from .runtime import DashboardView
 
 

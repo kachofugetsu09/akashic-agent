@@ -22,7 +22,7 @@ if str(_SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(_SOURCE_ROOT))
 
 import agent.plugins.manager as plugin_manager_module
-import plugins.wake.message_plugin as wake_plugin_module
+import plugins.wake.plugin as wake_plugin_module
 from agent.control.timer import TimerReceipt, TimerStatus
 from agent.plugin_composition import (
     CHAT_MODELS,
@@ -738,7 +738,7 @@ from tests.model_plugin_fakes import _MODEL_PROVIDERS
 from agent.plugin_composition import Context, ServiceKey
 from plugins.conversation.plugin import check_origin
 from plugins.akasha.interest import SEMANTIC_INTEREST
-from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.akasha.plugin import AKASHA_TOOLS
 from plugins.delivery.api import Receipt
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS

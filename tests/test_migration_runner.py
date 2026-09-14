@@ -225,7 +225,6 @@ def _write_bundle(
                 "name": manifest_name or bundle_id,
                 "version": "1.0.0",
                 "api_version": 3,
-                "entrypoint": "plugin.py",
             }
         ),
         encoding="utf-8",

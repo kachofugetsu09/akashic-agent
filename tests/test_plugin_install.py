@@ -30,6 +30,34 @@ from agent.plugins.static_manifest import (
 from agent.plugins.source_resolver import resolve_plugin_sources
 
 
+@pytest.mark.parametrize("entrypoint", ["plugin.py", "nested/custom.py"])
+def test_manifest_rejects_entrypoint_declarations(tmp_path: Path, entrypoint: str) -> None:
+    """入口文件固定后，旧 TOML 字段不能悄悄继续生效。"""
+    repo = tmp_path / "source"
+    _write_v3_plugin(repo, name="probe")
+    path = repo / "akashic.plugin.toml"
+    path.write_text(path.read_text() + f"entrypoint = {entrypoint!r}\n")
+    with pytest.raises(ValueError, match="未知字段.*entrypoint"):
+        load_static_plugin_manifest(repo)
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "directory"])
+def test_manifest_requires_plain_root_plugin_file(tmp_path: Path, kind: str) -> None:
+    """安装和发现不能把其他 Python 文件猜作入口。"""
+    repo = tmp_path / "source"
+    _write_v3_plugin(repo, name="probe")
+    entry = repo / "plugin.py"
+    entry.rename(repo / "custom.py")
+    if kind == "symlink":
+        entry.symlink_to(repo / "custom.py")
+    elif kind == "directory":
+        entry.mkdir()
+    with pytest.raises(ValueError, match="plugin.py"):
+        load_static_plugin_manifest(repo)
+    with pytest.raises(ValueError, match="plugin.py"):
+        resolve_plugin_sources([repo])
+
+
 def test_plugins_root_honors_explicit_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -729,8 +757,7 @@ def _write_v3_plugin(
         "schema_version = 1\n"
         f"name = {name!r}\n"
         f"version = {version!r}\n"
-        "api_version = 3\n"
-        'entrypoint = "plugin.py"\n',
+        "api_version = 3\n",
         encoding="utf-8",
     )
 

@@ -66,7 +66,6 @@ class PluginContract:
     id: str
     source: str
     path: str
-    entrypoint: str
     module: str
     stylesheet: str
     navigation: bool
@@ -256,7 +255,6 @@ def _parse_plugin(raw: object) -> PluginContract:
     required = {
         "id",
         "source",
-        "entrypoint",
         "module",
         "stylesheet",
         "navigation",
@@ -274,7 +272,7 @@ def _parse_plugin(raw: object) -> PluginContract:
     item = cast(dict[str, object], raw)
     strings = {
         field: _required_string(item, field)
-        for field in ("id", "entrypoint", "module", "stylesheet", "node_test")
+        for field in ("id", "module", "stylesheet", "node_test")
     }
     if source not in {"in-tree", "external"}:
         raise ValueError(f"v3 Mobile source 无效: {source!r}")
@@ -293,7 +291,6 @@ def _parse_plugin(raw: object) -> PluginContract:
         if len(set(revisions)) != 1:
             raise ValueError(f"插件 revision 必须固定到同一 SHA: {strings['id']}")
     _require_relative_path(path)
-    _require_relative_path(strings["entrypoint"])
     _require_relative_path(strings["module"])
     _require_relative_path(strings["stylesheet"])
     _require_relative_path(strings["node_test"])
@@ -310,7 +307,6 @@ def _parse_plugin(raw: object) -> PluginContract:
         id=strings["id"],
         source=cast(str, source),
         path=path,
-        entrypoint=strings["entrypoint"],
         module=strings["module"],
         stylesheet=strings["stylesheet"],
         navigation=navigation,
@@ -461,7 +457,7 @@ def _verify_plugin(contract: PluginContract, root: Path) -> dict[str, object]:
     """静态验证一个 pure-v3 Mobile source，并执行 Core runner 与真实 Node test。"""
 
     # 1. Manifest/namespace 与 AST UI seam 必须先闭合。
-    entrypoint = _inside(root, contract.entrypoint)
+    entrypoint = root / "plugin.py"
     static = _inspect_static_source(contract, root, entrypoint)
     if static["status"] != "passed":
         raise GateError(f"Mobile static contract failed: {contract.id}: {static['errors']}")
@@ -491,7 +487,7 @@ def _verify_plugin(contract: PluginContract, root: Path) -> dict[str, object]:
         "static": static,
         "assets": assets,
         "test_commands": commands,
-        "entrypoint": contract.entrypoint,
+        "entrypoint": str(entrypoint),
     }
 
 
@@ -507,13 +503,11 @@ def _inspect_static_source(
     if contract.source == "external":
         manifest, manifest_errors = _inspect_manifest(root)
         errors.extend(manifest_errors)
-        if manifest.get("entrypoint") != contract.entrypoint:
-            errors.append(
-                "manifest entrypoint 与 lock 不一致: "
-                f"{manifest.get('entrypoint')!r} != {contract.entrypoint!r}"
-            )
     else:
         manifest = {"status": "in-tree", "path": None}
+    if entrypoint.is_symlink() or not entrypoint.is_file():
+        errors.append(f"plugin.py 不存在或是 symlink: {entrypoint}")
+        return {"status": "failed", "manifest": manifest, "errors": errors}
     try:
         tree = ast.parse(entrypoint.read_text(encoding="utf-8"), filename=str(entrypoint))
     except (OSError, SyntaxError) as error:
@@ -542,31 +536,25 @@ def _inspect_manifest(root: Path) -> tuple[dict[str, object], list[str]]:
     if not isinstance(raw, dict):
         return {"status": "failed", "path": path.name}, ["manifest 根必须是对象"]
     allowed = {
-        "schema_version", "name", "version", "api_version", "entrypoint",
+        "schema_version", "name", "version", "api_version",
         "python", "validation", "mcp", "processes", "channel_credentials",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
         errors.append(f"manifest 包含未知字段: {unknown}")
-    for field in ("schema_version", "name", "version", "api_version", "entrypoint"):
+    for field in ("schema_version", "name", "version", "api_version"):
         if field not in raw:
             errors.append(f"manifest 缺少字段: {field}")
     if raw.get("schema_version") != 1:
         errors.append("manifest schema_version 必须为 1")
     if raw.get("api_version") != 3:
         errors.append("manifest api_version 必须为 3")
-    entrypoint = raw.get("entrypoint")
-    if not isinstance(entrypoint, str) or not entrypoint.strip() or not _safe_relative_path(entrypoint):
-        errors.append(f"manifest entrypoint 必须是 artifact 内相对路径: {entrypoint!r}")
-    elif not (root / entrypoint).is_file() or (root / entrypoint).is_symlink():
-        errors.append(f"manifest entrypoint 不存在或是 symlink: {entrypoint}")
     return {
         "status": "passed" if not errors else "failed",
         "path": path.name,
         "name": raw.get("name"),
         "version": raw.get("version"),
         "api_version": raw.get("api_version"),
-        "entrypoint": entrypoint,
         "sha256": _sha256(path),
     }, errors
 
@@ -681,7 +669,7 @@ def _run_python_contract(
 
     contract_root = temporary_root / "plugin-contracts"
     source = _checkout_contract_source(contract_root)
-    paths = tuple(str(_inside(roots[item.id], item.entrypoint)) for item in contracts)
+    paths = tuple(str(_inside(roots[item.id], "plugin.py")) for item in contracts)
     command = (
         sys.executable,
         "-m",

@@ -430,7 +430,7 @@ def build(repository: Path, revision: str, output: Path) -> dict[str, object]:
         str(Path(path).parent)
         for path in files
         if path.startswith("plugins/")
-        and path.endswith(("/plugin.py", "/message_plugin.py"))
+        and path.endswith("/plugin.py")
     }
     missing = entry_roots - set(roots)
     if missing:

@@ -35,8 +35,7 @@ def _write_plugin(root: Path) -> None:
         "schema_version = 1\n"
         "name = 'fixture_setup'\n"
         "version = '1.0.0'\n"
-        "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n",
+        "api_version = 3\n",
         encoding="utf-8",
     )
 

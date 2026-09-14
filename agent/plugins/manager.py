@@ -1303,13 +1303,12 @@ class PluginManager:
             seen_names.add(name)
             import_suffix = name.replace("-", "_").replace("@", "_")
             import_source = source.marketplace or source.plugin_root.parent.name
-            module_path = source.plugin_root / source.entrypoint
+            module_path = source.plugin_root / "plugin.py"
             mods.append(
                 {
                     "name": name,
                     "plugin_root": str(source.plugin_root),
-                    "module_path": str(module_path) if module_path is not None else "",
-                    "entrypoint": source.entrypoint,
+                    "module_path": str(module_path),
                     "manifest_digest": (
                         source.static_manifest.identity_digest
                         if source.static_manifest is not None
@@ -4757,31 +4756,23 @@ class PluginManager:
         created_activation_data_dir = False
         self._generation_sequence += 1
         generation_sequence = self._generation_sequence
-        module_path = mod["module_path"].strip()
+        module_path = mod["module_path"]
+        expected_module_path = plugin_dir / "plugin.py"
+        if Path(module_path).absolute() != expected_module_path.absolute():
+            raise RuntimeError(
+                "source discovery module path 与制品 plugin.py 不一致: "
+                f"discovered={module_path} expected={expected_module_path}"
+            )
+        if expected_module_path.is_symlink() or not expected_module_path.is_file():
+            raise ValueError(f"插件 plugin.py 必须是普通文件: {expected_module_path}")
         static_manifest: StaticPluginManifest | None = None
         manifest_path = plugin_dir / "akashic.plugin.toml"
         if manifest_path.exists() or manifest_path.is_symlink():
             try:
-                # Static identity is the admission source.  No plugin module is
-                # imported until this parse and the discovered entrypoint agree.
+                # 导入固定入口前核对发现时的静态身份。
                 static_manifest = load_static_plugin_manifest(plugin_dir)
-                expected_module_path = plugin_dir / static_manifest.entrypoint
-                discovered_entrypoint = mod.get("entrypoint", "plugin.py")
-                if discovered_entrypoint != static_manifest.entrypoint:
-                    raise RuntimeError(
-                        "source discovery entrypoint 与静态 manifest 不一致: "
-                        f"discovered={discovered_entrypoint} "
-                        f"manifest={static_manifest.entrypoint}"
-                    )
                 if mod.get("manifest_digest", "") != static_manifest.identity_digest:
                     raise RuntimeError("source discovery manifest identity 已漂移")
-                if Path(module_path).resolve(
-                    strict=False
-                ) != expected_module_path.resolve(strict=False):
-                    raise RuntimeError(
-                        "source discovery module path 与静态 manifest 不一致: "
-                        f"discovered={module_path} expected={expected_module_path}"
-                    )
             except Exception as error:
                 raise RuntimeError(
                     f"插件 {initial_plugin_id} 静态 manifest admission 失败: {error}"
@@ -4845,19 +4836,6 @@ class PluginManager:
             f"{stable_module_path}__g{generation_sequence}_"
             f"{source_revision[:8]}_{self._manager_namespace}"
         )
-        if not module_path:
-            error_text = f"插件缺少 plugin.py: {plugin_dir}"
-            self._record_failed_gate(
-                plugin_id=initial_plugin_id,
-                revision=source_revision,
-                check_id="plugin_module",
-                reason=error_text,
-            )
-            self._abort_reload_attempt(
-                reload_tx_id,
-                error=f"plugin_module: {error_text}",
-            )
-            raise RuntimeError(error_text)
         # Builtin v3 may omit a manifest; installed artifacts were rejected above.
         try:
             code_archive = self._archive.save(
@@ -4879,9 +4857,7 @@ class PluginManager:
                     environment_refs = read_environment_refs(plugin_dir, archived_manifest)
                 elif mod["source_type"] == "installed":
                     raise RuntimeError("插件尚未准备固定 Python 环境；请通过安装流程重建")
-            self._import_plugin(
-                mp, archived_dir / Path(module_path).relative_to(plugin_dir)
-            )
+            self._import_plugin(mp, archived_dir)
         except Exception as error:
             error_text = str(error) or type(error).__name__
             self._record_failed_gate(
@@ -5038,7 +5014,7 @@ class PluginManager:
                 plugin_dir=archived_dir,
             )
             archive_ref = self._archive.save_descriptor({
-                "version": 2,
+                "version": 3,
                 "code": code_archive,
                 "python_environments": environment_refs,
                 "plugin_id": plugin_id,
@@ -5046,7 +5022,6 @@ class PluginManager:
                 "config_revision": config_revision,
                 "config": encode_config(config_projection),
                 "static_active": instance.static_active,
-                "entrypoint": static_manifest.entrypoint if static_manifest else "plugin.py",
                 "source_type": mod["source_type"],
                 "data_dir": data_dir.resolve().relative_to(self._workspace.resolve()).as_posix(),
                 "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
@@ -5069,11 +5044,6 @@ class PluginManager:
                     mod["source_type"],
                 ),
                 static_manifest=static_manifest,
-                entrypoint=(
-                    static_manifest.entrypoint
-                    if static_manifest is not None
-                    else "plugin.py"
-                ),
                 state="prepared",
                 reload_tx_id=reload_tx_id,
             )
@@ -5485,7 +5455,7 @@ class PluginManager:
             records = tuple(self._archive.read_descriptor(ref) for ref in components)
             # 先检查整个闭包，不能导入前半段后才发现后续组件属于旧接口。
             for record in records:
-                if record["version"] != 2 or record["runtime"] != {
+                if record["version"] != 3 or record["runtime"] != {
                     "python_tag": sys.implementation.cache_tag,
                     "binding_api": PLUGIN_ARCHIVE_BINDING_API,
                 }:
@@ -5500,10 +5470,8 @@ class PluginManager:
                     raise ValueError(f"归档重复包含插件: {plugin_id}")
                 data_dir = self._workspace / cast(str, record["data_dir"])
                 validate_workspace_plugin_data_path(data_dir, self._workspace)
-                entrypoint = cast(str, record["entrypoint"])
-                _require_plugin_path(plugin_dir, (plugin_dir / entrypoint).resolve(), "归档入口")
                 module_path = f"_akashic_archive_{namespace}_{index}"
-                self._import_plugin(module_path, plugin_dir / entrypoint)
+                self._import_plugin(module_path, plugin_dir)
                 modules.append(module_path)
                 module = sys.modules[module_path]
                 manifest = (
@@ -5529,7 +5497,7 @@ class PluginManager:
                     contributions=self._collect_candidate_contributions(
                         instance=plugin, plugin_id=plugin_id, plugin_dir=plugin_dir,
                     ),
-                    static_manifest=manifest, entrypoint=entrypoint,
+                    static_manifest=manifest,
                     source_type=cast(Literal["builtin", "installed"], record["source_type"]),
                     archive_ref=ref,
                 )
@@ -6138,8 +6106,7 @@ class PluginManager:
             f"{candidate_owner.generation_id.replace(':', '_')}_"
             f"{secrets.token_hex(4)}"
         )
-        entrypoint = generation.entrypoint
-        self._import_plugin(module_path, plugin_dir / entrypoint)
+        self._import_plugin(module_path, plugin_dir)
         try:
             module = sys.modules[module_path]
             if generation.static_manifest is not None:
@@ -6808,8 +6775,12 @@ class PluginManager:
         self._gate_results[plugin_id] = result
         return result
 
-    def _import_plugin(self, module_name: str, path: Path) -> None:
-        self._fresh_importer.register(module_name, path.parent)
+    def _import_plugin(self, module_name: str, plugin_root: Path) -> None:
+        """只从固定制品根导入普通 plugin.py，不接受入口别名。"""
+        path = plugin_root / "plugin.py"
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"插件 plugin.py 必须是普通文件: {path}")
+        self._fresh_importer.register(module_name, plugin_root)
         spec = self._fresh_importer.root_spec(module_name, path)
         if spec is None or spec.loader is None:
             self._fresh_importer.unregister(module_name)

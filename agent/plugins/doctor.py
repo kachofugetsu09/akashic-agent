@@ -81,7 +81,7 @@ def _inspect_plugin(
             _check(
                 "install",
                 "ok",
-                f"stable {_entrypoint_label(stable_root)}: {stable_root}",
+                f"stable plugin.py: {stable_root}",
             )
         )
         try:
@@ -99,7 +99,7 @@ def _inspect_plugin(
             _check(
                 "install",
                 "ok",
-                f"latest candidate {_entrypoint_label(latest_root)}: {latest_root}",
+                f"latest candidate plugin.py: {latest_root}",
             )
         )
         try:
@@ -152,13 +152,6 @@ def _find_plugin_roots(
     return None, None
 
 
-def _entrypoint_label(root: Path) -> str:
-    manifest_path = root / "akashic.plugin.toml"
-    if manifest_path.exists() or manifest_path.is_symlink():
-        return load_static_plugin_manifest(root).entrypoint
-    return "plugin.py"
-
-
 def _load_plugin_declaration(
     plugin_root: Path,
     *,
@@ -170,9 +163,9 @@ def _load_plugin_declaration(
     if require_static and static_manifest is None:
         raise ValueError(f"installed v3 插件缺少静态 manifest: {plugin_root}")
     module_name = f"akasic_plugin_doctor_{uuid.uuid4().hex}"
-    path = plugin_root / (
-        static_manifest.entrypoint if static_manifest is not None else "plugin.py"
-    )
+    path = plugin_root / "plugin.py"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"插件 plugin.py 必须是普通文件: {path}")
     spec = importlib.util.spec_from_file_location(
         module_name,
         path,

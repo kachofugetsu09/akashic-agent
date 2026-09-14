@@ -83,7 +83,6 @@ class PluginGeneration:
     replaced_composition_runtime_generation: PluginGeneration | None = None
     formal_root_stopped: bool = False
     formal_root_released: bool = False
-    entrypoint: str = "plugin.py"
     runtime_snapshot: RuntimeSnapshot | None = None
     retire_started: bool = False
     state: str = "active"
@@ -105,7 +104,4 @@ class PluginGeneration:
         module = sys.modules[self.module_path]
         if module.__file__ is None:
             raise RuntimeError("插件入口缺少文件路径")
-        path = Path(module.__file__).resolve()
-        for _ in Path(self.entrypoint).parts:
-            path = path.parent
-        return path
+        return Path(module.__file__).resolve().parent

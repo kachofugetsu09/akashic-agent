@@ -6,6 +6,23 @@
 
 ## 1. 最小插件
 
+所有插件制品只从根目录普通文件 `plugin.py` 加载，再调用 `apply(ctx)`。
+不接受 TOML `entrypoint`，也不寻找其他文件名；缺失或符号链接入口在导入前拒绝。
+Akasha、Wake、Scheduler、Compaction 和 Markdown Memory 的旧 `message_plugin.py`
+已重命名，Python 导入者须改为对应的 `.plugin`，没有兼容别名。
+
+```text
+┌──────────────────┐    ┌────────────────────┐    ┌────────────┐
+│ 安装/发现固定制品 │ ─▶ │ 根目录 plugin.py   │ ─▶ │ apply(ctx) │
+└──────────────────┘    └────────────────────┘    └────────────┘
+```
+
+source revision、实际模块文件路径和代码树仍保留精确来源。Generation 与 source resolver
+不再复制可选入口字段，`code_dir` 从实际导入文件的父目录取得。
+新组件归档 descriptor 使用 v3，不再保存入口选择；旧 v2 在导入前明确拒绝。
+本层不迁移或改写旧归档、binding、插件数据和固定 Python 环境；恢复旧记录须保留基线 Core
+及原归档，采用新入口须从已更新源码显式重装。name/version/API 仍处于单独的过渡层。
+
 ```python
 from agent.plugin_composition import Context
 

@@ -22,7 +22,6 @@ def source(tmp_path):
 name = "probe"
 version = "1.0.0"
 api_version = 3
-entrypoint = "plugin.py"
 """)
     return code, load_static_plugin_manifest(code)
 

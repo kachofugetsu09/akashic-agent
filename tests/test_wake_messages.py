@@ -13,7 +13,7 @@ from agent.plugins.snapshot import lease_runtime_snapshot
 from plugins.delivery.plugin import DELIVERY
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.drift.plugin import DRIFT_PROPOSALS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.akasha.plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.wake.api import Config, DeliveryTarget, DRIFT_WAKE, DRIFT_DELIVERY, EVENTMAIL_WAKE
@@ -39,8 +39,8 @@ async def application(tmp_path, *, wake_delivery=False):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
     (sources / "wake/akashic.plugin.toml").write_text(
-        'schema_version = 1\nname = "wake"\nversion = "4.0.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
-    module = sources / "wake/message_plugin.py"
+        'schema_version = 1\nname = "wake"\nversion = "4.0.0"\napi_version = 3\n')
+    module = sources / "wake/plugin.py"
     module.write_text(module.read_text() + '''
 from agent.plugin_composition import ServiceKey
 _original_apply = apply
@@ -71,7 +71,7 @@ from plugins.models.store import ModelsStore
 from plugins.delivery.senders import DELIVERY_SENDERS
 from plugins.delivery.api import Receipt
 from plugins.tools.plugin import TOOLS
-from plugins.akasha.message_plugin import AKASHA_TOOLS
+from plugins.akasha.plugin import AKASHA_TOOLS
 from plugins.standard_web.plugin import STANDARD_WEB_TOOLS
 from agent.plugin_composition.messages import MESSAGE_CATALOG, MESSAGE_EMBEDDINGS
 from plugins.akasha.interest import SEMANTIC_INTEREST, SemanticInterest

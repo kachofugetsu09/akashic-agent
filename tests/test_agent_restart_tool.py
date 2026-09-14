@@ -748,8 +748,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         "schema_version=1\n"
         "name='restart_provider'\n"
         "version='1.0.0'\n"
-        "api_version=3\n"
-        "entrypoint='plugin.py'\n",
+        "api_version=3\n",
     )
     for args in (
         ("git", "init", "-q"),

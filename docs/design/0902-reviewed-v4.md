@@ -83,7 +83,7 @@
 | 连续 control ID 与 proactive 特殊分组 | [`logical_history_unit_ranges`](../../session/manager.py)，190 行 |
 | 按全部 user IDs 与 final assistant ID 建立 Akasha 样本 | `AkashaEngine._commit_source_event`（历史删除：`plugins/akasha/engine.py`），1211 行 |
 | 插件发布借用父 Turn terminal 触发 | [`TurnPluginRollout.turn_terminal`](../../agent/plugins/turn_rollout.py)，205 行 |
-| 来源无关的一次性等待、Scheduler 业务状态 | [`PluginTimers`](../../agent/plugin_composition/timers.py)、[`Scheduler message plugin`](../../plugins/scheduler/message_plugin.py) |
+| 来源无关的一次性等待、Scheduler 业务状态 | [`PluginTimers`](../../agent/plugin_composition/timers.py)、[`Scheduler message plugin`](../../plugins/scheduler/plugin.py) |
 
 Citation 与 Meme 的本地源码也显示了另一类耦合：Citation 改共享 `ctx.reply` 并提取引用，Meme 改同一正文和 media，Meme Prompt 还依赖 `citation.prompt`。检查路径是 `/mnt/data/coding/akashic-plugin/citation/plugin.py` 与 `/mnt/data/coding/akashic-plugin/meme/plugin.py`。这些 checkout 声明的是 V2 接口，只证明该份源码的依赖，不证明正式运行中的安装版本；迁移前必须核对正式 generation 对应的源码、cache 和实际消费者。
 
@@ -1148,7 +1148,7 @@ Reply 可选消费发送策略的 completion 能力。Conversation 在新 Input/
 
 附件来源导入从 Bootstrap 移至 `infra/channels/attachment_import.py`，保留原大小上限、公网 URL 校验、文件稳定性检查与原子 Artifact 发布。显式声明 `ARTIFACT_IMPORT` 的插件只得到来源导入口，candidate 调用明确失败；没有消息、读取或删除权限。当前推送测试覆盖真实迁移后的 MessageDB、文件导入后删除来源、移除插件源码、丢失发送与工具回执、数据库重开、原 binding 恢复，以及 delivered/unknown 两种结果下仅一次渠道发送。附件元数据已由独立 `ArtifactStore` 重开；推送恢复 fixture 关闭旧 SessionStore 后迁移，再分别重开消息与附件连接，恢复阶段也重新打开两者。正式 MessageLog 启动接线仍须第 10 层完成。
 
-当前验证包含真实 Channel 输入、命令与工具路径、连续输入不取消原发送、正式/归档 Root 双向协调、发布前 exact scope、准备/启动失败清理，以及真实 Scheduler 先启动而旧被动查询仍阻止模型开始。查询确认与继续 unknown 两种恢复都保持原通知不重发。Scheduler 的内部 Session、调度文件和最终通知恢复已接入候选 `message_plugin.py`；正式入口、UI/readers、Subagent/Wake、发布工具及旧出站状态迁移仍待本层后续与第 10 层完成。
+当前验证包含真实 Channel 输入、命令与工具路径、连续输入不取消原发送、正式/归档 Root 双向协调、发布前 exact scope、准备/启动失败清理，以及真实 Scheduler 先启动而旧被动查询仍阻止模型开始。查询确认与继续 unknown 两种恢复都保持原通知不重发。Scheduler 的内部 Session、调度文件和最终通知恢复已接入当前 `plugin.py`（原候选入口已重命名）；正式入口、UI/readers、Subagent/Wake、发布工具及旧出站状态迁移仍待本层后续与第 10 层完成。
 
 当前进程资源候选使用 `PROCESSES`：宿主按需创建一个实际 Local / Host Bridge manager，正式与归档 Root 共用；candidate 在创建前拒绝调用。每次操作用实际插件 owner 与其局部 key 形成无歧义身份，不接受调用者指定插件 ID。关闭先停止新准入、排空已接纳 I/O，再核对进程清理；失败保留原 manager，不能重新 start 冒充干净资源。此处只拥有物理进程和关闭屏障，不保存来源任务或工具回执。
 
@@ -1578,7 +1578,7 @@ Subagent 通过普通 spawn 工具保存独立内部 Input、固定程序与 pro
 
 ### Wake Source 候选接线与恢复证据
 
-`plugins/wake/message_plugin.py` 已组合普通 Message、Task、ReAct、Tools、Delivery、Akasha 查询与 EventMail/Drift，正式 manifest 仍指向旧入口。每次接纳使用独立内部 Session；根 Input 固定职责快照、原程序/工具/发送者 binding、目标模型偏好、时区、主动规则与历史。阶段 Input 的普通文本拥有实际任务正文，`wake.phase` 仅保存阶段身份，`model.selection` 保存本阶段使用的原偏好。初筛与 Drift 的记忆查询从真实 Input 正文取线索；调查和告警不加载 Akasha/Markdown 记忆材料。
+`plugins/wake/plugin.py` 已组合普通 Message、Task、ReAct、Tools、Delivery、Akasha 查询与 EventMail/Drift；0071 入口层已统一为根目录 `plugin.py`，manifest 不再选择入口。每次接纳使用独立内部 Session；根 Input 固定职责快照、原程序/工具/发送者 binding、目标模型偏好、时区、主动规则与历史。阶段 Input 的普通文本拥有实际任务正文，`wake.phase` 仅保存阶段身份，`model.selection` 保存本阶段使用的原偏好。初筛与 Drift 的记忆查询从真实 Input 正文取线索；调查和告警不加载 Akasha/Markdown 记忆材料。
 
 ```text
 ┌ Timer / EventMail 变化 ┐

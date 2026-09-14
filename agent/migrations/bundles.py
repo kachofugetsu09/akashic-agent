@@ -349,7 +349,6 @@ def validate_migration_artifact(
         plugin_root=plugin_root.resolve(strict=True),
         source_type="installed",
         plugin_name=static_manifest.name,
-        entrypoint=static_manifest.entrypoint,
         static_manifest=static_manifest,
     )
     return load_migration_bundle(source)

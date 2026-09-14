@@ -218,14 +218,13 @@ Health/Incident/inspection，不进入 immutable identity。
     name = "calendar"
     version = "3.0.0"
     api_version = 3
-    entrypoint = "plugin.py"
 
     [validation]
     exclude_data_paths = [".env", ".gcp-saved-tokens.json", "token.json", "oauth.json"]
     ```
 
     Python 输入已按 0071 改为制品内 `requirements.txt` 文件约定，详见[能力手册](plugin-v3-capabilities.md#python-安装输入0071-过渡层)。
-    installer 用 `tomllib` 校验静态 name/version/api/entrypoint 与 validation paths，并发现 requirements，拒绝绝对路径、
+    installer 用 `tomllib` 校验静态 name/version/api 与 validation paths，并发现 requirements，拒绝绝对路径、
     symlink 和 artifact/data 越界，由安装器在固定环境目录保留 requirements 的父目录布局并构建 `.venv`。MCP/process Python command 若落在
     该 root 下，命令绑定选择最近的父 runtime，Manager 将 `mcp:<name>` / `process:<name>` 的 argv[0]
     冻结为该 artifact 已 staging interpreter；C12b/C13b Host 只能消费这份 generation 投影，禁止再按 PATH 解析

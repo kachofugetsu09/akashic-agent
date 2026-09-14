@@ -53,11 +53,11 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
         shutil.copytree(Path(__file__).parents[1] / "plugins/compaction", sources / "compaction",
                         ignore=shutil.ignore_patterns("__pycache__"))
         (sources / "compaction/akashic.plugin.toml").write_text(
-            'schema_version = 1\nname = "compaction"\nversion = "4.1.0"\napi_version = 3\nentrypoint = "message_plugin.py"\n')
+            'schema_version = 1\nname = "compaction"\nversion = "4.1.0"\napi_version = 3\n')
         settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text('summary_source = ["compaction", "compaction"]\n')
-        module = sources / "compaction/message_plugin.py"
+        module = sources / "compaction/plugin.py"
         module.write_text(module.read_text().replace('Field(default=20_000,', f'Field(default={keep_recent_tokens},'))
         reply = sources / 'reply/plugin.py'
         reply.write_text(reply.read_text().replace('Field(default=4096,', f'Field(default={output_tokens},'))
