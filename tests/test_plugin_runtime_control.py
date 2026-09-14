@@ -97,7 +97,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
     old_generation = old_lease.snapshot.generations[plugin_id]
     old_runtime = _composition_runtime(manager, old_generation)
     old_server = _mcp_server(old_runtime)
-    old_ca_bundle = _runtime_ca_bundle(old_generation)
+    old_ca_bundle = _runtime_ca_bundle(manager, old_generation)
 
     try:
         # 1. 同版本提交新 revision，并等待真实 latest MCP 可租用。
@@ -369,7 +369,7 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
     old_generation = old_lease.snapshot.generations[plugin_id]
     old_runtime = _composition_runtime(manager, old_generation)
     old_server = _mcp_server(old_runtime)
-    old_ca_bundle = _runtime_ca_bundle(old_generation)
+    old_ca_bundle = _runtime_ca_bundle(manager, old_generation)
 
     try:
         # 1. 建立新 latest 后模拟旧环境材料丢失。
@@ -606,9 +606,11 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
     )
 
 
-def _runtime_ca_bundle(generation: PluginGeneration) -> Path:
+def _runtime_ca_bundle(manager: PluginManager, generation: PluginGeneration) -> Path:
     """从启动命令固定的 interpreter 取得真实环境 CA，不猜测安装目录。"""
-    interpreter = dict(generation.static_runtime_commands)["mcp:runtime_probe"][0]
+    interpreter = manager._resolve_runtime_command(
+        generation, ("python", "mcp/server.py"), "."
+    )[0]
     result = subprocess.run(
         [interpreter, "-I", "-B", "-c", "import certifi; print(certifi.where())"],
         capture_output=True,
