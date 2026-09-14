@@ -245,17 +245,24 @@ async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature
 
 
 @pytest.mark.asyncio
-async def test_import_failure_returns_failed_gate_without_generation(tmp_path: Path):
-    _write_plugin(tmp_path / "plugins", "broken", "this is not python !!!\n")
+async def test_import_failure_report_is_replaced_by_next_load_attempt(tmp_path: Path):
+    plugin = _write_plugin(tmp_path / "plugins", "broken", "this is not python !!!\n")
     manager = _manager(tmp_path)
 
-    with pytest.raises(RuntimeError, match="插件 broken 导入失败"):
-        await manager.load_all()
+    try:
+        with pytest.raises(RuntimeError, match="插件 broken 导入失败"):
+            await manager.load_all()
+        gate = manager.latest_gate("broken")
+        assert gate is not None and gate.status == "failed"
+        assert gate.checks[0].check_id == "import"
+        assert manager.generation("broken") is None
 
-    gate = manager.latest_gate("broken")
-    assert gate is not None and gate.status == "failed"
-    assert gate.checks[0].check_id == "import"
-    assert manager.generation("broken") is None
+        (plugin / "plugin.py").write_text(_v3_source("broken"), encoding="utf-8")
+        await manager.load_all()
+        assert manager.generation("broken") is not None
+        assert manager.latest_gate("broken") is None
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
