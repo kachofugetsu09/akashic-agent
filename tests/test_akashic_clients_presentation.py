@@ -138,6 +138,7 @@ class _ApplyContext:
     )
 
     def __init__(self, registry: _ChannelRegistry) -> None:
+        self.config = {}
         self.registry = registry
 
     def require(self, key: Any) -> Any:
@@ -152,7 +153,7 @@ class _ApplyContext:
 @pytest.mark.asyncio
 async def test_apply_registers_one_formal_channel_definition() -> None:
     registry = _ChannelRegistry()
-    await plugin.apply(cast(Context, _ApplyContext(registry)), AkashicClientsConfig())
+    await plugin.apply(cast(Context, _ApplyContext(registry)))
 
     assert registry.definition is not None
     assert registry.definition.name == "akashic"

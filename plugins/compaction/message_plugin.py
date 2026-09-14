@@ -51,8 +51,9 @@ class _CompactionReader:
         return summary_groups(groups, snapshot)
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """注册只读材料和归档解析；apply 不打开 writer 或调用模型。"""
+    config = Config.model_validate(ctx.config)
     context = ctx.require(CONTEXT)
 
     def records() -> SummaryRecords:

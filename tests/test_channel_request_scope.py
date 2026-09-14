@@ -53,7 +53,7 @@ def build_channel(context):
         async def deliver(self, request):
             raise AssertionError("request scope test must not send")
     return Adapter()
-async def apply(ctx, config):
+async def apply(ctx):
     async def child(child_ctx):
         global declaration_context
         declaration_context = child_ctx

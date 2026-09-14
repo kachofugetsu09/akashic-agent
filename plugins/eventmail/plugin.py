@@ -427,10 +427,9 @@ class _DeliveryServices:
         return self._store.settle_delivery(selection_token, settlement_ref)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Publish typed source and consumer views over one EventMail store."""
 
-    _ = config
     store = EventMailStore(ctx.data_root / "eventmail.sqlite3")
     store.initialize()
     _ = await ctx.provide(

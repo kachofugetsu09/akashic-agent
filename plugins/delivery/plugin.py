@@ -37,7 +37,7 @@ class DeliveryAdmission:
 DELIVERY = ServiceKey[DeliveryAdmission]("delivery.v1")
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """注册出站能力；只有正式调用才取得发送 owner 的状态和 Task。"""
     _ = await ctx.provide(DELIVERY_SENDERS, Senders(ctx))
     _ = await ctx.provide(DELIVERY, DeliveryAdmission(ctx))

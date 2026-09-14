@@ -6,5 +6,5 @@ web_requires = ("web.root.v1",)
 web_provides = ("shell.pages.v1",)
 
 
-def apply(ctx, config):
+def apply(ctx):
     pass

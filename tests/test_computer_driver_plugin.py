@@ -64,7 +64,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
     path = Path(plugin.__file__).parent
     try:
         await root.mount(
-            lambda ctx: content_plugin.apply(ctx, {}),
+            lambda ctx: content_plugin.apply(ctx),
             name="content", inject=content_plugin.inject,
             runtime=PluginRuntime(
                 plugin_id="content", generation_id="content-services", plugin_dir=path.parent / "content",
@@ -72,7 +72,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
             ),
         )
         await root.mount(
-            lambda ctx: tools_plugin.apply(ctx, {}),
+            lambda ctx: tools_plugin.apply(ctx),
             name="tools",
             inject=tools_plugin.inject,
             runtime=PluginRuntime(
@@ -81,7 +81,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
             ),
         )
         await root.mount(
-            lambda ctx: turn_projection_plugin.apply(ctx, {}),
+            lambda ctx: turn_projection_plugin.apply(ctx),
             name="turn_projection",
             inject=turn_projection_plugin.inject,
             runtime=PluginRuntime(
@@ -90,7 +90,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
             ),
         )
         await root.mount(
-            lambda ctx: plugin.apply(ctx, {}),
+            lambda ctx: plugin.apply(ctx),
             name="computer",
             inject=plugin.inject,
             runtime=PluginRuntime(

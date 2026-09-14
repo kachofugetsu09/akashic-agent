@@ -26,7 +26,7 @@ api_version = 3
 name = "{name}"
 version = "1.0.0"
 inject = (PROCESSES,)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("fixture.processes.{name}"), ctx)
 ''')
 

@@ -753,8 +753,9 @@ async def project(
             store.apply_draft(record.reference, draft)
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """启动后才创建文件与跟随日志；归档 apply 不写入正式记忆。"""
+    config = Config.model_validate(ctx.config)
     context = ctx.require(CONTEXT)
     store: MarkdownProfileStore | None = None
     watcher: asyncio.Task[None] | None = None

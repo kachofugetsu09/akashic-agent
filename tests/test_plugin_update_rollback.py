@@ -71,7 +71,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("version.probe"), lambda: "old")
 '''
     _write_v3_plugin(source, name="probe", module_source=module)

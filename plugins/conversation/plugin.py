@@ -66,7 +66,7 @@ inject = (CONTENT, SOURCE_CHECK, MESSAGE_WRITERS, SOURCES, SOURCE_SESSION, RESTA
 CONVERSATION = ServiceKey[Callable[[str], SourceSession]]("conversation.v1")
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """来源只使用模型选择校验与持久化能力，不持有模型执行权。"""
     model_selection = ctx.require(MODEL_SELECTION)
 

@@ -97,7 +97,7 @@ def open_source(ctx: Context, session_id: str) -> SourceSession:
         tasks=ctx.require(TASKS).open(ctx), changed=changed,
         restart_gate=ctx.require(RESTART_GATE))
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     _ = await ctx.require(SOURCES).register(ctx, name="programmatic", open=lambda session: open_source(ctx, session),
         needs_reply=lambda reader: ctx.require(SOURCE_SESSION).needs_reply(reader, "programmatic"))
     programmatic = Programmatic(ctx)

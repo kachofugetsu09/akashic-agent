@@ -50,7 +50,7 @@ async def _bind_optional(
     _ = await ctx.inject((key,), apply, name=f"runtime-inspection-{name}")
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """发布文档 owner，并在依赖存在时组合任务与技能只读 provider。"""
 
     provider = RuntimeInspectionProvider(

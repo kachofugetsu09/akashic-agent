@@ -25,7 +25,7 @@ name = "probe"
 version = "1.0.0"
 inject = ()
 DECLARATION
-async def apply(ctx, config):
+async def apply(ctx):
     path = ctx.runtime.workspace / "RELATIVE"
     def probe(value=None):
         with closing(sqlite3.connect(path)) as db:

@@ -769,8 +769,7 @@ class NoopTool:
         del key
         return None
 
-async def apply(ctx: Context, config: object):
-    del config
+async def apply(ctx: Context):
     # The isolated fixture does not mount the full conversation source, but
     # Delivery Policy still consumes the real conversation-owned origin check.
     await ctx.provide(ServiceKey("conversation.check_origin.v1"), check_origin)

@@ -587,19 +587,19 @@ def _inspect_namespace(tree: ast.Module, contract: PluginContract) -> dict[str, 
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "apply"
     ]
     if len(apply_nodes) != 1:
-        errors.append("必须提供唯一 async apply(ctx, config)")
+        errors.append("必须提供唯一 async apply(ctx)")
         return _namespace_result(api_version, name, inject, errors)
     apply = apply_nodes[0]
     positional = [*apply.args.posonlyargs, *apply.args.args]
     if (
-        [item.arg for item in positional] != ["ctx", "config"]
+        [item.arg for item in positional] != ["ctx"]
         or apply.args.vararg is not None
         or apply.args.kwarg is not None
         or apply.args.kwonlyargs
         or apply.args.defaults
         or apply.args.kw_defaults
     ):
-        errors.append("apply 签名必须是 apply(ctx, config)")
+        errors.append("apply 签名必须是 apply(ctx)")
     errors.extend(_inspect_mobile_registration(apply, contract))
     return _namespace_result(api_version, name, inject, errors)
 
@@ -842,7 +842,7 @@ def _namespace_result(
         "api_version": api_version,
         "name": name,
         "inject": list(inject or ()),
-        "apply_signature": "apply(ctx, config)" if not errors else None,
+        "apply_signature": "apply(ctx)" if not errors else None,
         "errors": errors,
     }
 

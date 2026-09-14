@@ -70,7 +70,7 @@ async def test_runtime_inspection_plugin_owns_documents_and_optional_providers(
     root = CompositionRoot("runtime-inspection")
 
     async def mount_runtime(ctx):
-        await plugin.apply(ctx, {})
+        await plugin.apply(ctx)
 
     await root.mount(mount_runtime, name=plugin.name, runtime=runtime)
     async def call(method, params=None):
@@ -125,7 +125,7 @@ async def test_runtime_inspection_provider_propagates_business_failure(
     root = CompositionRoot("runtime-inspection-failure")
 
     async def mount_runtime(ctx):
-        await plugin.apply(ctx, {})
+        await plugin.apply(ctx)
 
     await root.mount(mount_runtime, name=plugin.name, runtime=runtime)
 
@@ -170,7 +170,7 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
         "RUNTIME_CATALOG = ServiceKey('core.runtime_catalog.v1')\n"
         "api_version = 3\nname = 'external_assets'\nversion = '1'\n"
         "inject = (RUNTIME_CATALOG,)\n"
-        "asset_roots = {'skills': ('skills',)}\ndef apply(ctx, config): pass\n")
+        "asset_roots = {'skills': ('skills',)}\ndef apply(ctx): pass\n")
     (tmp_path / "workspace").mkdir()
     configuration = tmp_path / "workspace/plugin-data/context-builtin"
     configuration.mkdir(parents=True)

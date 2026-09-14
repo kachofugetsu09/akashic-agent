@@ -619,7 +619,7 @@ def _write_mcp_plugin(
             "    async def query(self, key: str) -> Result | None:\n"
             "        return None\n"
             "\n"
-            "async def apply(ctx, config):\n"
+            "async def apply(ctx):\n"
             "    @asynccontextmanager\n"
             "    async def open_version_for_context(_state: Mapping[str, object]) -> AsyncIterator[BoundTool]:\n"
             "        yield VersionTool(ctx)\n"

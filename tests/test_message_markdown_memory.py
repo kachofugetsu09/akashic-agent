@@ -72,7 +72,7 @@ api_version = 3
 name = "fixture_models"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     completed = asyncio.Event()
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()

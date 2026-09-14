@@ -91,8 +91,7 @@ version = "1.0.0"
 inject = (MESSAGE_CATALOG, MESSAGE_WRITERS, CONTENT)
 
 
-async def apply(ctx: Context, config: object) -> None:
-    _ = config
+async def apply(ctx: Context) -> None:
     catalog = ctx.require(MESSAGE_CATALOG)
     writers = ctx.require(MESSAGE_WRITERS)
     content = ctx.require(CONTENT)
@@ -141,8 +140,7 @@ version = "{version}"
 inject = ()
 
 
-async def apply(ctx: Context, config: object) -> None:
-    _ = config
+async def apply(ctx: Context) -> None:
 
     def provide(request):
         if not isinstance(request, dict) or request.get("kind") != "replacement":
@@ -170,8 +168,7 @@ version = "1.0.0"
 inject = (PROVIDER, MESSAGE_CATALOG, MESSAGE_WRITERS, CONTENT)
 
 
-async def apply(ctx: Context, config: object) -> None:
-    _ = config
+async def apply(ctx: Context) -> None:
     provider = ctx.require(PROVIDER)
     catalog = ctx.require(MESSAGE_CATALOG)
     writers = ctx.require(MESSAGE_WRITERS)

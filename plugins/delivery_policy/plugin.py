@@ -135,8 +135,9 @@ class DeliveryFinalOutput:
                 await asyncio.sleep(0.01)
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """正式启动后跟随日志；不把策略、学习或来源 ACK 放进发送原子能力。"""
+    config = Config.model_validate(ctx.config)
     final_delivery = DeliveryFinalOutput(ctx)
     origin_check = ctx.require(ORIGIN_CHECK)
     _ = await ctx.provide(ServiceKey("delivery.input-origin.v1"), partial(input_origin, check_origin=origin_check))

@@ -23,11 +23,10 @@ inject = (CHANNELS, *CLIENT_CAPABILITIES)
 Config = AkashicClientsConfig
 
 
-async def apply(ctx: Context, config: AkashicClientsConfig) -> None:
+async def apply(ctx: Context) -> None:
     """Register one ordinary channel over independent host capabilities."""
+    config = Config.model_validate(ctx.config)
 
-    if not isinstance(config, AkashicClientsConfig):
-        raise TypeError("akashic_clients config 必须通过 Config 校验")
     if not config.enabled:
         return
 

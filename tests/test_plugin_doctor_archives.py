@@ -11,7 +11,7 @@ def test_asset_doctor_checks_arbitrary_categories_without_skill_links(tmp_path):
 
     module = ModuleType("fixture")
     exec("api_version=3\nname='fixture'\nversion='1.0.0'\n"
-         "asset_roots={'abde': ('records',)}\nasync def apply(ctx, config): pass\n", module.__dict__)
+         "asset_roots={'abde': ('records',)}\nasync def apply(ctx): pass\n", module.__dict__)
     declaration = ComposablePlugin.from_module(module)
     (tmp_path / "records").mkdir()
     checks = _check_capabilities(declaration, tmp_path)

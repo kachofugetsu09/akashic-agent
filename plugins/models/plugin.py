@@ -49,10 +49,9 @@ web_contract_digests = {
 dashboard_module = "dashboard.py"
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Publish narrow views over one Root-local model state."""
 
-    _ = config
     store = ModelsStore(
         ctx.workspace_file("model-registry.sqlite3"),
         backup_dir=ctx.runtime.workspace / "runtime" / "model-backups",

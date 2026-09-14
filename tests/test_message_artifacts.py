@@ -96,7 +96,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("probe"), ctx)
 ''')
     host = PluginManager([sources], event_bus=EventBus(), workspace=workspace,

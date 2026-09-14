@@ -141,10 +141,9 @@ class _DeliveryServices:
         return self._store.settle_delivery(selection_token, settlement_ref)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Publish the narrow Drift view over one generation-scoped store."""
 
-    _ = config
     store = DriftStore(ctx.data_root / "drift.sqlite3")
     store.initialize()
     _ = await ctx.provide(DRIFT_PROPOSALS, _ProposalServices(store, lambda: ctx.emit(DRIFT_CHANGED, None)))

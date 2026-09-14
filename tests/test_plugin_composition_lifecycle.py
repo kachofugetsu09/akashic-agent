@@ -183,7 +183,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 workspace_files = ("fail-prepare",)
-async def apply(ctx, config):
+async def apply(ctx):
     events, held = [], []
     def prepare(_):
         snapshot = get_current_runtime_snapshot()
@@ -544,7 +544,7 @@ api_version = 3
 name = "registry"
 version = "1.0.0"
 _registry = set()
-async def apply(ctx, config):
+async def apply(ctx):
     generation_id = ctx.runtime.generation_id
     if generation_id in _registry:
         raise RuntimeError("generation owner still registered")

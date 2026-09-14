@@ -45,7 +45,7 @@ api_version = 3
 name = "akasha"
 version = "1.0.0"
 inject = (TURN_PROJECTION, TOOLS, CONTENT, BINDINGS)
-async def apply(ctx, config):
+async def apply(ctx):
     learning = Learning(ctx.require(TURN_PROJECTION), owner=ctx.runtime.plugin_id, post_commit_effect=ctx.require(CONTENT).legacy_post_commit_effect)
     await ctx.provide(AKASHA_LEARNING, learning)
     await ctx.require(CONTENT).register(ctx, {"name": "akasha", "content": {"akasha.feedback": check_feedback}})
@@ -454,7 +454,7 @@ api_version = 3
 name = "foreign"
 version = "1.0.0"
 inject = (TOOLS,)
-async def apply(ctx, config):
+async def apply(ctx):
     class Target:
         idempotent = True
         async def prepare(self, arguments, source=None):

@@ -90,7 +90,7 @@ api_version = 3
 name = "models_fixture"
 inject = (DELIVERY_SENDERS,)
 version = "1.0.0"
-async def apply(ctx, config):
+async def apply(ctx):
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
     class Driver:
@@ -141,7 +141,7 @@ async def apply(ctx, config):
         control.release.set()
     CONTROLS[str(tmp_path)] = control
     module = provider / "plugin.py"
-    text = module.read_text().replace("async def apply(ctx, config):", "from " + __name__ + " import CONTROLS\nasync def apply(ctx, config):")
+    text = module.read_text().replace("async def apply(ctx):", "from " + __name__ + " import CONTROLS\nasync def apply(ctx):")
     text = text.replace("CONTROL_PATH", repr(str(tmp_path)))
     text = text.replace("        async def complete(self, request):", "        async def complete(self, request):\n            control = CONTROLS[" + repr(str(tmp_path)) + "]\n            if '## 后台任务结果' in str(request.messages):\n                control.main_calls += 1\n                control.main_entered.put_nowait(request)\n                await control.main_release.wait()\n                if control.main_tool and 'main-report.txt' not in str(request.messages[:-1]):\n                    return LLMResponse(None, [ToolCall('main-write', 'write_file', {'path': CONTROL_REPORT_PATH, 'content': 'main result'})])\n                return LLMResponse('main summary: ' + ('cancelled' if 'cancelled' in str(request.messages[-1]) else 'child finished'))\n            if '[human followup]' in str(request.messages):\n                return LLMResponse('human answer')\n            control.calls += 1\n            control.entered.put_nowait(request)\n            await control.release.wait()")
     text = text.replace("CONTROL_REPORT_PATH", repr(str(tmp_path / "workspace/main-report.txt")))

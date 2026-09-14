@@ -33,7 +33,7 @@ api_version = 3
 name = "probe_command"
 version = "1.0.0"
 inject = (COMMANDS,)
-async def apply(ctx, config):
+async def apply(ctx):
     calls = []
     entered, gate = asyncio.Event(), asyncio.Event()
     if not BLOCKED:

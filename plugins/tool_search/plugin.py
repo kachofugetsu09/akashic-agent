@@ -238,7 +238,7 @@ class SearchPresentation:
         return {"groups": self._groups} if name == self._search_ref.name else None
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
 

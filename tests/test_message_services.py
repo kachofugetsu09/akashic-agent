@@ -28,7 +28,7 @@ api_version = 3
 name = "{name}"
 version = "1.0.0"
 inject = (MESSAGE_CATALOG, MESSAGE_WRITERS, OWNER_STATE, TASKS, BINDINGS)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("probe.{name}"), ctx)
 ''')
 
@@ -179,7 +179,7 @@ api_version = 3
 name = "listener"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     async def start(event):
         async with ctx.runtime_scope():
             writer = ctx.require(MESSAGE_WRITERS).bind(

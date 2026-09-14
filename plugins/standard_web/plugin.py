@@ -13,8 +13,7 @@ inject = (TOOLS,)
 STANDARD_WEB_TOOLS = ServiceKey[ToolView]("standard-web.tools.v1")
 
 
-async def apply(ctx: Context, config: object) -> None:
-    _ = config
+async def apply(ctx: Context) -> None:
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, always_on=True, description=desc)
     refs = await register_web(ctx)

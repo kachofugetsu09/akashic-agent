@@ -22,8 +22,7 @@ workspace_roots = ()
 workspace_files = ()
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Register this artifact's one provider-neutral model driver contribution."""
 
-    _ = config
     _ = await ctx.require(MODEL_DRIVERS).register(ctx, definition())

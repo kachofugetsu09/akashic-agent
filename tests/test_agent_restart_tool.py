@@ -128,7 +128,7 @@ name = "restart_provider"
 version = "1.0.0"
 inject = {inject}
 
-async def apply(ctx, config):
+async def apply(ctx):
 {fixture_setup}
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
@@ -197,7 +197,7 @@ inject = (DELIVERY_SENDERS,)
 STATE_ROOT = {str(state_root)!r}
 REJECT_FIRST = {reject_first!r}
 
-async def apply(ctx, config):
+async def apply(ctx):
     Path(STATE_ROOT).mkdir(parents=True, exist_ok=True)
 
     class Sender:
@@ -261,7 +261,7 @@ class Waiter:
         return None
 
 
-async def apply(ctx, config):
+async def apply(ctx):
     delivery = ctx.require(FINAL_OUTPUT_DELIVERY)
     waiter = Waiter()
     delivery.register("startup-probe", waiter)

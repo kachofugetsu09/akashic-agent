@@ -329,10 +329,9 @@ class SourceRuntime:
         return value.astimezone(UTC)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Bind the fake source to formal runtime lifecycle only."""
 
-    _ = config
     runtime = SourceRuntime(
         FixtureSourceStore(ctx.data_root / "source.sqlite3"),
         ctx.require(TIMERS),

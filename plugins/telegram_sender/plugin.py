@@ -56,7 +56,8 @@ class Config(BaseModel):
         return self
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
+    config = Config.model_validate(ctx.config)
     if not config.enabled:
         return
     token_ref = config.token

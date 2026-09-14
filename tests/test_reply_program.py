@@ -51,7 +51,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (ServiceKey("tools.v1"),)
-async def apply(ctx, config):
+async def apply(ctx):
     class Target:
         idempotent = False
         async def prepare(self, args, source=None):

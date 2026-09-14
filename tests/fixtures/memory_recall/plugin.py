@@ -86,8 +86,7 @@ class _RecallTool:
         return None
 
 
-async def apply(ctx: Context, config: object) -> None:
-    _ = config
+async def apply(ctx: Context) -> None:
     _ = await ctx.provide(MEMORY_RECALL, object())
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description="Fixture memory recall")

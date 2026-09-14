@@ -72,7 +72,7 @@ def test_standalone_dashboard_does_not_import_plugin_backend(
         "name = 'observe'\n"
         "version = '1.0.0'\n"
         "dashboard_module = 'dashboard.py'\n"
-        "async def apply(ctx, config): pass\n",
+        "async def apply(ctx): pass\n",
         encoding="utf-8",
     )
     (plugin_dir / "akashic.plugin.toml").write_text(

@@ -320,5 +320,5 @@ async def react(
 REACT = ServiceKey[Callable[..., Awaitable[Message]]]("react.v2")
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     _ = await ctx.provide(REACT, partial(react, capture_scope=ctx.capture_runtime_scope))

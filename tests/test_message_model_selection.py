@@ -34,7 +34,7 @@ api_version = 3
 name = "fixture_driver"
 version = "1.0.0"
 inject = (MODEL_DRIVERS,)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.require(MODEL_DRIVERS).register(ctx, definition())
 ''')
     path = sources / "test_provider/plugin.py"

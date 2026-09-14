@@ -104,7 +104,7 @@ SOURCE_SESSION = ServiceKey[type[_SourceSession]]("source.session.v1")
 SOURCE_CHANGED = ServiceKey[Changed]("source.changed.v1")
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     sources = Sources()
     _ = await ctx.provide(SOURCE_CHECK, check_source)
     _ = await ctx.provide(SOURCE_SESSION, _SourceSession)

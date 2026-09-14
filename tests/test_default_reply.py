@@ -86,7 +86,7 @@ api_version = 3
 name = "test_provider"
 version = "1.0.0"
 inject = (TOOLS,)
-async def apply(ctx, config):
+async def apply(ctx):
     calls = []
     store = ModelsStore(ctx.data_root / "models.db", ctx.data_root / "backups")
     store.initialize()
@@ -248,7 +248,7 @@ api_version = 3
 name = "citation"
 version = "1.0.0"
 inject = (CONTENT,)
-async def apply(ctx, config):
+async def apply(ctx):
     async def decode(source, references):
         return (), {"version": 1, "references": [{"ref": "remembered", "declared": True}]} if source.text else {}
     await ctx.require(CONTENT).register(ctx, {

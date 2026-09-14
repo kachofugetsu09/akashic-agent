@@ -346,7 +346,7 @@ def _inspect_static_plugin(root: Path, plugin_id: str) -> dict[str, object]:
     entrypoint_name = str(manifest.get("entrypoint", "plugin.py"))
     entrypoint = root / entrypoint_name
 
-    # 2. Parse the namespace AST and enforce api_version=3/apply(ctx, config).
+    # 2. Parse the namespace AST and enforce api_version=3/apply(ctx).
     namespace = _inspect_namespace(root, entrypoint)
 
     # 3. Scan production Python sources for generic v2 import and class edges.
@@ -520,7 +520,7 @@ def _inspect_namespace(root: Path, entrypoint: Path) -> dict[str, object]:
         args = apply_nodes[0].args
         positional = [*args.posonlyargs, *args.args]
         apply_ok = (
-            [item.arg for item in positional] == ["ctx", "config"]
+            [item.arg for item in positional] == ["ctx"]
             and args.vararg is None
             and args.kwarg is None
             and not args.kwonlyargs
@@ -532,13 +532,13 @@ def _inspect_namespace(root: Path, entrypoint: Path) -> dict[str, object]:
     if not isinstance(name, str) or not name.strip():
         errors.append("namespace name 必须是非空字符串")
     if not apply_ok:
-        errors.append("namespace 必须提供精确 apply(ctx, config)")
+        errors.append("namespace 必须提供精确 apply(ctx)")
     evidence.update(
         {
             "status": "passed" if not errors else "failed",
             "api_version": api_version,
             "name": name,
-            "apply_signature": "apply(ctx, config)" if apply_ok else None,
+            "apply_signature": "apply(ctx)" if apply_ok else None,
         }
     )
     return evidence

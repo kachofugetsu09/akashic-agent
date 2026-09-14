@@ -43,8 +43,9 @@ def is_active(_services: ServiceView) -> bool:
     return _replay_source_enabled()
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Register typed replay source, MCP, and optional outbound capture effects."""
+    config = Config.model_validate(ctx.config)
 
     # 1. The replay profile owns all declarations; a normal debug runtime stays inert.
     if not _replay_source_enabled():
@@ -127,8 +128,8 @@ def _replay_source_enabled() -> bool:
     )
 
 
-def _capture_channel_enabled(config: object) -> bool:
-    token = getattr(config, "replay_token", None)
+def _capture_channel_enabled(config: Config) -> bool:
+    token = config.replay_token
     return bool(
         os.environ.get("AKASHIC_REPLAY_OUTBOX_FILE", "").strip()
         and isinstance(token, CredentialRef)

@@ -43,7 +43,7 @@ class SendResult:
     provider_ids: tuple[str, ...] = ()
     error: str | None = None
 
-async def apply(ctx, config):
+async def apply(ctx):
     async def start(_event):
         path = ctx.data_root / "receiver-starts"
         path.parent.mkdir(parents=True, exist_ok=True)

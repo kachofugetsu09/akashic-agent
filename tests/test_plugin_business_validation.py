@@ -32,7 +32,7 @@ name = "probe"
 version = "1.0.0"
 inject = (CHAT_MODELS, MESSAGE_CATALOG, MESSAGE_WRITERS, SESSION_ADMISSION, TASKS,
           CONTENT, CONTEXT, MATERIALS, MODEL_CALLS, REACT, TOOLS, ALL_TOOLS, TURN_PROJECTION, ServiceKey("tools.cleanup.v1"))
-async def apply(ctx, config):
+async def apply(ctx):
     async def validate():
         ctx.require(SESSION_ADMISSION).ensure(ctx, "validation", SessionAttributes("internal", "excluded"))
         reader = ctx.require(MESSAGE_CATALOG).reader("validation")
@@ -99,7 +99,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (MESSAGE_WRITERS, SESSION_ADMISSION, TASKS)
-async def apply(ctx, config):
+async def apply(ctx):
     async def forbidden(event):
         raise AssertionError("program validation started an automatic source")
     await ctx.on(RUNTIME_STARTED, forbidden)
@@ -368,7 +368,7 @@ api_version = 3
 name = "fixture_embeddings"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     descriptor = EmbeddingSpaceDescriptor(
         plugin_snapshot_id="fixture", model_revision=0, model_id="fixture", connection_id="fixture",
         driver_id="fixture", driver_contract_version="1", auth_identity="fixture",

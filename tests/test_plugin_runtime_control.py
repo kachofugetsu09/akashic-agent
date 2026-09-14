@@ -525,7 +525,7 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "version = '1.0.0'\n"
         "inject = (MCP_SERVERS,)\n"
         "skill_roots = ('skills',)\n"
-        "async def apply(ctx, config):\n"
+        "async def apply(ctx):\n"
         "    await ctx.require(MCP_SERVERS).register(\n"
         "        ctx, McpServerDefinition(\n"
         "            name='runtime_probe', command=('python', 'mcp/server.py'),\n"
@@ -674,7 +674,7 @@ def _write_v3_plugin(
         "api_version = 3\n"
         f"name = {name!r}\n"
         f"version = {version!r}\n\n"
-        "async def apply(ctx, config):\n"
+        "async def apply(ctx):\n"
         "    return None\n",
         encoding="utf-8",
     )

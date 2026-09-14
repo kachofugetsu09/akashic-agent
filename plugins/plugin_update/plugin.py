@@ -54,8 +54,9 @@ class Config(BaseModel):
     max_output_tokens: int = Field(default=4096, gt=0)
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """工具只准备候选；普通来源拥有验证策略和通知，发布由 Core 排空。"""
+    config = Config.model_validate(ctx.config)
     watcher: asyncio.Task[None] | None = None
     catalog = ctx.require(TOOLS)
     _ = await catalog.declare_group(ctx, description=desc)

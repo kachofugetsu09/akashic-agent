@@ -20,11 +20,10 @@ inject = (CHANNELS,)
 Config = QQChannelConfig
 
 
-async def apply(ctx: Context, config: QQChannelConfig) -> None:
+async def apply(ctx: Context) -> None:
     """Register the legacy QQ protocol only when its plugin config enables it."""
+    config = Config.model_validate(ctx.config)
 
-    if not isinstance(config, QQChannelConfig):
-        raise TypeError("QQ channel config 必须通过 Config 校验")
     if not config.enabled:
         return
     await ctx.require(CHANNELS).register(

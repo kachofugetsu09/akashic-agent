@@ -34,7 +34,8 @@ class Config(BaseModel):
     prefix: str = "old:"
 def is_active(services):
     return os.environ["ARCHIVE_PROVIDER_ACTIVE"] == "yes"
-async def apply(ctx, config):
+async def apply(ctx):
+    config = Config.model_validate(ctx.config)
     state = {"text": config.prefix + VALUE, "started": False, "closed": False,
              "asset": (ctx.runtime.plugin_dir / "asset.txt").read_text()}
     async def start(event):
@@ -55,7 +56,7 @@ api_version = 3
 name = "consumer"
 version = "1.0.0"
 inject = (ServiceKey("archive.test.value"),)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("archive.test.result"), ctx.require(inject[0]))
 """)
 
@@ -110,7 +111,7 @@ from agent.plugin_composition import ServiceKey
 api_version = 3
 name = "consumer"
 version = "1.0.0"
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("archive.fixture.delivery"), {})
     async def child(child_ctx):
         await child_ctx.provide(ServiceKey("archive.test.result"), child_ctx.require(ServiceKey("archive.test.value")))
@@ -125,7 +126,7 @@ name = "unrelated"
 version = "1.0.0"
 LEGACY_DELIVERY = ServiceKey("archive.fixture.delivery")
 inject = (LEGACY_DELIVERY,)
-async def apply(ctx, config):
+async def apply(ctx):
     pass
 """)
     host = manager(tmp_path, [plugins])
@@ -183,7 +184,7 @@ api_version = 3
 name = "addon"
 version = "1.0.0"
 inject = (ServiceKey("archive.test.value"),)
-async def apply(ctx, config):
+async def apply(ctx):
     value = ctx.require(inject[0])
     value["registration"] = ctx
     value["extra"] = "registered A"

@@ -69,8 +69,9 @@ inject = (
 WAKE_DASHBOARD = ServiceKey[Callable[[], DashboardView | None]]("wake.dashboard.v1")
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """归档注册原程序和私有决定工具；消息与领域状态仅在正式来源执行时打开。"""
+    config = Config.model_validate(ctx.config)
     _ = await ctx.require(CONTENT).register(
         ctx,
         {

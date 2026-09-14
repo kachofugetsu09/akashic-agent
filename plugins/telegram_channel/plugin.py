@@ -20,11 +20,10 @@ inject = (CHANNELS,)
 Config = TelegramChannelConfig
 
 
-async def apply(ctx: Context, config: TelegramChannelConfig) -> None:
+async def apply(ctx: Context) -> None:
     """Register Telegram only when its ordinary plugin config enables it."""
+    config = Config.model_validate(ctx.config)
 
-    if not isinstance(config, TelegramChannelConfig):
-        raise TypeError("Telegram channel config 必须通过 Config 校验")
     if not config.enabled:
         return
     await ctx.require(CHANNELS).register(

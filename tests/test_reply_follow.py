@@ -30,7 +30,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("probe"), ctx)
 ''')
     log = MessageLog(tmp_path / "sessions.db")

@@ -79,7 +79,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     for name in ("one", "two", "unused"):
         root = source / "plugins" / name
         root.mkdir(parents=True)
-        (root / "plugin.py").write_text(f'api_version = 3\nname = "{name}"\nversion = "1"\ndef apply(ctx, config): pass\n')
+        (root / "plugin.py").write_text(f'api_version = 3\nname = "{name}"\nversion = "1"\ndef apply(ctx): pass\n')
         (root / "akashic.plugin.toml").write_text(f'schema_version = 1\napi_version = 3\nname = "{name}"\nversion = "1"\nentrypoint = "plugin.py"\n')
     (source / "main.py").write_text('print("core")\n')
     legacy_memory = source / "memory2"
@@ -203,7 +203,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     external = tmp_path / "external-one"
     external.mkdir()
     (external / "plugin.py").write_text(
-        'api_version = 3\nname = "one"\nversion = "2"\ndef apply(ctx, config): pass\n'
+        'api_version = 3\nname = "one"\nversion = "2"\ndef apply(ctx): pass\n'
     )
     (external / "akashic.plugin.toml").write_text(
         'schema_version = 1\napi_version = 3\nname = "one"\nversion = "2"\nentrypoint = "plugin.py"\n'
@@ -267,7 +267,7 @@ def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
     replacement_source = source / "plugins" / "replacement"
     replacement_source.mkdir(parents=True)
     (replacement_source / "plugin.py").write_text(
-        'api_version = 3\nname = "replacement"\nversion = "1"\ndef apply(ctx, config): pass\n'
+        'api_version = 3\nname = "replacement"\nversion = "1"\ndef apply(ctx): pass\n'
     )
     (replacement_source / "akashic.plugin.toml").write_text(
         'schema_version = 1\napi_version = 3\nname = "replacement"\n'
@@ -482,7 +482,7 @@ def test_formal_host_context_contains_core_and_bundles_only(tmp_path):
     plugin = source / "plugins" / "one"
     plugin.mkdir(parents=True)
     (plugin / "plugin.py").write_text(
-        'api_version = 3\nname = "one"\nversion = "1"\ndef apply(ctx, config): pass\n'
+        'api_version = 3\nname = "one"\nversion = "1"\ndef apply(ctx): pass\n'
     )
     (plugin / "akashic.plugin.toml").write_text(
         'schema_version = 1\napi_version = 3\nname = "one"\nversion = "1"\nentrypoint = "plugin.py"\n'

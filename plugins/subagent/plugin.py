@@ -70,8 +70,9 @@ class Config(BaseModel):
     max_output_tokens: int = Field(default=4096, gt=0)
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """工具提交请求，正式订阅者启动工作；归档只提供原程序和工具入口。"""
+    config = Config.model_validate(ctx.config)
     watcher: asyncio.Task[None] | None = None
     jobs = Subagents(ctx)
     catalog = ctx.require(TOOLS)

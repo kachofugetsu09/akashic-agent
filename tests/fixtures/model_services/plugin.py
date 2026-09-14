@@ -10,6 +10,5 @@ version = "1.0.0"
 inject = ()
 
 
-async def apply(ctx: Context, config: object) -> None:
-    _ = config
+async def apply(ctx: Context) -> None:
     await provide_test_model_services(ctx)

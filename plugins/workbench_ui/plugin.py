@@ -13,5 +13,5 @@ web_contract_digests = {
 }
 
 
-def apply(ctx, config):
+def apply(ctx):
     pass

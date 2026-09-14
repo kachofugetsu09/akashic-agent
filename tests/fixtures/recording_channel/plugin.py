@@ -114,11 +114,10 @@ def build_channel(context: ChannelFactoryContext) -> RecordingChannel:
     return RecordingChannel(context)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Register one ordinary outbound Channel through the public v3 slot."""
+    Config.model_validate(ctx.config)
 
-    if not isinstance(config, Config):
-        raise TypeError("recording Channel config 必须通过 Config 校验")
     await ctx.require(CHANNELS).register(
         ctx,
         ChannelDefinition(

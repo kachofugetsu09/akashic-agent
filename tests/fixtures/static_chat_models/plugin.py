@@ -10,6 +10,5 @@ version = "1.0.0"
 inject = ()
 
 
-async def apply(ctx: Context, config: object) -> None:
-    _ = config
+async def apply(ctx: Context) -> None:
     _ = await ctx.provide(CHAT_MODELS, build_test_chat_models(object()))

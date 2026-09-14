@@ -16,7 +16,7 @@ def _write_plugin(root: Path) -> None:
         "api_version = 3\n"
         "name = 'baseline'\n"
         "version = '1.0.0'\n\n"
-        "async def apply(ctx, config):\n"
+        "async def apply(ctx):\n"
         "    return None\n",
         encoding="utf-8",
     )

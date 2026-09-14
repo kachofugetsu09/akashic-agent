@@ -4686,7 +4686,7 @@ def _install_control_failure_plugin(sandbox: Path) -> None:
         "@asynccontextmanager\n"
         "async def open(_state):\n"
         "    yield FailureTool()\n"
-        "async def apply(ctx, config):\n"
+        "async def apply(ctx):\n"
         "    await ctx.require(TOOLS).register(\n"
         "        ctx, name='pc10_failure_probe',\n"
         "        description='Fail inside the PC10 tool handler.',\n"

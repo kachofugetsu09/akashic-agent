@@ -75,8 +75,9 @@ class Config(BaseModel):
     max_output_tokens: int = Field(default=4096, gt=0)
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """自动回复是普通可移除插件；正式启动后才读日志和接纳任务。"""
+    config = Config.model_validate(ctx.config)
     watcher: asyncio.Task[None] | None = None
     pending: dict[tuple[str, str], AbstractContextManager[None]] = {}
     running = False

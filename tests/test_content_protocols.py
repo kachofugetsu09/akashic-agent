@@ -36,7 +36,7 @@ async def bound_content(definitions):
     path = Path(temporary.name)
 
     async def provider(ctx):
-        await apply(ctx, None)
+        await apply(ctx)
 
     store = RuntimeSnapshotStore()
     try:
@@ -249,7 +249,7 @@ async def test_external_identity_registers_via_ordinary_effect_and_real_runtime_
     root = CompositionRoot("content-generation")
 
     async def provider(ctx):
-        await apply(ctx, None)
+        await apply(ctx)
 
     async def external(ctx):
         await ctx.require(CONTENT).register(ctx, meme_protocol([]))
@@ -364,7 +364,7 @@ async def test_dynamic_protocol_freezes_prompt_and_decoder_until_next_bind(tmp_p
         return TextProtocol(name="dynamic", prompt=value, decode=decode, content={})
 
     async def provider(ctx):
-        await apply(ctx, None)
+        await apply(ctx)
 
     async def consumer(ctx):
         await ctx.require(CONTENT).register(ctx, prepare(), prepare=prepare)

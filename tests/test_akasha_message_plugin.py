@@ -54,7 +54,7 @@ api_version = 3
 name = "fixture_embeddings"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     embedded = asyncio.Event()
     descriptor = EmbeddingSpaceDescriptor(
         plugin_snapshot_id="fixture", model_revision=0, model_id="fixture", connection_id="fixture",

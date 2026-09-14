@@ -44,10 +44,9 @@ DRIFT_PROPOSALS = ServiceKey[DriftProposalServices]("drift.proposals.v1")
 inject = (EVENTMAIL_CONTENT_SOURCE, DRIFT_PROPOSALS)
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     """Submit deterministic external facts only after formal runtime start."""
 
-    _ = config
     content = ctx.require(EVENTMAIL_CONTENT_SOURCE).bind("wake-drift-fixture")
     drift = ctx.require(DRIFT_PROPOSALS)
 

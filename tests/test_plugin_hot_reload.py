@@ -56,7 +56,7 @@ def _v3_source(
         f"name = {name!r}\n"
         f"version = {version!r}\n"
         f"{exports}"
-        "async def apply(ctx, config):\n"
+        "async def apply(ctx):\n"
         f"{body}"
     )
 
@@ -174,9 +174,9 @@ async def test_candidate_gate_publishes_unique_generation(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("signature", ["host, settings", "host, settings=None", "*args"])
+@pytest.mark.parametrize("signature", ["host", "host, settings=None", "*args"])
 async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature: str):
-    """可用两个位置参数调用的入口不受参数命名限制。"""
+    """可用一个位置参数调用的入口不受参数命名限制。"""
     source = (
         'api_version = 3\nname = "ordinary"\nversion = "1.0.0"\n'
         f'async def apply({signature}):\n    return None\n'
@@ -258,6 +258,7 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
         "module_tree",
         _v3_source(
             "module_tree",
+            body="    Config.model_validate(ctx.config)\n",
             exports=(
                 "from pydantic import BaseModel\n"
                 "from . import child\n"

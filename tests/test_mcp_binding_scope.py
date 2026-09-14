@@ -24,7 +24,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (MCP_SERVERS,)
-async def apply(ctx, config):
+async def apply(ctx):
     service = ctx.require(MCP_SERVERS)
     for name in ("first", "second"):
         await service.register(ctx, McpServerDefinition(

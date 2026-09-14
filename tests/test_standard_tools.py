@@ -81,7 +81,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (ServiceKey("core.bindings"), *REPLY_INJECT)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("standard-tools-probe"), ctx)
 '''.replace('REPLY_INJECT', '(ServiceKey("source.check.v1"), ServiceKey("models.selection.v1"))' if reply else '()'))
     workspace = tmp_path / "workspace"

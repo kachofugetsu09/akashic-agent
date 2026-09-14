@@ -44,14 +44,15 @@ async def application(tmp_path, *, wake_delivery=False):
     module.write_text(module.read_text() + '''
 from agent.plugin_composition import ServiceKey
 _original_apply = apply
-async def apply(ctx, config):
-    await _original_apply(ctx, config)
+async def apply(ctx):
+    await _original_apply(ctx)
     await ctx.provide(ServiceKey("fixture.wake"), ctx)
 ''')
     text = module.read_text()
     if wake_delivery:
-        text = text.replace("await _original_apply(ctx, config)",
-            'await _original_apply(ctx, Config.model_validate({"delivery": {"channel": "test", "recipient": "room", "session_id": "test:room"}}))')
+        config_path = tmp_path / "workspace/plugin-data/wake-builtin/config.local.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text('[delivery]\nchannel="test"\nrecipient="room"\nsession_id="test:room"\n')
     text += "\nfrom tests.test_wake_messages import CONTROLS\n_original_runtime = Runtime\ndef Runtime(ctx, config):\n    runtime = _original_runtime(ctx, config)\n    control = CONTROLS[" + repr(str(tmp_path)) + "]\n    control['runtime'] = runtime\n    deadline = runtime.duties.deadline\n    def observe(now):\n        value = deadline(now)\n        control.setdefault('deadlines', []).append(value)\n        control['due_read'].set()\n        return value\n    runtime.duties.deadline = observe\n    finish_attempt = runtime.state.finish_attempt\n    def observe_attempt(**kwargs):\n        finish_attempt(**kwargs)\n        control['attempts'].put_nowait(kwargs)\n    runtime.state.finish_attempt = observe_attempt\n    return runtime\n"
     module.write_text(text)
     provider = sources / "models_fixture"
@@ -81,7 +82,7 @@ api_version = 3
 name = "models_fixture"
 version = "1.0.0"
 inject = (DELIVERY_SENDERS, MESSAGE_CATALOG, MESSAGE_EMBEDDINGS, TURN_PROJECTION, TOOLS)
-async def apply(ctx, config):
+async def apply(ctx):
     control = CONTROLS[CONTROL_PATH]
     async def embed(texts):
         return [[1.0, 0.0] for _ in texts]

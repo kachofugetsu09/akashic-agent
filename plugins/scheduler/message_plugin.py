@@ -57,8 +57,9 @@ class Config(BaseModel):
     max_output_tokens: int = Field(default=4096, gt=0)
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """注册工具不启动调度；旧 binding 直接重读同一文件，不依赖当前 runtime 指针。"""
+    config = Config.model_validate(ctx.config)
     store = JobStore(ctx.workspace_file("schedules.json"))
     _ = await ctx.provide(SCHEDULER_INSPECTION, SchedulerInspectionProvider(store))
     watcher: asyncio.Task[None] | None = None

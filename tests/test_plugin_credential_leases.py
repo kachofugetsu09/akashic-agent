@@ -23,7 +23,8 @@ inject = (CREDENTIALS,)
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     token: CredentialRef
-async def apply(ctx, config):
+async def apply(ctx):
+    config = Config.model_validate(ctx.config)
     class Reader:
         async def read(self):
             async with ctx.require(CREDENTIALS).open(ctx, {"token": config.token}) as client:
@@ -63,13 +64,13 @@ async def test_credential_binding_uses_current_reader_after_config_change(tmp_pa
                 await reader.undeclared()
             reference = ctx.require(BINDINGS).bind(PROBE, {})
             generation = snapshot.generations["secret_reader"]
-            assert generation.config.token == CredentialRef(("token",))
+            assert generation.config["token"] == CredentialRef(("token",))
             assert "fixture-private-token" not in str(generation.config_projection)
             original_ctx = ctx.require(ServiceKey("test.credential_context"))
-            async with ctx.require(CREDENTIALS).open(original_ctx, {"token": generation.config.token}) as client:
-                assert client.credential(generation.config.token) == "fixture-private-token"
+            async with ctx.require(CREDENTIALS).open(original_ctx, {"token": generation.config["token"]}) as client:
+                assert client.credential(generation.config["token"]) == "fixture-private-token"
             with pytest.raises(RuntimeError, match="已关闭"):
-                client.credential(generation.config.token)
+                client.credential(generation.config["token"])
         for path in host._archive.path.rglob("*"):
             if path.is_file():
                 assert b"fixture-private-token" not in path.read_bytes()
@@ -129,7 +130,7 @@ async def test_channel_credential_grant_does_not_grant_generic_plugin_access(tmp
     (source / "plugin.py").write_text(MODULE.replace(
         'inject = (CREDENTIALS,)',
         'from agent.plugin_composition import CHANNELS, ChannelCapability, ChannelDefinition, ChannelReady, StopReceipt\ninject = (CREDENTIALS, CHANNELS)'
-    ).replace('async def apply(ctx, config):', '''def build_channel(context):
+    ).replace('async def apply(ctx):', '''def build_channel(context):
     class LocalChannel:
         async def start(self):
             return ChannelReady(context.binding_token)
@@ -138,7 +139,7 @@ async def test_channel_credential_grant_does_not_grant_generic_plugin_access(tmp
         async def deliver(self, request):
             raise AssertionError("permission test must not send")
     return LocalChannel()
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.require(CHANNELS).register(ctx, ChannelDefinition(
         name="test", capabilities=frozenset({ChannelCapability.OUTBOUND}),
         factory_export="build_channel", inbound_identity=None, credential_paths=("token",)))'''))
@@ -212,8 +213,8 @@ name = "plain"
 version = "1.0.0"
 class Config(BaseModel):
     label: str = "ordinary"
-async def apply(ctx, config):
-    pass
+async def apply(ctx):
+    Config.model_validate(ctx.config)
 ''')
     _commit(plain)
     install_git_plugin(workspace=tmp_path / "workspace", source=str(plain), marketplace="lab",

@@ -111,8 +111,9 @@ AKASHA_RECORDS_VIEW = ServiceKey[Callable[[], RecallRecordsRead]](
 AKASHA_TOOLS = ServiceKey[ToolView]("akasha.tools.v1")
 
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
     """注册纯学习规则和延迟工具；正式启动事件才取得唯一学习 writer。"""
+    config = Config.model_validate(ctx.config)
     catalog: ToolCatalog = ctx.require(TOOLS)
     content: ContentCapability = ctx.require(CONTENT)
     _ = await catalog.declare_group(ctx, description=desc)

@@ -74,7 +74,7 @@ def prompt_sources(sources):
 name = "fixture_skills"
 version = "1.0.0"
 skill_roots = ("skills",)
-async def apply(ctx, config):
+async def apply(ctx):
     pass
 ''')
     personal = sources.parent / "workspace/skills/unmanaged"

@@ -48,7 +48,7 @@ api_version = 3
 name = "target"
 version = "1.0.0"
 inject = (ServiceKey("tools.v1"),)
-async def apply(ctx, config):
+async def apply(ctx):
     class Target:
         idempotent = False
         async def prepare(self, arguments, source=None):
@@ -81,7 +81,7 @@ api_version = 3
 name = "prepare"
 version = "1.0.0"
 inject = (ServiceKey("tools.v1"), ServiceKey("fixture.example-ref"))
-async def apply(ctx, config):
+async def apply(ctx):
     async def prepare(arguments):
         return {"value": "restore:" + arguments["value"]}
     await ctx.require(inject[0]).register_prepare(
@@ -99,7 +99,7 @@ api_version = 3
 name = "authorize"
 version = "1.0.0"
 inject = (ServiceKey("tools.v1"), ServiceKey("fixture.example-ref"))
-async def apply(ctx, config):
+async def apply(ctx):
     async def authorize(arguments):
         if arguments["value"] == "restore:blocked":
             return "blocked by fixed policy"

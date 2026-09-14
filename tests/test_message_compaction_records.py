@@ -253,7 +253,7 @@ api_version = 3
 name = "fixture_models"
 version = "1.0.0"
 inject = ()
-async def apply(ctx, config):
+async def apply(ctx):
     class Models:
         def execution(self):
             raise AssertionError("archive lookup must not open a model")

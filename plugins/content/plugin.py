@@ -350,5 +350,5 @@ async def open_content(
             yield view
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     _ = await ctx.provide(CONTENT, Content(ctx))

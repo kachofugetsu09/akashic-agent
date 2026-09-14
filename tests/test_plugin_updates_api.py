@@ -21,7 +21,7 @@ api_version = 3
 name = "probe"
 version = "1.0.0"
 inject = (PLUGIN_UPDATES,)
-async def apply(ctx, config):
+async def apply(ctx):
     await ctx.provide(ServiceKey("test.context"), ctx)
     await ctx.provide(ServiceKey("test.version"), lambda: "old")
 '''

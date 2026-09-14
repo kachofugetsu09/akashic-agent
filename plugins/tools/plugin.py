@@ -525,7 +525,7 @@ async def bind_saved_tool(
         )
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     catalog = ToolCatalog(ctx)
     _ = await ctx.provide(ServiceKey("tools.bind-saved.v1"), bind_saved_tool)
     _ = await ctx.provide(TOOLS, catalog)

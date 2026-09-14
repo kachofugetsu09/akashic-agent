@@ -60,7 +60,7 @@ class Sender:
         return None
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     @asynccontextmanager
     async def open() -> AsyncGenerator[Sender]:
         yield Sender()
