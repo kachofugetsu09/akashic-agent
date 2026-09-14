@@ -565,7 +565,7 @@ async def test_capture_freezes_target_model_and_phase_text_remains_a_real_memory
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fault", ["input", "ready", "delivered"])
-async def test_reopen_uses_original_program_sender_and_input_after_source_changes(tmp_path, monkeypatch, fault):
+async def test_reopen_current_plugins_handle_original_facts_after_source_changes(tmp_path, monkeypatch, fault):
     from agent.plugins.manager import PluginManager
     from bus.event_bus import EventBus
     from infra.channels.artifacts import ChannelAttachmentArtifactStore
@@ -590,10 +590,14 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
                 await asyncio.wait_for(task.join(), 10)
         saved = log.reader(original.session_id).snapshot()
     module = tmp_path / "plugins/models_fixture/plugin.py"
-    module.write_text(module.read_text().replace("async def complete(self, request):",
-        'async def complete(self, request):\n            raise RuntimeError("changed model must not run")').replace(
-        "async def send(self, key, address, message):",
-        'async def send(self, key, address, message):\n            raise RuntimeError("changed sender must not run")'))
+    changed = module.read_text()
+    if fault == "input":
+        # 只有阶段 Input 的未启动请求可以使用新 stable；让新 provider 留下可观察的新正文。
+        changed = changed.replace('"useful notification"', '"new provider notification"')
+    else:
+        changed = changed.replace("async def complete(self, request):",
+            'async def complete(self, request):\n            raise RuntimeError("completed model work must not run again")')
+    module.write_text(changed)
     workspace = tmp_path / "workspace"
     log = MessageLog(workspace / "sessions.db")
     metadata = ArtifactStore(workspace / "sessions.db")
@@ -612,8 +616,22 @@ async def test_reopen_uses_original_program_sender_and_input_after_source_change
                     await asyncio.wait_for(task.join(), 10)
                 assert source.pending() == ()
                 assert await source.start(original.flow_id) is None
-                assert ctx.require(DRIFT_DELIVERY).lookup(original.accepted)["status"] == "settled"
-        assert len(control["calls"]) == 1 and len(control["sent"]) == 1
+                delivery = ctx.require(DRIFT_DELIVERY).lookup(original.accepted)
+                if fault == "input":
+                    delivery_execution = ctx.require(DELIVERY).open(ctx)
+                    receipt = delivery_execution.receipt(original.notification_id, "test")
+                    persisted_binding = delivery_execution.destination(
+                        original.notification_id, "test"
+                    ).binding_id
+        if fault == "input":
+            # 未启动的 Wake 程序可以在当前 stable 运行，但投递仍固定使用原 Sink。
+            assert delivery is not None and delivery["status"] == "settled"
+            assert receipt is not None and receipt.status == "delivered"
+            assert persisted_binding == original.sink["binding_id"]
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 1
+        else:
+            assert delivery is not None and delivery["status"] == "settled"
+            assert len(control["calls"]) == 1 and len(control["sent"]) == 1
         assert log.reader(original.session_id).snapshot()[:len(saved)] == saved
         assert len(log.reader(original.session_id).snapshot()) == 5
     finally:

@@ -79,7 +79,9 @@ async def runtime(tmp_path, complete, invoke, *, max_steps=4, authorize_hook=Non
         if authorize_hook is not None:
             await authorize_hook()
         return {"decision": "allowed"}
-    execution = ToolExecution(log.owner("tools"), tasks, open_tool, authorize, task_key="tools")
+    execution = ToolExecution(
+        log.owner("tools"), tasks, open_tool, authorize, task_key="tools",
+    )
     class Menu(ToolMenu):
         def __init__(self, task: Task) -> None:
             self.task = task

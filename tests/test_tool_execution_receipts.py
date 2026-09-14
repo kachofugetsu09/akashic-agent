@@ -55,7 +55,9 @@ def environment(tmp_path):
         assert binding == "fixed-A"
         yield probe
 
-    execution = ToolExecution(state, tasks, open_tool, authorize, task_key="tools")
+    execution = ToolExecution(
+        state, tasks, open_tool, authorize, task_key="tools",
+    )
     yield log, state, tasks, probe, permissions, execution
     log.close()
 
@@ -170,6 +172,41 @@ async def test_restart_started_call_queries_before_closing_failure(environment, 
         result = await execution.execute("request", "fixed-A", {})
         assert result.outcome == ("success" if query else "error")
         assert probe.query_count == 1
+        assert len(probe.calls) == 1
+    finally:
+        await tasks.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["prepared", "started"])
+async def test_binding_open_failure_propagates_without_query_or_invoke(environment, phase):
+    _, state, tasks, probe, _, execution = environment
+    await execution.execute("request", "fixed-A", {})
+    completed = state.read("program:request")
+    assert completed is not None
+    state.transact(
+        lambda tx: tx.save(
+            "program:request",
+            {
+                key: value
+                for key, value in {**completed.value, "phase": phase}.items()
+                if key != "result"
+            },
+            expected_version=completed.version,
+        )
+    )
+
+    @asynccontextmanager
+    async def incompatible(_binding):
+        raise ValueError("插件无法读取旧数据")
+        yield
+
+    execution._open_tool = incompatible
+    try:
+        with pytest.raises(ValueError, match="插件无法读取旧数据"):
+            await execution.execute("request", "fixed-A", {})
+        assert state.read("program:request").value["phase"] == phase
+        assert probe.query_count == 0
         assert len(probe.calls) == 1
     finally:
         await tasks.close()

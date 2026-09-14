@@ -26,10 +26,11 @@ class DeliveryAdmission:
     def open(self, consumer: Context) -> Deliveries:
         owner = consumer.require_runtime_owner(DELIVERY, self)
         ctx = self._ctx
+        bindings = ctx.require(BINDINGS)
         return Deliveries(
             DeliveryRecords(ctx.require(OWNER_STATE).open(ctx), owner),
             ctx.require(MESSAGE_CATALOG), ctx.require(TASKS).open(ctx),
-            partial(open_sender, ctx.require(BINDINGS)), task_key="delivery",
+            partial(open_sender, bindings), task_key="delivery",
         )
 
 

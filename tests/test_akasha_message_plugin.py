@@ -105,7 +105,7 @@ async def apply(ctx, config):
 
 
 @pytest.mark.asyncio
-async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_tool(tmp_path):
+async def test_actual_plugin_learns_provides_materials_and_runs_recall_tool(tmp_path):
     async with application(tmp_path) as (log, host):
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
@@ -136,18 +136,13 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
                 assert isinstance(retrieval_ref, str)
                 observed = read_recall(retrieval_ref)
                 assert observed.graph_version == 1
-                # 显式归档材料查询不争抢仍在运行的正式学习 writer。
+                # 历史材料查询不争抢仍在运行的正式学习 writer。
                 from plugins.akasha.infrastructure.lease import WriterLease
                 from plugins.akasha.infrastructure.persistence import logical_state_sha256
                 graph = tmp_path / "workspace/memory/akasha.db"
                 before_graph = logical_state_sha256(graph)
-                archive_refs: list[str] = []
-                for generation in snapshot.generations.values():
-                    assert isinstance(generation.archive_ref, str)
-                    archive_refs.append(generation.archive_ref)
-                async with host.open_binding(tuple(archive_refs)) as archived:
-                    async with archived.require(MATERIALS).bind() as view:
-                        copied = await view.prepare(log.reader("s").snapshot(), "conversation")
+                async with ctx.require(MATERIALS).bind() as view:
+                    copied = await view.prepare(log.reader("s").snapshot(), "conversation")
                     copied_references = _reference_rows(copied)
                     assert [ref["ref"] for ref in copied_references] == ["u", "a"]
                 assert logical_state_sha256(graph) == before_graph
@@ -196,8 +191,7 @@ async def test_actual_plugin_learns_provides_materials_and_runs_archived_recall_
 
 
 @pytest.mark.asyncio
-async def test_prepared_recall_survives_config_change_and_source_removal(tmp_path):
-    from agent.plugin_composition.bindings import Bindings
+async def test_recall_binding_facts_remain_readable_after_config_change(tmp_path):
     from plugins.tools.plugin import open_tool
 
     async with application(tmp_path) as (log, host):
@@ -224,21 +218,17 @@ async def test_prepared_recall_survives_config_change_and_source_removal(tmp_pat
                     prepared = await tool.prepare({"query": "original memory"})
                     assert isinstance(prepared, Mapping)
 
-    # 重启前改变可变配置并移除源码；归档闭包仍须使用原配置、原图与原预算。
+    # 重启前改变可变配置；旧 binding 的事实仍可由当前服务读取。
     config_path.write_text('db_path = "other.db"\ninject_max_chars = 1\n')
-    shutil.rmtree(tmp_path / "plugins")
     restored_log = MessageLog(tmp_path / "sessions.db")
-    restored_host = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
+    restored_host = PluginManager([tmp_path / "plugins"], event_bus=EventBus(), workspace=tmp_path / "workspace",
                                   installed_cache_root=tmp_path / "home", message_log=restored_log)
-    restored_bindings = Bindings(restored_log, restored_host._archive, restored_host.open_binding)
     try:
-        async with open_tool(restored_bindings, identity) as tool:
-            result = await tool.invoke("restored", prepared)
-            assert result.outcome == "success"
-            assert "learned answer" in str(result.parts)
-            before = (tmp_path / "embedding-calls.txt").read_text()
-            assert await tool.query("restored") == result
-            assert (tmp_path / "embedding-calls.txt").read_text() == before
+        await restored_host.load_all()
+        snapshot = restored_host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        restored_bindings = snapshot.composition_root.context.require(BINDINGS)
+        assert restored_bindings.describe(identity, TOOLS)["tool"]["name"] == "recall_memory"
         assert not (tmp_path / "workspace/memory/other.db").exists()
     finally:
         await restored_host.terminate_all()

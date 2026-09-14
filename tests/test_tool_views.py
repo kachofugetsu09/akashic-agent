@@ -233,7 +233,7 @@ async def _allow() -> Mapping[str, object]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replacement", ["removed", "changed"])
-async def test_fixed_bindings_use_archived_schema_without_rebinding_current_provider(
+async def test_fixed_bindings_keep_display_schema_but_do_not_reopen_history(
     tmp_path, replacement
 ):
     sources = _sources(tmp_path)
@@ -243,7 +243,8 @@ async def test_fixed_bindings_use_archived_schema_without_rebinding_current_prov
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            bindings = Bindings(log, host._archive, host.open_binding)
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, host._archive, snapshot.composition_root)
             catalog = ctx.require(TOOLS)
             old = catalog.bind(ctx.require(ALL_TOOLS)().select("example"), bindings)
         await host.terminate_all()
@@ -262,7 +263,8 @@ async def test_fixed_bindings_use_archived_schema_without_rebinding_current_prov
         await restored.load_all()
         async with lease_runtime_snapshot(restored.snapshot_store) as snapshot:
             ctx = snapshot.composition_root.context
-            bindings = Bindings(log, restored._archive, restored.open_binding)
+            assert snapshot.composition_root is not None
+            bindings = Bindings(log, restored._archive, snapshot.composition_root)
             menu = ToolMenu(
                 ctx.require(TOOLS),
                 bindings,
@@ -286,10 +288,16 @@ async def test_fixed_bindings_use_archived_schema_without_rebinding_current_prov
             (identity, arguments) = decoded.binding_id, decoded.arguments
             assert identity is not None
             assert identity == old
-            result = await ctx.require(TOOLS).execution(
+            execution = ctx.require(TOOLS).execution(
                 lambda binding, final: _allow()
-            ).execute("archived", identity, arguments)
-            assert result.parts[0].value == "A:restore:old"
+            )
+            if replacement == "removed":
+                with pytest.raises(KeyError):
+                    await execution.execute("history", identity, arguments)
+            else:
+                result = await execution.execute("history", identity, arguments)
+                assert result.outcome == "error"
+                assert "归档工具描述或参数准备" in result.parts[0].value
         await restored.terminate_all()
     finally:
         await host.terminate_all()

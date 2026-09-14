@@ -350,9 +350,7 @@ async def _start_follower(ctx: Context) -> None:
             )
             groups.setdefault(group, []).append((key, record))
         for records in groups.values():
-            # `follow()` wakes without a runtime lease.  Re-open the exact
-            # generation for each effect group so the archived binding and
-            # MCP endpoint cannot fall back to a different Root.
+            # follow 唤醒时没有 scope；每组效果取得当前选定的运行时。
             async with ctx.runtime_scope():
                 await _try_end(ctx, catalog, projection, records)
 
@@ -370,7 +368,7 @@ async def _try_end(
     records: list[tuple[str, OwnerRecord]],
 ) -> None:
     """只在源 Turn 已闭合后结束同一 Computer group。"""
-    key, record = records[0]
+    _, record = records[0]
     value = record.value
     expected = {"v", "phase", "control_binding", "session_id", "source", "turn_input_id"}
     if (
@@ -401,13 +399,9 @@ async def _try_end(
     )
     end_id = "end:" + hashlib.sha256(group.encode()).hexdigest()
     binding = cast(str, value["control_binding"])
-    try:
-        bindings = ctx.require(BINDINGS)
-        async with bindings.open(binding, COMPUTER_CONTROL) as (bound, _):
-            await bound.end_turn(identity, end_id)
-    except Exception as error:
-        ctx.report_incident("computer-end-turn", f"{key}: {error}")
-        return
+    bindings = ctx.require(BINDINGS)
+    async with bindings.open(binding, COMPUTER_CONTROL) as (bound, _):
+        await bound.end_turn(identity, end_id)
     state = ctx.require(OWNER_STATE).open(ctx)
     def commit(tx) -> None:
         for item_key, item_record in records:

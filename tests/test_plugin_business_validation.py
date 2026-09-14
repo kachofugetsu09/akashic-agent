@@ -1,6 +1,7 @@
 """真实候选的独立消息/Task 与清理；不把程序验证冒充正式来源启动。"""
 import asyncio
 from contextlib import closing
+from typing import cast
 
 import pytest
 
@@ -485,8 +486,149 @@ async def test_validation_reply_reads_real_memory_without_starting_learning(tmp_
 
 
 @pytest.mark.asyncio
-async def test_validation_copies_wal_history_archived_workspace_and_artifact_bytes(tmp_path):
-    """当前组件不再声明旧数据时，实际旧 binding 和附件仍从独立副本打开。"""
+async def test_validation_message_backup_covers_graph_reference_added_during_copy(tmp_path, monkeypatch):
+    """图复制期间追加的消息必须随最后一次日志副本一同进入验证宿主。"""
+    from datetime import datetime
+    import sqlite3
+
+    from agent.plugin_composition import EMBEDDINGS
+    from agent.plugin_composition.bindings import BINDINGS
+    from agent.plugin_composition.messages import MESSAGE_EMBEDDINGS
+    from agent.plugins.snapshot import lease_runtime_snapshot
+    from plugins.akasha.application.consumer import MessageConsumer
+    from plugins.akasha.domain.model import MemoryConfig
+    from plugins.akasha.learning import AKASHA_LEARNING, LearningConfig
+    from plugins.akasha.projection import applied_source, dialogue_turn, project_samples
+    from plugins.content.plugin import CONTENT
+    from plugins.turn_projection.plugin import TurnProjection
+    from session.message import Output
+    from tests.test_default_reply import application
+    import agent.plugins.manager as manager_module
+
+    async with application(tmp_path, replying=False, start=False, provider_effect_data=True,
+                           extra_sources=memory_sources) as (log, host):
+        memory = tmp_path / "workspace/memory"
+        graph = memory / "akasha.db"
+        consumer = None
+        try:
+            async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
+                ctx = snapshot.composition_root.context
+                api = ctx.require(EMBEDDINGS)
+                bindings = ctx.require(BINDINGS)
+                vectors = ctx.require(MESSAGE_EMBEDDINGS)
+                learning = ctx.require(AKASHA_LEARNING)
+                consumer = await MessageConsumer.load(
+                    graph, legacy_index=None, catalog=log.catalog(), embeddings=vectors,
+                    bindings=bindings, config=MemoryConfig(),
+                )
+                async with ctx.require(CONTENT).bind() as content:
+                    writer = log.writer(
+                        "past", author="user", source="conversation",
+                        body_types=(Input, Output), content=content.checks,
+                    )
+                    writer.append("historical-input", Input((
+                        ContentPart("text", "remember the original route"),
+                    )))
+                    writer.append("historical-answer", Output((
+                        ContentPart("text", "the original route is the blue lake"),
+                    ), "complete"))
+                descriptor = api.describe()
+                binding = bindings.bind(AKASHA_LEARNING, LearningConfig(
+                    embedding_model=descriptor.identity, dimension=2,
+                    sources=("conversation",),
+                ).model_dump())
+
+                async def embed(texts):
+                    async with api.bind() as model:
+                        return [list(vector) for vector in (await model.embed(texts)).vectors]
+
+                assert await consumer.consume(
+                    catalog=log.catalog(), learning_binding=binding, embeddings=vectors,
+                    bindings=bindings, embed_batch=embed,
+                ) == 1
+
+            source = tmp_path / "source"
+            _write_v3_plugin(source, name="probe", module_source=REPLY_MODULE)
+            _commit(source)
+            await host.install_candidate(
+                source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+            )
+
+            def text(message):
+                return "".join(
+                    part.value for part in message.body.parts
+                    if isinstance(part, ContentPart) and isinstance(part.value, str)
+                )
+
+            appended = False
+            real_copy = manager_module._copy_validation_tree
+
+            def append_graph_reference() -> None:
+                assert consumer is not None
+                writer = log.writer(
+                    "past", author="user", source="conversation",
+                    body_types=(Input, Output),
+                    content={"text": lambda part: ContentReferences()},
+                )
+                user = writer.append("during-copy-input", Input((
+                    ContentPart("text", "message appended while copying the graph"),
+                )))
+                answer = writer.append("during-copy-answer", Output((
+                    ContentPart("text", "the graph now points at this message"),
+                ), "complete"))
+                records = vectors.bind(learning.text)
+                records.save(user, model=descriptor.identity, embedding=[0.6, 0.8])
+                records.save(answer, model=descriptor.identity, embedding=[0.6, 0.8])
+                sample = project_samples(
+                    log.catalog(), TurnProjection(),
+                    include=lambda session, source: source == "conversation",
+                )[-1]
+                turn = dialogue_turn(
+                    sample, node_id=consumer.cycle.state_version,
+                    previous=datetime.fromisoformat(consumer.cycle.turns[-1].committed_at),
+                    text=text, embeddings=records,
+                    embedding_model=descriptor.identity, dimension=2,
+                )
+                assert turn is not None
+                assert consumer.apply(
+                    turn, applied_source(sample, learning_binding=binding),
+                )
+
+            def copy_tree(source, target, exclude_paths, *, keep_existing=False):
+                nonlocal appended
+                if source.resolve() == memory.resolve() and not appended:
+                    appended = True
+                    append_graph_reference()
+                return real_copy(
+                    source, target, exclude_paths, keep_existing=keep_existing,
+                )
+
+            monkeypatch.setattr(manager_module, "_copy_validation_tree", copy_tree)
+            candidate = host.latest_snapshot
+            assert candidate is not None
+            lease = host.snapshot_store.lease(candidate.snapshot_id)
+            validation = await host._build_validation_host(lease)
+            try:
+                assert appended
+                with closing(sqlite3.connect(validation.workspace / "memory/akasha.db")) as copied:
+                    refs = copied.execute(
+                        "SELECT user_message_id, assistant_message_id FROM turn_nodes ORDER BY node_id"
+                    ).fetchall()
+                assert refs[-1] == ("during-copy-input", "during-copy-answer")
+                assert {
+                    row.message_id for row in validation.messages.reader("past").snapshot()
+                } >= {"during-copy-input", "during-copy-answer"}
+            finally:
+                await validation.close()
+                await lease.release()
+        finally:
+            if consumer is not None:
+                consumer.close()
+
+
+@pytest.mark.asyncio
+async def test_validation_preserves_history_without_archived_workspace(tmp_path):
+    """验证保留历史事实和 descriptor，但不复活旧服务、代码或 workspace。"""
     from agent.plugin_composition.artifacts import ARTIFACT_READ
     from agent.plugin_composition.bindings import BINDINGS
     from agent.plugins.snapshot import lease_runtime_snapshot
@@ -502,11 +644,16 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
     await ctx.provide(ServiceKey("test.history"), history)
 '''
     _write_v3_plugin(source, name="probe", module_source=original)
+    (source / "akashic.plugin.toml").write_text(
+        (source / "akashic.plugin.toml").read_text()
+        + '\n[validation]\nexclude_data_paths = ["legacy-secret.txt"]\n'
+    )
     _commit(source)
-    _ = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
+    old = install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
     (workspace / "legacy").mkdir()
     (workspace / "legacy/old.txt").write_text("old workspace")
     (workspace / "old-setting.txt").write_text(" and file")
+    (old.data_path / "legacy-secret.txt").write_text("old private data")
     log = MessageLog(workspace / "sessions.db")
     _ = log._connection.execute("PRAGMA journal_mode=WAL").fetchall()
     artifacts = ArtifactStore(workspace / "sessions.db")
@@ -517,6 +664,14 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             reference = snapshot.composition_root.context.require(BINDINGS).bind(ServiceKey("test.history"), {})
+        binding = log.read_binding(reference)
+        root_ref = cast(str, binding["root_ref"])
+        root_descriptor = host._archive.read_descriptor(root_ref)
+        component_refs = cast(tuple[str, ...], root_descriptor["components"])
+        component_descriptors = {
+            ref: host._archive.read_descriptor(ref) for ref in component_refs
+        }
+        old_code_ref = cast(str, component_descriptors[component_refs[0]]["code"])
         attachment = await physical.import_bytes(b"historical attachment bytes", kind=AttachmentKind.FILE,
                                                 filename="history.txt", media_type="text/plain")
         def check_file(part):
@@ -527,6 +682,10 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
             "past-input", Input((ContentPart("file", attachment.artifact_id),)))
         assert (workspace / "sessions.db-wal").stat().st_size > 0
         (source / "plugin.py").write_text(MODULE)
+        (source / "akashic.plugin.toml").write_text(
+            'schema_version = 1\nname = "probe"\nversion = "1.0.0"\n'
+            'api_version = 3\nentrypoint = "plugin.py"\n'
+        )
         _commit(source)
         result, _ = await host.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         (source / "plugin.py").unlink()
@@ -534,17 +693,79 @@ async def test_validation_copies_wal_history_archived_workspace_and_artifact_byt
         async with host.open_validation(result.update_id) as scope:
             validation = next(iter(host._validation_hosts.values()))
             assert validation.messages.reader("past").snapshot() == log.reader("past").snapshot()
-            async with scope.require(BINDINGS).open(reference, ServiceKey("test.history")) as (read, _):
-                assert await read() == "old workspace and file"
+            assert validation.manager._archive.read_descriptor(root_ref) == root_descriptor
+            for ref, descriptor in component_descriptors.items():
+                assert validation.manager._archive.read_descriptor(ref) == descriptor
+            assert not (validation.manager._archive.path / old_code_ref).exists()
+            with pytest.raises(RuntimeError, match="当前 runtime scope 不提供服务"):
+                async with scope.require(BINDINGS).open(reference, ServiceKey("test.history")):
+                    pytest.fail("removed historical provider was imported")
+            assert not (validation.workspace / "legacy").exists()
+            assert not (validation.workspace / "old-setting.txt").exists()
+            assert not (validation.workspace / "plugin-data/probe-lab/legacy-secret.txt").exists()
             lease = await scope.require(ARTIFACT_READ).acquire(attachment)
             try:
                 assert await lease.read_bytes(max_bytes=attachment.size_bytes) == b"historical attachment bytes"
             finally:
                 await lease.aclose()
-            (validation.workspace / "legacy/old.txt").write_text("only in the copy")
         assert (workspace / "legacy/old.txt").read_text() == "old workspace"
+        assert (workspace / "old-setting.txt").read_text() == " and file"
+        assert (old.data_path / "legacy-secret.txt").read_text() == "old private data"
         assert tuple(log._connection.iterdump()) == before
     finally:
         await host.terminate_all()
         artifacts.close()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_validation_rejects_binding_added_after_data_copy(tmp_path, monkeypatch):
+    """复制后新增的 binding 未参与凭据排除，必须拒绝并清理整个副本。"""
+    from agent.plugin_composition.bindings import BINDINGS
+    from agent.plugins.snapshot import lease_runtime_snapshot
+    from plugins.tools.plugin import TOOLS
+    from tests.test_default_reply import application
+
+    async with application(tmp_path, replying=False, start=False) as (log, host):
+        source = tmp_path / "source"
+        _write_v3_plugin(source, name="probe", module_source=REPLY_MODULE)
+        _commit(source)
+        result, _ = await host.install_candidate(
+            source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+        )
+        copy_components = host._copy_validation_components
+        copied = []
+        added = []
+
+        data_copied = asyncio.Event()
+        binding_saved = asyncio.Event()
+
+        async def bind_in_formal_task():
+            await data_copied.wait()
+            async with lease_runtime_snapshot(host.snapshot_store) as stable:
+                added.append(stable.composition_root.context.require(BINDINGS).bind(
+                    TOOLS, {"created": "during validation copy"},
+                ))
+            binding_saved.set()
+
+        async def copy_then_bind(snapshot, workspace, archive, bindings):
+            await copy_components(snapshot, workspace, archive, bindings)
+            copied.append(workspace)
+            data_copied.set()
+            await asyncio.wait_for(binding_saved.wait(), 10)
+
+        monkeypatch.setattr(host, "_copy_validation_components", copy_then_bind)
+        # 正式任务在进入 candidate scope 前创建，不能借验证上下文取得正式权限。
+        formal_task = asyncio.create_task(bind_in_formal_task())
+        try:
+            with pytest.raises(RuntimeError, match="候选复制期间 binding 已变化"):
+                async with host.open_validation(result.update_id):
+                    pytest.fail("不完整排除声明的副本不能开放")
+            await formal_task
+        finally:
+            if not formal_task.done():
+                formal_task.cancel()
+            await asyncio.gather(formal_task, return_exceptions=True)
+        assert len(copied) == 1 and not copied[0].parent.exists()
+        assert len(added) == 1
+        assert log.read_binding(added[0])["metadata"] == {"created": "during validation copy"}

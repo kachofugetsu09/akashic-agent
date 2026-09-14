@@ -4,7 +4,7 @@
 - 日期：2026-09-08
 - 关联条款：CTX-004、CTX-007、PLG-003、PLG-008、PLG-009、PLG-014、PLG-016
 - supersedes：0047 中“Service 绑定一个工具名并从全局目录解析”的选择
-- superseded by：无
+- superseded by：[0069](0069-bindings-follow-selected-runtime-scope.md)（仅历史 binding 打开语义）
 
 ## 背景
 

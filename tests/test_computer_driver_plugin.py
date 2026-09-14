@@ -67,14 +67,7 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
     workloads = PluginWorkloads(root.instance_token)
     archive = PluginArchive(tmp_path / "archives")
 
-    from contextlib import asynccontextmanager
-    from agent.plugin_composition.bindings import BindingScope
-
-    @asynccontextmanager
-    async def unused_open(_components):
-        yield BindingScope(root)
-
-    bindings = Bindings(log, archive, unused_open)
+    bindings = Bindings(log, archive, root)
     for key, value in (
         (MCP_SERVERS, mcp),
         (WORKLOADS, workloads),
@@ -342,7 +335,6 @@ async def test_computer_control_against_optional_container_oracle(tmp_path: Path
             child.stdin.close()
         await asyncio.wait_for(child.wait(), 25)
         assert child.returncode == 0, (await child.stderr.read()).decode() if child.stderr else ""
-
 
 
 class _ComputerGatewayState:
@@ -741,7 +733,7 @@ async def test_computer_cancel_releases_driver_and_follower_ends_unknown_call(tm
 
 @pytest.mark.asyncio
 async def test_computer_failure_retries_started_owner_after_restart_and_source_change(tmp_path: Path) -> None:
-    """启动失败保留 owner；重启后的旧 binding 仍命中旧 driver。"""
+    """清理错误使任务明确失败；显式重启由选定的 stable 处理旧 owner。"""
     state = _ComputerGatewayState()
     harness = await _computer_harness(
         tmp_path, gateway_state=state, gateway_label="old"
@@ -767,8 +759,11 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
             if call.get("endTurn")
         )
         await _wait_until(lambda: harness.manager.current_snapshot.lease_count == 0)
-        incidents = harness.composition_root.receipt().incidents
-        assert any(incident.kind == "computer-end-turn" for incident in incidents)
+        await _wait_until(lambda: any(
+            incident.kind == "task_failure"
+            for incident in harness.composition_root.receipt().incidents
+        ))
+        assert not harness.composition_root.receipt().ready
 
         computer_source = harness.root / "computer" / "plugin.py"
         manifest_source = harness.root / "computer" / "akashic.plugin.toml"

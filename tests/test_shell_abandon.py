@@ -31,7 +31,7 @@ async def test_real_tools_watcher_restarts_and_settles_offline_abandon_once(tmp_
             ctx = snapshot.composition_root.context
             binding = ctx.require(TOOLS).bind(
                 ctx.require(ALL_TOOLS)().select("shell"),
-                Bindings(log, host._archive, host.open_binding),
+                Bindings(log, host._archive, snapshot.composition_root),
             )
         inputs = log.writer(
             "s", author="user", source="conversation", body_types=(Input,), content={}
@@ -94,7 +94,9 @@ async def test_abandon_keeps_old_cleanup_permit_and_does_not_kill_new_process(tm
     try:
         await host.load_all()
         await host.start_runtime()
-        bindings = Bindings(log, host._archive, host.open_binding)
+        snapshot = host.current_snapshot
+        assert snapshot is not None and snapshot.composition_root is not None
+        bindings = Bindings(log, host._archive, snapshot.composition_root)
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             root = snapshot.composition_root.context
             ctx = root.require(ServiceKey("standard-tools-probe"))

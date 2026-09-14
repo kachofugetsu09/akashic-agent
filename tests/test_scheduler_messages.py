@@ -152,46 +152,6 @@ async def test_actual_scheduler_restart_resumes_after_saved_output_without_repea
 
 
 @pytest.mark.asyncio
-async def test_archived_schedule_tool_recovers_original_operation_after_source_removal(tmp_path):
-    from agent.plugin_composition.bindings import Bindings
-    from agent.plugins.manager import PluginManager
-    from bus.event_bus import EventBus
-    from plugins.tools.plugin import ALL_TOOLS, TOOLS, open_tool
-
-    install(tmp_path)
-    async with application(tmp_path, replying=False, start=False) as (log, host):
-        bindings = Bindings(log, host._archive, host.open_binding)
-        async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
-            ctx = snapshot.composition_root.context
-            tool = ctx.require(TOOLS).bind(
-                ctx.require(ALL_TOOLS)().select("schedule"), bindings
-            )
-            async with open_tool(bindings, tool) as bound:
-                prepared = await bound.prepare({"tier": "instant", "trigger": "after", "when": "1h",
-                    "channel": "test", "chat_id": "room", "timezone": "UTC", "message": "original"})
-                assert isinstance(prepared, Mapping)
-                result = await bound.invoke("original-schedule", prepared)
-        store = JobStore(tmp_path / "workspace/schedules.json")
-        original = store.load()[0]
-        await host.terminate_all()
-        shutil.rmtree(tmp_path / "plugins")
-        restarted = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
-                                  installed_cache_root=tmp_path / "home", message_log=log)
-        try:
-            bindings = Bindings(log, restarted._archive, restarted.open_binding)
-            async with open_tool(bindings, tool) as bound:
-                recovered = await bound.query("original-schedule")
-                repeated = await bound.invoke("original-schedule", prepared)
-                assert (recovered.outcome, recovered.parts) == (result.outcome, result.parts)
-                assert (repeated.outcome, repeated.parts) == (result.outcome, result.parts)
-            assert store.load() == [original]
-            assert store.read().fires == {}
-            assert log.catalog().snapshot_heads() == {}
-        finally:
-            await restarted.terminate_all()
-
-
-@pytest.mark.asyncio
 async def test_cancelling_a_failed_prepared_fire_revisits_cleanup_in_same_runtime(tmp_path, monkeypatch):
     """第一次触发已退出且保留 prepared，后来的取消仍被当前 watcher 恢复。"""
     install(tmp_path)
@@ -299,14 +259,15 @@ async def test_restart_preclaims_passive_effect_before_scheduler_or_archive_can_
         await host.load_all()
         async with lease_runtime_snapshot(host.snapshot_store) as snapshot:
             root = snapshot.composition_root
-            bindings = Bindings(log, host._archive, host.open_binding)
+            assert root is not None
+            bindings = Bindings(log, host._archive, root)
             service = ServiceKey("fixture.delivery")
             binding = bindings.bind(service, {})
             async with bindings.open(binding, service) as (factory, _):
-                archived = factory()
-                archive_waiter = asyncio.create_task(archived.wait_idle("test", "room"))
+                selected = factory()
+                selected_waiter = asyncio.create_task(selected.wait_idle("test", "room"))
                 await waiting.wait()
-                assert not archive_waiter.done()
+                assert not selected_waiter.done()
                 waiting.clear()
                 # 受控顺序：真正 Scheduler 先启动并抵达 idle wait，策略此时还没启动 follower。
                 listeners = root._events._listeners[cast(EventKey, RUNTIME_STARTED)]
@@ -330,11 +291,11 @@ async def test_restart_preclaims_passive_effect_before_scheduler_or_archive_can_
                 async with asyncio.timeout(5):
                     await probing.wait()
                 assert root.context.require(ServiceKey("fixture.calls")) == []
-                assert not archive_waiter.done()
+                assert not selected_waiter.done()
                 assert not (tmp_path / "effect.txt").exists()
                 release.set()
                 async with asyncio.timeout(5):
-                    await archive_waiter
+                    await selected_waiter
                 fire = await settled(store, fire_key(job))
                 assert fire.status == "delivered"
                 records = DeliveryRecords(log.owner("plugin:delivery"), "delivery_policy")

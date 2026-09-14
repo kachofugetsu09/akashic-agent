@@ -799,7 +799,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 | `sessions.db/bindings` | Bindings 在真实 lease 内追加不可变 descriptor；表由第 03 层 yoyo 创建 | 同 ID 同内容幂等，不允许覆盖；它不拥有业务执行终态 | 提交 Message/receipt 失败可留下未引用 row，作为恢复材料保留。无自动减少；使用 Session DB 原生备份恢复 |
 | `sessions.db/message_bindings` | Message writer 在正文同一事务追加引用 | 引用不可原位替换；正常日志只追加 | 只能随明确的消息/会话管理减少，不级联删除归档或 binding descriptor |
 
-装配历史 Root 不调用正式启动事件，也不接入当前会话、调度或发送 owner。归档只有代码恢复权，不拥有迁移、删除或回滚正式 plugin-data 的权限。第 06 层使用新增文件目录和既有 SQL schema，没有新增 yoyo；本任务的正式 workspace 未被改写。
+候选验证只在已选 candidate snapshot 中装配独立 Root，不调用正式启动事件，也不接入当前会话、调度或发送 owner。binding 的旧 `root_ref`/component descriptor 只保留 provenance；不为普通执行或验证复活历史 Root，归档也不拥有迁移、删除或回滚正式 plugin-data 的权限。第 06 层使用新增文件目录和既有 SQL schema，没有新增 yoyo；本任务的正式 workspace 未被改写。
 
 
 ## Message 插件栈第 07 层：固定 Python 环境
@@ -819,7 +819,7 @@ INT-001～INT-008 和 INT-011 已由花月哥哥确认，其中长期语义已�
 
 ### 第 09 层候选业务验证的持久证据
 
-候选业务验证另在 `runtime/plugin-update-validation/<id>/workspace/` 保存一次运行的独立证据。PluginManager 复制实际候选的固定代码、descriptor、声明的 plugin-data 与 workspace 数据；SQLite 使用原生 backup 读取已提交 WAL，不复制 WAL/SHM。声明数据先复制，随后 MessageLog 原生 backup 保存完整 `sessions.db`，包括历史 Message、向量、binding、owner record 与附件元数据；正常只追加的消息库覆盖此前已复制学习图的已有引用。每个数据库自身一致，不承诺多个文件共享同一切点。从消息副本的实际 binding 保存原 root/component descriptor 与代码，并补齐历史组件独有的数据和 workspace 声明；同一路径已固定的候选文件优先。已发布附件通过原 Artifact 读取 owner 校验后复制其字节，副本再由独立 MessageLog 与 ArtifactStore 打开。验证 Message、binding、owner record 和 Artifact 只写入此目录；正式消息库及插件数据不因此变化。Python 环境仍只读已发布的不可变环境及原路径。
+候选业务验证另在 `runtime/plugin-update-validation/<id>/workspace/` 保存一次运行的独立证据。PluginManager 先从正式 MessageLog 读取一次 binding，并只读扫描正式 archive 中的 manifest；旧 manifest 的 credential/exclude 声明与 current manifest 在 current data 首次复制前合并生效。随后只复制实际候选 snapshot 的固定代码、descriptor、声明的 plugin-data 与 workspace 数据（含图）；SQLite 不复制 WAL/SHM。图与其他 workspace 复制完成后，PluginManager 只用 MessageLog 原生 backup 一次固定已提交的 `sessions.db`，再由独立 MessageLog 与 ArtifactStore 打开。这样复制期间追加的 Message 也覆盖图已有引用。旧 binding 的 root/component descriptor 仍从正式 archive 保存为 provenance，但旧组件代码、plugin-data 和 workspace 不复制、不导入。副本包括历史 Message、向量、binding、owner record 与附件元数据；已发布附件通过原 Artifact 读取 owner 校验后复制其字节。验证 Message、binding、owner record 和 Artifact 只写入此目录；正式消息库及插件数据不因此变化。Python 环境仍只读已发布的不可变环境及原路径。
 
 验证程序可增加其消息和领域结果、按各 owner 原有协议修改副本；没有自动减少或 GC。退出只关闭 Task、进程、MCP、Root、模块与数据连接，不删除证据目录。清理失败由现存 ValidationHost 保留真实资源和候选租约，原 owner 重试成功后才释放；程序仍在执行或资源未清理时不得发布候选。验证代码、数据副本及 journal 中的组件身份和路径提供恢复证据，进程死亡后不自动重跑验证。
 
@@ -832,7 +832,7 @@ Delivery provider 的 Core Tasks 按目标 key 持有活动计数和短发送排
 新链路的 `PROCESSES` 保留现有 Local / Host Bridge 的实际进程表与清理证据；只新增宿主级准入/排空屏障，无新的持久状态表。工具 key、调用回执与作业状态仍归各普通插件。正常 spawn 增加短命进程，stdio 消费增量输出，明确 stop/owner cleanup 或宿主关闭按现有物理进程协议减少；失败保留原 manager/失败进程身份，不能先清空资源指针。此能力不改变消息、附件、归档或历史诊断数据的减少合同。
 
 
-标准工具 File 读取的图片先按既有后端规则规范化，再由 Artifact owner 原子导入；其 Message 只增加附件引用，不反写原文件。Shell 当前程序结束只减少所属 `(plugin owner, session_id/source 或显式 job key)` 的短命进程；ToolCall、ToolResult、归档与 binding 保留。清理时从实际调用的原 Tool binding 派生原 `SHELL_OWNERS` binding，是已有不可变绑定的增加协议，没有删除或业务终态写权。清理失败保留物理进程表及诊断，不改完成的 Output；Host Bridge 的未确认清理隔离只活在当前 client manager 内，重启不持久化，实际宿主 boot 清理仍由 Bridge/Guardian 确认。
+标准工具 File 读取的图片先按既有后端规则规范化，再由 Artifact owner 原子导入；其 Message 只增加附件引用，不反写原文件。Shell 当前程序结束只减少所属 `(plugin owner, session_id/source 或显式 job key)` 的短命进程；ToolCall、ToolResult、归档与 binding 保留。清理先校验实际调用的原 Tool binding，再在同一 current scope 直接使用 `SHELL_OWNERS`，不为一次清理写入临时 binding，也没有删除或业务终态写权。清理失败保留物理进程表及诊断，不改完成的 Output；Host Bridge 的未确认清理隔离只活在当前 client manager 内，重启不持久化，实际宿主 boot 清理仍由 Bridge/Guardian 确认。
 
 ### 明确 abandon 的工具结算（RUN-008）
 
@@ -850,7 +850,7 @@ Delivery provider 的 Core Tasks 按目标 key 持有活动计数和短发送排
 
 原生 Sender 的凭据仍由原 plugin-data 的 `config.local.toml` 拥有。静态 `credential_paths` 授予通用短租约，旧 Channel 声明只授予自身 factory；二者的并集只用于脱敏与验证排除。归档只增加原配置版本和 CredentialRef，不保存明文或复制新 token。用户改写/撤销配置后，旧 binding 版本检查失败；没有自动凭据迁移、轮换或减少。本任务只写隔离 fixture 配置，未操作正式凭据。
 
-业务验证先复制非配置数据图，再备份 Message DB；之后从该 DB 的历史 binding 和当前组件归档声明合并每个 data root 的排除规则。所有 `config.local.toml` 在第一阶段均不落地，第二阶段只复制从未被这些组件声明为凭据配置的文件；既有文件和图不再次覆盖。此顺序既保留图已有引用的日志，又阻止新版本移除凭据声明后通过共用目录读到旧 secret。验证副本保留原有恢复/不自动删除协议。
+业务验证先从正式 MessageLog 读取一次 binding，计算历史 manifest 并与 current 组件的 credential/exclude 声明合并；这份并集在 current data 首次复制前生效。current data/workspace（含图）复制完成后，再只用 MessageLog 原生 backup 固定已提交消息并打开副本，复制期间追加的 Message 因而不会成为图的悬空引用。未被声明为凭据或排除路径的普通数据（包括普通配置）仍可复制，旧组件代码、历史独有数据和 workspace 不随 binding 复活。这样既保留消息图已有引用，又阻止新版本移除声明后通过共用目录读到旧 secret。验证副本保留原有恢复/不自动删除协议。
 
 ### 2026-09-07 · 首次 App、工作台读取与 embedding binding
 

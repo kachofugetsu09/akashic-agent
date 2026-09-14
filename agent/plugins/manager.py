@@ -18,7 +18,7 @@ from contextlib import ExitStack, asynccontextmanager, contextmanager
 from contextvars import Context as TaskContext
 from pathlib import Path, PurePosixPath
 from types import ModuleType, UnionType
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping
 from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin
 from uuid import uuid4
 
@@ -70,7 +70,6 @@ from agent.plugin_composition import (
     PluginCommands,
     InteractionUndoService,
     PluginRuntime,
-    PluginDurableDeliveries,
     PluginTimers,
     ServiceView,
     ServiceKey,
@@ -100,11 +99,6 @@ from agent.plugin_composition.model import (
     resolve_declared_workspace_root,
 )
 from agent.control.timer import AsyncioOneShotTimer
-from agent.plugin_composition.durable_deliveries import (
-    DurableProjector,
-    DurableDeliveryRequest,
-    DurableSender,
-)
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.interaction_undo import InteractionUndoCoordinator
@@ -430,8 +424,6 @@ class PluginManager:
         self._drain_transactions: dict[str, str] = {}
         self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
-        self._durable_delivery_sender: DurableSender | None = None
-        self._durable_delivery_recovered = False
 
     def _acquire_channel_recovery_lease(
         self,
@@ -449,13 +441,6 @@ class PluginManager:
     @property
     def loaded_count(self) -> int:
         return len(self._loaded)
-
-    def bind_durable_delivery_sender(self, sender: DurableSender) -> None:
-        """Bind the two-stage provider boundary before loading durable consumers."""
-
-        if self._durable_delivery_sender is not None:
-            raise RuntimeError("PluginManager durable delivery sender 已绑定")
-        self._durable_delivery_sender = sender
 
     async def run_runtime_services(self) -> None:
         """Follow stable Roots without retaining Turn admission across reloads."""
@@ -5338,62 +5323,6 @@ class PluginManager:
             raise _CandidateRejected(gate) from error
 
     @asynccontextmanager
-    async def open_binding(self, components: tuple[str, ...]) -> AsyncIterator[BindingScope]:
-        """从归档重建独立 Root；不发布或启动正式 runtime。"""
-        # 1. 每次打开都有自己的模块空间、Root 和 lease store。
-        namespace = secrets.token_hex(12)
-        root = CompositionRoot(f"archive:{namespace}")
-
-        async def drained(_snapshot: RuntimeSnapshot) -> None:
-            await root.dispose()
-
-        store = RuntimeSnapshotStore(drained)
-        root._bind_runtime_scope_acquirer(lambda: store.acquire_composition_root(root))  # pyright: ignore[reportPrivateUsage]
-        modules = ExitStack()
-        scope: BindingScope | None = None
-        installed = False
-        try:
-            generations = modules.enter_context(self._archived_generations(components, namespace))
-
-            # 2. 使用同一 Core 能力装配，依赖只能来自这些归档组件。
-            ordered = tuple(generations[key] for key in sorted(generations))
-            await self._provide_composition_services(root, ordered, candidate=False, archive=True)
-            for generation in ordered:
-                await self._mount_generation_composition(root, generation)
-            if not root.receipt().ready:
-                raise RuntimeError(f"归档 provider 闭包不完整: {root.receipt().required_pending}")
-            result = await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
-            if result is not None:
-                raise RuntimeError("归档 snapshot.sealing 不接受 Bail")
-            snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
-            _validate_static_manifest_runtime(snapshot, generations)
-            store.install(snapshot)
-            installed = True
-            scope = BindingScope(root)
-            async with RuntimeScope(await store.acquire()):
-                yield scope
-        finally:
-            # 3. 先撤销读取并排空 exact leases，成功后才释放模块空间。
-            if scope is not None:
-                scope._expire()  # pyright: ignore[reportPrivateUsage]
-            async def close_scope() -> None:
-                if installed:
-                    snapshot = store.pause_admission()
-                    assert snapshot is not None
-                    await store.wait_for_no_leases(snapshot)
-                try:
-                    if installed:
-                        await store.close()
-                    else:
-                        await root.dispose()
-                finally:
-                    modules.close()
-
-            _, cancelled = await _complete_critical(close_scope())
-            if cancelled:
-                raise asyncio.CancelledError
-
-    @asynccontextmanager
     async def open_validation(self, update_id: str) -> AsyncGenerator[BindingScope]:
         """在独立数据与候选资源中打开实际组件；调用程序自行解释验证结果。"""
         # 1. 固定实际候选并持有租约；其他发布必须等待本次资源真正退出。
@@ -5478,21 +5407,31 @@ class PluginManager:
     async def _build_validation_host(
         self, lease: RuntimeSnapshotLease,
     ) -> ValidationHost:
-        """先固定声明数据，再保存完整消息库；验证只打开独立副本。"""
+        """先读取排除声明，再复制候选数据，最后固定消息库副本。"""
         if self._message_log is None:
             raise RuntimeError("业务验证缺少正式 MessageLog")
         identity = secrets.token_hex(16)
         workspace = self._workspace / "runtime" / "plugin-update-validation" / identity / "workspace"
         workspace.mkdir(parents=True)
         archive = PluginArchive(workspace / "runtime" / "plugin-archives")
+        messages: MessageLog | None = None
         try:
-            await self._copy_validation_components(lease.snapshot, workspace, archive)
-            # 图与 receipt 先复制；正常只追加的消息库随后覆盖它们已有的历史引用。
+            bindings = self._message_log.read_bindings()
+            await self._copy_validation_components(
+                lease.snapshot, workspace, archive, bindings,
+            )
+            # 图副本可能引用复制期间追加的 Message；最后一次 backup 必须覆盖这些引用。
             await _copy_in_thread(self._message_log.backup, workspace / "sessions.db")
+            messages = MessageLog(workspace / "sessions.db")
+            # 新 binding 可能带来旧凭据排除声明；不开放按较早声明复制的数据。
+            if messages.read_bindings() != bindings:
+                raise RuntimeError("候选复制期间 binding 已变化；本次验证副本不可用")
         except BaseException:
+            if messages is not None:
+                messages.close()
             await _copy_in_thread(_remove_validation_data_dir, workspace.parent)
             raise
-        messages = MessageLog(workspace / "sessions.db")
+        assert messages is not None
         try:
             artifacts = ArtifactStore(workspace / "sessions.db")
         except BaseException:
@@ -5517,9 +5456,14 @@ class PluginManager:
         return ValidationHost(identity, workspace, child, messages, artifacts, bus, ExitStack(), task, lease.fork())
 
     async def _copy_validation_components(
-        self, snapshot: RuntimeSnapshot, workspace: Path, archive: PluginArchive,
+        self,
+        snapshot: RuntimeSnapshot,
+        workspace: Path,
+        archive: PluginArchive,
+        bindings: tuple[Mapping[str, object], ...],
     ) -> None:
         """逐项保存声明数据；每个 SQLite 自身一致，不承诺跨文件的共同切点。"""
+        binding_exclusions = self._validation_binding_exclusions(bindings)
         for generation in snapshot.generations.values():
             if generation.archive_ref is None:
                 raise RuntimeError(f"验证组件缺少归档: {generation.plugin_id}")
@@ -5531,15 +5475,40 @@ class PluginManager:
                 raise RuntimeError("验证组件描述身份不一致")
             data_dir = workspace / cast(str, record["data_dir"])
             validate_workspace_plugin_data_path(data_dir, workspace)
-            # 日志副本形成后才能知道历史绑定；凭据文件先不进入验证目录。
-            excluded = (*_candidate_data_exclude_paths(generation.static_manifest), "config.local.toml")
-            _ = await _copy_in_thread(_copy_validation_tree, generation.data_dir, data_dir, excluded)
+            excluded = set(_candidate_data_exclude_paths(generation.static_manifest))
+            excluded.update(binding_exclusions.get(cast(str, record["data_dir"]), ()))
+            # 历史 binding 的旧声明必须在 current data 首次复制前生效。
+            _ = await _copy_in_thread(
+                _copy_validation_tree, generation.data_dir, data_dir,
+                tuple(sorted(excluded)),
+            )
         plugins = tuple(cast(ComposablePlugin, item.instance) for item in snapshot.generations.values())
         await self._project_candidate_workspace_roots(plugins, workspace)
         await self._project_candidate_workspace_files(plugins, workspace)
 
+    def _validation_binding_exclusions(
+        self, bindings: tuple[Mapping[str, object], ...],
+    ) -> dict[str, tuple[str, ...]]:
+        """只读扫描固定 binding manifest，提前合并候选数据的排除路径。"""
+        exclusions: dict[str, set[str]] = {}
+        for binding in bindings:
+            if binding["version"] != 1:
+                raise ValueError("验证副本包含不支持的 binding 版本")
+            root = self._archive.read_descriptor(cast(str, binding["root_ref"]))
+            for component_ref in cast(tuple[str, ...], root["components"]):
+                record = self._archive.read_descriptor(component_ref)
+                plugin_dir = self._archive.open(cast(str, record["code"]))
+                manifest = (
+                    load_static_plugin_manifest(plugin_dir)
+                    if (plugin_dir / "akashic.plugin.toml").exists() else None
+                )
+                exclusions.setdefault(cast(str, record["data_dir"]), set()).update(
+                    _candidate_data_exclude_paths(manifest)
+                )
+        return {data_dir: tuple(sorted(paths)) for data_dir, paths in exclusions.items()}
+
     async def _copy_validation_bindings(self, host: ValidationHost) -> None:
-        """按消息副本的实际绑定保存历史代码与数据，不从当前安装补齐旧实现。"""
+        """只保存 binding provenance，不导入旧代码、数据或 workspace。"""
         archive = host.manager._archive
         current = {item.archive_ref for item in host.parent_lease.snapshot.generations.values()}
         refs = dict.fromkeys(cast(str, ref) for ref in current)
@@ -5552,51 +5521,10 @@ class PluginManager:
                 raise RuntimeError("验证 binding 闭包身份不一致")
             refs.update(dict.fromkeys(cast(tuple[str, ...], root["components"])))
 
-        # 1. 以实际日志副本的绑定合并同目录的历史声明，不让新版本放宽旧凭据边界。
-        records = {ref: self._archive.read_descriptor(ref) for ref in refs}
-        exclusions: dict[str, set[str]] = {}
-        for record in records.values():
-            plugin_dir = self._archive.open(cast(str, record["code"]))
-            manifest = (load_static_plugin_manifest(plugin_dir)
-                        if (plugin_dir / "akashic.plugin.toml").exists() else None)
-            exclusions.setdefault(cast(str, record["data_dir"]), set()).update(
-                _candidate_data_exclude_paths(manifest))
-
-        # 2. 已固定的候选数据优先；补齐历史独有目录和允许复制的普通配置。
-        for ref, record in records.items():
-            code = cast(str, record["code"])
-            if archive.save(self._archive.open(code)) != code or archive.save_descriptor(record) != ref:
+        for ref in refs:
+            record = self._archive.read_descriptor(ref)
+            if archive.save_descriptor(record) != ref:
                 raise RuntimeError("验证历史组件身份不一致")
-            data = cast(str, record["data_dir"])
-            source, target = self._workspace / data, host.workspace / data
-            validate_workspace_plugin_data_path(source, self._workspace)
-            validate_workspace_plugin_data_path(target, host.workspace)
-            excluded = tuple(sorted(exclusions[data]))
-            if not target.exists():
-                _ = await _copy_in_thread(_copy_validation_tree, source, target, excluded)
-            elif not _candidate_data_path_is_excluded(Path("config.local.toml"), excluded):
-                old_config, new_config = source / "config.local.toml", target / "config.local.toml"
-                if old_config.exists() and not new_config.exists():
-                    if old_config.is_symlink() or not old_config.is_file():
-                        raise RuntimeError(f"candidate 配置只能复制普通文件: {old_config}")
-                    _ = await _copy_in_thread(shutil.copy2, old_config, new_config)
-            if ref not in current:
-                # 只读取旧模块声明，不 apply，也不覆盖当前候选已固定的共享数据。
-                with self._archived_generations((ref,), secrets.token_hex(16)) as generations:
-                    plugin = cast(ComposablePlugin, next(iter(generations.values())).instance)
-                    for name in plugin.workspace_roots:
-                        old_root = resolve_declared_workspace_root(self._workspace, name)
-                        if old_root.exists():
-                            _ = await _copy_in_thread(_copy_validation_tree, old_root, host.workspace / name, (), keep_existing=True)
-                    for name in plugin.workspace_files:
-                        old_file = resolve_declared_workspace_file(self._workspace, name)
-                        new_file = host.workspace / name
-                        if old_file.exists() and not new_file.exists():
-                            new_file.parent.mkdir(parents=True, exist_ok=True)
-                            if _is_sqlite_database(old_file):
-                                await _copy_in_thread(_copy_sqlite_snapshot, old_file, new_file)
-                            else:
-                                _ = await _copy_in_thread(shutil.copy2, old_file, new_file)
 
     async def _copy_validation_artifacts(self, host: ValidationHost) -> None:
         """复制消息副本已引用的不可变文件，读取仍经过正式 Artifact owner 校验。"""
@@ -5948,9 +5876,8 @@ class PluginManager:
         mount_order: tuple[PluginGeneration, ...],
         *,
         candidate: bool,
-        archive: bool = False,
     ) -> None:
-        """向独立 Root 提供宿主能力；归档只取得明确声明的窄端口。"""
+        """向当前 stable 或 candidate Root 提供宿主能力。"""
 
         await self._provide_root_registries(
             root, mount_order, resource_mode="candidate" if candidate or self._validation_only else "formal",
@@ -6038,21 +5965,15 @@ class PluginManager:
         if requested & message_services and self._message_log is None:
             raise RuntimeError("消息能力需要 bootstrap 提供已迁移的 MessageLog")
         if self._message_log is not None:
-            if not archive or MESSAGE_CATALOG in requested:
-                _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
-            if not archive or MESSAGE_EMBEDDINGS in requested:
-                _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
-            if not archive or MESSAGE_WRITERS in requested:
-                _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
-            if not archive or OWNER_STATE in requested:
-                _ = await root.context.provide(OWNER_STATE, OwnerState(log))
-            if not archive or SESSION_ADMISSION in requested:
-                _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
-            if not archive or BINDINGS in requested:
-                _ = await root.context.provide(
-                    BINDINGS, Bindings(log, self._archive, self.open_binding)
-                )
-        if TASKS in requested or not archive and self._message_log is not None:
+            _ = await root.context.provide(MESSAGE_CATALOG, MessageCatalog(log))
+            _ = await root.context.provide(MESSAGE_EMBEDDINGS, MessageEmbeddings(log))
+            _ = await root.context.provide(MESSAGE_WRITERS, MessageWriters(log))
+            _ = await root.context.provide(OWNER_STATE, OwnerState(log))
+            _ = await root.context.provide(SESSION_ADMISSION, SessionAdmission(log))
+            _ = await root.context.provide(
+                BINDINGS, Bindings(log, self._archive, root)
+            )
+        if TASKS in requested or self._message_log is not None:
             _ = await root.context.provide(
                 TASKS, PluginTasks(formal=False) if candidate else self._plugin_tasks
             )
@@ -6060,7 +5981,7 @@ class PluginManager:
             _ = await root.context.provide(
                 PROCESSES, PluginProcesses(formal=False) if candidate else self._plugin_processes
             )
-        if (not archive or ARTIFACT_READ in requested) and self._artifact_read is not None:
+        if self._artifact_read is not None:
             _ = await root.context.provide(
                 ARTIFACT_READ, ArtifactRead(None) if candidate else self._artifact_read
             )
@@ -6124,8 +6045,6 @@ class PluginManager:
                 ServiceKey[object]("core.web_ui.v1"),
                 PluginWebUiProvider(self._snapshot_store),
             )
-        if archive:
-            return
         if any(
             INTERACTION_UNDO in cast(ComposablePlugin, item.instance).inject
             for item in mount_order
@@ -6240,36 +6159,6 @@ class PluginManager:
                 if owner in available and owner not in selected_plugin_ids
             )
         return frozenset(additional)
-
-    def _formal_durable_deliveries(self) -> PluginDurableDeliveries:
-        """Build one Root-local port over the process-owned delivery ledger."""
-
-        sender = self._durable_delivery_sender
-        session_manager = self._session_manager
-        projector: DurableProjector | None = None
-        if session_manager is not None:
-
-            async def project(request: DurableDeliveryRequest) -> str:
-                return await session_manager.append_durable_delivery(
-                    session_key=request.projection_session_id,
-                    content=request.body,
-                    delivery_id=request.logical_delivery_id,
-                    control_turn_id=request.accepted_turn.turn_id,
-                    metadata=request.metadata,
-                )
-
-            projector = project
-
-        service = PluginDurableDeliveries(
-            DurableDeliveryStore(
-                self._workspace / "runtime" / "deliveries" / "settlements.sqlite"
-            ),
-            sender,
-            projector,
-            recover_started=not self._durable_delivery_recovered,
-        )
-        self._durable_delivery_recovered = True
-        return service
 
     def _preflight_durable_delivery_targets(self, snapshot: RuntimeSnapshot) -> None:
         """Fence forward-completable rows whose target vanished from candidate."""
