@@ -462,7 +462,7 @@ command = [
   "tests/test_channel_input.py::test_retry_uses_message_identity_without_copying_transport_clock_or_handoff",
   "tests/test_plugin_hot_reload.py::test_runtime_snapshot_latest_requires_explicit_selector_and_promotion",
   "tests/test_message_sdk.py::test_async_sdk_real_socket_replay_and_subscription_replacement",
-  "tests/test_message_compaction_records.py::test_summary_use_reopens_original_archive_after_head_advance_and_source_removal",
+  "tests/test_message_compaction_records.py::test_summary_use_reads_original_record_after_head_advance_and_restart",
   "tests/test_default_reply.py::test_actual_reply_compacts_history_before_provider_and_records_each_successful_use",
 ]
 observes = [
@@ -477,7 +477,7 @@ observes = [
   "chat_lane_timer_order",
   "message_push_receipt",
   "crash_recovery",
-  "summary_archive_reopens",
+  "summary_record_survives_restart",
   "summary_use_committed",
 ]
 mutants = [
