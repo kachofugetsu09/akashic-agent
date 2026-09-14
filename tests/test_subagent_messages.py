@@ -361,6 +361,8 @@ async def test_background_reopen_keeps_input_and_tool_choice_and_only_returns_on
                 assert await resumed.prepare_candidate(plugin_id) is not None
                 publication = await resumed.publish_prepared(plugin_id)
                 assert publication["publication_state"] == "committed"
+                # 下一次独立换代前明确等待原 snapshot owner 回收。
+                await resumed.snapshot_store.retry_drains()
             assert resumed.current_snapshot.generations["models_fixture"].archive_ref != stable_model
             await resumed.start_runtime()
             async def completed():
