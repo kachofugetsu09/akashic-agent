@@ -18,7 +18,12 @@ from agent.plugins.install import (
 from agent.plugins.manifest import load_plugin_manifest
 import scripts.build_host_runtime_release as host_runtime_release
 from scripts.build_host_runtime_release import _create_context
-from scripts.build_plugin_distribution import _append_tree, build
+from scripts.build_plugin_distribution import (
+    _append_tree,
+    _build_web_assets,
+    _bundle_plugin,
+    build,
+)
 from scripts.install_plugin_distribution import (
     _preflight_bundle,
     _write_receipt,
@@ -38,6 +43,99 @@ def test_default_profile_installs_akashic_sender() -> None:
     plugins = {item["name"]: item for item in profile["plugins"]}
 
     assert plugins["akashic_sender"]["depends_on"] == ["delivery"]
+
+
+def test_web_build_includes_plugin_ui_assets(tmp_path, monkeypatch) -> None:
+    """发行 Web 构建必须生成插件 UI，不能只构建两个宿主页面。"""
+
+    source = tmp_path / "source"
+    for path in (
+        "frontend/chat/vite.config.ts",
+        "frontend/dashboard/vite.config.ts",
+    ):
+        target = source / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("export default {}\n", encoding="utf-8")
+    (source / "package.json").write_text("{}\n", encoding="utf-8")
+    (source / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True, capture_output=True)
+    subprocess.run([
+        "git", "-C", str(source), "-c", "user.name=Test", "-c",
+        "user.email=test@example.invalid", "-c", "commit.gpgSign=false",
+        "commit", "-m", "source",
+    ], check=True, capture_output=True)
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, cwd, env):
+        commands.append(command)
+        if command == ["npm", "run", "build:dashboard"]:
+            (cwd / "static/dashboard").mkdir(parents=True)
+            (cwd / "static/dashboard/index.html").write_text("dashboard")
+        elif command == ["npm", "run", "build:chat"]:
+            (cwd / "static/chat").mkdir(parents=True)
+            (cwd / "static/chat/index.html").write_text("chat")
+        elif command == ["npm", "run", "build:web-plugins"]:
+            (cwd / "plugins/akasha").mkdir(parents=True)
+            (cwd / "plugins/akasha/message_ui.js").write_text("new module")
+
+    monkeypatch.setattr(
+        "scripts.build_plugin_distribution._run_web_command", fake_run
+    )
+    temporary = tmp_path / "build"
+    temporary.mkdir()
+    assets, plugins, report = _build_web_assets(source, "HEAD", temporary)
+
+    assert assets is not None
+    assert plugins is not None
+    assert (plugins / "akasha/message_ui.js").read_text() == "new module"
+    assert commands[-1] == ["npm", "run", "build:web-plugins"]
+    assert report["build_commands"][-1] == "npm run build:web-plugins"
+
+
+def test_plugin_bundle_uses_generated_ui_asset(tmp_path) -> None:
+    """插件 bundle 必须覆盖固定提交中陈旧的生成资产。"""
+
+    source = tmp_path / "source"
+    plugin = source / "plugins/akasha"
+    plugin.mkdir(parents=True)
+    (plugin / "message_plugin.py").write_text(
+        'api_version = 3\nname = "akasha"\nversion = "1"\ndef apply(ctx, config): pass\n'
+    )
+    (plugin / "akashic.plugin.toml").write_text(
+        'schema_version = 1\napi_version = 3\nname = "akasha"\n'
+        'version = "1"\nentrypoint = "message_plugin.py"\n'
+    )
+    (plugin / "message_ui.js").write_text("stale module\n")
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True, capture_output=True)
+    subprocess.run([
+        "git", "-C", str(source), "-c", "user.name=Test", "-c",
+        "user.email=test@example.invalid", "-c", "commit.gpgSign=false",
+        "commit", "-m", "source",
+    ], check=True, capture_output=True)
+    generated = tmp_path / "generated/plugins/akasha"
+    generated.mkdir(parents=True)
+    (generated / "message_ui.js").write_text("fresh module\n")
+    output = tmp_path / "release"
+    output.mkdir()
+
+    row = _bundle_plugin(
+        source,
+        "HEAD",
+        "2026-09-15T00:00:00+00:00",
+        "plugins/akasha",
+        output,
+        set(),
+        generated.parent,
+    )
+    installed = tmp_path / "installed"
+    subprocess.run(
+        ["git", "clone", str(output / row["file"]), str(installed)],
+        check=True,
+        capture_output=True,
+    )
+    assert (installed / "message_ui.js").read_text() == "fresh module\n"
 
 
 def test_workload_controller_imports_core_from_distribution_source() -> None:
