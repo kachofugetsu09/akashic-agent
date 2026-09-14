@@ -712,7 +712,7 @@ Mobile 中止按钮和 channel `/stop` 只追加带精确 `source` 与 `through_
 
 ### PLG-005 低频更新使用完整组合换代
 
-更新先关闭新工作来源，再排空已有有限工作，停止旧组合并启动完整新组合。允许短暂停服，不拼接新旧 Root，不在已发布组合内响应式替换 provider。持有当前 lease 的调用栈只能登记更新，不能等待自身排空。新插件负责理解现有数据；旧代码可能无法读取新写入，底座不承诺数据回滚或自动安全降级。
+更新先关闭新工作来源，再排空已有有限工作，停止旧组合并启动完整新组合。允许短暂停服，不拼接新旧 Root，不在已发布组合内响应式替换 provider。持有当前 lease 的调用栈只能登记更新，不能等待自身排空。更新有有限截止时间：排空超时且旧资源尚未释放时取消本次更新并恢复旧接纳；释放开始后只有真实恢复成功才开放，否则保持明确故障并交由宿主或维护者处理，不无限静默等待。新插件负责理解现有数据；旧代码可能无法读取新写入，底座不承诺数据回滚或自动安全降级。
 
 ### PLG-006 清理逆序、抗取消并保留全部失败
 
@@ -780,7 +780,7 @@ generation identity 只作为 structured metadata；Prometheus 只聚合经过�
 插件只能导入公开 Plugin API 和自身包内代码；不得导入兄弟插件源码、Core 私有实现或依赖主
 仓库相对路径。跨插件关系只通过本地声明的版本化 `ServiceKey`、结构合同、事件和 provider
 选择的 Tool 表达。发布 Gate 必须在不加入主仓库源码路径的隔离安装中证明 import、apply、
-provide/inject、Tool、热重载、卸载和 plugin-data 边界。
+provide/inject、Tool、整体换代式热更新、卸载和 plugin-data 边界。
 
 ### PLG-017 Workload 是普通插件原子能力
 
@@ -942,7 +942,7 @@ pool mass 超过固定 threshold 时才进入 Wake Turn，不使用随机
 
 ### CTRL-003 Programmatic 验证可选择 snapshot 且默认不学习
 
-新 programmatic session 可以在严格类型边界显式选择 `stable` 或 `latest`，默认使用 stable。新 session 默认持久化 thread、messages、tool items 与 terminal，但它的 Turn scope 声明 `effects.post_commit=suppress`：Session 仍记录客观事实，Akasha 等派生投影不消费它；Prompt 是否读取既有记忆与 Tool 是否可用分别由 `disabled_prompt_sections` 和 `ToolGrant` 决定。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
+新 programmatic session 默认使用 stable；只有所属更新授予的精确候选授权才能选择候选，不提供任意 `latest` 选择器。新 session 默认持久化 thread、messages、tool items 与 terminal，但它的 Turn scope 声明 `effects.post_commit=suppress`：Session 仍记录客观事实，Akasha 等派生投影不消费它；Prompt 是否读取既有记忆与 Tool 是否可用分别由 `disabled_prompt_sections` 和 `ToolGrant` 决定。验证 CLI 默认 attached，控制连接在 terminal 前关闭时 runtime 必须取消其拥有的 turn 并释放 snapshot lease；显式 detached 必须先返回可恢复的 thread/turn handle，且不得用于插件自验证。
 
 ## 13. 独立验收要求
 

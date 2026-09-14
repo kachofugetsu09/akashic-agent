@@ -28,8 +28,9 @@ Session/Message 全身份迁移、配置、Akasha 和 Android 强制全量同步
 
 ## P0 · 插件递归自验证
 
-- 在独立 Fitbit canonical source 变更中让 monitor 与 MCP 读取同一个 `validation_port_env`，再以一次性 workspace 验收真实隔离 listener、child tool trace、正式切换和旧 listener 恢复；不得在 Core 中添加 Fitbit 特判。
-- 补充 turn-boundary rollout 的进程崩溃注入矩阵，覆盖 terminal 封口后、候选服务停止后、正式 endpoint 切换后和 pointer 提交前；恢复失败必须保持 degraded 可见，不能只恢复 pointer。
+- 按 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md) 调整为调用程序拥有验证、provider 拥有隔离资源、底座拥有整体 stable 提交。旧 `validation_port_env`、双指针与 attached child 的 Core 特例不再是目标合同。
+- 独立 Fitbit source 的候选 listener 与正式资源隔离仍待该仓库交付，本轮不修改外部插件。
+- 提交前后崩溃、排空失败和真实恢复的行为证据尚缺；本轮用户要求只提 PR，不执行 Gate/CI，不能将代码交付视作这些验收已完成。
 
 ## P0 · 独立语义验收
 

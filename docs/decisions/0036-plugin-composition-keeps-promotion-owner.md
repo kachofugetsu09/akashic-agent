@@ -4,7 +4,7 @@
 - 日期：2026-08-14
 - 关联条款：PLG-001～PLG-014、WSP-001～WSP-005、ERR-001、TST-001～TST-007
 - supersedes：无
-- superseded by：无
+- superseded by：[0071](0071-plugin-composition-and-whole-runtime-updates.md) 调整响应式换代与中央发布参与者；保留服务组合、资源归属和提交 owner，不保留双指针目标。
 
 ## 背景
 
