@@ -67,6 +67,31 @@ async def test_failed_consumer_cleanup_keeps_provider_until_explicit_retry():
 
 
 @pytest.mark.asyncio
+async def test_effect_cleanup_cannot_wait_for_its_own_close():
+    """错误的自等待明确失败并保留 owner，修正后可显式重试。"""
+    from agent.plugin_composition.effect import Effect
+
+    owners: list[Effect] = []
+    attempts = 0
+
+    async def cleanup():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await effect.aclose()
+
+    effect = Effect(label="connection", remove_from_owner=owners.remove)
+    owners.append(effect)
+    await effect.start(lambda: cleanup)
+    with pytest.raises(CompositionError, match="自身关闭"):
+        await effect.aclose()
+    assert owners == [effect]
+    await effect.aclose()
+    assert owners == []
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
 async def test_effect_close_joins_concurrent_callers_despite_repeated_cancel():
     """多个关闭调用和重复取消只执行一次实际关闭。"""
     from agent.plugin_composition.effect import Effect
