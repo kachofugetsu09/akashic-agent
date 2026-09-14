@@ -82,7 +82,7 @@ from agent.plugin_composition.channels import (
 )
 from agent.plugin_composition.processes import PROCESSES, PluginProcesses
 from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
-from agent.host_bridge.plugin_execution import CodeOwner, ExecutionAccess, ControllerAccess
+from agent.host_bridge.plugin_execution import CodeOwner, ExecutionAccess, ControllerAccess, cleanup_workloads_for_boot
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
     resolve_declared_workspace_root,
@@ -1379,6 +1379,10 @@ class PluginManager:
         selection_ref = self._selection.read()
         if self.current_snapshot is not None:
             raise RuntimeError("load_all 不能重复启动正式 Root")
+        self._check_operation_commit()
+        await cleanup_workloads_for_boot(self._workload_controller, self._workload_workspace_id)
+        # 宿主可能延迟返回或吞掉取消；撤销许可后不得继续执行任何 apply。
+        self._check_operation_commit()
         self._plugin_tasks.start()
         self._plugin_processes.start()
         recovery = self._reload_journal.pending_recovery()
