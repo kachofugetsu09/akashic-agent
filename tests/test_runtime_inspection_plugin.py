@@ -166,7 +166,9 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: probe\ndescription: lease proof\n---\nRead safely.\n")
     (asset / "plugin.py").write_text(
+        "from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG\n"
         "api_version = 3\nname = 'external_assets'\nversion = '1'\n"
+        "inject = (RUNTIME_CATALOG,)\n"
         "asset_roots = {'skills': ('skills',)}\ndef apply(ctx, config): pass\n")
     (tmp_path / "workspace").mkdir()
     configuration = tmp_path / "workspace/plugin-data/context-builtin"
@@ -193,7 +195,10 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
         service = ScopedRpcRuntimeInspection(open_scope)
         for _ in range(2):
             result = await service.list_capabilities()
-            assert [item["name"] for item in _rows(result["items"])] == ["probe"]
+            assert set(result) == {"snapshot_id", "plugins", "skills", "mcp_servers"}
+            assert result["snapshot_id"] == snapshot.snapshot_id
+            assert [item["name"] for item in _rows(result["skills"])] == ["probe"]
+            assert "items" not in result
             assert snapshot.lease_count == 0
             assert get_current_runtime_snapshot() is None
     finally:

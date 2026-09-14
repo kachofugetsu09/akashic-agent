@@ -15,6 +15,7 @@ from agent.plugin_composition.commands import COMMANDS
 from agent.plugin_composition.messages import MESSAGE_CATALOG
 from agent.plugin_composition.rpc import rpc_method_key
 from agent.plugin_composition.message_view import MessageDisplayReader
+from agent.plugin_composition.runtime_catalog import RUNTIME_CATALOG
 
 from .services import MobileUiProvider, WebUiProvider
 
@@ -64,6 +65,7 @@ MODEL_RPC_KEYS = (MODEL_CALL, MODEL_CATALOG_RPC, MODEL_DISCOVER, MODEL_COMMAND)
 # by the manifest importer to activate the ordinary channel only when the
 # exact providers are present.
 CLIENT_CAPABILITIES = (
+    RUNTIME_CATALOG,
     MESSAGE_CATALOG,
     COMMANDS,
     MESSAGE_DISPLAY,

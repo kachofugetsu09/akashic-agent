@@ -7,9 +7,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from typing import cast
 
 from agent.plugin_composition.rpc import RpcMethod
+from agent.plugin_composition.runtime_catalog import (
+    RUNTIME_CATALOG,
+    RuntimeCatalogUnavailable,
+)
 
 from .capabilities import (
     INSPECTION_DOCUMENTS_GET,
@@ -27,22 +32,29 @@ class ScopedRpcRuntimeInspection:
     def __init__(self, open_scope) -> None:
         self._open_scope = open_scope
 
+    async def _invoke(
+        self,
+        scope,
+        key: object,
+        payload: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Invoke one declared inspection RPC in the caller's exact scope."""
+
+        method = scope.require(key)
+        if not isinstance(method, RpcMethod):
+            raise RuntimeInspectionError(
+                "invalid_provider",
+                "runtime inspection provider 类型无效",
+            )
+        params = method.params.model_validate(dict(payload))
+        result = await method.invoke(params, None)
+        if not isinstance(result, Mapping):
+            raise RuntimeInspectionError("invalid_response", "runtime inspection RPC 返回值必须是对象")
+        return cast(dict[str, object], dict(result))
+
     async def _call(self, key: object, payload: Mapping[str, object]) -> dict[str, object]:
         async with self._open_scope() as scope:
-            method = scope.require(key)
-            if not isinstance(method, RpcMethod):
-                raise RuntimeInspectionError(
-                    "invalid_provider",
-                    "runtime inspection provider 类型无效",
-                )
-            params = method.params.model_validate(dict(payload))
-            result = await method.invoke(params, None)
-        if not isinstance(result, Mapping):
-            raise RuntimeInspectionError(
-                "invalid_response",
-                "runtime inspection RPC 返回值必须是对象",
-            )
-        return cast(dict[str, object], dict(result))
+            return await self._invoke(scope, key, payload)
 
     async def list_documents(self) -> dict[str, object]:
         return await self._call(INSPECTION_DOCUMENTS_LIST, {})
@@ -60,13 +72,106 @@ class ScopedRpcRuntimeInspection:
         return await self._call(INSPECTION_JOBS_GET, {"job_id": job_id})
 
     async def list_capabilities(self) -> dict[str, object]:
-        return await self._call(INSPECTION_SKILLS_LIST, {})
+        """Restore the existing Mobile aggregate from one request generation."""
+
+        async with self._open_scope() as scope:
+            try:
+                payload = dict(scope.require(RUNTIME_CATALOG)())
+            except RuntimeCatalogUnavailable as error:
+                raise RuntimeInspectionError(error.code, str(error)) from error
+            skills = await self._invoke(scope, INSPECTION_SKILLS_LIST, {})
+            unavailable = skills.get("unavailable")
+            if isinstance(unavailable, Mapping):
+                code = unavailable.get("code")
+                message = unavailable.get("message")
+                if isinstance(code, str) and isinstance(message, str):
+                    raise RuntimeInspectionError(code, message)
+                raise RuntimeInspectionError(
+                    "invalid_response",
+                    "runtime inspection unavailable 响应无效",
+                )
+            items = skills.get("items")
+            if not isinstance(items, list):
+                raise RuntimeInspectionError(
+                    "invalid_response",
+                    "runtime inspection skills 响应缺少 items",
+                )
+            payload["skills"] = items
+            expected = {"snapshot_id", "plugins", "skills", "mcp_servers"}
+            if payload.keys() != expected:
+                raise RuntimeInspectionError(
+                    "invalid_response",
+                    "runtime catalog 返回字段与客户端合同不一致",
+                )
+            return payload
 
     async def get_mcp(self, owner_id: str, server_name: str) -> dict[str, object]:
-        raise RuntimeInspectionError(
-            "mcp_unavailable",
-            "当前 runtime inspection RPC 未声明 MCP 读取能力",
+        """Render one MCP detail from the same neutral catalog capability."""
+
+        async with self._open_scope() as scope:
+            try:
+                payload = scope.require(RUNTIME_CATALOG)()
+            except RuntimeCatalogUnavailable as error:
+                raise RuntimeInspectionError(error.code, str(error)) from error
+        servers = payload.get("mcp_servers")
+        if not isinstance(servers, list):
+            raise RuntimeInspectionError("invalid_response", "runtime catalog 缺少 MCP 列表")
+        server = next(
+            (
+                item
+                for item in servers
+                if isinstance(item, Mapping)
+                and item.get("owner_id") == owner_id
+                and item.get("name") == server_name
+            ),
+            None,
         )
+        if server is None:
+            raise RuntimeInspectionError(
+                "mcp_not_found",
+                f"MCP server 不存在: {owner_id}/{server_name}",
+            )
+        tools = server.get("tools")
+        if not isinstance(tools, list):
+            raise RuntimeInspectionError("invalid_response", "runtime catalog MCP tools 无效")
+        return {
+            "owner_id": owner_id,
+            "name": server_name,
+            "tool_count": len(tools),
+            "tools": tools,
+            "markdown": _mcp_markdown(owner_id, server_name, tools),
+        }
+
+
+def _mcp_markdown(
+    owner_id: str,
+    server_name: str,
+    tools: list[object],
+) -> str:
+    """Render the existing read-only MCP detail format."""
+
+    lines = [f"# {server_name}", "", f"归属：`{owner_id}`", "", "## 工具", ""]
+    for value in tools:
+        if not isinstance(value, Mapping):
+            raise RuntimeInspectionError("invalid_response", "runtime catalog MCP tool 无效")
+        name = value.get("name")
+        description = value.get("description")
+        input_schema = value.get("input_schema")
+        if not isinstance(name, str) or not isinstance(description, str):
+            raise RuntimeInspectionError("invalid_response", "runtime catalog MCP tool 字段无效")
+        lines.extend(
+            (
+                f"### `{name}`",
+                "",
+                description,
+                "",
+                "```json",
+                json.dumps(input_schema, ensure_ascii=False, indent=2, sort_keys=True),
+                "```",
+                "",
+            )
+        )
+    return "\n".join(lines)
 
 
 __all__ = [

@@ -33,6 +33,10 @@ from agent.plugins.config import read_config_source
 from agent.plugin_composition.bindings import BINDINGS, BindingScope, Bindings
 from agent.plugin_composition.artifacts import ARTIFACT_IMPORT, ARTIFACT_READ, ArtifactImport, ArtifactRead
 from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
+from agent.plugin_composition.runtime_catalog import (
+    RUNTIME_CATALOG,
+    build_runtime_catalog,
+)
 from agent.plugin_composition.credentials import CREDENTIALS, CredentialClients
 from infra.channels.attachment_import import ChannelOutboundAttachmentImporter
 from agent.plugin_composition.messages import (
@@ -5974,6 +5978,22 @@ class PluginManager:
                 return tuple(assets)
 
             _ = await root.context.provide(INSTALLED_ASSETS, read_installed_assets)
+        if RUNTIME_CATALOG in requested:
+            def read_runtime_catalog() -> dict[str, object]:
+                """Read neutral runtime facts from the exact task-bound snapshot."""
+
+                snapshot = get_current_runtime_snapshot()
+                if snapshot is None:
+                    raise RuntimeError("读取 runtime catalog 需要当前任务的 runtime scope")
+                current = snapshot.composition_root
+                if (
+                    current is None
+                    or current.context.require(RUNTIME_CATALOG) is not read_runtime_catalog
+                ):
+                    raise RuntimeError("runtime catalog 不属于当前 runtime scope")
+                return build_runtime_catalog(snapshot)
+
+            _ = await root.context.provide(RUNTIME_CATALOG, read_runtime_catalog)
         if CREDENTIALS in requested:
             clients = CredentialClients(None if candidate or self._validation_only else {
                 generation.plugin_id: CoreProviderClientFactory(
