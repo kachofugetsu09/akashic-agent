@@ -187,7 +187,11 @@ async def test_plugin_entry_uses_python_call_semantics(tmp_path: Path, signature
     _write_plugin(tmp_path / "plugins", "ordinary", source)
     manager = _manager(tmp_path)
     try:
-        await manager.load_all()
+        if accepted:
+            await manager.load_all()
+        else:
+            with pytest.raises(RuntimeError):
+                await manager.load_all()
         assert (manager.generation("ordinary") is not None) is accepted
     finally:
         await manager.terminate_all()
@@ -205,6 +209,24 @@ async def test_import_failure_returns_failed_gate_without_generation(tmp_path: P
     assert gate is not None and gate.status == "failed"
     assert gate.checks[0].check_id == "import"
     assert manager.generation("broken") is None
+
+
+@pytest.mark.asyncio
+async def test_boot_failure_never_publishes_a_smaller_plugin_selection(tmp_path: Path):
+    """不能删除失败插件后把剩余插件伪装成选中的 stable 组合。"""
+    _write_plugin(tmp_path / "plugins", "good", _v3_source("good"))
+    _write_plugin(tmp_path / "plugins", "broken", _v3_source(
+        "broken", body="    raise ValueError('cannot initialize')\n",
+    ))
+    manager = _manager(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="拓扑未就绪"):
+            await manager.load_all()
+        assert manager.current_snapshot is None
+        assert manager.generation("good") is None
+        assert manager.generation("broken") is None
+    finally:
+        await manager.terminate_all()
 
 
 @pytest.mark.asyncio
@@ -276,8 +298,9 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
     (config_dir / "config.local.toml").write_text("", encoding="utf-8")
     manager = _manager(tmp_path)
 
-    await manager.load_all()
-    assert manager.latest_gate("module_tree").status == "failed"  # type: ignore[union-attr]
+    with pytest.raises(RuntimeError, match="拓扑未就绪"):
+        await manager.load_all()
+    assert manager.current_snapshot is None
     assert not any("plugins_module_tree__g" in name for name in sys.modules)
 
     (config_dir / "config.local.toml").write_text("required = 'ok'\n", encoding="utf-8")
@@ -328,7 +351,8 @@ async def test_declared_paths_cannot_escape_plugin_root(tmp_path: Path):
     )
     manager = _manager(tmp_path)
 
-    await manager.load_all()
+    with pytest.raises(RuntimeError, match="完整插件组合加载失败"):
+        await manager.load_all()
 
     gate = manager.latest_gate("escaped")
     assert gate is not None and gate.status == "failed"
@@ -347,7 +371,8 @@ async def test_source_symlink_cannot_escape_plugin_root(tmp_path: Path):
     (plugin_dir / "helper.py").symlink_to(outside)
     manager = _manager(tmp_path)
 
-    await manager.load_all()
+    with pytest.raises(RuntimeError, match="完整插件组合加载失败"):
+        await manager.load_all()
 
     gate = manager.latest_gate("linked_source")
     assert gate is not None and gate.status == "failed"

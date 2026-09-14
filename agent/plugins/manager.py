@@ -1604,9 +1604,12 @@ class PluginManager:
             # 1. 只导入、校验并准备声明，不开放任何 stable snapshot。
             for mod in mods:
                 generation = await self._load_one(mod, stage_stable=True)
-                if generation is not None:
-                    staged.append(generation)
-            snapshot = await self._compile_stable_batch_snapshot(staged)
+                if generation is None:
+                    raise RuntimeError(f"完整插件组合加载失败: {_resolve_plugin_id(mod)}")
+                staged.append(generation)
+            snapshot = await self._compile_topology_snapshot(
+                {item.plugin_id: item for item in staged}
+            )
             for generation in staged:
                 generation.runtime_snapshot = snapshot
 
@@ -1624,7 +1627,7 @@ class PluginManager:
 
             # 4. 全部准备成功后才登记 stable owner，并一次安装快照。
             await self._publish_stable_batch(staged, snapshot)
-        except BaseException as error:
+        except BaseException:
             # 5. 未发布事务失败时恢复所有进程内 owner，并反向释放资源。
             _, cleanup_cancelled = await _complete_critical(
                 self._discard_stable_batch(
@@ -1634,27 +1637,8 @@ class PluginManager:
             )
             if cleanup_cancelled:
                 raise asyncio.CancelledError
-            if isinstance(error, _StablePluginFailed):
-                await self._retry_stable_batch_without_failed(mods, error)
-                return
             raise
 
-    async def _compile_stable_batch_snapshot(
-        self,
-        staged: list[PluginGeneration],
-    ) -> RuntimeSnapshot:
-        """为 stable 启动批次编译一个完整的未发布快照。"""
-
-        try:
-            return await self._compile_topology_snapshot(
-                {item.plugin_id: item for item in staged}
-            )
-        except Exception as error:
-            if len(staged) == 1 and "missing_services=" not in str(error):
-                raise _StablePluginFailed(
-                    staged[0], "runtime_snapshot", error
-                ) from error
-            raise
 
     async def _publish_stable_batch(
         self,
@@ -1664,14 +1648,11 @@ class PluginManager:
         """登记全部 stable owner 并一次安装批次快照。"""
 
         for generation in staged:
-            try:
-                self._scopes[generation.module_path] = generation.scope
-                self._loaded.add(generation.module_path)
-                generation.state = "active"
-                self._active_generations[generation.plugin_id] = generation
-                self._activate_published_generation(generation, None)
-            except Exception as error:
-                raise _StablePluginFailed(generation, "publish", error) from error
+            self._scopes[generation.module_path] = generation.scope
+            self._loaded.add(generation.module_path)
+            generation.state = "active"
+            self._active_generations[generation.plugin_id] = generation
+            self._activate_published_generation(generation, None)
         await self._publish_committed_snapshot(snapshot)
         for generation in staged:
             generation.boot_created_data_dir = False
@@ -1733,29 +1714,6 @@ class PluginManager:
         ):
             await snapshot.composition_root.dispose()
 
-    async def _retry_stable_batch_without_failed(
-        self,
-        mods: tuple[dict[str, str], ...],
-        failure: _StablePluginFailed,
-    ) -> None:
-        """记录被拒绝的 stable 参与者并重建剩余批次。"""
-
-        generation = failure.generation
-        self._record_failed_gate(
-            plugin_id=generation.plugin_id,
-            revision=generation.source_revision,
-            check_id=failure.phase,
-            reason=str(failure.cause) or type(failure.cause).__name__,
-        )
-        logger.warning(
-            "插件 %s 加载失败，回滚整个未发布批次: %s",
-            generation.plugin_id,
-            failure.cause,
-        )
-        remaining = tuple(
-            mod for mod in mods if _resolve_plugin_id(mod) != generation.plugin_id
-        )
-        await self._load_stable_batch(remaining)
 
     @staticmethod
     def _require_unique_recovery_plugins(
@@ -6977,19 +6935,6 @@ class _CandidateRejected(Exception):
         self.gate = gate
 
 
-class _StablePluginFailed(Exception):
-    """标识一个可以排除后重试的 stable boot 参与者。"""
-
-    def __init__(
-        self,
-        generation: PluginGeneration,
-        phase: str,
-        cause: Exception,
-    ) -> None:
-        super().__init__(str(cause))
-        self.generation = generation
-        self.phase = phase
-        self.cause = cause
 
 
 def _gate_failure_details(gate: GateResult) -> str:
