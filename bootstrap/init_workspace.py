@@ -8,6 +8,8 @@ from pathlib import Path
 
 from agent.config import Config
 from agent.migrations.runner import initialize_empty_workspace
+from agent.plugins.selection import PluginSelection
+from bootstrap.workspace_lock import WorkspaceInstanceLock
 
 @dataclass
 class InitSummary:
@@ -52,6 +54,13 @@ def init_workspace(
     summary = InitSummary()
     config_path = Path(config_path)
 
+    # 只有本次独占新建的目录可初始化选择；不扫描或猜测既有历史。
+    try:
+        workspace.mkdir(parents=True)
+    except FileExistsError:
+        created_workspace = False
+    else:
+        created_workspace = True
     _ensure_config(config_path, force=force, summary=summary)
 
     _ = Config.load(config_path, workspace=workspace)
@@ -60,6 +69,19 @@ def init_workspace(
         repo_root=Path(__file__).resolve().parents[1], workspace=workspace,
         config_path=config_path.resolve(),
     )
+
+    if created_workspace:
+        # 先让既有空 workspace 协议建立起点，再写选择文件，避免干扰空状态判断。
+        lock = WorkspaceInstanceLock(workspace)
+        lock.acquire()
+        try:
+            selection = PluginSelection(workspace)
+            selection.initialize()
+            summary.created.append(selection.path)
+        finally:
+            lock.release()
+    else:
+        summary.notes.append("既有 workspace 的 stable 保持原样；缺失时需后续显式升级。")
 
     summary.notes.append(f"工作区已初始化: {workspace}")
     summary.next_steps = [

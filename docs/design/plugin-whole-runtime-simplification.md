@@ -69,6 +69,59 @@ snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能�
 本步提供固定绑定原语；初始化仍保留 pending、provider epoch 和依赖协调，
 整体发布与旧增量分支的删除仍按下述分层合同继续。新增回归尚未运行。
 
+## 完整选择的持久格式（存储子层，尚未接入运行消费者）
+
+`agent/plugins/selection.py` 的 `PluginSelection(workspace)` 拥有唯一可变文件
+`runtime/plugin-stable.json`。本层未修改 Manager：当前 boot、候选、晋升和 journal
+仍走旧链路，不能把新文件已存在表述为完整 stable 已生效。
+
+指针 v1 为 `{"version": 1, "root_ref": null}` 或指向 SHA-256 记录的同形对象。
+null 只由显式 `initialize()` 创建，表示尚无成功提交；它与已提交的空组件集合不同。
+缺失、未知版本、非法结构、链接或损坏记录明确报错，不在读取中初始化或猜测迁移。
+
+完整记录复用 `PluginArchive.save_descriptor()`，仍在 `runtime/plugin-archives/<hash>.json`：
+
+```json
+{"version": 1, "components": ["<component archive_ref>"], "previous": "<previous committed root_ref>"}
+```
+
+首次记录的 `previous` 是 null。组件已有代码、配置和环境引用，本层不再保存身份、配置、
+能力或路径副本，也不限制 workspace 搬迁；实际 venv 的位置约束仍由 PythonEnvironment
+owner 处理，本层没有修改它。`components` 必须由 wholeRoot 构造方提供完整正式输入，
+建议按 plugin_id 固定顺序；存储层只检查引用结构、重复和 descriptor 存在，不判断依赖
+或把任意 binding 子集推断成完整组合。恢复代码与配置前仍须由各输入 owner 验证组件内容。
+
+最小调用合同：
+
+- `initialize()`：只新建，不覆盖已有 null、已提交选择或未知文件；调用者证明它属于
+  新 workspace 或已批准的显式升级。存储层不扫描业务数据。
+- `read() -> str | None`：只读指针并验证当前选择记录，不打开环境、不启动插件、不自动续跑候选。
+- `commit(components: tuple[str, ...], *, expected_ref: str | None) -> str`：核对基线，
+  追加完整记录，再替换唯一指针并返回新 ref。`previous` 固定本次基线，所以 A→B→A
+  的末次 ref 不等于首次 ref；过期 expected_ref 明确报 `SelectionConflictError`。
+
+initialize 和 commit 的调用者必须持续持有 workspace 单 writer 锁；expected_ref 不是
+跨进程锁的替代品。候选授权、未 revert、正式实例已就绪但接纳仍关闭，均由提交调用者保证。
+本层没有另建候选记录协议、运行身份或自动恢复流程。
+
+记录先 fsync 发布；指针采用同目录临时文件 fsync → 原子 replace → 父目录 fsync。
+初始化改用无覆盖 hardlink 发布，防止覆盖未知指针，并同步新 runtime 目录的父目录。
+`SelectionWriteError` 保留原始异常及 `operation/target_ref/outcome/observed_ref/observation_error`：
+发布尝试前失败为 `unchanged`；发布尝试后失败为 `uncertain`，即便读到新 ref 也不能宣称
+已经耐久提交。观察失败不能当成 null。调用方必须保持接纳关闭并报告不确定结果，不能简单
+恢复旧指针或重开旧实例。记录写入失败也可能留下未引用记录，但不改变 stable。
+
+`init_workspace()` 只给本次 `mkdir` 新建的目录接线：先调用现有
+`initialize_empty_workspace()` 建立 migration baseline，再持 workspace 锁初始化选择。
+既有空目录、旧 baseline、旧安装或中途失败留下的目录都不自动补写 pointer；缺失时报告
+需要后续显式升级。baseline 与 pointer 尚不是一个原子事务：两者之间死亡会留下无 pointer
+的已建目录，再次普通 init 不猜测恢复。现有初始化函数未改动，也没有新增历史扫描或迁移。
+
+不可变记录只增加；每次完整提交仅原位替换 pointer，旧记录保留为 previous 链或未引用证据。
+失败的临时文件保留用于诊断，没有自动扫描清理、GC 或制品删除。恢复材料是 pointer 与
+整个 archive 及各输入 owner 的环境/数据；业务数据不随代码选择回滚。
+本层只编写 storage/init 边界测试并做静态复查，未运行测试或 runtime 验收。
+
 ## 分层合同
 
 | 层 | 改动 | 独立验收 |
