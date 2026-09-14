@@ -8,6 +8,7 @@ import tarfile
 import tomllib
 
 import pytest
+import yaml
 
 from agent.plugins.install import (
     finalize_uninstall_plugin,
@@ -26,6 +27,37 @@ from scripts.install_plugin_distribution import (
     install_profile,
     verify_distribution,
 )
+
+
+def test_workload_controller_imports_core_from_distribution_source() -> None:
+    """发行 workload controller 必须能导入 image 中的 Core 模块。"""
+
+    compose = yaml.safe_load(
+        Path("docker/host-runtime/compose.experiment.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    environment = compose["services"]["workload-controller"]["environment"]
+
+    assert environment["PYTHONPATH"] == "/opt/akashic/source"
+
+
+def test_core_mounts_host_python_prefix_read_only() -> None:
+    """Core 必须只读访问创建持久插件环境时固定的宿主 Python。"""
+
+    compose = yaml.safe_load(
+        Path("docker/host-runtime/compose.experiment.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    volumes = compose["services"]["akashic-core"]["volumes"]
+
+    assert {
+        "type": "bind",
+        "source": "${AKASHIC_HOST_PYTHON_PREFIX:?AKASHIC_HOST_PYTHON_PREFIX is required}",
+        "target": "${AKASHIC_HOST_PYTHON_PREFIX:?AKASHIC_HOST_PYTHON_PREFIX is required}",
+        "read_only": True,
+    } in volumes
 
 
 def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
@@ -410,6 +442,9 @@ def test_release_environment_exports_distribution_tree(monkeypatch, tmp_path):
     from scripts.akashic_release.model import ReleasePaths
 
     monkeypatch.setattr(activate, "docker_socket_gid", lambda: 961)
+    host_python = tmp_path / "mise" / "python" / "3.14.6"
+    host_python.mkdir(parents=True)
+    monkeypatch.setattr(activate, "_base_python_prefix", lambda _: host_python)
     monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-only-key")
     paths = ReleasePaths(tmp_path / "release")
     paths.create_layout()
@@ -427,6 +462,7 @@ def test_release_environment_exports_distribution_tree(monkeypatch, tmp_path):
 
     assert values["AKASHIC_RUNTIME_COMMIT"] == "a" * 40
     assert values["AKASHIC_RUNTIME_TREE"] == "b" * 40
+    assert values["AKASHIC_HOST_PYTHON_PREFIX"] == str(host_python)
 
 
 def test_formal_host_context_contains_core_and_bundles_only(tmp_path):

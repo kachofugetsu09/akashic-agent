@@ -39,6 +39,31 @@ def ensure_bridge_token(paths: ReleasePaths) -> str:
     return token
 
 
+def _base_python_prefix(bridge_python: Path) -> Path:
+    """Resolve the host Python tree required by persisted plugin environments."""
+
+    result = subprocess.run(
+        [
+            str(bridge_python),
+            "-I",
+            "-S",
+            "-c",
+            "import sys; print(sys.base_prefix)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    raw_prefix = result.stdout.strip()
+    prefix = Path(raw_prefix)
+    if not raw_prefix or not prefix.is_absolute():
+        raise RuntimeError("Bridge base Python prefix 不是绝对路径")
+    resolved = prefix.resolve(strict=True)
+    if not resolved.is_dir() or resolved == Path(resolved.anchor):
+        raise RuntimeError("Bridge base Python prefix 不是可挂载目录")
+    return resolved
+
+
 def release_environment(
     *,
     paths: ReleasePaths,
@@ -54,10 +79,12 @@ def release_environment(
     if not isinstance(host_identity, Mapping):
         raise RuntimeError("release manifest 缺少 host toolchain identity")
     token = ensure_bridge_token(paths)
+    bridge_python = paths.bridge_venv(commit) / "bin/python"
     values = dict(current)
     values.update(
         {
-            "AKASHIC_BRIDGE_PYTHON": str(paths.bridge_venv(commit) / "bin/python"),
+            "AKASHIC_BRIDGE_PYTHON": str(bridge_python),
+            "AKASHIC_HOST_PYTHON_PREFIX": str(_base_python_prefix(bridge_python)),
             "AKASHIC_MISE": str(mise),
             "AKASHIC_RUNTIME_CHECKOUT": str(paths.source(commit)),
             "AKASHIC_RUNTIME_COMMIT": commit,

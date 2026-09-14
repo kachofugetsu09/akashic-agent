@@ -51,6 +51,10 @@ services:
         target: "${AKASHIC_RUNTIME_CHECKOUT:?AKASHIC_RUNTIME_CHECKOUT is required}"
         read_only: true
       - type: bind
+        source: "${AKASHIC_HOST_PYTHON_PREFIX:?AKASHIC_HOST_PYTHON_PREFIX is required}"
+        target: "${AKASHIC_HOST_PYTHON_PREFIX:?AKASHIC_HOST_PYTHON_PREFIX is required}"
+        read_only: true
+      - type: bind
         source: "${AKASHIC_RELEASE_MANIFEST:?AKASHIC_RELEASE_MANIFEST is required}"
         target: /run/akashic-release.json
         read_only: true
@@ -94,6 +98,7 @@ services:
       - no-new-privileges:true
     environment:
       HOME: /tmp
+      PYTHONPATH: /opt/akashic/source
       PYTHONUNBUFFERED: "1"
     entrypoint:
       - /opt/venv/bin/python
