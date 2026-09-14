@@ -1,11 +1,15 @@
 # 插件 v3 静态投影与 exact runtime 任务合同
 
-- 状态：implementation candidate
+- 状态：历史合同，已由 [0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 取代；不作为当前接入协议
 - 日期：2026-08-15
 - 关联条款：PLG-001～PLG-004、PLG-009、PLG-014、STA-001～STA-003
 - 上游：[0036](../decisions/0036-plugin-composition-keeps-promotion-owner.md)、[v3 包级 contribution](plugin-v3-package-contributions-task-contract.md)、[DashboardContext](plugin-v3-dashboard-context-task-contract.md)
 
 ## 1. 目标
+
+当前实现已删除 `is_active`、`ServiceView`、`static_active` 和静态 UI/Skill 贡献。
+所有注册都在 `apply(ctx)` 内，是否注册由普通分支决定；依赖只保留一份 `inject`。
+下文保留旧设计缘由，不授权恢复这些入口。
 
 让 v3 插件的静态启用状态、Skill catalog、Dashboard binding 与 composition listener
 消费同一个 generation/Root 事实，不再从 original module 全局或可变

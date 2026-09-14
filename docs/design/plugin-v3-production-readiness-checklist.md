@@ -226,7 +226,7 @@ GitHub Watcher 只以上述 canonical source exact head 进入最终 fleet lock�
 | B | legacy assistant metadata slots | `READY`（Core `695f35ac` 已删除 legacy assistant metadata slot 出口，待 E1/E4） |
 | C | legacy Dashboard ABI | `READY`（Core `92ac1713` 已删除 v2 backend/import 路径，待 E1/E3/E4） |
 | D | ToolHook ABI、catalog 与 traces | `READY`（Core `0940e9e7` 已把 execution contract/Executor 收归 typed Tool owner并物理删除 `agent.tool_hooks`；最终 Tool Gate 待跑） |
-| E | v2 static-active / stable-health exception | `READY`（stable-health exemption 已删除，正式 Root 始终必须 ready；`static_active/is_active` 是 Akasha/Default Memory 二选一所需的 v3 static projection，不属于删除对象） |
+| E | static-active / stable-health exception | `REMOVED`（0071：正式 Root 必须 ready；业务启用由 apply 内部分支决定，不维护 static_active/is_active 协议） |
 | F | `PluginContext` | `READY`（通用 `PluginContext` 文件与 production consumer 已物理删除；memory-engine factory 不是该 ABI） |
 | G | v2 doctor / class discovery | `READY`（doctor、Manager 与 installer 都只接受静态 manifest + v3 namespace，旧 class discovery 已删除） |
 | H | `Plugin` base、registry、Manager 固定能力方法 | `READY`（`Plugin` base/registry、fixed contribution consumer、workspace MCP owner与 Channel fallback 已物理删除；只保留 Default/Wake exact builtin 私有 proactive bridge） |

@@ -124,7 +124,6 @@ def _plugin_composition_items(
                     "parent": topology_fiber.parent,
                     "state": current_fibers[topology_fiber.name].state.value,
                     "required": topology_fiber.required_for_readiness,
-                    "static_active": topology_fiber.static_active,
                     "dependencies": list(topology_fiber.dependencies),
                     "missing_services": list(
                         current_fibers[topology_fiber.name].missing_services

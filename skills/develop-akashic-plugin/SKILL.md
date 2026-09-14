@@ -16,6 +16,7 @@ description: 创建、编写、修改并验证 Akashic 插件及插件内 Skill/
 ## 实现
 
 - 唯一入口是 apply(ctx)，配置从 ctx.config 取得并由插件自行解析。
+- 功能启用条件写在 apply 内，不导出 is_active。已选插件的 inject 仍是硬依赖；整包禁用由组合选择决定。
 - 依赖通过 ServiceKey 组合；资源、监听和任务必须有清楚的 Scope owner。
 - 插件负责自己的持久数据。代码回退不表示数据已回退。
 - import 不启动进程、开放端口或发送消息；正式接纳和候选隔离服从当前宿主合同。

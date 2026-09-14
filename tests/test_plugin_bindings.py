@@ -32,9 +32,9 @@ name = "provider"
 version = "1.0.0"
 class Config(BaseModel):
     prefix: str = "old:"
-def is_active(services):
-    return os.environ["ARCHIVE_PROVIDER_ACTIVE"] == "yes"
 async def apply(ctx):
+    if os.environ["ARCHIVE_PROVIDER_ACTIVE"] != "yes":
+        return
     config = Config.model_validate(ctx.config)
     state = {"text": config.prefix + VALUE, "started": False, "closed": False,
              "asset": (ctx.runtime.plugin_dir / "asset.txt").read_text()}

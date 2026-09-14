@@ -65,7 +65,6 @@ from agent.plugin_composition import (
     InteractionUndoService,
     PluginRuntime,
     PluginTimers,
-    ServiceView,
     ServiceKey,
     RUNTIME_STARTING,
     RUNTIME_STARTED,
@@ -4930,7 +4929,6 @@ class PluginManager:
 
         try:
             load_phase = "declarations"
-            instance.bind_static_services(self._composition_service_view())
             contributions = self._collect_candidate_contributions(
                 instance=instance,
             )
@@ -4942,7 +4940,6 @@ class PluginManager:
                 "source_revision": source_revision,
                 "config_revision": config_revision,
                 "config": encode_config(config_projection),
-                "static_active": instance.static_active,
                 "source_type": mod["source_type"],
                 "data_dir": data_dir.resolve().relative_to(self._workspace.resolve()).as_posix(),
                 "runtime": {"python_tag": sys.implementation.cache_tag, "binding_api": PLUGIN_ARCHIVE_BINDING_API},
@@ -5396,7 +5393,6 @@ class PluginManager:
                 plugin = ComposablePlugin.from_module(module, manifest)
                 if plugin.name != plugin_id.split("@", 1)[0]:
                     raise ValueError("归档插件身份不一致")
-                plugin.bind_archived_active(cast(bool, record["static_active"]))
                 projection = decode_config(record["config"])
                 if not isinstance(projection, dict):
                     raise ValueError("归档插件配置必须是对象")
@@ -5826,25 +5822,6 @@ class PluginManager:
                 + ", ".join(missing)
             )
 
-    def _composition_service_view(self) -> ServiceView:
-        """冻结静态 v3 声明可读取的 Core service 输入。"""
-
-        values: dict[Any, object] = {}
-        values[TIMERS] = PluginTimers(AsyncioOneShotTimer())
-        return ServiceView.freeze(values)
-
-    @staticmethod
-    def _static_active_generations(
-        generations: list[PluginGeneration],
-    ) -> list[PluginGeneration]:
-        """用 snapshot 相同的 active 合同过滤静态 catalog。"""
-
-        return [
-            generation
-            for generation in generations
-            if cast(ComposablePlugin, generation.instance).static_active
-        ]
-
     async def _mount_generation_composition(
         self,
         root: CompositionRoot,
@@ -5862,7 +5839,6 @@ class PluginManager:
             name=generation.plugin_id,
             inject=plugin.inject,
             plugin_module=plugin.module,
-            static_active=plugin.static_active,
             runtime=PluginRuntime(
                 plugin_id=generation.plugin_id,
                 generation_id=generation.generation_id,
@@ -5932,7 +5908,6 @@ class PluginManager:
                 name=generation.plugin_id,
                 inject=clone.inject,
                 plugin_module=clone.module,
-                static_active=clone.static_active,
                 runtime=PluginRuntime(
                     plugin_id=generation.plugin_id,
                     generation_id=generation.generation_id,
@@ -6016,7 +5991,6 @@ class PluginManager:
             module = sys.modules[module_path]
             clone = ComposablePlugin.from_module(module, identity)
             config = copy.deepcopy(generation.config_projection)
-            clone.bind_archived_active(cast(bool, record["static_active"]))
             return clone, module_path, data_dir, config
         except BaseException:
             self._remove_module_tree(module_path)

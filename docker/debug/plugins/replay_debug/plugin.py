@@ -18,7 +18,6 @@ from agent.plugin_composition import (
     DeliveryStatus,
     ProviderDeliveryReceipt,
     ProviderDeliveryRequest,
-    ServiceView,
     StopReceipt,
 )
 from core.clock import clock_from_env
@@ -35,12 +34,6 @@ class Config(BaseModel):
     """Carry the opaque fixture credential required by the v3 channel seam."""
 
     replay_token: CredentialRef | None = None
-
-
-def is_active(_services: ServiceView) -> bool:
-    """Enable replay declarations only when the debug replay profile is mounted."""
-
-    return _replay_source_enabled()
 
 
 async def apply(ctx: Context) -> None:

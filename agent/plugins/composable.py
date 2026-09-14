@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from types import ModuleType
 from typing import cast
 
-from agent.plugin_composition import Context, ServiceKey, ServiceView
+from agent.plugin_composition import Context, ServiceKey
 from agent.plugins.static_manifest import StaticPluginManifest
 
 _CORE_RESERVED_WORKSPACE_ROOTS = frozenset({"plugin-data", "runtime"})
@@ -26,8 +26,6 @@ class ComposablePlugin:
     workspace_roots: tuple[str, ...]
     workspace_files: tuple[str, ...]
     _apply: Callable[[Context], object] = field(repr=False)
-    _service_view: ServiceView | None = field(default=None, init=False, repr=False)
-    _static_active: bool | None = field(default=None, init=False, repr=False)
     api_version: int
 
     @classmethod
@@ -55,9 +53,6 @@ class ComposablePlugin:
         )
         if len(set(inject)) != len(inject):
             raise ValueError(f"v3 插件依赖重复: {name}")
-        active = getattr(module, "is_active", None)
-        if active is not None and not callable(active):
-            raise ValueError("v3 插件 is_active 必须是可调用对象")
         workspace_roots = _workspace_roots_export(module)
         workspace_files = _workspace_files_export(module)
         return cls(
@@ -74,54 +69,9 @@ class ComposablePlugin:
         )
 
     async def apply(self, ctx: Context) -> None:
-        active = self.is_active()
-        ctx._set_static_active(active)  # pyright: ignore[reportPrivateUsage]
-        if not active:
-            return
         result = self._apply(ctx)
         if inspect.isawaitable(result):
             await result
-
-    def bind_static_services(self, services: ServiceView) -> None:
-        """使用冻结的 Core services 计算静态贡献准入。"""
-
-        if self._service_view is not None or self._static_active is not None:
-            raise RuntimeError("v3 插件 static services 不能重复绑定")
-        self._service_view = services
-        provider = getattr(self.module, "is_active", None)
-        if provider is None:
-            self._static_active = True
-            return
-        result = provider(services)
-        if inspect.isawaitable(result):
-            close = getattr(result, "close", None)
-            if callable(close):
-                _ = close()
-            raise RuntimeError("v3 插件 is_active 不支持 async")
-        if not isinstance(result, bool):
-            raise RuntimeError("v3 插件 is_active 必须返回 bool")
-        self._static_active = result
-
-    def is_active(self) -> bool:
-        """返回插件自己决定的静态 contribution 发布状态。"""
-
-        if getattr(self.module, "is_active", None) is None:
-            return True
-        if self._static_active is None:
-            raise RuntimeError("v3 插件 is_active 尚未绑定 Core static services")
-        return self._static_active
-
-    def bind_archived_active(self, active: bool) -> None:
-        """恢复已捕获的发布选择，不用当前 Core services 重算历史选择。"""
-        if self._static_active is not None or self._service_view is not None:
-            raise RuntimeError("插件静态状态已绑定")
-        if type(active) is not bool:
-            raise TypeError("归档静态状态必须是 bool")
-        self._static_active = active
-
-    @property
-    def static_active(self) -> bool:
-        return self.is_active()
 
 def _string_tuple_export(module: ModuleType, name: str) -> tuple[str, ...]:
     raw = cast(object, getattr(module, name, ()))

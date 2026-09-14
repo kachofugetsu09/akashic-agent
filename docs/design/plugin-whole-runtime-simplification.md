@@ -14,6 +14,9 @@
 当前分层代码已采用单参数入口和完整候选 Root，删除 Overlay 与重复运行描述；
 资源关闭失败保留实际句柄，未交接 Root 同样保留模块和数据依赖。
 资产由普通 `assets` provider 注册，直接读取固定代码制品，不再由 Core 复制第二份目录。
+入口统一为 `plugin.py`，身份只声明一次；配置输入与凭据引用固定，业务字段归插件解释。
+Web/Dashboard 已迁入显式 `ui` provider。删除 `is_active`、`ServiceView`、`static_active`
+及旁路依赖列表；功能启用分支留在 `apply(ctx)`，选入组合的硬依赖仍必须满足。
 这仍未完成整体重构：Manager 仍拥有业务验证、逐类运行宿主和发布特例，
 snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能把局部删除视作整体换代已经完成。
 
