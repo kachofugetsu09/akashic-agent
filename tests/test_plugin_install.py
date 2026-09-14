@@ -14,6 +14,7 @@ from agent.plugins.artifacts import (
     ArtifactPointer,
     discard_latest_pointer,
     read_pointer,
+    resolve_pointer,
 )
 from agent.plugins.install import (
     finalize_uninstall_plugin,
@@ -28,6 +29,19 @@ from agent.plugins.static_manifest import (
     materialize_command,
 )
 from agent.plugins.source_resolver import resolve_plugin_sources
+
+
+def test_installed_pointer_loads_code_identity_without_toml(tmp_path: Path) -> None:
+    """安装制品与源码采用同一入口规则，不额外要求空 TOML。"""
+    artifact = tmp_path / ".artifacts" / "probe-version"
+    artifact.mkdir(parents=True)
+    entry = artifact / "plugin.py"
+    entry.write_text('name = "probe"\nversion = "1.0"\napi_version = 3\n')
+    pointer = ArtifactPointer(".artifacts/probe-version")
+    assert resolve_pointer(tmp_path, pointer) == artifact
+    entry.unlink()
+    with pytest.raises(ValueError, match="plugin.py 必须是普通文件"):
+        resolve_pointer(tmp_path, pointer)
 
 
 def test_code_identity_is_read_without_execution_or_toml(tmp_path: Path) -> None:
