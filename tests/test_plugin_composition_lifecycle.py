@@ -123,34 +123,6 @@ async def test_effect_close_joins_concurrent_callers_despite_repeated_cancel():
 
 
 @pytest.mark.asyncio
-async def test_restart_finishes_failed_cleanup_before_acquiring_again():
-    """显式重试不能覆盖上次尚未关闭的资源。"""
-    root = CompositionRoot("restart-cleanup")
-    events = []
-    attempts = 0
-
-    async def plugin(ctx):
-        events.append("open")
-
-        def close():
-            nonlocal attempts
-            attempts += 1
-            events.append("close")
-            if attempts == 1:
-                raise OSError("still open")
-
-        await ctx.effect(lambda: close)
-
-    fiber = await root.mount(plugin, name="resource")
-    with pytest.raises(OSError, match="still open"):
-        await fiber.restart()
-    assert events == ["open", "close"]
-    await fiber.restart()
-    assert events == ["open", "close", "close", "open"]
-    await root.dispose()
-
-
-@pytest.mark.asyncio
 async def test_mount_and_cleanup_failure_keep_both_errors_and_owner():
     """挂载失败不隐藏清理失败，也不允许重用未释放的名称。"""
     root = CompositionRoot("mount-cleanup")
@@ -855,7 +827,6 @@ async def test_compiled_root_rejects_binding_changes_without_restarting_work():
         lambda: context.inject((service,), lambda ctx: None, name="late-inject"),
         lambda: context.provide(service, ["replacement"]),
         lambda: context.provide(missing, object()),
-        context.fiber.restart,
         context.fiber.dispose,
         provider_fiber.context.fiber.dispose,
     )
@@ -956,7 +927,6 @@ async def test_frozen_binding_removal_requires_whole_root_teardown():
         for operation in (
             lambda: root.context.provide(service, object()),
             lambda: root.mount(lambda ctx: None, name="replacement"),
-            fiber.context.fiber.restart,
         ):
             with pytest.raises(CompositionError) as caught:
                 await operation()
@@ -1020,45 +990,15 @@ async def test_sealing_precedes_freeze_and_started_resources_and_health_remain_l
 
 
 @pytest.mark.asyncio
-async def test_mount_observer_cannot_wait_for_its_own_reconcile():
-    """重入调用明确失败；调用方处理错误后挂载仍能正常完成。"""
-    root = CompositionRoot("observer-reconcile")
-    events: list[str] = []
-
-    async def observer(fiber):
-        with pytest.raises(CompositionError) as caught:
-            await fiber.reconcile()
-        assert caught.value.code == "REENTRANT_LIFECYCLE_WAIT"
-        events.append("observer")
-
-    async def plugin(ctx):
-        events.append("apply")
-
-    root.on_mount(observer)
-    await root.mount(plugin, name="observed")
-    assert events == ["observer", "apply"]
-    root.freeze()
-    await root.dispose()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["observer", "apply"])
-async def test_freeze_rejects_incomplete_mount_without_caching_assembly_status(phase):
-    """已有 Fiber 过渡锁覆盖挂载 observer 与 apply 的异步等待。"""
+async def test_freeze_rejects_incomplete_mount_without_caching_assembly_status():
+    """已有 Fiber 过渡锁覆盖 apply 的异步等待。"""
     root = CompositionRoot("freeze-during-mount")
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def wait():
+    async def plugin(ctx):
         entered.set()
         await release.wait()
-    async def observer(fiber):
-        if phase == "observer":
-            await wait()
-    async def plugin(ctx):
-        if phase == "apply":
-            await wait()
 
-    root.on_mount(observer)
     mount = asyncio.create_task(root.mount(plugin, name="mounting"))
     await entered.wait()
     with pytest.raises(CompositionError) as caught:

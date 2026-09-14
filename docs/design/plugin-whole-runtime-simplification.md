@@ -47,8 +47,9 @@ snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能�
 
 `RuntimeSnapshotCompiler.compile` 成功返回前调用 `CompositionRoot.freeze()`。
 正式、候选和验证 Root 共用此出口；`SNAPSHOT_SEALING` 仍在编译前完成插件注册。
-冻结不可逆，之后 mount、inject、provide 和 Fiber.restart 明确报 `COMPOSITION_FROZEN`，
+冻结不可逆，之后 mount、inject、provide 明确报 `COMPOSITION_FROZEN`，
 更换组合必须创建新 Root。服务内部目录、连接重试、Effect/Task 和健康诊断仍归插件；
+没有生产调用方的 Fiber restart 与挂载/状态/退出观察者协议已删除。
 `RUNTIME_STARTED` 可以取得这些资源，健康变化不会重新装配 Fiber。
 冻结后单独关闭 provider Effect 或 FiberHandle 也明确拒绝；只有整个 Root 已进入
 `UNLOADING` 时才能移除绑定和挂载节点。普通资源 Effect 仍可独立关闭。

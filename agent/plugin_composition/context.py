@@ -54,7 +54,6 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 R = TypeVar("R")
 PluginApply = Callable[["Context"], object]
-FiberObserver = Callable[["Fiber"], object]
 
 
 class RuntimeScope:
@@ -518,10 +517,6 @@ class FiberHandle:
         reject_executor_context_access()
         return self._fiber._activation_token
 
-    async def restart(self) -> None:
-        reject_executor_context_access()
-        await self._fiber.restart()
-
     async def dispose(self) -> None:
         reject_executor_context_access()
         await self._fiber.dispose()
@@ -594,7 +589,6 @@ class Fiber:
         self._transition_owner: asyncio.Task[object] | None = None
         self._dispose_requested = False
         self._dispose_task: asyncio.Task[None] | None = None
-        self._restart_task: asyncio.Task[None] | None = None
         self._is_root = is_root
 
     @property
@@ -648,24 +642,6 @@ class Fiber:
             await self._unload(next_state=FiberState.PENDING)
         await self._load(providers, target_epoch)
 
-    async def restart(self) -> None:
-        self.root._require_unfrozen("restart Fiber")
-        self._reject_direct_reentrant_wait("restart")
-        if self._restart_task is None or self._restart_task.done():
-            self._restart_task = asyncio.create_task(
-                self._restart(),
-                name=f"plugin-fiber-restart:{self.name}",
-            )
-        await _await_critical(self._restart_task)
-
-    async def _restart(self) -> None:
-        async with self._locked_transition():
-            if self._dispose_requested or self._is_root:
-                return
-            if self.state in {FiberState.ACTIVE, FiberState.FAILED, FiberState.UNLOADING}:
-                await self._unload(next_state=FiberState.PENDING)
-        await self.reconcile()
-
     async def dispose(self) -> None:
         """Permanently unload this Fiber and join all child/effect cleanup."""
 
@@ -688,7 +664,6 @@ class Fiber:
             self.root._remove_fiber(self)
             if self.parent is not None and self in self.parent.children:
                 self.parent.children.remove(self)
-        await self.root._notify_disposed(self)
 
     async def _load(
         self,
@@ -700,7 +675,6 @@ class Fiber:
         self._activation_token = object()
         self.dependency_store = providers
         self.error = None
-        await self.root._notify_status(self)
         await asyncio.sleep(0)
         if (
             self._dispose_requested
@@ -766,14 +740,12 @@ class Fiber:
             return
         self._epoch = epoch
         self.state = FiberState.ACTIVE
-        await self.root._notify_status(self)
         await self.root._owner_became_active(self)
 
     async def _unload(self, *, next_state: FiberState) -> None:
         # 1. Make owned services unavailable before dependents clean up.
         self._activation_token = None
         self.state = FiberState.UNLOADING
-        await self.root._notify_status(self)
         await self.root._owner_became_inactive(self)
 
         # 2. 子作用域失败时保留父资源；无关子分支仍尝试关闭。
@@ -792,7 +764,6 @@ class Fiber:
         self._task_failures.clear()
         self._epoch = None
         self.state = next_state
-        await self.root._notify_status(self)
 
     @asynccontextmanager
     async def _locked_transition(self) -> AsyncGenerator[None]:
@@ -844,9 +815,6 @@ class CompositionRoot:
         self._frozen = False
         self._fibers: dict[int, Fiber] = {}
         self._providers: dict[ServiceKey[object], _Provider] = {}
-        self._mount_observers: list[FiberObserver] = []
-        self._status_observers: list[FiberObserver] = []
-        self._dispose_observers: list[FiberObserver] = []
         self._health_entries: dict[tuple[int, str], _HealthEntry] = {}
         self._incident_sequence = 0
         self._incident_counts: dict[str, int] = {}
@@ -897,14 +865,12 @@ class CompositionRoot:
 
         if self._frozen:
             return
-        # 1. 不把仍在挂载、重启或退出的 Fiber 固定成可发布组合。
+        # 1. 不把仍在挂载或退出的 Fiber 固定成可发布组合。
         for fiber in (self.root_fiber, *self._fibers.values()):
             if (
                 fiber._transition.locked()
                 or fiber.state in {FiberState.LOADING, FiberState.UNLOADING, FiberState.DISPOSED}
-                or any(task is not None and not task.done() for task in (
-                    fiber._restart_task, fiber._dispose_task,
-                ))
+                or (fiber._dispose_task is not None and not fiber._dispose_task.done())
             ):
                 raise CompositionError(
                     "COMPOSITION_NOT_SETTLED", f"{fiber.name} 尚未完成装配或正在退出",
@@ -942,15 +908,6 @@ class CompositionRoot:
         if acquire is None:
             raise RuntimeError("composition Root runtime scope 不可用")
         return await acquire()
-
-    def on_mount(self, observer: FiberObserver) -> Callable[[], None]:
-        return self._add_observer(self._mount_observers, observer)
-
-    def on_status(self, observer: FiberObserver) -> Callable[[], None]:
-        return self._add_observer(self._status_observers, observer)
-
-    def on_dispose(self, observer: FiberObserver) -> Callable[[], None]:
-        return self._add_observer(self._dispose_observers, observer)
 
     async def mount(
         self,
@@ -1332,9 +1289,7 @@ class CompositionRoot:
         self._fibers[fiber.fiber_id] = fiber
         self._bump_composition_revision()
         try:
-            # observer 与初次装配共同持锁，不能在两者之间 freeze。
             async with fiber._locked_transition():
-                await self._notify_mount(fiber)
                 if parent.state not in {FiberState.UNLOADING, FiberState.DISPOSED}:
                     await fiber._reconcile()
         except BaseException as error:
@@ -1518,36 +1473,6 @@ class CompositionRoot:
             if errors:
                 raise BaseExceptionGroup("依赖 Fiber 协调失败", errors)
 
-    async def _notify_mount(self, fiber: Fiber) -> None:
-        for observer in tuple(self._mount_observers):
-            result = observer(fiber)
-            if inspect.isawaitable(result):
-                await result
-
-    async def _notify_status(self, fiber: Fiber) -> None:
-        await self._notify_contained(self._status_observers, fiber)
-
-    async def _notify_disposed(self, fiber: Fiber) -> None:
-        await self._notify_contained(self._dispose_observers, fiber)
-
-    async def _notify_contained(
-        self,
-        observers: list[FiberObserver],
-        fiber: Fiber,
-    ) -> None:
-        for observer in tuple(observers):
-            try:
-                result = observer(fiber)
-                if inspect.isawaitable(result):
-                    await result
-            except asyncio.CancelledError as error:
-                current = asyncio.current_task()
-                if current is not None and current.cancelling():
-                    raise
-                self._record_error(fiber, error)
-            except Exception as error:
-                self._record_error(fiber, error)
-
     def _new_health_entry(
         self,
         owner: Fiber,
@@ -1726,19 +1651,6 @@ class CompositionRoot:
                 else f"{type(fiber.error).__name__}: {fiber.error}"
             ),
         )
-
-    @staticmethod
-    def _add_observer(
-        observers: list[FiberObserver],
-        observer: FiberObserver,
-    ) -> Callable[[], None]:
-        observers.append(observer)
-
-        def remove() -> None:
-            if observer in observers:
-                observers.remove(observer)
-
-        return remove
 
 
 def _error_message(error: BaseException) -> str:
