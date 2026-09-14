@@ -27,7 +27,6 @@ from agent.tools.unified_exec import HeadTailBuffer
 from agent.tools.unified_exec import ShellProcessManager, UnknownExecutionError
 from agent.tools.unified_exec import clamp_initial_yield_time
 from agent.tools.unified_exec import clamp_write_stdin_yield_time
-from agent.tools.registry import ToolRegistry
 from core.error_context import current_session_key
 from session.manager import SessionManager
 

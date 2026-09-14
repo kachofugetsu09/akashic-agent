@@ -17,6 +17,10 @@
 入口统一为 `plugin.py`，身份只声明一次；配置输入与凭据引用固定，业务字段归插件解释。
 Web/Dashboard 已迁入显式 `ui` provider。删除 `is_active`、`ServiceView`、`static_active`
 及旁路依赖列表；功能启用分支留在 `apply(ctx)`，选入组合的硬依赖仍必须满足。
+旧 `ToolRegistry` 在实际启动链没有构造者；只有测试向 Manager 注入它，复制 MCP facade
+并写入另一份 snapshot 目录。这条路径及其搜索后端已删除，实际工具仍由 `plugins/tools`
+与 MCP 的调用 scope 拥有。MCP 只读工具目录尚待对应 provider 提供，当前继续明确报告
+`mcp_catalog_unavailable`，不把未打开的服务伪装成空工具成功。
 这仍未完成整体重构：Manager 仍拥有业务验证、逐类运行宿主和发布特例，
 snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能把局部删除视作整体换代已经完成。
 

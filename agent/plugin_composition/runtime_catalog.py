@@ -186,49 +186,14 @@ def _top_level_plugin_owners(
 
 
 def _mcp_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
-    """Project exact MCP declarations and live schemas from the stable catalog."""
-
-    items: list[dict[str, object]] = []
+    """声明不能冒充已取得的工具目录；读取能力仍待 MCP owner 提供。"""
     registry = snapshot.mcp_server_registry
-    if registry is not None:
-        for descriptor in registry.descriptors:
-            tools = _mcp_tools(snapshot, descriptor.name)
-            items.append(
-                {
-                    "owner_id": descriptor.owner,
-                    "name": descriptor.name,
-                    "tool_count": len(tools),
-                    "tools": tools,
-                }
-            )
-    return sorted(items, key=lambda item: (str(item["owner_id"]), str(item["name"])))
-
-
-def _mcp_tools(snapshot: RuntimeSnapshot, server_name: str) -> list[dict[str, object]]:
-    """Read one exact live MCP server projection from the frozen ToolRegistry."""
-
-    registry = snapshot.tool_registry
-    if registry is None:
+    if registry is not None and registry.descriptors:
         raise RuntimeCatalogUnavailable(
             "mcp_catalog_unavailable",
             "MCP 工具目录暂不可用，声明的服务按需启动",
         )
-    prefix = f"mcp_{server_name}__"
-    tools: list[dict[str, object]] = []
-    for name in registry.get_registered_order(
-        registry.get_source_tool_names("mcp", server_name)
-    ):
-        tool = registry.get_tool(name)
-        if tool is None:
-            raise RuntimeError(f"stable MCP ToolRegistry 缺少已登记工具: {name}")
-        tools.append(
-            {
-                "name": name.removeprefix(prefix),
-                "description": tool.description.removeprefix(f"[MCP:{server_name}] "),
-                "input_schema": tool.parameters or {},
-            }
-        )
-    return tools
+    return []
 
 
 __all__ = [

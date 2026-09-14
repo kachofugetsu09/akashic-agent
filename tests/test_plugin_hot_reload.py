@@ -39,7 +39,6 @@ from agent.plugins.snapshot import (
 )
 from agent.plugins.watcher import PluginWatcher
 from plugins.standard_tools.skill_catalog import SkillCatalogParser
-from agent.tools.registry import ToolRegistry
 from bootstrap.dashboard_api import create_dashboard_app
 from bus.event_bus import EventBus
 
@@ -105,13 +104,11 @@ def _write_plugin(root: Path, name: str, source: str) -> Path:
 def _manager(
     tmp_path: Path,
     *,
-    tools: ToolRegistry | None = None,
     workspace: Path | None = None,
 ) -> PluginManager:
     return PluginManager(
         plugin_dirs=[tmp_path / "plugins"],
         event_bus=EventBus(),
-        tool_registry=tools,
         workspace=workspace or tmp_path / "workspace",
         installed_cache_root=tmp_path / "home" / "cache",
     )

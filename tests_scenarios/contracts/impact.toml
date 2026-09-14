@@ -395,7 +395,6 @@ scenarios = ["contract_catalog"]
 priority = "p0"
 requirements = ["SEC-001", "ERR-001", "TST-001", "TST-003"]
 paths = [
-  "agent/tools/registry.py",
   "agent/tools/base.py",
   "agent/tool_runtime.py",
   "agent/plugin_composition/messages.py",

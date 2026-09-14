@@ -284,7 +284,6 @@ class PluginManager:
         *,
         event_bus: EventBus,
         workspace: Path,
-        tool_registry: Any = None,
         session_manager: Any = None,
         message_log: MessageLog | None = None,
         channel_identities: ChannelIdentities | None = None,
@@ -297,7 +296,6 @@ class PluginManager:
     ) -> None:
         self._dirs = plugin_dirs
         self._event_bus = event_bus
-        self._tool_registry = tool_registry
         self._workspace = workspace
         self._archive = PluginArchive(workspace / "runtime" / "plugin-archives")
         self._python_environments = PythonEnvironments(workspace)
@@ -2909,7 +2907,6 @@ class PluginManager:
                 composition_root=composition_root,
                 core_channel_definitions=self._core_channel_definitions,
             )
-            self._refresh_composition_runtime_tools(snapshot)
         except BaseException as error:
             if created_root and composition_root is not None:
                 await self._discard_building_root(composition_root, error)
@@ -4679,7 +4676,6 @@ class PluginManager:
                     "prepared_generation": None,
                     "preparation_state": "active",
                     "candidate_revision": source_revision,
-                    "mcp_tools": _mcp_tool_names(active),
                     "snapshot_id": (
                         self.current_snapshot.snapshot_id
                         if self.current_snapshot is not None
@@ -4709,7 +4705,6 @@ class PluginManager:
                 "candidate_revision": (
                     prepared.source_revision if prepared is not None else source_revision
                 ),
-                "mcp_tools": _mcp_tool_names(prepared) if prepared is not None else [],
                 "snapshot_id": (
                     self.current_snapshot.snapshot_id
                     if self.current_snapshot is not None
@@ -5095,7 +5090,6 @@ class PluginManager:
             )
             if candidate_owner is not None:
                 self._preflight_durable_delivery_targets(snapshot)
-            snapshot.tool_registry = self._compile_snapshot_tools()
         except BaseException as error:
             if created_root and composition_root is not None:
                 await self._discard_building_root(composition_root, error)
@@ -5162,7 +5156,6 @@ class PluginManager:
                     # 2. 数据能力指向副本，外部声明仍按 candidate env/权限启动。
                     for generation in ordered:
                         _ = await child._start_composition_generation_runtime(generation, snapshot, mode="candidate")
-                    child._refresh_composition_runtime_tools(snapshot)
                     scope = BindingScope(root)
                     self._reload_journal.annotate(cast(str, update.reload_tx_id), {
                         "event": "business_validation_ready", "validation_id": host.identity,
@@ -6061,7 +6054,6 @@ class PluginManager:
                 generation.generation_id,
                 None,
             )
-        self._refresh_composition_runtime_tools(snapshot)
         return runtime
 
     async def _start_snapshot_composition_runtimes(
@@ -6205,7 +6197,6 @@ class PluginManager:
                     core_channel_definitions=self._core_channel_definitions,
                     require_composition_ready=True,
                 )
-                replacement.tool_registry = self._compile_snapshot_tools()
             else:
                 replacement = await self._compile_generation_snapshot(
                     stable,
@@ -6517,23 +6508,6 @@ class PluginManager:
             f"candidate={candidate_pointer}"
         )
 
-    def _refresh_composition_runtime_tools(
-        self,
-        snapshot: RuntimeSnapshot,
-    ) -> None:
-        """Rebuild ToolRegistry and attach every exact live v3 MCP facade."""
-
-        snapshot.tool_registry = self._compile_snapshot_tools()
-        for generation in sorted(
-            snapshot.generations.values(),
-            key=lambda item: item.plugin_id,
-        ):
-            runtime = self._composition_generation_host.get(generation.generation_id)
-            snapshot.tool_registry = self._composition_generation_host.attach_tools(
-                snapshot.tool_registry,
-                runtime,
-            )
-
     @staticmethod
     def _composition_runtime_declared(
         snapshot: RuntimeSnapshot,
@@ -6550,13 +6524,6 @@ class PluginManager:
             )
             if registry is not None
             for binding in registry.values()
-        )
-
-    def _compile_snapshot_tools(self) -> Any:
-        if self._tool_registry is None:
-            return None
-        return self._tool_registry.fork(
-            excluded_source_types={"plugin", "mcp"},
         )
 
     async def _publish_committed_snapshot(
@@ -7170,7 +7137,6 @@ def _replace_snapshot_payload(
         "managed_process_registry_identity",
         "workload_registry",
         "workload_registry_identity",
-        "tool_registry",
         "command_registry",
         "composition_root",
         "composition_topology",
@@ -7267,35 +7233,15 @@ def _path_metadata(path: Path) -> bytes:
     return f"{path}:{stat.st_mtime_ns}:{stat.st_size}".encode()
 
 
-def _mcp_tool_names(generation: PluginGeneration) -> list[str]:
-    snapshot = generation.runtime_snapshot
-    if snapshot is None or snapshot.tool_registry is None:
-        return []
-    registry = snapshot.mcp_server_registry
-    if registry is None:
-        return []
-    names: set[str] = set()
-    for descriptor in registry.descriptors:
-        if descriptor.owner == generation.plugin_id:
-            names.update(
-                snapshot.tool_registry.get_source_tool_names(
-                    "mcp",
-                    descriptor.name,
-                )
-            )
-    return sorted(names)
-
-
 def _log_candidate_status(result: dict[str, object]) -> None:
     logger.info(
         "plugin_candidate_status plugin=%s preparation=%s active=%s prepared=%s "
-        "revision=%s mcp_tools=%d",
+        "revision=%s",
         result["plugin_id"],
         result["preparation_state"],
         result["active_generation"],
         result["prepared_generation"] or "-",
         str(result["candidate_revision"])[:12],
-        len(cast(list[object], result["mcp_tools"])),
     )
     logger.debug(
         "plugin_candidate_status_detail %s",

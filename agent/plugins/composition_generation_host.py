@@ -10,11 +10,9 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
-from agent.mcp.client import McpToolExecutionError
 from agent.plugin_composition import FiberState
-from agent.plugin_composition.diagnostics import plugin_entrypoint
 from agent.plugin_composition.mcp_slots import (
     McpServerBinding,
     McpServerRegistry,
@@ -37,7 +35,6 @@ from agent.plugins.mcp_generation_host import (
     McpMaterializedCommand,
     McpRoute,
     McpServerView,
-    McpToolView,
 )
 from agent.plugins.workload_generation_host import (
     WorkloadCleanupTombstone,
@@ -46,8 +43,6 @@ from agent.plugins.workload_generation_host import (
 )
 from agent.workloads.client import WorkloadController
 from agent.plugins.snapshot import RuntimeSnapshot
-from agent.tools.base import Tool
-from agent.tools.registry import ToolRegistry
 
 RuntimeMode = Literal["candidate", "formal"]
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?", re.IGNORECASE)
@@ -412,32 +407,6 @@ class CompositionGenerationHost:
             closing.result()
             if cancelled:
                 raise asyncio.CancelledError
-
-    def attach_tools(
-        self,
-        registry: ToolRegistry | None,
-        runtime: CompositionRuntimeGeneration | None,
-    ) -> ToolRegistry | None:
-        """Attach exact generation MCP routes to one snapshot ToolRegistry."""
-
-        if registry is None or runtime is None or runtime.mcp is None:
-            return registry
-        for server in runtime.mcp.values():
-            for tool in server.tools.values():
-                wrapper = _McpRouteTool(runtime.plugin_id, server, tool)
-                if registry.has_tool(wrapper.name):
-                    raise RuntimeError(f"MCP 工具名称重复: {wrapper.name}")
-                registry.register(
-                    wrapper,
-                    risk=(
-                        "read-only"
-                        if runtime.mode == "candidate"
-                        else "external-side-effect"
-                    ),
-                    source_type="mcp",
-                    source_name=server.name,
-                )
-        return registry
 
     async def stop(self, generation_id: str) -> None:
         """Stop consumers before providers and retain failed ownership."""
@@ -839,46 +808,6 @@ class CompositionGenerationHost:
             self._on_failure(failure)
 
 
-class _McpRouteTool(Tool):
-    """Expose one exact generation MCP route as a standard Tool."""
-
-    def __init__(
-        self,
-        plugin_id: str,
-        server: McpServerView,
-        tool: McpToolView,
-    ) -> None:
-        self._plugin_id = plugin_id
-        self._server = server
-        self._tool = tool
-
-    @property
-    def name(self) -> str:
-        return f"mcp_{self._server.name}__{self._tool.name}"
-
-    @property
-    def description(self) -> str:
-        return f"[MCP:{self._server.name}] {self._tool.description}"
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return cast(dict[str, Any], _thaw(self._tool.input_schema))
-
-    async def execute(self, **kwargs: Any) -> str:
-        with plugin_entrypoint(
-            plugin_id=self._plugin_id,
-            generation_id=self._server.generation_id,
-            fiber=self._plugin_id,
-            operation="mcp.tool",
-            entrypoint=f"{self._server.name}.{self._tool.name}",
-        ):
-            async with self._server.route() as route:
-                result = await route.call(self._tool.name, kwargs)
-            if result.tool_error:
-                raise McpToolExecutionError(result.output)
-        return result.output
-
-
 def _owned_process_bindings(
     snapshot: RuntimeSnapshot,
     plugin_id: str,
@@ -1049,11 +978,3 @@ def _core_environment(data_dir: Path, workspace: Path) -> dict[str, str]:
         _CORE_DATA_ENV[1]: str(data_dir),
         "AKASHIC_WORKSPACE": str(workspace),
     }
-
-
-def _thaw(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {str(key): _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw(item) for item in value]
-    return value

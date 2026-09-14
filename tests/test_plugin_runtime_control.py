@@ -19,7 +19,6 @@ from agent.plugins.manager import PluginManager
 from agent.plugins.install import PluginInstallResult, install_git_plugin
 from agent.plugins.install import finalize_uninstall_plugin, set_installed_plugin_enabled
 from agent.plugins.reload_journal import ReloadJournal
-from agent.tools.registry import ToolRegistry
 from agent.control.client import ControlClient
 from agent.control.service import ControlService
 from bootstrap.app import AppRuntime
@@ -337,14 +336,6 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
 
-        registry = manager.latest_snapshot.tool_registry
-        assert registry is not None
-        assert registry.get_source_tool_names(
-            "mcp", "runtime_probe", risk="read-only"
-        ) == {"mcp_runtime_probe__probe"}
-        assert registry.get_non_read_only_source_tool_names(
-            "mcp", "runtime_probe"
-        ) == set()
         await app._promote_plugin(plugin_id)
 
         active = manager.generation(plugin_id)
@@ -501,7 +492,6 @@ async def _start_runtime_mcp(
     manager = PluginManager(
         plugin_dirs=[provider.parent],
         event_bus=bus,
-        tool_registry=ToolRegistry(),
         workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "plugins-home" / "cache",
     )

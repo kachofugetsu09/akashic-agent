@@ -13,7 +13,6 @@ from agent.control.scoped_turn import TurnAdmissionRetiredError
 from agent.plugin_composition.effect import _join_cleanup
 
 from agent.plugins.generation import PluginGeneration
-from agent.tools.registry import ToolRegistry
 from agent.plugin_composition import (
     CHANNELS,
     COMMANDS,
@@ -81,7 +80,6 @@ class RuntimeSnapshot:
     managed_process_registry_identity: str | None = None
     workload_registry: WorkloadRegistry | None = None
     workload_registry_identity: str | None = None
-    tool_registry: ToolRegistry | None = None
     command_registry: CommandRegistry | None = None
     composition_root: CompositionRoot | None = None
     composition_topology: TopologyView | None = None
