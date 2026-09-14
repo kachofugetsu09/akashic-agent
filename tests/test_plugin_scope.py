@@ -11,6 +11,43 @@ from agent.plugins.scope import CleanupFailure, PluginScope
 
 
 @pytest.mark.asyncio
+async def test_disabled_cleanup_retries_a_generation_that_never_reached_a_snapshot(tmp_path):
+    """显式禁用清理也能收敛加载回滚留下的 scope，不要求重启整个宿主。"""
+    from agent.plugins.generation import PluginContributions, PluginGeneration
+    from bus.event_bus import EventBus
+
+    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
+                            installed_cache_root=tmp_path / "home/cache")
+    scope = PluginScope("owner")
+    attempts = 0
+
+    def cleanup():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("still open")
+
+    scope.defer("resource", cleanup)
+    generation = PluginGeneration(
+        plugin_id="owner", generation_id="failed-load", module_path="_failed_load",
+        source_revision="source", config_revision="config", plugin_dir=tmp_path,
+        data_dir=tmp_path / "data", instance=object(), scope=scope,
+        contributions=PluginContributions({}),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="scope cleanup 未完成"):
+            await manager._dispose_generation(generation, state="discarded")
+        assert attempts == 1
+        assert generation.runtime_snapshot is None
+        await manager.reconcile_disabled_and_drain("owner")
+        assert attempts == 2
+        assert scope.closed
+        assert "owner" not in manager._draining_generations
+    finally:
+        await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_failure_keeps_resource_and_earlier_dependencies_until_explicit_retry():
     scope = PluginScope("owner")
     events = []

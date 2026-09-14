@@ -2407,10 +2407,14 @@ class PluginManager:
             if active is not None:
                 _ = await self._deactivate_plugin(plugin_id)
                 draining = self._draining_generations[plugin_id]
-            for generation in draining:
+            for generation in tuple(draining):
                 await self._snapshot_store.wait_for_generation_drained(generation)
                 if not generation.scope.closed:
-                    raise RuntimeError(f"插件旧代资源尚未关闭: {plugin_id}")
+                    if self._snapshot_store.generation_is_referenced_elsewhere(
+                        generation, excluding_snapshot_id="",
+                    ):
+                        raise RuntimeError(f"插件旧代仍属于快照: {plugin_id}")
+                    await self._dispose_generation(generation, state="retired")
             _ = self._draining_generations.pop(plugin_id, None)
 
     async def _deactivate_plugin(self, plugin_id: str) -> dict[str, object]:
