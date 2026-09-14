@@ -644,7 +644,7 @@ def _write_mcp_plugin(
             encoding="utf-8",
         )
 
-    # 2. 静态 manifest 冻结同一 MCP 合同，server 只写 disposable lifecycle。
+    # 2. manifest 只声明 Python 依赖，server 只写 disposable lifecycle。
     server_source = plugin_root / "restart_probe_server.py"
     if (
         not server_source.exists()
@@ -665,14 +665,7 @@ def _write_mcp_plugin(
         "api_version = 3\n"
         "entrypoint = 'plugin.py'\n\n"
         "[[python]]\n"
-        "requirements = 'requirements.txt'\n\n"
-        "[[mcp]]\n"
-        "name = 'restart_probe'\n"
-        "command = ['python', 'restart_probe_server.py']\n"
-        f"env = {{VERSION = {version!r}, "
-        f"LIFECYCLE_LOG = {str(lifecycle)!r}}}\n"
-        "required_tools = ['version']\n"
-        "candidate_read_only_tools = ['version']\n",
+        "requirements = 'requirements.txt'\n\n",
         domain="restart_gate_fixture",
     )
 

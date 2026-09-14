@@ -27,10 +27,6 @@ from plugins.tools.api import MessageReply
 from plugins.tools.plugin import ALL_TOOLS, TOOLS
 from plugins.turn_projection import plugin as turn_projection_plugin
 from session.log import MessageLog
-from agent.plugins.static_manifest import (
-    load_static_plugin_manifest,
-    validate_module_exports,
-)
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
 from agent.plugins.workload_generation_host import WorkloadGenerationHost
@@ -45,17 +41,6 @@ from bus.event_bus import EventBus
 from plugins.computer import plugin
 from plugins.computer.control import endpoint_name, request
 from session.message import CallRef, ContentPart, ContentReferences, Control, Input, Output, ToolCall, ToolResult
-
-
-@pytest.mark.asyncio
-async def test_computer_plugin_mounts_with_static_manifest(tmp_path: Path) -> None:
-    """静态入口只声明 Message Tool 与空 discovery 的 MCP。"""
-    path = Path(plugin.__file__).parent
-    manifest = load_static_plugin_manifest(path)
-    validate_module_exports(manifest, plugin, plugin_root=path)
-    assert any(key.name == "tools.v1" for key in plugin.inject)
-    assert manifest.mcp_servers[0].required_tools == ()
-    assert manifest.mcp_servers[0].candidate_read_only_tools == ()
 
 
 @pytest.mark.asyncio

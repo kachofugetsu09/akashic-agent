@@ -25,7 +25,7 @@ from agent.plugins.reload_journal import ReloadJournal
 from agent.plugins.python_environment import ENVIRONMENT_FILE, PythonEnvironments
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
-    materialize_static_command,
+    materialize_command,
 )
 from agent.plugins.source_resolver import resolve_plugin_sources
 
@@ -111,7 +111,7 @@ def test_install_git_plugin_reads_static_v3_manifest(tmp_path: Path) -> None:
     assert (result.installed_path / "akashic.plugin.toml").is_file()
 
 
-def test_install_git_plugin_prepares_declared_mcp_runtime(
+def test_install_git_plugin_prepares_declared_python_runtime(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -124,12 +124,7 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
         (repo / "akashic.plugin.toml").read_text(encoding="utf-8")
         + "\n"
         + "[[python]]\n"
-        + 'requirements = "mcp/requirements.txt"\n'
-        + "\n"
-        + "[[mcp]]\n"
-        + 'name = "feed"\n'
-        + 'command = ["python", "mcp/run_mcp.py"]\n'
-        + 'cwd = "mcp"\n',
+        + 'requirements = "mcp/requirements.txt"\n',
         encoding="utf-8",
     )
     _commit(repo)
@@ -153,8 +148,9 @@ def test_install_git_plugin_prepares_declared_mcp_runtime(
     code = store.archive.open(code_ref)
     manifest = load_static_plugin_manifest(code)
     environment = store.open(ref, code, manifest.python[0])
-    command = materialize_static_command(
-        code, manifest, manifest.mcp_servers[0], environment_root=environment
+    command = materialize_command(
+        code, manifest.python, ("python", "mcp/run_mcp.py"),
+        environment_root=environment,
     )
     assert (
         subprocess.run(

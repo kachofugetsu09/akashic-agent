@@ -43,18 +43,6 @@ entrypoint = "plugin.py"
 requirements = "first/requirements.txt"
 [[python]]
 requirements = "second/requirements.txt"
-[[mcp]]
-name = "first"
-command = ["python", "first/server.py"]
-env = {SERVER = "first"}
-required_tools = ["ping"]
-candidate_read_only_tools = ["ping"]
-[[mcp]]
-name = "second"
-command = ["python", "second/server.py"]
-env = {SERVER = "second"}
-required_tools = ["ping"]
-candidate_read_only_tools = ["ping"]
 """)
     (path / "server.py").write_text("""
 import json, os, sys
@@ -295,11 +283,6 @@ async def test_candidate_scoped_mcp_uses_candidate_environment_and_tool_permissi
     path.write_text(path.read_text().replace(
         'required_tools=("ping",), candidate_read_only_tools=("ping",),',
         'required_tools=("ping",), candidate_read_only_tools=("ping",), candidate_env={"VALIDATION_MARK": "candidate"},',
-    ))
-    path = source / "akashic.plugin.toml"
-    path.write_text(path.read_text().replace(
-        'candidate_read_only_tools = ["ping"]',
-        'candidate_read_only_tools = ["ping"]\ncandidate_env = {VALIDATION_MARK = "candidate"}',
     ))
     for name in ("first", "second"):
         path = source / name / "server.py"

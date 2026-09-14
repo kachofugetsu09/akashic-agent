@@ -601,12 +601,7 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "api_version = 3\n"
         "entrypoint = \"plugin.py\"\n\n"
         "[[python]]\n"
-        "requirements = \"mcp/requirements.txt\"\n\n"
-        "[[mcp]]\n"
-        "name = \"runtime_probe\"\n"
-        "command = [\"python\", \"mcp/server.py\"]\n"
-        "required_tools = [\"probe\"]\n"
-        "candidate_read_only_tools = [\"probe\"]\n",
+        "requirements = \"mcp/requirements.txt\"\n\n",
         encoding="utf-8",
     )
 

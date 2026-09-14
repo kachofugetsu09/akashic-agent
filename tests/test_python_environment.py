@@ -8,7 +8,7 @@ import pytest
 from agent.plugins.python_environment import PythonEnvironments
 from agent.plugins.static_manifest import (
     load_static_plugin_manifest,
-    materialize_static_command,
+    materialize_command,
 )
 
 
@@ -25,9 +25,6 @@ api_version = 3
 entrypoint = "plugin.py"
 [[python]]
 requirements = "requirements.txt"
-[[mcp]]
-name = "probe"
-command = ["python", "probe.py"]
 """)
     return code, load_static_plugin_manifest(code)
 
@@ -46,8 +43,8 @@ def test_final_environment_survives_cache_removal_and_rejects_damage(
     assert isinstance(code_ref, str)
     archived_code = store.archive.open(code_ref)
     root = store.open(ref, archived_code, manifest.python[0])
-    command = materialize_static_command(
-        archived_code, manifest, manifest.mcp_servers[0], environment_root=root
+    command = materialize_command(
+        archived_code, manifest.python, ("python", "probe.py"), environment_root=root
     )
     shutil.rmtree(code)
     poison = tmp_path / "poison"
