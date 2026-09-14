@@ -329,6 +329,32 @@ Web bootstrap 和 DashboardHost 从所选 Root 的 typed service 读取目录；
               实际请求租约 ────────┘
 ```
 
+### Mobile UI
+
+同一个显式选择的 `ui` 插件提供 `UI_SLOTS`（保留字符串 `core.ui_slots`）。
+SDK 的 `UiSlots`、`MobileUiRegistry` 是窄 Protocol，具体注册表和资源校验在 provider 内。
+贡献插件仍在 `apply(ctx)` 调用 `ctx.require(UI_SLOTS).register_mobile(...)`，
+使用原 `MobileUiDefinition`、navigation、slots 和同步 query/available 合同。
+
+```text
+贡献 Context ── register_mobile ── UI provider 的注册 Effect
+                                      │ SNAPSHOT_SEALING
+                                      ▼
+                             本 Root 的封存目录
+                                      │
+                   Mobile HTTP/RPC 域消费者按实际 Root 读取
+```
+
+provider 校验贡献方属于同一 Root 和服务，资源路径仍固定在该 Context 的代码制品中。
+目录与服务均带实际 Root token；域消费者拒绝借用另一 Root 的服务或目录。
+Core compiler 不再读取、冻结或复制 Mobile 目录，RuntimeSnapshot 不含 Mobile UI 字段。
+注册 Effect 关闭只解除内存归属，不删除代码、plugin-data、消息或历史记录。
+
+`PluginMobileUiProvider` 继续承担已有 RPC 线程池、容量、超时和请求租约；
+MobileHTTP/RPC 的 revision、摘要、slot、授权和响应格式不变。
+Manager 的既有 `core.mobile_ui.v1` 请求 adapter 接线仍保留，但不再检测
+`inject(UI_SLOTS)` 或创建业务注册表。仓库内 Akasha 的真实安装组合已显式选择 `ui`。
+
 ## 6. Generation 与 candidate
 
 ```text

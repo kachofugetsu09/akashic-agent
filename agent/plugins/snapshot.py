@@ -23,8 +23,6 @@ from agent.plugin_composition import (
     CommandRegistry,
     CompositionRoot,
     CompositionError,
-    MobileUiRegistry,
-    UI_SLOTS,
     TopologyView,
 )
 
@@ -74,8 +72,6 @@ class _ReplyStatusReader(Protocol):
 class RuntimeSnapshot:
     snapshot_id: str
     generations: Mapping[str, PluginGeneration]
-    mobile_ui_registry: MobileUiRegistry | None = None
-    mobile_ui_registry_identity: str | None = None
     channel_registry: ChannelRegistrySnapshot | None = None
     channel_registry_identity: str | None = None
     channel_catalog: CommittedChannelCatalog | None = None
@@ -149,7 +145,6 @@ class RuntimeSnapshotCompiler:
         composition_topology: TopologyView | None = None
         composition_active_plugin_ids: frozenset[str] | None = None
         command_registry: CommandRegistry | None = None
-        mobile_ui_registry: MobileUiRegistry | None = None
         channel_registry: ChannelRegistrySnapshot | None = None
         channel_catalog: CommittedChannelCatalog | None = None
         mcp_server_registry: McpServerRegistry | None = None
@@ -170,16 +165,6 @@ class RuntimeSnapshotCompiler:
             composition_topology = composition_root.topology_view()
             composition_active_plugin_ids = composition_root.active_plugin_ids()
             identity += f"|composition:{composition_topology.identity}"
-            ui_slots = catalog_context.get(UI_SLOTS)
-            if ui_slots is not None:
-                freeze = getattr(ui_slots, "freeze", None)
-                if not callable(freeze):
-                    raise RuntimeError("RuntimeSnapshot UI Slots Service 缺少 freeze")
-                frozen_registry = freeze()
-                if not isinstance(frozen_registry, MobileUiRegistry):
-                    raise RuntimeError("RuntimeSnapshot UI Slots freeze 返回值无效")
-                mobile_ui_registry = frozen_registry
-                identity += f"|mobile-ui:{mobile_ui_registry.identity}"
             commands = catalog_context.get(COMMANDS)
             if commands is not None:
                 command_registry = commands.freeze()
@@ -305,8 +290,6 @@ class RuntimeSnapshotCompiler:
                     if composition_topology is None
                     else composition_topology.identity
                 ),
-                "mobile-ui:"
-                + ("" if mobile_ui_registry is None else mobile_ui_registry.identity),
                 "commands:"
                 + ("" if command_registry is None else command_registry.catalog_digest),
                 "channels:"
@@ -329,10 +312,6 @@ class RuntimeSnapshotCompiler:
         snapshot = RuntimeSnapshot(
             snapshot_id=snapshot_id,
             generations=MappingProxyType(dict(generations)),
-            mobile_ui_registry=mobile_ui_registry,
-            mobile_ui_registry_identity=(
-                None if mobile_ui_registry is None else mobile_ui_registry.identity
-            ),
             channel_registry=channel_registry,
             channel_registry_identity=(
                 None if channel_registry is None else channel_registry.identity
@@ -1396,8 +1375,6 @@ class RuntimeSnapshotStore:
         if root is None:
             if (
                 snapshot.composition_topology is not None
-                or snapshot.mobile_ui_registry is not None
-                or snapshot.mobile_ui_registry_identity is not None
                 or snapshot.channel_registry is not None
                 or snapshot.channel_registry_identity is not None
                 or snapshot.channel_catalog is not None
@@ -1412,12 +1389,6 @@ class RuntimeSnapshotStore:
                     "RuntimeSnapshot composition identity 缺少 Root Context"
                 )
             return
-        if snapshot.mobile_ui_registry_identity != (
-            None
-            if snapshot.mobile_ui_registry is None
-            else snapshot.mobile_ui_registry.identity
-        ):
-            raise RuntimeError("RuntimeSnapshot Mobile UI descriptor 在编译后发生变化")
         if snapshot.channel_registry_identity != (
             None
             if snapshot.channel_registry is None

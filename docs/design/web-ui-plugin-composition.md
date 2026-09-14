@@ -86,7 +86,7 @@ Core 只是一块有电的空地，留一个总插座：`web.root`。`shell-ui` 
 
 ```text
 Web module
-  → package contribution
+  → apply(ctx) 向普通 UI provider 注册
   → exact snapshot WebUiCatalog
   → content-digest JS/CSS
   → Host 激活 module 并组合 Mount
@@ -98,8 +98,8 @@ Dashboard module
 
 Mobile UI
   → UI_SLOTS.register_mobile(...)
-  → candidate Root freeze
-  → RuntimeSnapshot.mobile_ui_registry
+  → UI provider 的 SNAPSHOT_SEALING hook
+  → 所选 Root 的 UI_SLOTS.catalog() 封存目录
   → catalog / content-digest asset / bounded read-only query
   → Android WebView runtime
 ```

@@ -12,6 +12,9 @@ from types import ModuleType, FunctionType
 from agent.plugin_composition import Context, Effect, SNAPSHOT_SEALING, SnapshotSealing
 from agent.plugin_composition.ui import UI, WEB_UI, DashboardBinding, WebModuleDescriptor, WebUiCatalog
 
+from agent.plugin_composition.ui_slots import UI_SLOTS
+
+from .mobile import MobileUiSlots
 from .dashboard import DashboardImportError, DashboardResources, _core_routes, _require_routes_available
 from .web import freeze_web_ui_catalog, resolve_web_module
 
@@ -198,3 +201,6 @@ async def apply(ctx: Context) -> None:
     await ctx.provide(UI, registry, binding_contributors=registry.contributors)
     await ctx.provide(WEB_UI, registry, binding_contributors=registry.contributors)
     await ctx.on(SNAPSHOT_SEALING, registry.seal)
+    mobile = MobileUiSlots(ctx)
+    await ctx.provide(UI_SLOTS, mobile, binding_contributors=mobile.contributors)
+    await ctx.on(SNAPSHOT_SEALING, mobile.seal)

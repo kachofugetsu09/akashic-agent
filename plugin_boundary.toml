@@ -88,8 +88,8 @@ role = "core"
 note = "人类命令、alias 与 handler 注册表"
 
 [capabilities."core.ui_slots"]
-role = "core"
-note = "Mobile 页面、查询与导航注册表"
+role = "seam"
+note = "普通 UI provider 拥有 Mobile 页面、查询与导航注册及封存目录"
 
 [capabilities."core.message_display.v1"]
 role = "core"

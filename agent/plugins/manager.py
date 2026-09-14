@@ -56,11 +56,9 @@ from agent.plugin_composition import (
     WORKLOADS,
     MCP_SERVERS,
     TIMERS,
-    UI_SLOTS,
     CompositionRoot,
     FiberState,
     PluginChannels,
-    PluginUiSlots,
     PluginCommands,
     InteractionUndoService,
     PluginRuntime,
@@ -5635,11 +5633,6 @@ class PluginManager:
                 WORKLOADS,
                 PluginWorkloads(root.instance_token),
             )
-        if any(
-            UI_SLOTS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(UI_SLOTS, PluginUiSlots())
 
     async def _provide_composition_services(
         self,
@@ -7168,8 +7161,6 @@ def _replace_snapshot_payload(
         raise RuntimeError("只能刷新无 lease 的 candidate snapshot")
     for name in (
         "generations",
-        "mobile_ui_registry",
-        "mobile_ui_registry_identity",
         "channel_registry",
         "channel_registry_identity",
         "channel_catalog",

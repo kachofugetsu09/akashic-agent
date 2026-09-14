@@ -17,7 +17,8 @@ from agent.plugin_composition import (
     RuntimeScope,
 )
 from agent.plugin_composition.diagnostics import plugin_entrypoint
-from agent.plugins.generation import MobileUiAsset, PluginGeneration
+from agent.plugins.generation import PluginGeneration
+from agent.plugin_composition.ui_slots import UI_SLOTS, MobileUiAsset
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import (
     RuntimeSnapshot,
@@ -295,9 +296,16 @@ class PluginMobileUiProvider:
         """Resolve a live Mobile UI handler from this snapshot's exact Root registry."""
 
         # 1. Only the immutable registry from this exact snapshot Root owns handlers.
-        registry = snapshot.mobile_ui_registry
-        if registry is None:
+        root = snapshot.composition_root
+        slots = None if root is None else root.context.get(UI_SLOTS)
+        if slots is None:
             return None
+        assert root is not None
+        if slots.root_instance_token is not root.instance_token:
+            raise MobileUiPluginUnavailable("Mobile UI provider 不属于所选 Root")
+        registry = slots.catalog()
+        if registry.root_instance_token is not root.instance_token:
+            raise MobileUiPluginUnavailable("Mobile UI 目录不属于所选 Root")
         binding = registry.binding(generation.plugin_id)
         if binding is None or not binding.is_live():
             return None

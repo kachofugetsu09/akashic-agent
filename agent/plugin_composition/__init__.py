@@ -211,8 +211,8 @@ from agent.plugin_composition.ui_slots import (
     MobileUiQueryHandler,
     MobileUiRegistry,
     MobileUiRpcInvalidRequest,
-    PluginUiSlots,
-    resolve_mobile_ui_asset,
+    UiSlots,
+    MobileUiAsset,
 )
 
 from agent.plugin_composition.processes import PROCESSES, PluginProcesses, ProcessCleanupError
@@ -363,8 +363,8 @@ __all__ = [
     "ObserveEventKey",
     "PluginChannels",
     "PluginCommands",
-    "PluginUiSlots",
-    "resolve_mobile_ui_asset",
+    "UiSlots",
+    "MobileUiAsset",
     "PluginRuntime",
     "PluginDiagnostics",
     "PluginDiagnosticContext",
