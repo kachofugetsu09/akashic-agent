@@ -45,12 +45,12 @@ Core 用一个位置参数调用 `apply(ctx)`，不限制参数名字或默认�
 |---|---|
 | `api_version`、`name`、`version`、`apply` | 必需的身份和唯一入口 |
 | `inject` | 根 Fiber 激活所需的 `ServiceKey` |
-| `is_active(services)` | 根据冻结的静态 Service view 决定是否发布静态贡献 |
 | `workspace_roots`、`workspace_files` | 声明被授权的 workspace 路径；只授予真正的数据 owner |
 
 配置从 `ctx.config` 读取，是当前组合固定输入的插件本地副本，不跟随全局文件变化。
 插件自行选择解析方式，例如 `config = Config.model_validate(ctx.config)`；`Config` 只是插件内部普通类，
 Core 不读取它。无配置时输入为空对象。候选只取得授权允许的输入，凭据仍是不可直接解析的引用。
+启用条件写在普通 `apply` 分支中；所有贡献走同一注册路径，没有另一个 `is_active` 协议。
 
 可选的根目录 `configure.py` 是插件自己的配置程序，不是普通辅助模块名称。
 只有显式运行 `main.py setup` 才会从已启用的已安装 stable 制品发现并执行它，使用根目录固定 Python 环境。
@@ -95,8 +95,9 @@ Computer 的空 requirements 文件已删除；容器内命令不需要 Core 的
 API 必须为整数 `3`。身份由 loader 固定后交给 Composable；运行中的模块属性变化不改变
 安装名、展示版本或 API，也不触发第二次 expected/actual 比对。
 
-`akashic.plugin.toml` 是可选的临时策略文件，只接受 `validation.exclude_data_paths`、
-`channel_credentials` 和 `credential_paths`。旧 `schema_version/name/version/api_version`
+`akashic.plugin.toml` 是可选的临时策略文件，只接受 `validation.exclude_data_paths`。
+凭据通过固定配置中的 `CredentialRef` 与独立正式授权解析，不再声明凭据路径。
+旧 `schema_version/name/version/api_version`
 以及已删除的入口、Python 声明都明确拒绝，不能靠忽略字段兼容旧格式。没有策略就不发布该文件。
 代码树摘要、source revision、实际导入文件路径和环境引用继续固定原始来源。
 
@@ -225,9 +226,9 @@ Turn 是 `plugins.turn_projection` 从 Message 日志得到的无状态读投影
 | Key | 主要方法 | 用途 |
 |---|---|---|
 | `TIMERS` | `schedule(deadline)` | Core-owned timer |
-| `MCP_SERVERS` | `register(ctx, McpServerDefinition(...))` | generation-bound MCP server |
-| `MANAGED_PROCESSES` | `register(ctx, ManagedProcessDefinition(...))` | Core 监督的进程 |
-| `WORKLOADS` | `register(ctx, Workload(...))` | 窄 Controller 管理的容器 workload |
+| `MCP_SERVERS` | `register(ctx, definition)`、`open(ctx, name)` | 普通 `mcp` provider；每次调用独立会话 |
+| `MANAGED_PROCESSES` | `register(ctx, definition)` | 普通 `managed_processes` provider；返回实际进程句柄 |
+| `WORKLOADS` | `register(ctx, definition)` | 普通 `workloads` provider；取得窄 Controller 管理的容器句柄 |
 | `EXECUTOR_SERVICE` | `parallel_sync(jobs)` | 有界纯同步工作；worker 不取得 Context/Fiber |
 
 资产通过普通 `assets` 插件提供的 `INSTALLED_ASSETS` 注册。贡献方在 `inject` 中声明依赖，
@@ -256,10 +257,11 @@ provider 从实际 Context 取得 owner 与固定代码制品根；拒绝跨 Roo
 代码制品、工具归档和用户 workspace 数据没有新的更新、逻辑失效或物理减少协议；关闭不会
 删除它们，恢复仍依赖原代码归档、binding 与各数据 owner 的备份。
 
-MCP、process 和 Workload 只在插件代码中声明，通过上表 Service
-建立 Fiber-owned registration；字段与权限由各 provider 和 Controller 校验。命令直接来自实际注册，
-Python 命令绑定安装制品的固定环境，不再与 TOML 中的第二份命令对账。MCP 引用的 owner 与端口
-暂时仍在 snapshot 组合检查，后续移入对应 provider。
+MCP、process 和 Workload 由显式选择的普通 provider 提供，Manager 不补入隐式依赖。
+资源在 `apply` 中取得，Scope 在外部等待前登记关闭责任；失败保留同一资源句柄。
+MCP 的端口引用直接使用 Workload/Process 返回的句柄，provider 检查 owner，Snapshot 不再列举
+三类注册表或解释它们的依赖。Python 命令仍由宿主绑定固定制品环境；候选不解析正式凭据。
+公开协议、每调用 MCP 的关闭语义与未知 Controller 请求限制见[普通资源 provider](plugin-resource-providers.md)。
 
 ### 4.4 模型
 
@@ -358,22 +360,27 @@ Manager 的既有 `core.mobile_ui.v1` 请求 adapter 接线仍保留，但不再
 ## 6. Generation 与 candidate
 
 ```text
-source + config
-      │
-      ▼
-isolated candidate Root ── settle / Health / Incident / semantic checks
-      │ pass
-      ▼
-committed snapshot ── stable/latest pointer ── request lease
-      │
-      └─ old request keeps old Root until lease drain
+┌────────────────────┐      ┌────────────────────┐
+│ 固定代码与配置归档 │ ───▶ │ 独立候选 Root 检查 │
+└────────────────────┘      └──────────┬─────────┘
+                                       │ 调用程序授权晋升
+                                       ▼
+┌────────────────────┐      ┌────────────────────┐
+│ 新正式 Root 初始化 │ ◀─── │ 候选退出，旧组排空 │
+│ 完成前保持关闭接纳 │      │ 并成功释放旧 Root │
+└──────────┬─────────┘      └────────────────────┘
+           ▼
+┌────────────────────┐      ┌────────────────────┐
+│ 完整 stable 提交   │ ───▶ │ 开放新请求的 lease │
+└────────────────────┘      └────────────────────┘
 ```
 
-- Candidate 使用隔离 Root、plugin-data 副本、workspace 投影、端口和外部效果策略，不能
-  作为 stable Root 执行，也不能复用 stable 的执行或数据效果。owner 不变时可以复用已批准的不可变 catalog，
-  但不能借此取得 stable 的运行状态或写入权。
-- Root 只生成能力，不能自行晋升。artifact、journal、stable/latest、parent Turn 授权和恢复由 Core
-  publication plane 拥有。
+- Candidate 与正式 Root 使用同一组精确归档，但模块、Scope 和 generation 都重新创建，
+  不把候选实例或目录改作正式实例。当前候选数据副本与 workspace 投影仍在迁出底座的过渡阶段。
+- Root 不能自行晋升。调用程序拥有业务验证与正常终态/未撤销授权；底座检查候选和基线，
+  只在初始化成功后提交完整 stable。重启只读取该记录，不追随尚未晋升的源码或安装指针。
+- 整组换代先等待旧请求结束，再释放旧资源；不是逐插件无停顿替换。写入结果不确定时保留
+  实际 owner 并关闭接纳，不能自动重放外部启动或声称已回滚。代码恢复不回滚插件数据。
 - Workspace path 是显式授予正式数据 owner 的高权限能力，不应替代窄 Service；candidate
   只得到声明路径在 attempt workspace 内的副本。
 - 普通卸载删除代码、manifest 和派生投影，默认保留 plugin-data。`manifest.toml` 只接受

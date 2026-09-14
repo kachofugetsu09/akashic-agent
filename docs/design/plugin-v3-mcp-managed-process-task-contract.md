@@ -1,5 +1,7 @@
 # 插件 v3 MCP / managed process capability 任务合同
 
+> 2026-09-15 资源归属勘误：中央 registry 与 generation host 已由[普通资源 provider](plugin-resource-providers.md)取代。本文的 Core materialize、双份 descriptor 与原端口字符串接口只保留历史背景，不是当前 SDK 用法。
+
 > 2026-09-15 勘误：[0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md) 已取代本文的两参数入口、精确参数名和 Core 配置模型校验。现行入口为 `apply(ctx)`，插件自行解析 `ctx.config`；下文相关描述仅保留历史背景。凭据脱敏及正式解析授权边界不因此取消。
 
 - 状态：Core capability complete / workspace MCP compatibility removed / Calendar consumer Gate pending
