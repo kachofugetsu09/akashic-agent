@@ -93,16 +93,12 @@ def _write_bundle(
         )
     catalog = artifact / "migration.catalog.toml"
     catalog.write_text("\n".join(catalog_lines), encoding="utf-8")
-    catalog_digest = hashlib.sha256(catalog.read_bytes()).hexdigest()
     (artifact / "akashic.plugin.toml").write_text(
         "schema_version = 1\n"
         f"name = {plugin_name!r}\n"
         "version = '1.0.0'\n"
         "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n\n"
-        "[migration]\n"
-        "catalog = 'migration.catalog.toml'\n"
-        f"catalog_sha256 = {catalog_digest!r}\n",
+        "entrypoint = 'plugin.py'\n",
         encoding="utf-8",
     )
     return artifact
@@ -257,7 +253,7 @@ def test_plugin_bundle_keeps_old_sources_and_catalog_entries_append_only(
     _git(repo, "add", ".")
     assert checker.violations(base) == []
 
-    # Updating the catalog digest does not authorize rewriting an old ID.
+    # 更新目录中的文件 digest 不授权改写既有 ID。
     old.write_text("steps = ['rewritten']\n", encoding="utf-8")
     _write_bundle(
         repo,
@@ -351,3 +347,25 @@ def test_existing_yoyo_migration_cannot_be_deleted(
     assert checker.violations(base) == [
         "registered Yoyo migration changed: migrations/yoyo/20260802_01_origin.py"
     ]
+
+
+def test_catalog_history_survives_plugin_manifest_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, _base = _repository(tmp_path)
+    artifact = _write_bundle(repo, [("20260803_01_old", "steps = []\n")])
+    base = _commit(repo, "bundle baseline")
+    monkeypatch.setattr(checker, "ROOT", repo)
+    (artifact / "akashic.plugin.toml").unlink()
+
+    assert checker.violations(base) == []
+    catalog_base = _commit(repo, "remove plugin manifest")
+    (artifact / "migration_steps/20260803_01_old.py").write_text(
+        "steps = ['changed']\n", encoding="utf-8",
+    )
+
+    assert any(
+        item.endswith("20260803_01_old.py")
+        for item in checker.violations(catalog_base)
+    )

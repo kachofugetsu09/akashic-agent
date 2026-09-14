@@ -28,7 +28,6 @@ _TOP_LEVEL_KEYS = frozenset(
         "validation",
         "channel_credentials",
         "credential_paths",
-        "migration",
     }
 )
 _PYTHON_COMMAND = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:\.exe)?")
@@ -40,14 +39,6 @@ class StaticPythonRuntime:
 
     requirements: str
     runtime_root: str
-
-
-@dataclass(frozen=True, slots=True)
-class StaticMigrationDeclaration:
-    """Import-free declaration for an artifact-owned migration catalog."""
-
-    catalog: str
-    catalog_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +55,6 @@ class StaticPluginManifest:
     channel_credentials: tuple[tuple[str, tuple[str, ...]], ...]
     identity_digest: str
     credential_paths: tuple[str, ...] = ()
-    migration: StaticMigrationDeclaration | None = None
 
     @property
     def all_credential_paths(self) -> tuple[str, ...]:
@@ -211,7 +201,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     # 3. Optional declarations are checked statically and kept immutable.
     channel_credentials = _channel_credentials(raw.get("channel_credentials", {}))
     credential_paths = _credential_paths(raw.get("credential_paths", []), "credential_paths")
-    migration = _migration_declaration(root, raw.get("migration", {}))
     _check_credential_overlap(set(credential_paths) | {
         path for _channel, paths in channel_credentials for path in paths
     }, "credential_paths/channel_credentials")
@@ -237,11 +226,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     # 原渠道 manifest 的身份保持不变；通用声明参与自身不可变身份。
     if credential_paths:
         identity["credential_paths"] = list(credential_paths)
-    if migration is not None:
-        identity["migration"] = {
-            "catalog": migration.catalog,
-            "catalog_sha256": migration.catalog_sha256,
-        }
     identity_digest = hashlib.sha256(
         json.dumps(
             identity,
@@ -261,42 +245,7 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         channel_credentials=channel_credentials,
         identity_digest=identity_digest,
         credential_paths=credential_paths,
-        migration=migration,
     )
-
-
-def _migration_declaration(
-    root: Path,
-    raw: object,
-) -> StaticMigrationDeclaration | None:
-    """Validate the catalog path and digest without importing migration code."""
-
-    if raw == {}:
-        return None
-    table = _table(raw, "migration")
-    _exact_keys(table, {"catalog", "catalog_sha256"}, "migration")
-    catalog = _relative_artifact_path(
-        root,
-        table.get("catalog"),
-        label="migration.catalog",
-        must_exist=True,
-        require_file=True,
-    )
-    digest = table.get("catalog_sha256")
-    if (
-        not isinstance(digest, str)
-        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-    ):
-        raise ValueError("migration.catalog_sha256 必须是小写 SHA-256")
-    actual = hashlib.sha256((root / catalog).read_bytes()).hexdigest()
-    if actual != digest:
-        raise ValueError(
-            "migration.catalog_sha256 与 artifact 内容不一致: "
-            f"expected={digest}, actual={actual}"
-        )
-    return StaticMigrationDeclaration(catalog=catalog, catalog_sha256=digest)
-
-
 
 
 def _channel_credentials(

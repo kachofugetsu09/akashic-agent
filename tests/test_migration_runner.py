@@ -226,12 +226,6 @@ def _write_bundle(
                 "version": "1.0.0",
                 "api_version": 3,
                 "entrypoint": "plugin.py",
-                "migration": {
-                    "catalog": "migration.catalog.toml",
-                    "catalog_sha256": hashlib.sha256(
-                        catalog_path.read_bytes()
-                    ).hexdigest(),
-                },
             }
         ),
         encoding="utf-8",

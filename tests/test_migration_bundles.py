@@ -87,16 +87,12 @@ def _write_bundle(
     ).encode("utf-8")
     catalog_path = artifact / "migration.catalog.toml"
     catalog_path.write_bytes(catalog)
-    catalog_hash = hashlib.sha256(catalog).hexdigest()
     (artifact / "akashic.plugin.toml").write_text(
         "schema_version = 1\n"
         f"name = {bundle_id!r}\n"
         "version = '1.0.0'\n"
         "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n\n"
-        "[migration]\n"
-        "catalog = 'migration.catalog.toml'\n"
-        f"catalog_sha256 = {catalog_hash!r}\n",
+        "entrypoint = 'plugin.py'\n",
         encoding="utf-8",
     )
     return artifact
@@ -269,3 +265,31 @@ def test_bundle_rejects_current_plugin_namespace_import(tmp_path: Path) -> None:
             plugin_dirs=(plugin_parent,),
             installed_cache_root=tmp_path / "empty-cache",
         )
+
+
+def test_bundle_discovery_without_plugin_manifest(tmp_path: Path) -> None:
+    artifact = _write_bundle(tmp_path)
+    (artifact / "akashic.plugin.toml").unlink()
+
+    bundles = discover_migration_bundles(plugin_dirs=(artifact,))
+
+    assert len(bundles) == 1
+    assert bundles[0].migration_ids == ("bundle_step",)
+
+
+@pytest.mark.parametrize("catalog_kind", ["invalid_toml", "directory", "symlink"])
+def test_bundle_discovery_rejects_invalid_catalog(
+    tmp_path: Path, catalog_kind: str,
+) -> None:
+    artifact = _write_bundle(tmp_path)
+    catalog = artifact / "migration.catalog.toml"
+    catalog.unlink()
+    if catalog_kind == "invalid_toml":
+        catalog.write_text("[broken", encoding="utf-8")
+    elif catalog_kind == "directory":
+        catalog.mkdir()
+    else:
+        catalog.symlink_to(artifact / "plugin.py")
+
+    with pytest.raises(MigrationBundleError):
+        discover_migration_bundles(plugin_dirs=(artifact,))

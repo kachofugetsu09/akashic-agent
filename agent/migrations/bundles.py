@@ -20,11 +20,10 @@ from agent.plugins.source_resolver import (
     ResolvedPluginSource,
     resolve_plugin_sources,
 )
-from agent.plugins.static_manifest import (
-    StaticMigrationDeclaration,
-    StaticPluginManifest,
-)
+from agent.plugins.static_manifest import StaticPluginManifest
 
+
+_MIGRATION_CATALOG = "migration.catalog.toml"
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -148,10 +147,10 @@ def discover_migration_bundles(
     seen_packages: set[str] = set()
     seen_migrations: set[str] = set()
     for source in sources:
-        declaration = source.static_manifest.migration if source.static_manifest else None
-        if declaration is None:
+        catalog = source.plugin_root / _MIGRATION_CATALOG
+        if not catalog.exists() and not catalog.is_symlink():
             continue
-        bundle = load_migration_bundle(source, declaration)
+        bundle = load_migration_bundle(source)
         if bundle.bundle_id in seen_bundles:
             raise MigrationBundleError(f"重复 migration bundle: {bundle.bundle_id}")
         if bundle.package_name in seen_packages:
@@ -172,19 +171,13 @@ def discover_migration_bundles(
 
 def load_migration_bundle(
     source: ResolvedPluginSource,
-    declaration: StaticMigrationDeclaration,
 ) -> MigrationBundle:
     """解析一个静态 bundle 并核对每个 migration 文件的 digest。"""
 
     root = source.plugin_root.resolve(strict=True)
-    catalog_path = _inside_file(root, root / declaration.catalog, "migration catalog")
+    catalog_path = _inside_file(root, root / _MIGRATION_CATALOG, "migration catalog")
     catalog_bytes = catalog_path.read_bytes()
     actual_catalog_sha256 = hashlib.sha256(catalog_bytes).hexdigest()
-    if actual_catalog_sha256 != declaration.catalog_sha256:
-        raise MigrationBundleError(
-            "migration catalog digest 漂移: "
-            f"expected={declaration.catalog_sha256}, actual={actual_catalog_sha256}"
-        )
     try:
         raw = tomllib.loads(catalog_bytes.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
@@ -347,10 +340,10 @@ def validate_migration_artifact(
     *,
     static_manifest: StaticPluginManifest,
 ) -> MigrationBundle | None:
-    """在 artifact 发布前校验其声明的 migration bundle。"""
+    """在 artifact 发布前校验约定路径下的 migration bundle。"""
 
-    declaration = static_manifest.migration
-    if declaration is None:
+    catalog = plugin_root / _MIGRATION_CATALOG
+    if not catalog.exists() and not catalog.is_symlink():
         return None
     source = ResolvedPluginSource(
         plugin_root=plugin_root.resolve(strict=True),
@@ -359,7 +352,7 @@ def validate_migration_artifact(
         entrypoint=static_manifest.entrypoint,
         static_manifest=static_manifest,
     )
-    return load_migration_bundle(source, declaration)
+    return load_migration_bundle(source)
 
 
 def load_migration_requirements(path: Path) -> tuple[MigrationRequirement, ...]:

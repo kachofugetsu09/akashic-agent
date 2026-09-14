@@ -12,7 +12,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 
 # These are the checkout paths used by the historical Core migration chain.
-# New migrations must be owned by a plugin manifest.
+# Plugin migrations are owned by their conventional catalog.
 LEGACY_PREFIX = "migrations/yoyo/"
 CORE_PREFIX = "migrations/core/"
 LEGACY_PLUGIN_PREFIX = "plugins/legacy_upgrade/"
@@ -21,6 +21,8 @@ LEGACY_PLUGIN_PREFIX = "plugins/legacy_upgrade/"
 # closed so the deleted implementation cannot quietly return.
 RETIRED_PREFIXES = (LEGACY_PREFIX, LEGACY_PLUGIN_PREFIX)
 RETIRED_EXACT_PATHS = frozenset({"migrations/core/20260802_01_yoyo_origin.py"})
+
+_MIGRATION_CATALOG = "migration.catalog.toml"
 
 RETIREMENT_METADATA = "migrations/retired.toml"
 # Both commits are real migration identities in the stacked change.  The first
@@ -99,23 +101,11 @@ def _toml_bytes(source: bytes, label: str) -> dict[str, Any]:
     return value
 
 
-def _manifest_migration(raw: dict[str, Any], path: str) -> tuple[str, str]:
-    migration = raw.get("migration")
-    if not isinstance(migration, dict):
-        raise ValueError(f"插件 migration 声明缺失: {path}")
-    catalog = _safe_relative(migration.get("catalog"), f"{path}:migration.catalog")
-    digest = migration.get("catalog_sha256")
-    if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
-        raise ValueError(f"{path}:migration.catalog_sha256 无效")
-    return catalog, digest
-
-
 def _catalog_spec(
     raw: dict[str, Any],
     *,
     read_source: SourceReader,
     catalog_path: str,
-    plugin_path: str,
 ) -> dict[str, Any]:
     """Read the immutable prefix of one plugin-owned migration catalog."""
 
@@ -134,7 +124,7 @@ def _catalog_spec(
     migration_root = _safe_relative(
         migration_root_value, f"{catalog_path}:migration_root"
     )
-    plugin_root = str(Path(plugin_path).parent).replace("\\", "/")
+    plugin_root = str(PurePosixPath(catalog_path).parent)
     package_root = _repo_path(plugin_root, migration_root)
 
     raw_files = raw.get("files")
@@ -204,14 +194,7 @@ def _catalog_spec(
         migrations[migration_id] = (relative, tuple(depends), transactional, digest)
 
     return {
-        "manifest_path": plugin_path,
         "catalog_path": catalog_path,
-        "catalog_relative": _safe_relative(
-            _manifest_migration(
-                _toml_bytes(read_source(plugin_path), plugin_path), plugin_path
-            )[0],
-            f"{plugin_path}:migration.catalog",
-        ),
         "bundle_id": bundle_id,
         "migration_root": migration_root,
         "package_name": package_name,
@@ -221,32 +204,21 @@ def _catalog_spec(
 
 
 def _bundle_specs(base: str) -> list[dict[str, Any]]:
-    """Discover every migration catalog declared by a plugin in a tree."""
+    """从 Git 树中的约定文件发现插件迁移目录。"""
 
     paths = _git("ls-tree", "-r", "--name-only", base, "--", "plugins").splitlines()
     specs: list[dict[str, Any]] = []
-    for manifest_path in paths:
-        if not manifest_path.endswith("/akashic.plugin.toml"):
+    for catalog_path in paths:
+        if PurePosixPath(catalog_path).name != _MIGRATION_CATALOG:
             continue
-        manifest = _toml_bytes(_source_bytes(base, manifest_path), manifest_path)
-        migration = manifest.get("migration")
-        if migration is None:
-            continue
-        catalog_relative, declared_digest = _manifest_migration(manifest, manifest_path)
-        plugin_root = str(Path(manifest_path).parent).replace("\\", "/")
-        catalog_path = _repo_path(plugin_root, catalog_relative)
-        catalog_source = _source_bytes(base, catalog_path)
-        actual_digest = hashlib.sha256(catalog_source).hexdigest()
-        if actual_digest != declared_digest:
-            raise ValueError(f"migration catalog digest 漂移: {catalog_path}")
-        catalog = _toml_bytes(catalog_source, catalog_path)
-        spec = _catalog_spec(
-            catalog,
-            read_source=lambda path, tree=base: _source_bytes(tree, path),
-            catalog_path=catalog_path,
-            plugin_path=manifest_path,
+        catalog = _toml_bytes(_source_bytes(base, catalog_path), catalog_path)
+        specs.append(
+            _catalog_spec(
+                catalog,
+                read_source=lambda path, tree=base: _source_bytes(tree, path),
+                catalog_path=catalog_path,
+            )
         )
-        specs.append(spec)
     return specs
 
 
@@ -274,7 +246,11 @@ def _retirement_inventory(base: str) -> tuple[tuple[str, str], ...]:
 
     paths = _registered_paths(base)
     for spec in _bundle_specs(base):
-        paths.add(spec["manifest_path"])
+        # 固定退役提交的原始恢复清单仍包含当时的插件 manifest 字节。
+        manifest_path = str(
+            PurePosixPath(spec["catalog_path"]).with_name("akashic.plugin.toml")
+        )
+        paths.add(manifest_path)
         paths.add(spec["catalog_path"])
     return tuple(
         (path, hashlib.sha256(_source_bytes(base, path)).hexdigest())
@@ -354,46 +330,22 @@ def _retirement_paths(base: str) -> tuple[set[str], list[str]]:
     return {path for path, _digest in expected}, []
 
 
-def _current_toml(path: Path) -> dict[str, Any]:
-    return _toml_bytes(path.read_bytes(), path.as_posix())
-
-
 def _bundle_violations(base: str, retirement_paths: set[str]) -> list[str]:
     problems: list[str] = []
     for spec in _bundle_specs(base):
-        manifest_path = spec["manifest_path"]
-        if manifest_path in retirement_paths:
-            continue
-        manifest_file = ROOT / manifest_path
-        if not manifest_file.is_file():
-            problems.append(f"registered migration bundle changed: {manifest_path}")
+        catalog_name = spec["catalog_path"]
+        if catalog_name in retirement_paths:
             continue
         try:
-            manifest = _current_toml(manifest_file)
-            catalog_relative, declared_digest = _manifest_migration(
-                manifest, manifest_path
-            )
-            if catalog_relative != spec["catalog_relative"]:
-                problems.append(f"registered migration bundle changed: {manifest_path}")
-                continue
-            catalog_path = ROOT / spec["catalog_path"]
-            if not catalog_path.is_file():
-                problems.append(
-                    f"registered migration bundle changed: {spec['catalog_path']}"
-                )
+            catalog_path = ROOT / catalog_name
+            if catalog_path.is_symlink() or not catalog_path.is_file():
+                problems.append(f"registered migration bundle changed: {catalog_name}")
                 continue
             catalog_bytes = catalog_path.read_bytes()
-            actual_digest = hashlib.sha256(catalog_bytes).hexdigest()
-            if actual_digest != declared_digest:
-                problems.append(
-                    f"registered migration bundle changed: {spec['catalog_path']}"
-                )
-                continue
             current = _catalog_spec(
                 _toml_bytes(catalog_bytes, spec["catalog_path"]),
                 read_source=lambda path: (ROOT / path).read_bytes(),
                 catalog_path=spec["catalog_path"],
-                plugin_path=manifest_path,
             )
             for field in ("bundle_id", "migration_root", "package_name"):
                 if current[field] != spec[field]:
@@ -416,7 +368,7 @@ def _bundle_violations(base: str, retirement_paths: set[str]) -> list[str]:
                             f"{spec['catalog_path']}#{migration_id}"
                         )
         except (OSError, UnicodeError, ValueError, RuntimeError):
-            problems.append(f"registered migration bundle changed: {manifest_path}")
+            problems.append(f"registered migration bundle changed: {catalog_name}")
     return problems
 
 
