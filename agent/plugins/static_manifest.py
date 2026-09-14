@@ -39,7 +39,6 @@ _TOP_LEVEL_KEYS = frozenset(
         "validation",
         "mcp",
         "processes",
-        "workload",
         "channel_credentials",
         "credential_paths",
         "migration",
@@ -89,21 +88,6 @@ class StaticManagedProcessDeclaration:
 
 
 @dataclass(frozen=True, slots=True)
-class StaticWorkloadDeclaration:
-    """The import-free Workload declaration projection."""
-
-    name: str
-    image: str
-    command: tuple[str, ...]
-    ports: tuple[tuple[str, int], ...]
-    loopback_ports: tuple[tuple[str, int], ...]
-    data: tuple[tuple[str, str, bool], ...]
-    health: tuple[str, str, float]
-    limits: tuple[int, float, int]
-    user_namespaces: bool
-
-
-@dataclass(frozen=True, slots=True)
 class StaticMigrationDeclaration:
     """Import-free declaration for an artifact-owned migration catalog."""
 
@@ -132,7 +116,6 @@ class StaticPluginManifest:
     exclude_data_paths: tuple[str, ...]
     mcp_servers: tuple[StaticMcpDeclaration, ...]
     managed_processes: tuple[StaticManagedProcessDeclaration, ...]
-    workloads: tuple[StaticWorkloadDeclaration, ...]
     channel_credentials: tuple[tuple[str, tuple[str, ...]], ...]
     identity_digest: str
     credential_paths: tuple[str, ...] = ()
@@ -288,7 +271,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     # 3. Optional declarations are checked statically and kept immutable.
     mcp_servers = _mcp_declarations(root, raw, python)
     managed_processes = _process_declarations(root, raw, python)
-    workloads = _workload_declarations(raw)
     channel_credentials = _channel_credentials(raw.get("channel_credentials", {}))
     credential_paths = _credential_paths(raw.get("credential_paths", []), "credential_paths")
     migration = _migration_declaration(root, raw.get("migration", {}))
@@ -297,7 +279,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         path for _channel, paths in channel_credentials for path in paths
     }, "credential_paths/channel_credentials")
     _validate_endpoint_process_refs(mcp_servers, managed_processes)
-    _validate_endpoint_workload_refs(mcp_servers, workloads)
     identity: dict[str, object] = {
         "schema_version": schema_version,
         "name": name,
@@ -314,7 +295,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         "exclude_data_paths": list(exclude_data_paths),
         "mcp_servers": [_mcp_identity(item) for item in mcp_servers],
         "managed_processes": [_process_identity(item) for item in managed_processes],
-        "workloads": [_workload_identity(item) for item in workloads],
         "channel_credentials": [
             {"channel": channel, "paths": list(paths)}
             for channel, paths in channel_credentials
@@ -351,7 +331,6 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
         exclude_data_paths=exclude_data_paths,
         mcp_servers=mcp_servers,
         managed_processes=managed_processes,
-        workloads=workloads,
         channel_credentials=channel_credentials,
         identity_digest=identity_digest,
         credential_paths=credential_paths,
@@ -724,85 +703,6 @@ def _validate_endpoint_process_refs(
                 )
 
 
-def _workload_declarations(
-    raw: Mapping[str, object],
-) -> tuple[StaticWorkloadDeclaration, ...]:
-    """Validate fixed Workload data without importing plugin code."""
-
-    raw_items = raw.get("workload", [])
-    if not isinstance(raw_items, list):
-        raise ValueError("Workload 声明必须是表数组")
-    items = cast(list[object], raw_items)
-    result: list[StaticWorkloadDeclaration] = []
-    seen: set[str] = set()
-    image_pattern = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
-    for index, item in enumerate(items):
-        table = _table(item, f"workload[{index}]")
-        _exact_keys(
-            table,
-            {
-                "name",
-                "image",
-                "command",
-                "ports",
-                "data",
-                "health",
-                "limits",
-                "user_namespaces",
-            },
-            f"workload[{index}]",
-        )
-        name = _name(table.get("name"), f"workload[{index}].name")
-        if name in seen:
-            raise ValueError(f"Workload 名称重复: {name}")
-        seen.add(name)
-        image = table.get("image")
-        if not isinstance(image, str) or image_pattern.fullmatch(image) is None:
-            raise ValueError(f"workload[{index}].image 必须使用 sha256 digest")
-        command = _string_list(table.get("command", []), f"workload[{index}].command")
-        if not command:
-            raise ValueError(f"workload[{index}].command 不能为空")
-        ports, loopback_ports = _workload_ports(
-            table.get("ports"), f"workload[{index}].ports"
-        )
-        data = _workload_data(table.get("data", []), f"workload[{index}].data")
-        health = _workload_health(
-            table.get("health"), ports, f"workload[{index}].health"
-        )
-        limits = _workload_limits(table.get("limits"), f"workload[{index}].limits")
-        user_namespaces = table.get("user_namespaces", False)
-        if not isinstance(user_namespaces, bool):
-            raise ValueError(f"workload[{index}].user_namespaces 必须是 bool")
-        result.append(
-            StaticWorkloadDeclaration(
-                name,
-                image,
-                command,
-                ports,
-                loopback_ports,
-                data,
-                health,
-                limits,
-                user_namespaces,
-            )
-        )
-    return tuple(result)
-
-
-def _validate_endpoint_workload_refs(
-    servers: tuple[StaticMcpDeclaration, ...],
-    workloads: tuple[StaticWorkloadDeclaration, ...],
-) -> None:
-    ports = {item.name: {name for name, _ in item.ports} for item in workloads}
-    for server in servers:
-        for _, workload, port in server.workload_env:
-            if workload not in ports or port not in ports[workload]:
-                raise ValueError(
-                    "MCP workload_env 引用了未声明的 Workload 端口: "
-                    f"{workload}:{port}"
-                )
-
-
 def _command(root: Path, raw: object, label: str) -> tuple[str, ...]:
     if not isinstance(raw, list) or not raw:
         raise ValueError(f"{label} 必须是非空字符串数组")
@@ -917,138 +817,6 @@ def _workload_env(
         seen.add(env)
         result.append((env, workload, port))
     return tuple(result)
-
-
-def _workload_ports(
-    raw: object,
-    label: str,
-) -> tuple[tuple[tuple[str, int], ...], tuple[tuple[str, int], ...]]:
-    if not isinstance(raw, list) or not raw:
-        raise ValueError(f"{label} 必须是非空表数组")
-    result: list[tuple[str, int]] = []
-    names: set[str] = set()
-    numbers: set[int] = set()
-    loopback_numbers: set[int] = set()
-    loopback_ports: list[tuple[str, int]] = []
-    for index, item in enumerate(raw):
-        table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"name", "number", "loopback"}, f"{label}[{index}]")
-        name = _name(table.get("name"), f"{label}[{index}].name")
-        number = table.get("number")
-        loopback = table.get("loopback")
-        if (
-            isinstance(number, bool)
-            or not isinstance(number, int)
-            or not 1 <= number <= 65535
-            or name in names
-            or number in numbers
-            or (
-                loopback is not None
-                and (
-                    isinstance(loopback, bool)
-                    or not isinstance(loopback, int)
-                    or not 1024 <= loopback <= 65535
-                    or loopback in loopback_numbers
-                )
-            )
-        ):
-            raise ValueError(f"{label}[{index}] 无效")
-        names.add(name)
-        numbers.add(number)
-        result.append((name, number))
-        if loopback is not None:
-            loopback_numbers.add(loopback)
-            loopback_ports.append((name, loopback))
-    return tuple(result), tuple(loopback_ports)
-
-
-def _workload_data(
-    raw: object,
-    label: str,
-) -> tuple[tuple[str, str, bool], ...]:
-    if not isinstance(raw, list):
-        raise ValueError(f"{label} 必须是表数组")
-    result: list[tuple[str, str, bool]] = []
-    names: set[str] = set()
-    targets: set[str] = set()
-    for index, item in enumerate(raw):
-        table = _table(item, f"{label}[{index}]")
-        _exact_keys(table, {"name", "target", "writable"}, f"{label}[{index}]")
-        name = _name(table.get("name"), f"{label}[{index}].name")
-        target = table.get("target")
-        writable = table.get("writable", True)
-        if not isinstance(target, str) or target != target.strip():
-            raise ValueError(f"{label}[{index}].target 无效")
-        path = PurePosixPath(target)
-        if (
-            not path.is_absolute()
-            or path == PurePosixPath("/")
-            or ".." in path.parts
-            or not isinstance(writable, bool)
-            or name in names
-            or str(path) in targets
-        ):
-            raise ValueError(f"{label}[{index}] 无效")
-        names.add(name)
-        targets.add(str(path))
-        result.append((name, str(path), writable))
-    return tuple(result)
-
-
-def _workload_health(
-    raw: object,
-    ports: tuple[tuple[str, int], ...],
-    label: str,
-) -> tuple[str, str, float]:
-    table = _table(raw, label)
-    _exact_keys(table, {"port", "path", "timeout_seconds"}, label)
-    port = table.get("port")
-    path = table.get("path", "/health")
-    timeout = table.get("timeout_seconds", 60.0)
-    if not isinstance(port, str) or port not in {name for name, _ in ports}:
-        raise ValueError(f"{label}.port 无效")
-    if (
-        not isinstance(path, str)
-        or not path.startswith("/")
-        or path.startswith("//")
-        or path != path.strip()
-        or "\\" in path
-        or any(part in {".", ".."} for part in path.split("/"))
-    ):
-        raise ValueError(f"{label}.path 无效")
-    parsed = urlsplit(path)
-    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-        raise ValueError(f"{label}.path 无效")
-    if (
-        isinstance(timeout, bool)
-        or not isinstance(timeout, (int, float))
-        or not math.isfinite(float(timeout))
-        or not 0 < float(timeout) <= 300
-    ):
-        raise ValueError(f"{label}.timeout_seconds 无效")
-    return port, path, float(timeout)
-
-
-def _workload_limits(raw: object, label: str) -> tuple[int, float, int]:
-    table = _table(raw, label)
-    _exact_keys(table, {"memory_mb", "cpu_count", "pids"}, label)
-    memory = table.get("memory_mb")
-    cpu = table.get("cpu_count")
-    pids = table.get("pids")
-    if (
-        isinstance(memory, bool)
-        or not isinstance(memory, int)
-        or not (memory == 0 or 64 <= memory <= 262_144)
-        or isinstance(cpu, bool)
-        or not isinstance(cpu, (int, float))
-        or not math.isfinite(float(cpu))
-        or not (float(cpu) == 0 or 0.1 <= float(cpu) <= 256)
-        or isinstance(pids, bool)
-        or not isinstance(pids, int)
-        or not (pids == 0 or 16 <= pids <= 1_048_576)
-    ):
-        raise ValueError(f"{label} 无效")
-    return memory, float(cpu), pids
 
 
 def _environment(raw: object, label: str) -> tuple[tuple[str, str], ...]:
@@ -1200,18 +968,4 @@ def _process_identity(item: StaticManagedProcessDeclaration) -> dict[str, object
         "readiness_path": item.readiness_path,
         "startup_timeout_seconds": item.startup_timeout_seconds,
         "python_runtime": item.python_runtime,
-    }
-
-
-def _workload_identity(item: StaticWorkloadDeclaration) -> dict[str, object]:
-    return {
-        "name": item.name,
-        "image": item.image,
-        "command": list(item.command),
-        "ports": [list(value) for value in item.ports],
-        "loopback_ports": [list(value) for value in item.loopback_ports],
-        "data": [list(value) for value in item.data],
-        "health": list(item.health),
-        "limits": list(item.limits),
-        "user_namespaces": item.user_namespaces,
     }

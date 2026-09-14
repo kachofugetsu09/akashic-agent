@@ -7893,65 +7893,6 @@ def _validate_static_manifest_runtime(
             f"missing={missing!r} extra={extra!r}"
         )
 
-    expected_workloads: set[tuple[object, ...]] = set()
-    for plugin_id, manifest in manifests.items():
-        assert manifest is not None
-        expected_workloads.update(
-            (
-                plugin_id,
-                declaration.name,
-                declaration.image,
-                declaration.command,
-                declaration.ports,
-                declaration.loopback_ports,
-                declaration.data,
-                declaration.health,
-                declaration.limits,
-                declaration.user_namespaces,
-            )
-            for declaration in manifest.workloads
-        )
-    workload_registry = snapshot.workload_registry
-    actual_workloads: set[tuple[object, ...]] = set()
-    if workload_registry is not None:
-        static_owners = set(all_manifests)
-        actual_workloads.update(
-            (
-                descriptor.owner,
-                descriptor.name,
-                descriptor.image,
-                descriptor.command,
-                tuple((item.name, item.number) for item in descriptor.ports),
-                tuple(
-                    (item.name, item.loopback)
-                    for item in descriptor.ports
-                    if item.loopback is not None
-                ),
-                tuple(
-                    (item.name, item.target, item.writable) for item in descriptor.data
-                ),
-                (
-                    descriptor.health.port,
-                    descriptor.health.path,
-                    descriptor.health.timeout_seconds,
-                ),
-                (
-                    descriptor.limits.memory_mb,
-                    descriptor.limits.cpu_count,
-                    descriptor.limits.pids,
-                ),
-                descriptor.user_namespaces,
-            )
-            for descriptor in workload_registry.descriptors
-            if descriptor.owner in static_owners
-        )
-    if actual_workloads != expected_workloads:
-        missing = sorted(expected_workloads - actual_workloads, key=repr)
-        extra = sorted(actual_workloads - expected_workloads, key=repr)
-        raise RuntimeError(
-            "静态 manifest Workload 声明与 Root frozen registry 不一致: "
-            f"missing={missing!r} extra={extra!r}"
-        )
 
 
 def _require_plugin_path(plugin_dir: Path, path: Path, label: str) -> None:
