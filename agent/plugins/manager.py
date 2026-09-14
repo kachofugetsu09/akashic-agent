@@ -1693,11 +1693,28 @@ class PluginManager:
             and pending is not None
             and pending.candidate is snapshot
         )
+        if not store_owned_pending:
+            # 整批进程都退出后才能关闭共享 Root；失败批次仍需有可重试 owner。
+            for generation in staged:
+                tracked = self._draining_generations.setdefault(generation.plugin_id, [])
+                if not any(item is generation for item in tracked):
+                    tracked.append(generation)
+                self._scopes[generation.module_path] = generation.scope
+            errors: list[Exception] = []
+            for generation in reversed(staged):
+                try:
+                    await self._stop_composition_generation_runtime(generation)
+                except Exception as error:
+                    errors.append(error)
+            if errors:
+                _ = self._snapshot_store.pause_admission()
+                raise ExceptionGroup("启动批次 runtime 关闭失败，保留 Root", errors)
         for generation in reversed(staged):
             _ = self._active_generations.pop(generation.plugin_id, None)
             if not store_owned_pending:
-                generation.runtime_snapshot = None
-                await self._dispose_generation(generation, state="discarded")
+                await self._dispose_generation(
+                    generation, state="discarded", skip_composition_runtime=True
+                )
         if store_owned_pending:
             assert pending is not None
             await self._snapshot_store.abort(pending)
@@ -2137,10 +2154,12 @@ class PluginManager:
                 excluding_snapshot_id=snapshot.snapshot_id,
             )
         )
+        stop_errors: list[Exception] = []
         for generation in unreferenced_generations:
             try:
                 await self._stop_composition_generation_runtime(generation)
             except Exception as error:
+                stop_errors.append(error)
                 self._record_drained_composition_runtime_failure(
                     snapshot,
                     generation,
@@ -2152,6 +2171,8 @@ class PluginManager:
                         error=str(error) or type(error).__name__,
                     )
                 )
+        if stop_errors:
+            raise ExceptionGroup("generation runtime 关闭失败，保留 Root", stop_errors)
         if root_unreferenced:
             assert composition_root is not None
             if self._dashboard_validation_releaser is not None:
@@ -4459,7 +4480,7 @@ class PluginManager:
         ):
             raise RuntimeError("RuntimeSnapshot 候选事务不一致")
         for item in snapshot.generations.values():
-            if item.scope.closed:
+            if not item.scope.accepting_resources:
                 raise RuntimeError("RuntimeSnapshot 插件作用域已关闭")
 
     def _advance_reload(

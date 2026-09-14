@@ -38,6 +38,11 @@ class PluginScope:
     def closed(self) -> bool:
         return self._close_task is not None and not self._cleanups
 
+    @property
+    def accepting_resources(self) -> bool:
+        """开始关闭后不能再次用于装配，即使仍有未释放资源。"""
+        return self._close_task is None
+
     def defer(self, resource: str, cleanup: Cleanup) -> None:
         self._ensure_open()
         if not callable(cleanup):
@@ -100,5 +105,5 @@ class PluginScope:
         return []
 
     def _ensure_open(self) -> None:
-        if self._close_task is not None:
+        if not self.accepting_resources:
             raise RuntimeError(f"插件作用域已关闭: {self.plugin_id}")
