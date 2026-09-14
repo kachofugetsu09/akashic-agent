@@ -160,7 +160,8 @@ def _run_plugin_setups(workspace: Path) -> None:
                     "program = sys.argv[2]; "
                     "sys.path.insert(0, str(__import__('pathlib').Path(program).parent)); "
                     "sys.argv = [program]; runpy.run_path(program, run_name='__main__')",
-                    json.dumps([str(Path(path).resolve()) for path in sys.path if path]),
+                    json.dumps([str(Path(__file__).resolve().parents[1]),
+                                *(str(Path(path).resolve()) for path in sys.path if path)]),
                     str(code_root / "configure.py"),
                 ],
                 cwd=code_root,

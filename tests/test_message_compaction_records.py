@@ -5,6 +5,8 @@ from contextlib import closing
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from plugins.compaction.records import (
     ImportedSummaryRecord,
     LegacySummarySource,
@@ -240,9 +242,9 @@ async def test_summary_use_reads_original_record_after_head_advance_and_restart(
     for name in ("context", "compaction", "turn_projection"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
-    settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+    settings = tmp_path / "workspace/plugin-data/context-builtin"
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text('summary_source = ["compaction", "compaction"]\n')
+    save_config(settings, {"summary_source": ["compaction", "compaction"]})
     provider = sources / "fixture_models"
     provider.mkdir()
     (provider / "plugin.py").write_text('''

@@ -15,6 +15,8 @@ from typing import Any, cast
 from urllib.parse import urlencode
 
 import pytest
+
+from agent.plugin_composition.config_input import save_config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
@@ -341,7 +343,7 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
     (plugin_dir / "child.py").write_text("value = 1\n", encoding="utf-8")
     config_dir = tmp_path / "workspace" / "plugin-data" / "module_tree-builtin"
     config_dir.mkdir(parents=True)
-    (config_dir / "config.local.toml").write_text("", encoding="utf-8")
+    save_config(config_dir, {})
     manager = _manager(tmp_path)
 
     with pytest.raises(RuntimeError, match="拓扑未就绪"):
@@ -349,7 +351,7 @@ async def test_generation_module_tree_is_removed_on_config_failure_and_terminate
     assert manager.current_snapshot is None
     assert not any("plugins_module_tree__g" in name for name in sys.modules)
 
-    (config_dir / "config.local.toml").write_text("required = 'ok'\n", encoding="utf-8")
+    save_config(config_dir, {"required": "ok"})
     await manager.load_all()
     generation = manager.generation("module_tree")
     assert generation is not None

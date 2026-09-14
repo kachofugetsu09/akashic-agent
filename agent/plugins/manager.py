@@ -7087,8 +7087,6 @@ def _copy_validation_tree(
     # 2. Candidate data must never retain an edge back into formal storage.
     for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
         root = Path(directory)
-        if any("config.local.toml" in name for name in (*dirnames, *filenames)):
-            raise RuntimeError("候选数据含旧配置或备份；须显式升级")
         if ".plugin-credentials" in dirnames:
             raise RuntimeError("候选数据不能包含正式私有凭据目录")
         relative_dir = root.relative_to(source_root)
@@ -7113,8 +7111,6 @@ def _copy_validation_tree(
     target.mkdir(parents=True, exist_ok=keep_existing)
     for directory, dirnames, filenames in os.walk(source_root, followlinks=False):
         root = Path(directory)
-        if any("config.local.toml" in name for name in (*dirnames, *filenames)):
-            raise RuntimeError("候选数据含旧配置或备份；须显式升级")
         if ".plugin-credentials" in dirnames:
             raise RuntimeError("候选数据不能包含正式私有凭据目录")
         relative_dir = root.relative_to(source_root)

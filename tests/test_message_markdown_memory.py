@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugin_composition import CHAT_MODELS, ServiceKey
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugins.manager import PluginManager
@@ -50,9 +52,9 @@ async def application(tmp_path, *, start=False, transient_failure=False, draft_f
         for name in ("content", "context", "compaction", "markdown_memory", "turn_projection"):
             shutil.copytree(Path(__file__).parents[1] / "plugins" / name, sources / name,
                             ignore=shutil.ignore_patterns("__pycache__"))
-        settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+        settings = tmp_path / "workspace/plugin-data/context-builtin"
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text('summary_source = ["compaction", "compaction"]\nprompt_sources = {markdown_memory = "markdown_memory"}\n')
+        save_config(settings, {"summary_source": ["compaction", "compaction"], "prompt_sources": {"markdown_memory": "markdown_memory"}})
         provider = sources / "fixture_models"
         provider.mkdir()
         (provider / "plugin.py").write_text('''

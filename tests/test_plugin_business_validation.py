@@ -5,6 +5,8 @@ from typing import cast
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config, load_config
+
 from agent.plugin_composition import ServiceKey
 from agent.plugins.install import install_git_plugin
 from agent.plugins.manager import PluginManager
@@ -350,13 +352,12 @@ def memory_sources(root):
     for name in ("akasha", "markdown_memory", "compaction"):
         shutil.copytree(Path(__file__).parents[1] / "plugins" / name, root / name,
                         ignore=shutil.ignore_patterns("__pycache__"))
-    settings = root.parent / "workspace/plugin-data/context-builtin/config.local.toml"
+    settings = root.parent / "workspace/plugin-data/context-builtin"
     settings.parent.mkdir(parents=True, exist_ok=True)
-    with settings.open("a") as handle:
-        handle.write(
-            'summary_source = ["compaction", "compaction"]\n'
-            'prompt_sources = {markdown_memory = "markdown_memory"}\n'
-        )
+    config, _ = load_config(settings)
+    config.update({"summary_source": ["compaction", "compaction"],
+                   "prompt_sources": {"markdown_memory": "markdown_memory"}})
+    save_config(settings, config)
     provider = root / "fixture_embeddings"
     provider.mkdir()
     (provider / "plugin.py").write_text('''

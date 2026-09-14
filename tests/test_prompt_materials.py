@@ -7,6 +7,8 @@ import shutil
 from typing import cast
 
 import pytest
+
+from agent.plugin_composition.config_input import save_config
 from pydantic import ValidationError
 
 from agent.plugin_composition import ServiceKey
@@ -58,12 +60,10 @@ def prompt_sources(sources):
             ignore=shutil.ignore_patterns("__pycache__"),
         )
     settings = (
-        sources.parent / "workspace/plugin-data/context-builtin/config.local.toml"
+        sources.parent / "workspace/plugin-data/context-builtin"
     )
     settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(
-        'summary_source = []\nprompt_sources = {default_prompt = "prompt", skills = "standard_tools"}\n'
-    )
+    save_config(settings, {"summary_source": [], "prompt_sources": {"default_prompt": "prompt", "skills": "standard_tools"}})
     veda = sources.parent / "workspace/memory/VEDA.md"
     veda.parent.mkdir(parents=True, exist_ok=True)
     veda.write_text("唯一人格甲")

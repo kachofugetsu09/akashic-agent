@@ -407,8 +407,9 @@ factory 合同；Channel host 不再提取配置字段或维护第二份凭据�
 旧输入保存在私有 `config-history/`。凭据、撤销标记、配置历史没有自动 GC；恢复必须一起保留
 私有目录和对应配置输入。Models 的连接凭据与刷新协议保持自己的 owner，不使用这份存储。
 
-旧 `config.local.toml` 及名称包含它的备份会阻止加载与候选复制，不能通过排除列表绕过。
-普通非空 plugin-data 没有固定输入也会拒绝，必须先显式配置或升级。新安装只初始化空固定映射。
+普通读取与写入只识别准确的旧入口 `config.local.toml`，存在时明确要求升级。
+缺少固定输入时返回空映射，与业务目录是否存在或含哪些数据无关；安装不写空配置占位文件。
+普通路径不递归扫描业务目录，不按备份文件名判断兼容性。只有显式升级工具收集命名备份。
 Telegram Channel 和两个 Sender 的 `configure.py --upgrade` 由插件解释旧 TOML；其他明确不含
 秘密的配置可离线运行 `python -m scripts.upgrade_plugin_config --data-dir <path> --no-secrets`。
 执行插件配置程序时沿正式安装环境提供 `AKASHIC_PLUGIN_DATA_DIR`，Channel 程序同时使用
@@ -418,8 +419,8 @@ Telegram Channel 和两个 Sender 的 `configure.py --upgrade` 由插件解释�
 导入宿主 SDK 及插件依赖的环境。
 
 升级先在私有 `upgrades/<id>/original/` 保存旧配置与命名备份，再发布固定输入，最后把原件
-移入同一恢复点的 `retired/`。中断后保留全部材料；若新输入与旧文件同时存在，继续拒绝启动，
-操作者须核对恢复点后完成移动或恢复原配置，不能重复覆盖。旧 artifact、归档和 binding 不改写；
+移入同一恢复点的 `retired/`。中断后保留全部材料；若新输入与旧入口同时存在，继续拒绝启动，
+操作者须核对恢复点后完成移动或恢复原配置，不能重复覆盖；仅剩命名备份不构成运行栅栏。旧 artifact、归档和 binding 不改写；
 含已删除 TOML 字段的旧安装必须显式重装。历史 Yoyo 脚本保持原字节，若它产生旧配置，随后仍须
 经过显式配置升级，不能把旧输出直接作为新输入。
 
@@ -428,11 +429,11 @@ Telegram Channel 和两个 Sender 的 `configure.py --upgrade` 由插件解释�
 协议。不能把未知旧目录写一个空输入就声称验收通过。同进程 Python 插件仍属于受信任代码；
 这些窄接口和复制限制不是操作系统文件沙箱。本层只完成代码与静态 diff 检查，行为验证另行执行。
 
-本层迁移了日常向导、发布 profile、旧渠道升级命令、Docker 调试辅助写入器及共享测试 fixture。
-以下非秘密测试仍直接写旧 TOML，需机械迁移后再做行为验收（本层没有执行测试）：
-`test_default_reply.py`、`test_message_markdown_memory.py`、`test_plugin_hot_reload.py`、
-`test_akasha_message_plugin.py`、`test_agent_restart_tool.py`、`test_wake_messages.py`、
-`test_prompt_materials.py`、`test_standard_tools.py`、`test_plugin_business_validation.py`、
-`test_message_compaction_records.py`、`test_runtime_inspection_plugin.py`。
-迁移历史与备份合同中的旧 TOML 样本应保留，不应批量替换。源码模式的非空旧 plugin-data 同样
-需要显式配置；仅正式安装的空目录会初始化固定输入，启动不承担格式写入或升级。
+日常向导、发布 profile、旧渠道升级命令、Docker 调试辅助写入器、共享 fixture 和原先列出的
+11 个非秘密测试输入已迁移。迁移历史与备份合同中的旧 TOML 样本保留。当前仍存在的 Core
+候选复制职责须由整体换代层删除；本层不以文件名扫描充当数据 owner 授权，因而不保证旧命名
+备份不会被既有复制路径带入候选。候选 broker 禁止正式凭据解析的边界仍独立生效。
+
+SDK 导入路径静态链路：向导从自身 `__file__` 定位宿主源码根，将该根及父进程依赖路径作为
+参数传给安装解释器；`-I -B -c` 启动代码显式加入这些路径，先导入共享 writer，再执行制品内
+配置程序。该链路不依赖 `PYTHONPATH` 或空的 `sys.path` 项；依赖版本的实际导入仍未运行验证。

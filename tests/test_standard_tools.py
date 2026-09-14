@@ -12,6 +12,8 @@ import httpx
 from PIL import Image
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.media import encode_image_data_uri
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import Bindings
@@ -87,9 +89,9 @@ async def apply(ctx):
 '''.replace('REPLY_INJECT', '(ServiceKey("source.check.v1"), ServiceKey("models.selection.v1"))' if reply else '()'))
     workspace = tmp_path / "workspace"
     store, log = storage(workspace)
-    context_config = workspace / "plugin-data/context-builtin/config.local.toml"
+    context_config = workspace / "plugin-data/context-builtin"
     context_config.parent.mkdir(parents=True, exist_ok=True)
-    context_config.write_text('prompt_sources = {skills = "standard_tools"}\n')
+    save_config(context_config, {"prompt_sources": {"skills": "standard_tools"}})
     artifacts = ChannelAttachmentArtifactStore(
         workspace=workspace, metadata_store=store
     )

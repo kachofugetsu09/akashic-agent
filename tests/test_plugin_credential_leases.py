@@ -121,15 +121,15 @@ async def test_candidate_registers_credential_consumer_but_cannot_read_secret(tm
 
 
 @pytest.mark.asyncio
-async def test_candidate_rejects_restored_plaintext_backup(tmp_path):
+async def test_candidate_rejects_restored_legacy_config(tmp_path):
     source, config, log, host = environment(tmp_path)
     try:
         await host.load_all()
-        (config.parent / "config.local.toml.before-setup.bak").write_text('token="old-secret"')
+        (config.parent / "config.local.toml").write_text('token="old-secret"')
         (source / "plugin.py").write_text(MODULE + "\nmarker = 'candidate'\n")
         with pytest.raises(RuntimeError, match="升级"):
             await host.prepare_candidate("secret_reader")
-        assert (config.parent / "config.local.toml.before-setup.bak").read_text() == 'token="old-secret"'
+        assert (config.parent / "config.local.toml").read_text() == 'token="old-secret"'
     finally:
         await host.terminate_all()
         log.close()

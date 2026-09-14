@@ -13,6 +13,8 @@ from typing import cast
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugin_composition import CompositionRoot, Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
@@ -345,9 +347,9 @@ async def _restart_application(
     owns_log = message_log is None
     log = MessageLog(tmp_path / "sessions.db") if message_log is None else message_log
     artifact_store = ArtifactStore(tmp_path / "sessions.db")
-    context_config = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+    context_config = tmp_path / "workspace/plugin-data/context-builtin"
     context_config.parent.mkdir(parents=True, exist_ok=True)
-    context_config.write_text('prompt_sources = {skills = "standard_tools"}\n')
+    save_config(context_config, {"prompt_sources": {"skills": "standard_tools"}})
     host = PluginManager(
         [sources], event_bus=EventBus(), workspace=tmp_path / "workspace",
         installed_cache_root=tmp_path / "home/cache", message_log=log,
@@ -766,9 +768,9 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     )
     log = MessageLog(tmp_path / "sessions.db")
     artifact_store = ArtifactStore(tmp_path / "sessions.db")
-    context_config = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+    context_config = tmp_path / "workspace/plugin-data/context-builtin"
     context_config.parent.mkdir(parents=True, exist_ok=True)
-    context_config.write_text('prompt_sources = {skills = "standard_tools"}\n')
+    save_config(context_config, {"prompt_sources": {"skills": "standard_tools"}})
     host = PluginManager(
         [sources],
         event_bus=EventBus(),

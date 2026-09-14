@@ -8,6 +8,8 @@ from typing import Literal, cast
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugin_composition import ServiceKey
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -201,7 +203,7 @@ async def test_recall_binding_facts_remain_readable_after_config_change(tmp_path
             identity = ctx.require(TOOLS).bind(
                 ctx.require(AKASHA_TOOLS).select("recall_memory"), bindings
             )
-            config_path = snapshot.generations["akasha"].data_dir / "config.local.toml"
+            config_path = snapshot.generations["akasha"].data_dir
             async with ctx.require(CONTENT).bind() as content:
                 inputs = log.writer("s", author="user", source="conversation", body_types=(Input,),
                                     content=content.checks)
@@ -219,7 +221,7 @@ async def test_recall_binding_facts_remain_readable_after_config_change(tmp_path
                     assert isinstance(prepared, Mapping)
 
     # 重启前改变可变配置；旧 binding 的事实仍可由当前服务读取。
-    config_path.write_text('db_path = "other.db"\ninject_max_chars = 1\n')
+    save_config(config_path, {"db_path": "other.db", "inject_max_chars": 1})
     restored_log = MessageLog(tmp_path / "sessions.db")
     restored_host = PluginManager([tmp_path / "plugins"], event_bus=EventBus(), workspace=tmp_path / "workspace",
                                   installed_cache_root=tmp_path / "home", message_log=restored_log)

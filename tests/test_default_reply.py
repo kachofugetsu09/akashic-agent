@@ -9,6 +9,8 @@ from typing import cast
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -52,17 +54,17 @@ async def application(tmp_path, *, replying, start=True, missing_tool=False, dis
     if compaction:
         shutil.copytree(Path(__file__).parents[1] / "plugins/compaction", sources / "compaction",
                         ignore=shutil.ignore_patterns("__pycache__"))
-        settings = tmp_path / "workspace/plugin-data/context-builtin/config.local.toml"
+        settings = tmp_path / "workspace/plugin-data/context-builtin"
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text('summary_source = ["compaction", "compaction"]\n')
+        save_config(settings, {"summary_source": ["compaction", "compaction"]})
         module = sources / "compaction/plugin.py"
         module.write_text(module.read_text().replace('Field(default=20_000,', f'Field(default={keep_recent_tokens},'))
         reply = sources / 'reply/plugin.py'
         reply.write_text(reply.read_text().replace('Field(default=4096,', f'Field(default={output_tokens},'))
     if missing_tool:
-        settings = tmp_path / "workspace/plugin-data/reply-builtin/config.local.toml"
+        settings = tmp_path / "workspace/plugin-data/reply-builtin"
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text('tools = ["gone"]\n')
+        save_config(settings, {"tools": ["gone"]})
     provider = sources / "test_provider"
     provider.mkdir()
     (provider / "plugin.py").write_text('''

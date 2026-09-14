@@ -8,6 +8,8 @@ from typing import cast
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugin_composition import CompositionRoot, PluginRuntime
 from agent.plugin_composition.rpc import rpc_method_key
 from plugins.runtime_inspection import plugin
@@ -176,7 +178,7 @@ async def test_client_inspection_binds_lease_for_real_skill_projection(tmp_path:
     (tmp_path / "workspace").mkdir()
     configuration = tmp_path / "workspace/plugin-data/context-builtin"
     configuration.mkdir(parents=True)
-    (configuration / "config.local.toml").write_text('summary_source=[]\nprompt_sources={skills="standard_tools"}\n')
+    save_config(configuration, {"summary_source": [], "prompt_sources": {"skills": "standard_tools"}})
     metadata = ArtifactStore(tmp_path / "workspace" / "sessions.db")
     attachments = ChannelAttachmentArtifactStore(workspace=tmp_path / "workspace", metadata_store=metadata)
     manager = PluginManager([source], event_bus=EventBus(), workspace=tmp_path / "workspace",

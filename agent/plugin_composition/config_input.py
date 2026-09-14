@@ -51,15 +51,14 @@ def _legacy_files(data_dir: Path) -> tuple[Path, ...]:
 
 
 def check_config_format(data_dir: Path) -> None:
-    """旧配置及其备份必须显式升级，不能由启动或候选复制忽略。"""
+    """只核对固定配置入口；插件业务数据不参与格式判断。"""
     data_dir = _data_dir(data_dir)
-    if _legacy_files(data_dir):
-        raise RuntimeError("发现 config.local.toml 或其备份；须离线显式升级插件配置")
+    legacy = data_dir / _LEGACY
+    if legacy.exists() or legacy.is_symlink():
+        raise RuntimeError("发现 config.local.toml；须离线显式升级插件配置")
     path = data_dir / CONFIG_INPUT
     if path.is_symlink():
         raise ValueError("固定配置输入不能是符号链接")
-    if not path.exists() and data_dir.exists() and any(data_dir.iterdir()):
-        raise RuntimeError("非空插件数据缺少固定配置输入；须显式配置或升级，不能推断安全")
 
 
 def load_config(data_dir: Path) -> tuple[dict[str, object], str]:
@@ -121,8 +120,7 @@ def save_config(data_dir: Path, config: Mapping[str, object]) -> None:
     """显式发布插件解释后的输入；旧输入在私有目录保留独立恢复点。"""
     # 1. 编码和格式核对先于持久化，旧 TOML 只能经过显式升级入口。
     data_dir = _data_dir(data_dir)
-    if _legacy_files(data_dir):
-        raise RuntimeError("发现旧配置或备份；请先显式升级，不能覆盖")
+    check_config_format(data_dir)
     content = _config_bytes(config)
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / CONFIG_INPUT

@@ -34,8 +34,6 @@ from agent.plugins.manifest import (
     plugins_root,
     workspace_plugin_data_dir,
 )
-from agent.plugin_composition.config_input import CONFIG_INPUT, load_config, save_config
-
 from agent.plugins.static_manifest import (
     StaticPluginManifest,
     load_static_plugin_manifest,
@@ -391,8 +389,6 @@ def _activate_plugin_version(
             created_artifact = True
         created_data_dir = not data_path.exists()
         ensure_workspace_plugin_data_dir(data_path, workspace)
-        if not any(data_path.iterdir()):
-            save_config(data_path, {})
         latest = relative_artifact_pointer(plugin_base, target_root)
         candidate_staged = stage_latest and stable != latest
         # 新指针可见之前，先让代码目录与旧状态的恢复点耐久。
@@ -457,12 +453,6 @@ def _remove_created_data_dir(path: Path) -> None:
     """Remove only an empty plugin-data directory owned by this transaction."""
 
     try:
-        config = path / CONFIG_INPUT
-        if config.exists():
-            values, _ = load_config(path)
-            if values:
-                raise RuntimeError("安装回滚发现已修改配置；保留数据目录")
-            config.unlink()
         path.rmdir()
     except FileNotFoundError:
         return

@@ -7,6 +7,8 @@ import shutil
 
 import pytest
 
+from agent.plugin_composition.config_input import save_config
+
 from agent.plugin_composition import ServiceKey
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugins.snapshot import lease_runtime_snapshot
@@ -48,9 +50,9 @@ async def apply(ctx):
 ''')
     text = module.read_text()
     if wake_delivery:
-        config_path = tmp_path / "workspace/plugin-data/wake-builtin/config.local.toml"
+        config_path = tmp_path / "workspace/plugin-data/wake-builtin"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text('[delivery]\nchannel="test"\nrecipient="room"\nsession_id="test:room"\n')
+        save_config(config_path, {"delivery": {"channel": "test", "recipient": "room", "session_id": "test:room"}})
     text += "\nfrom tests.test_wake_messages import CONTROLS\n_original_runtime = Runtime\ndef Runtime(ctx, config):\n    runtime = _original_runtime(ctx, config)\n    control = CONTROLS[" + repr(str(tmp_path)) + "]\n    control['runtime'] = runtime\n    deadline = runtime.duties.deadline\n    def observe(now):\n        value = deadline(now)\n        control.setdefault('deadlines', []).append(value)\n        control['due_read'].set()\n        return value\n    runtime.duties.deadline = observe\n    finish_attempt = runtime.state.finish_attempt\n    def observe_attempt(**kwargs):\n        finish_attempt(**kwargs)\n        control['attempts'].put_nowait(kwargs)\n    runtime.state.finish_attempt = observe_attempt\n    return runtime\n"
     module.write_text(text)
     provider = sources / "models_fixture"
