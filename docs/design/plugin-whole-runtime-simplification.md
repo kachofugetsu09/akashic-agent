@@ -122,6 +122,44 @@ initialize 和 commit 的调用者必须持续持有 workspace 单 writer 锁；
 整个 archive 及各输入 owner 的环境/数据；业务数据不随代码选择回滚。
 本层只编写 storage/init 边界测试并做静态复查，未运行测试或 runtime 验收。
 
+### 存量 workspace 的显式空选择入口
+
+`scripts/upgrade_plugin_selection.py` 只建立新协议的明确 null，不转换旧组合，
+不从历史 binding 猜测完整 Root，也不表示当前安装代码已经验证或晋升。
+它与 Manager 消费者一起发布；本层仍未接通运行恢复，不单独发布 primitive PR。
+
+停用目标 workspace 的宿主及安装 writer 后，在项目环境中明确执行：
+
+```sh
+python -m scripts.upgrade_plugin_selection \
+  --workspace /path/to/workspace \
+  --plugins-home /path/to/plugin-home \
+  --backup-dir /path/to/recovery/before-stable-init
+```
+
+三个路径均须明确指定；workspace、plugin-home 和备份父目录须已存在。
+备份目录必须全新且位于两份运行目录之外，拒绝复用或覆盖。命令先取得既有
+WorkspaceInstanceLock，再取得 PluginPublicationLock，持锁完成备份及初始化。
+任何已有 stable（包括 null、损坏文件、未知格式或链接）均拒绝，没有 force。
+
+恢复点仅包含 `plugin-home/manifest.toml`、`cache/<marketplace>/<plugin>/.pointers.json`
+和 `workspace/runtime/plugin-reloads.sqlite3`。清单和指针按原字节备份；journal 用只读
+SQLite backup 纳入已提交 WAL，并检查副本完整性，不修改源 journal 阶段。
+`recovery.json` 记录原路径、缺失项、备份校验摘要及原 stable 缺失事实；它只是恢复清单，
+不是另一份运行选择。文件及目录同步完成后才调用 `PluginSelection.initialize()`。
+不读取消息库、binding、代码归档或 plugin-data；不安装、导入插件或复制业务数据。
+
+命令成功只说明 null 已初始化。待完整消费者接通后，下一次正常启动才从操作者明确的
+安装选择固定整组代码和配置，构造 whole Root，并在真正 ready 后首次 commit。
+未晋升候选不会因此获授权；旧 journal、安装指针和业务数据保持不变。
+
+备份失败不调用 initialize；初始化失败保留完整恢复点并传播原类型化失败，CLI 输出
+`outcome/observed_ref/observation_error`，不因观察到 null 而把不确定刷盘说成成功。
+恢复时先停宿主并核对指针：只有仍为本次新建 null、且尚未发生首次提交时，操作者才可
+显式撤销该新增文件；已有非空选择不得据此恢复点自动回退。旧元数据未被本命令改写，
+不要无条件覆盖它们；备份不是业务数据的回滚材料。中途失败的恢复目录保留，不自动清理。
+本层只编写边界测试，未执行 CLI、测试或运行验收。
+
 ## 分层合同
 
 | 层 | 改动 | 独立验收 |
