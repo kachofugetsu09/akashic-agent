@@ -218,7 +218,7 @@ def test_runtime_validates_disabled_plugin_ids_only_for_explicit_roots(monkeypat
     from agent.config_models import Config
     from bootstrap.tools import _disabled_builtin_plugins_for_runtime
 
-    monkeypatch.setenv("AKASHIC_WORKLOAD_SOCKET", "/tmp/fixture.sock")
+    monkeypatch.delenv("AKASHIC_WORKLOAD_SOCKET", raising=False)
     repo_plugins = Path(__file__).parents[1] / "plugins"
     existing = frozenset(
         {"akasha", "scheduler", "wake", "compaction", "markdown_memory"}

@@ -209,7 +209,7 @@ def _disabled_builtin_plugins_for_runtime(
     config: Config,
     plugin_dirs: Iterable[Path] = (),
 ) -> frozenset[str]:
-    """Apply generic disabled/Workload rules to explicit development roots."""
+    """校验显式禁用的插件，不根据运行能力改写用户选择。"""
 
     disabled = set(config.disabled_builtin_plugins)
     roots = tuple(plugin_dirs)
@@ -227,21 +227,4 @@ def _disabled_builtin_plugins_for_runtime(
         raise ValueError(
             "agent.plugins.disabled_builtin 包含未知内置插件: " + ", ".join(unknown)
         )
-    if os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip():
-        return frozenset(disabled)
-
-    from agent.plugins.static_manifest import load_static_plugin_manifest
-
-    unavailable = {
-        manifest.name
-        for root in roots
-        for path in root.glob("*/plugin.py")
-        if (manifest := load_static_plugin_manifest(path.parent)).workloads
-    }
-    if unavailable:
-        logger.warning(
-            "当前部署没有 Workload Controller，未启用内置 Workload 插件: %s",
-            ", ".join(sorted(unavailable)),
-        )
-    disabled.update(unavailable)
     return frozenset(disabled)
