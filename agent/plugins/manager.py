@@ -364,11 +364,16 @@ class PluginManager:
         self._drained_before_commit: set[str] = set()
         self._event_bus.bind_runtime_snapshot_store(self._snapshot_store)
 
-    def _reject_operation_lease(self) -> None:
+    def _reject_operation_lease(self, *, allow_stable_lease: bool = False) -> None:
         """在创建任务前拒绝等待同一 Manager 租约造成的自锁。"""
         from agent.plugins.snapshot import get_current_runtime_lease
         lease = get_current_runtime_lease()
         if lease is not None and lease._store is self._snapshot_store:
+            if (allow_stable_lease and lease.active
+                    and lease.snapshot is self.current_snapshot
+                    and lease.snapshot.state == "committed"
+                    and lease.snapshot.accepting_leases):
+                return
             raise RuntimeError("持有本 Manager 的 RuntimeSnapshot lease 时不能同步更新或关闭")
 
     def _require_operation_idle(self) -> None:
@@ -440,10 +445,23 @@ class PluginManager:
         operation.task.add_done_callback(lambda _: timer.cancel())
         return operation
 
-    async def _run_operation(self, work: Callable[[], Awaitable[U]]) -> U:
+    async def _run_operation(
+        self, work: Callable[[], Awaitable[U]], *, allow_stable_lease: bool = False,
+    ) -> U:
         """公开入口有限观察同一任务；退出观察不释放仍在工作的 owner。"""
-        self._reject_operation_lease()
-        operation = self._start_operation(work)
+        self._reject_operation_lease(allow_stable_lease=allow_stable_lease)
+        from agent.plugins.snapshot import get_current_runtime_lease
+        lease = get_current_runtime_lease()
+        if lease is not None and lease._store is self._snapshot_store:
+            async def scoped_work() -> U:
+                # 任务取得自己的真实租约；调用者超时退出不能释放仍在工作的 scope。
+                self._check_operation_commit()
+                async with RuntimeScope(lease.fork()):
+                    return await work()
+
+            operation = self._start_operation(scoped_work)
+        else:
+            operation = self._start_operation(work)
         try:
             return cast(U, await observe_operation(operation, deadline=operation.deadline))
         finally:
@@ -1476,7 +1494,9 @@ class PluginManager:
             raise failure
 
     async def prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
-        return await self._run_operation(lambda: self._prepare_candidate(plugin_id))
+        return await self._run_operation(
+            lambda: self._prepare_candidate(plugin_id), allow_stable_lease=True,
+        )
 
     async def _prepare_candidate(self, plugin_id: str) -> PluginGeneration | None:
         if self._ready_candidate is not None:
@@ -1495,7 +1515,7 @@ class PluginManager:
     ) -> None:
         await self._run_operation(lambda: self._discard_prepared(
             plugin_id, error=error,
-        ))
+        ), allow_stable_lease=True)
 
     async def _discard_prepared(
         self,
@@ -1724,7 +1744,7 @@ class PluginManager:
         return await self._run_operation(lambda: self._install_candidate(
             source=source, marketplace=marketplace, ref_name=ref_name,
             sparse_paths=sparse_paths, update_id=update_id,
-        ))
+        ), allow_stable_lease=True)
 
     async def _install_candidate(
         self,
@@ -1735,7 +1755,7 @@ class PluginManager:
         sparse_paths: list[str],
         update_id: str | None = None,
     ) -> tuple[PluginInstallResult, dict[str, object]]:
-        """Stage one immutable artifact and publish its latest runtime atomically."""
+        """只安装并准备本次目标的 latest；正式切换仍需独立发布授权。"""
 
         # 1. 操作 owner 已取得，写 cache 前拒绝未决候选。
         if update_id is not None:
@@ -1745,7 +1765,6 @@ class PluginManager:
                 previous_update = None
             if previous_update is not None:
                 raise RuntimeError("已有更新请求只能查询，不能重跑安装")
-        await self._reconcile_changed()
         self._check_operation_commit()
         status = self.candidate_status()
         if status["candidate_state"] in {
@@ -1779,11 +1798,20 @@ class PluginManager:
             )
         )
         publication_before = self._publication
+        plugin_id = f"{result.plugin_name}@{result.marketplace}"
         try:
             if install_cancelled:
                 raise asyncio.CancelledError
             self._check_operation_commit()
-            await self._reconcile_changed()
+            if self._reload_journal.update(result.update_id).phase == "committed":
+                # 安装器已确认同一制品，不另建无法关联该请求的候选。
+                self._notify_updates()
+                return result, self.candidate_status()
+            # 本次安装只准备自己的目标；不顺手更新其他源码或切换正式 Root。
+            generation = await self._prepare_candidate(plugin_id)
+            if generation is None:
+                raise RuntimeError(f"安装目标未进入候选: {plugin_id}")
+            await self._publish_prepared(plugin_id, candidate_only=True)
         except BaseException:
             if self._publication is not publication_before and self._publication is not None:
                 if self._publication.must_retain:
@@ -1793,7 +1821,6 @@ class PluginManager:
                 self.installed_plugins_home, update_id=result.update_id, error="candidate preparation failed",
             )
             raise
-        plugin_id = f"{result.plugin_name}@{result.marketplace}"
         status = self.candidate_status()
         self._check_operation_commit()
         if result.staged_candidate and (
@@ -2821,11 +2848,15 @@ class PluginManager:
         }
 
     async def drop_candidate(self, plugin_id: str) -> dict[str, object]:
-        return await self._run_operation(lambda: self._drop_ready(plugin_id))
+        return await self._run_operation(
+            lambda: self._drop_ready(plugin_id), allow_stable_lease=True,
+        )
 
 
     async def discard_update(self, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
-        await self._run_operation(lambda: self._discard_update(update_id, reason=reason))
+        await self._run_operation(
+            lambda: self._discard_update(update_id, reason=reason), allow_stable_lease=True,
+        )
 
     async def _discard_update(self, update_id: str, *, reason: str = "candidate behavior rejected") -> None:
         """持候选锁核对原请求；不能撤销期间已被替换的另一候选。"""
@@ -2836,6 +2867,11 @@ class PluginManager:
         if any(host.parent_lease.snapshot is ready.snapshot for host in self._validation_hosts.values()):
             raise RuntimeError("验证尚未退出或资源尚未清理")
         _ = await self._drop_ready(update.plugin_id, error=reason)
+        self._check_operation_commit()
+        # runtime 清理不回写安装状态；由持有本次请求的安装入口结算恢复点。
+        self._reload_journal.rollback_updates(
+            self.installed_plugins_home, update_id=update_id, error=reason,
+        )
         self._notify_updates()
 
     async def _drop_ready(self, plugin_id: str, *, error: str = "candidate behavior rejected") -> dict[str, object]:
@@ -2936,7 +2972,9 @@ class PluginManager:
             raise RuntimeError(f"latest 属于其他插件: {ready.plugin_id}")
         return ready
 
-    async def _publish_prepared(self, plugin_id: str) -> dict[str, object]:
+    async def _publish_prepared(
+        self, plugin_id: str, *, candidate_only: bool = False,
+    ) -> dict[str, object]:
         """发布完整隔离候选；直接更新也通过同一个 ready → formal 入口。"""
         self._check_operation_commit()
         generation = self._prepared_generations[plugin_id]
@@ -2993,7 +3031,7 @@ class PluginManager:
         self._advance_reload(generation, "latest_ready")
         if cancelled:
             raise asyncio.CancelledError
-        if not _installed_generation_is_candidate(generation):
+        if not candidate_only and not _installed_generation_is_candidate(generation):
             result = await self._switch_ready(plugin_id)
             result["publication_state"] = "committed"
             return result
@@ -3417,7 +3455,9 @@ class PluginManager:
         scope: BindingScope | None = None
         failure: BaseException | None = None
         try:
-            host, scope = await self._run_operation(lambda: self._prepare_validation(update_id, caller))
+            host, scope = await self._run_operation(
+                lambda: self._prepare_validation(update_id, caller), allow_stable_lease=True,
+            )
             async with RuntimeScope(host.parent_lease.fork()):
                 async with RuntimeScope(await host.manager._snapshot_store.acquire()):
                     yield scope
@@ -3443,7 +3483,10 @@ class PluginManager:
                 retained.active = False
                 if not self._stopping and (operation is None or operation.task.done()):
                     try:
-                        await self._run_operation(lambda: self._retry_validation_cleanup(retained.identity))
+                        await self._run_operation(
+                            lambda: self._retry_validation_cleanup(retained.identity),
+                            allow_stable_lease=True,
+                        )
                     except BaseException as cleanup_error:
                         if failure is not None:
                             raise BaseExceptionGroup("验证与资源回收均失败", [failure, cleanup_error]) from None
@@ -3677,7 +3720,9 @@ class PluginManager:
         await _complete_critical(operation.task)
 
     async def retry_validation_cleanup(self, identity: str) -> None:
-        await self._run_operation(lambda: self._retry_validation_cleanup(identity))
+        await self._run_operation(
+            lambda: self._retry_validation_cleanup(identity), allow_stable_lease=True,
+        )
 
     async def _retry_validation_cleanup(self, identity: str) -> None:
         """只重试现存验证资源的清理；不重跑验证或建立候选。"""
