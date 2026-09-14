@@ -726,17 +726,35 @@ class Fiber:
                 result = self.apply(self.context)
                 if inspect.isawaitable(result):
                     await result
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
             cleanup_task = asyncio.create_task(
                 self._unload(next_state=FiberState.PENDING),
                 name=f"plugin-fiber-cancel-cleanup:{self.name}",
             )
-            await _await_critical(cleanup_task)
+            try:
+                await _await_critical(cleanup_task)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as cleanup_error:
+                failure = BaseExceptionGroup(
+                    f"插件初始化取消且清理失败: {self.name}", [error, cleanup_error]
+                )
+                self.error = failure
+                self.root._record_error(self, cleanup_error)
+                raise failure from None
             raise
         except Exception as error:
             self.error = error
             self.root._record_error(self, error)
-            await self._unload(next_state=FiberState.FAILED)
+            try:
+                await self._unload(next_state=FiberState.FAILED)
+            except BaseException as cleanup_error:
+                failure = BaseExceptionGroup(
+                    f"插件初始化和清理均失败: {self.name}", [error, cleanup_error]
+                )
+                self.error = failure
+                self.root._record_error(self, cleanup_error)
+                raise failure from None
             return
         if (
             self._dispose_requested
@@ -1306,6 +1324,9 @@ class CompositionRoot:
 
         fiber.error = error
         self._record_error(fiber, error)
+        if fiber.state == FiberState.UNLOADING:
+            # 初始化已经尝试清理；不在异常回退中隐式重试失败资源。
+            return
         try:
             await fiber.dispose()
         except BaseException as cleanup_error:
