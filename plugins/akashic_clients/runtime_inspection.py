@@ -11,17 +11,13 @@ import json
 from typing import cast
 
 from agent.plugin_composition.rpc import RpcMethod
-from agent.plugin_composition.runtime_catalog import (
-    RUNTIME_CATALOG,
-    RuntimeCatalogUnavailable,
-)
-
 from .capabilities import (
     INSPECTION_DOCUMENTS_GET,
     INSPECTION_DOCUMENTS_LIST,
     INSPECTION_JOBS_GET,
     INSPECTION_JOBS_LIST,
     INSPECTION_SKILLS_LIST,
+    RUNTIME_CATALOG,
 )
 from .services import RuntimeInspectionError, RuntimeInspectionService
 
@@ -75,10 +71,8 @@ class ScopedRpcRuntimeInspection:
         """Restore the existing Mobile aggregate from one request generation."""
 
         async with self._open_scope() as scope:
-            try:
-                payload = dict(scope.require(RUNTIME_CATALOG)())
-            except RuntimeCatalogUnavailable as error:
-                raise RuntimeInspectionError(error.code, str(error)) from error
+            payload = dict(scope.require(RUNTIME_CATALOG)())
+            _raise_catalog_unavailable(payload)
             skills = await self._invoke(scope, INSPECTION_SKILLS_LIST, {})
             unavailable = skills.get("unavailable")
             if isinstance(unavailable, Mapping):
@@ -109,10 +103,8 @@ class ScopedRpcRuntimeInspection:
         """Render one MCP detail from the same neutral catalog capability."""
 
         async with self._open_scope() as scope:
-            try:
-                payload = scope.require(RUNTIME_CATALOG)()
-            except RuntimeCatalogUnavailable as error:
-                raise RuntimeInspectionError(error.code, str(error)) from error
+            payload = scope.require(RUNTIME_CATALOG)()
+            _raise_catalog_unavailable(payload)
         servers = payload.get("mcp_servers")
         if not isinstance(servers, list):
             raise RuntimeInspectionError("invalid_response", "runtime catalog 缺少 MCP 列表")
@@ -141,6 +133,21 @@ class ScopedRpcRuntimeInspection:
             "tools": tools,
             "markdown": _mcp_markdown(owner_id, server_name, tools),
         }
+
+
+def _raise_catalog_unavailable(payload: Mapping[str, object]) -> None:
+    """Translate the neutral catalog failure shape at the plugin boundary."""
+
+    unavailable = payload.get("unavailable")
+    if unavailable is None:
+        return
+    if not isinstance(unavailable, Mapping):
+        raise RuntimeInspectionError("invalid_response", "runtime catalog unavailable 响应无效")
+    code = unavailable.get("code")
+    message = unavailable.get("message")
+    if not isinstance(code, str) or not isinstance(message, str):
+        raise RuntimeInspectionError("invalid_response", "runtime catalog unavailable 响应无效")
+    raise RuntimeInspectionError(code, message)
 
 
 def _mcp_markdown(

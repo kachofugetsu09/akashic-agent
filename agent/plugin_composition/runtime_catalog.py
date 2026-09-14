@@ -26,10 +26,19 @@ class RuntimeCatalogUnavailable(RuntimeError):
 def build_runtime_catalog(snapshot: RuntimeSnapshot) -> dict[str, object]:
     """Project neutral plugin and MCP facts from one leased snapshot."""
 
+    try:
+        mcp_servers = _mcp_items(snapshot)
+    except RuntimeCatalogUnavailable as error:
+        return {
+            "unavailable": {
+                "code": error.code,
+                "message": str(error),
+            }
+        }
     return {
         "snapshot_id": snapshot.snapshot_id,
         "plugins": _plugin_items(snapshot),
-        "mcp_servers": _mcp_items(snapshot),
+        "mcp_servers": mcp_servers,
     }
 
 
