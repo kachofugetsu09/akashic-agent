@@ -97,12 +97,20 @@ async def test_cancel_during_external_switch_joins_cleanup_without_committing_ca
         asyncio.get_running_loop().call_soon(release.set)
         with pytest.raises(asyncio.CancelledError):
             await publication
+        operation = host._operation
+        await asyncio.wait((operation.task,))
+        if not operation.task.cancelled():
+            operation.task.exception()
         assert inputs(host.current_snapshot) == inputs(stable)
-        assert host.current_snapshot is not stable
+        assert host.current_snapshot is stable
         assert host.current_snapshot is not checked
-        assert host.current_snapshot.accepting_leases
-        assert len(switches) == 3  # 新端点尝试、撤销、重建旧组合后重新接入。
+        assert not host.current_snapshot.accepting_leases
+        assert len(switches) == 2  # 撤销后只回收外部尝试，不自动重建并开放旧组合。
         assert host._building_roots == {}
+        await host.retry_runtime_recovery("changed@lab")
+        assert host.current_snapshot is not stable
+        assert inputs(host.current_snapshot) == inputs(stable)
+        assert host.current_snapshot.accepting_leases
         assert_actual_instances(host.current_snapshot)
     finally:
         release.set()
@@ -194,7 +202,7 @@ async def test_import_failure_keeps_module_tree_when_scope_cleanup_fails(tmp_pat
 
     monkeypatch.setattr(host, "_close_root_scope", fail_once)
     with pytest.raises(BaseExceptionGroup):
-        await host._load_one(host.discover()[0])
+        await host._run_operation(lambda: host._load_one(host.discover()[0]))
     [(root, generations)] = host._building_roots.items()
     assert generations == ()
     [(module_path, scope)] = host._scopes.items()

@@ -43,6 +43,13 @@ def forbidden(*args, **kwargs):
     raise AssertionError("archived boot must not read mutable installation inputs")
 
 
+async def replace_root(owner, expected_ref):
+    """经实际操作接纳入口替换全组，不绕过取消与截止许可。"""
+    return await owner._run_operation(
+        lambda: owner._replace_formal_root((), expected_ref=expected_ref),
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("raw", [None, "{}", "broken"])
 async def test_boot_requires_explicit_valid_selection(tmp_path, monkeypatch, raw):
@@ -136,7 +143,7 @@ async def test_initializer_failure_does_not_commit_and_rebuilds_exact_old_root(t
 
     monkeypatch.setattr(owner, "_start_closed_runtime_snapshot", fail_new)
     with pytest.raises(RuntimeError, match="closed init failed"):
-        await owner._replace_formal_root((), expected_ref=ref)
+        await replace_root(owner, ref)
     assert calls == 2
     assert selection.read() == ref
     assert owner.current_snapshot is not old
@@ -158,7 +165,7 @@ async def test_post_commit_failure_keeps_new_closed_owner(tmp_path, monkeypatch)
 
     monkeypatch.setattr(owner, "_activate_snapshot", fail_after_commit)
     with pytest.raises(RuntimeError, match="publication callback failed"):
-        await owner._replace_formal_root((), expected_ref=previous)
+        await replace_root(owner, previous)
     target = selection.read()
     assert target != previous
     assert selection.archive.read_descriptor(target)["previous"] == previous
@@ -167,7 +174,7 @@ async def test_post_commit_failure_keeps_new_closed_owner(tmp_path, monkeypatch)
     assert not owner.current_snapshot.generations
     assert not owner.current_snapshot.accepting_leases
     with pytest.raises(RuntimeError, match="maintenance"):
-        await owner._replace_formal_root((), expected_ref=target)
+        await replace_root(owner, target)
     await owner.terminate_all()
 
 
@@ -185,7 +192,7 @@ async def test_uncertain_pointer_write_never_restores_old_selection(tmp_path, mo
     with monkeypatch.context() as patch:
         patch.setattr(selection_module, "sync_directory", fail_sync)
         with pytest.raises(SelectionWriteError) as caught:
-            await owner._replace_formal_root((), expected_ref=previous)
+            await replace_root(owner, previous)
     error = caught.value
     assert error.outcome == "uncertain"
     assert owner._publication.selection_result is error
@@ -213,7 +220,7 @@ async def test_stale_aba_is_rejected_before_closing_live_root(tmp_path):
     second = selection.commit((), expected_ref=first)
     third = selection.commit(components, expected_ref=second)
     with pytest.raises(SelectionConflictError):
-        await owner._replace_formal_root((), expected_ref=first)
+        await replace_root(owner, first)
     assert owner.current_snapshot is root and root.accepting_leases
     assert selection.read() == third != first
     await owner.terminate_all()
@@ -349,7 +356,7 @@ async def test_unchanged_write_failure_rebuilds_old_without_another_commit(tmp_p
 
     monkeypatch.setattr(owner._selection, "commit", fail_write)
     with pytest.raises(SelectionWriteError) as caught:
-        await owner._replace_formal_root((), expected_ref=ref)
+        await replace_root(owner, ref)
     assert caught.value is error and attempts == [((), ref)]
     assert selection.read() == ref
     assert owner.current_snapshot is not old and owner.current_snapshot.accepting_leases

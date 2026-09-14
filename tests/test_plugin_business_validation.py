@@ -227,17 +227,19 @@ async def test_shutdown_waits_for_validation_cleanup_already_in_progress(tmp_pat
         await asyncio.wait_for(cleanup_entered.wait(), 10)
         validation = next(iter(host._validation_hosts.values()))
         assert not validation.active and not validation.closed
-        retry_entered = asyncio.Event()
-        original_retry = host.retry_validation_cleanup
-        async def retry(identity):
-            retry_entered.set()
-            await original_retry(identity)
-        monkeypatch.setattr(host, "retry_validation_cleanup", retry)
+        joined = asyncio.Event()
+        original_finish = host._finish_termination
+        async def finish(previous):
+            joined.set()
+            await original_finish(previous)
+        monkeypatch.setattr(host, "_finish_termination", finish)
         shutdown = asyncio.create_task(host.terminate_all())
-        await asyncio.wait_for(retry_entered.wait(), 10)
+        await joined.wait()
         assert not shutdown.done() and calls == 1
         release_cleanup.set()
-        await asyncio.wait_for(asyncio.gather(task, shutdown), 10)
+        results = await asyncio.gather(task, shutdown, return_exceptions=True)
+        assert results[1] is None
+        assert results[0] is None or isinstance(results[0], asyncio.CancelledError)
         assert calls == 1 and validation.closed
         assert host._validation_hosts == {}
     finally:

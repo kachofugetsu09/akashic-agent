@@ -222,15 +222,15 @@ async def apply(ctx):
         if prepare_failure:
             (workspace / "fail-prepare").touch()
             with pytest.raises(ValueError, match="rebuild prepare failed"):
-                await manager._build_and_publish_root(
+                await manager._run_operation(lambda: manager._build_and_publish_root(
                     dict(snapshot.generations), previous=snapshot, old_channel=None,
-                )
+                ))
             assert manager.current_snapshot is snapshot
             assert not snapshot.accepting_leases and snapshot.lease_count == 0
             (workspace / "fail-prepare").unlink()
-        replacement = await manager._build_and_publish_root(
+        replacement = await manager._run_operation(lambda: manager._build_and_publish_root(
             dict(snapshot.generations), previous=snapshot, old_channel=None,
-        )
+        ))
         assert replacement is manager.current_snapshot and replacement is not snapshot
         assert snapshot.composition_root is old_root
         assert replacement.generations[stable.plugin_id] is not stable
@@ -583,7 +583,9 @@ async def apply(ctx):
         assert stable_snapshot.composition_root is old_root
         assert stable.runtime_snapshot is stable_snapshot
         await manager._dispose_unreferenced_composition_root(candidate)
-        replacement = await manager._replace_formal_root(dict(stable_snapshot.generations))
+        replacement = await manager._run_operation(
+            lambda: manager._replace_formal_root(dict(stable_snapshot.generations))
+        )
 
         assert candidate_root.receipt().fibers == ()
         assert stable_snapshot.composition_root is old_root
@@ -663,7 +665,7 @@ async def test_failed_root_build_keeps_module_data_and_cleanup_owner(
         if entry == "batch":
             await manager.load_all()
         else:
-            await manager._load_one(manager.discover()[0])
+            await manager._run_operation(lambda: manager._load_one(manager.discover()[0]))
     leaves = _error_leaves(caught.value)
     assert any(isinstance(error, ValueError) for error in leaves)
     assert any(isinstance(error, OSError) for error in leaves)
@@ -701,14 +703,18 @@ async def test_cancelled_compilation_cleanup_keeps_cancel_and_real_failure(tmp_p
         raise ValueError("catalog compilation failed")
 
     monkeypatch.setattr(manager._snapshot_compiler, "compile", fail_compile)
-    task = asyncio.create_task(manager._load_one(manager.discover()[0]))
+    task = asyncio.create_task(manager._run_operation(lambda: manager._load_one(manager.discover()[0])))
     await entered.wait()
     task.cancel()
     asyncio.get_running_loop().call_soon(task.cancel)
     asyncio.get_running_loop().call_soon(release.set)
-    with pytest.raises(BaseExceptionGroup) as caught:
+    with pytest.raises(asyncio.CancelledError):
         await task
-    leaves = _error_leaves(caught.value)
+    operation = manager._operation
+    await asyncio.wait((operation.task,))
+    error = operation.task.exception()
+    assert isinstance(error, BaseExceptionGroup)
+    leaves = _error_leaves(error)
     assert any(isinstance(error, asyncio.CancelledError) for error in leaves)
     assert any(isinstance(error, ValueError) for error in leaves)
     assert any(isinstance(error, OSError) for error in leaves)
@@ -758,9 +764,8 @@ async def test_terminate_joins_untransferred_root_without_generations(tmp_path, 
     asyncio.get_running_loop().call_soon(first.cancel)
     asyncio.get_running_loop().call_soon(release.set)
     if fail_close:
-        with pytest.raises(BaseExceptionGroup) as caught:
+        with pytest.raises(asyncio.CancelledError):
             await first
-        assert any(isinstance(error, asyncio.CancelledError) for error in _error_leaves(caught.value))
         with pytest.raises(OSError):
             await second
         assert attempts == 2
@@ -791,7 +796,7 @@ async def test_compilation_cancellation_with_successful_cleanup_stays_cancelled(
 
     monkeypatch.setattr(manager._snapshot_compiler, "compile", cancel_compile)
     with pytest.raises(asyncio.CancelledError):
-        await manager._load_one(manager.discover()[0])
+        await manager._run_operation(lambda: manager._load_one(manager.discover()[0]))
     [generation] = loaded
     assert generation.module_path not in sys.modules
     assert generation.scope.closed
