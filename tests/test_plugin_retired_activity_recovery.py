@@ -22,7 +22,12 @@ def _write_plugin(root: Path) -> None:
     )
 
 
-def _write_recovery_action(workspace: Path, *, resource: str) -> ReloadJournal:
+def _write_recovery_action(
+    workspace: Path,
+    *,
+    resource: str,
+    runtime_owner_boot_id: str | None = "old-boot",
+) -> ReloadJournal:
     journal = ReloadJournal(workspace)
     tx_id = journal.begin(
         plugin_id="baseline",
@@ -31,7 +36,8 @@ def _write_recovery_action(workspace: Path, *, resource: str) -> ReloadJournal:
         source_revision="legacy-source",
         config_revision="legacy-config",
     )
-    journal.mark_runtime_owner(tx_id, "old-boot")
+    if runtime_owner_boot_id is not None:
+        journal.mark_runtime_owner(tx_id, runtime_owner_boot_id)
     journal.advance(
         tx_id,
         "degraded",
@@ -127,3 +133,75 @@ async def test_startup_still_finishes_non_activity_runtime_recovery(
     record = journal.latest(plugin_id="baseline")
     assert record is not None
     assert record.phase == "recovered"
+    receipt = journal.events(record.tx_id)[-1].details["retry_receipt"]
+    assert isinstance(receipt, str)
+    assert "previous=old-boot:current=new-boot:cleanup=complete" in receipt
+
+
+@pytest.mark.asyncio
+async def test_startup_finishes_runtime_recovery_without_prior_runtime_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未启动旧 runtime 的失败事务无需伪造 boot cleanup。"""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_plugin(tmp_path)
+    journal = _write_recovery_action(
+        workspace,
+        resource="channel-publication",
+        runtime_owner_boot_id=None,
+    )
+    monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
+    monkeypatch.setenv("AKASHIC_BOOT_ID", "new-boot")
+    import agent.background.boot_guardian as guardian
+
+    cleanup_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        guardian,
+        "_cleanup_boot_processes",
+        lambda **kwargs: cleanup_calls.append(kwargs),
+    )
+    manager = _manager(tmp_path, workspace, with_plugin=True)
+    try:
+        await manager.load_all()
+    finally:
+        await manager.terminate_all()
+
+    assert cleanup_calls == []
+    record = journal.latest(plugin_id="baseline")
+    assert record is not None
+    assert record.phase == "recovered"
+    receipt = journal.events(record.tx_id)[-1].details["retry_receipt"]
+    assert isinstance(receipt, str)
+    assert "previous=None:current=new-boot:cleanup=not-required" in receipt
+
+
+@pytest.mark.asyncio
+async def test_startup_rejects_runtime_recovery_owned_by_current_boot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前 boot 不能冒充需要清理的旧 runtime owner。"""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_plugin(tmp_path)
+    journal = _write_recovery_action(
+        workspace,
+        resource="channel-publication",
+        runtime_owner_boot_id="new-boot",
+    )
+    monkeypatch.setenv("AKASHIC_SUPERVISED", "1")
+    monkeypatch.setenv("AKASHIC_BOOT_ID", "new-boot")
+    manager = _manager(tmp_path, workspace, with_plugin=True)
+    try:
+        with pytest.raises(RuntimeError, match="旧 boot identity"):
+            await manager.load_all()
+    finally:
+        await manager.terminate_all()
+
+    record = journal.latest(plugin_id="baseline")
+    assert record is not None
+    assert record.phase == "degraded"

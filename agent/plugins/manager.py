@@ -1428,21 +1428,26 @@ class PluginManager:
         receipts: dict[str, str] = {}
         for action in actions:
             previous_boot_id = action.runtime_owner_boot_id
-            if not previous_boot_id or previous_boot_id == current_boot_id:
+            if previous_boot_id is not None and (
+                not previous_boot_id.strip() or previous_boot_id == current_boot_id
+            ):
                 raise RuntimeError(
                     "v3 runtime recovery 缺少不同于当前进程的旧 boot identity"
                 )
-            if previous_boot_id not in cleaned_boots:
-                await asyncio.to_thread(
-                    _cleanup_boot_processes,
-                    boot_id=previous_boot_id,
-                    gateway_group_id=None,
-                )
-                cleaned_boots.add(previous_boot_id)
+            cleanup = "not-required"
+            if previous_boot_id is not None:
+                cleanup = "complete"
+                if previous_boot_id not in cleaned_boots:
+                    await asyncio.to_thread(
+                        _cleanup_boot_processes,
+                        boot_id=previous_boot_id,
+                        gateway_group_id=None,
+                    )
+                    cleaned_boots.add(previous_boot_id)
             self._normalize_runtime_recovery_pointer(action)
             receipts[action.tx_id] = (
                 f"boot-reconcile:previous={previous_boot_id}:"
-                f"current={current_boot_id}:cleanup=complete:"
+                f"current={current_boot_id}:cleanup={cleanup}:"
                 f"target={action.recovery_target}"
             )
         return receipts
