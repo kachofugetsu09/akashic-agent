@@ -120,7 +120,7 @@ async def _run(workspace: Path) -> dict[str, object]:
         plugin_dir=SOURCE_ROOT / "examples" / "plugin_composition",
         data_dir=provider_data_root,
         workspace=workspace,
-        config=None,
+        config={},
     )
 
     # 2. New plugins prove required waiting and optional nested injection.

@@ -528,7 +528,7 @@ def _inspect_namespace(root: Path, entrypoint: Path) -> dict[str, object]:
             "status": "passed" if not errors else "failed",
             "api_version": api_version,
             "name": name,
-            "apply_signature": "apply(ctx)" if apply_ok else None,
+            "apply_entrypoint": "module-level apply" if apply_ok else None,
         }
     )
     return evidence
