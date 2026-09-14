@@ -98,6 +98,8 @@
 
 ## 4. 按任务选择阅读路径
 
+插件重构先读 [0071](decisions/0071-plugin-composition-and-whole-runtime-updates.md)；表中旧插件决策用于理解迁移前代码，不覆盖整体换代目标。
+
 | 任务 | 必读顺序 | 随后检查的真实入口 |
 |---|---|---|
 | Message 日志、无状态 Turn 投影、完整回复链插件化 | [已批准设计与分层实施合同](design/0902-reviewed-v4.md) → 本文对应持久化、插件和会话路由 | `session/`、`plugins/sources/`、`plugins/conversation/`、`plugins/reply/`、`plugins/react/`、`plugins/tools/`、`plugins/delivery/`、`plugins/turn_projection/`；第 15 节保留插件功能，第 16 节给出 PR 与 yoyo 归属 |

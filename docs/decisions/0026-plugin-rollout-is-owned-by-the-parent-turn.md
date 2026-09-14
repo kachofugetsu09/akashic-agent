@@ -1,5 +1,7 @@
 # 0026 · 插件发布由父 Turn 在终点统一授权
 
+> [0071](0071-plugin-composition-and-whole-runtime-updates.md) 调整内部双快照与验证归属：父 Turn 的终点授权保留，由更新调用程序拥有；底座只提交精确候选对应的完整 stable。
+
 - 状态：accepted
 - 日期：2026-08-08
 - supersedes：[0024](0024-plugin-self-validation-uses-stable-and-latest.md) 的 Agent 显式 latest/promote/discard 接口；保留其内部双快照与 session 并发机制
