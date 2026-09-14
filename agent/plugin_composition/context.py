@@ -637,21 +637,26 @@ class Fiber:
     async def reconcile(self) -> None:
         """Move to the state implied by the newest dependency epoch."""
 
+        self._reject_direct_reentrant_wait("reconcile")
         async with self._locked_transition():
-            if self._dispose_requested or self._is_root or self.root.frozen:
-                return
-            providers = self.root._dependency_snapshot(self._activation_dependencies)
-            target_epoch = self.root._provider_epoch(providers)
-            if providers is None:
-                if self.state in {FiberState.ACTIVE, FiberState.FAILED, FiberState.UNLOADING}:
-                    await self._unload(next_state=FiberState.PENDING)
-                return
-            assert target_epoch is not None
-            if self.state == FiberState.ACTIVE and self._epoch == target_epoch:
-                return
+            await self._reconcile()
+
+    async def _reconcile(self) -> None:
+        """在调用方持有转换锁时完成依赖装配。"""
+        if self._dispose_requested or self._is_root or self.root.frozen:
+            return
+        providers = self.root._dependency_snapshot(self._activation_dependencies)
+        target_epoch = self.root._provider_epoch(providers)
+        if providers is None:
             if self.state in {FiberState.ACTIVE, FiberState.FAILED, FiberState.UNLOADING}:
                 await self._unload(next_state=FiberState.PENDING)
-            await self._load(providers, target_epoch)
+            return
+        assert target_epoch is not None
+        if self.state == FiberState.ACTIVE and self._epoch == target_epoch:
+            return
+        if self.state in {FiberState.ACTIVE, FiberState.FAILED, FiberState.UNLOADING}:
+            await self._unload(next_state=FiberState.PENDING)
+        await self._load(providers, target_epoch)
 
     async def restart(self) -> None:
         self.root._require_unfrozen("restart Fiber")
@@ -1348,9 +1353,11 @@ class CompositionRoot:
         self._fibers[fiber.fiber_id] = fiber
         self._bump_composition_revision()
         try:
-            # 挂载 observer 也属于正在进行的装配，不能在其等待中 freeze。
+            # observer 与初次装配共同持锁，不能在两者之间 freeze。
             async with fiber._locked_transition():
                 await self._notify_mount(fiber)
+                if parent.state not in {FiberState.UNLOADING, FiberState.DISPOSED}:
+                    await fiber._reconcile()
         except BaseException as error:
             await self._rollback_mount(fiber, error)
             raise
@@ -1362,11 +1369,6 @@ class CompositionRoot:
                 self._record_error(fiber, error)
                 raise
             return fiber
-        try:
-            await fiber.reconcile()
-        except BaseException as error:
-            await self._rollback_mount(fiber, error)
-            raise
         return fiber
 
     async def _rollback_mount(self, fiber: Fiber, error: BaseException) -> None:
