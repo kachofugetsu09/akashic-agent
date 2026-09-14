@@ -674,6 +674,8 @@ class Fiber:
     async def dispose(self) -> None:
         """Permanently unload this Fiber and join all child/effect cleanup."""
 
+        if self.state != FiberState.DISPOSED:
+            self.root._require_tree_removal("dispose Fiber")
         self._reject_direct_reentrant_wait("dispose")
         if self._dispose_task is None or self._dispose_task.done():
             self._dispose_task = asyncio.create_task(
@@ -922,6 +924,13 @@ class CompositionRoot:
         if self._frozen:
             raise CompositionError(
                 "COMPOSITION_FROZEN", f"Root 已冻结，不能 {operation}；请建立新 Root",
+            )
+
+    def _require_tree_removal(self, operation: str) -> None:
+        """冻结结构只随整个 Root 退出；失败退出仍由原 Root 继续持有。"""
+        if self._frozen and self.root_fiber.state != FiberState.UNLOADING:
+            raise CompositionError(
+                "COMPOSITION_FROZEN", f"Root 已冻结，只有整个 Root 退出时才能 {operation}",
             )
 
     def _bind_runtime_scope_acquirer(
@@ -1444,6 +1453,7 @@ class CompositionRoot:
                 "SERVICE_OWNER_MISMATCH",
                 f"{owner.name} 不能移除 {provider.owner.name} 的 Service {key.name}",
             )
+        self._require_tree_removal("移除 Service 绑定")
         if self._frozen:
             # 先关闭持有此绑定的消费者；失败时服务和资源仍留在原 owner。
             await self._reconcile_dependents((key,), exclude=owner)

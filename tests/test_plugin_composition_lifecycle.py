@@ -843,7 +843,7 @@ async def test_compiled_root_rejects_binding_changes_without_restarting_work():
         contexts.append(ctx)
         calls.append(ctx.require(service))
 
-    await root.mount(provider, name="provider")
+    provider_fiber = await root.mount(provider, name="provider")
     fiber = await root.mount(consumer, name="consumer", inject=(service,))
     context = contexts[0]
     token = context.fiber.activation_token
@@ -858,6 +858,8 @@ async def test_compiled_root_rejects_binding_changes_without_restarting_work():
         lambda: context.provide(service, ["replacement"]),
         lambda: context.provide(missing, object()),
         context.fiber.restart,
+        context.fiber.dispose,
+        provider_fiber.context.fiber.dispose,
     )
     for change in changes:
         with pytest.raises(CompositionError) as caught:
@@ -902,8 +904,8 @@ async def test_pending_initial_dependency_resolves_then_frozen_teardown_closes_c
 
 
 @pytest.mark.asyncio
-async def test_frozen_service_removal_retains_binding_until_consumer_cleanup_succeeds():
-    """关闭服务失败不能先删 provider，成功后也不能重新绑定消费者。"""
+async def test_frozen_binding_removal_requires_whole_root_teardown():
+    """手动移除不改变已发布组合；被拒绝的 Effect 留给整个 Root 退出。"""
     from agent.plugin_composition import ServiceKey
 
     root = CompositionRoot("fixed-service-removal")
@@ -911,7 +913,8 @@ async def test_frozen_service_removal_retains_binding_until_consumer_cleanup_suc
     value = object()
     registration = await root.context.provide(service, value)
     attempts = 0
-    starts = []
+    starts, resource_closes = [], []
+    resource = await root.context.effect(lambda: lambda: resource_closes.append("closed"))
 
     async def consumer(ctx):
         starts.append(ctx.require(service))
@@ -923,19 +926,55 @@ async def test_frozen_service_removal_retains_binding_until_consumer_cleanup_suc
                 raise OSError("consumer connection still open")
         await ctx.effect(lambda: close)
 
-    await root.mount(consumer, name="consumer", inject=(service,))
-    RuntimeSnapshotCompiler().compile({}, composition_root=root)
-    with pytest.raises(BaseExceptionGroup):
+    fiber = await root.mount(consumer, name="consumer", inject=(service,))
+    snapshot = RuntimeSnapshotCompiler().compile({}, composition_root=root)
+    store = RuntimeSnapshotStore()
+    store.install(snapshot)
+    topology = root.topology_view()
+    try:
+        for operation in (registration.aclose, fiber.context.fiber.dispose):
+            with pytest.raises(CompositionError) as caught:
+                await operation()
+            assert caught.value.code == "COMPOSITION_FROZEN"
+        assert store.current is snapshot and snapshot.state == "committed"
+        assert root.context.require(service) is value
+        assert root.topology_view() == topology
+        assert registration in root.root_fiber.effects
+        assert attempts == 0 and starts == [value]
+
+        # 普通资源 Effect 不拥有服务绑定或挂载树，可以独立关闭。
+        await resource.aclose()
+        assert resource_closes == ["closed"]
+        assert root.topology_view().identity == topology.identity
+        assert root.context.require(service) is value
+        await store.close()
+
+        with pytest.raises(BaseExceptionGroup):
+            await root.dispose()
+        assert attempts == 1
+        assert registration in root.root_fiber.effects
+        assert service.name in root.receipt().services
+        # 退出失败也不能补挂、替换服务或重新激活旧工作。
+        for operation in (
+            lambda: root.context.provide(service, object()),
+            lambda: root.mount(lambda ctx: None, name="replacement"),
+            fiber.context.fiber.restart,
+        ):
+            with pytest.raises(CompositionError) as caught:
+                await operation()
+            assert caught.value.code == "COMPOSITION_FROZEN"
+        await root.dispose()
+        assert attempts == 2 and starts == [value]
+        assert registration not in root.root_fiber.effects
+        assert root.receipt().services == ()
+        assert root.receipt().fibers == ()
+        # 已完成的句柄再次关闭没有结构变化。
         await registration.aclose()
-    assert root.context.require(service) is value
-    assert attempts == 1
-    await registration.aclose()
-    assert root.context.get(service) is None
-    assert attempts == 2 and starts == [value]
-    with pytest.raises(CompositionError) as caught:
-        await root.context.provide(service, object())
-    assert caught.value.code == "COMPOSITION_FROZEN"
-    await root.dispose()
+        await fiber.context.fiber.dispose()
+        assert resource_closes == ["closed"]
+    finally:
+        await store.close()
+        await root.dispose()
 
 
 @pytest.mark.asyncio

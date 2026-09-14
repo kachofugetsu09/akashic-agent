@@ -36,7 +36,10 @@ snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能�
 冻结不可逆，之后 mount、inject、provide 和 Fiber.restart 明确报 `COMPOSITION_FROZEN`，
 更换组合必须创建新 Root。服务内部目录、连接重试、Effect/Task 和健康诊断仍归插件；
 `RUNTIME_STARTED` 可以取得这些资源，健康变化不会重新装配 Fiber。
-退出保留原绑定直到消费者关闭成功，再移除 provider，不激活待定消费者或重绑旧工作。
+冻结后单独关闭 provider Effect 或 FiberHandle 也明确拒绝；只有整个 Root 已进入
+`UNLOADING` 时才能移除绑定和挂载节点。普通资源 Effect 仍可独立关闭。
+整个 Root 退出时保留原绑定直到消费者关闭成功，再移除 provider；失败句柄仍归原 owner
+供退出重试，不激活待定消费者或重绑旧工作。
 
 ```text
 ┌───────────────────────────────┐
