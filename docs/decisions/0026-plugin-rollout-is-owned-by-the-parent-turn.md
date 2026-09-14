@@ -2,6 +2,10 @@
 
 > [0071](0071-plugin-composition-and-whole-runtime-updates.md) 调整内部双快照与验证归属：父 Turn 的终点授权保留，由更新调用程序拥有；底座只提交精确候选对应的完整 stable。
 
+> 实施勘误：无生产实例的 `TurnPluginRollout` 及无人消费的 startup feedback writer 已删除。
+> 既有 `plugin-rollout-fact.json` 保留，不再宣称会在下一 Turn 注入或删除。
+> 当前更新调用程序仍须独立满足终态授权合同，删除旧类不表示这项验收已完成。
+
 - 状态：accepted
 - 日期：2026-08-08
 - supersedes：[0024](0024-plugin-self-validation-uses-stable-and-latest.md) 的 Agent 显式 latest/promote/discard 接口；保留其内部双快照与 session 并发机制

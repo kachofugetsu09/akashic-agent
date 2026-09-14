@@ -147,7 +147,9 @@ workspace 仍不是完整运行环境的全部。模型 Provider credential 已�
 | `runtime/plugin-jobs/outcomes.sqlite` | generation-scoped plugin job 首次 admission INSERT semantic job/event/interval identity、exact snapshot/plugin/model generation、artifact/source/handler/lifecycle identity 与 queued 状态 | 同一 invocation 只按 queued→running→terminal/retry_pending 状态机更新 attempt、phase（handler/provider/documents）、error 与 result digest；跨 generation redelivery 复用同一 semantic key，不新建第二次 effect；documents phase 只由 ActivityHost forward recovery | 当前没有自动 retention；这是 event dedupe、取消与 crash recovery 证据，普通插件卸载、重载或日志清理不得删除。workspace 备份应以 SQLite online backup + integrity_check 保存；只有后续名称明确的 retention/插件数据管理操作可减少 |
 | `runtime/deliveries/settlements.sqlite` | Core 为每个 accepted Turn INSERT 一条 immutable delivery envelope 与 stable logical id | 只按 `prepared → provider_started → delivered → projected → settled` 前向更新 exact binding、provider receipt、Session message 与 opaque domain receipt；provider 调用中断进入 `failed`，明确拒绝进入 `rejected`；候选只读检查 `prepared/delivered/projected` 的 target service 仍可解析 | 当前没有 DELETE 或自动 retention；Core ledger 是 provider effect、Session projection 与领域 settle 的恢复证据。备份应覆盖数据库、WAL/SHM 并使用 SQLite online backup + `integrity_check`；只有后续名称明确的 delivery retention 操作可以减少 |
 | `runtime/proactive-documents/intents/<invocation-id>/` | `ProactiveDocuments.prepare_pair()` 在 DB effect 前创建，保存两份 old state（bytes 或 absent marker）、完整 new bytes、expected digest、idempotency key 与 fsync receipt | 无 DB receipt 时只允许 abort 并保持正文原状态；有 DB receipt 时只允许 ordered replace/forward recovery；partial replace 依据 old bytes 恢复两份原始状态 | commit/abort terminal receipt、目标 digest 与目录 fsync 均完成后才能删除该 intent；启动恢复不得按年龄猜测 orphan。workspace 备份必须与 outcomes.sqlite、两份 Markdown 一起覆盖该目录 |
-| `runtime/plugin-rollout-fact.json` | turn 后 install/uninstall 产生一条待反馈事实 | 新结果原子替换尚未消费的旧事实 | 下一次非 programmatic 用户 turn 注入后删除；它是可重建反馈，不是会话或长期记忆 |
+| `runtime/plugin-stable.json` | 明确新 workspace 或显式升级创建 null 选择；缺失或损坏不能由启动补建 | 插件底座在完整正式组合闭接纳初始化成功后原子替换完整 Root 引用；已提交或结果未知时不得回写旧值冒充回滚 | 无自动删除；备份同时保留所引用的完整组合与组件归档，恢复从该引用加载，不重选当前源码或配置 |
+| `runtime/plugin-archives/` 中完整组合记录 | 插件底座追加内容寻址记录，保存全部组件引用及 previous 选择；同一内容不覆盖 | 记录不可变；只有 stable 指针选择哪份记录可变化 | 无自动 GC；恢复必须同时保存组件代码、固定配置输入和完整组合记录，插件数据由各插件负责 |
+| `runtime/plugin-rollout-fact.json` | 旧反馈 reader 与孤儿 startup writer 已退役，不再新增 | 既有文件不再参与插件选择或反馈，不自动改写 | 本次仅删除代码，不删除既有文件；没有新增自动清理协议 |
 | `runtime/plugin-skill-links.json` | legacy adoption 或首次插件 Skill/Drift skill 投影时创建 ownership registry；每次链接切换先原子写入含 old/new 的 pending journal | 目录项切换后原子提交 `links` 并清除对应 pending；进程重启只在实际链接仍等于 old 或 new 时收敛，用户文件、未登记软链接和第三种状态 fail-loud | 只有插件 disable/uninstall 或 generation 切换的 linker owner 可以删除已登记且 target 匹配的投影链接并移除对应 ownership；不得删除用户文件、普通目录、未登记链接或外部 canonical source。registry 是重建与恢复证据，当前没有整文件自动删除协议 |
 
 H4 后 Core 配置、Setup、Prompt、Dashboard 与 Mobile Runtime Inspection 均不再读取旧主动岛状态。
@@ -347,12 +349,14 @@ workspace 之外还有两组明确的全局状态：
 │   └── recall_inspector.jsonl         v2 兼容名字；迁移后与 plugin-data 文件同 inode
 ├── subagent-runs/<job-id>/            子任务产物
 ├── runtime/
+│   ├── plugin-stable.json            唯一完整组合选择；缺失须显式升级
+│   ├── plugin-archives/              不可变组件与完整组合记录
 │   ├── plugin-reloads.sqlite3         插件热重载事务与恢复阶段
 │   ├── plugin-jobs/outcomes.sqlite    插件 background job 幂等与恢复状态
 │   ├── deliveries/settlements.sqlite  通用 delivery、provider、Session projection 与领域 settle
 │   ├── proactive-documents/
 │   │   └── intents/<invocation-id>/   paired Markdown old/new bytes 与恢复回执
-│   ├── plugin-rollout-fact.json       下一用户 turn 消费的一条派生结果
+│   ├── plugin-rollout-fact.json       退役反馈文件；既有内容保留
 │   └── plugin-validation/<generation>/ 候选隔离 plugin-data 副本
 ├── memes/manifest.json
 ├── .app-server-token
@@ -542,7 +546,12 @@ V3 插件 artifact 同时可以交付 Skill 和 MCP：
 
 因此，Skill/MCP 的 canonical code 和声明属于插件 source；cache 是已安装版本，manifest 记录安装身份，workspace 只保存 plugin-data 和必要的运行投影。
 
-#### 10.2.1 0024 stable/latest 实现
+#### 10.2.1 0024 stable/latest 实现（历史）
+
+0071 的运行选择现由 `runtime/plugin-stable.json` 指向完整组合记录；启动只恢复该记录，
+不自动续跑候选。安装 `.pointers.json` 不再决定运行版本，reload journal 只保留操作和外部资源恢复事实。
+提交之前死亡使用旧选择，提交之后死亡使用新选择；数据解释由当前插件负责。
+下面保留旧链路作为历史证据，不再作为当前选择或 attached child 授权协议。
 
 **F-014：** [0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md) 与 [0026](../decisions/0026-plugin-rollout-is-owned-by-the-parent-turn.md) 要求插件安装 artifact 按 source revision/tree digest 不可变保存；同一版本号的新 commit 不能覆盖 stable runtime 仍引用的代码。插件目录内的原子 `.pointers.json` 拥有 stable/latest artifact descriptor；`<workspace>/runtime/plugin-reloads.sqlite3` 拥有单一未决 candidate phase、install provenance、turn lineage 与 append-only phase journal。普通 turn 只读取 stable；只有 owner parent turn 创建的 attached programmatic child 自动读取匹配 latest。候选独占服务使用 `runtime/plugin-validation/<generation>/` 的 plugin-data 副本和临时端口，提交或丢弃后删除。
 
