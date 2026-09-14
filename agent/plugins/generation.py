@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -75,7 +76,7 @@ class PluginGeneration:
     config_revision: str
     plugin_dir: Path
     data_dir: Path
-    config: object | None
+    config: Mapping[str, object]
     instance: object
     scope: PluginScope
     contributions: PluginContributions

@@ -111,7 +111,7 @@ class PluginRuntime:
     plugin_dir: Path
     data_dir: Path
     workspace: Path
-    config: object
+    config: Mapping[str, object]
     workspace_roots: tuple[str, ...] = ()
     workspace_files: tuple[str, ...] = ()
 

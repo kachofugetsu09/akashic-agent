@@ -214,6 +214,12 @@ class Context:
         )
 
     @property
+    def config(self) -> Mapping[str, object]:
+        """当前插件的固定配置输入，字段含义由插件解释。"""
+
+        return self.runtime.config
+
+    @property
     def runtime(self) -> PluginRuntime:
         """Return the Core-owned runtime identity for this plugin tree."""
 

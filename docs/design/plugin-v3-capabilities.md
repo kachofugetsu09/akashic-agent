@@ -15,11 +15,11 @@ version = "1.0.0"
 inject = ()
 
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     pass
 ```
 
-Core 用两个位置参数调用 `apply`，不限制参数名字或默认值；无法调用时由实际装配报告原错误。
+Core 用一个位置参数调用 `apply(ctx)`，不限制参数名字或默认值；无法调用时由实际装配报告原错误。
 `api_version != 3`、V2 `Plugin` 子类、固定 lifecycle
 方法和 phase module 注入都不会被加载，也没有自动包装或兼容 fallback。插件不能直接接入
 `EventBus`；V3 事件由明确 owner 通过 typed key 发布。
@@ -27,13 +27,16 @@ Core 用两个位置参数调用 `apply`，不限制参数名字或默认值；�
 | 模块声明 | 用途 |
 |---|---|
 | `api_version`、`name`、`version`、`apply` | 必需的身份和唯一入口 |
-| `Config` | 可选配置模型；Core 校验后传给 `apply` |
 | `inject` | 根 Fiber 激活所需的 `ServiceKey` |
 | `is_active(services)` | 根据冻结的静态 Service view 决定是否发布静态贡献 |
 | `skill_roots`、`drift_skill_roots` | 发布普通 Skill 和 Drift Skill |
 | `workspace_roots`、`workspace_files` | 声明被授权的 workspace 路径；只授予真正的数据 owner |
 | `dashboard_module` | 发布 Dashboard HTTP/面板模块 |
 | `web_module`、`web_requires`、`web_provides`、`web_contract_digests` | 发布 Web 模块及版本化组合合同 |
+
+配置从 `ctx.config` 读取，是当前组合固定输入的插件本地副本，不跟随全局文件变化。
+插件自行选择解析方式，例如 `config = Config.model_validate(ctx.config)`；`Config` 只是插件内部普通类，
+Core 不读取它。无配置时输入为空对象。候选只取得授权允许的输入，凭据仍是不可直接解析的引用。
 
 ## 2. 组合原子能力
 
@@ -72,7 +75,7 @@ class Greeter(Protocol):
 
 GREETER = ServiceKey[Greeter]("example.greeter.v1")
 
-async def apply(ctx: Context, config: object) -> None:
+async def apply(ctx: Context) -> None:
     await ctx.provide(GREETER, MyGreeter())
 ```
 

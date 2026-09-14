@@ -31,7 +31,7 @@ class ComposablePlugin:
     web_requires: tuple[str, ...]
     web_provides: tuple[str, ...]
     web_contract_digests: tuple[tuple[str, str], ...]
-    _apply: Callable[[Context, object], object] = field(repr=False)
+    _apply: Callable[[Context], object] = field(repr=False)
     _service_view: ServiceView | None = field(default=None, init=False, repr=False)
     _static_active: bool | None = field(default=None, init=False, repr=False)
     api_version: int = field(default=3, init=False)
@@ -55,7 +55,7 @@ class ComposablePlugin:
             raise ValueError("v3 插件 version 必须是非空且无首尾空白的字符串")
         apply = getattr(module, "apply", None)
         if not callable(apply):
-            raise ValueError("v3 插件模块必须导出 apply(ctx, config)")
+            raise ValueError("插件模块必须导出 apply(ctx)")
 
         # 2. Dependencies are typed ServiceKeys; ordering comes from providers.
         raw_inject = cast(object, getattr(module, "inject", ()))
@@ -123,19 +123,15 @@ class ComposablePlugin:
             web_requires=web_requires,
             web_provides=web_provides,
             web_contract_digests=web_contract_digests,
-            _apply=cast(Callable[[Context, object], object], apply),
+            _apply=cast(Callable[[Context], object], apply),
         )
-
-    @property
-    def ConfigModel(self) -> type[object] | None:
-        return cast(type[object] | None, getattr(self.module, "Config", None))
 
     async def apply(self, ctx: Context) -> None:
         active = self.is_active()
         ctx._set_static_active(active)  # pyright: ignore[reportPrivateUsage]
         if not active:
             return
-        result = self._apply(ctx, ctx.runtime.config)
+        result = self._apply(ctx)
         if inspect.isawaitable(result):
             await result
 

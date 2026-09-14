@@ -39,13 +39,14 @@ inject = (ServiceKey[object]("required.service"),)
 class Config(BaseModel):
     enabled: bool = True
 
-async def apply(ctx: Context, config: Config) -> None:
+async def apply(ctx: Context) -> None:
+    config = Config.model_validate(ctx.config)
     runtime = ctx.runtime
     # runtime 由 Core 分配 plugin_id/plugin_dir/data_dir/workspace/config；
     # 插件自己实现领域读取、注册和 Effect 清理。
 ```
 
-- `name / version / apply` 必需；`inject / Config / desc / author` 可选。
+- `name / version / apply` 必需；`inject / desc / author` 可选。配置模型是插件内部实现，不属于模块导出协议。
 - `inject` 只接受 typed `ServiceKey`。扫描顺序不承担依赖语义；启动期先出现的 consumer 可以等待随后出现的 provider，完整 stable 树结束仍缺 Service 时启动失败。
 - `ctx.runtime` 只给出 Core 拥有的身份、路径和配置接入点，不替插件实现领域数据协议。
 - `apply` 的注册、监听器、任务和子插件必须归属 Fiber/Effect；Root 退役时逆序回收。
