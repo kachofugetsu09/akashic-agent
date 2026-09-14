@@ -7,6 +7,7 @@ the exact scope active for that operation.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
@@ -23,7 +24,7 @@ RequestScopeOpener = Callable[
     [], AbstractAsyncContextManager[Any]
 ]
 
-_ACTIVE_SCOPE: ContextVar[Any | None] = ContextVar(
+_ACTIVE_SCOPE: ContextVar[tuple[Any, asyncio.Task[Any] | None] | None] = ContextVar(
     "akashic_clients_active_request_scope",
     default=None,
 )
@@ -36,7 +37,7 @@ async def open_request_scope(
     """Open one exact host scope and expose it to nested synchronous readers."""
 
     async with opener() as scope:
-        token = _ACTIVE_SCOPE.set(scope)
+        token = _ACTIVE_SCOPE.set((scope, asyncio.current_task()))
         try:
             yield scope
         finally:
@@ -46,11 +47,14 @@ async def open_request_scope(
 def active_scope() -> Any | None:
     """Return the exact scope owned by the current request task, if any."""
 
-    return _ACTIVE_SCOPE.get()
+    bound = _ACTIVE_SCOPE.get()
+    if bound is None or bound[1] is not asyncio.current_task():
+        return None
+    return bound[0]
 
 
 def _require_active_scope(capability: str) -> Any:
-    scope = _ACTIVE_SCOPE.get()
+    scope = active_scope()
     if scope is None:
         raise RuntimeError(f"akashic {capability} 必须在 request scope 内读取")
     return scope
