@@ -33,6 +33,21 @@
   },
   "plugins": [
     {
+      "name": "workloads",
+      "depends_on": [],
+      "reason": "普通 provider 持有 Workload；无贡献时不调用 Controller。"
+    },
+    {
+      "name": "managed_processes",
+      "depends_on": [],
+      "reason": "普通 provider 持有实际进程。"
+    },
+    {
+      "name": "mcp",
+      "depends_on": [],
+      "reason": "普通 provider 按调用取得 MCP 会话。"
+    },
+    {
       "name": "commands",
       "depends_on": [],
       "reason": "拥有命令注册、封存、执行和未知效果恢复。"

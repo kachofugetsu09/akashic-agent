@@ -119,7 +119,7 @@ async def test_dashboard_close_failure_retains_same_handle(tmp_path):
         await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
         with pytest.raises(RuntimeError, match="不是 closeable"):
             registry.prepare_dashboard(
-                core_routes=(), workload_urls=lambda generation: {},
+                core_routes=(),
                 validation_owners=frozenset(), tolerate_failures=False,
             )
         with pytest.raises(RuntimeError, match="retry close"):

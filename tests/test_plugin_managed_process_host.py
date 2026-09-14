@@ -12,8 +12,8 @@ from urllib.request import urlopen
 import pytest
 
 from agent.plugin_composition import ManagedProcessDefinition
-import agent.plugins.managed_process_host as managed_process_host
-from agent.plugins.managed_process_host import (
+import plugins.managed_processes.host as managed_process_host
+from plugins.managed_processes.host import (
     ManagedProcessGenerationHost,
     _Generation,
     _LogRing,

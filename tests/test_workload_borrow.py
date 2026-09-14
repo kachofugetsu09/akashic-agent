@@ -15,9 +15,9 @@ from agent.plugin_composition.workload_slots import (
     WorkloadHealth,
     WorkloadLimits,
     WorkloadPort,
-    _WorkloadDeclarations,
 )
-from agent.plugins.workload_generation_host import WorkloadGenerationHost, _http_health
+from plugins.workloads.definitions import WorkloadBinding, _descriptor
+from plugins.workloads.host import WorkloadGenerationHost, _http_health
 from agent.workloads.client import WorkloadEffectUnknown
 from agent.workloads.model import (
     WorkloadEndpoint,
@@ -90,12 +90,10 @@ async def test_health_probe_does_not_mistake_busy_loop_for_unhealthy_workload(st
 @pytest_asyncio.fixture(loop_scope="session")
 async def workload(tmp_path):
     root = CompositionRoot("test")
-    declarations = _WorkloadDeclarations()
+    bindings = []
 
     async def apply(ctx):
-        await declarations.register(
-            ctx,
-            Workload(
+        value = Workload(
                 name="desktop",
                 image="example/desktop@sha256:" + "a" * 64,
                 command=("/start",),
@@ -103,8 +101,10 @@ async def workload(tmp_path):
                 data=(WorkloadData("profile", "/data"),),
                 health=WorkloadHealth("gateway"),
                 limits=WorkloadLimits(0, 0, 0),
-            ),
-        )
+            )
+        health = await ctx.health("desktop")
+        bindings.append(WorkloadBinding(_descriptor("desktop", value), health,
+            ctx.fiber, ctx.fiber.activation_token, ctx.report_incident))
 
     await root.mount(
         apply,
@@ -118,8 +118,7 @@ async def workload(tmp_path):
             {},
         ),
     )
-    registry = declarations.freeze(root.instance_token)
-    binding = next(iter(registry.values()))
+    binding = bindings[0]
     controller = Controller()
 
     async def healthy(url, timeout):

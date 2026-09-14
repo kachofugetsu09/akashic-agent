@@ -1,13 +1,9 @@
-"""Core-owned generation host for declaration-backed stdio MCP servers.
-
-The plugin composition layer owns only frozen declarations.  This module owns
-the materialized :class:`McpClient`, its generation fence and the route facade;
-plugins never receive a client, process, or mutable tool wrapper.
-"""
+"""MCP provider 的会话、协议恢复与关闭 owner，不读取 Core Snapshot。"""
 
 from __future__ import annotations
 
 import asyncio
+from agent.plugin_composition.effect import _join_cleanup
 import hashlib
 import inspect
 import json
@@ -20,11 +16,11 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol, cast
 
 from agent.mcp.client import McpClient, McpToolExecutionError
-from agent.plugin_composition.mcp_slots import (
+from agent.plugin_composition.mcp_slots import McpToolView, McpCallResult, McpLogView
+from .definitions import (
     McpServerBinding,
     McpServerDefinition,
     McpServerDescriptor,
-    McpServerRegistry,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,44 +64,11 @@ class IncidentReporter(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class McpMaterializedCommand:
-    """Core-resolved command, cwd and base environment for one server."""
+    """Host-authorized command, cwd and base environment for one server."""
 
     command: tuple[str, ...]
     cwd: str
     env: Mapping[str, str] = field(default_factory=dict)
-
-@dataclass(frozen=True, slots=True)
-class McpToolView:
-    """Immutable tool metadata exposed by a generation facade."""
-
-    name: str
-    description: str
-    input_schema: Mapping[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class McpCallResult:
-    """The only successful route result states: success or tool_error."""
-
-    status: Literal["success", "tool_error"]
-    output: str
-
-    @property
-    def success(self) -> bool:
-        return self.status == "success"
-
-    @property
-    def tool_error(self) -> bool:
-        return self.status == "tool_error"
-
-
-@dataclass(frozen=True, slots=True)
-class McpLogView:
-    """Bounded protocol stdout/stderr diagnostics owned by the client."""
-
-    stdout: tuple[str, ...]
-    stderr: tuple[str, ...]
-
 
 @dataclass(frozen=True, slots=True)
 class McpCleanupTombstone:
@@ -144,7 +107,6 @@ class _McpEntry:
 class _Generation:
     generation_id: str
     mode: McpMode
-    registry: McpServerRegistry
     entries: dict[str, _McpEntry]
     token: object = field(default_factory=object)
     state: McpGenerationState = "starting"
@@ -345,7 +307,7 @@ class McpGenerationHost:
     async def start_generation(
         self,
         generation_id: str,
-        registry: McpServerRegistry,
+        registry: Mapping[str, McpServerBinding],
         materialized_commands: Mapping[str, McpMaterializedCommand],
         *,
         mode: McpMode = "candidate",
@@ -375,12 +337,11 @@ class McpGenerationHost:
         generation = _Generation(
             generation_id=generation_id,
             mode=mode,
-            registry=registry,
             entries={},
         )
         self._generations[generation_id] = generation
         try:
-            # 1. Build each Core-owned client and complete its handshake/tools-list.
+            # 1. Build each provider-owned client and complete its handshake/tools-list.
             for name, binding in bindings.items():
                 entry = await self._start_entry(
                     generation,
@@ -405,9 +366,9 @@ class McpGenerationHost:
                 name=f"mcp_generation_cleanup:{generation_id}",
             )
             try:
-                await _await_task_after_cancellation(cleanup_task)
+                await _join_cleanup(cleanup_task)
             except asyncio.CancelledError:
-                if not cleanup_task.done() or cleanup_task.exception() is not None:
+                if not cleanup_task.done() or cleanup_task.cancelled() or cleanup_task.exception() is not None:
                     self._retain_tombstone(generation, _task_error(cleanup_task, error))
                 else:
                     _ = self._generations.pop(generation_id, None)
@@ -434,9 +395,9 @@ class McpGenerationHost:
                 name=f"mcp_generation_stop:{generation_id}",
             )
             try:
-                await _await_task_after_cancellation(cleanup_task)
+                await _join_cleanup(cleanup_task)
             except asyncio.CancelledError:
-                if cleanup_task.done() and cleanup_task.exception() is None:
+                if cleanup_task.done() and not cleanup_task.cancelled() and cleanup_task.exception() is None:
                     _ = self._generations.pop(generation_id, None)
                     _ = self._tombstones.pop(generation_id, None)
                 else:
@@ -462,9 +423,9 @@ class McpGenerationHost:
                 name=f"mcp_generation_retry:{generation_id}",
             )
             try:
-                await _await_task_after_cancellation(cleanup_task)
+                await _join_cleanup(cleanup_task)
             except asyncio.CancelledError:
-                if cleanup_task.done() and cleanup_task.exception() is None:
+                if cleanup_task.done() and not cleanup_task.cancelled() and cleanup_task.exception() is None:
                     _ = self._generations.pop(generation_id, None)
                     _ = self._tombstones.pop(generation_id, None)
                 else:
@@ -664,7 +625,7 @@ class McpGenerationHost:
             process_identity=None,
         )
         # Register the client before any await so cancellation or handshake
-        # failure leaves a Core-owned cleanup handle behind.
+        # failure leaves a provider-owned cleanup handle behind.
         generation.entries[definition.name] = entry
         await self._emit_health(
             generation.generation_id,
@@ -929,10 +890,8 @@ class McpGenerationHost:
 
     @staticmethod
     def _validate_registry(
-        registry: McpServerRegistry,
+        registry: Mapping[str, McpServerBinding],
     ) -> dict[str, McpServerBinding]:
-        if type(registry) is not McpServerRegistry:
-            raise TypeError("MCP host requires an exact frozen McpServerRegistry")
         bindings: dict[str, McpServerBinding] = {}
         for name, binding in registry.items():
             if type(binding) is not McpServerBinding:
@@ -1037,7 +996,7 @@ class McpGenerationHost:
         result: dict[str, McpMaterializedCommand] = {}
         for name, materialized in commands.items():
             if type(materialized) is not McpMaterializedCommand:
-                raise TypeError("MCP command must be Core-owned McpMaterializedCommand")
+                raise TypeError("MCP command must be provider-owned McpMaterializedCommand")
             if (
                 not isinstance(materialized.command, tuple)
                 or not materialized.command

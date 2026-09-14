@@ -94,7 +94,7 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
     promoted_lease = None
     plugin_id = "runtime_mcp@lab"
     old_generation = old_lease.snapshot.generations[plugin_id]
-    old_runtime = _composition_runtime(manager, old_generation)
+    old_runtime = _mcp_registration(old_lease.snapshot)
     old_server = _mcp_server(old_runtime)
     old_ca_bundle = _runtime_ca_bundle(manager, old_generation)
 
@@ -110,9 +110,9 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
 
         latest_lease = manager.snapshot_store.lease(selector="latest")
         latest_generation = latest_lease.snapshot.generations[plugin_id]
-        latest_runtime = _composition_runtime(manager, latest_generation)
+        latest_runtime = _mcp_registration(latest_lease.snapshot)
         latest_server = _mcp_server(latest_runtime)
-        assert latest_runtime.generation_id != old_runtime.generation_id
+        assert latest_runtime.ctx.runtime.generation_id != old_runtime.ctx.runtime.generation_id
 
         # 2. 更新后旧 MCP 延迟读取自己的 CA bundle，新旧调用各自保持代际身份。
         old_probe = await _call_runtime_probe(old_server)
@@ -159,15 +159,15 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         promoted_lease = manager.snapshot_store.lease()
         assert promoted_lease.snapshot is candidate_snapshot
         promoted_generation = promoted_lease.snapshot.generations[plugin_id]
-        promoted_runtime = _composition_runtime(manager, promoted_generation)
+        promoted_runtime = _mcp_registration(promoted_lease.snapshot)
         assert promoted_runtime is not latest_runtime
-        assert promoted_runtime.generation_id == latest_runtime.generation_id
-        assert promoted_runtime.mode == "formal"
+        assert promoted_runtime.ctx.runtime.generation_id == latest_runtime.ctx.runtime.generation_id
+        assert promoted_runtime.grant.mode == "formal"
 
         await promoted_lease.release()
         promoted_lease = None
         await manager.snapshot_store.retry_drains()
-        assert manager._composition_generation_host.get(old_generation.generation_id) is None
+        assert old_runtime.ctx.fiber.activation_token is None
         assert old_artifact.is_dir()
 
         # 4. 已排空 artifact 仍保留，只有显式卸载才删除 cache。
@@ -312,7 +312,7 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         assert marker.read_bytes() == production_before
         assert _directory_digest(production_data) == production_digest_before
 
-        candidate_runtime = _composition_runtime(manager, candidate)
+        candidate_runtime = _mcp_registration(manager.latest_snapshot)
         candidate_server = _mcp_server(candidate_runtime)
         probe = await _call_runtime_probe(
             candidate_server,
@@ -353,7 +353,7 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
     latest_lease = None
     plugin_id = "runtime_mcp@lab"
     old_generation = old_lease.snapshot.generations[plugin_id]
-    old_runtime = _composition_runtime(manager, old_generation)
+    old_runtime = _mcp_registration(old_lease.snapshot)
     old_server = _mcp_server(old_runtime)
     old_ca_bundle = _runtime_ca_bundle(manager, old_generation)
 
@@ -366,12 +366,14 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
         old_ca_bundle.unlink()
 
         # 2. 旧 MCP 在调用时才读取路径，oracle 必须命中原事故而不是静默切新代。
-        error_result = await old_server.route().call("probe", {})
+        async with old_server() as opened:
+            async with opened.route() as route:
+                error_result = await route.call("probe", {})
         assert error_result.tool_error
         assert "cacert.pem" in error_result.output or "No such file" in error_result.output
         assert old_lease.snapshot is manager.current_snapshot
         latest_generation = latest_lease.snapshot.generations[plugin_id]
-        latest_runtime = _composition_runtime(manager, latest_generation)
+        latest_runtime = _mcp_registration(latest_lease.snapshot)
         latest_probe = await _call_runtime_probe(_mcp_server(latest_runtime))
         assert latest_probe["runtime_version"] == "v2"
         assert latest_probe["ca_bundle"] != str(old_ca_bundle)
@@ -482,6 +484,8 @@ async def _start_runtime_mcp(
     _commit_all(source, "runtime-v1")
     provider = tmp_path / "providers/assets"
     shutil.copytree(Path(__file__).parents[1] / "plugins/assets", provider,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(Path(__file__).parents[1] / "plugins/mcp", provider.parent / "mcp",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     bus = EventBus()
     initialize_plugin_workspace(tmp_path / "workspace")
@@ -616,7 +620,9 @@ def _directory_digest(root: Path) -> str:
 async def _call_runtime_probe(server: Any) -> dict[str, Any]:
     """调用 v3 MCP route，并严格解析结构化代际证据。"""
 
-    result = await server.route().call("probe", {})
+    async with server() as opened:
+        async with opened.route() as route:
+            result = await route.call("probe", {})
     if result.tool_error:
         raise AssertionError(f"MCP probe 调用失败: {result.output}")
     raw = result.output
@@ -626,19 +632,15 @@ async def _call_runtime_probe(server: Any) -> dict[str, Any]:
     return parsed
 
 
-def _composition_runtime(manager: PluginManager, generation: Any) -> Any:
-    """Return one exact v3 composition runtime for a generation."""
-
-    runtime = manager._composition_generation_host.get(generation.generation_id)
-    assert runtime is not None and runtime.mcp is not None
-    return runtime
+def _mcp_registration(snapshot):
+    """从被测快照的实际 provider 读取注册 owner，而非中央 generation host。"""
+    from agent.plugin_composition.mcp_slots import MCP_SERVERS
+    return snapshot.composition_root.context.require(MCP_SERVERS)._entries["runtime_probe"]
 
 
-def _mcp_server(runtime: Any) -> Any:
-    """Return the exact runtime MCP server view under test."""
-
-    assert runtime.mcp is not None
-    return runtime.mcp["runtime_probe"]
+def _mcp_server(entry):
+    from agent.plugin_composition.mcp_slots import MCP_SERVERS
+    return lambda: entry.ctx.require(MCP_SERVERS).open(entry.ctx, entry.definition.name)
 
 
 def _write_v3_plugin(

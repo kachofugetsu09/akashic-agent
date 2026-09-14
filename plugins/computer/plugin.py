@@ -295,24 +295,24 @@ async def apply(ctx: Context) -> None:
         idempotent=False,
         risk="external-side-effect",
     )
+    workload = await _register_workload(ctx)
     await ctx.require(MCP_SERVERS).register(
         ctx,
         McpServerDefinition(
             name="computer",
             command=("mcp_server.py",),
-            workload_env=(WorkloadEnv("COMPUTER_URL", "computer", "gateway"),),
+            workload_env=(WorkloadEnv("COMPUTER_URL", workload, "gateway"),),
         ),
     )
-    await _register_workload(ctx)
     async def start_follower(_event: object) -> None:
         _ = await ctx.spawn(_start_follower(ctx), name="computer-turn-follower")
 
     _ = await ctx.on(RUNTIME_STARTED, start_follower)
 
 
-async def _register_workload(ctx: Context) -> None:
-    """注册持久 source-driver workload。"""
-    await ctx.require(WORKLOADS).register(
+async def _register_workload(ctx: Context):
+    """取得持久 source-driver Workload 句柄，再供 MCP 借用。"""
+    return await ctx.require(WORKLOADS).register(
         ctx,
         Workload(
             name="computer",

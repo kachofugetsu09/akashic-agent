@@ -1,24 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+from agent.plugin_composition.effect import _join_cleanup
 import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import httpx
 
-from agent.plugin_composition.workload_slots import (
+from .definitions import (
     WorkloadBinding,
     WorkloadDescriptor,
 )
-from agent.workloads.client import WorkloadController, WorkloadEffectUnknown
+from agent.workloads.client import WorkloadEffectUnknown
 from agent.workloads.model import (
     WorkloadLease,
     WorkloadStartRequest,
     WorkloadStartReceipt,
+    WorkloadStopReceipt,
     workload_spec_digest,
 )
 
@@ -78,12 +80,17 @@ class WorkloadGeneration:
         }
 
 
+class LeaseController(Protocol):
+    async def start(self, request: WorkloadStartRequest) -> WorkloadStartReceipt: ...
+    async def stop(self, lease: WorkloadLease) -> WorkloadStopReceipt: ...
+
+
 class WorkloadGenerationHost:
     """Own Controller leases until each workload is strongly stopped."""
 
     def __init__(
         self,
-        controller: WorkloadController,
+        controller: LeaseController,
         *,
         workspace_id: str,
         health_probe: HealthProbe | None = None,
@@ -178,9 +185,9 @@ class WorkloadGenerationHost:
         except BaseException as start_error:
             cleanup_task = asyncio.create_task(self._cleanup(generation))
             try:
-                await _await_task_after_cancellation(cleanup_task)
+                await _join_cleanup(cleanup_task)
             except asyncio.CancelledError:
-                if cleanup_task.done() and cleanup_task.exception() is None:
+                if cleanup_task.done() and not cleanup_task.cancelled() and cleanup_task.exception() is None:
                     self._generations.pop(generation_id, None)
                 else:
                     self._retain(generation, start_error, state="cleanup_failed")
@@ -211,9 +218,9 @@ class WorkloadGenerationHost:
             return
         cleanup_task = asyncio.create_task(self._cleanup(generation))
         try:
-            await _await_task_after_cancellation(cleanup_task)
+            await _join_cleanup(cleanup_task)
         except asyncio.CancelledError:
-            if cleanup_task.done() and cleanup_task.exception() is None:
+            if cleanup_task.done() and not cleanup_task.cancelled() and cleanup_task.exception() is None:
                 self._generations.pop(generation_id, None)
                 self._tombstones.pop(generation_id, None)
             else:
@@ -240,7 +247,7 @@ class WorkloadGenerationHost:
         matches = [
             (generation, entry)
             for generation in self._generations.values()
-            if generation.mode == "formal" and generation.state == "ready"
+            if generation.state == "ready"
             for entry in generation.entries.values()
             if entry.binding.descriptor == descriptor
         ]
@@ -580,10 +587,7 @@ async def _await_task_after_cancellation(task: asyncio.Task[Any]) -> Any:
             if task.done():
                 break
             cancelled = True
-    try:
-        result = task.result()
-    except asyncio.CancelledError:
-        result = None
+    result = task.result()
     if cancelled:
         raise asyncio.CancelledError
     return result

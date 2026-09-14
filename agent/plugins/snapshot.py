@@ -16,9 +16,6 @@ from agent.plugins.generation import PluginGeneration
 from agent.plugins.selection import SelectionWriteError
 from agent.plugin_composition import (
     CHANNELS,
-    MANAGED_PROCESSES,
-    WORKLOADS,
-    MCP_SERVERS,
     CompositionRoot,
     CompositionError,
     TopologyView,
@@ -33,18 +30,6 @@ from agent.plugin_composition.channels import (
     CoreChannelDefinition,
     _freeze_plugin_channels,
     channel_config_revision,
-)
-from agent.plugin_composition.mcp_slots import (
-    McpServerRegistry,
-    _freeze_plugin_mcp_servers,
-)
-from agent.plugin_composition.process_slots import (
-    ManagedProcessRegistry,
-    _freeze_plugin_managed_processes,
-)
-from agent.plugin_composition.workload_slots import (
-    WorkloadRegistry,
-    _freeze_plugin_workloads,
 )
 
 SnapshotState = Literal[
@@ -73,12 +58,6 @@ class RuntimeSnapshot:
     channel_registry: ChannelRegistrySnapshot | None = None
     channel_registry_identity: str | None = None
     channel_catalog: CommittedChannelCatalog | None = None
-    mcp_server_registry: McpServerRegistry | None = None
-    mcp_server_registry_identity: str | None = None
-    managed_process_registry: ManagedProcessRegistry | None = None
-    managed_process_registry_identity: str | None = None
-    workload_registry: WorkloadRegistry | None = None
-    workload_registry_identity: str | None = None
     composition_root: CompositionRoot | None = None
     composition_topology: TopologyView | None = None
     composition_active_plugin_ids: frozenset[str] | None = None
@@ -151,9 +130,6 @@ class RuntimeSnapshotCompiler:
         composition_active_plugin_ids: frozenset[str] | None = None
         channel_registry: ChannelRegistrySnapshot | None = None
         channel_catalog: CommittedChannelCatalog | None = None
-        mcp_server_registry: McpServerRegistry | None = None
-        managed_process_registry: ManagedProcessRegistry | None = None
-        workload_registry: WorkloadRegistry | None = None
         if composition_root is not None:
             catalog_root_token = composition_root.instance_token
             catalog_context = composition_root.context
@@ -186,81 +162,6 @@ class RuntimeSnapshotCompiler:
                     },
                 )
                 identity += f"|channels-v3:{channel_registry.identity}"
-            process_declarations = catalog_context.get(MANAGED_PROCESSES)
-            if process_declarations is not None:
-                frozen_processes = _freeze_plugin_managed_processes(
-                    process_declarations,
-                    catalog_root_token,
-                )
-                for descriptor in frozen_processes.descriptors:
-                    if descriptor.owner not in generations:
-                        raise RuntimeError(
-                            "RuntimeSnapshot managed process owner 不属于 generations: "
-                            f"{descriptor.owner}"
-                        )
-                managed_process_registry = frozen_processes
-                identity += f"|managed-process-v3:{frozen_processes.identity}"
-            workload_declarations = catalog_context.get(WORKLOADS)
-            if workload_declarations is not None:
-                frozen_workloads = _freeze_plugin_workloads(
-                    workload_declarations,
-                    catalog_root_token,
-                )
-                for descriptor in frozen_workloads.descriptors:
-                    if descriptor.owner not in generations:
-                        raise RuntimeError(
-                            "RuntimeSnapshot Workload owner 不属于 generations: "
-                            f"{descriptor.owner}"
-                        )
-                workload_registry = frozen_workloads
-                identity += f"|workload-v3:{frozen_workloads.identity}"
-            mcp_servers = catalog_context.get(MCP_SERVERS)
-            if mcp_servers is not None:
-                frozen_mcp = _freeze_plugin_mcp_servers(
-                    mcp_servers,
-                    catalog_root_token,
-                )
-                for descriptor in frozen_mcp.descriptors:
-                    generation = generations.get(descriptor.owner)
-                    if generation is None:
-                        raise RuntimeError(
-                            "RuntimeSnapshot MCP owner 不属于 generations: "
-                            f"{descriptor.owner}"
-                        )
-                    for endpoint in descriptor.endpoint_env:
-                        process = (
-                            None
-                            if managed_process_registry is None
-                            else managed_process_registry.get(endpoint.process)
-                        )
-                        if (
-                            process is None
-                            or process.descriptor.owner != descriptor.owner
-                        ):
-                            raise RuntimeError(
-                                "RuntimeSnapshot MCP endpoint 缺少同 owner managed process: "
-                                f"{descriptor.owner}:{descriptor.name} -> "
-                                f"{endpoint.process}"
-                            )
-                    for endpoint in descriptor.workload_env:
-                        workload = (
-                            None
-                            if workload_registry is None
-                            else workload_registry.owned(
-                                descriptor.owner,
-                                endpoint.workload,
-                            )
-                        )
-                        if workload is None or endpoint.port not in {
-                            item.name for item in workload.descriptor.ports
-                        }:
-                            raise RuntimeError(
-                                "RuntimeSnapshot MCP workload endpoint 缺少同 owner 端口: "
-                                f"{descriptor.owner}:{descriptor.name} -> "
-                                f"{endpoint.workload}:{endpoint.port}"
-                            )
-                mcp_server_registry = frozen_mcp
-                identity += f"|mcp-v3:{frozen_mcp.identity}"
             assert composition_active_plugin_ids is not None
             self._validate_channel_registry(
                 channel_registry,
@@ -296,16 +197,6 @@ class RuntimeSnapshotCompiler:
                 ),
                 "channels:"
                 + ("" if channel_registry is None else channel_registry.identity),
-                "processes:"
-                + (
-                    ""
-                    if managed_process_registry is None
-                    else managed_process_registry.identity
-                ),
-                "workloads:"
-                + ("" if workload_registry is None else workload_registry.identity),
-                "mcp:"
-                + ("" if mcp_server_registry is None else mcp_server_registry.identity),
                 "channel-catalog:"
                 + ("" if channel_catalog is None else channel_catalog.identity),
             )
@@ -319,20 +210,6 @@ class RuntimeSnapshotCompiler:
                 None if channel_registry is None else channel_registry.identity
             ),
             channel_catalog=channel_catalog,
-            mcp_server_registry=mcp_server_registry,
-            mcp_server_registry_identity=(
-                None if mcp_server_registry is None else mcp_server_registry.identity
-            ),
-            managed_process_registry=managed_process_registry,
-            managed_process_registry_identity=(
-                None
-                if managed_process_registry is None
-                else managed_process_registry.identity
-            ),
-            workload_registry=workload_registry,
-            workload_registry_identity=(
-                None if workload_registry is None else workload_registry.identity
-            ),
             composition_root=composition_root,
             composition_topology=composition_topology,
             composition_active_plugin_ids=composition_active_plugin_ids,
@@ -1431,12 +1308,6 @@ class RuntimeSnapshotStore:
                 or snapshot.channel_registry is not None
                 or snapshot.channel_registry_identity is not None
                 or snapshot.channel_catalog is not None
-                or snapshot.mcp_server_registry is not None
-                or snapshot.mcp_server_registry_identity is not None
-                or snapshot.managed_process_registry is not None
-                or snapshot.managed_process_registry_identity is not None
-                or snapshot.workload_registry is not None
-                or snapshot.workload_registry_identity is not None
             ):
                 raise RuntimeError(
                     "RuntimeSnapshot composition identity 缺少 Root Context"
@@ -1458,46 +1329,6 @@ class RuntimeSnapshotStore:
             and snapshot.channel_catalog.root_instance_token is not root.instance_token
         ):
             raise RuntimeError("RuntimeSnapshot channel catalog 不属于 exact Root")
-        if snapshot.mcp_server_registry_identity != (
-            None
-            if snapshot.mcp_server_registry is None
-            else snapshot.mcp_server_registry.identity
-        ):
-            raise RuntimeError("RuntimeSnapshot MCP descriptor 在编译后发生变化")
-        if (
-            snapshot.mcp_server_registry is not None
-            and snapshot.mcp_server_registry.root_instance_token
-            is not root.instance_token
-        ):
-            raise RuntimeError("RuntimeSnapshot MCP registry 不属于 exact Root")
-        if snapshot.managed_process_registry_identity != (
-            None
-            if snapshot.managed_process_registry is None
-            else snapshot.managed_process_registry.identity
-        ):
-            raise RuntimeError(
-                "RuntimeSnapshot managed process descriptor 在编译后发生变化"
-            )
-        if (
-            snapshot.managed_process_registry is not None
-            and snapshot.managed_process_registry.root_instance_token
-            is not root.instance_token
-        ):
-            raise RuntimeError(
-                "RuntimeSnapshot managed process registry 不属于 exact Root"
-            )
-        if snapshot.workload_registry_identity != (
-            None
-            if snapshot.workload_registry is None
-            else snapshot.workload_registry.identity
-        ):
-            raise RuntimeError("RuntimeSnapshot Workload descriptor 在编译后发生变化")
-        if (
-            snapshot.workload_registry is not None
-            and snapshot.workload_registry.root_instance_token
-            is not root.instance_token
-        ):
-            raise RuntimeError("RuntimeSnapshot Workload registry 不属于 exact Root")
         topology = snapshot.composition_topology
         if topology is None:
             raise RuntimeError("RuntimeSnapshot composition Root 缺少 TopologyView")

@@ -24,10 +24,8 @@ class PluginDashboardHost:
 
     def __init__(
         self, *, core_routes: tuple[object, ...],
-        workload_urls: Callable[[str], Mapping[tuple[str, str], str]] | None = None,
     ) -> None:
         self._core_routes = core_routes
-        self._workload_urls = workload_urls or (lambda _generation_id: {})
 
     def prepare_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         self._prepare_snapshot(snapshot, tolerate_failures=False)
@@ -44,7 +42,7 @@ class PluginDashboardHost:
             if generation.validation_workspace is not None
         )
         registry.prepare_dashboard(
-            core_routes=self._core_routes, workload_urls=self._workload_urls,
+            core_routes=self._core_routes,
             validation_owners=validation, tolerate_failures=tolerate_failures,
         )
 

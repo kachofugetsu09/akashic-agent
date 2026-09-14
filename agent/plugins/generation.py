@@ -50,7 +50,6 @@ class PluginGeneration:
     config_projection: dict[str, object] = field(default_factory=dict)
     source_type: Literal["builtin", "installed"] = "builtin"
     static_manifest: StaticPluginManifest | None = None
-    composition_runtime_cleanup_registered: bool = False
     runtime_snapshot: RuntimeSnapshot | None = None
     retire_started: bool = False
     state: str = "active"

@@ -150,7 +150,7 @@ from agent.plugin_composition.process_slots import (
 )
 from agent.plugin_composition.workload_slots import (
     WORKLOADS,
-    PluginWorkloads,
+    Workloads,
     Workload,
     WorkloadData,
     WorkloadHealth,
@@ -347,7 +347,7 @@ __all__ = [
     "WorkloadEnv",
     "McpServerDefinition",
     "ManagedProcessDefinition",
-    "PluginWorkloads",
+    "Workloads",
     "Workload",
     "WorkloadData",
     "WorkloadHealth",

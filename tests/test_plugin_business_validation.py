@@ -273,15 +273,17 @@ async def test_validation_copy_failure_closes_connections_and_releases_candidate
 
 @pytest.mark.asyncio
 async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_retry(tmp_path, monkeypatch):
-    from tests.test_mcp_binding_scope import SERVICE, write_plugin
+    from tests.test_mcp_binding_scope import SERVICE, write_plugin, select_mcp_provider
 
     source, workspace, home = (tmp_path / name for name in ("source", "workspace", "home"))
     write_plugin(source)
+    providers = tmp_path / "providers"
+    select_mcp_provider(providers)
     _commit(source)
     install_git_plugin(workspace=workspace, source=str(source), marketplace="lab", plugins_home=home)
     log = MessageLog(workspace / "sessions.db")
     initialize_plugin_workspace(workspace)
-    host = PluginManager([], event_bus=EventBus(), workspace=workspace, message_log=log,
+    host = PluginManager([providers], event_bus=EventBus(), workspace=workspace, message_log=log,
                          installed_cache_root=home / "cache")
     try:
         await host.load_all()
@@ -297,19 +299,22 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
             async with host.open_validation(result.update_id) as scope:
                 validation = next(iter(host._validation_hosts.values()))
                 child = validation.manager
-                runtime = child._composition_generation_host
+                # 已安装 provider 使用自己的模块 namespace，按实际会话 host 注入故障。
                 async with scope.require(SERVICE)() as server:
+                    from agent.plugin_composition.mcp_slots import MCP_SERVERS
+                    service = child.current_snapshot.composition_root.context.require(MCP_SERVERS)
+                    session = service._sessions[server.generation_id]
+                    actual = session._host._cleanup_entry
+                    async def fail_actual(entry):
+                        nonlocal failed, process
+                        if not failed:
+                            failed = True
+                            process = entry.client._process
+                            raise OSError("injected live MCP cleanup failure")
+                        await actual(entry)
+                    monkeypatch.setattr(session._host, "_cleanup_entry", fail_actual)
                     async with server.route() as route:
                         assert (await route.call("ping", {})).output == "fixed B"
-                original = runtime._mcp_host._cleanup_entry
-                async def fail_once(entry):
-                    nonlocal failed, process
-                    if not failed:
-                        failed = True
-                        process = entry.client._process
-                        raise OSError("injected live MCP cleanup failure")
-                    await original(entry)
-                monkeypatch.setattr(runtime._mcp_host, "_cleanup_entry", fail_once)
         assert failed and process is not None and process.returncode is None
         assert host.latest_snapshot.lease_count == 1
         assert tuple(host._validation_hosts) == (validation.identity,)
@@ -319,9 +324,9 @@ async def test_validation_mcp_failure_keeps_real_owner_and_candidate_pin_for_ret
         assert process.returncode is not None
         assert host._validation_hosts == {}
         assert host.latest_snapshot.lease_count == 0
-        formal = host._composition_generation_host.get(host.current_snapshot.generations["probe@lab"].generation_id)
-        async with formal.mcp.server("first").route() as route:
-            assert (await route.call("ping", {})).output == "fixed A"
+        async with host.current_snapshot.composition_root.service_value(SERVICE)() as formal:
+            async with formal.route() as route:
+                assert (await route.call("ping", {})).output == "fixed A"
     finally:
         await host.terminate_all()
         log.close()

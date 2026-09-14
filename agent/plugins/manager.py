@@ -56,9 +56,6 @@ from agent.plugin_composition import (
     COMMANDS,
     INTERACTION_UNDO,
     CompositionError,
-    MANAGED_PROCESSES,
-    WORKLOADS,
-    MCP_SERVERS,
     TIMERS,
     CompositionRoot,
     FiberState,
@@ -83,10 +80,9 @@ from agent.plugin_composition.channels import (
     ProviderClient,
     ProviderClientFactory,
 )
-from agent.plugin_composition.mcp_slots import PluginMcpServers
-from agent.plugin_composition.process_slots import PluginManagedProcesses
 from agent.plugin_composition.processes import PROCESSES, PluginProcesses
-from agent.plugin_composition.workload_slots import PluginWorkloads
+from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
+from agent.host_bridge.plugin_execution import CodeOwner, ExecutionAccess, ControllerAccess
 from agent.plugin_composition.model import (
     resolve_declared_workspace_file,
     resolve_declared_workspace_root,
@@ -95,11 +91,6 @@ from agent.control.timer import AsyncioOneShotTimer
 from agent.plugin_composition.durable_delivery_store import DurableDeliveryStore
 from agent.plugins.composable import ComposablePlugin
 from agent.plugins.interaction_undo import InteractionUndoCoordinator
-from agent.plugins.composition_generation_host import (
-    CompositionGenerationHost,
-    CompositionRuntimeFailure,
-    CompositionRuntimeGeneration,
-)
 from agent.plugins.channel_generation_host import (
     ChannelCleanupTombstone,
     ChannelGeneration,
@@ -336,7 +327,6 @@ class PluginManager:
         self._gate_results: dict[str, GateResult] = {}
         self._stable_aliases: dict[str, str] = {}
         self._fresh_importer = FreshPluginImporter()
-        self._composition_runtime_generations: dict[str, PluginGeneration] = {}
         if workload_controller is None:
             workload_socket = os.environ.get("AKASHIC_WORKLOAD_SOCKET", "").strip()
             if workload_socket:
@@ -348,17 +338,9 @@ class PluginManager:
         self._restart_gate = restart_gate
         self._owns_control_frames = control_frames is None
         self._control_frames = FrameBook() if control_frames is None else control_frames
-        workload_workspace_id = hashlib.sha256(
+        self._workload_workspace_id = hashlib.sha256(
             str(workspace.resolve(strict=False)).encode("utf-8")
         ).hexdigest()[:16]
-        self._composition_generation_host = CompositionGenerationHost(
-            workload_controller=workload_controller,
-            workspace_id=(
-                workload_workspace_id if workload_controller is not None else None
-            ),
-            on_failure=self._on_composition_runtime_failure,
-            command_resolver=self._resolve_runtime_command,
-        )
         self._snapshot_compiler = RuntimeSnapshotCompiler()
         self._snapshot_store = RuntimeSnapshotStore(self._on_snapshot_drained)
         self._runtime_started_roots: set[object] = set()
@@ -621,11 +603,6 @@ class PluginManager:
     def prepared_generation(self, plugin_id: str) -> PluginGeneration | None:
         return self._prepared_generations.get(plugin_id)
 
-    def workload_urls(self, generation_id: str) -> Mapping[tuple[str, str], str]:
-        """Return ready workload URLs for one exact plugin generation."""
-
-        return self._composition_generation_host.workload_urls(generation_id)
-
     def bind_dashboard_preparer(
         self,
         preparer: Callable[[RuntimeSnapshot], None],
@@ -691,10 +668,6 @@ class PluginManager:
     @property
     def channel_generation_host(self) -> ChannelGenerationHost:
         return self._channel_generation_host
-
-    @property
-    def composition_generation_host(self) -> CompositionGenerationHost:
-        return self._composition_generation_host
 
     @staticmethod
     def _channel_catalog_identity(snapshot: RuntimeSnapshot | None) -> str | None:
@@ -1406,10 +1379,8 @@ class PluginManager:
         selection_ref = self._selection.read()
         if self.current_snapshot is not None:
             raise RuntimeError("load_all 不能重复启动正式 Root")
-        self._composition_generation_host.start_scoped()
         self._plugin_tasks.start()
         self._plugin_processes.start()
-        await self._composition_generation_host.cleanup_candidates()
         recovery = self._reload_journal.pending_recovery()
         receipts = await self._prepare_boot_runtime_recovery(tuple(
             action for action in recovery
@@ -1562,11 +1533,6 @@ class PluginManager:
         _, cancelled = await _complete_critical(
             self._dispose_generation(generation, state="discarded")
         )
-        runtime_failure = self._composition_generation_host.failure(
-            generation.generation_id
-        )
-        if runtime_failure is not None:
-            raise RuntimeError("候选 runtime cleanup 未完成，必须显式 retry")
         self._abort_reload(generation, error=error)
         if self._prepared_generations.get(plugin_id) is generation:
             _ = self._prepared_generations.pop(plugin_id)
@@ -1626,7 +1592,6 @@ class PluginManager:
         *,
         state: str,
         preserve_stable_alias: bool = False,
-        skip_composition_runtime: bool = False,
     ) -> None:
         """成功后才解除 owner；失败或取消保留资源供显式关闭重试。"""
 
@@ -1649,10 +1614,6 @@ class PluginManager:
                 root = generation.runtime_snapshot.composition_root
                 if root in self._building_roots and root.root_fiber.state == FiberState.UNLOADING:
                     raise RuntimeError("构建 Root 清理已失败，须显式 recovery/terminate 重试")
-            if not skip_composition_runtime:
-                await self._stop_composition_generation_runtime(generation)
-            if self._composition_generation_host.failure(generation.generation_id) is not None:
-                raise RuntimeError("generation runtime cleanup 未完成，必须显式 retry")
             if generation.runtime_snapshot is not None:
                 await self._dispose_unreferenced_composition_root(generation.runtime_snapshot)
             failures = await generation.scope.aclose()
@@ -1668,8 +1629,8 @@ class PluginManager:
             _, cancelled = await _complete_critical(close_resources())
         except BaseException as error:
             _ = self._snapshot_store.pause_admission()
-            if self._composition_generation_host.failure(generation.generation_id) is not None:
-                self._record_composition_runtime_failure(
+            if generation.runtime_snapshot is not None:
+                self._record_root_failure(
                     generation,
                     error,
                     formal_effects=("generation_runtime_cleanup_pending",),
@@ -1710,7 +1671,6 @@ class PluginManager:
         if self._dashboard_validation_releaser is not None:
             await self._dashboard_validation_releaser(snapshot)
         await self._stop_runtime_snapshot(snapshot)
-        await self._stop_snapshot_composition_runtimes(snapshot)
         if root in self._building_roots:
             await self._close_building_root(root)
         else:
@@ -1758,25 +1718,6 @@ class PluginManager:
                 excluding_snapshot_id=snapshot.snapshot_id,
             )
         )
-        stop_errors: list[Exception] = []
-        for generation in unreferenced_generations:
-            try:
-                await self._stop_composition_generation_runtime(generation)
-            except Exception as error:
-                stop_errors.append(error)
-                self._record_drained_composition_runtime_failure(
-                    snapshot,
-                    generation,
-                    error,
-                )
-                self._cleanup_failures.append(
-                    CleanupFailure(
-                        resource=(f"plugin:{generation.plugin_id}:composition-runtime"),
-                        error=str(error) or type(error).__name__,
-                    )
-                )
-        if stop_errors:
-            raise ExceptionGroup("generation runtime 关闭失败，保留 Root", stop_errors)
         if root_unreferenced:
             assert composition_root is not None
             if self._dashboard_validation_releaser is not None:
@@ -1796,7 +1737,6 @@ class PluginManager:
                 preserve_stable_alias=(
                     replacement is not None and replacement is not generation
                 ),
-                skip_composition_runtime=True,
             )
             self._forget_drained_generation(generation)
         self._finish_drained_reload(snapshot.snapshot_id)
@@ -2486,7 +2426,7 @@ class PluginManager:
         try:
             _, cancelled = await _complete_critical(self._snapshot_store.discard_latest(ready.snapshot))
         except BaseException as error:
-            self._record_composition_runtime_failure(
+            self._record_root_failure(
                 candidate, error, resource="runtime-snapshot-drain",
                 formal_effects=("candidate_runtime_cleanup_pending",), recovery_target="base",
             )
@@ -2604,7 +2544,7 @@ class PluginManager:
                 self._snapshot_store.pause_admission()
                 owner = attempt or (None if isinstance(inputs, tuple) else next(iter(inputs.values()), None))
                 if owner is not None:
-                    self._record_composition_runtime_failure(
+                    self._record_root_failure(
                         owner, error, formal_effects=("old_runtime_restore_uncertain",),
                         recovery_target="base",
                     )
@@ -2640,7 +2580,7 @@ class PluginManager:
                 self._snapshot_store.pause_admission()
                 owner = attempt or (None if isinstance(inputs, tuple) else next(iter(inputs.values()), None))
                 if owner is not None:
-                    self._record_composition_runtime_failure(
+                    self._record_root_failure(
                         owner, recovery_error, formal_effects=("old_runtime_restore_uncertain",),
                         recovery_target=(
                             "candidate"
@@ -2662,7 +2602,6 @@ class PluginManager:
             self._active_channel_catalog_identity = None
         if snapshot is not None:
             await self._stop_runtime_snapshot(snapshot)
-            await self._stop_snapshot_composition_runtimes(snapshot)
             if snapshot.composition_root is not None:
                 await snapshot.composition_root.dispose()
 
@@ -2735,7 +2674,6 @@ class PluginManager:
             transaction = self._begin_snapshot_publication(snapshot)
             self._publication = transaction
             self._check_operation_commit()
-            await self._start_snapshot_composition_runtimes(snapshot)
             await self._post_snapshot_invariants(snapshot)
             self._snapshot_store.seal_pending_validation(snapshot)
             channel_state = _ChannelPublicationState(
@@ -2765,10 +2703,7 @@ class PluginManager:
                 self._hold_selection_publication(transaction)
                 raise
             # Participant 的清理已经失败时保留 pending；外层不能隐式重试它。
-            if isinstance(error, _PublicationParticipantRestoreError) or any(
-                self._composition_generation_host.failure(item.generation_id) is not None
-                for item in snapshot.generations.values()
-            ):
+            if isinstance(error, _PublicationParticipantRestoreError):
                 if operation.revoked and isinstance(error, Exception):
                     raise BaseExceptionGroup("发布取消且资源清理失败", [asyncio.CancelledError(), error]) from None
                 raise
@@ -2801,7 +2736,7 @@ class PluginManager:
                 if attempt is not None else next(iter(snapshot.generations.values()), None)
             )
             if owner is not None:
-                self._record_composition_runtime_failure(
+                self._record_root_failure(
                     owner, error, formal_effects=("committed_runtime_start_failed",),
                     recovery_target="candidate",
                 )
@@ -2840,22 +2775,6 @@ class PluginManager:
         for generation in old.values():
             self._retire_generation(generation)
 
-    def resource_failures(self) -> tuple[CompositionRuntimeFailure, ...]:
-        """返回调用 scope 保留的真实资源故障；它们不参与插件发布事务。"""
-        return self._composition_generation_host.scoped_failures()
-
-    async def retry_resource_cleanup(self, scope_id: str) -> str:
-        return await self._run_operation(lambda: self._retry_resource_cleanup(scope_id))
-
-    async def _retry_resource_cleanup(self, scope_id: str) -> str:
-        """按调用的精确资源身份重试清理，不切换安装指针或正式 generation。"""
-        host = self._composition_generation_host
-        cleanup = host.retry_scoped_cleanup(scope_id)
-        result, cancelled = await _complete_critical(cleanup)
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
-
     async def retry_runtime_recovery(self, plugin_id: str) -> dict[str, object]:
         return await self._run_operation(lambda: self._retry_runtime_recovery(plugin_id))
 
@@ -2886,11 +2805,7 @@ class PluginManager:
             await self._snapshot_store.wait_for_no_leases(current)
         self._check_operation_commit()
 
-        # 1. 查询 journal 中实际取得的 runtime 身份，不能拿候选 ID 代替正式 owner。
-        for generation_id in self._reload_journal.runtime_generation_ids(action.tx_id):
-            if self._composition_generation_host.failure(generation_id) is not None:
-                await _complete_critical(self._composition_generation_host.retry_generation_cleanup(generation_id))
-                self._composition_runtime_generations.pop(generation_id, None)
+        # 1. 实际资源由其 Root Effect 关闭，不能按插件 ID 重放取得操作。
         for token in (action.failure_resource or "").split(","):
             if token.startswith("channel-binding:"):
                 await _complete_critical(self._channel_generation_host.retry_generation_cleanup(
@@ -3071,7 +2986,6 @@ class PluginManager:
         transaction = self._begin_snapshot_publication(snapshot)
         try:
             self._advance_reload(generation, "validating", candidate_snapshot_id=snapshot.snapshot_id)
-            await self._start_snapshot_composition_runtimes(snapshot, mode="candidate")
             if self._dashboard_preparer is not None:
                 self._dashboard_preparer(snapshot)
             await self._post_publish_invariants(generation, snapshot)
@@ -3086,18 +3000,12 @@ class PluginManager:
                 )
             )
         except BaseException as error:
-            if any(
-                self._composition_generation_host.failure(item.generation_id) is not None
-                for item in snapshot.generations.values()
-            ):
-                self._snapshot_store.pause_admission()
-                raise
             try:
                 _, cleanup_cancelled = await _complete_critical(
                     self._snapshot_store.abort(transaction, reopen_previous=False)
                 )
             except BaseException as cleanup_error:
-                self._record_composition_runtime_failure(
+                self._record_root_failure(
                     generation, cleanup_error, resource="runtime-snapshot-drain",
                     formal_effects=("candidate_runtime_cleanup_pending",), recovery_target="base",
                 )
@@ -3656,9 +3564,7 @@ class PluginManager:
                 self._check_operation_commit()
                 child._snapshot_store.install(snapshot)
                 child._building_roots.pop(root)
-                # 2. 数据能力指向副本，外部声明仍按 candidate env/权限启动。
-                for generation in ordered:
-                    _ = await child._start_composition_generation_runtime(generation, snapshot, mode="candidate")
+                # 2. apply 已通过候选授权取得资源，不再重复执行启动阶段。
                 scope = BindingScope(root)
                 self._reload_journal.annotate(cast(str, update.reload_tx_id), {
                     "event": "business_validation_ready", "validation_id": host.identity,
@@ -4064,7 +3970,6 @@ class PluginManager:
 
     async def _provide_root_registries(
         self, root: CompositionRoot, mount_order: tuple[PluginGeneration, ...],
-        *, resource_mode: Literal["candidate", "formal"] = "formal",
     ) -> None:
         """注册表只属于当前 Root，不接入正式执行 owner。"""
         if any(
@@ -4075,36 +3980,6 @@ class PluginManager:
                 CHANNELS,
                 PluginChannels(root.instance_token),
             )
-        if any(
-            MCP_SERVERS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                MCP_SERVERS,
-                PluginMcpServers(
-                    root.instance_token,
-                    lambda snapshot, name, digest: self._composition_generation_host.open_mcp(
-                        snapshot, name, expected_catalog_digest=digest, mode=resource_mode,
-                    ),
-                ),
-            )
-        if any(
-            MANAGED_PROCESSES in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                MANAGED_PROCESSES,
-                PluginManagedProcesses(root.instance_token),
-            )
-        if any(
-            WORKLOADS in cast(ComposablePlugin, item.instance).inject
-            for item in mount_order
-        ):
-            _ = await root.context.provide(
-                WORKLOADS,
-                PluginWorkloads(root.instance_token),
-            )
-
     async def _provide_composition_services(
         self,
         root: CompositionRoot,
@@ -4114,9 +3989,15 @@ class PluginManager:
     ) -> None:
         """向当前 stable 或 candidate Root 提供宿主能力。"""
 
-        await self._provide_root_registries(
-            root, mount_order, resource_mode="candidate" if candidate or self._validation_only else "formal",
-        )
+        await self._provide_root_registries(root, mount_order)
+        execution = ExecutionAccess(root.instance_token, {
+            item.plugin_id: CodeOwner(item.generation_id, item.code_dir,
+                lambda command, cwd, item=item: self._resolve_runtime_command(item, command, cwd))
+            for item in mount_order
+        }, candidate=candidate or self._validation_only)
+        await root.context.provide(EXECUTION, execution)
+        await root.context.provide(WORKLOAD_CONTROLLER,
+            ControllerAccess(execution, self._workload_controller, self._workload_workspace_id))
         requested = {
             key
             for generation in mount_order
@@ -4386,103 +4267,12 @@ class PluginManager:
             generation.code_dir, runtimes, command, cwd, environment_root=environment
         )
 
-    async def _start_composition_generation_runtime(
-        self,
-        generation: PluginGeneration,
-        snapshot: RuntimeSnapshot,
-        *,
-        mode: Literal["candidate", "formal"],
-    ) -> CompositionRuntimeGeneration | None:
-        """Start one exact Root runtime and refresh snapshot Tool routes."""
-
-        if generation.reload_tx_id is not None and self._composition_runtime_declared(
-            snapshot, generation.plugin_id
-        ):
-            boot_id = os.environ.get("AKASHIC_BOOT_ID", "").strip()
-            if boot_id:
-                self._reload_journal.mark_runtime_owner(
-                    generation.reload_tx_id,
-                    boot_id,
-                )
-        self._composition_runtime_generations[generation.generation_id] = generation
-        try:
-            runtime = await self._composition_generation_host.start(
-                generation,
-                snapshot,
-                mode=mode,
-            )
-        except BaseException:
-            if (
-                self._composition_generation_host.failure(generation.generation_id)
-                is None
-            ):
-                _ = self._composition_runtime_generations.pop(
-                    generation.generation_id,
-                    None,
-                )
-            raise
-        if runtime is None:
-            _ = self._composition_runtime_generations.pop(
-                generation.generation_id,
-                None,
-            )
-        return runtime
-
-    async def _start_snapshot_composition_runtimes(
-        self,
-        snapshot: RuntimeSnapshot,
-        *,
-        mode: Literal["candidate", "formal"] = "formal",
-    ) -> None:
-        """启动当前 Root 的全部实际 runtime。"""
-
-        started: list[PluginGeneration] = []
-        try:
-            for item in snapshot.generations.values():
-                await self._start_composition_generation_runtime(
-                    item,
-                    snapshot,
-                    mode=mode,
-                )
-                started.append(item)
-        except BaseException as error:
-            cleanup_errors: list[BaseException] = []
-            for item in reversed(started):
-                try:
-                    await self._stop_composition_generation_runtime(item)
-                except BaseException as cleanup_error:
-                    cleanup_errors.append(cleanup_error)
-            if cleanup_errors:
-                raise BaseExceptionGroup("runtime 启动和清理均失败", [error, *cleanup_errors]) from None
-            raise
-
-    async def _stop_snapshot_composition_runtimes(
-        self,
-        snapshot: RuntimeSnapshot,
-    ) -> None:
-        """Stop every managed runtime before its formal Root is disposed."""
-
-        for item in reversed(tuple(snapshot.generations.values())):
-            await self._stop_composition_generation_runtime(item)
-
-    async def _stop_composition_generation_runtime(
-        self,
-        generation: PluginGeneration,
-    ) -> None:
-        """Stop one generation before its exact Root is disposed."""
-
-        await self._composition_generation_host.stop(generation.generation_id)
-        _ = self._composition_runtime_generations.pop(
-            generation.generation_id,
-            None,
-        )
-
-    def _record_composition_runtime_failure(
+    def _record_root_failure(
         self,
         generation: PluginGeneration,
         error: BaseException,
         *,
-        resource: str = "composition-runtime",
+        resource: str = "root",
         formal_effects: tuple[str, ...],
         recovery_target: RecoveryTarget | None = None,
     ) -> None:
@@ -4493,26 +4283,12 @@ class PluginManager:
             "event": "runtime_failure_owner",
             "runtime_generation_id": generation.generation_id,
         })
-        failure = self._composition_generation_host.failure(generation.generation_id)
-        if failure is None:
-            action: RecoveryActionName = (
-                "retry_generation_cleanup"
-                if resource == "runtime-snapshot-drain"
-                else "retry_runtime_recovery"
-            )
-        else:
-            action = failure.action
-        phase: ReloadPhase = (
-            "degraded" if action == "retry_runtime_recovery" else "cleanup_failed"
+        action: RecoveryActionName = (
+            "retry_generation_cleanup" if resource == "runtime-snapshot-drain" else "retry_runtime_recovery"
         )
-        failure_resource = (
-            f"{resource}:{generation.generation_id}"
-            if failure is None
-            else ",".join((*failure.resource_names, resource))
-        )
-        failure_error = (
-            str(error) or type(error).__name__ if failure is None else failure.error
-        )
+        phase: ReloadPhase = "degraded" if action == "retry_runtime_recovery" else "cleanup_failed"
+        failure_resource = f"{resource}:{generation.generation_id}"
+        failure_error = str(error) or type(error).__name__
         self._reload_journal.advance(
             tx_id,
             phase,
@@ -4536,30 +4312,6 @@ class PluginManager:
             and self._snapshot_store.unpromoted_candidate is ready.snapshot
         ):
             _ = self._snapshot_store.pause_candidate_admission(ready.snapshot)
-
-    def _on_composition_runtime_failure(
-        self,
-        failure: CompositionRuntimeFailure,
-    ) -> None:
-        """Persist a watchdog failure for the exact generation owner."""
-
-        if self._validation_only or self._composition_generation_host.scoped(failure.generation_id):
-            logger.error(
-                "调用资源清理待恢复: scope=%s action=%s error=%s",
-                failure.generation_id, failure.action, failure.error,
-            )
-            return
-        generation = self._composition_runtime_generations.get(failure.generation_id)
-        if generation is None:
-            raise RuntimeError(
-                "v3 runtime failure 缺少 Manager generation owner: "
-                f"{failure.generation_id}"
-            )
-        self._record_composition_runtime_failure(
-            generation,
-            RuntimeError(failure.error),
-            formal_effects=("runtime_watchdog_failure",),
-        )
 
     def _ensure_runtime_recovery_transaction(
         self,
@@ -4618,7 +4370,7 @@ class PluginManager:
             self._reload_journal.mark_runtime_owner(tx_id, boot_id)
         return tx_id
 
-    def _record_drained_composition_runtime_failure(
+    def _record_drained_root_failure(
         self,
         snapshot: RuntimeSnapshot,
         generation: PluginGeneration,
@@ -4637,24 +4389,12 @@ class PluginManager:
             "event": "drained_runtime_failure_owner",
             "runtime_generation_id": generation.generation_id,
         })
-        failure = self._composition_generation_host.failure(generation.generation_id)
-        action: RecoveryActionName = (
-            "retry_generation_cleanup" if failure is None else failure.action
-        )
-        phase: ReloadPhase = (
-            "degraded" if action == "retry_runtime_recovery" else "cleanup_failed"
-        )
+        action: RecoveryActionName = "retry_generation_cleanup"
         self._reload_journal.advance(
             tx_id,
-            phase,
-            error=(
-                str(error) or type(error).__name__ if failure is None else failure.error
-            ),
-            resource=(
-                f"composition-runtime:{generation.generation_id}"
-                if failure is None
-                else ",".join(failure.resource_names)
-            ),
+            "cleanup_failed",
+            error=str(error) or type(error).__name__,
+            resource=f"root:{generation.generation_id}",
             formal_effects=(
                 (
                     "committed_generation_retained",
@@ -4692,23 +4432,6 @@ class PluginManager:
             return "candidate"
         return "base"
 
-    @staticmethod
-    def _composition_runtime_declared(
-        snapshot: RuntimeSnapshot,
-        plugin_id: str,
-    ) -> bool:
-        """Return whether one plugin owns runtime declarations in a snapshot."""
-
-        return any(
-            binding.descriptor.owner == plugin_id
-            for registry in (
-                snapshot.managed_process_registry,
-                snapshot.mcp_server_registry,
-                snapshot.workload_registry,
-            )
-            if registry is not None
-            for binding in registry.values()
-        )
 
     def _collect_candidate_contributions(
         self,
@@ -4852,10 +4575,6 @@ class PluginManager:
         externally_cancelled = externally_cancelled or cancelled
         _, cancelled = await _complete_critical(self._plugin_processes.close())
         externally_cancelled = externally_cancelled or cancelled
-        _, cancelled = await _complete_critical(
-            self._composition_generation_host.close_scoped()
-        )
-        externally_cancelled = externally_cancelled or cancelled
         channel_runtime = self._active_channel_generation
         if channel_runtime is not None:
             _ = self._snapshot_store.pause_admission()
@@ -4876,15 +4595,6 @@ class PluginManager:
             else:
                 self._active_channel_generation = None
                 self._active_channel_catalog_identity = None
-        for generation in tuple(self._composition_runtime_generations.values()):
-            failure = self._composition_generation_host.failure(generation.generation_id)
-            if failure is not None:
-                await _complete_critical(
-                    self._composition_generation_host.retry_runtime_recovery(generation.generation_id)
-                )
-                self._composition_runtime_generations.pop(generation.generation_id, None)
-            else:
-                await _complete_critical(self._stop_composition_generation_runtime(generation))
         # 未交接 Root 先释放；SnapshotStore 和 generation 随后才能移除其依赖。
         for root in tuple(self._building_roots):
             await self._close_building_root(root)

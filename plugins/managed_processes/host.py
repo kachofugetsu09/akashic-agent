@@ -1,13 +1,10 @@
-"""Generation-scoped host for Core-owned managed processes.
-
-The declaration registry remains the plugin-facing boundary.  This module only
-accepts already-normalized declarations and exposes endpoint, health and bounded
-diagnostic views; it never exposes a subprocess handle to a plugin.
-"""
+"""进程 provider 的启动、就绪、恢复与关闭 owner，不读取 Core Snapshot。"""
 
 from __future__ import annotations
 
 import asyncio
+from agent.plugin_composition.effect import _join_cleanup
+import os
 import inspect
 import logging
 import socket
@@ -20,7 +17,8 @@ from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from agent.plugin_composition.process_slots import ManagedProcessDefinition
+from .definitions import ManagedProcessDefinition
+from agent.host_bridge.plugin_execution import spawn_process
 from utils.process_group import (
     OwnedProcessGroup,
     owned_process_env,
@@ -59,7 +57,7 @@ class IncidentReporter(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ManagedProcessEndpoint:
-    """Core-generated loopback endpoint for one current process epoch."""
+    """provider-generated loopback endpoint for one current process epoch."""
 
     generation_id: str
     process_name: str
@@ -264,9 +262,9 @@ class ManagedProcessGenerationHost:
                 name=f"managed_process_cleanup:{generation_id}",
             )
             try:
-                await _await_task_after_cancellation(cleanup_task)
+                await _join_cleanup(cleanup_task)
             except asyncio.CancelledError as cleanup_cancelled:
-                if cleanup_task.done() and cleanup_task.exception() is None:
+                if cleanup_task.done() and not cleanup_task.cancelled() and cleanup_task.exception() is None:
                     _ = self._generations.pop(generation_id, None)
                 else:
                     self._retain_cleanup_tombstone(
@@ -302,9 +300,9 @@ class ManagedProcessGenerationHost:
                 name=f"managed_process_stop:{generation_id}",
             )
             try:
-                await _await_task_after_cancellation(cleanup_task)
+                await _join_cleanup(cleanup_task)
             except asyncio.CancelledError:
-                if cleanup_task.done() and cleanup_task.exception() is None:
+                if cleanup_task.done() and not cleanup_task.cancelled() and cleanup_task.exception() is None:
                     _ = self._generations.pop(generation_id, None)
                     _ = self._tombstones.pop(generation_id, None)
                 else:
@@ -334,9 +332,9 @@ class ManagedProcessGenerationHost:
                 name=f"managed_process_retry:{generation_id}",
             )
             try:
-                await _await_task_after_cancellation(cleanup_task)
+                await _join_cleanup(cleanup_task)
             except asyncio.CancelledError:
-                if cleanup_task.done() and cleanup_task.exception() is None:
+                if cleanup_task.done() and not cleanup_task.cancelled() and cleanup_task.exception() is None:
                     _ = self._generations.pop(generation_id, None)
                     _ = self._tombstones.pop(generation_id, None)
                 else:
@@ -459,10 +457,10 @@ class ManagedProcessGenerationHost:
             ) from errors[0]
 
     async def _start_entry(self, generation: _Generation, entry: _ProcessEpoch) -> None:
-        """Spawn one process epoch, wait for Core-owned readiness, then publish it."""
+        """Spawn one process epoch, wait for provider-owned readiness, then publish it."""
 
         definition = entry.definition
-        port = self._allocate_port(definition.formal_port if generation.mode == "formal" and generation.fixed_ports else None)
+        port = self._allocate_port(definition.formal_port if generation.mode == "formal" and generation.fixed_ports and definition.formal_port else None)
         command = self._resolve_command(definition.command, entry.artifact_root)
         cwd = self._resolve_cwd(definition.cwd, entry.artifact_root)
         env = self._process_env(definition.env, definition.port_env, port)
@@ -487,10 +485,10 @@ class ManagedProcessGenerationHost:
             "starting",
         )
         try:
-            process = await asyncio.create_subprocess_exec(
+            process, spawn_cancelled = await spawn_process(
                 *command,
                 cwd=str(cwd),
-                env=owned_process_env(env),
+                env=owned_process_env(env, scrub_keys=frozenset(os.environ)),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 **process_group_spawn_kwargs(),
@@ -507,6 +505,8 @@ class ManagedProcessGenerationHost:
             raise
         entry.process = process
         entry.process_group = OwnedProcessGroup.from_process(process)
+        if spawn_cancelled:
+            raise asyncio.CancelledError
         entry.stdout_task = asyncio.create_task(
             self._drain_stream(process.stdout, entry.stdout_ring),
             name=f"managed_process_stdout:{generation.generation_id}:{definition.name}:{entry.epoch}",
@@ -552,7 +552,7 @@ class ManagedProcessGenerationHost:
         entry: _ProcessEpoch,
         port: int,
     ) -> None:
-        """Poll only the Core-generated loopback readiness URL until ready or timeout."""
+        """Poll only the provider-generated loopback readiness URL until ready or timeout."""
 
         process = entry.process
         if process is None:
@@ -951,7 +951,7 @@ class ManagedProcessGenerationHost:
                 raise ValueError("managed process name must be non-empty")
             if name != definition.name:
                 raise ValueError(f"managed process mapping key/name mismatch: {name}")
-            if definition.formal_port < 1 or definition.formal_port > 65535:
+            if definition.formal_port < 0 or definition.formal_port > 65535:
                 raise ValueError(f"managed process formal port invalid: {name}")
             if definition.port_env in definition.env:
                 raise ValueError(f"managed process port_env is already declared: {name}")

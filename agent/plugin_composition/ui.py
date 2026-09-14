@@ -112,7 +112,6 @@ class UiRegistry(Protocol):
 
     def prepare_dashboard(
         self, *, core_routes: tuple[object, ...],
-        workload_urls: Callable[[str], Mapping[tuple[str, str], str]],
         validation_owners: frozenset[str], tolerate_failures: bool,
     ) -> None: ...
 

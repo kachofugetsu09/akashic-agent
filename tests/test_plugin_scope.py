@@ -122,7 +122,7 @@ async def test_cleanup_cancel_is_failure_and_keeps_its_dependency():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stage", ["runtime", "root", "scope"])
+@pytest.mark.parametrize("stage", ["root", "scope"])
 async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, stage):
     """真实关闭入口不能在任一资源阶段失败后继续卸载其依赖。"""
     manager = object.__new__(PluginManager)
@@ -133,6 +133,7 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
         plugin_id="owner", generation_id="generation", module_path="module",
         scope=scope, runtime_snapshot=object(), state="prepared",
     )
+    manager._building_roots = {}
     manager._draining_generations = {}
     manager._scopes = {}
     manager._cleanup_failures = []
@@ -140,11 +141,9 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
     manager._active_plugins = {"module": object()}
     manager._stable_aliases = {"module": "alias"}
     manager._snapshot_store = SimpleNamespace(pause_admission=Mock())
-    manager._composition_generation_host = SimpleNamespace(failure=Mock(return_value=None))
-    stop = AsyncMock(side_effect=OSError("still open") if stage == "runtime" else None)
     dispose_root = AsyncMock(side_effect=OSError("still open") if stage == "root" else None)
     remove = Mock()
-    monkeypatch.setattr(manager, "_stop_composition_generation_runtime", stop)
+    monkeypatch.setattr(manager, "_record_root_failure", Mock())
     monkeypatch.setattr(manager, "_dispose_unreferenced_composition_root", dispose_root)
     monkeypatch.setattr(manager, "_remove_module_tree", remove)
 
@@ -157,12 +156,10 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
     assert not scope.closed
     remove.assert_not_called()
     manager._snapshot_store.pause_admission.assert_called_once()
-    if stage == "runtime":
-        dispose_root.assert_not_awaited()
     if stage != "scope":
         cleanup.assert_not_called()
 
-    stop.side_effect = dispose_root.side_effect = cleanup.side_effect = None
+    dispose_root.side_effect = cleanup.side_effect = None
     await manager._dispose_generation(generation, state="discarded")
     assert manager._draining_generations == {}
     assert manager._scopes == {}
@@ -197,10 +194,10 @@ async def test_terminate_failure_keeps_scope_module_and_control_owner(monkeypatc
     manager._validation_hosts = {}
     manager._plugin_tasks = SimpleNamespace(close=AsyncMock())
     manager._plugin_processes = SimpleNamespace(close=AsyncMock())
-    manager._composition_generation_host = SimpleNamespace(close_scoped=AsyncMock())
     manager._active_channel_generation = None
     manager._active_generations = {}
     manager._prepared_generations = {}
+    manager._building_roots = {}
     manager._draining_generations = {}
     manager._cleanup_failures = []
     scope = PluginScope("owner")

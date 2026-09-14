@@ -187,13 +187,15 @@ def _top_level_plugin_owners(
 
 def _mcp_items(snapshot: RuntimeSnapshot) -> list[dict[str, object]]:
     """声明不能冒充已取得的工具目录；读取能力仍待 MCP owner 提供。"""
-    registry = snapshot.mcp_server_registry
-    if registry is not None and registry.descriptors:
-        raise RuntimeCatalogUnavailable(
-            "mcp_catalog_unavailable",
-            "MCP 工具目录暂不可用，声明的服务按需启动",
-        )
-    return []
+    from agent.plugin_composition.mcp_slots import MCP_SERVERS
+    root = snapshot.composition_root
+    service = None if root is None else root.context.get(MCP_SERVERS)
+    if service is None:
+        return []
+    if service.root_instance_token is not root.instance_token:
+        raise RuntimeError("MCP provider 不属于所选 Root")
+    return service.catalog()
+
 
 
 __all__ = [

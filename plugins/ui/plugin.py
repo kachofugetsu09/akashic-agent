@@ -13,6 +13,7 @@ from agent.plugin_composition import Context, Effect, SNAPSHOT_SEALING, Snapshot
 from agent.plugin_composition.ui import UI, WEB_UI, DashboardBinding, WebModuleDescriptor, WebUiCatalog
 
 from agent.plugin_composition.ui_slots import UI_SLOTS
+from agent.plugin_composition.workload_slots import WORKLOADS
 
 from .mobile import MobileUiSlots
 from .dashboard import DashboardImportError, DashboardResources, _core_routes, _require_routes_available
@@ -141,7 +142,6 @@ class Ui:
 
     def prepare_dashboard(
         self, *, core_routes: tuple[object, ...],
-        workload_urls: Callable[[str], Mapping[tuple[str, str], str]],
         validation_owners: frozenset[str], tolerate_failures: bool,
     ) -> None:
         """为本 Root 准备实际 Dashboard，失败资源仍由原注册 Effect 关闭。"""
@@ -153,8 +153,9 @@ class Ui:
                 continue
             if entry.binding is None:
                 try:
+                    workloads = entry.ctx.get(WORKLOADS)
                     entry.binding = resources.build(
-                        occupied=occupied, workload_urls=workload_urls(entry.ctx.runtime.generation_id),
+                        occupied=occupied, workload_urls={} if workloads is None else workloads.urls(entry.ctx),
                         validation=owner in validation_owners,
                     )
                 except DashboardImportError as error:

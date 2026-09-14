@@ -17,12 +17,14 @@ from agent.plugin_composition import (
     WORKLOADS,
     CompositionRoot,
     PluginRuntime,
-    PluginWorkloads,
 )
 from agent.plugin_composition.bindings import BINDINGS, Bindings
 from agent.plugin_composition.messages import MESSAGE_CATALOG, OWNER_STATE, MessageCatalog, OwnerState
 from agent.plugins.archive import PluginArchive
-from agent.plugin_composition.mcp_slots import PluginMcpServers, _freeze_plugin_mcp_servers
+from agent.plugin_composition.execution import EXECUTION, WORKLOAD_CONTROLLER
+from agent.host_bridge.plugin_execution import CodeOwner, ExecutionAccess, ControllerAccess
+from plugins.mcp import plugin as mcp_plugin
+from plugins.workloads import plugin as workloads_plugin
 from plugins.content import plugin as content_plugin
 from plugins.tools import plugin as tools_plugin
 from plugins.tools.api import MessageReply
@@ -31,7 +33,7 @@ from plugins.turn_projection import plugin as turn_projection_plugin
 from session.log import MessageLog
 from agent.plugins.manager import PluginManager
 from agent.plugins.snapshot import lease_runtime_snapshot
-from agent.plugins.workload_generation_host import WorkloadGenerationHost
+from plugins.workloads.host import WorkloadGenerationHost
 from agent.workloads.model import (
     WorkloadEndpoint,
     WorkloadLease,
@@ -48,18 +50,27 @@ from session.message import CallRef, ContentPart, ContentReferences, Control, In
 
 
 @pytest.mark.asyncio
-async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path) -> None:
+async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path, monkeypatch) -> None:
     """真实 Composition Root 接纳新 Tool 与 workload/MCP 声明。"""
     log = MessageLog(tmp_path / "sessions.db")
     root = CompositionRoot("computer-services")
-    mcp = PluginMcpServers(root.instance_token)
-    workloads = PluginWorkloads(root.instance_token)
+    path = Path(plugin.__file__).parent
+    execution = ExecutionAccess(root.instance_token, {
+        "computer": CodeOwner("computer-services", path, lambda command, cwd: (sys.executable, str(path / command[0]), *command[1:])),
+    }, candidate=True)
+    controller = _WorkloadController(12345)
+    async def healthy(*args):
+        return True, "ready"
+    monkeypatch.setattr("plugins.workloads.host._http_health", healthy)
+    await root.context.provide(EXECUTION, execution)
+    await root.context.provide(WORKLOAD_CONTROLLER, ControllerAccess(execution, controller, "test"))
+    await root.mount(mcp_plugin.apply, name="mcp", inject=mcp_plugin.inject)
+    await root.mount(workloads_plugin.apply, name="workloads", inject=workloads_plugin.inject)
+    mcp = root.context.require(MCP_SERVERS)
     archive = PluginArchive(tmp_path / "archives")
 
     bindings = Bindings(log, archive, root)
     for key, value in (
-        (MCP_SERVERS, mcp),
-        (WORKLOADS, workloads),
         (BINDINGS, bindings),
         (MESSAGE_CATALOG, MessageCatalog(log)),
         (OWNER_STATE, OwnerState(log)),
@@ -113,8 +124,12 @@ async def test_computer_plugin_mounts_real_tools_and_mcp_services(tmp_path: Path
         assert [ref.name for ref in root.context.require(ALL_TOOLS)().refs] == [
             "computer"
         ]
-        registry = _freeze_plugin_mcp_servers(mcp, root.instance_token)
-        assert registry["computer"].definition.workload_env[0].env == "COMPUTER_URL"
+        registration = mcp._entries["computer"]
+        reference = registration.definition.workload_env[0]
+        assert reference.env == "COMPUTER_URL"
+        assert reference.workload.url(registration.ctx, "gateway") == "http://127.0.0.1:12345"
+        assert controller.started[0].plugin_id == "computer"
+        assert controller.started[0].mode == "candidate"
     finally:
         await root.dispose()
         log.close()
@@ -406,9 +421,6 @@ class _ComputerHarness:
         snapshot = manager.current_snapshot
         assert snapshot is not None and snapshot.composition_root is not None
         self.composition_root = snapshot.composition_root
-        workload_host = manager.composition_generation_host._workload_host
-        assert workload_host is not None
-        self.workload_host: WorkloadGenerationHost = workload_host
         self.tools = self.composition_root.context.require(TOOLS)
         self.bindings = self.composition_root.context.require(BINDINGS)
         self.binding: str | None = None
@@ -580,7 +592,7 @@ async def _computer_harness(tmp_path: Path, *, log: MessageLog | None = None,
     source_root = tmp_path / "computer-plugins"
     repo_plugins = Path(plugin.__file__).parent.parent
     source_root.mkdir(exist_ok=True)
-    for name in ("ui", "assets", "content", "tools", "turn_projection", "computer"):
+    for name in ("ui", "assets", "content", "tools", "turn_projection", "workloads", "mcp", "computer"):
         destination = source_root / name
         if not destination.exists():
             shutil.copytree(
@@ -752,7 +764,7 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
         await _wait_until(lambda: sum(1 for call in state.calls if call.get("endTurn")) == 1)
         assert harness.owner(reply).value["phase"] == "started"
         old_revision = harness.manager.current_snapshot.generations["computer"].source_revision
-        old_mcp_command = harness.manager.current_snapshot.mcp_server_registry["computer"].descriptor.command
+        old_mcp_command = harness.composition_root.context.require(MCP_SERVERS)._entries["computer"].definition.command
         old_end_generation = next(
             _call_context(call)["generation_id"]
             for call in state.calls
@@ -821,7 +833,7 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
             computer_result = next(item for item in result if item["plugin_id"] == "computer")
             assert computer_result["publication_state"] == "committed"
             assert restarted.manager.current_snapshot.generations["computer"].source_revision != old_revision
-            new_mcp_command = restarted.manager.current_snapshot.mcp_server_registry["computer"].descriptor.command
+            new_mcp_command = restarted.manager.current_snapshot.composition_root.context.require(MCP_SERVERS)._entries["computer"].definition.command
             assert old_mcp_command != new_mcp_command
             assert new_mcp_command[-1] == "--new-target"
             current_root = restarted.manager.current_snapshot.composition_root
