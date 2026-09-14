@@ -128,8 +128,6 @@ async def test_restart_finishes_failed_cleanup_before_acquiring_again():
 @pytest.mark.asyncio
 async def test_mount_and_cleanup_failure_keep_both_errors_and_owner():
     """挂载失败不隐藏清理失败，也不允许重用未释放的名称。"""
-    from agent.plugin_composition.model import FiberState
-
     root = CompositionRoot("mount-cleanup")
     attempts = 0
 
@@ -141,19 +139,13 @@ async def test_mount_and_cleanup_failure_keep_both_errors_and_owner():
                 raise OSError("still open")
 
         await ctx.effect(lambda: close)
-
-    def fail_activation(fiber):
-        if fiber.state == FiberState.ACTIVE:
-            raise ValueError("publication failed")
-
-    remove_observer = root.on_status(fail_activation)
+        raise ValueError("initialization failed")
     with pytest.raises(BaseExceptionGroup) as caught:
         await root.mount(plugin, name="resource")
     assert isinstance(caught.value.exceptions[0], ValueError)
     assert isinstance(caught.value.exceptions[1], OSError)
     with pytest.raises(CompositionError, match="重复挂载"):
         await root.mount(plugin, name="resource")
-    remove_observer()
     await root.dispose()
     assert attempts == 2
     assert root.receipt().fibers == ()
