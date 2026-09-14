@@ -1954,11 +1954,9 @@ class PluginManager:
         preserve_latest: bool = False,
         error: str = "candidate discarded",
     ) -> None:
-        generation = self._prepared_generations.pop(plugin_id, None)
+        generation = self._prepared_generations.get(plugin_id)
         if generation is None:
             return
-        if not preserve_latest:
-            _discard_generation_candidate_pointer(generation)
         _, cancelled = await _complete_critical(
             self._dispose_generation(generation, state="discarded")
         )
@@ -1967,7 +1965,11 @@ class PluginManager:
         )
         if runtime_failure is not None:
             raise RuntimeError("候选 runtime cleanup 未完成，必须显式 retry")
+        if not preserve_latest:
+            _discard_generation_candidate_pointer(generation)
         self._abort_reload(generation, error=error)
+        if self._prepared_generations.get(plugin_id) is generation:
+            _ = self._prepared_generations.pop(plugin_id)
         if cancelled:
             raise asyncio.CancelledError
 
@@ -2024,47 +2026,49 @@ class PluginManager:
         preserve_stable_alias: bool = False,
         skip_composition_runtime: bool = False,
     ) -> None:
-        """完成插件终止、作用域清理和注册表卸载。"""
+        """成功后才解除 owner；失败或取消保留资源供显式关闭重试。"""
 
-        # 1. Host 必须在 exact Root/Health observer 仍存活时先回收进程。
-        externally_cancelled = False
-        if not skip_composition_runtime:
-            try:
+        # 1. 调用者可能已移除 active/prepared，先把责任交给既有排空集合。
+        tracked = self._draining_generations.setdefault(generation.plugin_id, [])
+        if not any(item is generation for item in tracked):
+            tracked.append(generation)
+        self._scopes[generation.module_path] = generation.scope
+
+        async def close_resources() -> None:
+            """后取得的资源关闭成功后，才释放其 Root 和作用域依赖。"""
+
+            if not skip_composition_runtime:
                 await self._stop_composition_generation_runtime(generation)
-            except asyncio.CancelledError:
-                externally_cancelled = True
-            except Exception as error:
-                self._cleanup_failures.append(
-                    CleanupFailure(
-                        resource=f"plugin:{generation.plugin_id}:composition-runtime",
-                        error=str(error) or type(error).__name__,
-                    )
+            if self._composition_generation_host.failure(generation.generation_id) is not None:
+                raise RuntimeError("generation runtime cleanup 未完成，必须显式 retry")
+            if generation.runtime_snapshot is not None:
+                await self._dispose_unreferenced_composition_root(generation.runtime_snapshot)
+            failures = await generation.scope.aclose()
+            self._cleanup_failures.extend(failures)
+            if failures:
+                raise RuntimeError(
+                    "generation scope cleanup 未完成，必须显式 retry: "
+                    + "; ".join(f"{item.resource}: {item.error}" for item in failures)
                 )
 
-        # 2. 回收尚未交给 snapshot store 的组合 Root。
-        if generation.runtime_snapshot is not None:
-            await self._dispose_unreferenced_composition_root(
-                generation.runtime_snapshot
-            )
+        # 2. 重复取消不能截断清理；任何失败均阻止卸载模块与恢复接纳。
+        try:
+            _, cancelled = await _complete_critical(close_resources())
+        except BaseException as error:
+            _ = self._snapshot_store.pause_admission()
+            if self._composition_generation_host.failure(generation.generation_id) is not None:
+                self._record_composition_runtime_failure(
+                    generation,
+                    error,
+                    formal_effects=("generation_runtime_cleanup_pending",),
+                )
+            self._cleanup_failures.append(CleanupFailure(
+                resource=f"plugin:{generation.plugin_id}:generation:{generation.generation_id}",
+                error=str(error) or type(error).__name__,
+            ))
+            raise
 
-        # 3. 收集作用域失败，确保外部取消不会截断资源清理。
-        cleanup_failures, cleanup_cancelled = await _complete_critical(
-            generation.scope.aclose()
-        )
-        self._cleanup_failures.extend(cleanup_failures)
-        externally_cancelled = externally_cancelled or cleanup_cancelled
-        if (
-            not skip_composition_runtime
-            and self._composition_generation_host.failure(generation.generation_id)
-            is not None
-        ):
-            self._record_composition_runtime_failure(
-                generation,
-                RuntimeError("generation runtime cleanup 未完成"),
-                formal_effects=("generation_runtime_cleanup_pending",),
-            )
-
-        # 4. 清理注册表和模块树。
+        # 3. 所有资源确认关闭后才移除模块及排空 owner。
         _ = self._scopes.pop(generation.module_path, None)
         self._loaded.discard(generation.module_path)
         _ = self._active_plugins.pop(generation.module_path, None)
@@ -2074,7 +2078,8 @@ class PluginManager:
             _ = self._stable_aliases.pop(generation.module_path, None)
             self._remove_module_tree(stable_alias)
         generation.state = state
-        if externally_cancelled:
+        self._forget_drained_generation(generation)
+        if cancelled:
             raise asyncio.CancelledError
 
     async def _dispose_unreferenced_composition_root(
@@ -4981,25 +4986,51 @@ class PluginManager:
         generation: PluginGeneration | None = None
 
         async def rollback_load(error: str) -> None:
+            """保留未完成回收的原 owner，成功后才结束加载回滚。"""
+
+            # 1. 即使 generation 尚未构造，scope 与模块也必须可再次关闭。
+            self._scopes[mp] = scope
+            if generation is not None:
+                tracked = self._draining_generations.setdefault(plugin_id, [])
+                if not any(item is generation for item in tracked):
+                    tracked.append(generation)
+
+            async def close_resources() -> None:
+                if generation is not None:
+                    await self._stop_composition_generation_runtime(generation)
+                    if generation.runtime_snapshot is not None:
+                        await self._dispose_unreferenced_composition_root(
+                            generation.runtime_snapshot
+                        )
+                failures = await scope.aclose()
+                self._cleanup_failures.extend(failures)
+                if failures:
+                    raise RuntimeError(
+                        "加载回滚 scope cleanup 未完成，必须显式 retry: "
+                        + "; ".join(f"{item.resource}: {item.error}" for item in failures)
+                    )
+                if created_activation_data_dir:
+                    _remove_validation_data_dir(data_dir)
+                elif generation is not None and generation.boot_created_data_dir:
+                    _remove_validation_data_dir(generation.data_dir)
+                    generation.boot_created_data_dir = False
+
+            # 2. 清理失败必须传给加载调用者，不能返回候选已丢弃。
+            try:
+                _, cancelled = await _complete_critical(close_resources())
+            except BaseException:
+                _ = self._snapshot_store.pause_admission()
+                raise
             if reload_tx_id is not None:
                 phase = self._reload_journal.get(reload_tx_id).phase
                 if phase not in {"complete", "aborted", "recovered"}:
-                    self._reload_journal.advance(
-                        reload_tx_id,
-                        "aborted",
-                        error=error,
-                    )
-            if generation is not None and generation.runtime_snapshot is not None:
-                await self._dispose_unreferenced_composition_root(
-                    generation.runtime_snapshot
-                )
-            self._cleanup_failures.extend(await scope.aclose())
-            if created_activation_data_dir:
-                _remove_validation_data_dir(data_dir)
-            elif generation is not None and generation.boot_created_data_dir:
-                _remove_validation_data_dir(generation.data_dir)
-                generation.boot_created_data_dir = False
+                    self._reload_journal.advance(reload_tx_id, "aborted", error=error)
             self._remove_module_tree(mp)
+            _ = self._scopes.pop(mp)
+            if generation is not None:
+                self._forget_drained_generation(generation)
+            if cancelled:
+                raise asyncio.CancelledError
 
         try:
             load_phase = "declarations"
@@ -6973,6 +7004,7 @@ class PluginManager:
     async def terminate_all(self) -> None:
         """完成快照、插件生命周期和作用域资源的全量关闭。"""
 
+        _ = self._snapshot_store.pause_admission()
         # 1. 先停止尚未提交的发布等待，原 owner 负责已开始切换的结算。
         publication = self._update_publication
         if publication is not None and not publication[1].done():
@@ -7042,37 +7074,39 @@ class PluginManager:
         for plugin_id in tuple(self._prepared_generations):
             _, cancelled = await _complete_critical(self.discard_prepared(plugin_id))
             externally_cancelled = externally_cancelled or cancelled
-        # 3. 逐插件关闭 generation scope 并消费全部 cleanup failures。
-        for mp in list(self._loaded):
-            active_info = self._active_plugins.get(mp)
-            scope = self._scopes.pop(mp, None)
-            if scope is not None:
-                generation = (
-                    None
-                    if active_info is None
-                    else self._active_generations.get(active_info.plugin_id)
+        # 3. 快照之外的失败 generation 仍由排空集合持有，显式关闭时重试。
+        for tracked in tuple(self._draining_generations.values()):
+            for generation in tuple(tracked):
+                _, cancelled = await _complete_critical(
+                    self._dispose_generation(generation, state="retired")
                 )
-                cleanup_failures, cancelled = await _complete_critical(scope.aclose())
-                self._cleanup_failures.extend(cleanup_failures)
+                externally_cancelled = externally_cancelled or cancelled
+        for generation in tuple(self._active_generations.values()):
+            if not generation.scope.closed:
+                _, cancelled = await _complete_critical(
+                    self._dispose_generation(generation, state="retired")
+                )
                 externally_cancelled = externally_cancelled or cancelled
 
-            # 4. 注销模块和运行时注册。
+        # 4. 尚未构造 generation 的加载失败也不能丢失 scope 或模块。
+        for mp, scope in tuple(self._scopes.items()):
+            failures, cancelled = await _complete_critical(scope.aclose())
+            self._cleanup_failures.extend(failures)
+            externally_cancelled = externally_cancelled or cancelled
+            if failures:
+                raise RuntimeError(
+                    f"插件 scope cleanup 未完成，owner 已保留: {mp}: "
+                    + "; ".join(f"{item.resource}: {item.error}" for item in failures)
+                )
             self._remove_module_tree(mp)
-            stable_alias = self._stable_aliases.pop(mp, None)
-            if stable_alias is not None:
-                self._remove_module_tree(stable_alias)
-            if active_info is not None:
-                generation = self._active_generations.get(active_info.plugin_id)
-                if generation is not None and generation.module_path == mp:
-                    _ = self._active_generations.pop(active_info.plugin_id)
-                    generation.state = "retired"
-            _ = self._active_plugins.pop(mp, None)
+            _ = self._scopes.pop(mp)
+        for mp in tuple(self._loaded):
+            self._remove_module_tree(mp)
+        for alias in self._stable_aliases.values():
+            self._remove_module_tree(alias)
         self._loaded.clear()
         self._active_plugins.clear()
-        self._scopes.clear()
         self._active_generations.clear()
-        self._draining_generations.clear()
-        self._prepared_generations.clear()
         self._stable_aliases.clear()
         if self._owns_control_frames:
             self._control_frames.close()
