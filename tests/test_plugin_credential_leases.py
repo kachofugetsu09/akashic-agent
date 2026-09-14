@@ -64,13 +64,13 @@ async def test_credential_binding_uses_current_reader_after_config_change(tmp_pa
                 await reader.undeclared()
             reference = ctx.require(BINDINGS).bind(PROBE, {})
             generation = snapshot.generations["secret_reader"]
-            assert generation.config["token"] == CredentialRef(("token",))
+            assert generation.config_projection["token"] == CredentialRef(("token",))
             assert "fixture-private-token" not in str(generation.config_projection)
             original_ctx = ctx.require(ServiceKey("test.credential_context"))
-            async with ctx.require(CREDENTIALS).open(original_ctx, {"token": generation.config["token"]}) as client:
-                assert client.credential(generation.config["token"]) == "fixture-private-token"
+            async with ctx.require(CREDENTIALS).open(original_ctx, {"token": original_ctx.config["token"]}) as client:
+                assert client.credential(original_ctx.config["token"]) == "fixture-private-token"
             with pytest.raises(RuntimeError, match="已关闭"):
-                client.credential(generation.config["token"])
+                client.credential(original_ctx.config["token"])
         for path in host._archive.path.rglob("*"):
             if path.is_file():
                 assert b"fixture-private-token" not in path.read_bytes()

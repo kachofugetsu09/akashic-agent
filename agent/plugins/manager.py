@@ -4959,7 +4959,6 @@ class PluginManager:
                 config_source,
                 credential_paths=credential_paths,
             )
-            plugin_config = copy.deepcopy(config_projection)
         except Exception as error:
             self._remove_module_tree(mp)
             error_text = str(error) or type(error).__name__
@@ -5032,7 +5031,6 @@ class PluginManager:
                 config_revision=config_revision,
                 plugin_dir=plugin_dir,
                 data_dir=data_dir,
-                config=plugin_config,
                 config_projection=config_projection,
                 archive_ref=archive_ref,
                 instance=instance,
@@ -5529,12 +5527,11 @@ class PluginManager:
                 projection = decode_config(record["config"])
                 if not isinstance(projection, dict):
                     raise ValueError("归档插件配置必须是对象")
-                config = copy.deepcopy(projection)
                 generation_id = f"archive:{namespace}:{index}"
                 generations[plugin_id] = PluginGeneration(
                     plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
                     source_revision=revision, config_revision=cast(str, record["config_revision"]),
-                    plugin_dir=plugin_dir, data_dir=data_dir, config=config,
+                    plugin_dir=plugin_dir, data_dir=data_dir,
                     config_projection=cast(dict[str, object], projection), instance=plugin,
                     scope=PluginScope(plugin_id, generation_id=generation_id),
                     contributions=self._collect_candidate_contributions(
