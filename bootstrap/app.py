@@ -270,13 +270,11 @@ class AppRuntime:
             if plugin_manager is not None:
                 self.plugin_watcher = PluginWatcher(
                     plugin_manager,
-                    baseline_revision="",
                 )
                 self.plugin_watcher_task = asyncio.create_task(
                     self.plugin_watcher.run(),
                     name="plugin_watcher",
                 )
-                self.plugin_watcher.wake()
 
             self._install_plugin_reload_signal()
             if self.readiness is not None:

@@ -43,6 +43,10 @@ snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能�
 
 底座继续解释依赖及服务选择，发布后的绑定固定。不增加通用业务规格、兼容层或恢复入口。
 
+启动后的文件 watcher 首次成功扫描只建立基线，不自动 reconcile 关机期间遗留的候选。
+后续文件变化或明确的手动唤醒才请求处理；当前源码或安装元数据损坏时报告扫描错误，
+不改变已从 stable 归档恢复的组合。
+
 ## Root 绑定冻结边界
 
 `RuntimeSnapshotCompiler.compile` 成功返回前调用 `CompositionRoot.freeze()`。
