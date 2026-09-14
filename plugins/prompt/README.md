@@ -4,7 +4,7 @@
 消费者通过 Context 的授权配置选择材料 provider；Core 不预置这个选择。
 
 正式安装后，首次配置必须先运行通用 setup 向导。它按已安装 manifest 的 setup 声明执行本包的
-`setup.py`，只在 workspace 缺失时创建 `memory/VEDA.md`；已有合法内容保持原始字节：
+`configure.py`，只在 workspace 缺失时创建 `memory/VEDA.md`；已有合法内容保持原始字节：
 
 ```sh
 python main.py setup --config /path/to/config.toml --workspace /path/to/workspace

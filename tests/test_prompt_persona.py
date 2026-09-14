@@ -152,7 +152,7 @@ def test_installed_prompt_setup_entrypoint_is_standalone(tmp_path):
     environment["AKASHIC_SETUP_WORKSPACE"] = str(workspace)
 
     result = subprocess.run(
-        [sys.executable, str(installed / "setup.py")],
+        [sys.executable, str(installed / "configure.py")],
         cwd=installed,
         env=environment,
         text=True,
@@ -177,7 +177,7 @@ def test_installed_prompt_setup_fails_loud_on_empty_existing_veda(tmp_path):
     environment["AKASHIC_SETUP_WORKSPACE"] = str(workspace)
 
     result = subprocess.run(
-        [sys.executable, str(installed / "setup.py")],
+        [sys.executable, str(installed / "configure.py")],
         cwd=installed,
         env=environment,
         text=True,

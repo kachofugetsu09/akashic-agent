@@ -19,9 +19,8 @@ from bootstrap import setup_wizard
 
 def _write_plugin(root: Path) -> None:
     (root / "plugin.py").write_text("", encoding="utf-8")
-    (root / "setup").mkdir()
-    (root / "setup" / "requirements.txt").write_text("", encoding="utf-8")
-    (root / "setup.py").write_text(
+    (root / "requirements.txt").write_text("", encoding="utf-8")
+    (root / "configure.py").write_text(
         "from pathlib import Path\n"
         "import os\n"
         "import sys\n"
@@ -38,9 +37,7 @@ def _write_plugin(root: Path) -> None:
         "version = '1.0.0'\n"
         "api_version = 3\n"
         "entrypoint = 'plugin.py'\n"
-        "\n[[python]]\nrequirements = 'setup/requirements.txt'\n"
-        "\n[setup]\nentrypoint = 'setup.py'\n"
-        "python_runtime = 'setup'\n",
+        "\n[[python]]\nrequirements = 'requirements.txt'\n",
         encoding="utf-8",
     )
 
@@ -66,34 +63,6 @@ def _commit_source(root: Path) -> None:
     )
 
 
-def test_manifest_exposes_plugin_owned_setup_entrypoint(tmp_path: Path) -> None:
-    root = tmp_path / "fixture_setup"
-    root.mkdir()
-    _write_plugin(root)
-
-    manifest = load_static_plugin_manifest(root)
-
-    assert manifest.setup is not None
-    assert manifest.setup.entrypoint == "setup.py"
-    assert manifest.setup.python_runtime == "setup"
-
-
-def test_manifest_rejects_setup_entrypoint_outside_artifact(tmp_path: Path) -> None:
-    root = tmp_path / "fixture_setup"
-    root.mkdir()
-    _write_plugin(root)
-    manifest_path = root / "akashic.plugin.toml"
-    manifest_path.write_text(
-        manifest_path.read_text(encoding="utf-8").replace(
-            "entrypoint = 'setup.py'", "entrypoint = '../setup.py'"
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="artifact 内的相对路径"):
-        load_static_plugin_manifest(root)
-
-
 def test_wizard_initializes_core_before_plugin_data_setup(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -111,7 +80,7 @@ def test_wizard_initializes_core_before_plugin_data_setup(
     )
     monkeypatch.setattr(
         setup_wizard,
-        "_run_declared_plugin_setups",
+        "_run_plugin_setups",
         lambda workspace: events.append("plugins"),
     )
     monkeypatch.setattr(
@@ -149,7 +118,7 @@ def test_wizard_keeps_existing_config_and_still_runs_plugin_setup(
     )
     monkeypatch.setattr(
         setup_wizard,
-        "_run_declared_plugin_setups",
+        "_run_plugin_setups",
         lambda workspace: events.append("plugins"),
     )
     monkeypatch.setattr(setup_wizard, "_print_completion", lambda workspace: None)
@@ -190,7 +159,7 @@ def test_setup_runner_passes_plugin_data_boundary(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(setup_wizard, "resolve_plugin_sources", discover)
     monkeypatch.setattr(setup_wizard, "plugins_root", lambda: plugin_home)
 
-    setup_wizard._run_declared_plugin_setups(workspace)
+    setup_wizard._run_plugin_setups(workspace)
 
     config = workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
     lines = config.read_text(encoding="utf-8").splitlines()
@@ -205,7 +174,7 @@ def test_setup_runner_passes_plugin_data_boundary(tmp_path: Path, monkeypatch) -
         archived_code,
         manifest.python[0],
     )
-    assert Path(lines[1]) == environment_root / "setup" / ".venv"
+    assert Path(lines[1]) == environment_root / ".venv"
     assert os.environ.get("AKASHIC_SETUP_CONFIG_PATH") is None
     assert discovery["args"] == ((),)
     assert discovery["installed_cache_root"] == plugin_home / "cache"
@@ -228,7 +197,7 @@ def test_setup_runner_reads_formal_install_artifact(
     )
     monkeypatch.setattr(setup_wizard, "plugins_root", lambda: plugin_home)
 
-    setup_wizard._run_declared_plugin_setups(workspace)
+    setup_wizard._run_plugin_setups(workspace)
 
     config = workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
     lines = config.read_text(encoding="utf-8").splitlines()
@@ -262,7 +231,7 @@ def test_setup_runner_skips_disabled_installed_plugin(
         raise AssertionError("disabled plugin setup must not start")
 
     monkeypatch.setattr(setup_wizard.subprocess, "run", unexpected_setup)
-    setup_wizard._run_declared_plugin_setups(workspace)
+    setup_wizard._run_plugin_setups(workspace)
 
     assert not (
         workspace / "plugin-data" / "fixture_setup-lab" / "config.local.toml"
@@ -293,4 +262,30 @@ def test_setup_runner_rejects_checkout_plugin_source(
     )
 
     with pytest.raises(RuntimeError, match="正式安装 artifact"):
-        setup_wizard._run_declared_plugin_setups(tmp_path / "workspace")
+        setup_wizard._run_plugin_setups(tmp_path / "workspace")
+
+
+def test_setup_runner_rejects_linked_configuration_program(
+    tmp_path: Path, monkeypatch
+) -> None:
+    plugin_home = tmp_path / "plugin-home"
+    root = plugin_home / "cache" / "lab" / "fixture_setup" / ".artifacts" / "v1"
+    root.mkdir(parents=True)
+    _write_plugin(root)
+    manifest = load_static_plugin_manifest(root)
+    program = root / "configure.py"
+    external = tmp_path / "external.py"
+    program.rename(external)
+    program.symlink_to(external)
+    source = ResolvedPluginSource(
+        plugin_root=root,
+        source_type="installed",
+        marketplace="lab",
+        plugin_name=manifest.name,
+        static_manifest=manifest,
+    )
+    monkeypatch.setattr(setup_wizard, "resolve_plugin_sources", lambda *a, **k: [source])
+    monkeypatch.setattr(setup_wizard, "plugins_root", lambda: plugin_home)
+
+    with pytest.raises(RuntimeError, match="普通文件"):
+        setup_wizard._run_plugin_setups(tmp_path / "workspace")

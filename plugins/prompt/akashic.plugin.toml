@@ -5,8 +5,4 @@ api_version = 3
 entrypoint = "plugin.py"
 
 [[python]]
-requirements = "setup/requirements.txt"
-
-[setup]
-entrypoint = "setup.py"
-python_runtime = "setup"
+requirements = "requirements.txt"

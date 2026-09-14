@@ -50,7 +50,7 @@ def _divider() -> None:
 
 
 def run_setup_wizard(config_path: Path, workspace: Path) -> None:
-    """Write the Core config and run setup commands declared by installed plugins."""
+    """写入 Core 配置，再运行已安装插件自己的配置程序。"""
 
     click.echo(click.style("\n══ akashic 初始化向导 ══\n", bold=True))
     _hint("全程按回车使用括号内的默认值")
@@ -79,13 +79,13 @@ def run_setup_wizard(config_path: Path, workspace: Path) -> None:
 
     _ = init_workspace(config_path=config_path, workspace=workspace)
     _ok(f"{workspace} 已初始化")
-    _run_declared_plugin_setups(workspace)
+    _run_plugin_setups(workspace)
 
     _print_completion(workspace)
 
 
-def _run_declared_plugin_setups(workspace: Path) -> None:
-    """Run each plugin-owned setup entrypoint from its validated manifest."""
+def _run_plugin_setups(workspace: Path) -> None:
+    """显式配置命令发现 configure.py；运行插件不需要这份声明。"""
 
     plugin_home = plugins_root()
     enabled_plugins = load_plugin_manifest(plugin_home)
@@ -97,7 +97,10 @@ def _run_declared_plugin_setups(workspace: Path) -> None:
     )
     for source in sources:
         manifest = source.static_manifest
-        if manifest is None or manifest.setup is None:
+        if manifest is None:
+            continue
+        setup_path = source.plugin_root / "configure.py"
+        if not setup_path.exists() and not setup_path.is_symlink():
             continue
         if source.source_type != "installed" or not source.marketplace:
             raise RuntimeError(f"插件 {manifest.name} setup 必须来自正式安装 artifact")
@@ -118,10 +121,9 @@ def _run_declared_plugin_setups(workspace: Path) -> None:
         marketplace = source.marketplace
         data_dir = workspace_plugin_data_dir(workspace, manifest.name, marketplace)
         ensure_workspace_plugin_data_dir(data_dir, workspace)
-        setup_path = (plugin_root / manifest.setup.entrypoint).resolve(strict=True)
-        if not setup_path.is_relative_to(plugin_root) or not setup_path.is_file():
+        if setup_path.is_symlink() or not setup_path.is_file():
             raise RuntimeError(
-                f"插件 {manifest.name} setup.entrypoint 不在 artifact 内: {setup_path}"
+                f"插件 {manifest.name} configure.py 必须是制品内的普通文件"
             )
         interpreter, code_root = _setup_runtime(
             workspace,
@@ -149,7 +151,7 @@ def _run_declared_plugin_setups(workspace: Path) -> None:
                     "-E",
                     "-s",
                     "-B",
-                    str(code_root / manifest.setup.entrypoint),
+                    str(code_root / "configure.py"),
                 ],
                 cwd=code_root,
                 env=environment,
@@ -173,21 +175,17 @@ def _setup_runtime(
 ) -> tuple[Path, Path]:
     """Open the immutable installed code and its staged setup interpreter."""
 
-    declaration = manifest.setup
-    if declaration is None:
-        raise RuntimeError(f"插件 {manifest.name} 缺少 setup declaration")
     runtime = next(
         (
             item
             for item in manifest.python
-            if item.runtime_root == declaration.python_runtime
+            if item.runtime_root == "."
         ),
         None,
     )
     if runtime is None:
         raise RuntimeError(
-            f"插件 {manifest.name} setup.python_runtime 未找到: "
-            f"{declaration.python_runtime}"
+            f"插件 {manifest.name} configure.py 缺少根目录 Python 环境"
         )
     environment_refs = read_environment_refs(plugin_root, manifest)
     environment_ref = environment_refs.get(runtime.runtime_root)
@@ -206,7 +204,7 @@ def _setup_runtime(
     if not isinstance(code_ref, str):
         raise RuntimeError(f"插件 {manifest.name} Python environment code ref 无效")
     code_root = environments.archive.open(code_ref)
-    archived_setup = code_root / declaration.entrypoint
+    archived_setup = code_root / "configure.py"
     if (
         not archived_setup.is_file()
         or archived_setup.read_bytes() != setup_path.read_bytes()
