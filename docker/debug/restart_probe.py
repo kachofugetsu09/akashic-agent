@@ -663,9 +663,7 @@ def _write_mcp_plugin(
         "name = 'restart_probe'\n"
         f"version = {version!r}\n"
         "api_version = 3\n"
-        "entrypoint = 'plugin.py'\n\n"
-        "[[python]]\n"
-        "requirements = 'requirements.txt'\n\n",
+        "entrypoint = 'plugin.py'\n\n",
         domain="restart_gate_fixture",
     )
 

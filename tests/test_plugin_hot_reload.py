@@ -89,7 +89,6 @@ def _write_static_manifest(
     name: str,
     version: str,
     entrypoint: str = "plugin.py",
-    python_runtime: str | None = None,
 ) -> None:
     lines = [
         "schema_version = 1",
@@ -99,15 +98,6 @@ def _write_static_manifest(
         f"entrypoint = {entrypoint!r}",
         "",
     ]
-    if python_runtime is not None:
-        lines.extend(
-            [
-                "[[python]]",
-                'requirements = "requirements.txt"',
-                f"runtime_root = {python_runtime!r}",
-                "",
-            ]
-        )
     (root / "akashic.plugin.toml").write_text("\n".join(lines), encoding="utf-8")
 
 

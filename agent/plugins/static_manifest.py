@@ -24,7 +24,6 @@ _TOP_LEVEL_KEYS = frozenset(
         "version",
         "api_version",
         "entrypoint",
-        "python",
         "validation",
         "channel_credentials",
         "credential_paths",
@@ -65,7 +64,7 @@ class StaticPluginManifest:
 
     @property
     def requirements(self) -> tuple[str, ...]:
-        """Return all declared requirements paths in manifest order."""
+        """返回按路径排序的制品 requirements 文件。"""
 
         return tuple(runtime.requirements for runtime in self.python)
 
@@ -130,6 +129,7 @@ def staged_python_interpreter(
     """Return the executable staged for one manifest Python runtime."""
 
     root = plugin_root.resolve(strict=True)
+    _reject_symlink_ancestors(root, root / runtime.runtime_root, "Python runtime")
     runtime_root = (root / runtime.runtime_root).resolve(strict=True)
     if not runtime_root.is_relative_to(root):
         raise ValueError("插件 Python runtime 越过 artifact")
@@ -195,7 +195,7 @@ def _validate_manifest(root: Path, raw: Mapping[str, object]) -> StaticPluginMan
     if not entrypoint.endswith(".py"):
         raise ValueError("插件静态 manifest entrypoint 必须指向 Python 文件")
     # 2. Requirements are complete before the artifact is published.
-    python = _python_runtimes(root, raw.get("python", []))
+    python = _python_runtimes(root)
     exclude_data_paths = _validation_paths(root, raw.get("validation", {}))
 
     # 3. Optional declarations are checked statically and kept immutable.
@@ -283,39 +283,40 @@ def _check_credential_overlap(paths: set[str], label: str) -> None:
             raise ValueError(f"{label} 路径重叠: {value}")
 
 
-def _python_runtimes(
-    root: Path,
-    raw: object,
-) -> tuple[StaticPythonRuntime, ...]:
-    if not isinstance(raw, list):
-        raise ValueError("插件静态 manifest python 必须是表数组")
+def _python_runtimes(root: Path) -> tuple[StaticPythonRuntime, ...]:
+    """从固定制品发现 requirements.txt；不读取运行数据或准备环境。"""
+    excluded = {
+        ".git", ".venv", "venv", "node_modules", "cache", ".cache",
+        "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    }
     result: list[StaticPythonRuntime] = []
-    seen: set[str] = set()
-    runtime_roots: set[str] = set()
-    for index, item in enumerate(raw):
-        mapping = _table(item, f"python[{index}]")
-        _exact_keys(mapping, {"requirements"}, f"python[{index}]")
-        requirements = _relative_artifact_path(
-            root,
-            mapping.get("requirements"),
-            label=f"python[{index}].requirements",
-            must_exist=True,
-            require_file=True,
-        )
-        if requirements in seen:
-            raise ValueError(f"插件 requirements 重复: {requirements}")
-        seen.add(requirements)
-        runtime_root = str(PurePosixPath(requirements).parent)
-        if runtime_root in runtime_roots:
-            raise ValueError(f"插件 Python runtime root 重复: {runtime_root}")
-        runtime_roots.add(runtime_root)
-        result.append(
-            StaticPythonRuntime(
-                requirements=requirements,
-                runtime_root=runtime_root,
-            )
-        )
-    return tuple(result)
+
+    def visit(directory: Path) -> None:
+        # 1. 不进入依赖和缓存；其余目录链接可能隐藏 runtime，直接拒绝。
+        for path in sorted(directory.iterdir()):
+            if path.name in excluded:
+                continue
+            if path.is_symlink():
+                if path.name == "requirements.txt" or path.is_dir() or not path.exists():
+                    raise ValueError(f"插件 Python runtime 不能经过符号链接: {path}")
+                continue
+            if path.is_dir():
+                if path.name == "requirements.txt":
+                    raise ValueError(f"插件 requirements.txt 必须是文件: {path}")
+                visit(path)
+            elif path.name == "requirements.txt":
+                # 2. 精确文件名是 runtime 标记，其他 requirements 文件不独立安装。
+                requirements = _relative_artifact_path(
+                    root, path.relative_to(root).as_posix(),
+                    label="requirements", must_exist=True, require_file=True,
+                )
+                result.append(StaticPythonRuntime(
+                    requirements=requirements,
+                    runtime_root=str(PurePosixPath(requirements).parent),
+                ))
+
+    visit(root)
+    return tuple(sorted(result, key=lambda item: item.requirements))
 
 
 def _validation_paths(root: Path, raw: object) -> tuple[str, ...]:
@@ -367,12 +368,15 @@ def command_python_runtime(
             )
         )
     )
-    if len(matches) != 1:
+    if not matches:
         raise ValueError(
-            "command 必须唯一绑定已声明 Python runtime: "
+            "command 必须绑定制品 Python runtime: "
             f"matches={[item.runtime_root for item in matches]}"
         )
-    return matches[0].runtime_root
+    # 嵌套 runtime 拥有自己的命令，根 runtime 只承接其余路径。
+    return max(
+        matches, key=lambda item: len(PurePosixPath(item.runtime_root).parts)
+    ).runtime_root
 
 
 def _venv_python(venv_dir: Path) -> Path:

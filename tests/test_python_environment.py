@@ -23,8 +23,6 @@ name = "probe"
 version = "1.0.0"
 api_version = 3
 entrypoint = "plugin.py"
-[[python]]
-requirements = "requirements.txt"
 """)
     return code, load_static_plugin_manifest(code)
 
@@ -122,3 +120,102 @@ def test_environment_keeps_real_console_script_prefix_and_local_wheel(tmp_path):
         == "installed fixture"
     )
     assert store.open(ref, archived, manifest.python[0]) == root
+
+
+@pytest.mark.parametrize("command,cwd,expected", [
+    (("python", "probe.py"), ".", "."),
+    (("python", "mcp/server.py"), ".", "mcp"),
+    (("python", "-m", "server"), "mcp", "mcp"),
+    (("python", "mcp/worker/server.py"), ".", "mcp/worker"),
+])
+def test_discovered_runtime_binds_nearest_fixed_interpreter(tmp_path, command, cwd, expected):
+    """根与嵌套 runtime 共存时，命令仍绑定所属固定环境。"""
+    code, _ = source(tmp_path)
+    for relative in ("mcp", "mcp/worker"):
+        directory = code / relative
+        directory.mkdir()
+        (directory / "requirements.txt").write_text("")
+        (directory / "server.py").write_text("")
+    manifest = load_static_plugin_manifest(code)
+    environment = tmp_path / "fixed-environment"
+    interpreter = environment / expected / ".venv/bin/python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("staged interpreter; never execute in this test")
+    interpreter.chmod(0o755)
+    assert materialize_command(
+        code, manifest.python, command, cwd, environment_root=environment
+    ) == (str(interpreter), "-E", "-s", "-B", *command[1:])
+    with pytest.raises(RuntimeError, match="显式运行环境"):
+        materialize_command(code, manifest.python, command, cwd)
+    interpreter.unlink()
+    with pytest.raises(RuntimeError, match="尚未完成 staging"):
+        materialize_command(code, manifest.python, command, cwd, environment_root=environment)
+
+
+def test_requirements_discovery_skips_dependencies_and_optional_files(tmp_path):
+    """缓存内依赖和不同名的可选清单不成为必装 runtime。"""
+    code, _ = source(tmp_path)
+    for name in (
+        ".git", ".venv", "venv", "node_modules", "cache", ".cache",
+        "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ):
+        directory = code / name
+        directory.mkdir()
+        (directory / "requirements.txt").symlink_to(tmp_path / "absent")
+    (code / "requirements-dev.txt").write_text("optional-package")
+    (code / "requirements-optional.txt").write_text("optional-package")
+    assert load_static_plugin_manifest(code).requirements == ("requirements.txt",)
+    (code / "requirements.txt").unlink()
+    assert load_static_plugin_manifest(code).python == ()
+
+
+@pytest.mark.parametrize("kind", ["directory", "file", "broken", "named_directory"])
+def test_requirements_discovery_rejects_symlink_runtime_paths(tmp_path, kind):
+    """链接不得把制品外或别名目录变成环境输入。"""
+    code, _ = source(tmp_path)
+    directory = code / "mcp"
+    directory.mkdir()
+    (directory / "requirements.txt").write_text("")
+    if kind == "directory":
+        (code / "alias").symlink_to(directory, target_is_directory=True)
+    elif kind == "file":
+        (directory / "requirements.txt").unlink()
+        (directory / "requirements.txt").symlink_to(code / "requirements.txt")
+    elif kind == "broken":
+        (code / "alias").symlink_to(tmp_path / "absent", target_is_directory=True)
+    else:
+        (directory / "requirements.txt").unlink()
+        (directory / "requirements.txt").mkdir()
+    with pytest.raises(ValueError, match="符号链接|必须是文件"):
+        load_static_plugin_manifest(code)
+
+
+def test_manifest_rejects_removed_python_declarations(tmp_path):
+    code, _ = source(tmp_path)
+    path = code / "akashic.plugin.toml"
+    path.write_text(path.read_text() + '\n[[python]]\nrequirements = "requirements.txt"\n')
+    with pytest.raises(ValueError, match="未知字段.*python"):
+        load_static_plugin_manifest(code)
+
+
+def test_command_binding_uses_frozen_discovery_without_installing(tmp_path, monkeypatch):
+    """绑定只消费解析结果；后加清单不改变 owner，也不触发安装。"""
+    code, manifest = source(tmp_path)
+    nested = code / "later"
+    nested.mkdir()
+    (nested / "requirements.txt").write_text("must-not-install")
+    (nested / "server.py").write_text("")
+    environment = tmp_path / "fixed"
+    interpreter = environment / ".venv/bin/python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("staged interpreter")
+    interpreter.chmod(0o755)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("binding must not install or discover")
+
+    monkeypatch.setattr(PythonEnvironments, "prepare", forbidden)
+    monkeypatch.setattr("agent.plugins.static_manifest._python_runtimes", forbidden)
+    assert materialize_command(
+        code, manifest.python, ("python", "later/server.py"), environment_root=environment
+    )[0] == str(interpreter)

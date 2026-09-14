@@ -111,7 +111,7 @@ def test_install_git_plugin_reads_static_v3_manifest(tmp_path: Path) -> None:
     assert (result.installed_path / "akashic.plugin.toml").is_file()
 
 
-def test_install_git_plugin_prepares_declared_python_runtime(
+def test_install_git_plugin_prepares_discovered_python_runtime(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -120,13 +120,6 @@ def test_install_git_plugin_prepares_declared_python_runtime(
     (repo / "mcp" / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
     (repo / "mcp" / "requirements.txt").write_text("", encoding="utf-8")
     _write_v3_plugin(repo, name="feed")
-    (repo / "akashic.plugin.toml").write_text(
-        (repo / "akashic.plugin.toml").read_text(encoding="utf-8")
-        + "\n"
-        + "[[python]]\n"
-        + 'requirements = "mcp/requirements.txt"\n',
-        encoding="utf-8",
-    )
     _commit(repo)
     result = install_git_plugin(
         workspace=tmp_path / "workspace",
@@ -204,11 +197,6 @@ def test_retry_reuses_artifact_and_fixed_python_environment(
     (repo / "mcp").mkdir(parents=True)
     (repo / "mcp" / "requirements.txt").write_text("", encoding="utf-8")
     _write_v3_plugin(repo, name="feed", marker="v1")
-    (repo / "akashic.plugin.toml").write_text(
-        (repo / "akashic.plugin.toml").read_text(encoding="utf-8")
-        + '\n[[python]]\nrequirements = "mcp/requirements.txt"\n',
-        encoding="utf-8",
-    )
     _commit(repo)
 
     home = tmp_path / "plugins-home"

@@ -43,6 +43,36 @@ Core 不读取它。无配置时输入为空对象。候选只取得授权允许
 正常加载、候选装配和换代不运行配置程序。旧制品的 `[setup]` 等已删字段必须通过显式重装或格式转换更新，
 普通启动不改写旧制品或正式数据。
 
+### Python 安装输入（0071 过渡层）
+
+制品根目录和嵌套目录中的 `requirements.txt` 是 Python runtime 的唯一文件约定，
+其父目录拥有该环境。TOML 不再接受 `python` 或 `[[python]]`；`StaticPythonRuntime`
+暂时保留为环境 owner 的输入，由解析制品时一次发现，命令绑定不再扫描文件。
+
+精确名称 `requirements.txt` 表示安装必需输入，包括空文件；`requirements-dev.txt`、
+`requirements-optional.txt` 等其他名称不自动安装，除非被必需文件显式引用。
+发布者不能把无关示例或可选依赖也命名为 `requirements.txt` 留在制品中。
+当前仓库未声明的 `computer/requirements.txt` 为空，采用约定后会增加空固定环境。
+扫描跳过 `.git`、`.venv`、`venv`、`node_modules`、`cache`、`.cache`、`__pycache__`、
+`.pytest_cache`、`.mypy_cache` 和 `.ruff_cache`，不进入目录链接；其余目录链接、失效链接
+或 requirements 文件链接直接拒绝，以免隐藏环境输入。
+
+```text
+┌─────────────────────────┐     ┌─────────────────────────┐
+│ 固定制品 requirements   │ ──▶ │ 安装器准备固定环境引用  │
+└─────────────────────────┘     └────────────┬────────────┘
+                                            ▼
+                               ┌─────────────────────────┐
+                               │ 命令绑定最近 runtime    │
+                               │ 使用其 exact interpreter│
+                               └─────────────────────────┘
+```
+
+根 runtime 与嵌套 runtime 共存时，命令按既有脚本路径/cwd 解析结果选择最近的父 runtime。
+缺少已 staging 的显式环境时失败，不借用 PATH 或制品中的 `.venv`。
+本层不修改 Manager 的源码插件加载时准备空环境的既有路径；删除该临时路径由整体换代父层完成。
+正式环境仍由安装器创建，加载或候选不得新增安装路径。本层测试仅编写，未执行。
+
 ## 2. 组合原子能力
 
 初始化约束在 `apply` 或对应 provider 的实际注册中检查并抛出错误。底座不调用另一个

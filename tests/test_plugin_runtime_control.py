@@ -599,9 +599,7 @@ def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:
         "name = \"runtime_mcp\"\n"
         "version = \"1.0.0\"\n"
         "api_version = 3\n"
-        "entrypoint = \"plugin.py\"\n\n"
-        "[[python]]\n"
-        "requirements = \"mcp/requirements.txt\"\n\n",
+        "entrypoint = \"plugin.py\"\n\n",
         encoding="utf-8",
     )
 

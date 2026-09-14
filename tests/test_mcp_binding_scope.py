@@ -39,10 +39,6 @@ name = "probe"
 version = "1.0.0"
 api_version = 3
 entrypoint = "plugin.py"
-[[python]]
-requirements = "first/requirements.txt"
-[[python]]
-requirements = "second/requirements.txt"
 """)
     (path / "server.py").write_text("""
 import json, os, sys
