@@ -7,10 +7,6 @@ from agent.plugin_composition.context import (
     HealthHandle,
     RuntimeScope,
 )
-from agent.plugin_composition.overlay import (
-    CompositionOverlay,
-    CompositionSnapshotRoot,
-)
 from agent.control.turn_scope import ToolGrant, TurnExecutionScope
 from agent.control.models import TurnItem, TurnItemKind, TurnStatus
 from agent.control.scoped_turn import TurnAcceptedReceipt
@@ -282,8 +278,6 @@ __all__ = [
     "CompositionError",
     "CompositionReceipt",
     "CompositionRoot",
-    "CompositionOverlay",
-    "CompositionSnapshotRoot",
     "CompositionAudit",
     "Context",
     "COMMANDS",

@@ -48,7 +48,6 @@ from agent.plugin_composition.model import (
 )
 
 if TYPE_CHECKING:
-    from agent.plugin_composition.overlay import CompositionSnapshotRoot
     from agent.plugins.snapshot import RuntimeSnapshotLease
 
 
@@ -207,11 +206,9 @@ class Context:
             raise RuntimeError("当前 task 未绑定此插件 Root 的 runtime scope")
         return RuntimeScope(current.fork())
 
-    def _belongs_to_scope(self, root: CompositionSnapshotRoot | None) -> bool:
-        """Overlay 按实际 Context 选择 generation，不能退回其底层旧 Root。"""
-        return root is self._root or (
-            root is not None and root.context_owner(self) is not None
-        )
+    def _belongs_to_scope(self, root: CompositionRoot | None) -> bool:
+        """回调只能进入创建它的同一完整 Root。"""
+        return root is self._root
 
     @property
     def config(self) -> Mapping[str, object]:

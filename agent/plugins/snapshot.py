@@ -22,10 +22,8 @@ from agent.plugin_composition import (
     WORKLOADS,
     MCP_SERVERS,
     CommandRegistry,
-    CommandDefinition,
-    CommandDescriptor,
+    CompositionRoot,
     CompositionError,
-    CompositionSnapshotRoot,
     MobileUiRegistry,
     UI_SLOTS,
     TopologyView,
@@ -39,7 +37,6 @@ from agent.plugin_composition.channels import (
     CommittedChannelCatalog,
     CoreChannelDefinition,
     _freeze_plugin_channels,
-    _registry_identity,
     channel_config_revision,
 )
 from agent.plugin_composition.mcp_slots import (
@@ -94,7 +91,7 @@ class RuntimeSnapshot:
     workload_registry_identity: str | None = None
     tool_registry: ToolRegistry | None = None
     command_registry: CommandRegistry | None = None
-    composition_root: CompositionSnapshotRoot | None = None
+    composition_root: CompositionRoot | None = None
     composition_topology: TopologyView | None = None
     composition_active_plugin_ids: frozenset[str] | None = None
     composition_validation_identity: str | None = None
@@ -140,9 +137,7 @@ class RuntimeSnapshotCompiler:
         *,
         catalog_generation: PluginGeneration | None = None,
         snapshot_revision: str = "",
-        composition_root: CompositionSnapshotRoot | None = None,
-        base_snapshot: RuntimeSnapshot | None = None,
-        replaced_plugin_ids: frozenset[str] = frozenset(),
+        composition_root: CompositionRoot | None = None,
         core_channel_definitions: tuple[CoreChannelDefinition, ...] = (),
         require_composition_ready: bool = True,
     ) -> RuntimeSnapshot:
@@ -165,21 +160,9 @@ class RuntimeSnapshotCompiler:
         managed_process_registry: ManagedProcessRegistry | None = None
         workload_registry: WorkloadRegistry | None = None
         web_ui_catalog: WebUiCatalog | None = None
-        if base_snapshot is None and replaced_plugin_ids:
-            raise ValueError("replaced_plugin_ids 需要 base_snapshot")
-        if base_snapshot is not None and not replaced_plugin_ids:
-            raise ValueError("base_snapshot overlay 需要 replaced_plugin_ids")
         if composition_root is not None:
-            catalog_root_token = getattr(
-                composition_root,
-                "catalog_root_instance_token",
-                composition_root.instance_token,
-            )
-            catalog_context = getattr(
-                composition_root,
-                "catalog_context",
-                composition_root.context,
-            )
+            catalog_root_token = composition_root.instance_token
+            catalog_context = composition_root.context
             receipt = composition_root.receipt()
             if require_composition_ready and not receipt.ready:
                 raise RuntimeError(
@@ -222,13 +205,6 @@ class RuntimeSnapshotCompiler:
                         for generation in ordered
                     },
                 )
-                if base_snapshot is not None:
-                    channel_registry = _merge_channel_registries(
-                        base_snapshot.channel_registry,
-                        channel_registry,
-                        replaced_plugin_ids,
-                        composition_root.instance_token,
-                    )
                 identity += f"|channels-v3:{channel_registry.identity}"
             process_declarations = catalog_context.get(MANAGED_PROCESSES)
             if process_declarations is not None:
@@ -305,89 +281,6 @@ class RuntimeSnapshotCompiler:
                             )
                 mcp_server_registry = frozen_mcp
                 identity += f"|mcp-v3:{frozen_mcp.identity}"
-            if base_snapshot is not None:
-                mobile_ui_registry = _merge_owner_mapping_registry(
-                    base_snapshot.mobile_ui_registry,
-                    mobile_ui_registry,
-                    replaced_plugin_ids,
-                    MobileUiRegistry,
-                    lambda item: item.descriptor.owner,
-                )
-                command_registry = _merge_command_registries(
-                    base_snapshot.command_registry,
-                    command_registry,
-                    replaced_plugin_ids,
-                )
-                if channel_registry is None:
-                    channel_registry = _merge_channel_registries(
-                        base_snapshot.channel_registry,
-                        None,
-                        replaced_plugin_ids,
-                        composition_root.instance_token,
-                    )
-                managed_process_registry = cast(
-                    ManagedProcessRegistry | None,
-                    _merge_root_mapping_registry(
-                        base_snapshot.managed_process_registry,
-                        managed_process_registry,
-                        replaced_plugin_ids,
-                        ManagedProcessRegistry,
-                        composition_root.instance_token,
-                        lambda item: getattr(item, "descriptor").owner,
-                    ),
-                )
-                workload_registry = cast(
-                    WorkloadRegistry | None,
-                    _merge_root_mapping_registry(
-                        base_snapshot.workload_registry,
-                        workload_registry,
-                        replaced_plugin_ids,
-                        WorkloadRegistry,
-                        composition_root.instance_token,
-                        lambda item: getattr(item, "descriptor").owner,
-                    ),
-                )
-                mcp_server_registry = cast(
-                    McpServerRegistry | None,
-                    _merge_root_mapping_registry(
-                        base_snapshot.mcp_server_registry,
-                        mcp_server_registry,
-                        replaced_plugin_ids,
-                        McpServerRegistry,
-                        composition_root.instance_token,
-                        lambda item: getattr(item, "descriptor").owner,
-                    ),
-                )
-                identity += "|overlay-catalogs:" + "|".join(
-                    (
-                        (
-                            ""
-                            if mobile_ui_registry is None
-                            else mobile_ui_registry.identity
-                        ),
-                        (
-                            ""
-                            if command_registry is None
-                            else command_registry.catalog_digest
-                        ),
-                        "" if channel_registry is None else channel_registry.identity,
-                        (
-                            ""
-                            if managed_process_registry is None
-                            else managed_process_registry.identity
-                        ),
-                        (
-                            ""
-                            if workload_registry is None
-                            else workload_registry.identity
-                        ),
-                        (
-                            ""
-                            if mcp_server_registry is None
-                            else mcp_server_registry.identity
-                        ),
-                    )
-                )
             assert composition_active_plugin_ids is not None
             self._validate_channel_registry(
                 channel_registry,
@@ -514,176 +407,6 @@ class RuntimeSnapshotCompiler:
                     )
 
         # 静态声明限定凭据上限；配置可不注册渠道，此时不创建 provider 或读取凭据。
-
-def _merge_command_registries(
-    base: CommandRegistry | None,
-    delta: CommandRegistry | None,
-    replaced: frozenset[str],
-) -> CommandRegistry | None:
-    """Replace command contributions by owner without replaying stable plugins."""
-
-    if base is None and delta is None:
-        return None
-    commands: dict[str, CommandDefinition] = {}
-    owners: dict[str, str] = {}
-    generations: dict[str, str] = {}
-    fibers: dict[str, str] = {}
-    descriptors: list[CommandDescriptor] = []
-    for registry in (base, delta):
-        if registry is None:
-            continue
-        for (
-            name,
-            definition,
-        ) in registry._commands.items():  # pyright: ignore[reportPrivateUsage]
-            owner = registry._owners[name]  # pyright: ignore[reportPrivateUsage]
-            if registry is base and owner in replaced:
-                continue
-            if name in commands:
-                raise CompositionError(
-                    "DUPLICATE_COMMAND",
-                    f"candidate 与 stable 重复注册 command: {name}",
-                )
-            commands[name] = definition
-            owners[name] = owner
-            generation = registry._generations.get(
-                name
-            )  # pyright: ignore[reportPrivateUsage]
-            fiber = registry._fibers.get(name)  # pyright: ignore[reportPrivateUsage]
-            if generation is not None:
-                generations[name] = generation
-            if fiber is not None:
-                fibers[name] = fiber
-        descriptors.extend(
-            item
-            for item in registry.descriptors
-            if registry is not base or item.owner not in replaced
-        )
-    return CommandRegistry(
-        commands,
-        owners,
-        tuple(sorted(descriptors, key=lambda item: item.name)),
-        generations,
-        fibers,
-    )
-
-
-def _merge_owner_mapping_registry(
-    base: object | None,
-    delta: object | None,
-    replaced: frozenset[str],
-    registry_type: type[MobileUiRegistry],
-    owner_of: Callable[[object], str],
-) -> MobileUiRegistry | None:
-    """Replace one immutable owner-keyed registry."""
-
-    if base is None and delta is None:
-        return None
-    bindings: dict[str, object] = {}
-    for registry in (base, delta):
-        if registry is None:
-            continue
-        for key in registry:  # type: ignore[union-attr]
-            binding = registry[key]  # type: ignore[index]
-            owner = owner_of(binding)
-            if registry is base and owner in replaced:
-                continue
-            if key in bindings:
-                raise CompositionError(
-                    "DUPLICATE_REGISTRATION",
-                    f"candidate 与 stable 重复注册: {key}",
-                )
-            bindings[key] = binding
-    return registry_type(cast(Mapping[str, object], bindings))  # type: ignore[arg-type]
-
-
-def _merge_root_mapping_registry(
-    base: object | None,
-    delta: object | None,
-    replaced: frozenset[str],
-    registry_type: type[object],
-    root_token: object,
-    owner_of: Callable[[object], str],
-) -> object | None:
-    """Replace one immutable Root-bound registry by contribution owner."""
-
-    if base is None and delta is None:
-        return None
-    bindings: dict[str, object] = {}
-    for registry in (base, delta):
-        if registry is None:
-            continue
-        for key in registry:  # type: ignore[union-attr]
-            binding = registry[key]  # type: ignore[index]
-            owner = owner_of(binding)
-            if registry is base and owner in replaced:
-                continue
-            if key in bindings:
-                raise CompositionError(
-                    "DUPLICATE_REGISTRATION",
-                    f"candidate 与 stable 重复注册: {key}",
-                )
-            bindings[key] = binding
-    return registry_type(bindings, root_instance_token=root_token)  # type: ignore[call-arg]
-
-
-def _merge_channel_registries(
-    base: ChannelRegistrySnapshot | None,
-    delta: ChannelRegistrySnapshot | None,
-    replaced: frozenset[str],
-    root_token: object,
-) -> ChannelRegistrySnapshot | None:
-    """Replace immutable channel descriptors and provenance by plugin owner."""
-
-    if base is None and delta is None:
-        return None
-    descriptors = tuple(
-        sorted(
-            (
-                *(
-                    ()
-                    if base is None
-                    else tuple(
-                        item for item in base.descriptors if item.owner not in replaced
-                    )
-                ),
-                *(() if delta is None else delta.descriptors),
-            ),
-            key=lambda item: item.name,
-        )
-    )
-    factories = tuple(
-        sorted(
-            (
-                *(
-                    ()
-                    if base is None
-                    else tuple(
-                        item
-                        for item in base.factories
-                        if item.plugin_id not in replaced
-                    )
-                ),
-                *(() if delta is None else delta.factories),
-            ),
-            key=lambda item: (item.plugin_id, item.channel_name),
-        )
-    )
-    return ChannelRegistrySnapshot(
-        descriptors=descriptors,
-        factories=factories,
-        identity=_registry_identity(descriptors, factories),
-        root_instance_token=root_token,
-        _contexts={
-            item.name: registry._contexts[item.name]
-            for registry in (base, delta)
-            if registry is not None
-            for item in registry.descriptors
-            if (registry is delta or item.owner not in replaced)
-            and item.name in registry._contexts
-        },
-    )
-
 
 # 插件生命周期边界：一个 turn、job、event 或 proactive tick 必须始终使用同一
 # snapshot；旧 generation 只有在全部 lease 释放后才能 retire 和清理。
@@ -1013,7 +736,7 @@ class RuntimeSnapshotStore:
 
     def composition_is_referenced_elsewhere(
         self,
-        root: CompositionSnapshotRoot,
+        root: CompositionRoot,
         *,
         excluding_snapshot_id: str,
     ) -> bool:
@@ -1462,7 +1185,7 @@ class RuntimeSnapshotStore:
 
     async def acquire_composition_root(
         self,
-        root: CompositionSnapshotRoot,
+        root: CompositionRoot,
     ) -> RuntimeSnapshotLease:
         """Lease the committed snapshot that owns one exact composition Root."""
 

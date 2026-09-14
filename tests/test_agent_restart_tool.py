@@ -13,7 +13,7 @@ from typing import cast
 
 import pytest
 
-from agent.plugin_composition import CompositionOverlay, Context, ServiceKey
+from agent.plugin_composition import CompositionRoot, Context, ServiceKey
 from agent.plugin_composition.channels import CHANNEL_INPUT, ChannelInboundMessage
 from agent.plugin_composition.bindings import BINDINGS
 from agent.plugin_composition.messages import MESSAGE_WRITERS
@@ -860,14 +860,13 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
             == stable_generation_ids["message_push"]
         )
         assert latest.composition_root is not None
-        candidate_overlay = latest.composition_root
-        assert isinstance(candidate_overlay, CompositionOverlay)
-        expected_replaced = {"reply", "restart_provider@fixture"}
+        candidate_root = latest.composition_root
+        assert isinstance(candidate_root, CompositionRoot)
+        expected_active = {"reply", "restart_provider@fixture"}
         if supervised:
-            expected_replaced.add("message_push")
-        assert expected_replaced <= candidate_overlay.replaced_plugin_ids
-        assert expected_replaced <= candidate_overlay.candidate.active_plugin_ids()
-        candidate_gate = candidate_overlay.context.require(RESTART_GATE)
+            expected_active.add("message_push")
+        assert expected_active <= candidate_root.active_plugin_ids()
+        candidate_gate = candidate_root.context.require(RESTART_GATE)
         assert isinstance(candidate_gate, RestartGate)
         assert candidate_gate.supervised is supervised
         assert candidate_gate.execution_enabled is False
@@ -877,7 +876,7 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         with pytest.raises(RestartRejectedError, match="不允许重启效果"):
             await candidate_gate.commit("candidate-request")
         candidate_tool_names = {
-            ref.name for ref in candidate_overlay.context.require(ALL_TOOLS)().refs
+            ref.name for ref in candidate_root.context.require(ALL_TOOLS)().refs
         }
         if supervised:
             assert "agent_restart" in candidate_tool_names

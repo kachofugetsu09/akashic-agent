@@ -13,7 +13,6 @@ from session.message_codec import json_value
 
 if TYPE_CHECKING:
     from agent.plugin_composition.archive import PluginArchive
-    from agent.plugin_composition.overlay import CompositionSnapshotRoot
 
 _T = TypeVar("_T")
 
@@ -44,7 +43,7 @@ class Bindings:
         self,
         log: MessageLog | None,
         archive: PluginArchive,
-        root: CompositionSnapshotRoot,
+        root: CompositionRoot,
     ):
         self._storage = log
         self._archive = archive
@@ -152,8 +151,6 @@ class Bindings:
 
         current = get_current_runtime_lease()
         if current is None:
-            if not isinstance(self._root, CompositionRoot):
-                raise RuntimeError("打开 overlay binding 需要调用者已选的 runtime scope")
             lease = await self._root._acquire_runtime_scope()  # pyright: ignore[reportPrivateUsage]
         else:
             lease = current.fork()
@@ -162,7 +159,7 @@ class Bindings:
             root = lease.snapshot.composition_root
             if root is None:
                 raise RuntimeError("打开 binding 需要实际 runtime scope")
-            if not self._root_is_selected(root):
+            if root is not self._root:
                 raise RuntimeError("打开 binding 的所属 Root 不属于当前 runtime scope")
             value = root.context.get(service)
             if value is None:
@@ -181,15 +178,6 @@ class Bindings:
             raise ValueError("binding metadata 必须是对象")
         return descriptor
 
-    def _root_is_selected(self, root: object) -> bool:
-        """检查当前 snapshot 是否选中了 binding 所属的 Root。"""
-        if root is self._root:
-            return True
-        from agent.plugin_composition.overlay import CompositionOverlay
-
-        return isinstance(root, CompositionOverlay) and (
-            root.stable is self._root or root.candidate is self._root
-        )
 
 
 BINDINGS = ServiceKey[Bindings]("core.bindings")

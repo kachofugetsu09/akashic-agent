@@ -60,7 +60,6 @@ from agent.plugin_composition import (
     TIMERS,
     UI_SLOTS,
     CompositionRoot,
-    CompositionSnapshotRoot,
     CredentialRef,
     FiberState,
     PluginChannels,
@@ -5602,7 +5601,7 @@ class PluginManager:
         allow_pending: bool = False,
         candidate_owner: PluginGeneration | None = None,
         force_fresh: bool = False,
-    ) -> tuple[CompositionSnapshotRoot | None, bool]:
+    ) -> tuple[CompositionRoot | None, bool]:
         """同一组合可复用 Root；换代总是重新装配完整独立 Root。"""
 
         # 1. 只有 stable-to-stable 的纯 payload 变化可以复用 Root。
