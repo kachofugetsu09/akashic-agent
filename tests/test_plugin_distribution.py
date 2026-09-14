@@ -29,6 +29,18 @@ from scripts.install_plugin_distribution import (
 )
 
 
+def test_default_profile_installs_akashic_sender_before_delivery_policy() -> None:
+    """The default Akashic channel must have its matching delivery sender."""
+
+    profile = json.loads(
+        Path("docker/host-runtime/profiles/default.json").read_text(encoding="utf-8")
+    )
+    plugins = {item["name"]: item for item in profile["plugins"]}
+
+    assert plugins["akashic_sender"]["depends_on"] == ["delivery"]
+    assert "akashic_sender" in plugins["delivery_policy"]["depends_on"]
+
+
 def test_workload_controller_imports_core_from_distribution_source() -> None:
     """发行 workload controller 必须能导入 image 中的 Core 模块。"""
 
