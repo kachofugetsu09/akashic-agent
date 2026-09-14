@@ -97,6 +97,68 @@ async def test_effect_close_joins_concurrent_callers_despite_repeated_cancel():
     assert owners == []
 
 
+@pytest.mark.asyncio
+async def test_restart_finishes_failed_cleanup_before_acquiring_again():
+    """显式重试不能覆盖上次尚未关闭的资源。"""
+    root = CompositionRoot("restart-cleanup")
+    events = []
+    attempts = 0
+
+    async def plugin(ctx):
+        events.append("open")
+
+        def close():
+            nonlocal attempts
+            attempts += 1
+            events.append("close")
+            if attempts == 1:
+                raise OSError("still open")
+
+        await ctx.effect(lambda: close)
+
+    fiber = await root.mount(plugin, name="resource")
+    with pytest.raises(OSError, match="still open"):
+        await fiber.restart()
+    assert events == ["open", "close"]
+    await fiber.restart()
+    assert events == ["open", "close", "close", "open"]
+    await root.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mount_and_cleanup_failure_keep_both_errors_and_owner():
+    """挂载失败不隐藏清理失败，也不允许重用未释放的名称。"""
+    from agent.plugin_composition.model import FiberState
+
+    root = CompositionRoot("mount-cleanup")
+    attempts = 0
+
+    async def plugin(ctx):
+        def close():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("still open")
+
+        await ctx.effect(lambda: close)
+
+    def fail_activation(fiber):
+        if fiber.state == FiberState.ACTIVE:
+            raise ValueError("publication failed")
+
+    remove_observer = root.on_status(fail_activation)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await root.mount(plugin, name="resource")
+    assert isinstance(caught.value.exceptions[0], ValueError)
+    assert isinstance(caught.value.exceptions[1], OSError)
+    with pytest.raises(CompositionError, match="重复挂载"):
+        await root.mount(plugin, name="resource")
+    remove_observer()
+    await root.dispose()
+    assert attempts == 2
+    assert root.receipt().fibers == ()
+
+
 @asynccontextmanager
 async def _bound_root(root: CompositionRoot) -> AsyncIterator[None]:
     store = RuntimeSnapshotStore()

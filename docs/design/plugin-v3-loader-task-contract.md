@@ -49,7 +49,7 @@ async def apply(ctx: Context, config: Config) -> None:
 - `inject` 只接受 typed `ServiceKey`。扫描顺序不承担依赖语义；启动期先出现的 consumer 可以等待随后出现的 provider，完整 stable 树结束仍缺 Service 时启动失败。
 - `ctx.runtime` 只给出 Core 拥有的身份、路径和配置接入点，不替插件实现领域数据协议。
 - `apply` 的注册、监听器、任务和子插件必须归属 Fiber/Effect；Root 退役时逆序回收。
-- 可选的 `static_semantic_checks` 与 `readiness_semantic_checks` 继续进入现有 Gate；最终是否晋升仍由 Core 和父 Turn 决定。
+- 装配通过实际入口、资源注册和依赖检查判断合法性；插件业务自测不再是模块导出协议。晋升职责见 [0071](../decisions/0071-plugin-composition-and-whole-runtime-updates.md)。
 
 ## 3. publication 与失败语义
 

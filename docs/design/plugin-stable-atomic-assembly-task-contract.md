@@ -50,7 +50,6 @@ discover stable plugins
 
 v2 不是新组合平面的长期成员。本 PR 中下列代码只承担迁移期行为等价，全部是最终 v2-removal Gate 的物理删除目标：
 
-- `_activate_stable_batch()` 中 `Plugin.prepare/activate` 和 v2 task gate；
 - `_commit_stable_kv()` / `_rollback_stable_kv()` 与 `PreparedPluginKVStore.rollback_commit()`；
 - `_publish_stable_batch()` 中 `_register_tools()`、`_bind_tool_hooks()`、`_publish_contributions()` 与 staged legacy EventBus；
 - `_legacy_publication_counts()` / `_restore_legacy_publication_counts()`；
