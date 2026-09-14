@@ -368,7 +368,7 @@ async def _try_end(
     records: list[tuple[str, OwnerRecord]],
 ) -> None:
     """只在源 Turn 已闭合后结束同一 Computer group。"""
-    _, record = records[0]
+    key, record = records[0]
     value = record.value
     expected = {"v", "phase", "control_binding", "session_id", "source", "turn_input_id"}
     if (
@@ -380,7 +380,10 @@ async def _try_end(
             for field in ("control_binding", "session_id", "source", "turn_input_id")
         )
     ):
-        raise ValueError("Computer owner record 字段无效")
+        # 字段无效的记录永远无法完成收尾：终态标记，避免每次唤醒都撞同一组。
+        _fail_group(ctx, records, "Computer owner record 字段无效")
+        ctx.report_incident("computer-end-turn", f"{key}: Computer owner record 字段无效")
+        return
     reader = catalog.reader(cast(str, value["session_id"]))
     turns = projection.project(reader.snapshot(), cast(str, value["source"]))
     if not any(
@@ -400,8 +403,18 @@ async def _try_end(
     end_id = "end:" + hashlib.sha256(group.encode()).hexdigest()
     binding = cast(str, value["control_binding"])
     bindings = ctx.require(BINDINGS)
-    async with bindings.open(binding, COMPUTER_CONTROL) as (bound, _):
-        await bound.end_turn(identity, end_id)
+    try:
+        async with bindings.open(binding, COMPUTER_CONTROL) as (bound, _):
+            await bound.end_turn(identity, end_id)
+    except (KeyError, ValueError) as error:
+        # 不可变 binding 缺失或结构不匹配是终态；标记 failed 后不再重试。
+        _fail_group(ctx, records, f"computer control binding 不可用: {error}")
+        ctx.report_incident("computer-end-turn", f"{key}: {error}")
+        return
+    except Exception as error:
+        # scope/效果失败可能自愈：保留 started，下次唤醒或重启重试。
+        ctx.report_incident("computer-end-turn", f"{key}: {error}")
+        return
     state = ctx.require(OWNER_STATE).open(ctx)
     def commit(tx) -> None:
         for item_key, item_record in records:
@@ -419,3 +432,29 @@ async def _try_end(
             )
 
     state.transact(commit)
+
+
+def _fail_group(
+    ctx: Context,
+    records: list[tuple[str, OwnerRecord]],
+    reason: str,
+) -> None:
+    """把整组记录收敛到终态 failed；失败原因随记录保存供恢复判断。"""
+    state = ctx.require(OWNER_STATE).open(ctx)
+
+    def stop(tx) -> None:
+        for item_key, item_record in records:
+            current = tx.read(item_key)
+            if (
+                current is None
+                or current.version != item_record.version
+                or current.value != item_record.value
+            ):
+                continue
+            _ = tx.save(
+                item_key,
+                {**item_record.value, "phase": "failed", "error": reason},
+                expected_version=item_record.version,
+            )
+
+    state.transact(stop)

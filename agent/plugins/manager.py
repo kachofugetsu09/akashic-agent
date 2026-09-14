@@ -7753,13 +7753,10 @@ def _remove_validation_data_dir(path: Path) -> None:
 def _candidate_data_exclude_paths(
     manifest: StaticPluginManifest | None,
 ) -> tuple[str, ...]:
-    """按静态声明排除验证副本中的凭据和私有数据。"""
+    """验证副本只排除插件显式声明的数据路径。"""
     if manifest is None:
         return ()
-    excluded = set(manifest.exclude_data_paths)
-    if manifest.all_credential_paths:
-        excluded.add("config.local.toml")
-    return tuple(sorted(excluded))
+    return tuple(sorted(manifest.exclude_data_paths))
 
 
 def _validate_candidate_formal_snapshot_identity(

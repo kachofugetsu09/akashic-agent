@@ -733,7 +733,7 @@ async def test_computer_cancel_releases_driver_and_follower_ends_unknown_call(tm
 
 @pytest.mark.asyncio
 async def test_computer_failure_retries_started_owner_after_restart_and_source_change(tmp_path: Path) -> None:
-    """清理错误使任务明确失败；显式重启由选定的 stable 处理旧 owner。"""
+    """收尾失败记 incident 并保留 owner；显式重启由选定的 stable 处理旧 owner。"""
     state = _ComputerGatewayState()
     harness = await _computer_harness(
         tmp_path, gateway_state=state, gateway_label="old"
@@ -760,10 +760,10 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
         )
         await _wait_until(lambda: harness.manager.current_snapshot.lease_count == 0)
         await _wait_until(lambda: any(
-            incident.kind == "task_failure"
+            incident.kind == "computer-end-turn"
             for incident in harness.composition_root.receipt().incidents
         ))
-        assert not harness.composition_root.receipt().ready
+        assert harness.composition_root.receipt().ready
 
         computer_source = harness.root / "computer" / "plugin.py"
         manifest_source = harness.root / "computer" / "akashic.plugin.toml"
@@ -870,6 +870,60 @@ async def test_computer_failure_retries_started_owner_after_restart_and_source_c
         if new_gateway is not None:
             new_gateway.shutdown()
             new_gateway.server_close()
+
+
+@pytest.mark.asyncio
+async def test_computer_end_turn_failure_isolated_per_group(tmp_path: Path) -> None:
+    """单组收尾失败记 incident：永久失败收敛 failed，暂时失败保留 started，兄弟组和 follower 不受影响。"""
+    state = _ComputerGatewayState()
+    harness = await _computer_harness(tmp_path, gateway_state=state)
+    try:
+        await harness.bind_computer()
+        first = harness.add_call("first")
+        second = harness.add_call("second")
+        await harness.execute(first)
+        await harness.execute(second)
+        # 指向不存在 binding 的记录是永久失败：收敛 failed，不再重试。
+        poisoned_key = 'computer-use:message:["poisoned-input",0]'
+        poisoned_record = {
+            "v": 1,
+            "phase": "started",
+            "control_binding": "missing-computer-binding",
+            "session_id": "computer-session:second",
+            "source": "chat",
+            "turn_input_id": "second-input",
+        }
+        harness.log.owner("plugin:computer").transact(
+            lambda tx: tx.save(poisoned_key, poisoned_record, expected_version=None)
+        )
+        state.fail_ends = 1
+        harness.finish(first, "complete")
+        harness.finish(second, "complete")
+        await _wait_until(
+            lambda: harness.log.owner("plugin:computer").read(poisoned_key).value["phase"] == "failed"
+        )
+        await _wait_until(lambda: sum(1 for call in state.calls if call.get("endTurn")) == 2)
+        # 一次暂时失败只留该组 started；另一组正常 ended，follower 保持存活。
+        await _wait_until(lambda: "ended" in (
+            harness.owner(first).value["phase"], harness.owner(second).value["phase"]))
+        phases = {harness.owner(first).value["phase"], harness.owner(second).value["phase"]}
+        assert phases == {"started", "ended"}
+        assert any(
+            incident.kind == "computer-end-turn"
+            for incident in harness.composition_root.receipt().incidents
+        )
+        assert harness.composition_root.receipt().ready
+        # 后续唤醒重试暂时性记录并成功。
+        followup = harness.add_call("followup")
+        await harness.execute(followup)
+        harness.finish(followup, "complete")
+        await _wait_until(lambda: harness.owner(followup).value["phase"] == "ended")
+        await _wait_until(
+            lambda: {harness.owner(first).value["phase"], harness.owner(second).value["phase"]}
+            == {"ended"}
+        )
+    finally:
+        await harness.close()
 
 
 @pytest.mark.asyncio

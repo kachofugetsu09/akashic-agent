@@ -40,7 +40,7 @@ def environment(tmp_path):
     source = tmp_path / "plugins/secret_reader"
     source.mkdir(parents=True)
     (source / "plugin.py").write_text(MODULE)
-    (source / "akashic.plugin.toml").write_text('schema_version=1\nname="secret_reader"\nversion="1.0.0"\napi_version=3\nentrypoint="plugin.py"\ncredential_paths=["token"]\n')
+    (source / "akashic.plugin.toml").write_text('schema_version=1\nname="secret_reader"\nversion="1.0.0"\napi_version=3\nentrypoint="plugin.py"\ncredential_paths=["token"]\n[validation]\nexclude_data_paths=["config.local.toml"]\n')
     config = tmp_path / "workspace/plugin-data/secret_reader-builtin/config.local.toml"
     config.parent.mkdir(parents=True)
     config.write_text('token="fixture-private-token"\n')
@@ -195,9 +195,10 @@ async def test_business_validation_never_copies_historical_credentials(tmp_path,
         await host.terminate_all()
 
     if shared_directory:
-        # 新版本已移除凭据能力；随后有人恢复旧配置，验证不得复制这个磁盘版本。
+        # 新版本已移除凭据声明和排除路径；随后有人恢复旧配置，验证不得复制这个磁盘版本。
         manifest = source / "akashic.plugin.toml"
-        manifest.write_text(manifest.read_text().replace('credential_paths=["token"]\n', ''))
+        manifest.write_text(manifest.read_text().replace(
+            'credential_paths=["token"]\n[validation]\nexclude_data_paths=["config.local.toml"]\n', ''))
         (source / "plugin.py").write_text(MODULE.replace('token: CredentialRef', 'token: str'))
         config.write_text('token="public-new-setting"\n')
     else:

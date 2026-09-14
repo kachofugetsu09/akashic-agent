@@ -848,9 +848,9 @@ Delivery provider 的 Core Tasks 按目标 key 持有活动计数和短发送排
 
 来源接纳独立内部工作时新增 Session、Input 和来源自己的恢复记录；回复程序只追加 Output、ToolResult，工具和 Delivery owner 原位推进各自回执。来源取消或失败只记录控制/业务终态，不删除消息。内部 Session 固定 `visibility=internal`、`learning=excluded`，默认投递策略排除它们。已有旧 Turn 记录保持原值，不回填猜测消息或自动重跑；正式迁移另走发布流程。当前没有自动减少条件。恢复证据包括同一 `sessions.db` 的完整消息、owner_records、binding 与业务插件数据备份；选择和 ACK 仍由 EventMail/Wake 原 owner 提交。见 [0057](../decisions/0057-internal-source-messages.md)。
 
-原生 Sender 的凭据仍由原 plugin-data 的 `config.local.toml` 拥有。静态 `credential_paths` 授予通用短租约，旧 Channel 声明只授予自身 factory；二者的并集只用于脱敏与验证排除。归档只增加原配置版本和 CredentialRef，不保存明文或复制新 token。用户改写/撤销配置后，旧 binding 版本检查失败；没有自动凭据迁移、轮换或减少。本任务只写隔离 fixture 配置，未操作正式凭据。
+原生 Sender 的凭据仍由原 plugin-data 的 `config.local.toml` 拥有。静态 `credential_paths` 授予通用短租约，旧 Channel 声明只授予自身 factory；二者的并集只用于脱敏。验证副本的数据排除只由 `validation.exclude_data_paths` 显式声明，不从凭据声明推断文件名。归档只增加原配置版本和 CredentialRef，不保存明文或复制新 token。用户改写/撤销配置后，旧 binding 版本检查失败；没有自动凭据迁移、轮换或减少。本任务只写隔离 fixture 配置，未操作正式凭据。
 
-业务验证先从正式 MessageLog 读取一次 binding，计算历史 manifest 并与 current 组件的 credential/exclude 声明合并；这份并集在 current data 首次复制前生效。current data/workspace（含图）复制完成后，再只用 MessageLog 原生 backup 固定已提交消息并打开副本，复制期间追加的 Message 因而不会成为图的悬空引用。未被声明为凭据或排除路径的普通数据（包括普通配置）仍可复制，旧组件代码、历史独有数据和 workspace 不随 binding 复活。这样既保留消息图已有引用，又阻止新版本移除声明后通过共用目录读到旧 secret。验证副本保留原有恢复/不自动删除协议。
+业务验证先从正式 MessageLog 读取一次 binding，读取历史 manifest 并与 current 组件的 `exclude_data_paths` 声明合并；这份并集在 current data 首次复制前生效。current data/workspace（含图）复制完成后，再只用 MessageLog 原生 backup 固定已提交消息并打开副本，复制期间追加的 Message 因而不会成为图的悬空引用。未被声明为排除路径的普通数据（包括普通配置）仍可复制，旧组件代码、历史独有数据和 workspace 不随 binding 复活。这样既保留消息图已有引用，又阻止新版本移除声明后通过共用目录读到旧 secret。验证副本保留原有恢复/不自动删除协议。
 
 ### 2026-09-07 · 首次 App、工作台读取与 embedding binding
 

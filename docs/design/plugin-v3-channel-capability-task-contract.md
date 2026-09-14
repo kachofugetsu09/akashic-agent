@@ -473,8 +473,9 @@ candidate、factory 调用与 `start()` 之前的 credential resolution/client c
    同时出现在原始 config 时 admission fail-loud，formal resolver 不按 alias 顺序猜值。多个 channel 可以复用同一个
    exact path，但跨 channel 的父子 path overlap fail-loud。
    manifest 是 import-free admission；首次 formal module import 仍发生在 projection 前，因此这是一条 supported API
-   与 exact-source Gate，不是阻止同 UID 恶意 module-level 文件读取的安全沙箱。candidate data copy 会在 candidate
-   import 前排除 `config.local.toml`，candidate `apply` 只能收到已经核验的 opaque projection。
+   与 exact-source Gate，不是阻止同 UID 恶意 module-level 文件读取的安全沙箱。candidate data copy 只排除 manifest
+   显式声明的 `validation.exclude_data_paths`；含凭据的 `config.local.toml` 由声明该路径排除，candidate `apply`
+   只能收到已经核验的 opaque projection。
    这是 supported API 与 exact-source Gate，不是同 UID Python 安全沙箱：formal plugin 仍持有自己的 `ctx.data_root`，
    Core 不承诺阻止恶意反射或自行读取文件。首批 exact Feishu/QQBot source 必须证明 `apply/factory` 在 Host formal
    start 前没有 raw config read，credential 只经 Core resolver 进入 provider client factory。
