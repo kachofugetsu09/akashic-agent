@@ -716,3 +716,39 @@ async def test_validation_preserves_history_without_archived_workspace(tmp_path)
         await host.terminate_all()
         artifacts.close()
         log.close()
+
+
+@pytest.mark.asyncio
+async def test_validation_rejects_binding_added_after_data_copy(tmp_path, monkeypatch):
+    """复制后新增的 binding 未参与凭据排除，必须拒绝并清理整个副本。"""
+    from agent.plugin_composition.bindings import BINDINGS
+    from agent.plugins.snapshot import lease_runtime_snapshot
+    from plugins.tools.plugin import TOOLS
+    from tests.test_default_reply import application
+
+    async with application(tmp_path, replying=False, start=False) as (log, host):
+        source = tmp_path / "source"
+        _write_v3_plugin(source, name="probe", module_source=REPLY_MODULE)
+        _commit(source)
+        result, _ = await host.install_candidate(
+            source=str(source), marketplace="lab", ref_name="", sparse_paths=[],
+        )
+        copy_components = host._copy_validation_components
+        copied = []
+        added = []
+
+        async def copy_then_bind(snapshot, workspace, archive, bindings):
+            await copy_components(snapshot, workspace, archive, bindings)
+            copied.append(workspace)
+            async with lease_runtime_snapshot(host.snapshot_store) as stable:
+                added.append(stable.composition_root.context.require(BINDINGS).bind(
+                    TOOLS, {"created": "during validation copy"},
+                ))
+
+        monkeypatch.setattr(host, "_copy_validation_components", copy_then_bind)
+        with pytest.raises(RuntimeError, match="候选复制期间 binding 已变化"):
+            async with host.open_validation(result.update_id):
+                pytest.fail("不完整排除声明的副本不能开放")
+        assert len(copied) == 1 and not copied[0].parent.exists()
+        assert len(added) == 1
+        assert log.read_binding(added[0])["metadata"] == {"created": "during validation copy"}

@@ -5414,6 +5414,9 @@ class PluginManager:
             # 图副本可能引用复制期间追加的 Message；最后一次 backup 必须覆盖这些引用。
             await _copy_in_thread(self._message_log.backup, workspace / "sessions.db")
             messages = MessageLog(workspace / "sessions.db")
+            # 新 binding 可能带来旧凭据排除声明；不开放按较早声明复制的数据。
+            if messages.read_bindings() != bindings:
+                raise RuntimeError("候选复制期间 binding 已变化；本次验证副本不可用")
         except BaseException:
             if messages is not None:
                 messages.close()
