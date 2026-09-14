@@ -36,9 +36,6 @@ RUN python -m venv /opt/venv \
     && python -c "import site; from pathlib import Path; Path(site.getsitepackages()[0], 'akashic-sdk.pth').write_text('/app/sdk/python/src\n')"
 
 COPY docker/debug/plugins /opt/akashic-debug-plugins
-RUN python -m venv /opt/akashic-debug-plugins/replay_debug/.venv \
-    && /opt/akashic-debug-plugins/replay_debug/.venv/bin/python -m pip install \
-        -r /opt/akashic-debug-plugins/replay_debug/requirements.txt
 
 COPY docker/debug/entrypoint.sh /usr/local/bin/akashic-debug
 RUN chmod +x /usr/local/bin/akashic-debug
