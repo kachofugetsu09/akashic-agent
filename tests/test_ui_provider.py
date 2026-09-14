@@ -10,7 +10,7 @@ from agent.plugin_composition.ui import UI
 from plugins.ui import plugin as ui_plugin
 
 
-async def mount_owner(root, code, *, name="view", register=True, **options):
+async def mount_owner(root, code, *, name="view", register=True, data_root=None, **options):
     """把真实 Context 交给 provider，测试不自报注册 owner。"""
     contexts = []
 
@@ -23,7 +23,8 @@ async def mount_owner(root, code, *, name="view", register=True, **options):
         apply, name=name, inject=(UI,),
         runtime=PluginRuntime(
             plugin_id=name, generation_id=f"{name}-generation", plugin_dir=code,
-            data_dir=code / "data", workspace=code, config={},
+            data_dir=code / "data" if data_root is None else data_root,
+            workspace=code if data_root is None else data_root.parent, config={},
         ),
     )
     return contexts[0]
@@ -109,7 +110,7 @@ async def test_dashboard_close_failure_retains_same_handle(tmp_path):
     root = CompositionRoot("close")
     try:
         await root.mount(ui_plugin.apply, name="ui")
-        ctx = await mount_owner(root, Path(__file__).parent, register=False)
+        ctx = await mount_owner(root, Path(__file__).parent, register=False, data_root=tmp_path / "data")
         module = ModuleType("fixture_dashboard")
         module.__file__ = __file__
         handle = Resource()
@@ -153,7 +154,7 @@ async def test_dashboard_host_rejects_borrowed_provider():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("validation", [False, True])
-async def test_dashboard_uses_instance_environment_when_runtime_paths_match(validation):
+async def test_dashboard_uses_instance_environment_when_runtime_paths_match(validation, tmp_path):
     """独立候选的实际路径与 generation 一致，不能再靠路径差异推断环境。"""
     from agent.plugins.dashboard_host import PluginDashboardHost
     from agent.plugins.generation import PluginContributions, PluginGeneration
@@ -172,7 +173,7 @@ async def test_dashboard_uses_instance_environment_when_runtime_paths_match(vali
     module.register = register
     try:
         await root.mount(ui_plugin.apply, name="ui")
-        ctx = await mount_owner(root, Path(__file__).parent, dashboard=lambda: module)
+        ctx = await mount_owner(root, Path(__file__).parent, dashboard=lambda: module, data_root=tmp_path / "data")
         runtime = ctx.runtime
         generation = PluginGeneration(
             plugin_id=runtime.plugin_id, generation_id=runtime.generation_id,
