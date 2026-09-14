@@ -733,6 +733,8 @@ class Fiber:
             )
             try:
                 await _await_critical(cleanup_task)
+            except asyncio.CancelledError:
+                raise
             except BaseException as cleanup_error:
                 failure = BaseExceptionGroup(
                     f"插件初始化取消且清理失败: {self.name}", [error, cleanup_error]
