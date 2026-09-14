@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import json
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -33,27 +32,6 @@ class FrozenMobileUiRegistry(Mapping[str, MobileUiBinding]):
                 key=lambda descriptor: descriptor.owner,
             )
         )
-        identity_payload = [
-            {
-                "owner": descriptor.owner,
-                "module_sha256": descriptor.module_sha256,
-                "module_bytes": descriptor.module_bytes,
-                "stylesheet_sha256": descriptor.stylesheet_sha256,
-                "stylesheet_bytes": descriptor.stylesheet_bytes,
-                "navigation_label": descriptor.navigation_label,
-                "navigation_description": descriptor.navigation_description,
-                "slots": list(descriptor.slots),
-            }
-            for descriptor in self._descriptors
-        ]
-        self._identity = hashlib.sha256(
-            json.dumps(
-                identity_payload,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-        ).hexdigest()
 
     @property
     def root_instance_token(self) -> object:
@@ -62,10 +40,6 @@ class FrozenMobileUiRegistry(Mapping[str, MobileUiBinding]):
     @property
     def descriptors(self) -> tuple[MobileUiDescriptor, ...]:
         return self._descriptors
-
-    @property
-    def identity(self) -> str:
-        return self._identity
 
     def binding(self, plugin_id: str) -> MobileUiBinding | None:
         return self._bindings.get(plugin_id)

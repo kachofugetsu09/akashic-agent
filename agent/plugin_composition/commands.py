@@ -69,9 +69,6 @@ class CommandCatalog(Protocol):
     @property
     def descriptors(self) -> tuple[CommandDescriptor, ...]: ...
 
-    @property
-    def catalog_digest(self) -> str: ...
-
     def bind(self, bindings: Bindings, line: str) -> str | None: ...
 
     async def execute(

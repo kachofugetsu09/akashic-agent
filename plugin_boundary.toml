@@ -84,8 +84,8 @@ note = "有界纯同步 worker 池"
 
 # ── 人类与模型入口 ───────────────────────────────────────────
 [capabilities."core.commands"]
-role = "core"
-note = "人类命令、alias 与 handler 注册表"
+role = "seam"
+note = "普通 Commands provider 拥有人类命令、alias、handler 注册及封存目录"
 
 [capabilities."core.ui_slots"]
 role = "seam"

@@ -1,9 +1,7 @@
 """命令注册、目录封存、执行和恢复由当前 provider 独占。"""
 from __future__ import annotations
 
-import hashlib
 import inspect
-import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -58,32 +56,10 @@ class CommandRegistry:
         self._fibers = MappingProxyType(dict(fibers))
         self._contexts = MappingProxyType(dict(contexts))
         self._descriptors = descriptors
-        payload: list[dict[str, object]] = [
-            {
-                "name": item.name,
-                "description": item.description,
-                "aliases": list(item.aliases),
-                "input_hint": item.input_hint,
-                "owner": item.owner,
-            }
-            for item in descriptors
-        ]
-        self._catalog_digest = hashlib.sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
 
     @property
     def descriptors(self) -> tuple[CommandDescriptor, ...]:
         return self._descriptors
-
-    @property
-    def catalog_digest(self) -> str:
-        return self._catalog_digest
 
     def bind(self, bindings: Bindings, line: str) -> str | None:
         """匹配后固定真正的 handler owner；恢复不重新选择当前注册。"""
