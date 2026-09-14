@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from agent.control.context import mint_plugin_child_capability, running_turn_id
+from agent.control.context import running_turn_id
 from agent.plugin_composition.process_runtime import (
     DEFAULT_HARD_TIMEOUT_S,
     DEFAULT_INITIAL_YIELD_TIME_MS,
@@ -492,17 +492,12 @@ def _log_shell_execution(
 
 def _shell_env() -> dict[str, str]:
     env = os.environ.copy()
+    env.pop(_PLUGIN_ROLLOUT_CAPABILITY_ENV, None)
     turn_id = running_turn_id.get()
     if turn_id:
         env[_PLUGIN_ROLLOUT_OWNER_TURN_ENV] = turn_id
-        capability = mint_plugin_child_capability(turn_id)
-        if capability:
-            env[_PLUGIN_ROLLOUT_CAPABILITY_ENV] = capability
-        else:
-            env.pop(_PLUGIN_ROLLOUT_CAPABILITY_ENV, None)
     else:
         env.pop(_PLUGIN_ROLLOUT_OWNER_TURN_ENV, None)
-        env.pop(_PLUGIN_ROLLOUT_CAPABILITY_ENV, None)
     _prepend_existing_path_entries(env, _discover_user_path_entries(env))
     env.update(_UNIFIED_EXEC_ENV)
     return env

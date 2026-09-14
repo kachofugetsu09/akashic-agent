@@ -48,18 +48,14 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
     app.workspace = tmp_path / "workspace"
     app.core = SimpleNamespace(plugin_manager=manager)
 
-    result = await app._install_plugin(str(source), "lab", "", [])
+    result, candidate = await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
 
-    assert result["pluginId"] == "candidate@lab"
-    assert result["publicationState"] == "latest_ready"
-    candidate = result["candidate"]
-    assert isinstance(candidate, dict)
-    assert (
-        candidate["candidateRuntimeRevision"]
-        == manager.candidate_status()["candidate_source_revision"]
-    )
-    assert candidate["candidateReloadTransactionId"]
-    assert candidate["candidateError"] == ""
+    assert result.plugin_name == "candidate"
+    assert result.marketplace == "lab"
+    assert candidate["candidate_state"] == "latest_ready"
+    assert candidate["candidate_source_revision"] == manager.candidate_status()["candidate_source_revision"]
+    assert candidate["candidate_reload_tx_id"]
+    assert candidate["candidate_error"] == ""
     assert manager.current_snapshot is stable
     assert "candidate@lab" not in stable.generations
     assert manager.latest_snapshot is not None
@@ -74,7 +70,7 @@ async def test_runtime_install_waits_until_latest_is_leasable(tmp_path: Path) ->
         RuntimeError,
         match="已有插件候选等待处理: plugin=candidate@lab phase=latest_ready",
     ):
-        await app._install_plugin(str(blocked_source), "lab", "", [])
+        await manager.install_candidate(source=str(blocked_source), marketplace="lab", ref_name="", sparse_paths=[])
     assert not (manager.installed_plugins_home / "cache" / "lab" / "blocked").exists()
 
     promoted = await app._promote_plugin("candidate@lab")
@@ -103,9 +99,9 @@ async def test_installed_mcp_update_keeps_old_artifact_until_lease_drains(
         # 1. 同版本提交新 revision，并等待真实 latest MCP 可租用。
         _write_runtime_mcp_source(source, runtime_version="v2")
         _commit_all(source, "runtime-v2")
-        updated = await app._install_plugin(str(source), "lab", "", [])
-        new_artifact = Path(str(updated["installedPath"]))
-        assert updated["version"] == "1.0.0"
+        updated, _ = await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
+        new_artifact = updated.installed_path
+        assert updated.plugin_version == "1.0.0"
         assert new_artifact != old_artifact
         assert old_artifact.is_dir() and new_artifact.is_dir()
 
@@ -296,7 +292,7 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
     try:
         _write_runtime_mcp_source(source, runtime_version="v2")
         _commit_all(source, "runtime-v2-isolated")
-        await app._install_plugin(str(source), "lab", "", [])
+        await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
 
         candidate = manager.ready_candidate
         assert candidate is not None
@@ -362,7 +358,7 @@ async def test_mcp_hot_reload_oracle_rejects_deleted_old_ca_bundle(
         # 1. 建立新 latest 后模拟旧环境材料丢失。
         _write_runtime_mcp_source(source, runtime_version="v2")
         _commit_all(source, "runtime-v2")
-        _ = await app._install_plugin(str(source), "lab", "", [])
+        _ = await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
         latest_lease = manager.snapshot_store.lease(selector="latest")
         old_ca_bundle.unlink()
 
@@ -421,7 +417,7 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
     app.core = SimpleNamespace(plugin_manager=manager)
 
     install, watcher = await asyncio.gather(
-        app._install_plugin(str(sources["beta"]), "lab", "", []),
+        manager.install_candidate(source=str(sources["beta"]), marketplace="lab", ref_name="", sparse_paths=[]),
         manager.reconcile_changed(),
         return_exceptions=True,
     )
@@ -450,7 +446,7 @@ async def test_runtime_install_and_watcher_share_candidate_owner(
 
     monkeypatch.setattr("agent.plugins.manager.install_git_plugin", blocking_install)
     cancelled_install = asyncio.create_task(
-        app._install_plugin(str(sources["alpha"]), "lab", "", [])
+        manager.install_candidate(source=str(sources["alpha"]), marketplace="lab", ref_name="", sparse_paths=[])
     )
     assert await asyncio.to_thread(entered.wait, 5)
     cancelled_install.cancel()
@@ -496,10 +492,10 @@ async def _start_runtime_mcp(
     app.core = SimpleNamespace(plugin_manager=manager)
 
     # 2. 首次安装先成为 latest，显式 promote 后才提供 stable lease。
-    installed = await app._install_plugin(str(source), "lab", "", [])
-    assert installed["publicationState"] == "latest_ready"
+    installed, status = await manager.install_candidate(source=str(source), marketplace="lab", ref_name="", sparse_paths=[])
+    assert status["candidate_state"] == "latest_ready"
     _ = await app._promote_plugin("runtime_mcp@lab")
-    return source, manager, app, bus, Path(str(installed["installedPath"]))
+    return source, manager, app, bus, installed.installed_path
 
 
 def _write_runtime_mcp_source(source: Path, *, runtime_version: str) -> None:

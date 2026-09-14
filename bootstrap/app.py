@@ -23,7 +23,6 @@ from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
-from agent.plugins.turn_rollout import TurnPluginRollout
 from agent.plugins.watcher import PluginWatcher
 from core.net.http import (
     SharedHttpResources,
@@ -170,7 +169,6 @@ class AppRuntime:
         self.http_resources = SharedHttpResources()
         self.app_server: SocketAppServer | None = None
         self.control_service: ControlService | None = None
-        self.plugin_turn_rollout: TurnPluginRollout | None = None
         self.core: CoreRuntime | None = None
         self.bus = None
         self.event_bus: EventBus | None = None
@@ -448,14 +446,6 @@ class AppRuntime:
                         else _noop_async
                     ),
                 ),
-                (
-                    "plugin_turn_rollout.shutdown",
-                    (
-                        self.plugin_turn_rollout.shutdown
-                        if self.plugin_turn_rollout
-                        else _noop_async
-                    ),
-                ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
@@ -509,88 +499,6 @@ class AppRuntime:
             raise RuntimeError("插件 Runtime 不可用")
         await manager.reconcile_disabled_and_drain(plugin_id)
         return f"插件已停用并排空: {plugin_id}"
-
-    async def _install_plugin(
-        self,
-        source: str,
-        marketplace: str,
-        ref: str,
-        sparse: list[str],
-        owner_turn_id: str = "",
-    ) -> dict[str, object]:
-        """安装 immutable artifact，并等待 runtime latest 已可租用。"""
-
-        manager = getattr(self.core, "plugin_manager", None)
-        if manager is None:
-            raise RuntimeError("插件 Runtime 不可用")
-
-        # 1. PluginManager 与 watcher 共用一个 candidate 发布 owner。
-        rollout = getattr(self, "plugin_turn_rollout", None)
-        if rollout is None:
-            result, status = await manager.install_candidate(
-                source=source,
-                marketplace=marketplace,
-                ref_name=ref,
-                sparse_paths=sparse,
-            )
-        elif not owner_turn_id:
-            raise ValueError("plugin-install 必须由当前 active turn 发起")
-        else:
-            result, status = await rollout.install(
-                owner_turn_id,
-                source=source,
-                marketplace=marketplace,
-                ref_name=ref,
-                sparse_paths=sparse,
-            )
-
-        # 2. 返回 manager 在 candidate owner 锁内冻结的发布结果。
-        plugin_id = f"{result.plugin_name}@{result.marketplace}"
-        publication = status["candidate_state"] if result.staged_candidate else "stable"
-        message = (
-            f"{plugin_id} 候选版本安装成功。当前 turn 仍使用原版本；"
-            "本 turn 启动的 attached programmatic 验证会自动使用新版本。"
-            "验证正确后请正常结束当前 turn，系统会在本轮结束后自动切换，"
-            "下一 turn 生效；如果结果或轨迹不正确，请先执行 plugin-revert。"
-            if result.staged_candidate
-            else f"{plugin_id} 已经是当前安装版本；没有创建候选，也不需要重启。"
-        )
-        return {
-            "pluginId": plugin_id,
-            "version": result.plugin_version,
-            "sourceRevision": result.source_revision,
-            "installedPath": str(result.installed_path),
-            "dataPath": str(result.data_path),
-            "publicationState": publication,
-            "candidate": self._plugin_status(status),
-            "message": message,
-        }
-
-    async def _register_plugin_uninstall(
-        self,
-        plugin_id: str,
-        owner_turn_id: str,
-    ) -> dict[str, object]:
-        rollout = self.plugin_turn_rollout
-        if rollout is None:
-            raise RuntimeError("插件 turn rollout owner 不可用")
-        result = await rollout.uninstall(owner_turn_id, plugin_id)
-        result["message"] = (
-            f"{plugin_id} 卸载已确认。当前 turn 的已有操作可以完成；"
-            "本轮结束后系统会自动停止插件并删除已安装代码，plugin-data 会保留。"
-            "下一 turn 不再加载该插件。如需取消，请在本轮结束前执行 plugin-revert。"
-        )
-        return result
-
-    async def _revert_plugin_operation(self, owner_turn_id: str) -> dict[str, object]:
-        rollout = self.plugin_turn_rollout
-        if rollout is None:
-            raise RuntimeError("插件 turn rollout owner 不可用")
-        result = await rollout.revert(owner_turn_id)
-        result["message"] = (
-            "已撤销当前 turn 最近一次插件操作；已发布版本和 plugin-data 均未改变。"
-        )
-        return result
 
     def _plugin_status(
         self,

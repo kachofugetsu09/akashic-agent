@@ -1,10 +1,14 @@
 # 插件 install/uninstall/revert 与 turn 边界发布设计合同
 
-- 状态：implemented；Core 与 Skill 已实现，真实 Fitbit source 适配和扩展 crash matrix 记录在 `NOW.md`
+- 状态：历史合同；旧 TurnPluginRollout 已退役，当前流程见 0071。
 - 日期：2026-08-08
 - 基线：`origin/main@31b976d82cbd5766e6450d7e287ceda71d9b7573`
 - 关联条款：OBJ-002、STA-001～STA-003、CAP-001～CAP-002、ERR-001、RUN-003、PLG-001～PLG-013、BAK-001、TST-001～TST-006
 - 关联决策：[0008](../decisions/0008-plugin-runtime-publishes-only-committed-snapshots.md)、[0015](../decisions/0015-cleanup-does-not-own-turn-or-restart-finality.md)、[0024](../decisions/0024-plugin-self-validation-uses-stable-and-latest.md)
+
+> 退役说明：`ac42b3ea` 中旧 rollout 仅由测试实例化，生产 bootstrap 没有接入。
+> 本次仅删除死实现；当前 `plugins/plugin_update` 后台验证与 Manager 验证宿主保留。
+> 下文保留历史设计证据，不代表当前正常终态或晋升授权合同。
 
 ## 1. 用户可见目标
 
