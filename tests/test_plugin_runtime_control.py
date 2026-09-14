@@ -300,19 +300,14 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
 
         candidate = manager.ready_candidate
         assert candidate is not None
-        validation_root = (
-            tmp_path
-            / "workspace"
-            / "runtime"
-            / "plugin-validation"
-            / candidate.generation_id
-        )
-        validation_workspace = validation_root / "workspace"
+        validation_workspace = candidate.validation_workspace
+        assert validation_workspace is not None
+        validation_root = validation_workspace.parent
         validation_data = (
             validation_workspace / "plugin-data" / "runtime_mcp-lab"
         )
         assert candidate.data_dir == validation_data
-        assert candidate.production_data_dir == production_data
+        assert candidate.data_dir != production_data
         assert (validation_data / marker.name).read_bytes() == production_before
         assert not (tmp_path / "workspace" / "candidate-mcp-started.json").exists()
         assert marker.read_bytes() == production_before
@@ -326,7 +321,7 @@ async def test_mcp_candidate_uses_isolated_data_and_exact_read_only_surface(
         runtime_workspace = Path(str(probe["workspace"]))
         runtime_data = Path(str(probe["data_dir"]))
         assert runtime_workspace.name == "workspace"
-        assert runtime_workspace.is_relative_to(validation_root / "composition")
+        assert runtime_workspace == validation_workspace
         assert runtime_data == (
             runtime_workspace / "plugin-data" / "runtime_mcp-lab"
         )

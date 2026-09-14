@@ -572,6 +572,21 @@ class ReloadJournal:
             for row in rows
         )
 
+    def runtime_generation_ids(self, tx_id: str) -> tuple[str, ...]:
+        """从实际取得资源的事件读取身份，候选 ID 不代替正式 owner。"""
+        record = self.get(tx_id)
+        identities = {record.generation_id}
+        if record.base_generation_id is not None:
+            identities.add(record.base_generation_id)
+        for event in self.events(tx_id):
+            owner = event.details.get("runtime_generation_id")
+            if isinstance(owner, str):
+                identities.add(owner)
+            owners = event.details.get("runtime_generations")
+            if isinstance(owners, dict):
+                identities.update(cast(dict[str, str], owners).values())
+        return tuple(sorted(identities))
+
     def annotate(self, tx_id: str, details: dict[str, object]) -> None:
         """Append evidence without inventing another public rollout phase."""
 

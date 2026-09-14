@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from starlette.convertors import CONVERTOR_TYPES, StringConvertor
 from starlette.websockets import WebSocketDisconnect
 
-from agent.plugin_composition import CompositionError
+from agent.plugin_composition import CompositionError, CompositionRoot
 from agent.plugin_composition.assets import INSTALLED_ASSETS, InstalledAsset
 from agent.plugins.artifacts import ArtifactPointer, read_pointer, write_pointers
 from plugins.ui.dashboard import (
@@ -159,8 +159,9 @@ def test_archived_custom_entrypoint_contract_is_rejected_before_import(tmp_path:
 
     monkeypatch.setattr(owner, "_import_plugin", forbidden)
     with pytest.raises(RuntimeError, match="归档运行合同不兼容"):
-        with owner._archived_generations(("old-component",), "probe"):
-            pytest.fail("old archive must not yield")
+        owner._archived_generations(
+            ("old-component",), CompositionRoot("probe"), workspace=tmp_path, sources={},
+        )
     assert record == {"version": version, "entrypoint": "custom.py"}
 
 

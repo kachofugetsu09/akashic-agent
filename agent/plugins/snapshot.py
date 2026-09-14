@@ -274,6 +274,10 @@ class RuntimeSnapshotCompiler:
                     for item in ordered
                 ),
                 f"snapshot:{snapshot_revision}",
+                "root:" + (
+                    "" if composition_root is None
+                    else f"{composition_root.generation_id}:{id(composition_root.instance_token)}"
+                ),
                 "composition:"
                 + (
                     ""
@@ -1297,7 +1301,7 @@ class RuntimeSnapshotStore:
         try:
             if self._on_drained is not None:
                 await self._on_drained(snapshot)
-        except (asyncio.CancelledError, Exception) as error:
+        except BaseException as error:
             self._drain_failures[snapshot.snapshot_id] = error
         else:
             _ = self._snapshots.pop(snapshot.snapshot_id, None)
@@ -1350,6 +1354,15 @@ class RuntimeSnapshotStore:
             raise RuntimeError("RuntimeSnapshot provisional 发布事务已失效")
 
     def _adopt(self, snapshot: RuntimeSnapshot) -> None:
+        # 同一物理 Root 或 generation 不能通过另一张 snapshot 再次发布。
+        for owned in self._snapshots.values():
+            if snapshot.composition_root is not None and snapshot.composition_root is owned.composition_root:
+                raise RuntimeError("不同 RuntimeSnapshot 不能共享 Root")
+            if any(
+                generation is owned.generations.get(plugin_id)
+                for plugin_id, generation in snapshot.generations.items()
+            ):
+                raise RuntimeError("不同 RuntimeSnapshot 不能共享 PluginGeneration")
         snapshot.claim(self._token)
 
     @staticmethod

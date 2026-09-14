@@ -88,8 +88,8 @@ async def test_loaded_generation_keeps_assets_and_late_imports_after_source_chan
         assert importlib.import_module(alias + ".late").VALUE == "late A"
         current = host.current_snapshot
         assert current is not None
-        root, ready = await host._resolve_composition_root(dict(current.generations), force_fresh=True)
-        assert ready
+        root = await host._resolve_composition_root(dict(current.generations))
+        assert root.receipt().ready
         try:
             value = cast(Mapping[str, object], root.service_value(RESULT))
             assert value["asset"] == "asset A"

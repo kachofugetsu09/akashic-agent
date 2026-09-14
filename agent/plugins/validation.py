@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,7 +26,6 @@ class ValidationHost:
     messages: MessageLog
     artifacts: ArtifactStore
     bus: EventBus
-    modules: ExitStack
     task: asyncio.Task[object]
     parent_lease: RuntimeSnapshotLease
     root: CompositionRoot | None = None
@@ -44,7 +42,6 @@ class ValidationHost:
             if self.root is not None:
                 await self.root.dispose()
             await self.bus.aclose()
-            self.modules.close()
             self.artifacts.close()
             self.messages.close()
             await self.parent_lease.release()

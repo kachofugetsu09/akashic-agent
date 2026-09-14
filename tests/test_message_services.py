@@ -140,10 +140,10 @@ async def test_candidate_caps_reject_formal_log_state_tasks_and_bindings(tmp_pat
         prepared = await host.prepare_candidate("one")
         assert prepared is not None
         generations = {**snapshot.generations, "one": prepared}
-        candidate, ready = await host._resolve_composition_root(
-            generations, candidate_owner=prepared, force_fresh=True,
+        candidate = await host._resolve_composition_root(
+            generations, candidate_owner=prepared,
         )
-        assert ready
+        assert candidate.receipt().ready
         try:
             ctx = candidate.context.require(ServiceKey("probe.one"))
             with pytest.raises(RuntimeError, match="candidate"):

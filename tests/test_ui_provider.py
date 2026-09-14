@@ -149,3 +149,45 @@ async def test_dashboard_host_rejects_borrowed_provider():
     finally:
         await new.dispose()
         await old.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("validation", [False, True])
+async def test_dashboard_uses_instance_environment_when_runtime_paths_match(validation):
+    """独立候选的实际路径与 generation 一致，不能再靠路径差异推断环境。"""
+    from agent.plugins.dashboard_host import PluginDashboardHost
+    from agent.plugins.generation import PluginContributions, PluginGeneration
+    from agent.plugins.scope import PluginScope
+    from agent.plugins.snapshot import RuntimeSnapshot
+
+    root = CompositionRoot("dashboard-environment")
+    scope = PluginScope("view", generation_id="view-generation")
+    observed = []
+    module = ModuleType("fixture_dashboard_environment")
+    module.__file__ = __file__
+
+    def register(_app, context):
+        observed.append((context.validation, context.data_root))
+
+    module.register = register
+    try:
+        await root.mount(ui_plugin.apply, name="ui")
+        ctx = await mount_owner(root, Path(__file__).parent, dashboard=lambda: module)
+        runtime = ctx.runtime
+        generation = PluginGeneration(
+            plugin_id=runtime.plugin_id, generation_id=runtime.generation_id,
+            module_path=module.__name__, source_revision="code", config_revision="config",
+            plugin_dir=runtime.plugin_dir, data_dir=runtime.data_dir,
+            instance=module, scope=scope, contributions=PluginContributions({}),
+            validation_workspace=runtime.workspace if validation else None,
+        )
+        await root.context.serial(SNAPSHOT_SEALING, SnapshotSealing())
+        snapshot = RuntimeSnapshot(
+            "environment", {"view": generation}, composition_root=root,
+            composition_active_plugin_ids=frozenset({"view"}),
+        )
+        PluginDashboardHost(core_routes=()).prepare_snapshot(snapshot)
+        assert observed == [(validation, runtime.data_dir.resolve())]
+    finally:
+        await root.dispose()
+        await scope.aclose()

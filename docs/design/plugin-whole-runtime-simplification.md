@@ -15,12 +15,19 @@
 资源关闭失败保留实际句柄，未交接 Root 同样保留模块和数据依赖。
 资产由普通 `assets` provider 注册，直接读取固定代码制品，不再由 Core 复制第二份目录。
 入口统一为 `plugin.py`，身份只声明一次；配置输入与凭据引用固定，业务字段归插件解释。
-Web/Dashboard 已迁入显式 `ui` provider。删除 `is_active`、`ServiceView`、`static_active`
+Web/Dashboard、Mobile UI 已迁入显式 `ui` provider，命令目录与执行归显式 `commands` provider。
+删除 `is_active`、`ServiceView`、`static_active`
 及旁路依赖列表；功能启用分支留在 `apply(ctx)`，选入组合的硬依赖仍必须满足。
 旧 `ToolRegistry` 在实际启动链没有构造者；只有测试向 Manager 注入它，复制 MCP facade
 并写入另一份 snapshot 目录。这条路径及其搜索后端已删除，实际工具仍由 `plugins/tools`
 与 MCP 的调用 scope 拥有。MCP 只读工具目录尚待对应 provider 提供，当前继续明确报告
 `mcp_catalog_unavailable`，不把未打开的服务伪装成空工具成功。
+候选、正式及失败恢复现从同一组固定组件归档分别创建全新的模块、Scope 和 generation；
+snapshot 保存实际挂载的实例，禁止跨 snapshot 共用物理 Root 或 generation。
+关闭候选后才开始正式换代；旧组合排空并实际释放后再创建新正式组合。
+旧 payload 替换、候选 clone 以及正式/候选目录和身份来回切换已删除。
+恢复也是一次真实新 Root 构建，关闭失败仍由原 Root 或 Store 保存 owner，不能隐式重试。
+Dashboard 从该实例的验证环境归属读取限制，不再比较两份不一致的数据路径猜测环境。
 这仍未完成整体重构：Manager 仍拥有业务验证、逐类运行宿主和发布特例，
 snapshot 仍枚举其他能力，持久选择仍使用旧更新协议。不能把局部删除视作整体换代已经完成。
 

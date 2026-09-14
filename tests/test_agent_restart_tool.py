@@ -786,11 +786,11 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
     original_check = plugin_manager_module._validate_candidate_formal_snapshot_identity
 
     def capture_identity(
-        generation: PluginGeneration, *, candidate: RuntimeSnapshot, formal: RuntimeSnapshot,
+        *, candidate: RuntimeSnapshot, formal: RuntimeSnapshot,
     ) -> None:
         observed["candidate"] = candidate
         observed["formal"] = formal
-        original_check(generation, candidate=candidate, formal=formal)
+        original_check(candidate=candidate, formal=formal)
 
     monkeypatch.setattr(
         plugin_manager_module,
@@ -950,7 +950,10 @@ async def test_restart_provider_candidate_preserves_formal_root_identity(
         assert promoted["publication_state"] == "promoted"
         candidate = observed["candidate"]
         formal = observed["formal"]
-        assert candidate.snapshot_id == formal.snapshot_id
+        assert candidate.snapshot_id != formal.snapshot_id
+        assert {key: item.archive_ref for key, item in candidate.generations.items()} == {
+            key: item.archive_ref for key, item in formal.generations.items()
+        }
 
         candidate_topology = candidate.composition_topology
         formal_topology = formal.composition_topology

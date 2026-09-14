@@ -39,12 +39,9 @@ class PluginDashboardHost:
         registry = _ui_registry(snapshot)
         if registry is None:
             return
-        root = snapshot.composition_root
-        assert root is not None
         validation = frozenset(
             generation.plugin_id for generation in snapshot.active_generations()
-            if root.plugin_runtime(generation.plugin_id).data_dir.resolve()
-            != generation.data_dir.resolve()
+            if generation.validation_workspace is not None
         )
         registry.prepare_dashboard(
             core_routes=self._core_routes, workload_urls=self._workload_urls,

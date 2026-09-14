@@ -51,20 +51,12 @@ class PluginGeneration:
     source_type: Literal["builtin", "installed"] = "builtin"
     static_manifest: StaticPluginManifest | None = None
     composition_runtime_cleanup_registered: bool = False
-    replaced_composition_runtime_generation: PluginGeneration | None = None
-    formal_root_stopped: bool = False
-    formal_root_released: bool = False
     runtime_snapshot: RuntimeSnapshot | None = None
     retire_started: bool = False
     state: str = "active"
     lease_count: int = 0
     reload_tx_id: str | None = None
-    production_contributions: PluginContributions | None = None
-    production_data_dir: Path | None = None
-    boot_created_data_dir: bool = False
-    publication_created_data_dir: bool = False
     validation_workspace: Path | None = None
-    validation_data_inventory: tuple[str, ...] = ()
     archive_ref: str | None = None
 
     @property

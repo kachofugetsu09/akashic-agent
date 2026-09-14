@@ -242,26 +242,24 @@ async def apply(ctx):
         assert snapshot is not None
         await manager.snapshot_store.wait_for_no_leases(snapshot)
         old_root = snapshot.composition_root
-        await manager._stop_runtime_snapshot(snapshot)
+        await manager._close_formal_root(snapshot)
         stable = next(iter(manager._active_generations.values()))
         if prepare_failure:
             (workspace / "fail-prepare").touch()
             with pytest.raises(ValueError, match="rebuild prepare failed"):
-                await manager._rebuild_stable_root(stable, snapshot)
-        else:
-            await manager._rebuild_stable_root(stable, snapshot)
-        assert snapshot.composition_root is not old_root
-        assert not snapshot.accepting_leases and snapshot.lease_count == 0
-        events = snapshot.composition_root.context.require(ServiceKey("probe.events"))
-        if prepare_failure:
-            assert events == ["prepare", "stop"]
-            assert snapshot.composition_root.instance_token not in manager._runtime_starting_roots
+                await manager._build_and_publish_root(
+                    dict(snapshot.generations), previous=snapshot, old_channel=None,
+                )
+            assert manager.current_snapshot is snapshot
+            assert not snapshot.accepting_leases and snapshot.lease_count == 0
             (workspace / "fail-prepare").unlink()
-            await manager._rebuild_stable_root(stable, snapshot)
-            events = snapshot.composition_root.context.require(ServiceKey("probe.events"))
-        assert events == ["prepare"]
-        await manager.snapshot_store.resume(snapshot)
-        await manager.start_runtime()
+        replacement = await manager._build_and_publish_root(
+            dict(snapshot.generations), previous=snapshot, old_channel=None,
+        )
+        assert replacement is manager.current_snapshot and replacement is not snapshot
+        assert snapshot.composition_root is old_root
+        assert replacement.generations[stable.plugin_id] is not stable
+        events = replacement.composition_root.context.require(ServiceKey("probe.events"))
         assert events == ["prepare", "start"]
     finally:
         async with asyncio.timeout(3):
@@ -559,8 +557,8 @@ async def test_prepublication_resources_keep_exact_scope_and_cleanup_after_start
 
 
 @pytest.mark.asyncio
-async def test_recovery_disposes_candidate_root_before_rebuilding_same_generation(tmp_path):
-    """回退时先释放候选 Root，避免 generation effect 残留到 stable 重建。"""
+async def test_recovery_disposes_candidate_root_before_building_new_instances(tmp_path):
+    """关闭候选后重建实际新实例，原 snapshot 仍描述它原来的 Root。"""
     source = tmp_path / "plugins" / "registry"
     source.mkdir(parents=True)
     (source / "plugin.py").write_text(
@@ -598,30 +596,30 @@ async def apply(ctx):
         paused = manager.snapshot_store.pause_admission()
         assert paused is stable_snapshot
         await manager.snapshot_store.wait_for_no_leases(stable_snapshot)
-        await manager._stop_runtime_snapshot(stable_snapshot)
-        await manager._stop_stable_root(stable, stable_snapshot)
         old_root = stable_snapshot.composition_root
         candidate = await manager._compile_generation_snapshot(
-            stable, force_fresh_composition=True
+            stable, candidate_owner=stable,
         )
         candidate_root = candidate.composition_root
         assert candidate_root is not None and candidate_root is not old_root
         assert candidate_root.frozen and old_root.frozen
-        assert manager._building_roots == {}
+        assert candidate_root in manager._building_roots
         assert stable_snapshot.composition_root is old_root
-        stable.runtime_snapshot = candidate
-
-        await manager._recover_stable_root(stable, stable_snapshot)
+        assert stable.runtime_snapshot is stable_snapshot
+        await manager._dispose_unreferenced_composition_root(candidate)
+        replacement = await manager._replace_formal_root(dict(stable_snapshot.generations))
 
         assert candidate_root.receipt().fibers == ()
-        assert stable_snapshot.composition_root is not old_root
-        root = stable_snapshot.composition_root
+        assert stable_snapshot.composition_root is old_root
+        root = replacement.composition_root
         assert root is not None
         assert root.receipt().ready
         assert root.frozen
-        module = stable.instance.module
+        fresh = replacement.generations[stable.plugin_id]
+        assert fresh is not stable
+        module = fresh.instance.module
         assert module is not None
-        assert module.__dict__["_registry"] == {stable.generation_id}
+        assert module.__dict__["_registry"] == {fresh.generation_id}
     finally:
         await manager.terminate_all()
 
@@ -699,7 +697,7 @@ async def test_failed_root_build_keeps_module_data_and_cleanup_owner(
     assert (generation.data_dir / "connection-owner").read_text() == "open"
     assert not generation.scope.closed
     assert generation.runtime_snapshot is None
-    assert generation in manager._draining_generations[generation.plugin_id]
+    assert manager._scopes[generation.module_path] is generation.scope
 
     await manager.terminate_all()
 
@@ -741,7 +739,7 @@ async def test_cancelled_compilation_cleanup_keeps_cancel_and_real_failure(tmp_p
     [generation] = generations
     module = sys.modules[generation.module_path]
     assert module.attempts == 1
-    assert generation in manager._draining_generations[generation.plugin_id]
+    assert manager._scopes[generation.module_path] is generation.scope
     await manager.terminate_all()
     assert module.attempts == 2
     assert manager._building_roots == {}
