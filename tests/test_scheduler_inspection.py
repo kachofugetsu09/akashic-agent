@@ -185,12 +185,12 @@ async def test_client_reports_scheduler_unavailable_without_provider(tmp_path: P
     store.install(RuntimeSnapshotCompiler().compile({}, composition_root=root))
     service = _inspection_service(store)
     try:
-        assert await service.list_jobs() == {
-            "unavailable": {
-                "code": "scheduler_unavailable",
-                "message": "调度检查服务尚未绑定",
-            }
-        }
+        from plugins.akashic_clients.runtime_inspection import RuntimeInspectionError
+
+        with pytest.raises(RuntimeInspectionError) as captured:
+            await service.list_jobs()
+        assert captured.value.code == "scheduler_unavailable"
+        assert str(captured.value) == "调度检查服务尚未绑定"
     finally:
         await store.close()
         await root.dispose()

@@ -50,7 +50,9 @@ class ScopedRpcRuntimeInspection:
 
     async def _call(self, key: object, payload: Mapping[str, object]) -> dict[str, object]:
         async with self._open_scope() as scope:
-            return await self._invoke(scope, key, payload)
+            result = await self._invoke(scope, key, payload)
+        _raise_unavailable(result)
+        return result
 
     async def list_documents(self) -> dict[str, object]:
         return await self._call(INSPECTION_DOCUMENTS_LIST, {})
@@ -72,18 +74,9 @@ class ScopedRpcRuntimeInspection:
 
         async with self._open_scope() as scope:
             payload = dict(scope.require(RUNTIME_CATALOG)())
-            _raise_catalog_unavailable(payload)
+            _raise_unavailable(payload)
             skills = await self._invoke(scope, INSPECTION_SKILLS_LIST, {})
-            unavailable = skills.get("unavailable")
-            if isinstance(unavailable, Mapping):
-                code = unavailable.get("code")
-                message = unavailable.get("message")
-                if isinstance(code, str) and isinstance(message, str):
-                    raise RuntimeInspectionError(code, message)
-                raise RuntimeInspectionError(
-                    "invalid_response",
-                    "runtime inspection unavailable 响应无效",
-                )
+            _raise_unavailable(skills)
             items = skills.get("items")
             if not isinstance(items, list):
                 raise RuntimeInspectionError(
@@ -104,7 +97,7 @@ class ScopedRpcRuntimeInspection:
 
         async with self._open_scope() as scope:
             payload = scope.require(RUNTIME_CATALOG)()
-            _raise_catalog_unavailable(payload)
+            _raise_unavailable(payload)
         servers = payload.get("mcp_servers")
         if not isinstance(servers, list):
             raise RuntimeInspectionError("invalid_response", "runtime catalog 缺少 MCP 列表")
@@ -135,18 +128,24 @@ class ScopedRpcRuntimeInspection:
         }
 
 
-def _raise_catalog_unavailable(payload: Mapping[str, object]) -> None:
-    """Translate the neutral catalog failure shape at the plugin boundary."""
+def _raise_unavailable(payload: Mapping[str, object]) -> None:
+    """Translate a neutral inspection failure at the client boundary."""
 
     unavailable = payload.get("unavailable")
     if unavailable is None:
         return
     if not isinstance(unavailable, Mapping):
-        raise RuntimeInspectionError("invalid_response", "runtime catalog unavailable 响应无效")
+        raise RuntimeInspectionError(
+            "invalid_response",
+            "runtime inspection unavailable 响应无效",
+        )
     code = unavailable.get("code")
     message = unavailable.get("message")
     if not isinstance(code, str) or not isinstance(message, str):
-        raise RuntimeInspectionError("invalid_response", "runtime catalog unavailable 响应无效")
+        raise RuntimeInspectionError(
+            "invalid_response",
+            "runtime inspection unavailable 响应无效",
+        )
     raise RuntimeInspectionError(code, message)
 
 
