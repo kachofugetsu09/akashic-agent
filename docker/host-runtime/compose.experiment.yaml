@@ -94,6 +94,7 @@ services:
       - no-new-privileges:true
     environment:
       HOME: /tmp
+      PYTHONPATH: /opt/akashic/source
       PYTHONUNBUFFERED: "1"
     entrypoint:
       - /opt/venv/bin/python

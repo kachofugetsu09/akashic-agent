@@ -8,6 +8,7 @@ import tarfile
 import tomllib
 
 import pytest
+import yaml
 
 from agent.plugins.install import (
     finalize_uninstall_plugin,
@@ -26,6 +27,19 @@ from scripts.install_plugin_distribution import (
     install_profile,
     verify_distribution,
 )
+
+
+def test_workload_controller_imports_core_from_distribution_source() -> None:
+    """发行 workload controller 必须能导入 image 中的 Core 模块。"""
+
+    compose = yaml.safe_load(
+        Path("docker/host-runtime/compose.experiment.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    environment = compose["services"]["workload-controller"]["environment"]
+
+    assert environment["PYTHONPATH"] == "/opt/akashic/source"
 
 
 def test_distribution_installs_isolated_git_sources_and_refuses_overwrite(
