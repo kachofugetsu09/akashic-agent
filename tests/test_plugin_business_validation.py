@@ -78,6 +78,10 @@ async def test_validation_runs_real_reply_model_projection_and_tool_records(tmp_
         before = log.catalog().snapshot_heads()
         async with host.open_validation(result.update_id) as scope:
             validation = next(iter(host._validation_hosts.values()))
+            child = validation.manager
+            for plugin_id, generation in child.current_snapshot.generations.items():
+                assert child.generation(plugin_id) is generation
+                assert generation is not host.latest_snapshot.generations[plugin_id]
             output = await scope.require(ServiceKey("test.validation"))()
             assert output.body.finish == "complete"
             assert any(isinstance(part, ContentPart) and part.value == "finished" for part in output.body.parts)

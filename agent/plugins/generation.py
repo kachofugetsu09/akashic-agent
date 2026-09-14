@@ -30,11 +30,6 @@ class GateResult:
     failure_reason: str = ""
 
 
-@dataclass(frozen=True)
-class PluginContributions:
-    manifest: dict[str, object]
-
-
 @dataclass
 class PluginGeneration:
     plugin_id: str
@@ -46,7 +41,6 @@ class PluginGeneration:
     data_dir: Path
     instance: object
     scope: PluginScope
-    contributions: PluginContributions
     config_projection: dict[str, object] = field(default_factory=dict)
     source_type: Literal["builtin", "installed"] = "builtin"
     static_manifest: StaticPluginManifest | None = None

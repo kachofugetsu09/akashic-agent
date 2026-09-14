@@ -676,7 +676,7 @@ async def test_failed_root_build_keeps_module_data_and_cleanup_owner(
     assert (generation.data_dir / "connection-owner").read_text() == "open"
     assert not generation.scope.closed
     assert generation.runtime_snapshot is None
-    assert manager._scopes[generation.module_path] is generation.scope
+    assert manager._building_roots[root] == (generation,)
 
     await manager.terminate_all()
 
@@ -722,7 +722,7 @@ async def test_cancelled_compilation_cleanup_keeps_cancel_and_real_failure(tmp_p
     [generation] = generations
     module = sys.modules[generation.module_path]
     assert module.attempts == 1
-    assert manager._scopes[generation.module_path] is generation.scope
+    assert not generation.scope.closed
     await manager.terminate_all()
     assert module.attempts == 2
     assert manager._building_roots == {}

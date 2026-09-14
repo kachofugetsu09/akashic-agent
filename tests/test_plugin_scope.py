@@ -13,7 +13,7 @@ from agent.plugins.scope import CleanupFailure, PluginScope
 @pytest.mark.asyncio
 async def test_disabled_cleanup_retries_a_generation_that_never_reached_a_snapshot(tmp_path):
     """显式禁用清理也能收敛加载回滚留下的 scope，不要求重启整个宿主。"""
-    from agent.plugins.generation import PluginContributions, PluginGeneration
+    from agent.plugins.generation import PluginGeneration
     from bus.event_bus import EventBus
 
     manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
@@ -32,7 +32,6 @@ async def test_disabled_cleanup_retries_a_generation_that_never_reached_a_snapsh
         plugin_id="owner", generation_id="failed-load", module_path="_failed_load",
         source_revision="source", config_revision="config", plugin_dir=tmp_path,
         data_dir=tmp_path / "data", instance=object(), scope=scope,
-        contributions=PluginContributions({}),
     )
     try:
         with pytest.raises(RuntimeError, match="scope cleanup 未完成"):
@@ -131,16 +130,16 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
     scope.defer("asset", cleanup)
     generation = SimpleNamespace(
         plugin_id="owner", generation_id="generation", module_path="module",
-        scope=scope, runtime_snapshot=object(), state="prepared",
+        scope=scope, runtime_snapshot=SimpleNamespace(composition_root=None), state="prepared",
+        instance=SimpleNamespace(module=None),
     )
     manager._building_roots = {}
     manager._draining_generations = {}
-    manager._scopes = {}
     manager._cleanup_failures = []
-    manager._loaded = {"module"}
-    manager._active_plugins = {"module": object()}
     manager._stable_aliases = {"module": "alias"}
-    manager._snapshot_store = SimpleNamespace(pause_admission=Mock())
+    manager._snapshot_store = SimpleNamespace(
+        pause_admission=Mock(), generation_is_referenced_elsewhere=Mock(return_value=False),
+    )
     dispose_root = AsyncMock(side_effect=OSError("still open") if stage == "root" else None)
     remove = Mock()
     monkeypatch.setattr(manager, "_record_root_failure", Mock())
@@ -150,8 +149,7 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
     with pytest.raises((OSError, RuntimeError), match="still open"):
         await manager._dispose_generation(generation, state="discarded")
     assert manager._draining_generations["owner"] == [generation]
-    assert manager._scopes["module"] is scope
-    assert "module" in manager._loaded
+    assert manager._draining_generations["owner"][0].scope is scope
     assert generation.state == "prepared"
     assert not scope.closed
     remove.assert_not_called()
@@ -162,7 +160,6 @@ async def test_generation_disposal_keeps_failed_owner_and_module(monkeypatch, st
     dispose_root.side_effect = cleanup.side_effect = None
     await manager._dispose_generation(generation, state="discarded")
     assert manager._draining_generations == {}
-    assert manager._scopes == {}
     assert scope.closed
     assert generation.state == "discarded"
     assert [call.args[0] for call in remove.call_args_list] == ["module", "alias"]
@@ -178,50 +175,42 @@ async def test_discard_prepared_failure_keeps_candidate_and_does_not_abort(monke
     monkeypatch.setattr(manager, "_dispose_generation", dispose)
     monkeypatch.setattr(manager, "_abort_reload", abort)
     with pytest.raises(RuntimeError, match="cleanup pending"):
-        await manager.discard_prepared("owner")
+        await manager._discard_prepared("owner")
     assert manager._prepared_generations["owner"] is generation
     abort.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_terminate_failure_keeps_scope_module_and_control_owner(monkeypatch):
+async def test_terminate_failure_keeps_scope_module_and_control_owner(tmp_path, monkeypatch):
     """全量关闭不能把尚未构造 generation 的失败 scope 清空。"""
-    manager = object.__new__(PluginManager)
-    manager._snapshot_store = SimpleNamespace(
-        pause_admission=Mock(return_value=None), close=AsyncMock(),
-    )
-    manager._update_publication = None
-    manager._validation_hosts = {}
-    manager._plugin_tasks = SimpleNamespace(close=AsyncMock())
-    manager._plugin_processes = SimpleNamespace(close=AsyncMock())
-    manager._active_channel_generation = None
-    manager._active_generations = {}
-    manager._prepared_generations = {}
-    manager._building_roots = {}
-    manager._draining_generations = {}
-    manager._cleanup_failures = []
+    from agent.plugin_composition import CompositionRoot
+    from bus.event_bus import EventBus
+
+    manager = PluginManager([], event_bus=EventBus(), workspace=tmp_path / "workspace",
+                            installed_cache_root=tmp_path / "home/cache")
     scope = PluginScope("owner")
     cleanup = Mock(side_effect=OSError("still open"))
     scope.defer("asset", cleanup)
-    manager._scopes = {"module": scope}
-    manager._loaded = {"module"}
-    manager._active_plugins = {"module": object()}
-    manager._stable_aliases = {}
-    manager._owns_control_frames = True
-    manager._control_frames = SimpleNamespace(close=Mock())
+    control_close = Mock(wraps=manager._control_frames.close)
+    monkeypatch.setattr(manager._control_frames, "close", control_close)
     remove = Mock()
     monkeypatch.setattr(manager, "_remove_module_tree", remove)
+    root = CompositionRoot("partial-import")
+    manager._building_roots[root] = ()
+    root._defer_internal_cleanup("module", lambda: manager._remove_module_tree("module"))
+    root._defer_internal_cleanup("scope", lambda: manager._close_root_scope(scope, "module"))
 
     with pytest.raises(RuntimeError, match="still open"):
         await manager.terminate_all()
-    assert manager._scopes["module"] is scope
-    assert "module" in manager._loaded
+    assert root in manager._building_roots
+    assert not scope.closed
     assert manager._cleanup_failures == [CleanupFailure("asset", "still open")]
     manager._control_frames.close.assert_not_called()
     remove.assert_not_called()
 
     cleanup.side_effect = None
     await manager.terminate_all()
-    assert manager._scopes == {}
-    assert manager._loaded == set()
+    assert root not in manager._building_roots
+    assert scope.closed
+    remove.assert_called_once_with("module")
     manager._control_frames.close.assert_called_once()

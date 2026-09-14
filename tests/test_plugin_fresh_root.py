@@ -132,6 +132,7 @@ async def test_candidate_and_formal_mount_fresh_instances_for_every_plugin(tmp_p
         assert_actual_instances(ready)
         for key, item in ready.generations.items():
             old = stable.generations[key]
+            assert host.generation(key) is old
             assert item is not old
             assert item.instance.module is not old.instance.module
             assert item.scope is not old.scope
@@ -163,6 +164,11 @@ async def test_candidate_and_formal_mount_fresh_instances_for_every_plugin(tmp_p
     finally:
         await host.terminate_all()
 
+    assert host.current_snapshot is None
+    for key in formal.generations:
+        assert host.generation(key) is None
+        assert formal.generations[key].scope.closed
+
 
 @pytest.mark.asyncio
 async def test_store_rejects_republishing_a_shared_generation(tmp_path):
@@ -183,6 +189,7 @@ async def test_store_rejects_republishing_a_shared_generation(tmp_path):
 
 @pytest.mark.asyncio
 async def test_import_failure_keeps_module_tree_when_scope_cleanup_fails(tmp_path, monkeypatch):
+    initialize_plugin_workspace(tmp_path / "workspace")
     source = tmp_path / "plugins/import_owner"
     _write_v3_plugin(source, name="import_owner", module_source="api_version = 3\nname = 'import_owner'\nversion = '1.0.0'\nfrom . import helper\nraise ValueError('partial import')\n")
     (source / "helper.py").write_text("RESOURCE = object()\n")
@@ -192,9 +199,11 @@ async def test_import_failure_keeps_module_tree_when_scope_cleanup_fails(tmp_pat
     )
     close_scope = host._close_root_scope
     attempts = 0
+    acquired = []
 
     async def fail_once(scope, module_path):
         nonlocal attempts
+        acquired.append((module_path, scope))
         attempts += 1
         if attempts == 1:
             raise OSError("scope resource still open")
@@ -205,7 +214,7 @@ async def test_import_failure_keeps_module_tree_when_scope_cleanup_fails(tmp_pat
         await host._run_operation(lambda: host._load_one(host.discover()[0]))
     [(root, generations)] = host._building_roots.items()
     assert generations == ()
-    [(module_path, scope)] = host._scopes.items()
+    [(module_path, scope)] = acquired
     assert module_path in sys.modules and module_path + ".helper" in sys.modules
     assert not scope.closed
     assert attempts == 1

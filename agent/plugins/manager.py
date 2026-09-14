@@ -120,7 +120,6 @@ from agent.plugins.scope import CleanupFailure, PluginScope
 from agent.plugins.generation import (
     GateCheckResult,
     GateResult,
-    PluginContributions,
     PluginGeneration,
 )
 from agent.plugins.importer import FreshPluginImporter
@@ -202,14 +201,6 @@ def _reject_retired_owner_recovery(action: ReloadRecoveryAction) -> None:
         f"recovery (tx={action.tx_id}, plugin={action.plugin_id}, "
         f"resource={resource!r}); journal remains pending"
     )
-
-
-@dataclass(frozen=True)
-class ActivePluginInfo:
-    plugin_id: str
-    plugin_dir: Path
-    manifest: dict[str, object]
-    module_path: str
 
 
 @dataclass(frozen=True)
@@ -312,15 +303,11 @@ class PluginManager:
             ]
             | None
         ) = None
-        self._loaded: set[str] = set()
-        self._active_plugins: dict[str, ActivePluginInfo] = {}
-        self._scopes: dict[str, PluginScope] = {}
         self._cleanup_failures: list[CleanupFailure] = []
         # 仅持有尚未交给 snapshot 的真实 Root，以及它仍需使用的模块和数据 owner。
         self._building_roots: dict[CompositionRoot, tuple[PluginGeneration, ...]] = {}
         self._operation: ManagerOperation | None = None
         self._stopping = False
-        self._active_generations: dict[str, PluginGeneration] = {}
         self._draining_generations: dict[str, list[PluginGeneration]] = {}
         self._prepared_generations: dict[str, PluginGeneration] = {}
         self._ready_candidate: _ReadyPluginCandidate | None = None
@@ -476,10 +463,6 @@ class PluginManager:
             return self._snapshot_store.lease(snapshot_id)
         return self._snapshot_store.retain_recovery_target(snapshot)
 
-    @property
-    def loaded_count(self) -> int:
-        return len(self._loaded)
-
     async def run_runtime_services(self) -> None:
         """订阅 stable 变化；每次启动都经同一操作 owner，关闭由 terminate 负责。"""
         if self._runtime_services_enabled:
@@ -583,12 +566,11 @@ class PluginManager:
         if cancelled:
             raise asyncio.CancelledError
 
-    def active_plugins(self) -> list[ActivePluginInfo]:
-        return [
-            self._active_plugins[generation.module_path]
-            for generation in self._active_generations.values()
-            if self._registry_active(generation.module_path)
-        ]
+    @property
+    def _active_generations(self) -> Mapping[str, PluginGeneration]:
+        """当前实例只由 Store 选中的 snapshot 投影，不另存目录。"""
+        snapshot = self.current_snapshot
+        return {} if snapshot is None else snapshot.generations
 
     @property
     def cleanup_failures(self) -> list[CleanupFailure]:
@@ -1278,16 +1260,6 @@ class PluginManager:
             digest.update(_path_metadata(data_dir / CONFIG_INPUT))
         return digest.hexdigest()
 
-    def _registry_active(self, module_path: str) -> bool:
-        if module_path not in self._active_plugins:
-            return False
-        if self.current_snapshot is None:
-            return False
-        return any(
-            generation.module_path == module_path
-            for generation in self.current_snapshot.active_generations()
-        )
-
     def stable_channel_catalog(self) -> ChannelRegistrySnapshot | None:
         """Return the exact committed stable merged channel declaration catalog."""
 
@@ -1599,7 +1571,6 @@ class PluginManager:
         tracked = self._draining_generations.setdefault(generation.plugin_id, [])
         if not any(item is generation for item in tracked):
             tracked.append(generation)
-        self._scopes[generation.module_path] = generation.scope
 
         async def close_resources() -> None:
             """后取得的资源关闭成功后，才释放其 Root 和作用域依赖。"""
@@ -1642,9 +1613,6 @@ class PluginManager:
             raise
 
         # 3. 所有资源确认关闭后才移除模块及排空 owner。
-        _ = self._scopes.pop(generation.module_path, None)
-        self._loaded.discard(generation.module_path)
-        _ = self._active_plugins.pop(generation.module_path, None)
         self._remove_module_tree(generation.module_path)
         stable_alias = self._stable_aliases.pop(generation.module_path, None)
         if (
@@ -2769,9 +2737,6 @@ class PluginManager:
         for generation in snapshot.generations.values():
             self._activate_published_generation(generation, old.get(generation.plugin_id))
             generation.state = "active"
-            self._loaded.add(generation.module_path)
-            self._scopes[generation.module_path] = generation.scope
-        self._active_generations = dict(snapshot.generations)
         for generation in old.values():
             self._retire_generation(generation)
 
@@ -3037,24 +3002,10 @@ class PluginManager:
         generation: PluginGeneration,
         previous: PluginGeneration | None,
     ) -> None:
-        plugin_dir = generation.plugin_dir.resolve(strict=False)
         published_module = sys.modules[generation.module_path]
         stable_alias = self._stable_aliases.get(generation.module_path)
         if stable_alias is None and previous is not None:
             stable_alias = self._stable_aliases.get(previous.module_path)
-        retired_module = None
-        if stable_alias is None:
-            retired_module = next(
-                (
-                    module_path
-                    for module_path, info in self._active_plugins.items()
-                    if module_path != generation.module_path
-                    and info.plugin_id == generation.plugin_id
-                ),
-                None,
-            )
-            if retired_module is not None:
-                stable_alias = self._stable_aliases.get(retired_module)
         if stable_alias is None:
             stable_alias = "_akashic_stable_" + hashlib.sha256(generation.plugin_id.encode()).hexdigest()[:16]
 
@@ -3065,15 +3016,7 @@ class PluginManager:
         sys.modules[stable_alias] = published_module
         if previous is not None:
             _ = self._stable_aliases.pop(previous.module_path, None)
-        if retired_module is not None:
-            _ = self._stable_aliases.pop(retired_module, None)
         self._stable_aliases[generation.module_path] = stable_alias
-        self._active_plugins[generation.module_path] = ActivePluginInfo(
-            plugin_id=generation.plugin_id,
-            plugin_dir=plugin_dir,
-            manifest=generation.contributions.manifest,
-            module_path=generation.module_path,
-        )
 
     async def _post_publish_invariants(
         self,
@@ -3361,7 +3304,6 @@ class PluginManager:
             f"module:{module_path}", lambda: self._remove_module_tree(module_path),
         )
         scope = PluginScope(plugin_id, generation_id=generation_id)
-        self._scopes[module_path] = scope
         root._defer_internal_cleanup(
             f"scope:{module_path}", lambda: self._close_root_scope(scope, module_path),
         )
@@ -3380,9 +3322,6 @@ class PluginManager:
                 plugin_id=plugin_id, generation_id=generation_id, module_path=module_path,
                 source_revision=revision, config_revision=config_revision,
                 plugin_dir=plugin_dir, data_dir=data_dir, instance=instance, scope=scope,
-                contributions=self._collect_candidate_contributions(
-                    instance=instance,
-                ),
                 config_projection=config, archive_ref=ref, static_manifest=identity,
                 source_type=cast(Literal["builtin", "installed"], mod["source_type"]),
                 state="prepared",
@@ -3560,7 +3499,6 @@ class PluginManager:
                 snapshot = RuntimeSnapshotCompiler().compile(generations, composition_root=root)
                 for generation in generations.values():
                     generation.runtime_snapshot = snapshot
-                child._active_generations = generations
                 self._check_operation_commit()
                 child._snapshot_store.install(snapshot)
                 child._building_roots.pop(root)
@@ -3785,7 +3723,6 @@ class PluginManager:
                 lambda module_path=module_path: self._remove_module_tree(module_path),
             )
             scope = PluginScope(plugin_id, generation_id=generation_id)
-            self._scopes[module_path] = scope
             root._defer_internal_cleanup(
                 f"scope:{module_path}",
                 lambda scope=scope, module_path=module_path: self._close_root_scope(scope, module_path),
@@ -3804,9 +3741,6 @@ class PluginManager:
                 plugin_dir=code_dir if source is None else source.plugin_dir,
                 data_dir=data_dir, config_projection=cast(dict[str, object], projection),
                 instance=plugin, scope=scope,
-                contributions=self._collect_candidate_contributions(
-                    instance=plugin,
-                ),
                 static_manifest=manifest,
                 source_type=cast(Literal["builtin", "installed"], record["source_type"]),
                 archive_ref=ref,
@@ -3823,15 +3757,14 @@ class PluginManager:
         return generations
 
     async def _close_root_scope(self, scope: PluginScope, module_path: str) -> None:
-        """Scope 关闭成功后才解除索引；Root 在失败时保留该清理句柄。"""
+        """Root 只在 Scope 关闭成功后释放句柄，失败时继续持有依赖。"""
         failures = await scope.aclose()
         self._cleanup_failures.extend(failures)
         if failures:
             raise RuntimeError(
-                "Root scope cleanup 未完成，必须显式 retry: "
+                f"Root scope cleanup 未完成，必须显式 retry: {module_path}: "
                 + "; ".join(f"{item.resource}: {item.error}" for item in failures)
             )
-        self._scopes.pop(module_path, None)
 
     async def _resolve_composition_root(
         self,
@@ -4433,20 +4366,6 @@ class PluginManager:
         return "base"
 
 
-    def _collect_candidate_contributions(
-        self,
-        *,
-        instance: ComposablePlugin,
-    ) -> PluginContributions:
-        return PluginContributions(
-            manifest={
-                "name": instance.name,
-                "version": instance.version,
-                "desc": instance.desc,
-                "author": instance.author,
-            },
-        )
-
     def _record_failed_gate(
         self,
         *,
@@ -4621,32 +4540,9 @@ class PluginManager:
                     self._dispose_generation(generation, state="retired")
                 )
                 externally_cancelled = externally_cancelled or cancelled
-        for generation in tuple(self._active_generations.values()):
-            if not generation.scope.closed:
-                _, cancelled = await _complete_critical(
-                    self._dispose_generation(generation, state="retired")
-                )
-                externally_cancelled = externally_cancelled or cancelled
-
-        # 4. 尚未构造 generation 的加载失败也不能丢失 scope 或模块。
-        for mp, scope in tuple(self._scopes.items()):
-            failures, cancelled = await _complete_critical(scope.aclose())
-            self._cleanup_failures.extend(failures)
-            externally_cancelled = externally_cancelled or cancelled
-            if failures:
-                raise RuntimeError(
-                    f"插件 scope cleanup 未完成，owner 已保留: {mp}: "
-                    + "; ".join(f"{item.resource}: {item.error}" for item in failures)
-                )
-            self._remove_module_tree(mp)
-            _ = self._scopes.pop(mp)
-        for mp in tuple(self._loaded):
-            self._remove_module_tree(mp)
+        # 4. 导入前的 Scope 也由前面的 building Root 关闭，不绕过 Root 扫尾。
         for alias in self._stable_aliases.values():
             self._remove_module_tree(alias)
-        self._loaded.clear()
-        self._active_plugins.clear()
-        self._active_generations.clear()
         self._stable_aliases.clear()
         if self._owns_control_frames:
             self._control_frames.close()
