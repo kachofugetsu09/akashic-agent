@@ -581,6 +581,30 @@ def _installed_snapshot_source(
 
 
 @pytest.mark.asyncio
+async def test_disabled_installed_plugin_is_not_part_of_boot_selection(tmp_path: Path) -> None:
+    """禁用插件不进入装配；另一个选中的插件仍完整启动。"""
+    plugin_base, _ = _write_installed_artifact(
+        tmp_path, "1.0.0-disabled",
+        _v3_source("installed_snapshot", body="    raise RuntimeError('must not start')\n"),
+    )
+    pointer = ArtifactPointer(".artifacts/1.0.0-disabled")
+    write_pointers(plugin_base, stable=pointer, latest=pointer)
+    write_plugin_manifest(
+        {"installed_snapshot@lab": False}, plugins_home=tmp_path / "home",
+    )
+    _write_plugin(tmp_path / "plugins", "selected", _v3_source("selected"))
+    manager = _manager(tmp_path)
+    try:
+        await manager.load_all()
+        assert manager.current_snapshot is not None
+        assert set(manager.current_snapshot.generations) == {"selected"}
+        assert manager.generation("installed_snapshot@lab") is None
+        assert read_pointer(plugin_base, "stable") == pointer
+    finally:
+        await manager.terminate_all()
+
+
+@pytest.mark.asyncio
 async def test_installed_candidate_requires_explicit_promote_or_discard(
     tmp_path: Path,
 ) -> None:

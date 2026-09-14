@@ -1380,12 +1380,17 @@ class PluginManager:
             self._reload_journal.finish_recovery(action)
             self._write_startup_recovery_fact(action, committed=False)
 
-        # 4. stable 在未发布事务中完整装配；latest 随后以新事务恢复。
+        # 4. 禁用项不属于选中组合；恢复仍使用上面的完整制品目录。
+        enabled = load_plugin_manifest(self.installed_plugins_home)
+        selected = tuple(
+            mod for plugin_id, mod in stable_by_id.items()
+            if enabled.get(plugin_id, True)
+        )
         if self._active_generations:
-            for mod in stable_by_id.values():
+            for mod in selected:
                 _ = await self._load_one(mod)
         else:
-            await self._load_stable_batch(tuple(stable_by_id.values()))
+            await self._load_stable_batch(selected)
         self._finish_committed_recovery(restore_committed)
         self._finish_boot_runtime_recovery(
             runtime_recovery,
